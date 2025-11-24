@@ -341,3 +341,9 @@ pub struct SecurityScheme {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bearer_format: Option<String>,
 }
+
+/// Builder trait for types that can be converted to OpenAPI Schema
+pub trait SchemaBuilder: Sized {
+    // This trait is used as a marker for derive macro
+    // The actual schema conversion will be implemented separately
+}

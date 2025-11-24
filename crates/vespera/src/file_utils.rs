@@ -1,19 +1,22 @@
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use crate::extract_route_info;
+use crate::route::extract_route_info;
 
-pub fn collect_files(folder_path: &Path) -> Vec<PathBuf> {
+pub fn collect_files(folder_path: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    for entry in std::fs::read_dir(folder_path).unwrap() {
-        let entry = entry.unwrap();
+    for entry in std::fs::read_dir(folder_path)
+        .with_context(|| format!("Failed to read directory: {}", folder_path.display()))?
+    {
+        let entry = entry.with_context(|| "Failed to read directory entry")?;
         let path = entry.path();
         if path.is_file() {
             files.push(folder_path.join(path));
         } else if path.is_dir() {
-            files.extend(collect_files(&folder_path.join(&path)));
+            files.extend(collect_files(&folder_path.join(&path))?);
         }
     }
-    files
+    Ok(files)
 }
 
 pub fn file_to_segments(file: &Path, base_path: &Path) -> Vec<String> {
@@ -39,9 +42,14 @@ pub fn file_to_segments(file: &Path, base_path: &Path) -> Vec<String> {
 pub fn get_function_list(
     file: &Path,
     route_path: &str,
-) -> Result<Vec<(syn::Ident, String, Option<String>)>, String> {
-    let fn_list = syn::parse_file(std::fs::read_to_string(file).unwrap().as_str())
-        .unwrap()
+) -> Result<Vec<(syn::Ident, String, Option<String>)>> {
+    let content = std::fs::read_to_string(file)
+        .with_context(|| format!("Failed to read file: {}", file.display()))?;
+
+    let file_ast = syn::parse_file(&content)
+        .with_context(|| format!("Failed to parse file: {}", file.display()))?;
+
+    let fn_list = file_ast
         .items
         .iter()
         .filter_map(|item| {
