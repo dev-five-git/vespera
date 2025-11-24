@@ -309,7 +309,7 @@ This project is licensed under the Apache 2.0 License. See the `LICENSE` file fo
 
 ## Roadmap
 
-- [ v ] Automatic routes importing
+- [x] Automatic routes importing
 - [ ] Automatic OpenAPI 3.1 spec generation (`vespera_openapi!` macro)
 - [ ] Automatic request/response schema extraction
 - [ ] Swagger UI integration
