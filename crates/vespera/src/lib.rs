@@ -15,7 +15,6 @@ use syn::LitStr;
 use syn::parse::{Parse, ParseStream};
 
 use crate::collector::collect_metadata;
-use crate::file_utils::{file_to_segments, get_function_list};
 use crate::method::http_method_to_token_stream;
 use crate::openapi_generator::generate_openapi_doc_with_metadata;
 use vespera_core::route::HttpMethod;
@@ -82,7 +81,8 @@ pub fn vespera(input: TokenStream) -> TokenStream {
 }
 
 fn find_folder_path(folder_name: &str) -> std::path::PathBuf {
-    let path = format!("src/{}", folder_name);
+    let root = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let path = format!("{}/src/{}", root, folder_name);
     let path = Path::new(&path);
     if path.exists() && path.is_dir() {
         return path.to_path_buf();
@@ -93,66 +93,42 @@ fn find_folder_path(folder_name: &str) -> std::path::PathBuf {
 
 fn generate_router_code(folder_path: &Path, folder_name: &str) -> TokenStream {
     // Collect metadata (routes and structs) - used by vespera_openapi!() as well
-    let _metadata = collect_metadata(folder_path, folder_name);
+    let metadata = collect_metadata(folder_path, folder_name);
 
     let mut router_nests = Vec::new();
-    let files = match crate::file_utils::collect_files(folder_path) {
-        Ok(files) => files,
-        Err(e) => {
-            return syn::Error::new(Span::call_site(), format!("Failed to collect files: {}", e))
-                .to_compile_error()
-                .into();
-        }
-    };
 
-    for file in files {
-        if let Ok(file_stem) = file.strip_prefix(folder_path) {
-            let segments = file_to_segments(file_stem, folder_path);
+    for route in metadata.routes {
+        let http_method = HttpMethod::from(route.method.as_str());
+        let method_path = http_method_to_token_stream(http_method);
+        let path = route.path.clone().to_string();
+        let module_path = route.module_path.clone().to_string();
+        let function_name = route.function_name.clone().to_string();
 
-            let mut p: syn::punctuated::Punctuated<syn::PathSegment, syn::Token![::]> =
-                syn::punctuated::Punctuated::new();
-            p.extend(segments.iter().map(|s| syn::PathSegment {
-                ident: syn::Ident::new(s, Span::call_site()),
-                arguments: syn::PathArguments::None,
-            }));
-            let (route_path, mod_name) = (
-                format!("/{}", segments.join("/")),
-                if let Some(folder_name_ident) = if !folder_name.is_empty() {
-                    Some(syn::Ident::new(folder_name, Span::call_site()))
-                } else {
-                    None
-                } {
-                    quote! { crate::#folder_name_ident::#p }
-                } else {
-                    quote! { crate::#p }
-                },
-            );
-
-            // collect all fn names and their HTTP methods and paths from the file
-            let fn_list = match get_function_list(&file, &route_path) {
-                Ok(list) => list,
-                Err(e) => {
-                    return syn::Error::new(
-                        Span::call_site(),
-                        format!("Failed to get function list from {}: {}", file.display(), e),
-                    )
-                    .to_compile_error()
-                    .into();
-                }
-            };
-
-            for (fn_name, method, custom_path) in fn_list {
-                // Use custom path if provided, otherwise use default route_path
-                let final_path = custom_path.unwrap_or_else(|| route_path.clone());
-
-                // Use full path for axum routing methods
-                let http_method = HttpMethod::from(method.as_str());
-                let method_path = http_method_to_token_stream(http_method);
-                router_nests.push(quote!(
-                    .route(#final_path, #method_path(#mod_name::#fn_name))
-                ));
-            }
-        }
+        let mut p: syn::punctuated::Punctuated<syn::PathSegment, syn::Token![::]> =
+            syn::punctuated::Punctuated::new();
+        p.push(syn::PathSegment {
+            ident: syn::Ident::new("crate", Span::call_site()),
+            arguments: syn::PathArguments::None,
+        });
+        p.extend(
+            module_path
+                .split("::")
+                .filter_map(|s| {
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(syn::PathSegment {
+                            ident: syn::Ident::new(s, Span::call_site()),
+                            arguments: syn::PathArguments::None,
+                        })
+                    }
+                })
+                .collect::<Vec<syn::PathSegment>>(),
+        );
+        let func_name = syn::Ident::new(&function_name, Span::call_site());
+        router_nests.push(quote!(
+            .route(#path, #method_path(#p::#func_name))
+        ));
     }
 
     let expanded = quote! {

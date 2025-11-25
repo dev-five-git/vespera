@@ -9,9 +9,11 @@ pub struct RouteInfo {
 pub fn check_route_by_meta(meta: &syn::Meta) -> bool {
     match meta {
         syn::Meta::List(meta_list) => {
-            meta_list.path.segments.len() == 2
+            (meta_list.path.segments.len() == 2
                 && meta_list.path.segments[0].ident == "vespera"
-                && meta_list.path.segments[1].ident == "route"
+                && meta_list.path.segments[1].ident == "route")
+                || (meta_list.path.segments.len() == 1
+                    && meta_list.path.segments[0].ident == "route")
         }
         _ => false,
     }
