@@ -16,58 +16,41 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: write
-  pull-requests: write
-  id-token: write
-  packages: write
-  repository-projects: write
-  issues: write
-  discussions: write
-
 jobs:
-  # test:
-  #   name: Test
-  #   runs-on: ubuntu-latest
-  #   container:
-  #     image: xd009642/tarpaulin:develop-nightly
-  #     options: --security-opt seccomp=unconfined
-  #   steps:
-  #     - uses: actions/checkout@v5
-  #     - uses: oven-sh/setup-bun@v2
-  #       with:
-  #         bun-version: latest
-  #     - uses: actions-rust-lang/setup-rust-toolchain@v1
-  #     - name: Install
-  #       uses: dtolnay/rust-toolchain@stable
-  #       with:
-  #         components: clippy, rustfmt
-  #     - name: Build
-  #       run: cargo check
-  #     - name: Test
-  #       run: cargo tarpaulin
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    container:
+      image: xd009642/tarpaulin:develop-nightly
+      options: --security-opt seccomp=unconfined
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Build
+        run: cargo check
+      - name: Test
+        run: cargo tarpaulin
 
   # publish
   changepacks:
     name: changepacks
     runs-on: ubuntu-latest
-    # permissions:
-    #   # create pull request comments
-    #   pull-requests: write
+    permissions:
+      # create pull request comments
+      pull-requests: write
 
-    #   # Actions > General > Workflow permissions for creating pull request
-    #   # Create brench to create pull request
-    #   contents: write
-    #   id-token: write
-    # needs:
-    #   - test
+      # Actions > General > Workflow permissions for creating pull request
+      # Create brench to create pull request
+      contents: write
     steps:
       - uses: actions/checkout@v5
-      - name: Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: a
-
       - uses: changepacks/action@main
         with:
           publish: true
