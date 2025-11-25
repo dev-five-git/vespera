@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use axum::extract::Query;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use vespera::Schema;
 
 pub mod health;
@@ -26,7 +26,7 @@ pub async fn mod_file_with_map_query(
     "mod file endpoint"
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Schema)]
 pub struct StructQuery {
     pub name: String,
     pub age: u32,

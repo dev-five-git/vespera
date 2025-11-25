@@ -1283,13 +1283,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vespera"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "proc-macro2",
- "quote",
- "serde",
- "serde_json",
- "syn",
  "vespera-core",
+ "vespera_macro",
 ]
 
 [[package]]
@@ -1298,6 +1293,19 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "vespera_macro"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn",
+ "vespera-core",
 ]
 
 [[package]]
