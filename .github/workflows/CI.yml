@@ -19,6 +19,9 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    container:
+      image: xd009642/tarpaulin:develop-nightly
+      options: --security-opt seccomp=unconfined
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
@@ -31,10 +34,8 @@ jobs:
           components: clippy, rustfmt
       - name: Build
         run: cargo check
-      # - name: Test
-      #   run: cargo tarpaulin
-      - name: Run cargo-tarpaulin
-        uses: actions-rs/tarpaulin@v0.1
+      - name: Test
+        run: cargo tarpaulin
 
 
   # publish
