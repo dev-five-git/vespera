@@ -16,6 +16,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions: write-all
 jobs:
   # test:
   #   name: Test
@@ -42,14 +43,14 @@ jobs:
   changepacks:
     name: changepacks
     runs-on: ubuntu-latest
-    permissions:
-      # create pull request comments
-      pull-requests: write
+    # permissions:
+    #   # create pull request comments
+    #   pull-requests: write
 
-      # Actions > General > Workflow permissions for creating pull request
-      # Create brench to create pull request
-      contents: write
-      id-token: write
+    #   # Actions > General > Workflow permissions for creating pull request
+    #   # Create brench to create pull request
+    #   contents: write
+    #   id-token: write
     # needs:
     #   - test
     steps:
