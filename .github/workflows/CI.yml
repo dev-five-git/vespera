@@ -57,6 +57,6 @@ jobs:
       - uses: changepacks/action@main
         with:
           publish: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
