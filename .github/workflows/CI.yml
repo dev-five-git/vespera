@@ -42,7 +42,13 @@ jobs:
   changepacks:
     name: changepacks
     runs-on: ubuntu-latest
-    permissions: write-all
+    permissions:
+      # create pull request comments
+      pull-requests: write
+
+      # Actions > General > Workflow permissions for creating pull request
+      # Create brench to create pull request
+      contents: write
     needs:
       - test
     steps:
@@ -51,8 +57,8 @@ jobs:
         id: changepacks
         with:
           publish: true
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        # env:
+        #   CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     outputs:
       changepacks: ${{ steps.changepacks.outputs.changepacks }}
       release_assets_urls: ${{ steps.changepacks.outputs.release_assets_urls }}
