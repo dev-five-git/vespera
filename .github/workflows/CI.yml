@@ -16,7 +16,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions: write-all
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+  packages: write
+  repository-projects: write
+  issues: write
+  discussions: write
+
 jobs:
   # test:
   #   name: Test
