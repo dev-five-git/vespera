@@ -63,13 +63,8 @@ jobs:
     #   - test
     steps:
       - uses: actions/checkout@v5
-      - name: Create a Release
-        uses: elgohr/Github-Release-Action@v5
-        env:
-          GH_TOKEN: ${{ github.token }}
-        with:
-          title: MyReleaseMessage
-
+      - name: Release
+        uses: softprops/action-gh-release@v2
 
       - uses: changepacks/action@main
         with:
