@@ -29,12 +29,96 @@ pub fn parse_function_parameter(arg: &FnArg, path_params: &[String]) -> Option<P
     match arg {
         FnArg::Receiver(_) => None,
         FnArg::Typed(PatType { pat, ty, .. }) => {
+            // Extract parameter name from pattern
             let param_name = match pat.as_ref() {
                 Pat::Ident(ident) => ident.ident.to_string(),
+                Pat::TupleStruct(tuple_struct) => {
+                    // Handle Path(id) pattern
+                    if tuple_struct.elems.len() == 1 {
+                        match &tuple_struct.elems[0] {
+                            Pat::Ident(ident) => ident.ident.to_string(),
+                            _ => return None,
+                        }
+                    } else {
+                        return None;
+                    }
+                }
                 _ => return None,
             };
 
-            // Check if it's a path parameter
+            // Check for common Axum extractors first (before checking path_params)
+            if let Type::Path(type_path) = ty.as_ref() {
+                let path = &type_path.path;
+                if !path.segments.is_empty() {
+                    let segment = &path.segments[0];
+                    let ident_str = segment.ident.to_string();
+
+                    match ident_str.as_str() {
+                        "Path" => {
+                            // Path<T> extractor - use path parameter name from route if available
+                            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+                                && let Some(syn::GenericArgument::Type(inner_ty)) =
+                                    args.args.first()
+                            {
+                                // If there's exactly one path parameter, use its name
+                                let name = if path_params.len() == 1 {
+                                    path_params[0].clone()
+                                } else {
+                                    // Otherwise use the parameter name from the pattern
+                                    param_name
+                                };
+                                return Some(Parameter {
+                                    name,
+                                    r#in: ParameterLocation::Path,
+                                    description: None,
+                                    required: Some(true),
+                                    schema: Some(parse_type_to_schema_ref(inner_ty)),
+                                    example: None,
+                                });
+                            }
+                        }
+                        "Query" => {
+                            // Query<T> extractor
+                            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+                                && let Some(syn::GenericArgument::Type(inner_ty)) =
+                                    args.args.first()
+                            {
+                                return Some(Parameter {
+                                    name: param_name.clone(),
+                                    r#in: ParameterLocation::Query,
+                                    description: None,
+                                    required: Some(true),
+                                    schema: Some(parse_type_to_schema_ref(inner_ty)),
+                                    example: None,
+                                });
+                            }
+                        }
+                        "Header" => {
+                            // Header<T> extractor
+                            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+                                && let Some(syn::GenericArgument::Type(inner_ty)) =
+                                    args.args.first()
+                            {
+                                return Some(Parameter {
+                                    name: param_name.clone(),
+                                    r#in: ParameterLocation::Header,
+                                    description: None,
+                                    required: Some(true),
+                                    schema: Some(parse_type_to_schema_ref(inner_ty)),
+                                    example: None,
+                                });
+                            }
+                        }
+                        "Json" => {
+                            // Json<T> extractor - this will be handled as RequestBody
+                            return None;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Check if it's a path parameter (by name match) - for non-extractor cases
             if path_params.contains(&param_name) {
                 return Some(Parameter {
                     name: param_name.clone(),
@@ -46,78 +130,18 @@ pub fn parse_function_parameter(arg: &FnArg, path_params: &[String]) -> Option<P
                 });
             }
 
-            // Check for common Axum extractors
-            if let Type::Path(type_path) = ty.as_ref() {
-                let path = &type_path.path;
-                if path.segments.is_empty() {
-                    return None;
-                }
-
-                let segment = &path.segments[0];
-                let ident_str = segment.ident.to_string();
-
-                match ident_str.as_str() {
-                    "Path" => {
-                        // Path<T> extractor
-                        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-                            && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                                return Some(Parameter {
-                                    name: param_name.clone(),
-                                    r#in: ParameterLocation::Path,
-                                    description: None,
-                                    required: Some(true),
-                                    schema: Some(parse_type_to_schema_ref(inner_ty)),
-                                    example: None,
-                                });
-                            }
-                    }
-                    "Query" => {
-                        // Query<T> extractor
-                        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-                            && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                                return Some(Parameter {
-                                    name: param_name.clone(),
-                                    r#in: ParameterLocation::Query,
-                                    description: None,
-                                    required: Some(true),
-                                    schema: Some(parse_type_to_schema_ref(inner_ty)),
-                                    example: None,
-                                });
-                            }
-                    }
-                    "Header" => {
-                        // Header<T> extractor
-                        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-                            && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                                return Some(Parameter {
-                                    name: param_name.clone(),
-                                    r#in: ParameterLocation::Header,
-                                    description: None,
-                                    required: Some(true),
-                                    schema: Some(parse_type_to_schema_ref(inner_ty)),
-                                    example: None,
-                                });
-                            }
-                    }
-                    "Json" => {
-                        // Json<T> extractor - this will be handled as RequestBody
-                        return None;
-                    }
-                    _ => {
-                        // Check if it's a primitive type (direct parameter)
-                        if is_primitive_type(ty) {
-                            return Some(Parameter {
-                                name: param_name.clone(),
-                                r#in: ParameterLocation::Query,
-                                description: None,
-                                required: Some(true),
-                                schema: Some(parse_type_to_schema_ref(ty)),
-                                example: None,
-                            });
-                        }
-                    }
-                }
+            // Check if it's a primitive type (direct parameter)
+            if is_primitive_type(ty.as_ref()) {
+                return Some(Parameter {
+                    name: param_name.clone(),
+                    r#in: ParameterLocation::Query,
+                    description: None,
+                    required: Some(true),
+                    schema: Some(parse_type_to_schema_ref(ty)),
+                    example: None,
+                });
             }
+
             None
         }
     }
@@ -225,23 +249,24 @@ pub fn parse_request_body(arg: &FnArg) -> Option<RequestBody> {
 
                 if ident_str == "Json"
                     && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-                        && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                            let schema = parse_type_to_schema_ref(inner_ty);
-                            let mut content = std::collections::HashMap::new();
-                            content.insert(
-                                "application/json".to_string(),
-                                MediaType {
-                                    schema: Some(schema),
-                                    example: None,
-                                    examples: None,
-                                },
-                            );
-                            return Some(RequestBody {
-                                description: None,
-                                required: Some(true),
-                                content,
-                            });
-                        }
+                    && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+                {
+                    let schema = parse_type_to_schema_ref(inner_ty);
+                    let mut content = std::collections::HashMap::new();
+                    content.insert(
+                        "application/json".to_string(),
+                        MediaType {
+                            schema: Some(schema),
+                            example: None,
+                            examples: None,
+                        },
+                    );
+                    return Some(RequestBody {
+                        description: None,
+                        required: Some(true),
+                        content,
+                    });
+                }
             }
             None
         }

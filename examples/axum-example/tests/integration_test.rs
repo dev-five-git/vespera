@@ -100,6 +100,17 @@ async fn test_get_nonexistent_user() {
 }
 
 #[tokio::test]
+async fn test_prefix_variable() {
+    let app = create_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server.get("/path/prefix/123").await;
+
+    response.assert_status_ok();
+    response.assert_text("prefix variable: 123");
+}
+
+#[tokio::test]
 async fn test_invalid_path() {
     let app = create_app();
     let server = TestServer::new(app).unwrap();

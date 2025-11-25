@@ -23,28 +23,18 @@ pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
     for attr in attrs {
         // Check if attribute path is "vespera" or "route"
         if check_route_by_meta(&attr.meta) {
+            println!("attr.meta: {:?}", attr.meta);
             match &attr.meta {
                 syn::Meta::List(meta_list) => {
+                    println!("inner flag1");
                     // Try to parse as RouteArgs
-                    if let Ok(route_args) = meta_list.parse_args::<RouteArgs>()
-                        && let Some(method_ident) = route_args.method {
-                            let method = method_ident.to_string().to_lowercase();
-                            let path = route_args.path.map(|lit_str| lit_str.value());
-                            return Some(RouteInfo { method, path });
-                        }
-
-                    // Fallback: try to parse as single identifier
-                    if let Ok(ident) = meta_list.parse_args::<syn::Ident>() {
-                        let method_str = ident.to_string().to_lowercase();
-                        match method_str.as_str() {
-                            "get" | "post" | "put" | "patch" | "delete" | "head" | "options" => {
-                                return Some(RouteInfo {
-                                    method: method_str,
-                                    path: None,
-                                });
-                            }
-                            _ => {}
-                        }
+                    if let Ok(route_args) = meta_list.parse_args::<RouteArgs>() {
+                        let method = route_args
+                            .method
+                            .map(|ident| ident.to_string())
+                            .unwrap_or_else(|| "get".to_string());
+                        let path = route_args.path.map(|lit_str| lit_str.value());
+                        return Some(RouteInfo { method, path });
                     }
                 }
                 // Try to parse as Meta::NameValue (e.g., #[route = "patch"])

@@ -65,6 +65,33 @@ expression: openapi
         }
       }
     },
+    "/path/prefix/{var}": {
+      "get": {
+        "operationId": "prefix_variable",
+        "parameters": [
+          {
+            "name": "var",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/users": {
       "get": {
         "operationId": "get_users",
@@ -110,6 +137,16 @@ expression: openapi
     "/users/{id}": {
       "get": {
         "operationId": "get_user",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",

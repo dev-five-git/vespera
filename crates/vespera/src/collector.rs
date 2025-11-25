@@ -45,27 +45,32 @@ pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> CollectedMetad
 
         let file_path = file.display().to_string();
 
+        println!("flag5 --------------------- {:?}", file);
+
         // Collect routes
         for item in &file_ast.items {
             if let Item::Fn(fn_item) = item
-                && let Some(route_info) = extract_route_info(&fn_item.attrs) {
-                    let route_path = if let Some(custom_path) = &route_info.path {
-                        let base = format!("/{}", segments.join("/"));
-                        let trimmed_base = base.trim_end_matches('/');
-                        format!("{}/{}", trimmed_base, custom_path.trim_start_matches('/'))
-                    } else {
-                        format!("/{}", segments.join("/"))
-                    };
+                && let Some(route_info) = extract_route_info(&fn_item.attrs)
+            {
+                println!("route_info: {:?}", route_info);
 
-                    metadata.routes.push(RouteMetadata {
-                        method: route_info.method,
-                        path: route_path,
-                        function_name: fn_item.sig.ident.to_string(),
-                        module_path: module_path.clone(),
-                        file_path: file_path.clone(),
-                        signature: quote::quote!(#fn_item).to_string(),
-                    });
-                }
+                let route_path = if let Some(custom_path) = &route_info.path {
+                    let base = format!("/{}", segments.join("/"));
+                    let trimmed_base = base.trim_end_matches('/');
+                    format!("{}/{}", trimmed_base, custom_path.trim_start_matches('/'))
+                } else {
+                    format!("/{}", segments.join("/"))
+                };
+
+                metadata.routes.push(RouteMetadata {
+                    method: route_info.method,
+                    path: route_path,
+                    function_name: fn_item.sig.ident.to_string(),
+                    module_path: module_path.clone(),
+                    file_path: file_path.clone(),
+                    signature: quote::quote!(#fn_item).to_string(),
+                });
+            }
 
             // Collect structs with Schema derive
             if let Item::Struct(struct_item) = item {
