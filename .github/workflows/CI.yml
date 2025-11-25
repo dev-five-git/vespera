@@ -54,6 +54,21 @@ jobs:
     #   - test
     steps:
       - uses: actions/checkout@v5
+      - name: Create Release
+        id: create_release
+        uses: comnoco/create-release@v2
+        env:
+          GITHUB_TOKEN: ${{ github.toekn }} # This token is provided by Actions, you do not need to create your own token
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          body: |
+            Changes in this Release
+            - First Change
+            - Second Change
+          draft: false
+          prerelease: false
+
       - uses: changepacks/action@main
         with:
           publish: true
