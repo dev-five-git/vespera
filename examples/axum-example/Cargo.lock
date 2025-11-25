@@ -1253,11 +1253,11 @@ dependencies = [
  "serde",
  "serde_json",
  "syn",
- "vespera-core",
+ "vespera_core",
 ]
 
 [[package]]
-name = "vespera-core"
+name = "vespera_core"
 version = "0.1.0"
 dependencies = [
  "serde",

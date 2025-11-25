@@ -1,9 +1,9 @@
 [package]
 name = "vespera"
-version = "0.1.0"
+version = "0.0.0"
 edition = "2024"
 
 [dependencies]
-vespera-core = { path = "../vespera-core" }
+vespera_core = { path = "../vespera_core" }
 vespera-macro = { path = "../vespera_macro", package = "vespera_macro" }
 axum = "0.8"

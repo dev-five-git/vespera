@@ -1,0 +1,6 @@
+{
+  "ignore": ["**", "!crates/**"],
+  "baseBranch": "main",
+  "latestPackage": null,
+  "publish": {}
+}
