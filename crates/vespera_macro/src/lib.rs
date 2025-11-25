@@ -251,4 +251,3 @@ pub fn vespera_openapi(input: TokenStream) -> TokenStream {
 
     expanded.into()
 }
-

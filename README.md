@@ -234,6 +234,29 @@ pub async fn get_user(id: u32) -> Json<User> {
 - `HEAD`
 - `OPTIONS`
 
+### Generating OpenAPI JSON
+
+To generate an `openapi.json` file, create a `build.rs` file in your project root and add the following code:
+
+```rust
+use vespera::vespera_openapi;
+
+fn main() {
+    // Generate OpenAPI JSON using vespera
+    let json = vespera_openapi!();
+    std::fs::write("openapi.json", json).unwrap();
+}
+```
+
+You also need to add a `[build-dependencies]` section to your `Cargo.toml`:
+
+```toml
+[build-dependencies]
+vespera = { path = "../../crates/vespera" }
+```
+
+The `openapi.json` file will be automatically generated in the project root when you build.
+
 ### File Structure and Route Mapping
 
 File structure is automatically converted to URL paths:
