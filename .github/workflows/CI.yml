@@ -44,13 +44,13 @@ jobs:
   changepacks:
     name: changepacks
     runs-on: ubuntu-latest
-    permissions:
-      # create pull request comments
-      pull-requests: write
+    # permissions:
+    #   # create pull request comments
+    #   pull-requests: write
 
-      # Actions > General > Workflow permissions for creating pull request
-      # Create brench to create pull request
-      contents: write
+    #   # Actions > General > Workflow permissions for creating pull request
+    #   # Create brench to create pull request
+    #   contents: write
     needs:
       - test
     steps:
