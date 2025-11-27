@@ -6,6 +6,7 @@ use vespera::{
     axum::{Json, extract::Query},
 };
 
+pub mod error;
 pub mod health;
 pub mod path;
 pub mod users;
