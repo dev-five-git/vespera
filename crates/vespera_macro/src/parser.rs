@@ -441,37 +441,220 @@ pub fn parse_request_body(
     }
 }
 
-/// Analyze return type and convert to Response
+/// Unwrap Json<T> to get T
+fn unwrap_json(ty: &Type) -> &Type {
+    if let Type::Path(type_path) = ty {
+        let path = &type_path.path;
+        if !path.segments.is_empty() {
+            let segment = &path.segments[0];
+            if segment.ident == "Json" {
+                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                    if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
+                        return inner_ty;
+                    }
+                }
+            }
+        }
+    }
+    ty
+}
+
+/// Extract Ok and Err types from Result<T, E> or Result<Json<T>, E>
+/// Handles both Result and std::result::Result, and unwraps references
+fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
+    // First unwrap Json if present
+    let unwrapped = unwrap_json(ty);
+
+    // Handle both Type::Path and Type::Reference (for &Result<...>)
+    let result_type = match unwrapped {
+        Type::Path(type_path) => type_path,
+        Type::Reference(type_ref) => {
+            // Unwrap reference and check if it's a Result
+            if let Type::Path(type_path) = type_ref.elem.as_ref() {
+                type_path
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+
+    let path = &result_type.path;
+    if path.segments.is_empty() {
+        return None;
+    }
+
+    // Check if any segment is "Result" (handles both Result and std::result::Result)
+    let is_result = path.segments.iter().any(|seg| seg.ident == "Result");
+
+    if is_result {
+        // Get the last segment (Result) to check for generics
+        if let Some(segment) = path.segments.last() {
+            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                if args.args.len() >= 2 {
+                    if let (
+                        Some(syn::GenericArgument::Type(ok_ty)),
+                        Some(syn::GenericArgument::Type(err_ty)),
+                    ) = (args.args.first(), args.args.get(1))
+                    {
+                        // Unwrap Json from Ok type if present
+                        let ok_ty_unwrapped = unwrap_json(ok_ty);
+                        return Some((ok_ty_unwrapped.clone(), err_ty.clone()));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Check if error type is a tuple (StatusCode, E) or (StatusCode, Json<E>)
+/// Returns the error type E and a default status code (400)
+fn extract_status_code_tuple(err_ty: &Type) -> Option<(u16, Type)> {
+    if let Type::Tuple(tuple) = err_ty {
+        if tuple.elems.len() == 2 {
+            // Check if first element is StatusCode
+            if let Type::Path(type_path) = &tuple.elems[0] {
+                let path = &type_path.path;
+                if !path.segments.is_empty() {
+                    let segment = &path.segments[0];
+                    // Check if it's StatusCode (could be qualified like axum::http::StatusCode)
+                    let is_status_code = segment.ident == "StatusCode"
+                        || (path.segments.len() > 1
+                            && path.segments.iter().any(|s| s.ident == "StatusCode"));
+
+                    if is_status_code {
+                        // Use 400 as default status code
+                        // The actual status code value is determined at runtime
+                        if let Some(error_type) = tuple.elems.get(1) {
+                            // Unwrap Json if present
+                            let error_type_unwrapped = unwrap_json(error_type);
+                            return Some((400, error_type_unwrapped.clone()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Analyze return type and convert to Responses map
 pub fn parse_return_type(
     return_type: &ReturnType,
     known_schemas: &HashMap<String, String>,
-) -> Response {
-    let schema = match return_type {
-        ReturnType::Default => None,
-        ReturnType::Type(_, ty) => Some(parse_type_to_schema_ref(ty, known_schemas)),
-    };
+) -> BTreeMap<String, Response> {
+    let mut responses = BTreeMap::new();
 
-    let mut content = BTreeMap::new();
-    if let Some(schema) = schema {
-        content.insert(
-            "application/json".to_string(),
-            MediaType {
-                schema: Some(schema),
-                example: None,
-                examples: None,
-            },
-        );
+    match return_type {
+        ReturnType::Default => {
+            // No return type - just 200 with no content
+            responses.insert(
+                "200".to_string(),
+                Response {
+                    description: "Successful response".to_string(),
+                    headers: None,
+                    content: None,
+                },
+            );
+        }
+        ReturnType::Type(_, ty) => {
+            // Check if it's a Result<T, E>
+            if let Some((ok_ty, err_ty)) = extract_result_types(ty) {
+                // Handle success response (200)
+                let ok_schema = parse_type_to_schema_ref(&ok_ty, known_schemas);
+                let mut ok_content = BTreeMap::new();
+                ok_content.insert(
+                    "application/json".to_string(),
+                    MediaType {
+                        schema: Some(ok_schema),
+                        example: None,
+                        examples: None,
+                    },
+                );
+
+                responses.insert(
+                    "200".to_string(),
+                    Response {
+                        description: "Successful response".to_string(),
+                        headers: None,
+                        content: Some(ok_content),
+                    },
+                );
+
+                // Handle error response
+                // Check if error is (StatusCode, E) tuple
+                if let Some((status_code, error_type)) = extract_status_code_tuple(&err_ty) {
+                    // Use the status code from the tuple
+                    let err_schema = parse_type_to_schema_ref(&error_type, known_schemas);
+                    let mut err_content = BTreeMap::new();
+                    err_content.insert(
+                        "application/json".to_string(),
+                        MediaType {
+                            schema: Some(err_schema),
+                            example: None,
+                            examples: None,
+                        },
+                    );
+
+                    responses.insert(
+                        status_code.to_string(),
+                        Response {
+                            description: "Error response".to_string(),
+                            headers: None,
+                            content: Some(err_content),
+                        },
+                    );
+                } else {
+                    // Regular error type - use default 400
+                    // Unwrap Json if present
+                    let err_ty_unwrapped = unwrap_json(&err_ty);
+                    let err_schema = parse_type_to_schema_ref(err_ty_unwrapped, known_schemas);
+                    let mut err_content = BTreeMap::new();
+                    err_content.insert(
+                        "application/json".to_string(),
+                        MediaType {
+                            schema: Some(err_schema),
+                            example: None,
+                            examples: None,
+                        },
+                    );
+
+                    responses.insert(
+                        "400".to_string(),
+                        Response {
+                            description: "Error response".to_string(),
+                            headers: None,
+                            content: Some(err_content),
+                        },
+                    );
+                }
+            } else {
+                // Not a Result type - regular response
+                let schema = parse_type_to_schema_ref(ty, known_schemas);
+                let mut content = BTreeMap::new();
+                content.insert(
+                    "application/json".to_string(),
+                    MediaType {
+                        schema: Some(schema),
+                        example: None,
+                        examples: None,
+                    },
+                );
+
+                responses.insert(
+                    "200".to_string(),
+                    Response {
+                        description: "Successful response".to_string(),
+                        headers: None,
+                        content: Some(content),
+                    },
+                );
+            }
+        }
     }
 
-    Response {
-        description: "Successful response".to_string(),
-        headers: None,
-        content: if content.is_empty() {
-            None
-        } else {
-            Some(content)
-        },
-    }
+    responses
 }
 
 /// Build Operation from function signature
@@ -479,6 +662,7 @@ pub fn build_operation_from_function(
     sig: &syn::Signature,
     path: &str,
     known_schemas: &HashMap<String, String>,
+    error_status: Option<&[u16]>,
 ) -> Operation {
     let path_params = extract_path_parameters(path);
     let mut parameters = Vec::new();
@@ -494,10 +678,50 @@ pub fn build_operation_from_function(
         }
     }
 
-    // Parse return type
-    let response = parse_return_type(&sig.output, known_schemas);
-    let mut responses = BTreeMap::new();
-    responses.insert("200".to_string(), response);
+    // Parse return type - may return multiple responses (for Result types)
+    let mut responses = parse_return_type(&sig.output, known_schemas);
+
+    // Add additional error status codes from error_status attribute
+    if let Some(status_codes) = error_status {
+        // Find the error response schema (usually 400 or the first error response)
+        let error_schema = responses
+            .iter()
+            .find(|(code, _)| code != &&"200".to_string())
+            .and_then(|(_, resp)| {
+                resp.content
+                    .as_ref()?
+                    .get("application/json")?
+                    .schema
+                    .clone()
+            });
+
+        if let Some(schema) = error_schema {
+            for &status_code in status_codes {
+                let status_str = status_code.to_string();
+                // Only add if not already present
+                if !responses.contains_key(&status_str) {
+                    let mut err_content = BTreeMap::new();
+                    err_content.insert(
+                        "application/json".to_string(),
+                        MediaType {
+                            schema: Some(schema.clone()),
+                            example: None,
+                            examples: None,
+                        },
+                    );
+
+                    responses.insert(
+                        status_str,
+                        Response {
+                            description: "Error response".to_string(),
+                            headers: None,
+                            content: Some(err_content),
+                        },
+                    );
+                }
+            }
+        }
+    }
 
     Operation {
         operation_id: Some(sig.ident.to_string()),

@@ -97,6 +97,7 @@ pub fn generate_openapi_doc_with_metadata(
                     &fn_item.sig,
                     &route_meta.path,
                     &known_schema_names,
+                    route_meta.error_status.as_deref(),
                 );
 
                 // Get or create PathItem

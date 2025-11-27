@@ -4,6 +4,7 @@ use crate::args::RouteArgs;
 pub struct RouteInfo {
     pub method: String,
     pub path: Option<String>,
+    pub error_status: Option<Vec<u16>>,
 }
 
 pub fn check_route_by_meta(meta: &syn::Meta) -> bool {
@@ -32,7 +33,28 @@ pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
                             .map(|ident| ident.to_string())
                             .unwrap_or_else(|| "get".to_string());
                         let path = route_args.path.map(|lit_str| lit_str.value());
-                        return Some(RouteInfo { method, path });
+                        
+                        // Parse error_status array if present
+                        let error_status = route_args.error_status.and_then(|array| {
+                            let mut status_codes = Vec::new();
+                            for elem in array.elems {
+                                if let syn::Expr::Lit(syn::ExprLit {
+                                    lit: syn::Lit::Int(lit_int),
+                                    ..
+                                }) = elem {
+                                    if let Ok(code) = lit_int.base10_parse::<u16>() {
+                                        status_codes.push(code);
+                                    }
+                                }
+                            }
+                            if status_codes.is_empty() {
+                                None
+                            } else {
+                                Some(status_codes)
+                            }
+                        });
+                        
+                        return Some(RouteInfo { method, path, error_status });
                     }
                 }
                 // Try to parse as Meta::NameValue (e.g., #[route = "patch"])
@@ -48,6 +70,7 @@ pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
                                 return Some(RouteInfo {
                                     method: method_str,
                                     path: None,
+                                    error_status: None,
                                 });
                             }
                             _ => {}
