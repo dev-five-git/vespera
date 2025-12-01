@@ -7,6 +7,7 @@ use vespera::{
 };
 
 pub mod error;
+pub mod foo;
 pub mod health;
 pub mod path;
 pub mod users;

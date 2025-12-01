@@ -208,6 +208,33 @@ fn extract_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
     None
 }
 
+/// Extract rename attribute from field attributes
+/// Handles #[serde(rename = "newName")]
+fn extract_field_rename(attrs: &[syn::Attribute]) -> Option<String> {
+    for attr in attrs {
+        if attr.path().is_ident("serde") {
+            // Try to parse as Meta::List first
+            if let syn::Meta::List(meta_list) = &attr.meta {
+                let tokens = meta_list.tokens.to_string();
+
+                // Look for rename = "..." pattern
+                if let Some(start) = tokens.find("rename") {
+                    let remaining = &tokens[start + "rename".len()..];
+                    if let Some(equals_pos) = remaining.find('=') {
+                        let value_part = &remaining[equals_pos + 1..].trim();
+                        // Extract string value (remove quotes)
+                        if value_part.starts_with('"') && value_part.ends_with('"') {
+                            let value = &value_part[1..value_part.len() - 1];
+                            return Some(value.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Convert field name according to rename_all rule
 fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
     match rename_all {
@@ -282,8 +309,13 @@ pub fn parse_struct_to_schema(
                     .map(|i| i.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
 
-                // Apply rename_all transformation if present
-                let field_name = rename_field(&rust_field_name, rename_all.as_deref());
+                // Check for field-level rename attribute first (takes precedence)
+                let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
+                    renamed
+                } else {
+                    // Apply rename_all transformation if present
+                    rename_field(&rust_field_name, rename_all.as_deref())
+                };
 
                 let field_type = &field.ty;
                 let schema_ref = parse_type_to_schema_ref(field_type, known_schemas);
