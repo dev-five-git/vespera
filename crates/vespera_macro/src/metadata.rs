@@ -38,8 +38,6 @@ pub struct StructMetadata {
 /// Collected metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectedMetadata {
-    /// Folder name used for collection
-    pub folder_name: String,
     /// Routes
     pub routes: Vec<RouteMetadata>,
     /// Structs
@@ -47,18 +45,10 @@ pub struct CollectedMetadata {
 }
 
 impl CollectedMetadata {
-    pub fn new(folder_name: String) -> Self {
+    pub fn new() -> Self {
         Self {
-            folder_name,
             routes: Vec::new(),
             structs: Vec::new(),
         }
     }
 }
-
-impl Default for CollectedMetadata {
-    fn default() -> Self {
-        Self::new("routes".to_string())
-    }
-}
-

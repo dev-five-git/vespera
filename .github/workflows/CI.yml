@@ -37,6 +37,13 @@ jobs:
         run: cargo check
       - name: Test
         run: cargo tarpaulin
+      - name: Upload to codecov.io
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
+          files: lcov.info
+        if: github.ref == 'refs/heads/main'
 
   # publish
   changepacks:

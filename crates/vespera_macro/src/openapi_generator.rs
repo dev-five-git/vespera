@@ -1,7 +1,6 @@
 //! OpenAPI document generator
 
 use std::collections::BTreeMap;
-use std::path::Path;
 use vespera_core::{
     openapi::{Info, OpenApi, OpenApiVersion, Server},
     route::{HttpMethod, PathItem},
@@ -13,8 +12,6 @@ use crate::parser::{build_operation_from_function, parse_struct_to_schema};
 
 /// Generate OpenAPI document from collected metadata
 pub fn generate_openapi_doc_with_metadata(
-    _folder_path: &Path,
-    _folder_name: &str,
     title: Option<String>,
     version: Option<String>,
     metadata: &CollectedMetadata,
@@ -158,5 +155,335 @@ pub fn generate_openapi_doc_with_metadata(
         security: None,
         tags: None,
         external_docs: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata::{CollectedMetadata, RouteMetadata, StructMetadata};
+    use rstest::rstest;
+    use std::fs;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn create_temp_file(dir: &TempDir, filename: &str, content: &str) -> PathBuf {
+        let file_path = dir.path().join(filename);
+        fs::write(&file_path, content).expect("Failed to write temp file");
+        file_path
+    }
+
+    #[test]
+    fn test_generate_openapi_empty_metadata() {
+        let metadata = CollectedMetadata::new();
+
+        let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
+
+        assert_eq!(doc.openapi, OpenApiVersion::V3_1_0);
+        assert_eq!(doc.info.title, "API");
+        assert_eq!(doc.info.version, "1.0.0");
+        assert!(doc.paths.is_empty());
+        assert!(doc.components.as_ref().unwrap().schemas.is_none());
+        assert_eq!(doc.servers.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            doc.servers.as_ref().unwrap()[0].url,
+            "http://localhost:3000"
+        );
+    }
+
+    #[rstest]
+    #[case(None, None, "API", "1.0.0")]
+    #[case(Some("My API".to_string()), None, "My API", "1.0.0")]
+    #[case(None, Some("2.0.0".to_string()), "API", "2.0.0")]
+    #[case(Some("Test API".to_string()), Some("3.0.0".to_string()), "Test API", "3.0.0")]
+    fn test_generate_openapi_title_version(
+        #[case] title: Option<String>,
+        #[case] version: Option<String>,
+        #[case] expected_title: &str,
+        #[case] expected_version: &str,
+    ) {
+        let metadata = CollectedMetadata::new();
+
+        let doc = generate_openapi_doc_with_metadata(title, version, &metadata);
+
+        assert_eq!(doc.info.title, expected_title);
+        assert_eq!(doc.info.version, expected_version);
+    }
+
+    #[test]
+    fn test_generate_openapi_with_route() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create a test route file
+        let route_content = r#"
+pub fn get_users() -> String {
+    "users".to_string()
+}
+"#;
+        let route_file = create_temp_file(&temp_dir, "users.rs", route_content);
+
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "GET".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "test::users".to_string(),
+            file_path: route_file.to_string_lossy().to_string(),
+            signature: "fn get_users() -> String".to_string(),
+            error_status: None,
+        });
+
+        let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
+
+        assert!(doc.paths.contains_key("/users"));
+        let path_item = doc.paths.get("/users").unwrap();
+        assert!(path_item.get.is_some());
+        let operation = path_item.get.as_ref().unwrap();
+        assert_eq!(operation.operation_id, Some("get_users".to_string()));
+    }
+
+    #[test]
+    fn test_generate_openapi_with_struct() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create a test struct file
+        let struct_content = r#"
+use vespera::Schema;
+
+#[derive(Schema)]
+pub struct User {
+    pub id: i32,
+    pub name: String,
+}
+"#;
+        let struct_file = create_temp_file(&temp_dir, "user.rs", struct_content);
+
+        let mut metadata = CollectedMetadata::new();
+        metadata.structs.push(StructMetadata {
+            name: "User".to_string(),
+            module_path: "test::user".to_string(),
+            file_path: struct_file.to_string_lossy().to_string(),
+            definition: "struct User { id: i32, name: String }".to_string(),
+        });
+
+        let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
+
+        assert!(doc.components.as_ref().unwrap().schemas.is_some());
+        let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
+        assert!(schemas.contains_key("User"));
+    }
+
+    #[test]
+    fn test_generate_openapi_with_route_and_struct() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create test files
+        let struct_content = r#"
+use vespera::Schema;
+
+#[derive(Schema)]
+pub struct User {
+    pub id: i32,
+    pub name: String,
+}
+"#;
+        let struct_file = create_temp_file(&temp_dir, "user.rs", struct_content);
+
+        let route_content = r#"
+use crate::user::User;
+
+pub fn get_user() -> User {
+    User { id: 1, name: "Alice".to_string() }
+}
+"#;
+        let route_file = create_temp_file(&temp_dir, "user_route.rs", route_content);
+
+        let mut metadata = CollectedMetadata::new();
+        metadata.structs.push(StructMetadata {
+            name: "User".to_string(),
+            module_path: "test::user".to_string(),
+            file_path: struct_file.to_string_lossy().to_string(),
+            definition: "struct User { id: i32, name: String }".to_string(),
+        });
+        metadata.routes.push(RouteMetadata {
+            method: "GET".to_string(),
+            path: "/user".to_string(),
+            function_name: "get_user".to_string(),
+            module_path: "test::user_route".to_string(),
+            file_path: route_file.to_string_lossy().to_string(),
+            signature: "fn get_user() -> User".to_string(),
+            error_status: None,
+        });
+
+        let doc = generate_openapi_doc_with_metadata(
+            Some("Test API".to_string()),
+            Some("1.0.0".to_string()),
+            &metadata,
+        );
+
+        // Check struct schema
+        assert!(doc.components.as_ref().unwrap().schemas.is_some());
+        let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
+        assert!(schemas.contains_key("User"));
+
+        // Check route
+        assert!(doc.paths.contains_key("/user"));
+        let path_item = doc.paths.get("/user").unwrap();
+        assert!(path_item.get.is_some());
+    }
+
+    #[test]
+    fn test_generate_openapi_multiple_routes() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        let route1_content = r#"
+pub fn get_users() -> String {
+    "users".to_string()
+}
+"#;
+        let route1_file = create_temp_file(&temp_dir, "users.rs", route1_content);
+
+        let route2_content = r#"
+pub fn create_user() -> String {
+    "created".to_string()
+}
+"#;
+        let route2_file = create_temp_file(&temp_dir, "create_user.rs", route2_content);
+
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "GET".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "test::users".to_string(),
+            file_path: route1_file.to_string_lossy().to_string(),
+            signature: "fn get_users() -> String".to_string(),
+            error_status: None,
+        });
+        metadata.routes.push(RouteMetadata {
+            method: "POST".to_string(),
+            path: "/users".to_string(),
+            function_name: "create_user".to_string(),
+            module_path: "test::create_user".to_string(),
+            file_path: route2_file.to_string_lossy().to_string(),
+            signature: "fn create_user() -> String".to_string(),
+            error_status: None,
+        });
+
+        let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
+
+        assert_eq!(doc.paths.len(), 1); // Same path, different methods
+        let path_item = doc.paths.get("/users").unwrap();
+        assert!(path_item.get.is_some());
+        assert!(path_item.post.is_some());
+    }
+
+    #[rstest]
+    // Test file read failures
+    #[case::struct_file_read_failure(
+        Some(StructMetadata {
+            name: "User".to_string(),
+            module_path: "test::user".to_string(),
+            file_path: "/nonexistent/struct.rs".to_string(),
+            definition: "struct User { id: i32 }".to_string(),
+        }),
+        None,
+        false, // struct should not be added
+        false, // route should not be added
+    )]
+    #[case::route_file_read_failure(
+        None,
+        Some(RouteMetadata {
+            method: "GET".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "test::users".to_string(),
+            file_path: "/nonexistent/route.rs".to_string(),
+            signature: "fn get_users() -> String".to_string(),
+            error_status: None,
+        }),
+        false, // struct should not be added
+        false, // route should not be added
+    )]
+    // Test file parse failures
+    #[case::struct_file_parse_failure(
+        Some(StructMetadata {
+            name: "User".to_string(),
+            module_path: "test::user".to_string(),
+            file_path: "".to_string(), // Will be set to temp file with invalid syntax
+            definition: "struct User { id: i32 }".to_string(),
+        }),
+        None,
+        false, // struct should not be added
+        false, // route should not be added
+    )]
+    #[case::route_file_parse_failure(
+        None,
+        Some(RouteMetadata {
+            method: "GET".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "test::users".to_string(),
+            file_path: "".to_string(), // Will be set to temp file with invalid syntax
+            signature: "fn get_users() -> String".to_string(),
+            error_status: None,
+        }),
+        false, // struct should not be added
+        false, // route should not be added
+    )]
+    fn test_generate_openapi_file_errors(
+        #[case] struct_meta: Option<StructMetadata>,
+        #[case] route_meta: Option<RouteMetadata>,
+        #[case] expect_struct: bool,
+        #[case] expect_route: bool,
+    ) {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let mut metadata = CollectedMetadata::new();
+
+        // Handle struct metadata
+        if let Some(mut struct_m) = struct_meta {
+            // If file_path is empty, create invalid syntax file
+            if struct_m.file_path.is_empty() {
+                let invalid_file =
+                    create_temp_file(&temp_dir, "invalid_struct.rs", "invalid rust syntax {");
+                struct_m.file_path = invalid_file.to_string_lossy().to_string();
+            }
+            metadata.structs.push(struct_m);
+        }
+
+        // Handle route metadata
+        if let Some(mut route_m) = route_meta {
+            // If file_path is empty, create invalid syntax file
+            if route_m.file_path.is_empty() {
+                let invalid_file =
+                    create_temp_file(&temp_dir, "invalid_route.rs", "invalid rust syntax {");
+                route_m.file_path = invalid_file.to_string_lossy().to_string();
+            }
+            metadata.routes.push(route_m);
+        }
+
+        // Should not panic, just skip invalid files
+        let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
+
+        // Check struct
+        if expect_struct {
+            assert!(doc.components.as_ref().unwrap().schemas.is_some());
+            let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
+            assert!(schemas.contains_key("User"));
+        } else {
+            if let Some(schemas) = doc.components.as_ref().unwrap().schemas.as_ref() {
+                assert!(!schemas.contains_key("User"));
+            }
+        }
+
+        // Check route
+        if expect_route {
+            assert!(doc.paths.contains_key("/users"));
+        } else {
+            assert!(!doc.paths.contains_key("/users"));
+        }
+
+        // Ensure TempDir is properly closed
+        drop(temp_dir);
     }
 }

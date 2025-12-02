@@ -29,9 +29,7 @@ impl Reference {
 
     /// Create a component schema reference
     pub fn schema(name: &str) -> Self {
-        Self {
-            ref_path: format!("#/components/schemas/{}", name),
-        }
+        Reference::new(format!("#/components/schemas/{}", name))
     }
 }
 
