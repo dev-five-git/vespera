@@ -438,7 +438,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TestStruct"
                 }
               }
             }
@@ -455,7 +455,10 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/User"
+                  }
                 }
               }
             }
@@ -469,7 +472,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "content": {
             "application/json": {
               "schema": {
-                "type": "object"
+                "$ref": "#/components/schemas/CreateUserRequest"
               }
             }
           }
@@ -480,7 +483,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/User"
                 }
               }
             }
@@ -507,7 +510,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/User"
                 }
               }
             }
@@ -642,6 +645,21 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "nestedStructMap",
           "nestedStructArrayMap",
           "nestedStructMapArray"
+        ]
+      },
+      "CreateUserRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "email"
         ]
       },
       "ErrorResponse": {
@@ -788,6 +806,25 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "name",
           "age"
+        ]
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "email"
         ]
       }
     }

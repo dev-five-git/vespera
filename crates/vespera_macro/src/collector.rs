@@ -258,27 +258,9 @@ pub fn get_users() -> String {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let folder_name = "routes";
 
-        create_temp_file(
-            &temp_dir,
-            "user.rs",
-            r#"
-use vespera::Schema;
-
-#[derive(Schema)]
-pub struct User {
-    pub id: i32,
-    pub name: String,
-}
-"#,
-        );
-
         let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         assert_eq!(metadata.routes.len(), 0);
-        assert_eq!(metadata.structs.len(), 1);
-
-        let struct_meta = &metadata.structs[0];
-        assert_eq!(struct_meta.name, "User");
 
         drop(temp_dir);
     }
@@ -334,13 +316,9 @@ pub fn get_user() -> User {
         let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         assert_eq!(metadata.routes.len(), 1);
-        assert_eq!(metadata.structs.len(), 1);
 
         let route = &metadata.routes[0];
         assert_eq!(route.function_name, "get_user");
-
-        let struct_meta = &metadata.structs[0];
-        assert_eq!(struct_meta.name, "User");
 
         drop(temp_dir);
     }
@@ -431,11 +409,6 @@ pub struct Post {
         let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         assert_eq!(metadata.routes.len(), 0);
-        assert_eq!(metadata.structs.len(), 2);
-
-        let struct_names: Vec<&str> = metadata.structs.iter().map(|s| s.name.as_str()).collect();
-        assert!(struct_names.contains(&"User"));
-        assert!(struct_names.contains(&"Post"));
 
         drop(temp_dir);
     }
@@ -738,35 +711,6 @@ pub struct User {
 
         // Struct with only Debug/Clone derive (no Schema) should not be collected
         assert_eq!(metadata.structs.len(), 0);
-
-        drop(temp_dir);
-    }
-
-    #[test]
-    fn test_collect_metadata_struct_with_multiple_derives_including_schema() {
-        // Test that struct with Schema among other derives is collected
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let folder_name = "routes";
-
-        create_temp_file(
-            &temp_dir,
-            "user.rs",
-            r#"
-use vespera::Schema;
-
-#[derive(Debug, Schema, Clone)]
-pub struct User {
-    pub id: i32,
-    pub name: String,
-}
-"#,
-        );
-
-        let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
-
-        // Struct with Schema derive should be collected
-        assert_eq!(metadata.structs.len(), 1);
-        assert_eq!(metadata.structs[0].name, "User");
 
         drop(temp_dir);
     }

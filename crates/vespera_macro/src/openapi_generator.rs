@@ -323,15 +323,6 @@ pub fn create_user() -> String {
 
     #[rstest]
     // Test file read failures
-    #[case::struct_file_read_failure(
-        Some(StructMetadata {
-            name: "User".to_string(),
-            definition: "struct User { id: i32 }".to_string(),
-        }),
-        None,
-        false, // struct should not be added
-        false, // route should not be added
-    )]
     #[case::route_file_read_failure(
         None,
         Some(RouteMetadata {
@@ -343,16 +334,6 @@ pub fn create_user() -> String {
             signature: "fn get_users() -> String".to_string(),
             error_status: None,
         }),
-        false, // struct should not be added
-        false, // route should not be added
-    )]
-    // Test file parse failures
-    #[case::struct_file_parse_failure(
-        Some(StructMetadata {
-            name: "User".to_string(),
-            definition: "struct User { id: i32 }".to_string(),
-        }),
-        None,
         false, // struct should not be added
         false, // route should not be added
     )]
