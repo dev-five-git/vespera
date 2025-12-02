@@ -83,8 +83,12 @@ mod tests {
         #[case] base_path: &str,
         #[case] expected: Vec<&str>,
     ) {
-        let file = PathBuf::from(file_path);
-        let base = PathBuf::from(base_path);
+        // Normalize paths by replacing backslashes with forward slashes
+        // This ensures tests work cross-platform (Windows uses \, Unix uses /)
+        let normalized_file_path = file_path.replace("\\", "/");
+        let normalized_base_path = base_path.replace("\\", "/");
+        let file = PathBuf::from(normalized_file_path);
+        let base = PathBuf::from(normalized_base_path);
         let result = file_to_segments(&file, &base);
         let expected_vec: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
         assert_eq!(
