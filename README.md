@@ -44,8 +44,11 @@ Generates a complete OpenAPI 3.1 document from:
 ### 4. Type-Safe Schema Extraction
 Rust types are converted into JSON Schema with full type fidelity.
 
-### 5. Axum-First Design
-Built specifically for Axum’s architecture while offering the productivity of modern API frameworks.
+### 5. Built-in Swagger UI
+Automatically generates and serves Swagger UI documentation when `docs_url` is specified, providing interactive API exploration.
+
+### 6. Axum-First Design
+Built specifically for Axum's architecture while offering the productivity of modern API frameworks.
 
 ---
 
@@ -76,10 +79,14 @@ async fn main() {
 
     let state = AppState { db, config };
 
-    let app = vespera!();
-
-    // route auto import
-    let openapi = vespera_openapi!().with_state(state).layer(
+    let app = vespera!(
+        openapi = "openapi.json",
+        title = "My API",
+        version = "1.0.0",
+        docs_url = "/docs"
+    )
+    .with_state(state)
+    .layer(
         CorsLayer::new()
             .allow_origin("http://localhost:3000".parse::<HeaderValue>().unwrap())
             .allow_methods([
@@ -95,9 +102,9 @@ async fn main() {
             ]),
     );
 
-    let openapi = vespera_openapi!();
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     println!("API server is running on port {}", port);
+    println!("Swagger UI available at http://localhost:{}/docs", port);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
@@ -184,12 +191,23 @@ use vespera::vespera;
 
 #[tokio::main]
 async fn main() {
-    let app = vespera!(); // Scans "routes" folder by default
+    // Basic usage: scans "routes" folder by default
+    let app = vespera!();
+    
+    // Or with OpenAPI and Swagger UI support
+    let app = vespera!(
+        openapi = "openapi.json",
+        title = "My API",
+        version = "1.0.0",
+        docs_url = "/docs"
+    );
+    
     // Or specify a custom folder: vespera!("api")
     
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     println!("Server running on http://localhost:3000");
+    println!("Swagger UI available at http://localhost:3000/docs");
     axum::serve(listener, app).await.unwrap();
 }
 ```
@@ -200,7 +218,7 @@ async fn main() {
 
 ### `vespera!` Macro
 
-Automatically scans routes and generates an Axum Router.
+Automatically scans routes and generates an Axum Router with optional OpenAPI and Swagger UI support.
 
 ```rust
 // Basic usage: scans "routes" folder
@@ -208,7 +226,47 @@ let app = vespera!();
 
 // Specify a custom folder
 let app = vespera!("api");
+
+// With OpenAPI JSON file generation
+let app = vespera!(
+    openapi = "openapi.json"
+);
+
+// With OpenAPI and Swagger UI
+let app = vespera!(
+    openapi = "openapi.json",
+    docs_url = "/docs"
+);
+
+// Full configuration with all parameters
+let app = vespera!(
+    dir = "routes",              // Route folder name (default: "routes")
+    openapi = "openapi.json",    // OpenAPI JSON file path (optional)
+    title = "My API",            // API title (optional, default: "API")
+    version = "1.0.0",           // API version (optional, default: "1.0.0")
+    docs_url = "/docs"           // Swagger UI documentation URL (optional)
+);
 ```
+
+#### Parameter Description
+
+- **`dir`**: Route folder name (default: `"routes"`)
+  - You can also specify it directly as a string literal: `vespera!("api")`
+  
+- **`openapi`**: OpenAPI JSON file path (optional)
+  - If specified, an OpenAPI 3.1 spec is generated at compile time and **writes an `openapi.json` file to the specified path**
+  - Example: `openapi = "openapi.json"` → creates `openapi.json` file in project root
+  - Example: `openapi = "docs/api.json"` → creates `docs/api.json` file
+  
+- **`title`**: API title (optional, default: `"API"`)
+  - Used in the `info.title` field of the OpenAPI document
+  
+- **`version`**: API version (optional, default: `"1.0.0"`)
+  - Used in the `info.version` field of the OpenAPI document
+  
+- **`docs_url`**: Swagger UI documentation URL (optional)
+  - If specified, you can view the API documentation through Swagger UI at that path
+  - Example: Setting `docs_url = "/docs"` allows viewing documentation at `http://localhost:3000/docs`
 
 ### `#[route]` Attribute Macro
 
@@ -244,28 +302,27 @@ pub async fn get_user(id: u32) -> Json<User> {
 - `HEAD`
 - `OPTIONS`
 
-### Generating OpenAPI JSON
+### OpenAPI JSON Generation and Swagger UI
 
-To generate an `openapi.json` file, create a `build.rs` file in your project root and add the following code:
+When you specify the `openapi` parameter in the `vespera!` macro, an OpenAPI 3.1 spec is automatically generated at compile time and **writes a file to the specified path**.
 
 ```rust
-use vespera::vespera_openapi;
-
-fn main() {
-    // Generate OpenAPI JSON using vespera
-    let json = vespera_openapi!();
-    std::fs::write("openapi.json", json).unwrap();
-}
+let app = vespera!(
+    openapi = "openapi.json",    // Creates openapi.json file at this path
+    title = "My API",            // API title
+    version = "1.0.0",           // API version
+    docs_url = "/docs"           // Swagger UI URL (optional)
+);
 ```
 
-You also need to add a `[build-dependencies]` section to your `Cargo.toml`:
+With this configuration:
+- An OpenAPI JSON file is automatically generated at the specified path during compilation
+  - `openapi = "openapi.json"` → creates `openapi.json` file in project root
+  - `openapi = "docs/api.json"` → creates `docs/api.json` file
+- If you specify `docs_url`, you can view the API documentation through Swagger UI at that path
+- The OpenAPI spec is automatically generated by analyzing routes, handlers, and request/response types
 
-```toml
-[build-dependencies]
-vespera = { path = "../../crates/vespera" }
-```
-
-The `openapi.json` file will be automatically generated in the project root when you build.
+**Note**: The `build.rs` file is no longer needed. The `vespera!` macro automatically handles it at compile time.
 
 ### File Structure and Route Mapping
 
@@ -343,9 +400,9 @@ This project is licensed under the Apache 2.0 License. See the `LICENSE` file fo
 ## Roadmap
 
 - [x] Automatic routes importing
-- [ ] Automatic OpenAPI 3.1 spec generation (`vespera_openapi!` macro)
-- [ ] Automatic request/response schema extraction
-- [ ] Swagger UI integration
+- [x] Automatic OpenAPI 3.1 spec generation (via `vespera!` macro)
+- [x] Automatic request/response schema extraction
+- [x] Swagger UI integration
 - [ ] Support for more Axum extractors
 
 ---
