@@ -70,27 +70,6 @@ pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> Result<Collect
                     error_status: route_info.error_status.clone(),
                 });
             }
-
-            // Collect structs with Schema derive
-            // if let Item::Struct(struct_item) = item {
-            //     // Check if struct has Schema derive by checking attribute tokens
-            //     let has_schema = struct_item.attrs.iter().any(|attr| {
-            //         if attr.path().is_ident("derive") {
-            //             // Convert attribute to tokens and check for Schema
-            //             let tokens = quote::quote!(#attr).to_string();
-            //             tokens.contains("Schema")
-            //         } else {
-            //             false
-            //         }
-            //     });
-
-            //     if has_schema {
-            //         metadata.structs.push(StructMetadata {
-            //             name: struct_item.ident.to_string(),
-            //             definition: quote::quote!(#struct_item).to_string(),
-            //         });
-            //     }
-            // }
         }
     }
 
