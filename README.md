@@ -95,7 +95,6 @@ async fn main() {
             ]),
     );
 
-    let openapi = vespera_openapi!();
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     println!("API server is running on port {}", port);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
