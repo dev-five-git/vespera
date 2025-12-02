@@ -10,7 +10,6 @@ mod route;
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::quote;
-use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{LazyLock, Mutex};
 use syn::LitStr;
@@ -198,7 +197,6 @@ fn find_folder_path(folder_name: &str) -> std::path::PathBuf {
 }
 
 fn generate_router_code(metadata: &CollectedMetadata) -> proc_macro2::TokenStream {
-    // Collect metadata (routes and structs) - used by vespera_openapi!() as well
     let mut router_nests = Vec::new();
 
     for route in &metadata.routes {

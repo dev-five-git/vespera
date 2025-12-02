@@ -1,7 +1,7 @@
 //! Collector for routes and structs
 
 use crate::file_utils::{collect_files, file_to_segments};
-use crate::metadata::{CollectedMetadata, RouteMetadata, StructMetadata};
+use crate::metadata::{CollectedMetadata, RouteMetadata};
 use crate::route::extract_route_info;
 use anyhow::{Context, Result};
 use std::path::Path;

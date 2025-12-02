@@ -218,20 +218,6 @@ pub fn get_users() -> String {
 
     #[test]
     fn test_generate_openapi_with_struct() {
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-
-        // Create a test struct file
-        let struct_content = r#"
-use vespera::Schema;
-
-#[derive(Schema)]
-pub struct User {
-    pub id: i32,
-    pub name: String,
-}
-"#;
-        let struct_file = create_temp_file(&temp_dir, "user.rs", struct_content);
-
         let mut metadata = CollectedMetadata::new();
         metadata.structs.push(StructMetadata {
             name: "User".to_string(),
@@ -248,19 +234,6 @@ pub struct User {
     #[test]
     fn test_generate_openapi_with_route_and_struct() {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
-
-        // Create test files
-        let struct_content = r#"
-use vespera::Schema;
-
-#[derive(Schema)]
-pub struct User {
-    pub id: i32,
-    pub name: String,
-}
-"#;
-        let struct_file = create_temp_file(&temp_dir, "user.rs", struct_content);
-
         let route_content = r#"
 use crate::user::User;
 
