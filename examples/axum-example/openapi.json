@@ -415,6 +415,33 @@
         }
       }
     },
+    "/test-struct": {
+      "get": {
+        "operationId": "mod_file_with_test_struct",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TestStruct"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/users": {
       "get": {
         "operationId": "get_users",
@@ -730,6 +757,21 @@
         }
       },
       "StructQuery": {
+        "type": "object",
+        "properties": {
+          "age": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "age"
+        ]
+      },
+      "TestStruct": {
         "type": "object",
         "properties": {
           "age": {

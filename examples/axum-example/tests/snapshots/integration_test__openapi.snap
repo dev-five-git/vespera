@@ -1,6 +1,6 @@
 ---
 source: examples/axum-example/tests/integration_test.rs
-expression: openapi
+expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
 ---
 {
   "openapi": "3.1.0",
@@ -419,6 +419,33 @@ expression: openapi
         }
       }
     },
+    "/test-struct": {
+      "get": {
+        "operationId": "mod_file_with_test_struct",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TestStruct"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/users": {
       "get": {
         "operationId": "get_users",
@@ -734,6 +761,21 @@ expression: openapi
         }
       },
       "StructQuery": {
+        "type": "object",
+        "properties": {
+          "age": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "age"
+        ]
+      },
+      "TestStruct": {
         "type": "object",
         "properties": {
           "age": {

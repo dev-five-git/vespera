@@ -1,7 +1,6 @@
 use axum_example::create_app;
 use axum_test::TestServer;
 use serde_json::json;
-use vespera::vespera_openapi;
 
 #[tokio::test]
 async fn test_health_endpoint() {
@@ -43,7 +42,6 @@ async fn test_get_users() {
     assert!(users.is_array());
     assert_eq!(users.as_array().unwrap().len(), 2);
 
-    // 첫 번째 사용자 확인
     let first_user = &users[0];
     assert_eq!(first_user["id"], 1);
     assert_eq!(first_user["name"], "Alice");
@@ -90,8 +88,6 @@ async fn test_get_nonexistent_user() {
     let app = create_app();
     let server = TestServer::new(app).unwrap();
 
-    // 존재하지 않는 사용자 ID로 요청
-    // 현재 구현에서는 항상 성공하지만, 실제로는 404를 반환할 수도 있음
     let response = server.get("/users/999").await;
 
     response.assert_status_ok();
@@ -115,7 +111,6 @@ async fn test_invalid_path() {
     let app = create_app();
     let server = TestServer::new(app).unwrap();
 
-    // 존재하지 않는 경로
     let response = server.get("/nonexistent").await;
 
     response.assert_status_not_found();
@@ -204,7 +199,6 @@ async fn test_mod_file_with_complex_struct_body() {
     response.assert_status_ok();
     let response_text = response.text();
 
-    // 응답에 포함된 주요 필드들이 올바르게 포맷되었는지 확인
     assert!(response_text.contains("name: Test User"));
     assert!(response_text.contains("age: 30"));
     assert!(response_text.contains("item1"));
@@ -216,7 +210,6 @@ async fn test_mod_file_with_complex_struct_body_with_rename() {
     let app = create_app();
     let server = TestServer::new(app).unwrap();
 
-    // camelCase로 변환된 필드명 사용 (rename_all = "camelCase")
     let complex_body = json!({
         "name": "Test User Renamed",
         "age": 35,
@@ -295,7 +288,6 @@ async fn test_mod_file_with_complex_struct_body_with_rename() {
     response.assert_status_ok();
     let response_text = response.text();
 
-    // 응답에 포함된 주요 필드들이 올바르게 포맷되었는지 확인
     assert!(response_text.contains("name: Test User Renamed"));
     assert!(response_text.contains("age: 35"));
     assert!(response_text.contains("renamed1"));
@@ -304,7 +296,5 @@ async fn test_mod_file_with_complex_struct_body_with_rename() {
 
 #[tokio::test]
 async fn test_openapi() {
-    let openapi = vespera_openapi!();
-
-    insta::assert_snapshot!("openapi", openapi);
+    insta::assert_snapshot!("openapi", std::fs::read_to_string("openapi.json").unwrap());
 }

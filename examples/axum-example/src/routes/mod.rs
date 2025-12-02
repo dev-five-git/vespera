@@ -6,6 +6,8 @@ use vespera::{
     axum::{Json, extract::Query},
 };
 
+use crate::TestStruct;
+
 pub mod error;
 pub mod foo;
 pub mod health;
@@ -132,4 +134,9 @@ pub async fn mod_file_with_complex_struct_body_with_rename(
         body.nested_struct_array_map,
         body.nested_struct_map_array
     )
+}
+
+#[vespera::route(get, path = "/test-struct")]
+pub async fn mod_file_with_test_struct(Query(query): Query<TestStruct>) -> Json<TestStruct> {
+    Json(query)
 }

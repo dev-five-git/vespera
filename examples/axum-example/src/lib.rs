@@ -2,15 +2,22 @@ mod routes;
 
 use std::sync::Arc;
 
-use vespera::{axum, vespera};
-
-/// Create the application router for testing
-pub fn create_app() -> axum::Router {
-    vespera!().with_state(Arc::new(AppState {
-        config: "test".to_string(),
-    }))
-}
+use serde::{Deserialize, Serialize};
+use vespera::{Schema, axum, vespera};
 
 pub struct AppState {
     pub config: String,
+}
+
+#[derive(Serialize, Deserialize, Schema)]
+pub struct TestStruct {
+    pub name: String,
+    pub age: u32,
+}
+
+/// Create the application router for testing
+pub fn create_app() -> axum::Router {
+    vespera!(openapi = "examples/axum-example/openapi.json").with_state(Arc::new(AppState {
+        config: "test".to_string(),
+    }))
 }
