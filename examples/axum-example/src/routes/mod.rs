@@ -8,6 +8,7 @@ use vespera::{
 
 use crate::TestStruct;
 
+pub mod enums;
 pub mod error;
 pub mod foo;
 pub mod health;

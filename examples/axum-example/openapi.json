@@ -81,6 +81,40 @@
         }
       }
     },
+    "/enums": {
+      "get": {
+        "operationId": "enum_endpoint",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Enum"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/enums/enum2": {
+      "get": {
+        "operationId": "enum_endpoint2",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Enum2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/error": {
       "get": {
         "operationId": "error_endpoint",
@@ -656,6 +690,131 @@
         "required": [
           "name",
           "email"
+        ]
+      },
+      "Enum": {
+        "type": "string",
+        "enum": [
+          "A",
+          "B",
+          "C"
+        ]
+      },
+      "Enum2": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "A": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "A"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "B": {
+                "type": "object",
+                "properties": {
+                  "age": {
+                    "type": "integer"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "age"
+                ]
+              }
+            },
+            "required": [
+              "B"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "C": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "C"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "D": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "D"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "E": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "E"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "F": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
+            "required": [
+              "F"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "G": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "G"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "H": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "H"
+            ]
+          }
         ]
       },
       "ErrorResponse": {

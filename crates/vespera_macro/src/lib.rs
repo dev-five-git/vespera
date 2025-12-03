@@ -43,7 +43,7 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
         definition: quote::quote!(#input).to_string(),
     });
 
-    // For now, we just mark the struct as having SchemaBuilder
+    // Mark both struct and enum as having SchemaBuilder
     // The actual schema generation will be done at runtime
     let expanded = quote! {
         impl vespera::schema::SchemaBuilder for #name {}

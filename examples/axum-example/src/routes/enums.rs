@@ -1,0 +1,38 @@
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+use vespera::{
+    Schema,
+    axum::{Json, extract::Query},
+};
+
+use crate::TestStruct;
+
+#[derive(Serialize, Deserialize, Schema)]
+pub enum Enum {
+    A,
+    B,
+    C,
+}
+
+#[vespera::route(get)]
+pub async fn enum_endpoint() -> Json<Enum> {
+    Json(Enum::A)
+}
+
+#[derive(Serialize, Deserialize, Schema)]
+pub enum Enum2 {
+    A(String),
+    B { name: String, age: i32 },
+    C(i32),
+    D(bool),
+    E(Vec<String>),
+    F(String, i32),
+    G(HashMap<String, String>),
+    H(TestStruct),
+}
+
+#[vespera::route(get, path = "/enum2")]
+pub async fn enum_endpoint2() -> Json<Enum2> {
+    Json(Enum2::A("a".to_string()))
+}
