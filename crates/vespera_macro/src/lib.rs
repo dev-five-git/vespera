@@ -121,11 +121,31 @@ impl Parse for AutoRouterInput {
         }
 
         Ok(AutoRouterInput {
-            dir,
-            openapi,
-            title,
-            version,
-            docs_url,
+            dir: dir.or_else(|| {
+                std::env::var("VESPERA_DIR")
+                    .map(|f| LitStr::new(&f, Span::call_site()))
+                    .ok()
+            }),
+            openapi: openapi.or_else(|| {
+                std::env::var("VESPERA_OPENAPI")
+                    .map(|f| LitStr::new(&f, Span::call_site()))
+                    .ok()
+            }),
+            title: title.or_else(|| {
+                std::env::var("VESPERA_TITLE")
+                    .map(|f| LitStr::new(&f, Span::call_site()))
+                    .ok()
+            }),
+            version: version.or_else(|| {
+                std::env::var("VESPERA_VERSION")
+                    .map(|f| LitStr::new(&f, Span::call_site()))
+                    .ok()
+            }),
+            docs_url: docs_url.or_else(|| {
+                std::env::var("VESPERA_DOCS_URL")
+                    .map(|f| LitStr::new(&f, Span::call_site()))
+                    .ok()
+            }),
         })
     }
 }

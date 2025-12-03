@@ -1,0 +1,1 @@
+{"changes":{"crates/vespera_core/Cargo.toml":"Patch","crates/vespera_macro/Cargo.toml":"Patch","crates/vespera/Cargo.toml":"Patch"},"note":"Set macro option by env value","date":"2025-12-03T01:39:38.071244800Z"}
