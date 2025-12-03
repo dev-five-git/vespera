@@ -53,11 +53,9 @@ pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
                                     lit: syn::Lit::Int(lit_int),
                                     ..
                                 }) = elem
-                                {
-                                    if let Ok(code) = lit_int.base10_parse::<u16>() {
+                                    && let Ok(code) = lit_int.base10_parse::<u16>() {
                                         status_codes.push(code);
                                     }
-                                }
                             }
                             if status_codes.is_empty() {
                                 None

@@ -132,6 +132,9 @@ pub struct Schema {
     /// Array item schema
     #[serde(skip_serializing_if = "Option::is_none")]
     pub items: Option<Box<SchemaRef>>,
+    /// Prefix items for tuple arrays (OpenAPI 3.1 / JSON Schema 2020-12)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix_items: Option<Vec<SchemaRef>>,
     /// Minimum number of items
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_items: Option<usize>,
@@ -149,7 +152,7 @@ pub struct Schema {
     /// List of required properties
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<Vec<String>>,
-    /// Whether additional properties are allowed
+    /// Whether additional properties are allowed (can be boolean or SchemaRef)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub additional_properties: Option<serde_json::Value>,
     /// Minimum number of properties
@@ -210,6 +213,7 @@ impl Schema {
             max_length: None,
             pattern: None,
             items: None,
+            prefix_items: None,
             min_items: None,
             max_items: None,
             unique_items: None,

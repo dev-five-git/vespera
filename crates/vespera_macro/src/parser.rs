@@ -341,6 +341,217 @@ fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
     }
 }
 
+/// Parse enum definition to OpenAPI Schema
+pub fn parse_enum_to_schema(
+    enum_item: &syn::ItemEnum,
+    known_schemas: &HashMap<String, String>,
+) -> Schema {
+    // Extract rename_all attribute from enum
+    let rename_all = extract_rename_all(&enum_item.attrs);
+
+    // Check if all variants are unit variants
+    let all_unit = enum_item
+        .variants
+        .iter()
+        .all(|v| matches!(v.fields, syn::Fields::Unit));
+
+    if all_unit {
+        // Simple enum with string values
+        let mut enum_values = Vec::new();
+
+        for variant in &enum_item.variants {
+            let variant_name = variant.ident.to_string();
+
+            // Check for variant-level rename attribute first (takes precedence)
+            let enum_value = if let Some(renamed) = extract_field_rename(&variant.attrs) {
+                renamed
+            } else {
+                // Apply rename_all transformation if present
+                rename_field(&variant_name, rename_all.as_deref())
+            };
+
+            enum_values.push(serde_json::Value::String(enum_value));
+        }
+
+        Schema {
+            schema_type: Some(SchemaType::String),
+            r#enum: if enum_values.is_empty() {
+                None
+            } else {
+                Some(enum_values)
+            },
+            ..Schema::string()
+        }
+    } else {
+        // Enum with data - use oneOf
+        let mut one_of_schemas = Vec::new();
+
+        for variant in &enum_item.variants {
+            let variant_name = variant.ident.to_string();
+
+            // Check for variant-level rename attribute first (takes precedence)
+            let variant_key = if let Some(renamed) = extract_field_rename(&variant.attrs) {
+                renamed
+            } else {
+                // Apply rename_all transformation if present
+                rename_field(&variant_name, rename_all.as_deref())
+            };
+
+            let variant_schema = match &variant.fields {
+                syn::Fields::Unit => {
+                    // Unit variant: {"const": "VariantName"}
+                    Schema {
+                        schema_type: Some(SchemaType::String),
+                        r#enum: Some(vec![serde_json::Value::String(variant_key)]),
+                        ..Schema::string()
+                    }
+                }
+                syn::Fields::Unnamed(fields_unnamed) => {
+                    // Tuple variant: {"VariantName": <inner_type>}
+                    // For single field: {"VariantName": <type>}
+                    // For multiple fields: {"VariantName": [<type1>, <type2>, ...]}
+                    if fields_unnamed.unnamed.len() == 1 {
+                        // Single field tuple variant
+                        let inner_type = &fields_unnamed.unnamed[0].ty;
+                        let inner_schema = parse_type_to_schema_ref(inner_type, known_schemas);
+
+                        let mut properties = BTreeMap::new();
+                        properties.insert(variant_key.clone(), inner_schema);
+
+                        Schema {
+                            schema_type: Some(SchemaType::Object),
+                            properties: Some(properties),
+                            required: Some(vec![variant_key]),
+                            ..Schema::object()
+                        }
+                    } else {
+                        // Multiple fields tuple variant - serialize as array
+                        // serde serializes tuple variants as: {"VariantName": [value1, value2, ...]}
+                        // For OpenAPI 3.1, we use prefixItems to represent tuple arrays
+                        let mut tuple_item_schemas = Vec::new();
+                        for field in &fields_unnamed.unnamed {
+                            let field_schema = parse_type_to_schema_ref(&field.ty, known_schemas);
+                            tuple_item_schemas.push(field_schema);
+                        }
+
+                        let tuple_len = tuple_item_schemas.len();
+
+                        // Create array schema with prefixItems for tuple arrays (OpenAPI 3.1)
+                        let array_schema = Schema {
+                            schema_type: Some(SchemaType::Array),
+                            prefix_items: Some(tuple_item_schemas),
+                            min_items: Some(tuple_len),
+                            max_items: Some(tuple_len),
+                            items: None, // prefixItems와 items는 함께 사용하지 않음
+                            ..Schema::new(SchemaType::Array)
+                        };
+
+                        let mut properties = BTreeMap::new();
+                        properties.insert(
+                            variant_key.clone(),
+                            SchemaRef::Inline(Box::new(array_schema)),
+                        );
+
+                        Schema {
+                            schema_type: Some(SchemaType::Object),
+                            properties: Some(properties),
+                            required: Some(vec![variant_key]),
+                            ..Schema::object()
+                        }
+                    }
+                }
+                syn::Fields::Named(fields_named) => {
+                    // Struct variant: {"VariantName": {field1: type1, field2: type2, ...}}
+                    let mut variant_properties = BTreeMap::new();
+                    let mut variant_required = Vec::new();
+                    let variant_rename_all = extract_rename_all(&variant.attrs);
+
+                    for field in &fields_named.named {
+                        let rust_field_name = field
+                            .ident
+                            .as_ref()
+                            .map(|i| i.to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+
+                        // Check for field-level rename attribute first (takes precedence)
+                        let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
+                            renamed
+                        } else {
+                            // Apply rename_all transformation if present
+                            rename_field(
+                                &rust_field_name,
+                                variant_rename_all.as_deref().or(rename_all.as_deref()),
+                            )
+                        };
+
+                        let field_type = &field.ty;
+                        let schema_ref = parse_type_to_schema_ref(field_type, known_schemas);
+
+                        variant_properties.insert(field_name.clone(), schema_ref);
+
+                        // Check if field is Option<T>
+                        let is_optional = matches!(
+                            field_type,
+                            Type::Path(type_path)
+                                if type_path
+                                    .path
+                                    .segments
+                                    .first()
+                                    .map(|s| s.ident == "Option")
+                                    .unwrap_or(false)
+                        );
+
+                        if !is_optional {
+                            variant_required.push(field_name);
+                        }
+                    }
+
+                    // Wrap struct variant in an object with the variant name as key
+                    let inner_struct_schema = Schema {
+                        schema_type: Some(SchemaType::Object),
+                        properties: if variant_properties.is_empty() {
+                            None
+                        } else {
+                            Some(variant_properties)
+                        },
+                        required: if variant_required.is_empty() {
+                            None
+                        } else {
+                            Some(variant_required)
+                        },
+                        ..Schema::object()
+                    };
+
+                    let mut properties = BTreeMap::new();
+                    properties.insert(
+                        variant_key.clone(),
+                        SchemaRef::Inline(Box::new(inner_struct_schema)),
+                    );
+
+                    Schema {
+                        schema_type: Some(SchemaType::Object),
+                        properties: Some(properties),
+                        required: Some(vec![variant_key]),
+                        ..Schema::object()
+                    }
+                }
+            };
+
+            one_of_schemas.push(SchemaRef::Inline(Box::new(variant_schema)));
+        }
+
+        Schema {
+            schema_type: None, // oneOf doesn't have a single type
+            one_of: if one_of_schemas.is_empty() {
+                None
+            } else {
+                Some(one_of_schemas)
+            },
+            ..Schema::new(SchemaType::Object)
+        }
+    }
+}
+
 /// Parse struct definition to OpenAPI Schema
 pub fn parse_struct_to_schema(
     struct_item: &syn::ItemStruct,
@@ -424,7 +635,8 @@ pub fn parse_type_to_schema_ref(ty: &Type, known_schemas: &HashMap<String, Strin
                 return SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)));
             }
 
-            let segment = &path.segments[0];
+            // Get the last segment as the type name (handles paths like crate::TestStruct)
+            let segment = path.segments.last().unwrap();
             let ident_str = segment.ident.to_string();
 
             // Handle generic types
@@ -444,6 +656,32 @@ pub fn parse_type_to_schema_ref(ty: &Type, known_schemas: &HashMap<String, Strin
                             }
                         }
                     }
+                    "HashMap" | "BTreeMap" => {
+                        // HashMap<K, V> or BTreeMap<K, V> -> object with additionalProperties
+                        // K is typically String, we use V as the value type
+                        if args.args.len() >= 2
+                            && let (
+                                Some(syn::GenericArgument::Type(_key_ty)),
+                                Some(syn::GenericArgument::Type(value_ty)),
+                            ) = (args.args.get(0), args.args.get(1))
+                            {
+                                let value_schema =
+                                    parse_type_to_schema_ref(value_ty, known_schemas);
+                                // Convert SchemaRef to serde_json::Value for additional_properties
+                                let additional_props_value = match value_schema {
+                                    SchemaRef::Ref(ref_ref) => {
+                                        serde_json::json!({ "$ref": ref_ref.ref_path })
+                                    }
+                                    SchemaRef::Inline(schema) => serde_json::to_value(&*schema)
+                                        .unwrap_or(serde_json::json!({})),
+                                };
+                                return SchemaRef::Inline(Box::new(Schema {
+                                    schema_type: Some(SchemaType::Object),
+                                    additional_properties: Some(additional_props_value),
+                                    ..Schema::object()
+                                }));
+                            }
+                    }
                     _ => {}
                 }
             }
@@ -457,15 +695,23 @@ pub fn parse_type_to_schema_ref(ty: &Type, known_schemas: &HashMap<String, Strin
                 "bool" => SchemaRef::Inline(Box::new(Schema::boolean())),
                 "String" | "str" => SchemaRef::Inline(Box::new(Schema::string())),
                 // Standard library types that should not be referenced
-                "HashMap" | "BTreeMap" | "Vec" | "Option" | "Result" | "Json" | "Path"
-                | "Query" | "Header" => {
+                // Note: HashMap and BTreeMap are handled above in generic types
+                "Vec" | "Option" | "Result" | "Json" | "Path" | "Query" | "Header" => {
                     // These are not schema types, return object schema
                     SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)))
                 }
                 _ => {
                     // Check if this is a known schema (struct with Schema derive)
-                    if known_schemas.contains_key(&ident_str) {
-                        SchemaRef::Ref(Reference::schema(&ident_str))
+                    // Try both the full path and just the type name
+                    let type_name = if path.segments.len() > 1 {
+                        // For paths like crate::TestStruct, use just the type name
+                        ident_str.clone()
+                    } else {
+                        ident_str.clone()
+                    };
+
+                    if known_schemas.contains_key(&type_name) {
+                        SchemaRef::Ref(Reference::schema(&type_name))
                     } else {
                         // For unknown custom types, return object schema instead of reference
                         // This prevents creating invalid references to non-existent schemas
@@ -531,13 +777,11 @@ fn unwrap_json(ty: &Type) -> &Type {
         let path = &type_path.path;
         if !path.segments.is_empty() {
             let segment = &path.segments[0];
-            if segment.ident == "Json" {
-                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                    if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
+            if segment.ident == "Json"
+                && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+                    && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
                         return inner_ty;
                     }
-                }
-            }
         }
     }
     ty
@@ -573,10 +817,10 @@ fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
 
     if is_result {
         // Get the last segment (Result) to check for generics
-        if let Some(segment) = path.segments.last() {
-            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                if args.args.len() >= 2 {
-                    if let (
+        if let Some(segment) = path.segments.last()
+            && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+                && args.args.len() >= 2
+                    && let (
                         Some(syn::GenericArgument::Type(ok_ty)),
                         Some(syn::GenericArgument::Type(err_ty)),
                     ) = (args.args.first(), args.args.get(1))
@@ -585,9 +829,6 @@ fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
                         let ok_ty_unwrapped = unwrap_json(ok_ty);
                         return Some((ok_ty_unwrapped.clone(), err_ty.clone()));
                     }
-                }
-            }
-        }
     }
     None
 }
@@ -595,8 +836,8 @@ fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
 /// Check if error type is a tuple (StatusCode, E) or (StatusCode, Json<E>)
 /// Returns the error type E and a default status code (400)
 fn extract_status_code_tuple(err_ty: &Type) -> Option<(u16, Type)> {
-    if let Type::Tuple(tuple) = err_ty {
-        if tuple.elems.len() == 2 {
+    if let Type::Tuple(tuple) = err_ty
+        && tuple.elems.len() == 2 {
             // Check if first element is StatusCode
             if let Type::Path(type_path) = &tuple.elems[0] {
                 let path = &type_path.path;
@@ -619,7 +860,6 @@ fn extract_status_code_tuple(err_ty: &Type) -> Option<(u16, Type)> {
                 }
             }
         }
-    }
     None
 }
 
@@ -785,7 +1025,7 @@ pub fn build_operation_from_function(
             for &status_code in status_codes {
                 let status_str = status_code.to_string();
                 // Only add if not already present
-                if !responses.contains_key(&status_str) {
+                responses.entry(status_str).or_insert_with(|| {
                     let mut err_content = BTreeMap::new();
                     err_content.insert(
                         "application/json".to_string(),
@@ -796,15 +1036,12 @@ pub fn build_operation_from_function(
                         },
                     );
 
-                    responses.insert(
-                        status_str,
-                        Response {
+                    Response {
                             description: "Error response".to_string(),
                             headers: None,
                             content: Some(err_content),
-                        },
-                    );
-                }
+                        }
+                });
             }
         }
     }

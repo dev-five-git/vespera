@@ -81,6 +81,40 @@
         }
       }
     },
+    "/enums": {
+      "get": {
+        "operationId": "enum_endpoint",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Enum"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/enums/enum2": {
+      "get": {
+        "operationId": "enum_endpoint2",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Enum2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/error": {
       "get": {
         "operationId": "error_endpoint",
@@ -289,7 +323,12 @@
             "in": "query",
             "required": true,
             "schema": {
-              "type": "object"
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": {
+                "type": "string"
+              }
             }
           }
         ],
@@ -530,7 +569,12 @@
             }
           },
           "map": {
-            "type": "object"
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "type": "string"
+            }
           },
           "name": {
             "type": "string"
@@ -542,7 +586,12 @@
             }
           },
           "nested_map": {
-            "type": "object"
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StructBodyWithOptional"
+            }
           },
           "nested_struct": {
             "$ref": "#/components/schemas/StructBodyWithOptional"
@@ -556,14 +605,32 @@
           "nested_struct_array_map": {
             "type": "array",
             "items": {
-              "type": "object"
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": {
+                "$ref": "#/components/schemas/StructBodyWithOptional"
+              }
             }
           },
           "nested_struct_map": {
-            "type": "object"
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StructBodyWithOptional"
+            }
           },
           "nested_struct_map_array": {
-            "type": "object"
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/StructBodyWithOptional"
+              },
+              "type": "array"
+            }
           }
         },
         "required": [
@@ -593,7 +660,12 @@
             }
           },
           "map": {
-            "type": "object"
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "type": "string"
+            }
           },
           "name": {
             "type": "string"
@@ -605,7 +677,12 @@
             }
           },
           "nestedMap": {
-            "type": "object"
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StructBodyWithOptional"
+            }
           },
           "nestedStruct": {
             "$ref": "#/components/schemas/StructBodyWithOptional"
@@ -619,14 +696,32 @@
           "nestedStructArrayMap": {
             "type": "array",
             "items": {
-              "type": "object"
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": {
+                "$ref": "#/components/schemas/StructBodyWithOptional"
+              }
             }
           },
           "nestedStructMap": {
-            "type": "object"
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StructBodyWithOptional"
+            }
           },
           "nestedStructMapArray": {
-            "type": "object"
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/StructBodyWithOptional"
+              },
+              "type": "array"
+            }
           }
         },
         "required": [
@@ -656,6 +751,231 @@
         "required": [
           "name",
           "email"
+        ]
+      },
+      "Enum": {
+        "type": "string",
+        "enum": [
+          "A",
+          "B",
+          "C"
+        ]
+      },
+      "Enum2": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "A": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "A"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "B": {
+                "type": "object",
+                "properties": {
+                  "age": {
+                    "type": "integer"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "age"
+                ]
+              }
+            },
+            "required": [
+              "B"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "C": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "C"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "D": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "D"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "E": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "E"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "F": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
+            "required": [
+              "F"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "G": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "G"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "H": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "H"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "I": {
+                "$ref": "#/components/schemas/TestStruct"
+              }
+            },
+            "required": [
+              "I"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "J": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/TestStruct"
+                }
+              }
+            },
+            "required": [
+              "J"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "K": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "$ref": "#/components/schemas/TestStruct"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TestStruct"
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
+            "required": [
+              "K"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "L": {
+                "type": "string",
+                "nullable": true
+              }
+            },
+            "required": [
+              "L"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "M": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "nullable": true
+                }
+              }
+            },
+            "required": [
+              "M"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "N": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": {
+                  "nullable": true,
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "N"
+            ]
+          }
         ]
       },
       "ErrorResponse": {
