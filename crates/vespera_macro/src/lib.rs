@@ -58,6 +58,7 @@ struct AutoRouterInput {
     title: Option<LitStr>,
     version: Option<LitStr>,
     docs_url: Option<LitStr>,
+    redoc_url: Option<LitStr>,
 }
 
 impl Parse for AutoRouterInput {
@@ -67,6 +68,7 @@ impl Parse for AutoRouterInput {
         let mut title = None;
         let mut version = None;
         let mut docs_url = None;
+        let mut redoc_url = None;
 
         while !input.is_empty() {
             let lookahead = input.lookahead1();
@@ -87,6 +89,10 @@ impl Parse for AutoRouterInput {
                     "docs_url" => {
                         input.parse::<syn::Token![=]>()?;
                         docs_url = Some(input.parse()?);
+                    }
+                    "redoc_url" => {
+                        input.parse::<syn::Token![=]>()?;
+                        redoc_url = Some(input.parse()?);
                     }
                     "title" => {
                         input.parse::<syn::Token![=]>()?;
@@ -146,6 +152,11 @@ impl Parse for AutoRouterInput {
                     .map(|f| LitStr::new(&f, Span::call_site()))
                     .ok()
             }),
+            redoc_url: redoc_url.or_else(|| {
+                std::env::var("VESPERA_REDOC_URL")
+                    .map(|f| LitStr::new(&f, Span::call_site()))
+                    .ok()
+            }),
         })
     }
 }
@@ -164,6 +175,7 @@ pub fn vespera(input: TokenStream) -> TokenStream {
     let title = input.title.map(|t| t.value());
     let version = input.version.map(|v| v.value());
     let docs_url = input.docs_url.map(|u| u.value());
+    let redoc_url = input.redoc_url.map(|u| u.value());
 
     let folder_path = find_folder_path(&folder_name);
 
@@ -192,8 +204,9 @@ pub fn vespera(input: TokenStream) -> TokenStream {
     metadata.structs.extend(schemas);
 
     let mut docs_info = None;
+    let mut redoc_info = None;
 
-    if openapi_file_name.is_some() || docs_url.is_some() {
+    if openapi_file_name.is_some() || docs_url.is_some() || redoc_url.is_some() {
         // Generate OpenAPI document using collected metadata
 
         // Serialize to JSON
@@ -214,11 +227,14 @@ pub fn vespera(input: TokenStream) -> TokenStream {
             std::fs::write(openapi_file_name, &json_str).unwrap();
         }
         if let Some(docs_url) = docs_url {
-            docs_info = Some((docs_url, json_str));
+            docs_info = Some((docs_url, json_str.clone()));
+        }
+        if let Some(redoc_url) = redoc_url {
+            redoc_info = Some((redoc_url, json_str));
         }
     }
 
-    generate_router_code(&metadata, docs_info).into()
+    generate_router_code(&metadata, docs_info, redoc_info).into()
 }
 
 fn find_folder_path(folder_name: &str) -> std::path::PathBuf {
@@ -235,6 +251,7 @@ fn find_folder_path(folder_name: &str) -> std::path::PathBuf {
 fn generate_router_code(
     metadata: &CollectedMetadata,
     docs_info: Option<(String, String)>,
+    redoc_info: Option<(String, String)>,
 ) -> proc_macro2::TokenStream {
     let mut router_nests = Vec::new();
 
@@ -318,6 +335,44 @@ fn generate_router_code(
         ));
     }
 
+    if let Some((redoc_url, spec)) = redoc_info {
+        let method_path = http_method_to_token_stream(HttpMethod::Get);
+
+        let html = format!(
+            r#"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ReDoc</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {{
+      margin: 0;
+      padding: 0;
+    }}
+  </style>
+  <link rel="stylesheet" href="https://unpkg.com/redoc/bundles/redoc.standalone.css" />
+</head>
+<body>
+  <div id="redoc-container"></div>
+  <script src="https://unpkg.com/redoc/bundles/redoc.standalone.js"></script>
+  <script>
+    const openapiSpec = {spec_json};
+    Redoc.init(openapiSpec, {{}}, document.getElementById("redoc-container"));
+  </script>
+</body>
+</html>
+"#,
+            spec_json = spec
+        )
+        .replace("\n", "");
+
+        router_nests.push(quote!(
+            .route(#redoc_url, #method_path(|| async { vespera::axum::response::Html(#html) }))
+        ));
+    }
+
     quote! {
         vespera::axum::Router::new()
             #( #router_nests )*
@@ -347,6 +402,7 @@ mod tests {
 
         let result = generate_router_code(
             &collect_metadata(&temp_dir.path(), folder_name).unwrap(),
+            None,
             None,
         );
         let code = result.to_string();
@@ -504,6 +560,7 @@ pub fn get_users() -> String {
         let result = generate_router_code(
             &collect_metadata(&temp_dir.path(), folder_name).unwrap(),
             None,
+            None,
         );
         let code = result.to_string();
 
@@ -588,6 +645,7 @@ pub fn update_user() -> String {
         let result = generate_router_code(
             &collect_metadata(&temp_dir.path(), folder_name).unwrap(),
             None,
+            None,
         );
         let code = result.to_string();
 
@@ -641,6 +699,7 @@ pub fn create_users() -> String {
         let result = generate_router_code(
             &collect_metadata(&temp_dir.path(), folder_name).unwrap(),
             None,
+            None,
         );
         let code = result.to_string();
 
@@ -686,6 +745,7 @@ pub fn index() -> String {
         let result = generate_router_code(
             &collect_metadata(&temp_dir.path(), folder_name).unwrap(),
             None,
+            None,
         );
         let code = result.to_string();
 
@@ -720,6 +780,7 @@ pub fn get_users() -> String {
 
         let result = generate_router_code(
             &collect_metadata(&temp_dir.path(), folder_name).unwrap(),
+            None,
             None,
         );
         let code = result.to_string();

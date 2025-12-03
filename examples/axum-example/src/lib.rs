@@ -19,7 +19,8 @@ pub struct TestStruct {
 pub fn create_app() -> axum::Router {
     vespera!(
         openapi = "examples/axum-example/openapi.json",
-        docs_url = "/docs"
+        docs_url = "/docs",
+        redoc_url = "/redoc"
     )
     .with_state(Arc::new(AppState {
         config: "test".to_string(),
