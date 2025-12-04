@@ -25,13 +25,15 @@ pub fn extract_path_parameters(path: &str) -> Vec<String> {
     params
 }
 
-/// Analyze function parameter and convert to OpenAPI Parameter
+/// Analyze function parameter and convert to OpenAPI Parameter(s)
+/// Returns None if parameter should be ignored (e.g., Query<HashMap<...>>)
+/// Returns Some(Vec<Parameter>) with one or more parameters
 pub fn parse_function_parameter(
     arg: &FnArg,
     path_params: &[String],
     known_schemas: &HashMap<String, String>,
     struct_definitions: &HashMap<String, String>,
-) -> Option<Parameter> {
+) -> Option<Vec<Parameter>> {
     match arg {
         FnArg::Receiver(_) => None,
         FnArg::Typed(PatType { pat, ty, .. }) => {
@@ -75,7 +77,7 @@ pub fn parse_function_parameter(
                                     // Otherwise use the parameter name from the pattern
                                     param_name
                                 };
-                                return Some(Parameter {
+                                return Some(vec![Parameter {
                                     name,
                                     r#in: ParameterLocation::Path,
                                     description: None,
@@ -86,7 +88,7 @@ pub fn parse_function_parameter(
                                         struct_definitions,
                                     )),
                                     example: None,
-                                });
+                                }]);
                             }
                         }
                         "Query" => {
@@ -95,7 +97,22 @@ pub fn parse_function_parameter(
                                 && let Some(syn::GenericArgument::Type(inner_ty)) =
                                     args.args.first()
                             {
-                                return Some(Parameter {
+                                // Check if it's HashMap or BTreeMap - ignore these
+                                if is_map_type(inner_ty) {
+                                    return None;
+                                }
+                                
+                                // Check if it's a struct - expand to individual parameters
+                                if let Some(struct_params) = parse_query_struct_to_parameters(
+                                    inner_ty,
+                                    known_schemas,
+                                    struct_definitions,
+                                ) {
+                                    return Some(struct_params);
+                                }
+                                
+                                // Otherwise, treat as single parameter
+                                return Some(vec![Parameter {
                                     name: param_name.clone(),
                                     r#in: ParameterLocation::Query,
                                     description: None,
@@ -106,7 +123,7 @@ pub fn parse_function_parameter(
                                         struct_definitions,
                                     )),
                                     example: None,
-                                });
+                                }]);
                             }
                         }
                         "Header" => {
@@ -115,7 +132,7 @@ pub fn parse_function_parameter(
                                 && let Some(syn::GenericArgument::Type(inner_ty)) =
                                     args.args.first()
                             {
-                                return Some(Parameter {
+                                return Some(vec![Parameter {
                                     name: param_name.clone(),
                                     r#in: ParameterLocation::Header,
                                     description: None,
@@ -126,7 +143,7 @@ pub fn parse_function_parameter(
                                         struct_definitions,
                                     )),
                                     example: None,
-                                });
+                                }]);
                             }
                         }
                         "Json" => {
@@ -140,7 +157,7 @@ pub fn parse_function_parameter(
 
             // Check if it's a path parameter (by name match) - for non-extractor cases
             if path_params.contains(&param_name) {
-                return Some(Parameter {
+                return Some(vec![Parameter {
                     name: param_name.clone(),
                     r#in: ParameterLocation::Path,
                     description: None,
@@ -151,12 +168,12 @@ pub fn parse_function_parameter(
                         struct_definitions,
                     )),
                     example: None,
-                });
+                }]);
             }
 
             // Check if it's a primitive type (direct parameter)
             if is_primitive_type(ty.as_ref()) {
-                return Some(Parameter {
+                return Some(vec![Parameter {
                     name: param_name.clone(),
                     r#in: ParameterLocation::Query,
                     description: None,
@@ -167,12 +184,159 @@ pub fn parse_function_parameter(
                         struct_definitions,
                     )),
                     example: None,
-                });
+                }]);
             }
 
             None
         }
     }
+}
+
+/// Check if a type is HashMap or BTreeMap
+fn is_map_type(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        let path = &type_path.path;
+        if !path.segments.is_empty() {
+            let segment = path.segments.last().unwrap();
+            let ident_str = segment.ident.to_string();
+            return ident_str == "HashMap" || ident_str == "BTreeMap";
+        }
+    }
+    false
+}
+
+/// Parse struct fields to individual query parameters
+/// Returns None if the type is not a struct or cannot be parsed
+fn parse_query_struct_to_parameters(
+    ty: &Type,
+    known_schemas: &HashMap<String, String>,
+    struct_definitions: &HashMap<String, String>,
+) -> Option<Vec<Parameter>> {
+    // Check if it's a known struct
+    if let Type::Path(type_path) = ty {
+        let path = &type_path.path;
+        if path.segments.is_empty() {
+            return None;
+        }
+        
+        let segment = path.segments.last().unwrap();
+        let ident_str = segment.ident.to_string();
+        
+        // Get type name (handle both simple and qualified paths)
+        let type_name = if path.segments.len() > 1 {
+            ident_str.clone()
+        } else {
+            ident_str.clone()
+        };
+        
+        // Check if it's a known struct
+        if let Some(struct_def) = struct_definitions.get(&type_name) {
+            if let Ok(struct_item) = syn::parse_str::<syn::ItemStruct>(struct_def) {
+                let mut parameters = Vec::new();
+                
+                // Extract rename_all attribute from struct
+                let rename_all = extract_rename_all(&struct_item.attrs);
+                
+                if let syn::Fields::Named(fields_named) = &struct_item.fields {
+                    for field in &fields_named.named {
+                        let rust_field_name = field
+                            .ident
+                            .as_ref()
+                            .map(|i| i.to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        
+                        // Check for field-level rename attribute first (takes precedence)
+                        let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
+                            renamed
+                        } else {
+                            // Apply rename_all transformation if present
+                            rename_field(&rust_field_name, rename_all.as_deref())
+                        };
+                        
+                        let field_type = &field.ty;
+                        
+                        // Check if field is Option<T>
+                        let is_optional = matches!(
+                            field_type,
+                            Type::Path(type_path)
+                                if type_path
+                                    .path
+                                    .segments
+                                    .first()
+                                    .map(|s| s.ident == "Option")
+                                    .unwrap_or(false)
+                        );
+                        
+                        // Parse field type to schema (inline, not ref)
+                        // For Query parameters, we need inline schemas, not refs
+                        let mut field_schema = parse_type_to_schema_ref_with_schemas(
+                            field_type,
+                            known_schemas,
+                            struct_definitions,
+                        );
+                        
+                        // Convert ref to inline if needed (Query parameters should not use refs)
+                        // If it's a ref to a known struct, get the struct definition and inline it
+                        if let SchemaRef::Ref(ref_ref) = &field_schema {
+                            // Try to extract type name from ref path (e.g., "#/components/schemas/User" -> "User")
+                            if let Some(type_name) = ref_ref.ref_path.strip_prefix("#/components/schemas/") {
+                                if let Some(struct_def) = struct_definitions.get(type_name) {
+                                    if let Ok(nested_struct_item) = syn::parse_str::<syn::ItemStruct>(struct_def) {
+                                        // Parse the nested struct to schema (inline)
+                                        let nested_schema = parse_struct_to_schema(
+                                            &nested_struct_item,
+                                            known_schemas,
+                                            struct_definitions,
+                                        );
+                                        field_schema = SchemaRef::Inline(Box::new(nested_schema));
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // If it's Option<T>, make it nullable
+                        let final_schema = if is_optional {
+                            if let SchemaRef::Inline(mut schema) = field_schema {
+                                schema.nullable = Some(true);
+                                SchemaRef::Inline(schema)
+                            } else {
+                                // If still a ref, convert to inline object with nullable
+                                SchemaRef::Inline(Box::new(Schema {
+                                    schema_type: Some(SchemaType::Object),
+                                    nullable: Some(true),
+                                    ..Schema::object()
+                                }))
+                            }
+                        } else {
+                            // If it's still a ref, convert to inline object
+                            match field_schema {
+                                SchemaRef::Ref(_) => {
+                                    SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)))
+                                }
+                                SchemaRef::Inline(schema) => SchemaRef::Inline(schema),
+                            }
+                        };
+                        
+                        let required = !is_optional;
+                        
+                        parameters.push(Parameter {
+                            name: field_name,
+                            r#in: ParameterLocation::Query,
+                            description: None,
+                            required: Some(required),
+                            schema: Some(final_schema),
+                            example: None,
+                        });
+                    }
+                }
+                
+                if !parameters.is_empty() {
+                    return Some(parameters);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Check if a type is a primitive type
@@ -1176,10 +1340,10 @@ pub fn build_operation_from_function(
         // Check if it's a request body (Json<T>)
         if let Some(body) = parse_request_body(input, known_schemas, struct_definitions) {
             request_body = Some(body);
-        } else if let Some(param) =
+        } else if let Some(params) =
             parse_function_parameter(input, &path_params, known_schemas, struct_definitions)
         {
-            parameters.push(param);
+            parameters.extend(params);
         }
     }
 
