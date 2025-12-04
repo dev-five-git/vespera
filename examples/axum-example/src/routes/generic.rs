@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
-use vespera::axum::{Json, extract::Query};
+use serde::Serialize;
+use vespera::axum::Json;
 
 use crate::TestStruct;
 

@@ -299,17 +299,19 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericStruct"
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
                     }
-                  ],
-                  "$defs": {
-                    "T": {
-                      "type": "string",
-                      "$dynamicAnchor": "T"
-                    }
-                  }
+                  },
+                  "required": [
+                    "value",
+                    "name"
+                  ]
                 }
               }
             }
@@ -326,17 +328,19 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericStruct"
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/components/schemas/TestStruct"
                     }
-                  ],
-                  "$defs": {
-                    "T": {
-                      "$ref": "#/components/schemas/TestStruct",
-                      "$dynamicAnchor": "T"
-                    }
-                  }
+                  },
+                  "required": [
+                    "value",
+                    "name"
+                  ]
                 }
               }
             }
@@ -353,21 +357,23 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericStruct2"
-                    }
-                  ],
-                  "$defs": {
-                    "T": {
-                      "$ref": "#/components/schemas/TestStruct",
-                      "$dynamicAnchor": "T"
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
                     },
-                    "T2": {
-                      "type": "string",
-                      "$dynamicAnchor": "T2"
+                    "value": {
+                      "$ref": "#/components/schemas/TestStruct"
+                    },
+                    "value2": {
+                      "type": "string"
                     }
-                  }
+                  },
+                  "required": [
+                    "value",
+                    "name",
+                    "value2"
+                  ]
                 }
               }
             }
@@ -384,21 +390,23 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericStruct2"
-                    }
-                  ],
-                  "$defs": {
-                    "T": {
-                      "type": "boolean",
-                      "$dynamicAnchor": "T"
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
                     },
-                    "T2": {
-                      "type": "boolean",
-                      "$dynamicAnchor": "T2"
+                    "value": {
+                      "type": "boolean"
+                    },
+                    "value2": {
+                      "type": "boolean"
                     }
-                  }
+                  },
+                  "required": [
+                    "value",
+                    "name",
+                    "value2"
+                  ]
                 }
               }
             }
@@ -1141,18 +1149,13 @@
             "type": "string"
           },
           "value": {
-            "$dynamicRef": "#T"
+            "type": "object"
           }
         },
         "required": [
           "value",
           "name"
-        ],
-        "$defs": {
-          "T": {
-            "$dynamicAnchor": "T"
-          }
-        }
+        ]
       },
       "GenericStruct2": {
         "type": "object",
@@ -1161,25 +1164,17 @@
             "type": "string"
           },
           "value": {
-            "$dynamicRef": "#T"
+            "type": "object"
           },
           "value2": {
-            "$dynamicRef": "#T2"
+            "type": "object"
           }
         },
         "required": [
           "value",
           "name",
           "value2"
-        ],
-        "$defs": {
-          "T": {
-            "$dynamicAnchor": "T"
-          },
-          "T2": {
-            "$dynamicAnchor": "T2"
-          }
-        }
+        ]
       },
       "SignupRequest": {
         "type": "object",

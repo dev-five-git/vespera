@@ -31,7 +31,6 @@ pub fn parse_function_parameter(
     path_params: &[String],
     known_schemas: &HashMap<String, String>,
     struct_definitions: &HashMap<String, String>,
-    schemas: Option<&BTreeMap<String, Schema>>,
 ) -> Option<Parameter> {
     match arg {
         FnArg::Receiver(_) => None,
@@ -85,7 +84,6 @@ pub fn parse_function_parameter(
                                         inner_ty,
                                         known_schemas,
                                         struct_definitions,
-                                        schemas,
                                     )),
                                     example: None,
                                 });
@@ -106,7 +104,6 @@ pub fn parse_function_parameter(
                                         inner_ty,
                                         known_schemas,
                                         struct_definitions,
-                                        schemas,
                                     )),
                                     example: None,
                                 });
@@ -127,7 +124,6 @@ pub fn parse_function_parameter(
                                         inner_ty,
                                         known_schemas,
                                         struct_definitions,
-                                        schemas,
                                     )),
                                     example: None,
                                 });
@@ -153,7 +149,6 @@ pub fn parse_function_parameter(
                         ty,
                         known_schemas,
                         struct_definitions,
-                        schemas,
                     )),
                     example: None,
                 });
@@ -170,7 +165,6 @@ pub fn parse_function_parameter(
                         ty,
                         known_schemas,
                         struct_definitions,
-                        schemas,
                     )),
                     example: None,
                 });
@@ -596,33 +590,9 @@ pub fn parse_struct_to_schema(
 ) -> Schema {
     let mut properties = BTreeMap::new();
     let mut required = Vec::new();
-    let mut defs = BTreeMap::new();
 
     // Extract rename_all attribute from struct
     let rename_all = extract_rename_all(&struct_item.attrs);
-
-    // Check if this is a generic struct
-    let has_generics = !struct_item.generics.params.is_empty();
-    let mut generic_params = Vec::new();
-
-    if has_generics {
-        // Extract generic parameter names
-        for param in &struct_item.generics.params {
-            if let syn::GenericParam::Type(type_param) = param {
-                let param_name = type_param.ident.to_string();
-                generic_params.push(param_name.clone());
-
-                // Create $dynamicAnchor definition for each generic parameter
-                // Don't specify type - it will be determined by the concrete type
-                let anchor_schema = Schema {
-                    dynamic_anchor: Some(param_name.clone()),
-                    schema_type: None, // Don't assume type - concrete types will specify it
-                    ..Schema::new(SchemaType::Object)
-                };
-                defs.insert(param_name, anchor_schema);
-            }
-        }
-    }
 
     match &struct_item.fields {
         Fields::Named(fields_named) => {
@@ -643,38 +613,8 @@ pub fn parse_struct_to_schema(
 
                 let field_type = &field.ty;
 
-                // If this is a generic struct and the field type is a generic parameter,
-                // use $dynamicRef instead of parsing the type
-                let schema_ref = if has_generics
-                    && is_generic_parameter(field_type, &generic_params)
-                {
-                    // Extract the generic parameter name
-                    if let Type::Path(type_path) = field_type {
-                        if let Some(segment) = type_path.path.segments.last() {
-                            let param_name = segment.ident.to_string();
-                            if generic_params.contains(&param_name) {
-                                // Use $dynamicRef to reference the dynamic anchor
-                                SchemaRef::Inline(Box::new(Schema {
-                                    dynamic_ref: Some(format!("#{}", param_name)),
-                                    schema_type: None, // Don't assume type
-                                    ..Schema::new(SchemaType::Object)
-                                }))
-                            } else {
-                                parse_type_to_schema_ref(
-                                    field_type,
-                                    known_schemas,
-                                    struct_definitions,
-                                )
-                            }
-                        } else {
-                            parse_type_to_schema_ref(field_type, known_schemas, struct_definitions)
-                        }
-                    } else {
-                        parse_type_to_schema_ref(field_type, known_schemas, struct_definitions)
-                    }
-                } else {
-                    parse_type_to_schema_ref(field_type, known_schemas, struct_definitions)
-                };
+                let schema_ref =
+                    parse_type_to_schema_ref(field_type, known_schemas, struct_definitions);
 
                 properties.insert(field_name.clone(), schema_ref);
 
@@ -715,20 +655,42 @@ pub fn parse_struct_to_schema(
         } else {
             Some(required)
         },
-        defs: if defs.is_empty() { None } else { Some(defs) },
         ..Schema::object()
     }
 }
 
-/// Check if a type is a generic parameter
-fn is_generic_parameter(ty: &Type, generic_params: &[String]) -> bool {
-    if let Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            let ident_str = segment.ident.to_string();
-            return generic_params.contains(&ident_str) && segment.arguments.is_none();
+/// Substitute generic parameters in a type with concrete types
+/// Uses quote! to regenerate the type with substitutions
+fn substitute_type(ty: &Type, generic_params: &[String], concrete_types: &[&Type]) -> Type {
+    // Check if this is a generic parameter
+    if let Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+    {
+        let ident_str = segment.ident.to_string();
+        if generic_params.contains(&ident_str) && segment.arguments.is_none() {
+            // Find the index and substitute
+            if let Some(index) = generic_params.iter().position(|p| p == &ident_str)
+                && let Some(concrete_ty) = concrete_types.get(index)
+            {
+                return (*concrete_ty).clone();
+            }
         }
     }
-    false
+
+    // For complex types, use quote! to regenerate with substitutions
+    let tokens = quote::quote! { #ty };
+    let mut new_tokens = tokens.to_string();
+
+    // Replace generic parameter names with concrete types
+    for (param, concrete_ty) in generic_params.iter().zip(concrete_types.iter()) {
+        // Replace standalone generic parameter (not part of another identifier)
+        let pattern = format!(r"\b{}\b", param);
+        let replacement = quote::quote! { #concrete_ty }.to_string();
+        new_tokens = new_tokens.replace(&pattern, &replacement);
+    }
+
+    // Parse the substituted type
+    syn::parse_str::<Type>(&new_tokens).unwrap_or_else(|_| ty.clone())
 }
 
 /// Parse Rust type to OpenAPI SchemaRef
@@ -737,7 +699,7 @@ pub fn parse_type_to_schema_ref(
     known_schemas: &HashMap<String, String>,
     struct_definitions: &HashMap<String, String>,
 ) -> SchemaRef {
-    parse_type_to_schema_ref_with_schemas(ty, known_schemas, struct_definitions, None)
+    parse_type_to_schema_ref_with_schemas(ty, known_schemas, struct_definitions)
 }
 
 /// Parse Rust type to OpenAPI SchemaRef with optional schemas map for resolving references
@@ -745,7 +707,6 @@ fn parse_type_to_schema_ref_with_schemas(
     ty: &Type,
     known_schemas: &HashMap<String, String>,
     struct_definitions: &HashMap<String, String>,
-    schemas: Option<&BTreeMap<String, Schema>>,
 ) -> SchemaRef {
     match ty {
         Type::Path(type_path) => {
@@ -841,83 +802,60 @@ fn parse_type_to_schema_ref_with_schemas(
                         // Check if this is a generic type with type parameters
                         if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                             // This is a concrete generic type like GenericStruct<String>
-                            // Use $dynamicAnchor approach: $ref to base + $defs with concrete type
-                            if let Some(base_def) = struct_definitions.get(&type_name) {
-                                if let Ok(parsed) = syn::parse_str::<syn::ItemStruct>(base_def) {
-                                    // Extract generic parameter names from the struct definition
-                                    let generic_params: Vec<String> = parsed
-                                        .generics
-                                        .params
-                                        .iter()
-                                        .filter_map(|param| {
-                                            if let syn::GenericParam::Type(type_param) = param {
-                                                Some(type_param.ident.to_string())
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .collect();
+                            // Inline the schema by substituting generic parameters with concrete types
+                            if let Some(base_def) = struct_definitions.get(&type_name)
+                                && let Ok(mut parsed) = syn::parse_str::<syn::ItemStruct>(base_def)
+                            {
+                                // Extract generic parameter names from the struct definition
+                                let generic_params: Vec<String> = parsed
+                                    .generics
+                                    .params
+                                    .iter()
+                                    .filter_map(|param| {
+                                        if let syn::GenericParam::Type(type_param) = param {
+                                            Some(type_param.ident.to_string())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect();
 
-                                    // Extract concrete type arguments
-                                    let concrete_types: Vec<&Type> = args
-                                        .args
-                                        .iter()
-                                        .filter_map(|arg| {
-                                            if let syn::GenericArgument::Type(ty) = arg {
-                                                Some(ty)
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .collect();
+                                // Extract concrete type arguments
+                                let concrete_types: Vec<&Type> = args
+                                    .args
+                                    .iter()
+                                    .filter_map(|arg| {
+                                        if let syn::GenericArgument::Type(ty) = arg {
+                                            Some(ty)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect();
 
-                                    // Create $defs with concrete types as $dynamicAnchor
-                                    let mut defs = BTreeMap::new();
-                                    for (param_name, concrete_type) in
-                                        generic_params.iter().zip(concrete_types.iter())
-                                    {
-                                        // Parse the concrete type to schema
-                                        let concrete_schema_ref =
-                                            parse_type_to_schema_ref_with_schemas(
-                                                concrete_type,
-                                                known_schemas,
-                                                struct_definitions,
-                                                schemas,
+                                // Substitute generic parameters with concrete types in all fields
+                                if generic_params.len() == concrete_types.len() {
+                                    if let syn::Fields::Named(fields_named) = &mut parsed.fields {
+                                        for field in &mut fields_named.named {
+                                            field.ty = substitute_type(
+                                                &field.ty,
+                                                &generic_params,
+                                                &concrete_types,
                                             );
-
-                                        // Convert SchemaRef to Schema for $defs
-                                        // If it's a reference, use $ref directly instead of inline
-                                        let anchor_schema = match concrete_schema_ref {
-                                            SchemaRef::Ref(ref_ref) => {
-                                                // Use $ref directly in $defs
-                                                // Create a schema with $ref and $dynamicAnchor
-                                                Schema {
-                                                    ref_path: Some(ref_ref.ref_path.clone()),
-                                                    schema_type: None,
-                                                    dynamic_anchor: Some(param_name.clone()),
-                                                    ..Schema::new(SchemaType::Object)
-                                                }
-                                            }
-                                            SchemaRef::Inline(schema) => {
-                                                // For inline schemas, use them as-is
-                                                let mut s = *schema;
-                                                s.dynamic_anchor = Some(param_name.clone());
-                                                s
-                                            }
-                                        };
-
-                                        defs.insert(param_name.clone(), anchor_schema);
+                                        }
                                     }
 
-                                    // Return schema with $ref to base generic struct and $defs
-                                    return SchemaRef::Inline(Box::new(Schema {
-                                        schema_type: None,
-                                        all_of: Some(vec![SchemaRef::Ref(Reference::schema(
-                                            &type_name,
-                                        ))]),
-                                        defs: if defs.is_empty() { None } else { Some(defs) },
-                                        ..Schema::new(SchemaType::Object)
-                                    }));
+                                    // Remove generics from the struct (it's now concrete)
+                                    parsed.generics.params.clear();
+                                    parsed.generics.where_clause = None;
+
+                                    // Parse the substituted struct to schema (inline)
+                                    let schema = parse_struct_to_schema(
+                                        &parsed,
+                                        known_schemas,
+                                        struct_definitions,
+                                    );
+                                    return SchemaRef::Inline(Box::new(schema));
                                 }
                             }
                         }
@@ -933,12 +871,7 @@ fn parse_type_to_schema_ref_with_schemas(
         }
         Type::Reference(type_ref) => {
             // Handle &T, &mut T, etc.
-            parse_type_to_schema_ref_with_schemas(
-                &type_ref.elem,
-                known_schemas,
-                struct_definitions,
-                schemas,
-            )
+            parse_type_to_schema_ref_with_schemas(&type_ref.elem, known_schemas, struct_definitions)
         }
         _ => SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))),
     }
@@ -949,7 +882,6 @@ pub fn parse_request_body(
     arg: &FnArg,
     known_schemas: &HashMap<String, String>,
     struct_definitions: &HashMap<String, String>,
-    schemas: Option<&BTreeMap<String, Schema>>,
 ) -> Option<RequestBody> {
     match arg {
         FnArg::Receiver(_) => None,
@@ -972,7 +904,6 @@ pub fn parse_request_body(
                         inner_ty,
                         known_schemas,
                         struct_definitions,
-                        schemas,
                     );
                     let mut content = BTreeMap::new();
                     content.insert(
@@ -1096,7 +1027,6 @@ pub fn parse_return_type(
     return_type: &ReturnType,
     known_schemas: &HashMap<String, String>,
     struct_definitions: &HashMap<String, String>,
-    schemas: Option<&BTreeMap<String, Schema>>,
 ) -> BTreeMap<String, Response> {
     let mut responses = BTreeMap::new();
 
@@ -1120,7 +1050,6 @@ pub fn parse_return_type(
                     &ok_ty,
                     known_schemas,
                     struct_definitions,
-                    schemas,
                 );
                 let mut ok_content = BTreeMap::new();
                 ok_content.insert(
@@ -1149,7 +1078,6 @@ pub fn parse_return_type(
                         &error_type,
                         known_schemas,
                         struct_definitions,
-                        schemas,
                     );
                     let mut err_content = BTreeMap::new();
                     err_content.insert(
@@ -1177,7 +1105,6 @@ pub fn parse_return_type(
                         err_ty_unwrapped,
                         known_schemas,
                         struct_definitions,
-                        schemas,
                     );
                     let mut err_content = BTreeMap::new();
                     err_content.insert(
@@ -1206,7 +1133,6 @@ pub fn parse_return_type(
                     unwrapped_ty,
                     known_schemas,
                     struct_definitions,
-                    schemas,
                 );
                 let mut content = BTreeMap::new();
                 content.insert(
@@ -1240,7 +1166,6 @@ pub fn build_operation_from_function(
     known_schemas: &HashMap<String, String>,
     struct_definitions: &HashMap<String, String>,
     error_status: Option<&[u16]>,
-    schemas: Option<&BTreeMap<String, Schema>>,
 ) -> Operation {
     let path_params = extract_path_parameters(path);
     let mut parameters = Vec::new();
@@ -1249,21 +1174,17 @@ pub fn build_operation_from_function(
     // Parse function parameters
     for input in &sig.inputs {
         // Check if it's a request body (Json<T>)
-        if let Some(body) = parse_request_body(input, known_schemas, struct_definitions, schemas) {
+        if let Some(body) = parse_request_body(input, known_schemas, struct_definitions) {
             request_body = Some(body);
-        } else if let Some(param) = parse_function_parameter(
-            input,
-            &path_params,
-            known_schemas,
-            struct_definitions,
-            schemas,
-        ) {
+        } else if let Some(param) =
+            parse_function_parameter(input, &path_params, known_schemas, struct_definitions)
+        {
             parameters.push(param);
         }
     }
 
     // Parse return type - may return multiple responses (for Result types)
-    let mut responses = parse_return_type(&sig.output, known_schemas, struct_definitions, schemas);
+    let mut responses = parse_return_type(&sig.output, known_schemas, struct_definitions);
 
     // Add additional error status codes from error_status attribute
     if let Some(status_codes) = error_status {
@@ -1367,7 +1288,7 @@ mod tests {
             parsed.output
         };
 
-        let responses = parse_return_type(&return_type, &known_schemas, &struct_definitions, None);
+        let responses = parse_return_type(&return_type, &known_schemas, &struct_definitions);
 
         match expected_type {
             "" => {
@@ -1620,8 +1541,7 @@ mod tests {
             let parsed: syn::Signature =
                 syn::parse_str(&full_signature).expect("Failed to parse return type");
 
-            let responses =
-                parse_return_type(&parsed.output, &known_schemas, &struct_definitions, None);
+            let responses = parse_return_type(&parsed.output, &known_schemas, &struct_definitions);
 
             assert_eq!(responses.len(), 1);
             assert!(responses.contains_key("200"));
@@ -1645,8 +1565,7 @@ mod tests {
                 syn::parse_str(&full_signature).expect("Failed to parse return type");
 
             println!("parsed: {:?}", parsed.output);
-            let responses =
-                parse_return_type(&parsed.output, &known_schemas, &struct_definitions, None);
+            let responses = parse_return_type(&parsed.output, &known_schemas, &struct_definitions);
             println!("responses: {:?}", responses);
 
             assert_eq!(responses.len(), 1);
@@ -1678,8 +1597,7 @@ mod tests {
         let parsed: syn::Signature =
             syn::parse_str(&full_signature).expect("Failed to parse return type");
 
-        let responses =
-            parse_return_type(&parsed.output, &known_schemas, &struct_definitions, None);
+        let responses = parse_return_type(&parsed.output, &known_schemas, &struct_definitions);
 
         assert_eq!(responses.len(), 2);
         assert!(responses.contains_key("200"));
@@ -1731,8 +1649,7 @@ mod tests {
             let parsed: syn::Signature = syn::parse_str(&full_signature)
                 .expect(&format!("Failed to parse return type: {}", return_type_str));
 
-            let responses =
-                parse_return_type(&parsed.output, &known_schemas, &struct_definitions, None);
+            let responses = parse_return_type(&parsed.output, &known_schemas, &struct_definitions);
 
             assert_eq!(responses.len(), 1);
             let response = responses.get("200").unwrap();
@@ -1760,8 +1677,7 @@ mod tests {
         let parsed: syn::Signature =
             syn::parse_str(&full_signature).expect("Failed to parse return type");
 
-        let responses =
-            parse_return_type(&parsed.output, &known_schemas, &struct_definitions, None);
+        let responses = parse_return_type(&parsed.output, &known_schemas, &struct_definitions);
 
         assert_eq!(responses.len(), 1);
         let response = responses.get("200").unwrap();
@@ -1786,8 +1702,7 @@ mod tests {
         let parsed: syn::Signature =
             syn::parse_str(&full_signature).expect("Failed to parse return type");
 
-        let responses =
-            parse_return_type(&parsed.output, &known_schemas, &struct_definitions, None);
+        let responses = parse_return_type(&parsed.output, &known_schemas, &struct_definitions);
 
         assert_eq!(responses.len(), 1);
         let response = responses.get("200").unwrap();
