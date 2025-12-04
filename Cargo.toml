@@ -3,5 +3,5 @@ resolver = "2"
 members = ["crates/*", "examples/*"]
 
 [workspace.dependencies]
-vespera_core = { path = "crates/vespera_core", version = "0.1.8" }
-vespera_macro = { path = "crates/vespera_macro", version = "0.1.8" }
+vespera_core = { path = "crates/vespera_core", version = "0.1.9" }
+vespera_macro = { path = "crates/vespera_macro", version = "0.1.9" }
