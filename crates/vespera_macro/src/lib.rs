@@ -454,7 +454,7 @@ pub fn create_user() -> String {
 "#,
         )],
         "post",
-        "/create_user",
+        "/create-user",
         "routes::create_user::create_user",
     )]
     #[case::single_put_route(
@@ -469,7 +469,7 @@ pub fn update_user() -> String {
 "#,
         )],
         "put",
-        "/update_user",
+        "/update-user",
         "routes::update_user::update_user",
     )]
     #[case::single_delete_route(
@@ -484,7 +484,7 @@ pub fn delete_user() -> String {
 "#,
         )],
         "delete",
-        "/delete_user",
+        "/delete-user",
         "routes::delete_user::delete_user",
     )]
     #[case::single_patch_route(
@@ -499,7 +499,7 @@ pub fn patch_user() -> String {
 "#,
         )],
         "patch",
-        "/patch_user",
+        "/patch-user",
         "routes::patch_user::patch_user",
     )]
     #[case::route_with_custom_path(

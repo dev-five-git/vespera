@@ -139,7 +139,7 @@ pub fn create_user() -> String {
         1,
         0,
         "post",
-        "/create_user",
+        "/create-user",
         "create_user",
         "routes::create_user",
     )]
