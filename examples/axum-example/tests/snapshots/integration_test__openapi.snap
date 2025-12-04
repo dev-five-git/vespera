@@ -457,19 +457,48 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "operationId": "mod_file_with_map_query",
         "parameters": [
           {
-            "name": "_query",
+            "name": "name",
             "in": "query",
             "required": true,
             "schema": {
-              "type": "object",
-              "properties": {},
-              "required": [],
-              "additionalProperties": {
-                "type": "string"
-              }
+              "type": "string"
+            }
+          },
+          {
+            "name": "age",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "optional_age",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "nullable": true
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/no-schema-query": {
+      "get": {
+        "operationId": "mod_file_with_no_schema_query",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -570,11 +599,19 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "operationId": "mod_file_with_struct_query",
         "parameters": [
           {
-            "name": "query",
+            "name": "name",
             "in": "query",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/StructQuery"
+              "type": "string"
+            }
+          },
+          {
+            "name": "age",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
             }
           }
         ],
@@ -597,11 +634,19 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "operationId": "mod_file_with_test_struct",
         "parameters": [
           {
-            "name": "query",
+            "name": "name",
             "in": "query",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/TestStruct"
+              "type": "string"
+            }
+          },
+          {
+            "name": "age",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
             }
           }
         ],
@@ -1178,6 +1223,25 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "value",
           "name",
           "value2"
+        ]
+      },
+      "MapQuery": {
+        "type": "object",
+        "properties": {
+          "age": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "optional_age": {
+            "type": "integer",
+            "nullable": true
+          }
+        },
+        "required": [
+          "name",
+          "age"
         ]
       },
       "SignupRequest": {
