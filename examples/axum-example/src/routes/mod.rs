@@ -11,6 +11,7 @@ use crate::TestStruct;
 pub mod enums;
 pub mod error;
 pub mod foo;
+pub mod generic;
 pub mod health;
 pub mod path;
 pub mod users;

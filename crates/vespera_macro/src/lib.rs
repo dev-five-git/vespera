@@ -36,6 +36,7 @@ static SCHEMA_STORAGE: LazyLock<Mutex<Vec<StructMetadata>>> =
 pub fn derive_schema(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     let name = &input.ident;
+    let generics = &input.generics;
 
     let mut schema_storage = SCHEMA_STORAGE.lock().unwrap();
     schema_storage.push(StructMetadata {
@@ -44,9 +45,11 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
     });
 
     // Mark both struct and enum as having SchemaBuilder
+    // For generic types, include the generic parameters in the impl
     // The actual schema generation will be done at runtime
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     let expanded = quote! {
-        impl vespera::schema::SchemaBuilder for #name {}
+        impl #impl_generics vespera::schema::SchemaBuilder for #name #ty_generics #where_clause {}
     };
 
     TokenStream::from(expanded)

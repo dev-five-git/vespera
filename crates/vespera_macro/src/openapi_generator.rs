@@ -20,11 +20,14 @@ pub fn generate_openapi_doc_with_metadata(
     let mut schemas: BTreeMap<String, vespera_core::schema::Schema> = BTreeMap::new();
     let mut known_schema_names: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    let mut struct_definitions: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
-    // First, register all schema names so they can be referenced during parsing
+    // First, register all schema names and store struct definitions
     for struct_meta in &metadata.structs {
         let schema_name = struct_meta.name.clone();
         known_schema_names.insert(schema_name.clone(), schema_name);
+        struct_definitions.insert(struct_meta.name.clone(), struct_meta.definition.clone());
     }
 
     // Then, parse all struct and enum schemas (now they can reference each other)
@@ -32,14 +35,17 @@ pub fn generate_openapi_doc_with_metadata(
         let parsed = syn::parse_str::<syn::Item>(&struct_meta.definition).unwrap();
         let schema = match parsed {
             syn::Item::Struct(struct_item) => {
-                parse_struct_to_schema(&struct_item, &known_schema_names)
+                parse_struct_to_schema(&struct_item, &known_schema_names, &struct_definitions)
             }
-            syn::Item::Enum(enum_item) => parse_enum_to_schema(&enum_item, &known_schema_names),
+            syn::Item::Enum(enum_item) => {
+                parse_enum_to_schema(&enum_item, &known_schema_names, &struct_definitions)
+            }
             _ => {
                 // Fallback to struct parsing for backward compatibility
                 parse_struct_to_schema(
                     &syn::parse_str(&struct_meta.definition).unwrap(),
                     &known_schema_names,
+                    &struct_definitions,
                 )
             }
         };
@@ -83,6 +89,7 @@ pub fn generate_openapi_doc_with_metadata(
                     &fn_item.sig,
                     &route_meta.path,
                     &known_schema_names,
+                    &struct_definitions,
                     route_meta.error_status.as_deref(),
                 );
 
