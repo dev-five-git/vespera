@@ -59,6 +59,7 @@ pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> Result<Collect
                 } else {
                     format!("/{}", segments.join("/"))
                 };
+                let route_path = route_path.replace('_', "-");
 
                 metadata.routes.push(RouteMetadata {
                     method: route_info.method,

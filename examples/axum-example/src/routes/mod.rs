@@ -138,7 +138,7 @@ pub async fn mod_file_with_complex_struct_body_with_rename(
     )
 }
 
-#[vespera::route(get, path = "/test-struct")]
+#[vespera::route(get, path = "/test_struct")]
 pub async fn mod_file_with_test_struct(Query(query): Query<TestStruct>) -> Json<TestStruct> {
     Json(query)
 }

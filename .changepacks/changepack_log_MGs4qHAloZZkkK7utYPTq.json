@@ -1,0 +1,1 @@
+{"changes":{"crates/vespera_core/Cargo.toml":"Patch","crates/vespera_macro/Cargo.toml":"Patch","crates/vespera/Cargo.toml":"Patch"},"note":"Convert hyphen path","date":"2025-12-04T09:55:33.920740600Z"}
