@@ -495,16 +495,6 @@
     "/no-schema-query": {
       "get": {
         "operationId": "mod_file_with_no_schema_query",
-        "parameters": [
-          {
-            "name": "query",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "object"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "Successful response",

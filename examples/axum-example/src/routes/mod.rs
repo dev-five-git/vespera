@@ -47,6 +47,7 @@ pub struct NoSchemaQuery {
     pub age: u32,
     pub optional_age: Option<u32>,
 }
+
 #[vespera::route(get, path = "/no-schema-query")]
 pub async fn mod_file_with_no_schema_query(Query(query): Query<NoSchemaQuery>) -> &'static str {
     println!("no schema query: {:?}", query.age);
