@@ -286,22 +286,10 @@
         "parameters": [
           {
             "name": "value",
-            "in": "query",
+            "in": "path",
             "required": true,
             "schema": {
-              "type": "object",
-              "properties": {
-                "name": {
-                  "type": "string"
-                },
-                "value": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "value",
-                "name"
-              ]
+              "type": "object"
             }
           }
         ],
@@ -311,19 +299,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "name": {
-                      "type": "string"
-                    },
-                    "value": {
-                      "type": "string"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericStruct"
                     }
-                  },
-                  "required": [
-                    "value",
-                    "name"
-                  ]
+                  ],
+                  "$defs": {
+                    "T": {
+                      "type": "string",
+                      "$dynamicAnchor": "T"
+                    }
+                  }
                 }
               }
             }
@@ -340,19 +326,79 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "name": {
-                      "type": "string"
-                    },
-                    "value": {
-                      "$ref": "#/components/schemas/TestStruct"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericStruct"
                     }
-                  },
-                  "required": [
-                    "value",
-                    "name"
-                  ]
+                  ],
+                  "$defs": {
+                    "T": {
+                      "$ref": "#/components/schemas/TestStruct",
+                      "$dynamicAnchor": "T"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/generic/generic3": {
+      "get": {
+        "operationId": "generic_endpoint3",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericStruct2"
+                    }
+                  ],
+                  "$defs": {
+                    "T": {
+                      "$ref": "#/components/schemas/TestStruct",
+                      "$dynamicAnchor": "T"
+                    },
+                    "T2": {
+                      "type": "string",
+                      "$dynamicAnchor": "T2"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/generic/generic4": {
+      "get": {
+        "operationId": "generic_endpoint4",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericStruct2"
+                    }
+                  ],
+                  "$defs": {
+                    "T": {
+                      "type": "boolean",
+                      "$dynamicAnchor": "T"
+                    },
+                    "T2": {
+                      "type": "boolean",
+                      "$dynamicAnchor": "T2"
+                    }
+                  }
                 }
               }
             }
@@ -1095,13 +1141,45 @@
             "type": "string"
           },
           "value": {
-            "type": "object"
+            "$dynamicRef": "#T"
           }
         },
         "required": [
           "value",
           "name"
-        ]
+        ],
+        "$defs": {
+          "T": {
+            "$dynamicAnchor": "T"
+          }
+        }
+      },
+      "GenericStruct2": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "$dynamicRef": "#T"
+          },
+          "value2": {
+            "$dynamicRef": "#T2"
+          }
+        },
+        "required": [
+          "value",
+          "name",
+          "value2"
+        ],
+        "$defs": {
+          "T": {
+            "$dynamicAnchor": "T"
+          },
+          "T2": {
+            "$dynamicAnchor": "T2"
+          }
+        }
       },
       "SignupRequest": {
         "type": "object",

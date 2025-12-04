@@ -13,6 +13,22 @@ pub enum SchemaRef {
     Inline(Box<Schema>),
 }
 
+impl SchemaRef {
+    /// Check if this is a reference
+    pub fn is_ref(&self) -> bool {
+        matches!(self, SchemaRef::Ref(_))
+    }
+
+    /// Get the reference path if this is a reference
+    pub fn ref_path(&self) -> Option<&str> {
+        if let SchemaRef::Ref(ref_ref) = self {
+            Some(&ref_ref.ref_path)
+        } else {
+            None
+        }
+    }
+}
+
 /// Reference definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reference {
@@ -77,6 +93,10 @@ pub enum StringFormat {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Schema {
+    /// Schema reference ($ref) - if present, other fields are ignored
+    #[serde(rename = "$ref")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ref_path: Option<String>,
     /// Schema type
     #[serde(rename = "type")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -191,12 +211,27 @@ pub struct Schema {
     /// External documentation reference
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_docs: Option<ExternalDocumentation>,
+
+    // JSON Schema 2020-12 dynamic references
+    /// Definitions ($defs) - reusable schema definitions
+    #[serde(rename = "$defs")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defs: Option<BTreeMap<String, Schema>>,
+    /// Dynamic anchor ($dynamicAnchor) - defines a dynamic anchor
+    #[serde(rename = "$dynamicAnchor")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dynamic_anchor: Option<String>,
+    /// Dynamic reference ($dynamicRef) - references a dynamic anchor
+    #[serde(rename = "$dynamicRef")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dynamic_ref: Option<String>,
 }
 
 impl Schema {
     /// Create a new schema
     pub fn new(schema_type: SchemaType) -> Self {
         Self {
+            ref_path: None,
             schema_type: Some(schema_type),
             format: None,
             title: None,
@@ -231,6 +266,9 @@ impl Schema {
             read_only: None,
             write_only: None,
             external_docs: None,
+            defs: None,
+            dynamic_anchor: None,
+            dynamic_ref: None,
         }
     }
 
