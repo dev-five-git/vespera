@@ -70,25 +70,57 @@ pub fn parse_function_parameter(
                                 && let Some(syn::GenericArgument::Type(inner_ty)) =
                                     args.args.first()
                             {
-                                // If there's exactly one path parameter, use its name
-                                let name = if path_params.len() == 1 {
-                                    path_params[0].clone()
+                                // Check if inner type is a tuple (e.g., Path<(String, String, String)>)
+                                if let Type::Tuple(tuple) = inner_ty {
+                                    // For tuple types, extract parameters from path string
+                                    let mut parameters = Vec::new();
+                                    let tuple_elems = &tuple.elems;
+
+                                    // Match tuple elements with path parameters
+                                    for (idx, elem_ty) in tuple_elems.iter().enumerate() {
+                                        if let Some(param_name) = path_params.get(idx) {
+                                            parameters.push(Parameter {
+                                                name: param_name.clone(),
+                                                r#in: ParameterLocation::Path,
+                                                description: None,
+                                                required: Some(true),
+                                                schema: Some(
+                                                    parse_type_to_schema_ref_with_schemas(
+                                                        elem_ty,
+                                                        known_schemas,
+                                                        struct_definitions,
+                                                    ),
+                                                ),
+                                                example: None,
+                                            });
+                                        }
+                                    }
+
+                                    if !parameters.is_empty() {
+                                        return Some(parameters);
+                                    }
                                 } else {
-                                    // Otherwise use the parameter name from the pattern
-                                    param_name
-                                };
-                                return Some(vec![Parameter {
-                                    name,
-                                    r#in: ParameterLocation::Path,
-                                    description: None,
-                                    required: Some(true),
-                                    schema: Some(parse_type_to_schema_ref_with_schemas(
-                                        inner_ty,
-                                        known_schemas,
-                                        struct_definitions,
-                                    )),
-                                    example: None,
-                                }]);
+                                    // Single path parameter
+                                    // If there's exactly one path parameter, use its name
+                                    let name = if path_params.len() == 1 {
+                                        path_params[0].clone()
+                                    } else {
+                                        // Otherwise use the parameter name from the pattern
+                                        param_name
+                                    };
+                                    return Some(vec![Parameter {
+                                        name,
+                                        r#in: ParameterLocation::Path,
+                                        description: None,
+                                        required: Some(true),
+                                        schema: Some(parse_type_to_schema_ref_with_schemas(
+                                            inner_ty,
+                                            known_schemas,
+                                            struct_definitions,
+                                        )),
+                                        example: None,
+                                    }]);
+                                }
                             }
                         }
                         "Query" => {
@@ -233,14 +265,9 @@ fn is_known_type(
         let ident_str = segment.ident.to_string();
 
         // Get type name (handle both simple and qualified paths)
-        let type_name = if path.segments.len() > 1 {
-            ident_str.clone()
-        } else {
-            ident_str.clone()
-        };
 
         // Check if it's in struct_definitions or known_schemas
-        if struct_definitions.contains_key(&type_name) || known_schemas.contains_key(&type_name) {
+        if struct_definitions.contains_key(&ident_str) || known_schemas.contains_key(&ident_str) {
             return true;
         }
 
@@ -278,120 +305,112 @@ fn parse_query_struct_to_parameters(
         let ident_str = segment.ident.to_string();
 
         // Get type name (handle both simple and qualified paths)
-        let type_name = if path.segments.len() > 1 {
-            ident_str.clone()
-        } else {
-            ident_str.clone()
-        };
 
         // Check if it's a known struct
-        if let Some(struct_def) = struct_definitions.get(&type_name) {
-            if let Ok(struct_item) = syn::parse_str::<syn::ItemStruct>(struct_def) {
-                let mut parameters = Vec::new();
+        if let Some(struct_def) = struct_definitions.get(&ident_str)
+            && let Ok(struct_item) = syn::parse_str::<syn::ItemStruct>(struct_def)
+        {
+            let mut parameters = Vec::new();
 
-                // Extract rename_all attribute from struct
-                let rename_all = extract_rename_all(&struct_item.attrs);
+            // Extract rename_all attribute from struct
+            let rename_all = extract_rename_all(&struct_item.attrs);
 
-                if let syn::Fields::Named(fields_named) = &struct_item.fields {
-                    for field in &fields_named.named {
-                        let rust_field_name = field
-                            .ident
-                            .as_ref()
-                            .map(|i| i.to_string())
-                            .unwrap_or_else(|| "unknown".to_string());
+            if let syn::Fields::Named(fields_named) = &struct_item.fields {
+                for field in &fields_named.named {
+                    let rust_field_name = field
+                        .ident
+                        .as_ref()
+                        .map(|i| i.to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
 
-                        // Check for field-level rename attribute first (takes precedence)
-                        let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
-                            renamed
-                        } else {
-                            // Apply rename_all transformation if present
-                            rename_field(&rust_field_name, rename_all.as_deref())
-                        };
+                    // Check for field-level rename attribute first (takes precedence)
+                    let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
+                        renamed
+                    } else {
+                        // Apply rename_all transformation if present
+                        rename_field(&rust_field_name, rename_all.as_deref())
+                    };
 
-                        let field_type = &field.ty;
+                    let field_type = &field.ty;
 
-                        // Check if field is Option<T>
-                        let is_optional = matches!(
-                            field_type,
-                            Type::Path(type_path)
-                                if type_path
-                                    .path
-                                    .segments
-                                    .first()
-                                    .map(|s| s.ident == "Option")
-                                    .unwrap_or(false)
-                        );
+                    // Check if field is Option<T>
+                    let is_optional = matches!(
+                        field_type,
+                        Type::Path(type_path)
+                            if type_path
+                                .path
+                                .segments
+                                .first()
+                                .map(|s| s.ident == "Option")
+                                .unwrap_or(false)
+                    );
 
-                        // Parse field type to schema (inline, not ref)
-                        // For Query parameters, we need inline schemas, not refs
-                        let mut field_schema = parse_type_to_schema_ref_with_schemas(
-                            field_type,
-                            known_schemas,
-                            struct_definitions,
-                        );
+                    // Parse field type to schema (inline, not ref)
+                    // For Query parameters, we need inline schemas, not refs
+                    let mut field_schema = parse_type_to_schema_ref_with_schemas(
+                        field_type,
+                        known_schemas,
+                        struct_definitions,
+                    );
 
-                        // Convert ref to inline if needed (Query parameters should not use refs)
-                        // If it's a ref to a known struct, get the struct definition and inline it
-                        if let SchemaRef::Ref(ref_ref) = &field_schema {
-                            // Try to extract type name from ref path (e.g., "#/components/schemas/User" -> "User")
-                            if let Some(type_name) =
-                                ref_ref.ref_path.strip_prefix("#/components/schemas/")
-                            {
-                                if let Some(struct_def) = struct_definitions.get(type_name) {
-                                    if let Ok(nested_struct_item) =
-                                        syn::parse_str::<syn::ItemStruct>(struct_def)
-                                    {
-                                        // Parse the nested struct to schema (inline)
-                                        let nested_schema = parse_struct_to_schema(
-                                            &nested_struct_item,
-                                            known_schemas,
-                                            struct_definitions,
-                                        );
-                                        field_schema = SchemaRef::Inline(Box::new(nested_schema));
-                                    }
-                                }
-                            }
+                    // Convert ref to inline if needed (Query parameters should not use refs)
+                    // If it's a ref to a known struct, get the struct definition and inline it
+                    if let SchemaRef::Ref(ref_ref) = &field_schema {
+                        // Try to extract type name from ref path (e.g., "#/components/schemas/User" -> "User")
+                        if let Some(type_name) =
+                            ref_ref.ref_path.strip_prefix("#/components/schemas/")
+                            && let Some(struct_def) = struct_definitions.get(type_name)
+                            && let Ok(nested_struct_item) =
+                                syn::parse_str::<syn::ItemStruct>(struct_def)
+                        {
+                            // Parse the nested struct to schema (inline)
+                            let nested_schema = parse_struct_to_schema(
+                                &nested_struct_item,
+                                known_schemas,
+                                struct_definitions,
+                            );
+                            field_schema = SchemaRef::Inline(Box::new(nested_schema));
                         }
-
-                        // If it's Option<T>, make it nullable
-                        let final_schema = if is_optional {
-                            if let SchemaRef::Inline(mut schema) = field_schema {
-                                schema.nullable = Some(true);
-                                SchemaRef::Inline(schema)
-                            } else {
-                                // If still a ref, convert to inline object with nullable
-                                SchemaRef::Inline(Box::new(Schema {
-                                    schema_type: Some(SchemaType::Object),
-                                    nullable: Some(true),
-                                    ..Schema::object()
-                                }))
-                            }
-                        } else {
-                            // If it's still a ref, convert to inline object
-                            match field_schema {
-                                SchemaRef::Ref(_) => {
-                                    SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)))
-                                }
-                                SchemaRef::Inline(schema) => SchemaRef::Inline(schema),
-                            }
-                        };
-
-                        let required = !is_optional;
-
-                        parameters.push(Parameter {
-                            name: field_name,
-                            r#in: ParameterLocation::Query,
-                            description: None,
-                            required: Some(required),
-                            schema: Some(final_schema),
-                            example: None,
-                        });
                     }
-                }
 
-                if !parameters.is_empty() {
-                    return Some(parameters);
+                    // If it's Option<T>, make it nullable
+                    let final_schema = if is_optional {
+                        if let SchemaRef::Inline(mut schema) = field_schema {
+                            schema.nullable = Some(true);
+                            SchemaRef::Inline(schema)
+                        } else {
+                            // If still a ref, convert to inline object with nullable
+                            SchemaRef::Inline(Box::new(Schema {
+                                schema_type: Some(SchemaType::Object),
+                                nullable: Some(true),
+                                ..Schema::object()
+                            }))
+                        }
+                    } else {
+                        // If it's still a ref, convert to inline object
+                        match field_schema {
+                            SchemaRef::Ref(_) => {
+                                SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)))
+                            }
+                            SchemaRef::Inline(schema) => SchemaRef::Inline(schema),
+                        }
+                    };
+
+                    let required = !is_optional;
+
+                    parameters.push(Parameter {
+                        name: field_name,
+                        r#in: ParameterLocation::Query,
+                        description: None,
+                        required: Some(required),
+                        schema: Some(final_schema),
+                        example: None,
+                    });
                 }
+            }
+
+            if !parameters.is_empty() {
+                return Some(parameters);
             }
         }
     }
@@ -1393,16 +1412,147 @@ pub fn build_operation_from_function(
     let path_params = extract_path_parameters(path);
     let mut parameters = Vec::new();
     let mut request_body = None;
+    let mut path_extractor_type: Option<Type> = None;
 
-    // Parse function parameters
+    // First pass: find Path<T> extractor and extract its type
+    for input in &sig.inputs {
+        if let FnArg::Typed(PatType { ty, .. }) = input
+            && let Type::Path(type_path) = ty.as_ref()
+        {
+            let path_segments = &type_path.path;
+            if !path_segments.segments.is_empty() {
+                let segment = path_segments.segments.last().unwrap();
+                if segment.ident == "Path"
+                    && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+                    && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+                {
+                    path_extractor_type = Some(inner_ty.clone());
+                    break;
+                }
+            }
+        }
+    }
+
+    // Generate path parameters from path string (not from function signature)
+    // This is the primary source of truth for path parameters
+    if !path_params.is_empty() {
+        if let Some(ty) = path_extractor_type {
+            // Check if it's a tuple type
+            if let Type::Tuple(tuple) = ty {
+                // For tuple types, match each path parameter with tuple element type
+                for (idx, param_name) in path_params.iter().enumerate() {
+                    if let Some(elem_ty) = tuple.elems.get(idx) {
+                        parameters.push(Parameter {
+                            name: param_name.clone(),
+                            r#in: ParameterLocation::Path,
+                            description: None,
+                            required: Some(true),
+                            schema: Some(parse_type_to_schema_ref_with_schemas(
+                                elem_ty,
+                                known_schemas,
+                                struct_definitions,
+                            )),
+                            example: None,
+                        });
+                    } else {
+                        // If tuple doesn't have enough elements, use String as default
+                        parameters.push(Parameter {
+                            name: param_name.clone(),
+                            r#in: ParameterLocation::Path,
+                            description: None,
+                            required: Some(true),
+                            schema: Some(parse_type_to_schema_ref_with_schemas(
+                                &syn::parse_str::<Type>("String").unwrap(),
+                                known_schemas,
+                                struct_definitions,
+                            )),
+                            example: None,
+                        });
+                    }
+                }
+            } else {
+                // Single path parameter
+                if path_params.len() == 1 {
+                    parameters.push(Parameter {
+                        name: path_params[0].clone(),
+                        r#in: ParameterLocation::Path,
+                        description: None,
+                        required: Some(true),
+                        schema: Some(parse_type_to_schema_ref_with_schemas(
+                            &ty,
+                            known_schemas,
+                            struct_definitions,
+                        )),
+                        example: None,
+                    });
+                } else {
+                    // Multiple path parameters but single type - use String for all
+                    for param_name in &path_params {
+                        parameters.push(Parameter {
+                            name: param_name.clone(),
+                            r#in: ParameterLocation::Path,
+                            description: None,
+                            required: Some(true),
+                            schema: Some(parse_type_to_schema_ref_with_schemas(
+                                &ty,
+                                known_schemas,
+                                struct_definitions,
+                            )),
+                            example: None,
+                        });
+                    }
+                }
+            }
+        } else {
+            // No Path extractor found, but path has parameters - use String as default
+            for param_name in &path_params {
+                parameters.push(Parameter {
+                    name: param_name.clone(),
+                    r#in: ParameterLocation::Path,
+                    description: None,
+                    required: Some(true),
+                    schema: Some(parse_type_to_schema_ref_with_schemas(
+                        &syn::parse_str::<Type>("String").unwrap(),
+                        known_schemas,
+                        struct_definitions,
+                    )),
+                    example: None,
+                });
+            }
+        }
+    }
+
+    // Parse function parameters (skip Path extractor as we already handled it)
     for input in &sig.inputs {
         // Check if it's a request body (Json<T>)
         if let Some(body) = parse_request_body(input, known_schemas, struct_definitions) {
             request_body = Some(body);
-        } else if let Some(params) =
-            parse_function_parameter(input, &path_params, known_schemas, struct_definitions)
-        {
-            parameters.extend(params);
+        } else {
+            // Skip Path extractor - we already handled path parameters above
+            let is_path_extractor = if let FnArg::Typed(PatType { ty, .. }) = input {
+                if let Type::Path(type_path) = ty.as_ref() {
+                    let path_segments = &type_path.path;
+                    if !path_segments.segments.is_empty() {
+                        let segment = path_segments.segments.last().unwrap();
+                        segment.ident == "Path"
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if !is_path_extractor {
+                // Process non-Path parameters
+                if let Some(params) =
+                    parse_function_parameter(input, &path_params, known_schemas, struct_definitions)
+                {
+                    parameters.extend(params);
+                }
+            }
         }
     }
 

@@ -509,6 +509,119 @@
         }
       }
     },
+    "/path/multi-path/{arg}/{var1}/{var2}": {
+      "get": {
+        "operationId": "mod_file_with_multi_path",
+        "parameters": [
+          {
+            "name": "arg",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "var1",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "var2",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/path/multi-path/{var1}": {
+      "get": {
+        "operationId": "mod_file_with_test_struct",
+        "parameters": [
+          {
+            "name": "var1",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/path/multi-path2/{arg}/{var1}/{var2}": {
+      "get": {
+        "operationId": "mod_file_with_multi_path_2",
+        "parameters": [
+          {
+            "name": "arg",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "var1",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "var2",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/path/prefix/{var}": {
       "get": {
         "operationId": "prefix_variable",
