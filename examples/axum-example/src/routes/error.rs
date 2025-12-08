@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use vespera::{
     Schema,
-    axum::{Json, http::StatusCode, response::IntoResponse},
+    axum::{Json, http::StatusCode, http::header::HeaderMap, response::IntoResponse},
 };
 
 #[derive(Serialize, Deserialize, Schema)]
@@ -60,4 +60,19 @@ pub async fn error_endpoint_with_status_code2() -> Result<&'static str, (StatusC
             code: 500,
         },
     ))
+}
+
+#[vespera::route(path = "/header-map")]
+pub async fn header_map_endpoint() -> Result<(HeaderMap, &'static str), ErrorResponse2> {
+    let headers = HeaderMap::new();
+    println!("headers: {:?}", headers);
+    Ok((headers, "ok"))
+}
+
+#[vespera::route(path = "/header-map2")]
+pub async fn header_map_endpoint2() -> Result<(StatusCode, HeaderMap, &'static str), ErrorResponse2>
+{
+    let headers = HeaderMap::new();
+    println!("headers: {:?}", headers);
+    Ok((StatusCode::INTERNAL_SERVER_ERROR, headers, "ok"))
 }

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use syn::{Fields, FnArg, Pat, PatType, ReturnType, Type};
 use vespera_core::{
-    route::{MediaType, Operation, Parameter, ParameterLocation, RequestBody, Response},
+    route::{Header, MediaType, Operation, Parameter, ParameterLocation, RequestBody, Response},
     schema::{Reference, Schema, SchemaRef, SchemaType},
 };
 
@@ -1264,6 +1264,39 @@ fn extract_status_code_tuple(err_ty: &Type) -> Option<(u16, Type)> {
     None
 }
 
+/// Check whether the provided type is a HeaderMap
+fn is_header_map_type(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        let path = &type_path.path;
+        if path.segments.is_empty() {
+            return false;
+        }
+        return path.segments.iter().any(|s| s.ident == "HeaderMap");
+    }
+    false
+}
+
+/// Extract payload type from an Ok tuple and track if headers exist.
+/// The last element of the tuple is always treated as the response body.
+/// Any presence of HeaderMap in the tuple marks headers as present.
+fn extract_ok_payload_and_headers(ok_ty: &Type) -> (Type, Option<HashMap<String, Header>>) {
+    if let Type::Tuple(tuple) = ok_ty {
+        let payload_ty = tuple.elems.last().map(|ty| unwrap_json(ty).clone());
+        let has_headers = tuple.elems.iter().any(is_header_map_type);
+
+        if let Some(payload_ty) = payload_ty {
+            let headers = if has_headers {
+                Some(HashMap::new())
+            } else {
+                None
+            };
+            return (payload_ty, headers);
+        }
+    }
+
+    (ok_ty.clone(), None)
+}
+
 /// Analyze return type and convert to Responses map
 pub fn parse_return_type(
     return_type: &ReturnType,
@@ -1288,8 +1321,9 @@ pub fn parse_return_type(
             // Check if it's a Result<T, E>
             if let Some((ok_ty, err_ty)) = extract_result_types(ty) {
                 // Handle success response (200)
+                let (ok_payload_ty, ok_headers) = extract_ok_payload_and_headers(&ok_ty);
                 let ok_schema = parse_type_to_schema_ref_with_schemas(
-                    &ok_ty,
+                    &ok_payload_ty,
                     known_schemas,
                     struct_definitions,
                 );
@@ -1307,7 +1341,7 @@ pub fn parse_return_type(
                     "200".to_string(),
                     Response {
                         description: "Successful response".to_string(),
-                        headers: None,
+                        headers: ok_headers,
                         content: Some(ok_content),
                     },
                 );
@@ -1995,6 +2029,100 @@ mod tests {
         } else {
             panic!("Expected schema reference for Error");
         }
+    }
+
+    #[test]
+    fn test_parse_return_type_with_header_map_tuple() {
+        let known_schemas = HashMap::new();
+        let struct_definitions = HashMap::new();
+
+        let parsed: syn::Signature =
+            syn::parse_str("fn test() -> Result<(HeaderMap, String), String>")
+                .expect("Failed to parse return type");
+
+        let responses = parse_return_type(&parsed.output, &known_schemas, &struct_definitions);
+
+        let ok_response = responses.get("200").expect("Ok response missing");
+        let ok_content = ok_response
+            .content
+            .as_ref()
+            .expect("Ok content missing")
+            .get("application/json")
+            .expect("application/json missing");
+
+        if let SchemaRef::Inline(schema) = ok_content.schema.as_ref().unwrap() {
+            assert_eq!(schema.schema_type, Some(SchemaType::String));
+        } else {
+            panic!("Expected inline String schema for Ok type");
+        }
+
+        assert!(
+            ok_response.headers.is_some(),
+            "HeaderMap should set headers"
+        );
+    }
+
+    #[test]
+    fn test_parse_return_type_with_status_and_header_map_tuple() {
+        let known_schemas = HashMap::new();
+        let struct_definitions = HashMap::new();
+
+        let parsed: syn::Signature =
+            syn::parse_str("fn test() -> Result<(StatusCode, HeaderMap, String), String>")
+                .expect("Failed to parse return type");
+
+        let responses = parse_return_type(&parsed.output, &known_schemas, &struct_definitions);
+
+        let ok_response = responses.get("200").expect("Ok response missing");
+        let ok_content = ok_response
+            .content
+            .as_ref()
+            .expect("Ok content missing")
+            .get("application/json")
+            .expect("application/json missing");
+
+        if let SchemaRef::Inline(schema) = ok_content.schema.as_ref().unwrap() {
+            assert_eq!(schema.schema_type, Some(SchemaType::String));
+        } else {
+            panic!("Expected inline String schema for Ok type");
+        }
+
+        assert!(
+            ok_response.headers.is_some(),
+            "HeaderMap should set headers"
+        );
+    }
+
+    #[test]
+    fn test_parse_return_type_with_mixed_tuple_uses_last_as_body() {
+        let known_schemas = HashMap::new();
+        let struct_definitions = HashMap::new();
+
+        // Additional tuple elements before the payload should be ignored; last element is body
+        let parsed: syn::Signature =
+            syn::parse_str("fn test() -> Result<(StatusCode, HeaderMap, u32, String), String>")
+                .expect("Failed to parse return type");
+
+        let responses = parse_return_type(&parsed.output, &known_schemas, &struct_definitions);
+
+        let ok_response = responses.get("200").expect("Ok response missing");
+        let ok_content = ok_response
+            .content
+            .as_ref()
+            .expect("Ok content missing")
+            .get("application/json")
+            .expect("application/json missing");
+
+        if let SchemaRef::Inline(schema) = ok_content.schema.as_ref().unwrap() {
+            assert_eq!(schema.schema_type, Some(SchemaType::String));
+        } else {
+            panic!("Expected inline String schema for Ok type");
+        }
+
+        assert!(
+            ok_response.headers.is_some(),
+            "HeaderMap should set headers"
+        );
     }
 
     #[test]

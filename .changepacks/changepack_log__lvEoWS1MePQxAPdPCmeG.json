@@ -1,0 +1,1 @@
+{"changes":{"crates/vespera/Cargo.toml":"Patch","crates/vespera_core/Cargo.toml":"Patch","crates/vespera_macro/Cargo.toml":"Patch"},"note":"Fix response issue with HeaderMap","date":"2025-12-08T11:21:07.742369Z"}

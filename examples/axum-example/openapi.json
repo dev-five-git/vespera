@@ -243,6 +243,62 @@
         }
       }
     },
+    "/error/header-map": {
+      "get": {
+        "operationId": "header_map_endpoint",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "headers": {},
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/error/header-map2": {
+      "get": {
+        "operationId": "header_map_endpoint2",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "headers": {},
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/foo/foo": {
       "post": {
         "operationId": "signup",
