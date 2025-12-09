@@ -1,0 +1,1549 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "API",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000"
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "root_endpoint",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/complex-struct-body": {
+      "post": {
+        "operationId": "mod_file_with_complex_struct_body",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComplexStructBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/complex-struct-body-with-rename": {
+      "post": {
+        "operationId": "mod_file_with_complex_struct_body_with_rename",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComplexStructBodyWithRename"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/enums": {
+      "get": {
+        "operationId": "enum_endpoint",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Enum"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/enums/enum2": {
+      "get": {
+        "operationId": "enum_endpoint2",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Enum2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/error": {
+      "get": {
+        "operationId": "error_endpoint",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/error/error-with-status": {
+      "get": {
+        "operationId": "error_endpoint_with_status_code",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/error/error-with-status2": {
+      "get": {
+        "operationId": "error_endpoint_with_status_code2",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse2"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse2"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/error/error2": {
+      "get": {
+        "operationId": "error_endpoint2",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/error/header-map": {
+      "get": {
+        "operationId": "header_map_endpoint",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "headers": {},
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/error/header-map2": {
+      "get": {
+        "operationId": "header_map_endpoint2",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "headers": {},
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/foo/foo": {
+      "post": {
+        "operationId": "signup",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/generic/generic/{value}": {
+      "get": {
+        "operationId": "generic_endpoint",
+        "parameters": [
+          {
+            "name": "value",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "name"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/generic/generic2": {
+      "get": {
+        "operationId": "generic_endpoint2",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/components/schemas/TestStruct"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "name"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/generic/generic3": {
+      "get": {
+        "operationId": "generic_endpoint3",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/components/schemas/TestStruct"
+                    },
+                    "value2": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "name",
+                    "value2"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/generic/generic4": {
+      "get": {
+        "operationId": "generic_endpoint4",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "boolean"
+                    },
+                    "value2": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "name",
+                    "value2"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/hello": {
+      "get": {
+        "operationId": "mod_file_endpoint",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/map-query": {
+      "get": {
+        "operationId": "mod_file_with_map_query",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "age",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "optional_age",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/no-schema-query": {
+      "get": {
+        "operationId": "mod_file_with_no_schema_query",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/path/multi-path/{arg}/{var1}/{var2}": {
+      "get": {
+        "operationId": "mod_file_with_multi_path",
+        "parameters": [
+          {
+            "name": "arg",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "var1",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "var2",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/path/multi-path/{var1}": {
+      "get": {
+        "operationId": "mod_file_with_test_struct",
+        "parameters": [
+          {
+            "name": "var1",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/path/multi-path2/{arg}/{var1}/{var2}": {
+      "get": {
+        "operationId": "mod_file_with_multi_path_2",
+        "parameters": [
+          {
+            "name": "arg",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "var1",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "var2",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/path/prefix/{var}": {
+      "get": {
+        "operationId": "prefix_variable",
+        "parameters": [
+          {
+            "name": "var",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/struct-body": {
+      "post": {
+        "operationId": "mod_file_with_struct_body",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StructBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/struct-body-with-optional": {
+      "post": {
+        "operationId": "mod_file_with_struct_body_with_optional",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StructBodyWithOptional"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/struct-query": {
+      "get": {
+        "operationId": "mod_file_with_struct_query",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "age",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/test-struct": {
+      "get": {
+        "operationId": "mod_file_with_test_struct",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "age",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestStruct"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users": {
+      "get": {
+        "operationId": "get_users",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/User"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "create_user",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateUserRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{id}": {
+      "get": {
+        "operationId": "get_user",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ComplexStructBody": {
+        "type": "object",
+        "properties": {
+          "age": {
+            "type": "integer"
+          },
+          "array": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "map": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "nested_array": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StructBodyWithOptional"
+            }
+          },
+          "nested_map": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StructBodyWithOptional"
+            }
+          },
+          "nested_struct": {
+            "$ref": "#/components/schemas/StructBodyWithOptional"
+          },
+          "nested_struct_array": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StructBodyWithOptional"
+            }
+          },
+          "nested_struct_array_map": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": {
+                "$ref": "#/components/schemas/StructBodyWithOptional"
+              }
+            }
+          },
+          "nested_struct_map": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StructBodyWithOptional"
+            }
+          },
+          "nested_struct_map_array": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/StructBodyWithOptional"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "age",
+          "nested_struct",
+          "array",
+          "map",
+          "nested_array",
+          "nested_map",
+          "nested_struct_array",
+          "nested_struct_map",
+          "nested_struct_array_map",
+          "nested_struct_map_array"
+        ]
+      },
+      "ComplexStructBodyWithRename": {
+        "type": "object",
+        "properties": {
+          "age": {
+            "type": "integer"
+          },
+          "array": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "map": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "nestedArray": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StructBodyWithOptional"
+            }
+          },
+          "nestedMap": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StructBodyWithOptional"
+            }
+          },
+          "nestedStruct": {
+            "$ref": "#/components/schemas/StructBodyWithOptional"
+          },
+          "nestedStructArray": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StructBodyWithOptional"
+            }
+          },
+          "nestedStructArrayMap": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": {
+                "$ref": "#/components/schemas/StructBodyWithOptional"
+              }
+            }
+          },
+          "nestedStructMap": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StructBodyWithOptional"
+            }
+          },
+          "nestedStructMapArray": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/StructBodyWithOptional"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "age",
+          "nestedStruct",
+          "array",
+          "map",
+          "nestedArray",
+          "nestedMap",
+          "nestedStructArray",
+          "nestedStructMap",
+          "nestedStructArrayMap",
+          "nestedStructMapArray"
+        ]
+      },
+      "CreateUserRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "email"
+        ]
+      },
+      "Enum": {
+        "type": "string",
+        "enum": [
+          "A",
+          "B",
+          "C"
+        ]
+      },
+      "Enum2": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "A": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "A"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "B": {
+                "type": "object",
+                "properties": {
+                  "age": {
+                    "type": "integer"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "age"
+                ]
+              }
+            },
+            "required": [
+              "B"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "C": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "C"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "D": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "D"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "E": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "E"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "F": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
+            "required": [
+              "F"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "G": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "G"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "H": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "H"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "I": {
+                "$ref": "#/components/schemas/TestStruct"
+              }
+            },
+            "required": [
+              "I"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "J": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/TestStruct"
+                }
+              }
+            },
+            "required": [
+              "J"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "K": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "$ref": "#/components/schemas/TestStruct"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TestStruct"
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
+            "required": [
+              "K"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "L": {
+                "type": "string",
+                "nullable": true
+              }
+            },
+            "required": [
+              "L"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "M": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "nullable": true
+                }
+              }
+            },
+            "required": [
+              "M"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "N": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": {
+                  "nullable": true,
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "N"
+            ]
+          }
+        ]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "code"
+        ]
+      },
+      "ErrorResponse2": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "code"
+        ]
+      },
+      "GenericStruct": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "value",
+          "name"
+        ]
+      },
+      "GenericStruct2": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "object"
+          },
+          "value2": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "value",
+          "name",
+          "value2"
+        ]
+      },
+      "MapQuery": {
+        "type": "object",
+        "properties": {
+          "age": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "optional_age": {
+            "type": "integer",
+            "nullable": true
+          }
+        },
+        "required": [
+          "name",
+          "age"
+        ]
+      },
+      "SignupRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ]
+      },
+      "SignupResponse": {
+        "type": "object",
+        "properties": {
+          "birthday": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "gender": {
+            "type": "string",
+            "nullable": true
+          },
+          "id": {
+            "type": "integer"
+          },
+          "job": {
+            "type": "string",
+            "nullable": true
+          },
+          "name": {
+            "type": "string"
+          },
+          "nickname": {
+            "type": "string",
+            "nullable": true
+          },
+          "phoneNumber23": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "name",
+          "phoneNumber23",
+          "createdAt"
+        ]
+      },
+      "StructBody": {
+        "type": "object",
+        "properties": {
+          "age": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "age"
+        ]
+      },
+      "StructBodyWithOptional": {
+        "type": "object",
+        "properties": {
+          "age": {
+            "type": "integer",
+            "nullable": true
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "StructQuery": {
+        "type": "object",
+        "properties": {
+          "age": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "age"
+        ]
+      },
+      "TestStruct": {
+        "type": "object",
+        "properties": {
+          "age": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "age"
+        ]
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "email"
+        ]
+      }
+    }
+  }
+}

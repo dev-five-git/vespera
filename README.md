@@ -232,6 +232,11 @@ let app = vespera!(
     openapi = "openapi.json"
 );
 
+// Generate multiple OpenAPI JSON files at once
+let app = vespera!(
+    openapi = ["openapi.json", "admin-openapi.json"]
+);
+
 // With OpenAPI and Swagger UI
 let app = vespera!(
     openapi = "openapi.json",
@@ -253,10 +258,12 @@ let app = vespera!(
 - **`dir`**: Route folder name (default: `"routes"`)
   - You can also specify it directly as a string literal: `vespera!("api")`
   
-- **`openapi`**: OpenAPI JSON file path (optional)
-  - If specified, an OpenAPI 3.1 spec is generated at compile time and **writes an `openapi.json` file to the specified path**
+- **`openapi`**: OpenAPI JSON file path(s) (optional)
+  - Accepts a single string or an array of strings
+  - If specified, an OpenAPI 3.1 spec is generated at compile time and **writes an `openapi.json` file to the specified path (or paths)**
   - Example: `openapi = "openapi.json"` → creates `openapi.json` file in project root
   - Example: `openapi = "docs/api.json"` → creates `docs/api.json` file
+  - Example: `openapi = ["openapi.json", "docs/admin.json"]` → writes both files
   
 - **`title`**: API title (optional, default: `"API"`)
   - Used in the `info.title` field of the OpenAPI document

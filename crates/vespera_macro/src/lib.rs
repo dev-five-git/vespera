@@ -13,7 +13,9 @@ use quote::quote;
 use std::path::Path;
 use std::sync::{LazyLock, Mutex};
 use syn::LitStr;
+use syn::bracketed;
 use syn::parse::{Parse, ParseStream};
+use syn::punctuated::Punctuated;
 
 use crate::collector::collect_metadata;
 use crate::metadata::{CollectedMetadata, StructMetadata};
@@ -57,7 +59,7 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
 
 struct AutoRouterInput {
     dir: Option<LitStr>,
-    openapi: Option<LitStr>,
+    openapi: Option<Vec<LitStr>>,
     title: Option<LitStr>,
     version: Option<LitStr>,
     docs_url: Option<LitStr>,
@@ -86,8 +88,7 @@ impl Parse for AutoRouterInput {
                         dir = Some(input.parse()?);
                     }
                     "openapi" => {
-                        input.parse::<syn::Token![=]>()?;
-                        openapi = Some(input.parse()?);
+                        openapi = Some(parse_openapi_values(input)?);
                     }
                     "docs_url" => {
                         input.parse::<syn::Token![=]>()?;
@@ -137,7 +138,7 @@ impl Parse for AutoRouterInput {
             }),
             openapi: openapi.or_else(|| {
                 std::env::var("VESPERA_OPENAPI")
-                    .map(|f| LitStr::new(&f, Span::call_site()))
+                    .map(|f| vec![LitStr::new(&f, Span::call_site())])
                     .ok()
             }),
             title: title.or_else(|| {
@@ -164,6 +165,21 @@ impl Parse for AutoRouterInput {
     }
 }
 
+fn parse_openapi_values(input: ParseStream) -> syn::Result<Vec<LitStr>> {
+    input.parse::<syn::Token![=]>()?;
+
+    if input.peek(syn::token::Bracket) {
+        let content;
+        let _ = bracketed!(content in input);
+        let entries: Punctuated<LitStr, syn::Token![,]> =
+            content.parse_terminated(|input| input.parse::<LitStr>(), syn::Token![,])?;
+        Ok(entries.into_iter().collect())
+    } else {
+        let single: LitStr = input.parse()?;
+        Ok(vec![single])
+    }
+}
+
 #[proc_macro]
 pub fn vespera(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as AutoRouterInput);
@@ -173,7 +189,12 @@ pub fn vespera(input: TokenStream) -> TokenStream {
         .map(|f| f.value())
         .unwrap_or_else(|| "routes".to_string());
 
-    let openapi_file_name = input.openapi.map(|f| f.value());
+    let openapi_file_names = input
+        .openapi
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| f.value())
+        .collect::<Vec<_>>();
 
     let title = input.title.map(|t| t.value());
     let version = input.version.map(|v| v.value());
@@ -209,7 +230,7 @@ pub fn vespera(input: TokenStream) -> TokenStream {
     let mut docs_info = None;
     let mut redoc_info = None;
 
-    if openapi_file_name.is_some() || docs_url.is_some() || redoc_url.is_some() {
+    if !openapi_file_names.is_empty() || docs_url.is_some() || redoc_url.is_some() {
         // Generate OpenAPI document using collected metadata
 
         // Serialize to JSON
@@ -226,8 +247,18 @@ pub fn vespera(input: TokenStream) -> TokenStream {
                 .into();
             }
         };
-        if let Some(openapi_file_name) = openapi_file_name {
-            std::fs::write(openapi_file_name, &json_str).unwrap();
+        for openapi_file_name in &openapi_file_names {
+            if let Err(e) = std::fs::write(openapi_file_name, &json_str) {
+                return syn::Error::new(
+                    Span::call_site(),
+                    format!(
+                        "Failed to write OpenAPI document to {}: {}",
+                        openapi_file_name, e
+                    ),
+                )
+                .to_compile_error()
+                .into();
+            }
         }
         if let Some(docs_url) = docs_url {
             docs_info = Some((docs_url, json_str.clone()));
