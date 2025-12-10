@@ -36,15 +36,15 @@ impl syn::parse::Parse for RouteArgs {
                         return Err(lookahead.error());
                     }
                 }
+
+                // Check if there's a comma
+                if input.peek(syn::Token![,]) {
+                    input.parse::<syn::Token![,]>()?;
+                } else {
+                    break;
+                }
             } else {
                 return Err(lookahead.error());
-            }
-
-            // Check if there's a comma
-            if input.peek(syn::Token![,]) {
-                input.parse::<syn::Token![,]>()?;
-            } else {
-                break;
             }
         }
 
