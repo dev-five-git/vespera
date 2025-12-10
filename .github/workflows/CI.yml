@@ -36,7 +36,18 @@ jobs:
       - name: Build
         run: cargo check
       - name: Test
-        run: cargo tarpaulin --out Lcov
+        run: |
+          # rust coverage issue
+          echo 'max_width = 100000' > .rustfmt.toml
+          echo 'tab_spaces = 4' >> .rustfmt.toml
+          echo 'newline_style = "Unix"' >> .rustfmt.toml
+          echo 'fn_call_width = 100000' >> .rustfmt.toml
+          echo 'fn_params_layout = "Compressed"' >> .rustfmt.toml
+          echo 'chain_width = 100000' >> .rustfmt.toml
+          echo 'merge_derives = true' >> .rustfmt.toml
+          echo 'use_small_heuristics = "Default"' >> .rustfmt.toml
+          cargo fmt
+          cargo tarpaulin --out Lcov
       - name: Upload to codecov.io
         uses: codecov/codecov-action@v5
         with:

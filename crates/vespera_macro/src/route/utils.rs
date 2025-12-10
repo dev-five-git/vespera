@@ -47,9 +47,9 @@ pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
                         let path = route_args.path.as_ref().map(syn::LitStr::value);
 
                         // Parse error_status array if present
-                        let error_status = route_args.error_status.and_then(|array| {
+                        let error_status = route_args.error_status.as_ref().and_then(|array| {
                             let mut status_codes = Vec::new();
-                            for elem in array.elems {
+                            for elem in &array.elems {
                                 if let syn::Expr::Lit(syn::ExprLit {
                                     lit: syn::Lit::Int(lit_int),
                                     ..
@@ -81,15 +81,19 @@ pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
                     }) = &meta_nv.value
                     {
                         let method_str = lit_str.value().to_lowercase();
-                        match method_str.as_str() {
-                            "get" | "post" | "put" | "patch" | "delete" | "head" | "options" => {
-                                return Some(RouteInfo {
-                                    method: method_str,
-                                    path: None,
-                                    error_status: None,
-                                });
-                            }
-                            _ => {}
+                        if method_str == "get"
+                            || method_str == "post"
+                            || method_str == "put"
+                            || method_str == "patch"
+                            || method_str == "delete"
+                            || method_str == "head"
+                            || method_str == "options"
+                        {
+                            return Some(RouteInfo {
+                                method: method_str,
+                                path: None,
+                                error_status: None,
+                            });
                         }
                     }
                 }
@@ -222,6 +226,11 @@ mod tests {
     #[case("#[derive(Debug)] #[route(get, path = \"/api\")] #[test] fn test() {}", Some(("get".to_string(), Some("/api".to_string()), None)))]
     // Multiple route attributes - first one wins
     #[case("#[route(get, path = \"/first\")] #[route(post, path = \"/second\")] fn test() {}", Some(("get".to_string(), Some("/first".to_string()), None)))]
+    // Explicit tests for method.as_ref() and path.as_ref().map() coverage
+    #[case("#[route(path = \"/test\")] fn test() {}", Some(("get".to_string(), Some("/test".to_string()), None)))] // method None, path Some
+    #[case("#[route()] fn test() {}", Some(("get".to_string(), None, None)))] // method None, path None
+    #[case("#[route(post)] fn test() {}", Some(("post".to_string(), None, None)))] // method Some, path None
+    #[case("#[route(put, path = \"/test\")] fn test() {}", Some(("put".to_string(), Some("/test".to_string()), None)))] // method Some, path Some
     fn test_extract_route_info(
         #[case] code: &str,
         #[case] expected: Option<(String, Option<String>, Option<Vec<u16>>)>,
