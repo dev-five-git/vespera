@@ -15,6 +15,7 @@ pub mod generic;
 pub mod health;
 pub mod path;
 pub mod users;
+pub mod typed_header;
 
 /// Health check endpoint
 #[vespera::route(get)]

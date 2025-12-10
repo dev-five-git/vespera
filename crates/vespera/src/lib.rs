@@ -23,3 +23,7 @@ pub use vespera_macro::{Schema, route, vespera};
 pub mod axum {
     pub use axum::*;
 }
+
+pub mod axum_extra {
+    pub use axum_extra::*;
+}

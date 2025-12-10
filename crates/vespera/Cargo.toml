@@ -7,7 +7,11 @@ license = "Apache-2.0"
 repository = "https://github.com/dev-five-git/vespera"
 readme = "../../README.md"
 
+[features]
+default = ["dep:axum-extra", "axum-extra/typed-header", "axum-extra/form", "axum-extra/query", "axum-extra/multipart", "axum-extra/cookie"]
+
 [dependencies]
 vespera_core = { workspace = true }
 vespera_macro = { workspace = true }
 axum = "0.8"
+axum-extra = { version = "0.12", optional = true }
