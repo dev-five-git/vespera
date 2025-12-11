@@ -64,6 +64,8 @@ mod tests {
     #[case("othermod::Json", KeywordType::Json, true)]
     #[case("CustomType", KeywordType::Path, false)]
     #[case("Result", KeywordType::Result, true)]
+    #[case("Result<String, String>", KeywordType::Result, true)]
+    #[case("!", KeywordType::Result, false)]
     fn test_is_keyword_type(
         #[case] ty_str: &str,
         #[case] keyword: KeywordType,
