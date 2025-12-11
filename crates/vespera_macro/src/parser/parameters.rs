@@ -119,13 +119,11 @@ pub fn parse_function_parameter(
                                     }
                                 } else {
                                     // Single path parameter
-                                    // If there's exactly one path parameter, use its name
-                                    let name = if path_params.len() == 1 {
-                                        path_params[0].clone()
-                                    } else {
-                                        // Otherwise use the parameter name from the pattern
-                                        param_name
-                                    };
+                            // Allow only when exactly one path parameter is provided
+                            if path_params.len() != 1 {
+                                return None;
+                            }
+                            let name = path_params[0].clone();
                                     return Some(vec![Parameter {
                                         name,
                                         r#in: ParameterLocation::Path,
@@ -161,6 +159,11 @@ pub fn parse_function_parameter(
                                     return Some(struct_params);
                                 }
 
+                                // Ignore primitive-like query params (including Vec/Option of primitive)
+                                if is_primitive_like(inner_ty) {
+                                    return None;
+                                }
+
                                 // Check if it's a known type (primitive or known schema)
                                 // If unknown, don't add parameter
                                 if !is_known_type(inner_ty, known_schemas, struct_definitions) {
@@ -188,6 +191,10 @@ pub fn parse_function_parameter(
                                 && let Some(syn::GenericArgument::Type(inner_ty)) =
                                     args.args.first()
                             {
+                                // Ignore primitive-like headers
+                                if is_primitive_like(inner_ty) {
+                                    return None;
+                                }
                                 return Some(vec![Parameter {
                                     name: param_name.clone(),
                                     r#in: ParameterLocation::Header,
@@ -252,6 +259,25 @@ fn is_map_type(ty: &Type) -> bool {
             let segment = path.segments.last().unwrap();
             let ident_str = segment.ident.to_string();
             return ident_str == "HashMap" || ident_str == "BTreeMap";
+        }
+    }
+    false
+}
+
+fn is_primitive_like(ty: &Type) -> bool {
+    if is_primitive_type(ty) {
+        return true;
+    }
+    if let Type::Path(type_path) = ty {
+        if let Some(seg) = type_path.path.segments.last() {
+            let ident = seg.ident.to_string();
+            if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
+                    if (ident == "Vec" || ident == "Option") && is_primitive_like(inner_ty) {
+                        return true;
+                    }
+                }
+            }
         }
     }
     false
@@ -589,6 +615,55 @@ mod tests {
             parameters.extend(params.clone());
         }
         assert_debug_snapshot!(parameters);
+    }
+
+    #[rstest]
+    #[case(
+        "fn test(id: Query<i32>) {}",
+        vec![],
+    )]
+    #[case(
+        "fn test(auth: Header<String>) {}",
+        vec![],
+    )]
+    #[case(
+        "fn test(params: Query<Vec<i32>>) {}",
+        vec![],
+    )]
+    #[case(
+        "fn test(params: Query<Option<String>>) {}",
+        vec![],
+    )]
+    #[case(
+        "fn test(Path([a]): Path<[i32; 1]>) {}",
+        vec![],
+    )]
+    #[case(
+        "fn test(id: Path<i32>) {}",
+        vec!["user_id".to_string(), "post_id".to_string()],
+    )]
+    fn test_parse_function_parameter_wrong_cases(
+        #[case] func_src: &str,
+        #[case] path_params: Vec<String>,
+    ) {
+        let func: syn::ItemFn = syn::parse_str(func_src).unwrap();
+        let (known_schemas, struct_definitions) = setup_test_data(func_src);
+
+        for (idx, arg) in func.sig.inputs.iter().enumerate() {
+            let result = parse_function_parameter(
+                arg,
+                &path_params,
+                &known_schemas,
+                &struct_definitions,
+            );
+            assert!(
+                result.is_none(),
+                "Expected None at arg index {}, func: {}, got: {:?}",
+                idx,
+                func_src,
+                result
+            );
+        }
     }
 
     #[test]
