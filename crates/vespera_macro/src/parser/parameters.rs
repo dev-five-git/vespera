@@ -460,6 +460,7 @@ fn parse_query_struct_to_parameters(
 mod tests {
     use super::*;
     use rstest::rstest;
+    use serial_test::serial;
     use std::collections::HashMap;
     use vespera_core::route::ParameterLocation;
     use insta::assert_debug_snapshot;
@@ -581,6 +582,7 @@ mod tests {
         vec![],
         vec![vec![ParameterLocation::Header]]
     )]
+    #[serial]
     fn test_parse_function_parameter_cases(
         #[case] func_src: &str,
         #[case] path_params: Vec<String>,
