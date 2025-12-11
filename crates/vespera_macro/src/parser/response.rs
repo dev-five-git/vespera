@@ -3,6 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use syn::{ReturnType, Type};
 use vespera_core::route::{Header, MediaType, Response};
 
+use crate::parser::is_keyword_type::{KeywordType, is_keyword_type, is_keyword_type_by_type_path};
+
 use super::schema::parse_type_to_schema_ref_with_schemas;
 
 /// Unwrap Json<T> to get T
@@ -31,17 +33,14 @@ fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
     let unwrapped = unwrap_json(ty);
 
     // Handle both Type::Path and Type::Reference (for &Result<...>)
-    let result_type = match unwrapped {
-        Type::Path(type_path) => type_path,
-        Type::Reference(type_ref) => {
-            // Unwrap reference and check if it's a Result
-            if let Type::Path(type_path) = type_ref.elem.as_ref() {
-                type_path
-            } else {
-                return None;
-            }
-        }
-        _ => return None,
+    let result_type = if let Type::Path(type_path) = unwrapped {
+        type_path
+    } else if let Type::Reference(type_ref) = unwrapped
+        && let Type::Path(type_path) = type_ref.elem.as_ref()
+    {
+        type_path
+    } else {
+        return None;
     };
 
     let path = &result_type.path;
@@ -49,23 +48,17 @@ fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
         return None;
     }
 
-    // Check if any segment is "Result" (handles both Result and std::result::Result)
-    let is_result = path.segments.iter().any(|seg| seg.ident == "Result");
-
-    if is_result {
+    if is_keyword_type_by_type_path(result_type, &KeywordType::Result)
+        && let Some(segment) = path.segments.last()
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && args.args.len() >= 2
+        && let (Some(syn::GenericArgument::Type(ok_ty)), Some(syn::GenericArgument::Type(err_ty))) =
+            (args.args.first(), args.args.get(1))
+    {
         // Get the last segment (Result) to check for generics
-        if let Some(segment) = path.segments.last()
-            && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-            && args.args.len() >= 2
-            && let (
-                Some(syn::GenericArgument::Type(ok_ty)),
-                Some(syn::GenericArgument::Type(err_ty)),
-            ) = (args.args.first(), args.args.get(1))
-        {
-            // Unwrap Json from Ok type if present
-            let ok_ty_unwrapped = unwrap_json(ok_ty);
-            return Some((ok_ty_unwrapped.clone(), err_ty.clone()));
-        }
+        // Unwrap Json from Ok type if present
+        let ok_ty_unwrapped = unwrap_json(ok_ty);
+        return Some((ok_ty_unwrapped.clone(), err_ty.clone()));
     }
     None
 }
@@ -74,38 +67,15 @@ fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
 /// Returns the error type E and a default status code (400)
 fn extract_status_code_tuple(err_ty: &Type) -> Option<(u16, Type)> {
     if let Type::Tuple(tuple) = err_ty
-        && tuple.elems.len() == 2
-        && let Type::Path(type_path) = &tuple.elems[0]
-        && !&type_path.path.segments.is_empty()
+        && tuple
+            .elems
+            .iter()
+            .any(|ty| is_keyword_type(ty, &KeywordType::StatusCode))
     {
-        let path = &type_path.path;
-        let segment = &path.segments[0];
-        // Check if it's StatusCode (could be qualified like axum::http::StatusCode)
-        let is_status_code = segment.ident == "StatusCode"
-            || (path.segments.len() > 1 && path.segments.iter().any(|s| s.ident == "StatusCode"));
-
-        if is_status_code {
-            // Use 400 as default status code
-            // The actual status code value is determined at runtime
-            if let Some(error_type) = tuple.elems.get(1) {
-                // Unwrap Json if present
-                let error_type_unwrapped = unwrap_json(error_type);
-                return Some((400, error_type_unwrapped.clone()));
-            }
-        }
+        Some((400, unwrap_json(tuple.elems.last().unwrap()).clone()))
+    } else {
+        None
     }
-    None
-}
-
-fn is_header_map_type(ty: &Type) -> bool {
-    if let Type::Path(type_path) = ty {
-        let path = &type_path.path;
-        if path.segments.is_empty() {
-            return false;
-        }
-        return path.segments.iter().any(|s| s.ident == "HeaderMap");
-    }
-    false
 }
 
 /// Extract payload type from an Ok tuple and track if headers exist.
@@ -114,10 +84,13 @@ fn is_header_map_type(ty: &Type) -> bool {
 fn extract_ok_payload_and_headers(ok_ty: &Type) -> (Type, Option<HashMap<String, Header>>) {
     if let Type::Tuple(tuple) = ok_ty {
         let payload_ty = tuple.elems.last().map(|ty| unwrap_json(ty).clone());
-        let has_headers = tuple.elems.iter().any(is_header_map_type);
 
         if let Some(payload_ty) = payload_ty {
-            let headers = if has_headers {
+            let headers = if tuple
+                .elems
+                .iter()
+                .any(|ty| is_keyword_type(ty, &KeywordType::HeaderMap))
+            {
                 Some(HashMap::new())
             } else {
                 None
@@ -274,275 +247,195 @@ mod tests {
     use std::collections::HashMap;
     use vespera_core::schema::{SchemaRef, SchemaType};
 
-    #[rstest]
-    #[case("", "")] // No return type
-    #[case("-> String", "String")] // Simple return type
-    #[case("-> i32", "i32")] // Integer return type
-    #[case("-> bool", "bool")] // Boolean return type
-    #[case("-> Vec<String>", "Vec<String>")] // Array return type
-    #[case("-> Option<String>", "Option<String>")] // Option return type
-    #[case("-> Result<String, String>", "Result<String, String>")] // Result with same types
-    #[case("-> Result<i32, String>", "Result<i32, String>")] // Result with different types
-    #[case("-> Result<Json<User>, String>", "Result<Json<User>, String>")] // Result with Json wrapper
-    #[case(
-        "-> Result<String, (StatusCode, String)>",
-        "Result<String, (StatusCode, String)>"
-    )] // Result with status code tuple
-    #[case("-> &str", "&str")] // Reference return type
-    #[case("-> Result<&str, String>", "Result<&str, String>")] // Result with reference
-    fn test_parse_return_type(#[case] return_type_str: &str, #[case] expected_type: &str) {
-        let known_schemas = HashMap::new();
-        let struct_definitions = HashMap::new();
+    #[derive(Debug)]
+    struct ExpectedSchema {
+        schema_type: SchemaType,
+        nullable: bool,
+        items_schema_type: Option<SchemaType>,
+    }
 
-        let return_type = if return_type_str.is_empty() {
+    #[derive(Debug)]
+    struct ExpectedResponse {
+        status: &'static str,
+        schema: ExpectedSchema,
+    }
+
+    fn parse_return_type_str(return_type_str: &str) -> syn::ReturnType {
+        if return_type_str.is_empty() {
             syn::ReturnType::Default
         } else {
-            // Parse the return type from string
             let full_signature = format!("fn test() {}", return_type_str);
-            let parsed: syn::Signature =
-                syn::parse_str(&full_signature).expect("Failed to parse return type");
-            parsed.output
-        };
+            syn::parse_str::<syn::Signature>(&full_signature)
+                .expect("Failed to parse return type")
+                .output
+        }
+    }
+
+    fn assert_schema_matches(schema_ref: &SchemaRef, expected: &ExpectedSchema) {
+        match schema_ref {
+            SchemaRef::Inline(schema) => {
+                assert_eq!(schema.schema_type, Some(expected.schema_type.clone()));
+                assert_eq!(schema.nullable.unwrap_or(false), expected.nullable);
+                if let Some(item_ty) = &expected.items_schema_type {
+                    let items = schema
+                        .items
+                        .as_ref()
+                        .expect("items should be present for array");
+                    match items.as_ref() {
+                        SchemaRef::Inline(item_schema) => {
+                            assert_eq!(item_schema.schema_type, Some(item_ty.clone()));
+                        }
+                        SchemaRef::Ref(_) => panic!("expected inline schema for array items"),
+                    }
+                }
+            }
+            SchemaRef::Ref(_) => panic!("expected inline schema"),
+        }
+    }
+
+    #[rstest]
+    #[case("", None, None, None)]
+    #[case(
+        "-> String",
+        Some(ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None }),
+        None,
+        None
+    )]
+    #[case(
+        "-> &str",
+        Some(ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None }),
+        None,
+        None
+    )]
+    #[case(
+        "-> i32",
+        Some(ExpectedSchema { schema_type: SchemaType::Integer, nullable: false, items_schema_type: None }),
+        None,
+        None
+    )]
+    #[case(
+        "-> bool",
+        Some(ExpectedSchema { schema_type: SchemaType::Boolean, nullable: false, items_schema_type: None }),
+        None,
+        None
+    )]
+    #[case(
+        "-> Vec<String>",
+        Some(ExpectedSchema { schema_type: SchemaType::Array, nullable: false, items_schema_type: Some(SchemaType::String) }),
+        None,
+        None
+    )]
+    #[case(
+        "-> Option<String>",
+        Some(ExpectedSchema { schema_type: SchemaType::String, nullable: true, items_schema_type: None }),
+        None,
+        None
+    )]
+    #[case(
+        "-> Result<String, String>",
+        Some(ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None }),
+        Some(ExpectedResponse { status: "400", schema: ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None } }),
+        None
+    )]
+    #[case(
+        "-> Result<i32, String>",
+        Some(ExpectedSchema { schema_type: SchemaType::Integer, nullable: false, items_schema_type: None }),
+        Some(ExpectedResponse { status: "400", schema: ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None } }),
+        None
+    )]
+    #[case(
+        "-> Result<Json<User>, String>",
+        Some(ExpectedSchema { schema_type: SchemaType::Object, nullable: false, items_schema_type: None }),
+        Some(ExpectedResponse { status: "400", schema: ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None } }),
+        None
+    )]
+    #[case(
+        "-> Result<&str, String>",
+        Some(ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None }),
+        Some(ExpectedResponse { status: "400", schema: ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None } }),
+        None
+    )]
+    #[case(
+        "-> Result<String, (StatusCode, String)>",
+        Some(ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None }),
+        Some(ExpectedResponse { status: "400", schema: ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None } }),
+        None
+    )]
+    #[case(
+        "-> Result<String, (StatusCode, Json<String>)>",
+        Some(ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None }),
+        Some(ExpectedResponse { status: "400", schema: ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None } }),
+        None
+    )]
+    #[case(
+        "-> Result<(HeaderMap<String, String>, Json<i32>), String>",
+        Some(ExpectedSchema { schema_type: SchemaType::Integer, nullable: false, items_schema_type: None }),
+        Some(ExpectedResponse { status: "400", schema: ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None } }),
+        Some(true)
+    )]
+    #[case(
+        "-> Result<String, (axum::http::StatusCode, Json<i32>)>",
+        Some(ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None }),
+        Some(ExpectedResponse { status: "400", schema: ExpectedSchema { schema_type: SchemaType::Integer, nullable: false, items_schema_type: None } }),
+        None
+    )]
+    fn test_parse_return_type(
+        #[case] return_type_str: &str,
+        #[case] ok_expectation: Option<ExpectedSchema>,
+        #[case] err_expectation: Option<ExpectedResponse>,
+        #[case] ok_headers_expected: Option<bool>,
+    ) {
+        let known_schemas = HashMap::new();
+        let struct_definitions = HashMap::new();
+        let return_type = parse_return_type_str(return_type_str);
 
         let responses = parse_return_type(&return_type, &known_schemas, &struct_definitions);
 
-        match expected_type {
-            "" => {
-                // ReturnType::Default - should have 200 with no content
-                assert_eq!(responses.len(), 1);
-                assert!(responses.contains_key("200"));
-                let response = responses.get("200").unwrap();
-                assert_eq!(response.description, "Successful response");
-                assert!(response.content.is_none());
+        // Validate success response
+        let ok_response = responses.get("200").expect("200 response should exist");
+        assert_eq!(ok_response.description, "Successful response");
+        match &ok_expectation {
+            None => {
+                assert!(ok_response.content.is_none());
             }
-            "String" | "&str" => {
-                // String return type - should have 200 with String schema
-                assert_eq!(responses.len(), 1);
-                assert!(responses.contains_key("200"));
-                let response = responses.get("200").unwrap();
-                assert_eq!(response.description, "Successful response");
-                assert!(response.content.is_some());
-                let content = response.content.as_ref().unwrap();
-                assert!(content.contains_key("application/json"));
-                let media_type = content.get("application/json").unwrap();
-                if let SchemaRef::Inline(schema) = media_type.schema.as_ref().unwrap() {
-                    assert_eq!(schema.schema_type, Some(SchemaType::String));
-                } else {
-                    panic!("Expected inline String schema");
-                }
+            Some(expected_schema) => {
+                let content = ok_response
+                    .content
+                    .as_ref()
+                    .expect("ok content should exist");
+                let media_type = content
+                    .get("application/json")
+                    .expect("ok media type should exist");
+                let schema_ref = media_type.schema.as_ref().expect("ok schema should exist");
+                assert_schema_matches(schema_ref, expected_schema);
             }
-            "i32" => {
-                // Integer return type - should have 200 with Integer schema
-                assert_eq!(responses.len(), 1);
-                assert!(responses.contains_key("200"));
-                let response = responses.get("200").unwrap();
-                assert_eq!(response.description, "Successful response");
-                assert!(response.content.is_some());
-                let content = response.content.as_ref().unwrap();
-                assert!(content.contains_key("application/json"));
-                let media_type = content.get("application/json").unwrap();
-                if let SchemaRef::Inline(schema) = media_type.schema.as_ref().unwrap() {
-                    assert_eq!(schema.schema_type, Some(SchemaType::Integer));
-                } else {
-                    panic!("Expected inline Integer schema");
-                }
-            }
-            "bool" => {
-                // Boolean return type - should have 200 with Boolean schema
-                assert_eq!(responses.len(), 1);
-                assert!(responses.contains_key("200"));
-                let response = responses.get("200").unwrap();
-                assert_eq!(response.description, "Successful response");
-                assert!(response.content.is_some());
-                let content = response.content.as_ref().unwrap();
-                assert!(content.contains_key("application/json"));
-                let media_type = content.get("application/json").unwrap();
-                if let SchemaRef::Inline(schema) = media_type.schema.as_ref().unwrap() {
-                    assert_eq!(schema.schema_type, Some(SchemaType::Boolean));
-                } else {
-                    panic!("Expected inline Boolean schema");
-                }
-            }
-            "Vec<String>" => {
-                // Array return type - should have 200 with Array schema
-                assert_eq!(responses.len(), 1);
-                assert!(responses.contains_key("200"));
-                let response = responses.get("200").unwrap();
-                assert_eq!(response.description, "Successful response");
-                assert!(response.content.is_some());
-                let content = response.content.as_ref().unwrap();
-                assert!(content.contains_key("application/json"));
-                let media_type = content.get("application/json").unwrap();
-                if let SchemaRef::Inline(schema) = media_type.schema.as_ref().unwrap() {
-                    assert_eq!(schema.schema_type, Some(SchemaType::Array));
-                    assert!(schema.items.is_some());
-                    // Check that items is String
-                    if let Some(items) = &schema.items
-                        && let SchemaRef::Inline(items_schema) = items.as_ref()
-                    {
-                        assert_eq!(items_schema.schema_type, Some(SchemaType::String));
-                    }
-                } else {
-                    panic!("Expected inline Array schema");
-                }
-            }
-            "Option<String>" => {
-                // Option return type - should have 200 with nullable String schema
-                assert_eq!(responses.len(), 1);
-                assert!(responses.contains_key("200"));
-                let response = responses.get("200").unwrap();
-                assert_eq!(response.description, "Successful response");
-                assert!(response.content.is_some());
-                let content = response.content.as_ref().unwrap();
-                assert!(content.contains_key("application/json"));
-                let media_type = content.get("application/json").unwrap();
-                if let SchemaRef::Inline(schema) = media_type.schema.as_ref().unwrap() {
-                    assert_eq!(schema.nullable, Some(true));
-                    assert_eq!(schema.schema_type, Some(SchemaType::String));
-                } else {
-                    panic!("Expected inline nullable String schema");
-                }
-            }
-            "Result<String, String>" => {
-                // Result types - should have 200 for Ok and 400 for Err
+        }
+        if let Some(expect_headers) = ok_headers_expected {
+            assert_eq!(ok_response.headers.is_some(), expect_headers);
+        }
+
+        // Validate error response (if any)
+        match &err_expectation {
+            None => assert_eq!(responses.len(), 1),
+            Some(err) => {
                 assert_eq!(responses.len(), 2);
-                assert!(responses.contains_key("200"));
-                assert!(responses.contains_key("400"));
-
-                let ok_response = responses.get("200").unwrap();
-                assert_eq!(ok_response.description, "Successful response");
-                assert!(ok_response.content.is_some());
-                let ok_content = ok_response.content.as_ref().unwrap();
-                let ok_media_type = ok_content.get("application/json").unwrap();
-                if let SchemaRef::Inline(schema) = ok_media_type.schema.as_ref().unwrap() {
-                    assert_eq!(schema.schema_type, Some(SchemaType::String));
-                } else {
-                    panic!("Expected inline String schema for Ok type");
-                }
-
-                let err_response = responses.get("400").unwrap();
+                let err_response = responses
+                    .get(err.status)
+                    .expect("error response should exist");
                 assert_eq!(err_response.description, "Error response");
-                assert!(err_response.content.is_some());
-                let err_content = err_response.content.as_ref().unwrap();
-                let err_media_type = err_content.get("application/json").unwrap();
-                if let SchemaRef::Inline(schema) = err_media_type.schema.as_ref().unwrap() {
-                    assert_eq!(schema.schema_type, Some(SchemaType::String));
-                } else {
-                    panic!("Expected inline String schema for Err type");
-                }
+                let content = err_response
+                    .content
+                    .as_ref()
+                    .expect("error content should exist");
+                let media_type = content
+                    .get("application/json")
+                    .expect("error media type should exist");
+                let schema_ref = media_type
+                    .schema
+                    .as_ref()
+                    .expect("error schema should exist");
+                assert_schema_matches(schema_ref, &err.schema);
             }
-            "Result<i32, String>" => {
-                // Result types - should have 200 for Ok and 400 for Err
-                assert_eq!(responses.len(), 2);
-                assert!(responses.contains_key("200"));
-                assert!(responses.contains_key("400"));
-
-                let ok_response = responses.get("200").unwrap();
-                assert_eq!(ok_response.description, "Successful response");
-                assert!(ok_response.content.is_some());
-                let ok_content = ok_response.content.as_ref().unwrap();
-                let ok_media_type = ok_content.get("application/json").unwrap();
-                if let SchemaRef::Inline(schema) = ok_media_type.schema.as_ref().unwrap() {
-                    assert_eq!(schema.schema_type, Some(SchemaType::Integer));
-                } else {
-                    panic!("Expected inline Integer schema for Ok type");
-                }
-
-                let err_response = responses.get("400").unwrap();
-                assert_eq!(err_response.description, "Error response");
-                assert!(err_response.content.is_some());
-                let err_content = err_response.content.as_ref().unwrap();
-                let err_media_type = err_content.get("application/json").unwrap();
-                if let SchemaRef::Inline(schema) = err_media_type.schema.as_ref().unwrap() {
-                    assert_eq!(schema.schema_type, Some(SchemaType::String));
-                } else {
-                    panic!("Expected inline String schema for Err type");
-                }
-            }
-            "Result<Json<User>, String>" => {
-                // Result with Json wrapper - should unwrap Json
-                assert_eq!(responses.len(), 2);
-                assert!(responses.contains_key("200"));
-                assert!(responses.contains_key("400"));
-
-                let ok_response = responses.get("200").unwrap();
-                assert_eq!(ok_response.description, "Successful response");
-                assert!(ok_response.content.is_some());
-                // User is not in known_schemas, so it should be an object schema
-                let ok_content = ok_response.content.as_ref().unwrap();
-                let ok_media_type = ok_content.get("application/json").unwrap();
-                if let SchemaRef::Inline(schema) = ok_media_type.schema.as_ref().unwrap() {
-                    assert_eq!(schema.schema_type, Some(SchemaType::Object));
-                } else {
-                    panic!("Expected inline Object schema for User type");
-                }
-
-                let err_response = responses.get("400").unwrap();
-                assert_eq!(err_response.description, "Error response");
-                assert!(err_response.content.is_some());
-                let err_content = err_response.content.as_ref().unwrap();
-                let err_media_type = err_content.get("application/json").unwrap();
-                if let SchemaRef::Inline(schema) = err_media_type.schema.as_ref().unwrap() {
-                    assert_eq!(schema.schema_type, Some(SchemaType::String));
-                } else {
-                    panic!("Expected inline String schema for Err type");
-                }
-            }
-            "Result<&str, String>" => {
-                // Result with reference - should handle reference correctly
-                assert_eq!(responses.len(), 2);
-                assert!(responses.contains_key("200"));
-                assert!(responses.contains_key("400"));
-
-                let ok_response = responses.get("200").unwrap();
-                assert_eq!(ok_response.description, "Successful response");
-                assert!(ok_response.content.is_some());
-                let ok_content = ok_response.content.as_ref().unwrap();
-                let ok_media_type = ok_content.get("application/json").unwrap();
-                if let SchemaRef::Inline(schema) = ok_media_type.schema.as_ref().unwrap() {
-                    assert_eq!(schema.schema_type, Some(SchemaType::String));
-                } else {
-                    panic!("Expected inline String schema for &str type");
-                }
-
-                let err_response = responses.get("400").unwrap();
-                assert_eq!(err_response.description, "Error response");
-                assert!(err_response.content.is_some());
-                let err_content = err_response.content.as_ref().unwrap();
-                let err_media_type = err_content.get("application/json").unwrap();
-                if let SchemaRef::Inline(schema) = err_media_type.schema.as_ref().unwrap() {
-                    assert_eq!(schema.schema_type, Some(SchemaType::String));
-                } else {
-                    panic!("Expected inline String schema for Err type");
-                }
-            }
-            "Result<String, (StatusCode, String)>" => {
-                // Result with status code tuple - should use status code from tuple
-                assert_eq!(responses.len(), 2);
-                assert!(responses.contains_key("200"));
-                assert!(responses.contains_key("400")); // Default status code from tuple
-
-                let ok_response = responses.get("200").unwrap();
-                assert_eq!(ok_response.description, "Successful response");
-                let ok_content = ok_response.content.as_ref().unwrap();
-                let ok_media_type = ok_content.get("application/json").unwrap();
-                if let SchemaRef::Inline(schema) = ok_media_type.schema.as_ref().unwrap() {
-                    assert_eq!(schema.schema_type, Some(SchemaType::String));
-                } else {
-                    panic!("Expected inline String schema for Ok type");
-                }
-
-                let err_response = responses.get("400").unwrap();
-                assert_eq!(err_response.description, "Error response");
-                let err_content = err_response.content.as_ref().unwrap();
-                let err_media_type = err_content.get("application/json").unwrap();
-                if let SchemaRef::Inline(schema) = err_media_type.schema.as_ref().unwrap() {
-                    assert_eq!(schema.schema_type, Some(SchemaType::String));
-                } else {
-                    panic!("Expected inline String schema for Err type");
-                }
-            }
-            _ => panic!("Unexpected test case"),
         }
     }
 }
