@@ -460,10 +460,9 @@ fn parse_query_struct_to_parameters(
 mod tests {
     use super::*;
     use rstest::rstest;
-    use serial_test::serial;
     use std::collections::HashMap;
     use vespera_core::route::ParameterLocation;
-    use insta::assert_debug_snapshot;
+    use insta::{assert_debug_snapshot, with_settings};
 
     fn setup_test_data(func_src: &str) -> (HashMap<String, String>, HashMap<String, String>) {
         let mut struct_definitions = HashMap::new();
@@ -502,17 +501,20 @@ mod tests {
     #[case(
         "fn test(params: Path<(String, i32)>) {}",
         vec!["user_id".to_string(), "count".to_string()],
-        vec![vec![ParameterLocation::Path, ParameterLocation::Path]]
+        vec![vec![ParameterLocation::Path, ParameterLocation::Path]],
+        "path_tuple"
     )]
     #[case(
         "fn show(Path(id): Path<i32>) {}",
         vec!["item_id".to_string()],
-        vec![vec![ParameterLocation::Path]]
+        vec![vec![ParameterLocation::Path]],
+        "path_single"
     )]
     #[case(
         "fn test(Query(params): Query<HashMap<String, String>>) {}",
         vec![],
-        vec![vec![]]
+        vec![vec![]],
+        "query_hashmap"
     )]
     #[case(
         "fn test(TypedHeader(user_agent): TypedHeader<UserAgent>, count: i32) {}",
@@ -520,7 +522,8 @@ mod tests {
         vec![
             vec![ParameterLocation::Header],
             vec![],
-        ]
+        ],
+        "typed_header_and_arg"
     )]
     #[case(
         "fn test(TypedHeader(user_agent): TypedHeader<UserAgent>, content_type: Option<TypedHeader<ContentType>>, authorization: Option<TypedHeader<Authorization<Bearer>>>) {}",
@@ -529,7 +532,8 @@ mod tests {
             vec![ParameterLocation::Header],
             vec![ParameterLocation::Header],
             vec![ParameterLocation::Header],
-        ]
+        ],
+        "typed_header_multi"
     )]
     #[case(
         "fn test(user_agent: TypedHeader<UserAgent>, count: i32) {}",
@@ -537,7 +541,8 @@ mod tests {
         vec![
             vec![ParameterLocation::Header],
             vec![],
-        ]
+        ],
+        "header_value_and_arg"
     )]
     #[case(
         "fn test(&self, id: i32) {}",
@@ -545,48 +550,56 @@ mod tests {
         vec![
             vec![],
             vec![],
-        ]
+        ],
+        "method_receiver"
     )]
     #[case(
         "fn test(Path((a, b)): Path<(i32, String)>) {}",
         vec![],
-        vec![vec![]]
+        vec![vec![]],
+        "path_tuple_destructure"
     )]
     #[case(
         "fn test(params: Query<QueryParams>) {}",
         vec![],
-        vec![vec![ParameterLocation::Query, ParameterLocation::Query]]
+        vec![vec![ParameterLocation::Query, ParameterLocation::Query]],
+        "query_struct"
     )]
     #[case(
         "fn test(body: Json<User>) {}",
         vec![],
-        vec![vec![]]
+        vec![vec![]],
+        "json_body"
     )]
     #[case(
         "fn test(params: Query<UnknownType>) {}",
         vec![],
-        vec![vec![]]
+        vec![vec![]],
+        "query_unknown"
     )]
     #[case(
         "fn test(params: Query<BTreeMap<String, String>>) {}",
         vec![],
-        vec![vec![]]
+        vec![vec![]],
+        "query_map"
     )]
     #[case(
         "fn test(user: Query<User>) {}",
         vec![],
-        vec![vec![ParameterLocation::Query, ParameterLocation::Query]]
+        vec![vec![ParameterLocation::Query, ParameterLocation::Query]],
+        "query_user"
     )]
     #[case(
         "fn test(custom: Header<CustomHeader>) {}",
         vec![],
-        vec![vec![ParameterLocation::Header]]
+        vec![vec![ParameterLocation::Header]],
+        "header_custom"
     )]
-    #[serial]
     fn test_parse_function_parameter_cases(
         #[case] func_src: &str,
         #[case] path_params: Vec<String>,
         #[case] expected_locations: Vec<Vec<ParameterLocation>>,
+        #[case] suffix: &str,
     ) {
         let func: syn::ItemFn = syn::parse_str(func_src).unwrap();
         let (known_schemas, struct_definitions) = setup_test_data(func_src);
@@ -621,7 +634,9 @@ mod tests {
             );
             parameters.extend(params.clone());
         }
-        assert_debug_snapshot!(parameters);
+        with_settings!({ snapshot_suffix => format!("params_{}", suffix) }, {
+            assert_debug_snapshot!(parameters);
+        });
     }
 
     #[rstest]

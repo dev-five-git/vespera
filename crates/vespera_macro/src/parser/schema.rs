@@ -700,7 +700,7 @@ mod tests {
     use rstest::rstest;
     use std::collections::HashMap;
     use vespera_core::schema::{SchemaRef, SchemaType};
-    use insta::assert_debug_snapshot;
+    use insta::{assert_debug_snapshot, with_settings};
 
     #[rstest]
     #[case("HashMap<String, i32>", Some(SchemaType::Object), true)]
@@ -736,7 +736,8 @@ mod tests {
         }
         "#,
         SchemaType::String,
-        vec!["ok-status", "ErrorCode"] // rename_all is not applied in this path
+        vec!["ok-status", "ErrorCode"], // rename_all is not applied in this path
+        "status"
     )]
     #[case(
         r#"
@@ -746,7 +747,8 @@ mod tests {
         }
         "#,
         SchemaType::String,
-        vec!["First", "Second"]
+        vec!["First", "Second"],
+        "simple"
     )]
     #[case(
         r#"
@@ -757,12 +759,14 @@ mod tests {
         }
         "#,
         SchemaType::String,
-        vec!["first_item", "second_item"]
+        vec!["first_item", "second_item"],
+        "simple_snake"
     )]
     fn test_parse_enum_to_schema_unit_variants(
         #[case] enum_src: &str,
         #[case] expected_type: SchemaType,
         #[case] expected_enum: Vec<&str>,
+        #[case] suffix: &str,
     ) {
         let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
         let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
@@ -774,7 +778,9 @@ mod tests {
             .map(|v| v.as_str().unwrap().to_string())
             .collect::<Vec<_>>();
         assert_eq!(got, expected_enum);
-        assert_debug_snapshot!(schema);
+        with_settings!({ snapshot_suffix => format!("unit_{}", suffix) }, {
+            assert_debug_snapshot!(schema);
+        });
     }
 
     #[rstest]
@@ -786,7 +792,8 @@ mod tests {
         "#,
         1,
         Some(SchemaType::String),
-        0 // single-field tuple variant stored as object with inline schema
+        0, // single-field tuple variant stored as object with inline schema
+        "tuple_single"
     )]
     #[case(
         r#"
@@ -796,7 +803,8 @@ mod tests {
         "#,
         1,
         Some(SchemaType::Array),
-        2 // tuple array prefix_items length
+        2, // tuple array prefix_items length
+        "tuple_multi"
     )]
     #[case(
         r#"
@@ -806,20 +814,22 @@ mod tests {
         "#,
         1,
         Some(SchemaType::Object),
-        0 // not an array; ignore prefix_items length
+        0, // not an array; ignore prefix_items length
+        "named_object"
     )]
     fn test_parse_enum_to_schema_tuple_and_named_variants(
         #[case] enum_src: &str,
         #[case] expected_one_of_len: usize,
         #[case] expected_inner_type: Option<SchemaType>,
         #[case] expected_prefix_items_len: usize,
+        #[case] suffix: &str,
     ) {
         let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
         let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
         let one_of = schema.clone().one_of.expect("one_of missing");
         assert_eq!(one_of.len(), expected_one_of_len);
 
-        if let Some(inner_expected) = expected_inner_type {
+        if let Some(inner_expected) = expected_inner_type.clone() {
             if let SchemaRef::Inline(obj) = &one_of[0] {
                 let props = obj.properties.as_ref().expect("props missing");
                 // take first property value
@@ -856,7 +866,42 @@ mod tests {
             }
         }
 
-        assert_debug_snapshot!(schema);
+        with_settings!({ snapshot_suffix => format!("tuple_named_{}", suffix) }, {
+            assert_debug_snapshot!(schema);
+        });
+    }
+
+    #[rstest]
+    #[case(
+        r#"
+        enum Mixed {
+            Ready,
+            Data(String),
+        }
+        "#,
+        2,
+        SchemaType::String,
+        "Ready"
+    )]
+    fn test_parse_enum_to_schema_mixed_unit_variant(
+        #[case] enum_src: &str,
+        #[case] expected_one_of_len: usize,
+        #[case] expected_unit_type: SchemaType,
+        #[case] expected_unit_value: &str,
+    ) {
+        let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
+
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let one_of = schema.one_of.expect("one_of missing for mixed enum");
+        assert_eq!(one_of.len(), expected_one_of_len);
+
+        let unit_schema = match &one_of[0] {
+            SchemaRef::Inline(s) => s,
+            _ => panic!("Expected inline schema for unit variant"),
+        };
+        assert_eq!(unit_schema.schema_type, Some(expected_unit_type));
+        let unit_enum = unit_schema.r#enum.as_ref().expect("enum values missing");
+        assert_eq!(unit_enum[0].as_str().unwrap(), expected_unit_value);
     }
 
     #[test]
@@ -876,6 +921,16 @@ mod tests {
         assert!(props.contains_key("name"));
         assert!(schema.required.as_ref().unwrap().contains(&"id".to_string()));
         assert!(!schema.required.as_ref().unwrap().contains(&"name".to_string()));
+    }
+
+    #[rstest]
+    #[case("struct Wrapper(i32);")]
+    #[case("struct Empty;")]
+    fn test_parse_struct_to_schema_tuple_and_unit_structs(#[case] struct_src: &str) {
+        let struct_item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
+        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        assert!(schema.properties.is_none());
+        assert!(schema.required.is_none());
     }
 
     #[test]
@@ -940,6 +995,71 @@ mod tests {
             }
         } else {
             panic!("Expected inline schema for generic substitution");
+        }
+    }
+
+    #[rstest]
+    #[case("$invalid", "String")]
+    fn test_substitute_type_parse_failure_uses_original(
+        #[case] invalid: &str,
+        #[case] concrete_src: &str,
+    ) {
+        use proc_macro2::TokenStream;
+        use std::str::FromStr;
+
+        let ty = Type::Verbatim(TokenStream::from_str(invalid).unwrap());
+        let concrete: Type = syn::parse_str(concrete_src).unwrap();
+        let substituted = substitute_type(&ty, &[String::from("T")], &[&concrete]);
+        assert_eq!(substituted, ty);
+    }
+
+    #[rstest]
+    #[case("&i32")]
+    #[case("std::string::String")]
+    fn test_is_primitive_type_non_path_variants(#[case] ty_src: &str) {
+        let ty: Type = syn::parse_str(ty_src).unwrap();
+        assert!(!is_primitive_type(&ty));
+    }
+
+    #[rstest]
+    #[case("HashMap<String, Value>", true, None, Some("#/components/schemas/Value"))]
+    #[case("Result<String, i32>", false, Some(SchemaType::Object), None)]
+    #[case("crate::Value", false, None, None)]
+    #[case("(i32, bool)", false, Some(SchemaType::Object), None)]
+    fn test_parse_type_to_schema_ref_additional_cases(
+        #[case] ty_src: &str,
+        #[case] expect_additional_props: bool,
+        #[case] expected_type: Option<SchemaType>,
+        #[case] expected_ref: Option<&str>,
+    ) {
+        let mut known_schemas = HashMap::new();
+        known_schemas.insert("Value".to_string(), "Value".to_string());
+
+        let ty: Type = syn::parse_str(ty_src).unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &HashMap::new());
+        match expected_ref {
+            Some(expected) => {
+                let SchemaRef::Inline(schema) = schema_ref else {
+                    panic!("Expected inline schema for {}", ty_src);
+                };
+                let additional = schema
+                    .additional_properties
+                    .as_ref()
+                    .expect("additional_properties missing");
+                assert_eq!(additional.get("$ref").unwrap(), expected);
+            }
+            None => match schema_ref {
+                SchemaRef::Inline(schema) => {
+                    if expect_additional_props {
+                        assert!(schema.additional_properties.is_some());
+                    } else {
+                        assert_eq!(schema.schema_type, expected_type);
+                    }
+                }
+                SchemaRef::Ref(_) => {
+                    assert!(ty_src.contains("Value"));
+                }
+            },
         }
     }
 

@@ -90,24 +90,28 @@ pub fn parse_request_body(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use insta::assert_debug_snapshot;
+    use insta::{assert_debug_snapshot, with_settings};
     use rstest::rstest;
-    use serial_test::serial;
     use std::collections::HashMap;
     use vespera_core::schema::{SchemaRef, SchemaType};
 
     #[rstest]
-    #[case::json("fn test(Json(payload): Json<User>) {}", true)]
-    #[case::string("fn test(just_string: String) {}", true)]
-    #[case::str("fn test(just_str: &str) {}", true)]
-    #[case::i32("fn test(just_i32: i32) {}", false)]
-    #[serial]
-    fn test_parse_request_body_cases(#[case] func_src: &str, #[case] has_body: bool) {
+    #[case::json("fn test(Json(payload): Json<User>) {}", true, "json")]
+    #[case::string("fn test(just_string: String) {}", true, "string")]
+    #[case::str("fn test(just_str: &str) {}", true, "str")]
+    #[case::i32("fn test(just_i32: i32) {}", false, "i32")]
+    fn test_parse_request_body_cases(
+        #[case] func_src: &str,
+        #[case] has_body: bool,
+        #[case] suffix: &str,
+    ) {
         let func: syn::ItemFn = syn::parse_str(func_src).unwrap();
         let arg = func.sig.inputs.first().unwrap();
         let body = parse_request_body(arg, &HashMap::new(), &HashMap::new());
         assert_eq!(body.is_some(), has_body);
-        assert_debug_snapshot!(body);
+        with_settings!({ snapshot_suffix => format!("req_body_{}", suffix) }, {
+            assert_debug_snapshot!(body);
+        });
     }
 
     #[test]
