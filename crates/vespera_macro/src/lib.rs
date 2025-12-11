@@ -248,7 +248,13 @@ pub fn vespera(input: TokenStream) -> TokenStream {
             }
         };
         for openapi_file_name in &openapi_file_names {
-            if let Err(e) = std::fs::write(openapi_file_name, &json_str) {
+            // create directory if not exists
+            let file_path = Path::new(openapi_file_name);
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent).expect("Failed to create parent directory");
+            }
+
+            if let Err(e) = std::fs::write(file_path, &json_str) {
                 return syn::Error::new(
                     Span::call_site(),
                     format!(
