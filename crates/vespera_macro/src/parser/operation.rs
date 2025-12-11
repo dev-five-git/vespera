@@ -263,26 +263,231 @@ pub fn build_operation_from_function(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use std::collections::HashMap;
     use vespera_core::schema::{SchemaRef, SchemaType};
 
-    #[test]
-    fn test_build_operation_string_body_fallback() {
-        let sig: syn::Signature = syn::parse_str("fn upload(data: String) -> String").unwrap();
-        let op =
-            build_operation_from_function(&sig, "/upload", &HashMap::new(), &HashMap::new(), None);
-
-        // Ensure body is set as text/plain
-        let body = op.request_body.as_ref().expect("request body expected");
-        assert!(body.content.contains_key("text/plain"));
-        let media = body.content.get("text/plain").unwrap();
-        if let SchemaRef::Inline(schema) = media.schema.as_ref().unwrap() {
-            assert_eq!(schema.schema_type, Some(SchemaType::String));
-        } else {
-            panic!("inline string schema expected");
+    fn param_schema_type(param: &Parameter) -> Option<SchemaType> {
+        match param.schema.as_ref()? {
+            SchemaRef::Inline(schema) => schema.schema_type.clone(),
+            SchemaRef::Ref(_) => None,
         }
+    }
 
-        // No parameters should be present
-        assert!(op.parameters.is_none());
+    fn build(sig_src: &str, path: &str, error_status: Option<&[u16]>) -> Operation {
+        let sig: syn::Signature = syn::parse_str(sig_src).expect("signature parse failed");
+        build_operation_from_function(&sig, path, &HashMap::new(), &HashMap::new(), error_status)
+    }
+
+    #[derive(Clone, Debug)]
+    struct ExpectedParam {
+        name: &'static str,
+        schema: Option<SchemaType>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct ExpectedBody {
+        content_type: &'static str,
+        schema: Option<SchemaType>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct ExpectedResp {
+        status: &'static str,
+        schema: Option<SchemaType>,
+    }
+
+    fn assert_body(op: &Operation, expected: &Option<ExpectedBody>) {
+        match expected {
+            None => assert!(op.request_body.is_none()),
+            Some(exp) => {
+                let body = op.request_body.as_ref().expect("request body expected");
+                let media = body.content.get(exp.content_type).or_else(|| {
+                    // allow fallback to the only available content type if expected is absent
+                    if body.content.len() == 1 {
+                        body.content.values().next()
+                    } else {
+                        None
+                    }
+                }).expect("expected content type");
+                if let Some(schema_ty) = &exp.schema {
+                    match media.schema.as_ref().expect("schema expected") {
+                        SchemaRef::Inline(schema) => {
+                            assert_eq!(schema.schema_type, Some(schema_ty.clone()));
+                        }
+                        SchemaRef::Ref(_) => panic!("expected inline schema"),
+                    }
+                }
+            }
+        }
+    }
+
+    fn assert_params(op: &Operation, expected: &[ExpectedParam]) {
+        match op.parameters.as_ref() {
+            None => assert!(expected.is_empty()),
+            Some(params) => {
+                assert_eq!(params.len(), expected.len());
+                for (param, exp) in params.iter().zip(expected) {
+                    assert_eq!(param.name, exp.name);
+                    assert_eq!(param_schema_type(param), exp.schema);
+                }
+            }
+        }
+    }
+
+    fn assert_responses(op: &Operation, expected: &[ExpectedResp]) {
+        for exp in expected {
+            let resp = op.responses.get(exp.status).expect("response missing");
+            let media = resp
+                .content
+                .as_ref()
+                .and_then(|c| c.get("application/json"))
+                .or_else(|| resp.content.as_ref().and_then(|c| c.get("text/plain")))
+                .expect("media type missing");
+            if let Some(schema_ty) = &exp.schema {
+                match media.schema.as_ref().expect("schema expected") {
+                    SchemaRef::Inline(schema) => {
+                        assert_eq!(schema.schema_type, Some(schema_ty.clone()));
+                    }
+                    SchemaRef::Ref(_) => panic!("expected inline schema"),
+                }
+            }
+        }
+    }
+
+    #[rstest]
+    #[case(
+        "fn upload(data: String) -> String",
+        "/upload",
+        None::<&[u16]>,
+        vec![],
+        Some(ExpectedBody { content_type: "text/plain", schema: Some(SchemaType::String) }),
+        vec![ExpectedResp { status: "200", schema: Some(SchemaType::String) }]
+    )]
+    #[case(
+        "fn upload_ref(data: &str) -> String",
+        "/upload",
+        None::<&[u16]>,
+        vec![],
+        Some(ExpectedBody { content_type: "text/plain", schema: Some(SchemaType::String) }),
+        vec![ExpectedResp { status: "200", schema: Some(SchemaType::String) }]
+    )]
+    #[case(
+        "fn get(Path(params): Path<(i32,)>) -> String",
+        "/users/{id}/{name}",
+        None::<&[u16]>,
+        vec![
+            ExpectedParam { name: "id", schema: Some(SchemaType::Integer) },
+            ExpectedParam { name: "name", schema: Some(SchemaType::String) },
+        ],
+        None,
+        vec![ExpectedResp { status: "200", schema: Some(SchemaType::String) }]
+    )]
+    #[case(
+        "fn get() -> String",
+        "/items/{item_id}",
+        None::<&[u16]>,
+        vec![ExpectedParam { name: "item_id", schema: Some(SchemaType::String) }],
+        None,
+        vec![ExpectedResp { status: "200", schema: Some(SchemaType::String) }]
+    )]
+    #[case(
+        "fn get(Path(id): Path<String>) -> String",
+        "/shops/{shop_id}/items/{item_id}",
+        None::<&[u16]>,
+        vec![
+            ExpectedParam { name: "shop_id", schema: Some(SchemaType::String) },
+            ExpectedParam { name: "item_id", schema: Some(SchemaType::String) },
+        ],
+        None,
+        vec![ExpectedResp { status: "200", schema: Some(SchemaType::String) }]
+    )]
+    #[case(
+        "fn create(Json(body): Json<User>) -> Result<String, String>",
+        "/create",
+        None::<&[u16]>,
+        vec![],
+        Some(ExpectedBody { content_type: "application/json", schema: None }),
+        vec![
+            ExpectedResp { status: "200", schema: Some(SchemaType::String) },
+            ExpectedResp { status: "400", schema: Some(SchemaType::String) },
+        ]
+    )]
+    #[case(
+        "fn get(Path(params): Path<(i32,)>) -> String",
+        "/users/{id}/{name}/{extra}",
+        None::<&[u16]>,
+        vec![
+            ExpectedParam { name: "id", schema: Some(SchemaType::Integer) },
+            ExpectedParam { name: "name", schema: Some(SchemaType::String) },
+            ExpectedParam { name: "extra", schema: Some(SchemaType::String) },
+        ],
+        None,
+        vec![ExpectedResp { status: "200", schema: Some(SchemaType::String) }]
+    )]
+    #[case(
+        "fn get() -> String",
+        "/items/{item_id}/extra/{more}",
+        None::<&[u16]>,
+        vec![
+            ExpectedParam { name: "item_id", schema: Some(SchemaType::String) },
+            ExpectedParam { name: "more", schema: Some(SchemaType::String) },
+        ],
+        None,
+        vec![ExpectedResp { status: "200", schema: Some(SchemaType::String) }]
+    )]
+    #[case(
+        "fn post(data: String) -> String",
+        "/post",
+        None::<&[u16]>,
+        vec![],
+        Some(ExpectedBody { content_type: "text/plain", schema: Some(SchemaType::String) }),
+        vec![ExpectedResp { status: "200", schema: Some(SchemaType::String) }]
+    )]
+    #[case(
+        "fn no_error_extra() -> String",
+        "/plain",
+        Some(&[500u16][..]),
+        vec![],
+        None,
+        vec![ExpectedResp { status: "200", schema: Some(SchemaType::String) }]
+    )]
+    #[case(
+        "fn create() -> Result<String, String>",
+        "/create",
+        Some(&[400u16, 500u16][..]),
+        vec![],
+        None,
+        vec![
+            ExpectedResp { status: "200", schema: Some(SchemaType::String) },
+            ExpectedResp { status: "400", schema: Some(SchemaType::String) },
+            ExpectedResp { status: "500", schema: Some(SchemaType::String) },
+        ]
+    )]
+    #[case(
+        "fn create() -> Result<String, String>",
+        "/create",
+        Some(&[401u16, 402u16][..]),
+        vec![],
+        None,
+        vec![
+            ExpectedResp { status: "200", schema: Some(SchemaType::String) },
+            ExpectedResp { status: "400", schema: Some(SchemaType::String) },
+            ExpectedResp { status: "401", schema: Some(SchemaType::String) },
+            ExpectedResp { status: "402", schema: Some(SchemaType::String) },
+        ]
+    )]
+    fn test_build_operation_cases(
+        #[case] sig_src: &str,
+        #[case] path: &str,
+        #[case] extra_status: Option<&[u16]>,
+        #[case] expected_params: Vec<ExpectedParam>,
+        #[case] expected_body: Option<ExpectedBody>,
+        #[case] expected_resps: Vec<ExpectedResp>,
+    ) {
+        let op = build(sig_src, path, extra_status);
+        assert_params(&op, &expected_params);
+        assert_body(&op, &expected_body);
+        assert_responses(&op, &expected_resps);
     }
 }
