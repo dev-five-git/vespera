@@ -47,7 +47,7 @@ jobs:
           echo 'merge_derives = true' >> .rustfmt.toml
           echo 'use_small_heuristics = "Default"' >> .rustfmt.toml
           cargo fmt
-          cargo tarpaulin --out Lcov
+          cargo tarpaulin --out Lcov Stdout
       - name: Upload to codecov.io
         uses: codecov/codecov-action@v5
         with:
