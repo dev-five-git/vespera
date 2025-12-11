@@ -738,6 +738,27 @@ mod tests {
         SchemaType::String,
         vec!["ok-status", "ErrorCode"] // rename_all is not applied in this path
     )]
+    #[case(
+        r#"
+        enum Simple {
+            First,
+            Second,
+        }
+        "#,
+        SchemaType::String,
+        vec!["First", "Second"]
+    )]
+    #[case(
+        r#"
+        #[serde(rename_all = "snake_case")]
+        enum Simple {
+            FirstItem,
+            SecondItem,
+        }
+        "#,
+        SchemaType::String,
+        vec!["first_item", "second_item"]
+    )]
     fn test_parse_enum_to_schema_unit_variants(
         #[case] enum_src: &str,
         #[case] expected_type: SchemaType,
