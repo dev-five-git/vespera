@@ -1,6 +1,0 @@
----
-source: crates/vespera_macro/src/parser/parameters.rs
-assertion_line: 619
-expression: parameters
----
-[]

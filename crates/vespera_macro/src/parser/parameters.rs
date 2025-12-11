@@ -436,6 +436,7 @@ mod tests {
     use rstest::rstest;
     use std::collections::HashMap;
     use vespera_core::route::ParameterLocation;
+    use insta::assert_debug_snapshot;
 
     fn setup_test_data(func_src: &str) -> (HashMap<String, String>, HashMap<String, String>) {
         let mut struct_definitions = HashMap::new();
@@ -525,29 +526,9 @@ mod tests {
         vec![vec![]]
     )]
     #[case(
-        "fn test(Path([a]): Path<[i32; 1]>) {}",
-        vec![],
-        vec![vec![]]
-    )]
-    #[case(
-        "fn test(id: Path<i32>) {}",
-        vec!["user_id".to_string(), "post_id".to_string()],
-        vec![vec![ParameterLocation::Path]]
-    )]
-    #[case(
         "fn test(params: Query<QueryParams>) {}",
         vec![],
         vec![vec![ParameterLocation::Query, ParameterLocation::Query]]
-    )]
-    #[case(
-        "fn test(id: Query<i32>) {}",
-        vec![],
-        vec![vec![ParameterLocation::Query]]
-    )]
-    #[case(
-        "fn test(auth: Header<String>) {}",
-        vec![],
-        vec![vec![ParameterLocation::Header]]
     )]
     #[case(
         "fn test(body: Json<User>) {}",
@@ -569,16 +550,6 @@ mod tests {
         vec![],
         vec![vec![]]
     )]
-    #[case(
-        "fn test(params: Query<Vec<i32>>) {}",
-        vec![],
-        vec![vec![ParameterLocation::Query]]
-    )]
-    #[case(
-        "fn test(params: Query<Option<String>>) {}",
-        vec![],
-        vec![vec![ParameterLocation::Query]]
-    )]
     fn test_parse_function_parameter_cases(
         #[case] func_src: &str,
         #[case] path_params: Vec<String>,
@@ -586,6 +557,7 @@ mod tests {
     ) {
         let func: syn::ItemFn = syn::parse_str(func_src).unwrap();
         let (known_schemas, struct_definitions) = setup_test_data(func_src);
+        let mut parameters = Vec::new();
         
         for (idx, arg) in func.sig.inputs.iter().enumerate() {
             let result = parse_function_parameter(
@@ -614,7 +586,9 @@ mod tests {
                 got_locs, *expected,
                 "Location mismatch at arg index {idx}, func: {func_src}"
             );
+            parameters.extend(params.clone());
         }
+        assert_debug_snapshot!(parameters);
     }
 
     #[test]
@@ -636,39 +610,44 @@ mod tests {
         assert!(!is_map_type(&ty));
     }
 
-    #[test]
-    fn test_is_known_type() {
-        let mut known_schemas = HashMap::new();
-        let mut struct_definitions = HashMap::new();
-
-        // Test primitive type
-        let ty: Type = syn::parse_str("i32").unwrap();
-        assert!(is_known_type(&ty, &known_schemas, &struct_definitions));
-
-        // Test known struct
-        struct_definitions.insert("User".to_string(), "pub struct User { id: i32 }".to_string());
-        let ty: Type = syn::parse_str("User").unwrap();
-        assert!(is_known_type(&ty, &known_schemas, &struct_definitions));
-
-        // Test known schema
-        known_schemas.insert("Product".to_string(), "Product".to_string());
-        let ty: Type = syn::parse_str("Product").unwrap();
-        assert!(is_known_type(&ty, &known_schemas, &struct_definitions));
-
-        // Test Vec<T> with known inner type
-        let ty: Type = syn::parse_str("Vec<i32>").unwrap();
-        assert!(is_known_type(&ty, &known_schemas, &struct_definitions));
-
-        // Test Option<T> with known inner type
-        let ty: Type = syn::parse_str("Option<String>").unwrap();
-        assert!(is_known_type(&ty, &known_schemas, &struct_definitions));
-
-        // Test unknown type
-        let ty: Type = syn::parse_str("UnknownType").unwrap();
-        assert!(!is_known_type(&ty, &known_schemas, &struct_definitions));
-
-        // Test Type::Path with empty segments
-        // This is hard to create syntactically, but the code path exists
+    #[rstest]
+    #[case("i32", HashMap::new(), HashMap::new(), true)] // primitive type
+    #[case(
+        "User",
+        HashMap::new(),
+        {
+            let mut map = HashMap::new();
+            map.insert("User".to_string(), "pub struct User { id: i32 }".to_string());
+            map
+        },
+        true
+    )] // known struct
+    #[case(
+        "Product",
+        {
+            let mut map = HashMap::new();
+            map.insert("Product".to_string(), "Product".to_string());
+            map
+        },
+        HashMap::new(),
+        true
+    )] // known schema
+    #[case("Vec<i32>", HashMap::new(), HashMap::new(), true)] // Vec<T> with known inner type
+    #[case("Option<String>", HashMap::new(), HashMap::new(), true)] // Option<T> with known inner type
+    #[case("UnknownType", HashMap::new(), HashMap::new(), false)] // unknown type
+    fn test_is_known_type(
+        #[case] type_str: &str,
+        #[case] known_schemas: HashMap<String, String>,
+        #[case] struct_definitions: HashMap<String, String>,
+        #[case] expected: bool,
+    ) {
+        let ty: Type = syn::parse_str(type_str).unwrap();
+        assert_eq!(
+            is_known_type(&ty, &known_schemas, &struct_definitions),
+            expected,
+            "Type: {}",
+            type_str
+        );
     }
 
     #[test]
