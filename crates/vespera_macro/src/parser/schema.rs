@@ -700,6 +700,7 @@ mod tests {
     use rstest::rstest;
     use std::collections::HashMap;
     use vespera_core::schema::{SchemaRef, SchemaType};
+    use insta::assert_debug_snapshot;
 
     #[rstest]
     #[case("HashMap<String, i32>", Some(SchemaType::Object), true)]
@@ -722,6 +723,175 @@ mod tests {
         } else {
             panic!("Expected inline schema for {}", ty_src);
         }
+    }
+
+    #[rstest]
+    #[case(
+        r#"
+        #[serde(rename_all = "kebab-case")]
+        enum Status {
+            #[serde(rename = "ok-status")]
+            Ok,
+            ErrorCode,
+        }
+        "#,
+        SchemaType::String,
+        vec!["ok-status", "ErrorCode"] // rename_all is not applied in this path
+    )]
+    fn test_parse_enum_to_schema_unit_variants(
+        #[case] enum_src: &str,
+        #[case] expected_type: SchemaType,
+        #[case] expected_enum: Vec<&str>,
+    ) {
+        let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        assert_eq!(schema.schema_type, Some(expected_type));
+        let got = schema.clone()
+            .r#enum
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(got, expected_enum);
+        assert_debug_snapshot!(schema);
+    }
+
+    #[rstest]
+    #[case(
+        r#"
+        enum Event {
+            Data(String),
+        }
+        "#,
+        1,
+        Some(SchemaType::String),
+        0 // single-field tuple variant stored as object with inline schema
+    )]
+    #[case(
+        r#"
+        enum Pair {
+            Values(i32, String),
+        }
+        "#,
+        1,
+        Some(SchemaType::Array),
+        2 // tuple array prefix_items length
+    )]
+    #[case(
+        r#"
+        enum Msg {
+            Detail { id: i32, note: Option<String> },
+        }
+        "#,
+        1,
+        Some(SchemaType::Object),
+        0 // not an array; ignore prefix_items length
+    )]
+    fn test_parse_enum_to_schema_tuple_and_named_variants(
+        #[case] enum_src: &str,
+        #[case] expected_one_of_len: usize,
+        #[case] expected_inner_type: Option<SchemaType>,
+        #[case] expected_prefix_items_len: usize,
+    ) {
+        let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let one_of = schema.clone().one_of.expect("one_of missing");
+        assert_eq!(one_of.len(), expected_one_of_len);
+
+        if let Some(inner_expected) = expected_inner_type {
+            if let SchemaRef::Inline(obj) = &one_of[0] {
+                let props = obj.properties.as_ref().expect("props missing");
+                // take first property value
+                let inner_schema = props.values().next().expect("no property value");
+                match inner_expected {
+                    SchemaType::Array => {
+                        if let SchemaRef::Inline(array_schema) = inner_schema {
+                            assert_eq!(array_schema.schema_type, Some(SchemaType::Array));
+                            if expected_prefix_items_len > 0 {
+                                assert_eq!(
+                                    array_schema.prefix_items.as_ref().unwrap().len(),
+                                    expected_prefix_items_len
+                                );
+                            }
+                        } else {
+                            panic!("Expected inline array schema");
+                        }
+                    }
+                    SchemaType::Object => {
+                        if let SchemaRef::Inline(inner_obj) = inner_schema {
+                            assert_eq!(inner_obj.schema_type, Some(SchemaType::Object));
+                            let inner_props = inner_obj.properties.as_ref().unwrap();
+                            assert!(inner_props.contains_key("id"));
+                            assert!(inner_props.contains_key("note"));
+                            assert!(inner_obj.required.as_ref().unwrap().contains(&"id".to_string()));
+                        } else {
+                            panic!("Expected inline object schema");
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                panic!("Expected inline schema in one_of");
+            }
+        }
+
+        assert_debug_snapshot!(schema);
+    }
+
+    #[test]
+    fn test_parse_struct_to_schema_required_optional() {
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r#"
+            struct User {
+                id: i32,
+                name: Option<String>,
+            }
+        "#,
+        )
+        .unwrap();
+        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let props = schema.properties.as_ref().unwrap();
+        assert!(props.contains_key("id"));
+        assert!(props.contains_key("name"));
+        assert!(schema.required.as_ref().unwrap().contains(&"id".to_string()));
+        assert!(!schema.required.as_ref().unwrap().contains(&"name".to_string()));
+    }
+
+    #[test]
+    fn test_parse_type_to_schema_ref_empty_path_and_reference() {
+        // Empty path segments returns object
+        let ty = Type::Path(syn::TypePath {
+            qself: None,
+            path: syn::Path {
+                leading_colon: None,
+                segments: syn::punctuated::Punctuated::new(),
+            },
+        });
+        let schema_ref = parse_type_to_schema_ref(&ty, &HashMap::new(), &HashMap::new());
+        assert!(matches!(schema_ref, SchemaRef::Inline(_)));
+
+        // Reference type delegates to inner
+        let ty: Type = syn::parse_str("&i32").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &HashMap::new(), &HashMap::new());
+        if let SchemaRef::Inline(schema) = schema_ref {
+            assert_eq!(schema.schema_type, Some(SchemaType::Integer));
+        } else {
+            panic!("Expected inline integer schema");
+        }
+    }
+
+    #[test]
+    fn test_parse_type_to_schema_ref_known_schema_ref_and_unknown_custom() {
+        let mut known_schemas = HashMap::new();
+        known_schemas.insert("Known".to_string(), "Known".to_string());
+
+        let ty: Type = syn::parse_str("Known").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &HashMap::new());
+        assert!(matches!(schema_ref, SchemaRef::Ref(_)));
+
+        let ty: Type = syn::parse_str("UnknownType").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &HashMap::new());
+        assert!(matches!(schema_ref, SchemaRef::Inline(_)));
     }
 
     #[test]
