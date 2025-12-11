@@ -7,10 +7,8 @@ use vespera_core::{
 };
 
 use super::{
-    parameters::parse_function_parameter,
-    path::extract_path_parameters,
-    request_body::parse_request_body,
-    response::parse_return_type,
+    parameters::parse_function_parameter, path::extract_path_parameters,
+    request_body::parse_request_body, response::parse_return_type,
     schema::parse_type_to_schema_ref_with_schemas,
 };
 
@@ -288,4 +286,3 @@ mod tests {
         assert!(op.parameters.is_none());
     }
 }
-

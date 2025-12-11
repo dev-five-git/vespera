@@ -90,11 +90,11 @@ pub fn parse_request_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use insta::assert_debug_snapshot;
     use rstest::rstest;
+    use serial_test::serial;
     use std::collections::HashMap;
     use vespera_core::schema::{SchemaRef, SchemaType};
-    use insta::assert_debug_snapshot;
-    use serial_test::serial;
 
     #[rstest]
     #[case::json("fn test(Json(payload): Json<User>) {}", true)]
@@ -129,4 +129,3 @@ mod tests {
         }
     }
 }
-

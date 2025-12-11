@@ -45,7 +45,7 @@ pub fn parse_function_parameter(
                 if !path.segments.is_empty() {
                     let segment = path.segments.first().unwrap();
                     let ident_str = segment.ident.to_string();
-                    
+
                     // Handle Option<TypedHeader<T>>
                     if ident_str == "Option" {
                         if let syn::PathArguments::AngleBracketed(args) = &segment.arguments
@@ -55,7 +55,7 @@ pub fn parse_function_parameter(
                         {
                             let inner_segment = inner_type_path.path.segments.last().unwrap();
                             let inner_ident_str = inner_segment.ident.to_string();
-                            
+
                             if inner_ident_str == "TypedHeader" {
                                 // TypedHeader always uses string schema regardless of inner type
                                 return Some(vec![Parameter {
@@ -436,6 +436,8 @@ mod tests {
     use rstest::rstest;
     use std::collections::HashMap;
     use vespera_core::route::ParameterLocation;
+
+    use insta::assert_debug_snapshot;
     use serial_test::serial;
     #[rstest]
     #[case(
@@ -485,9 +487,8 @@ mod tests {
         #[case] expected_locations: Vec<Vec<ParameterLocation>>,
     ) {
         let func: syn::ItemFn = syn::parse_str(func_src).unwrap();
+        let mut parameters = Vec::new();
         for (idx, arg) in func.sig.inputs.iter().enumerate() {
-            use insta::assert_debug_snapshot;
-
             let result =
                 parse_function_parameter(arg, &path_params, &HashMap::new(), &HashMap::new());
             let expected = expected_locations
@@ -510,8 +511,8 @@ mod tests {
                 got_locs, *expected,
                 "Location mismatch at arg index {idx}, func: {func_src}"
             );
-            assert_debug_snapshot!(params);
+            parameters.extend(params.clone());
         }
+        assert_debug_snapshot!(parameters);
     }
 }
-

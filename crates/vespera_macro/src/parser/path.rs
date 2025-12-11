@@ -30,4 +30,3 @@ mod tests {
         assert_eq!(extract_path_parameters(path), expected);
     }
 }
-

@@ -75,23 +75,24 @@ fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
 fn extract_status_code_tuple(err_ty: &Type) -> Option<(u16, Type)> {
     if let Type::Tuple(tuple) = err_ty
         && tuple.elems.len() == 2
-        && let Type::Path(type_path) = &tuple.elems[0]&& !&type_path.path.segments.is_empty() {
-            let path = &type_path.path;
-            let segment = &path.segments[0];
-            // Check if it's StatusCode (could be qualified like axum::http::StatusCode)
-            let is_status_code = segment.ident == "StatusCode"
-                || (path.segments.len() > 1
-                    && path.segments.iter().any(|s| s.ident == "StatusCode"));
+        && let Type::Path(type_path) = &tuple.elems[0]
+        && !&type_path.path.segments.is_empty()
+    {
+        let path = &type_path.path;
+        let segment = &path.segments[0];
+        // Check if it's StatusCode (could be qualified like axum::http::StatusCode)
+        let is_status_code = segment.ident == "StatusCode"
+            || (path.segments.len() > 1 && path.segments.iter().any(|s| s.ident == "StatusCode"));
 
-            if is_status_code {
-                // Use 400 as default status code
-                // The actual status code value is determined at runtime
-                if let Some(error_type) = tuple.elems.get(1) {
-                    // Unwrap Json if present
-                    let error_type_unwrapped = unwrap_json(error_type);
-                    return Some((400, error_type_unwrapped.clone()));
-                }
+        if is_status_code {
+            // Use 400 as default status code
+            // The actual status code value is determined at runtime
+            if let Some(error_type) = tuple.elems.get(1) {
+                // Unwrap Json if present
+                let error_type_unwrapped = unwrap_json(error_type);
+                return Some((400, error_type_unwrapped.clone()));
             }
+        }
     }
     None
 }
@@ -545,4 +546,3 @@ mod tests {
         }
     }
 }
-

@@ -1,14 +1,14 @@
 ---
 source: crates/vespera_macro/src/parser/parameters.rs
-expression: params
+expression: parameters
 ---
 [
     Parameter {
-        name: "authorization",
+        name: "user-agent",
         in: Header,
         description: None,
         required: Some(
-            false,
+            true,
         ),
         schema: Some(
             Inline(

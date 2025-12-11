@@ -822,4 +822,3 @@ mod tests {
         assert_eq!(rename_field(field_name, rename_all), expected);
     }
 }
-
