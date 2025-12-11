@@ -37,6 +37,10 @@ pub(super) fn extract_field_rename(attrs: &[syn::Attribute]) -> Option<String> {
 
                 // Look for rename = "..." pattern
                 if let Some(start) = tokens.find("rename") {
+                    // Avoid false positives from rename_all
+                    if tokens[start..].starts_with("rename_all") {
+                        continue;
+                    }
                     let remaining = &tokens[start + "rename".len()..];
                     if let Some(equals_pos) = remaining.find('=') {
                         let value_part = &remaining[equals_pos + 1..].trim();
@@ -84,8 +88,21 @@ pub(super) fn rename_field(field_name: &str, rename_all: Option<&str>) -> String
             result
         }
         Some("kebab-case") => {
-            // Convert snake_case to kebab-case
-            field_name.replace('_', "-")
+            // Convert snake_case or Camel/PascalCase to kebab-case (lowercase with hyphens)
+            let mut result = String::new();
+            for (i, ch) in field_name.chars().enumerate() {
+                if ch.is_uppercase() {
+                    if i > 0 && !result.ends_with('-') {
+                        result.push('-');
+                    }
+                    result.push(ch.to_lowercase().next().unwrap_or(ch));
+                } else if ch == '_' {
+                    result.push('-');
+                } else {
+                    result.push(ch);
+                }
+            }
+            result
         }
         Some("PascalCase") => {
             // Convert snake_case to PascalCase
@@ -697,10 +714,10 @@ pub(super) fn parse_type_to_schema_ref_with_schemas(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use insta::{assert_debug_snapshot, with_settings};
     use rstest::rstest;
     use std::collections::HashMap;
     use vespera_core::schema::{SchemaRef, SchemaType};
-    use insta::{assert_debug_snapshot, with_settings};
 
     #[rstest]
     #[case("HashMap<String, i32>", Some(SchemaType::Object), true)]
@@ -736,7 +753,7 @@ mod tests {
         }
         "#,
         SchemaType::String,
-        vec!["ok-status", "ErrorCode"], // rename_all is not applied in this path
+        vec!["ok-status", "error-code"], // rename_all is not applied in this path
         "status"
     )]
     #[case(
@@ -771,7 +788,8 @@ mod tests {
         let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
         let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
         assert_eq!(schema.schema_type, Some(expected_type));
-        let got = schema.clone()
+        let got = schema
+            .clone()
             .r#enum
             .unwrap()
             .iter()
@@ -854,7 +872,13 @@ mod tests {
                             let inner_props = inner_obj.properties.as_ref().unwrap();
                             assert!(inner_props.contains_key("id"));
                             assert!(inner_props.contains_key("note"));
-                            assert!(inner_obj.required.as_ref().unwrap().contains(&"id".to_string()));
+                            assert!(
+                                inner_obj
+                                    .required
+                                    .as_ref()
+                                    .unwrap()
+                                    .contains(&"id".to_string())
+                            );
                         } else {
                             panic!("Expected inline object schema");
                         }
@@ -905,6 +929,125 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_enum_to_schema_rename_all_for_data_variant() {
+        let enum_item: syn::ItemEnum = syn::parse_str(
+            r#"
+            #[serde(rename_all = "kebab-case")]
+            enum Payload {
+                DataItem(String),
+            }
+        "#,
+        )
+        .unwrap();
+
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let one_of = schema.one_of.expect("one_of missing");
+        let variant_obj = match &one_of[0] {
+            SchemaRef::Inline(s) => s,
+            _ => panic!("Expected inline schema"),
+        };
+        let props = variant_obj
+            .properties
+            .as_ref()
+            .expect("variant props missing");
+        assert!(props.contains_key("data-item"));
+    }
+
+    #[test]
+    fn test_parse_enum_to_schema_field_uses_enum_rename_all() {
+        let enum_item: syn::ItemEnum = syn::parse_str(
+            r#"
+            #[serde(rename_all = "snake_case")]
+            enum Event {
+                Detail { UserId: i32 },
+            }
+        "#,
+        )
+        .unwrap();
+
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let one_of = schema.one_of.expect("one_of missing");
+        let variant_obj = match &one_of[0] {
+            SchemaRef::Inline(s) => s,
+            _ => panic!("Expected inline schema"),
+        };
+        let props = variant_obj
+            .properties
+            .as_ref()
+            .expect("variant props missing");
+        let inner = match props.get("detail").expect("variant key missing") {
+            SchemaRef::Inline(s) => s,
+            _ => panic!("Expected inline inner schema"),
+        };
+        let inner_props = inner.properties.as_ref().expect("inner props missing");
+        assert!(inner_props.contains_key("user_id"));
+        assert!(!inner_props.contains_key("UserId"));
+    }
+
+    #[test]
+    fn test_parse_enum_to_schema_variant_rename_overrides_rename_all() {
+        let enum_item: syn::ItemEnum = syn::parse_str(
+            r#"
+            #[serde(rename_all = "snake_case")]
+            enum Payload {
+                #[serde(rename = "Explicit")]
+                DataItem(i32),
+            }
+        "#,
+        )
+        .unwrap();
+
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let one_of = schema.one_of.expect("one_of missing");
+        let variant_obj = match &one_of[0] {
+            SchemaRef::Inline(s) => s,
+            _ => panic!("Expected inline schema"),
+        };
+        let props = variant_obj
+            .properties
+            .as_ref()
+            .expect("variant props missing");
+        assert!(props.contains_key("Explicit"));
+        assert!(!props.contains_key("data_item"));
+    }
+
+    #[test]
+    fn test_parse_enum_to_schema_field_rename_overrides_variant_rename_all() {
+        let enum_item: syn::ItemEnum = syn::parse_str(
+            r#"
+            #[serde(rename_all = "snake_case")]
+            enum Payload {
+                #[serde(rename_all = "kebab-case")]
+                Detail { #[serde(rename = "ID")] user_id: i32 },
+            }
+        "#,
+        )
+        .unwrap();
+
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let one_of = schema.one_of.expect("one_of missing");
+        let variant_obj = match &one_of[0] {
+            SchemaRef::Inline(s) => s,
+            _ => panic!("Expected inline schema"),
+        };
+        let props = variant_obj
+            .properties
+            .as_ref()
+            .expect("variant props missing");
+        let inner = match props
+            .get("detail")
+            .or_else(|| props.get("Detail"))
+            .expect("variant key missing")
+        {
+            SchemaRef::Inline(s) => s,
+            _ => panic!("Expected inline inner schema"),
+        };
+        let inner_props = inner.properties.as_ref().expect("inner props missing");
+        assert!(inner_props.contains_key("ID")); // field-level rename wins
+        assert!(!inner_props.contains_key("user-id")); // variant rename_all ignored for this field
+    }
+
+    #[test]
     fn test_parse_struct_to_schema_required_optional() {
         let struct_item: syn::ItemStruct = syn::parse_str(
             r#"
@@ -919,8 +1062,43 @@ mod tests {
         let props = schema.properties.as_ref().unwrap();
         assert!(props.contains_key("id"));
         assert!(props.contains_key("name"));
-        assert!(schema.required.as_ref().unwrap().contains(&"id".to_string()));
-        assert!(!schema.required.as_ref().unwrap().contains(&"name".to_string()));
+        assert!(
+            schema
+                .required
+                .as_ref()
+                .unwrap()
+                .contains(&"id".to_string())
+        );
+        assert!(
+            !schema
+                .required
+                .as_ref()
+                .unwrap()
+                .contains(&"name".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_struct_to_schema_rename_all_and_field_rename() {
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r#"
+            #[serde(rename_all = "camelCase")]
+            struct Profile {
+                #[serde(rename = "id")]
+                user_id: i32,
+                display_name: Option<String>,
+            }
+        "#,
+        )
+        .unwrap();
+
+        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let props = schema.properties.as_ref().expect("props missing");
+        assert!(props.contains_key("id")); // field-level rename wins
+        assert!(props.contains_key("displayName")); // rename_all applied
+        let required = schema.required.as_ref().expect("required missing");
+        assert!(required.contains(&"id".to_string()));
+        assert!(!required.contains(&"displayName".to_string())); // Option makes it optional
     }
 
     #[rstest]
@@ -1022,7 +1200,12 @@ mod tests {
     }
 
     #[rstest]
-    #[case("HashMap<String, Value>", true, None, Some("#/components/schemas/Value"))]
+    #[case(
+        "HashMap<String, Value>",
+        true,
+        None,
+        Some("#/components/schemas/Value")
+    )]
     #[case("Result<String, i32>", false, Some(SchemaType::Object), None)]
     #[case("crate::Value", false, None, None)]
     #[case("(i32, bool)", false, Some(SchemaType::Object), None)]

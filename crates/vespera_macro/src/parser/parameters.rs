@@ -47,26 +47,25 @@ pub fn parse_function_parameter(
                     let ident_str = segment.ident.to_string();
 
                     // Handle Option<TypedHeader<T>>
-                    if ident_str == "Option" {
-                        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-                            && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
-                            && let Type::Path(inner_type_path) = inner_ty
-                            && !inner_type_path.path.segments.is_empty()
-                        {
-                            let inner_segment = inner_type_path.path.segments.last().unwrap();
-                            let inner_ident_str = inner_segment.ident.to_string();
+                    if ident_str == "Option"
+                        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+                        && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+                        && let Type::Path(inner_type_path) = inner_ty
+                        && !inner_type_path.path.segments.is_empty()
+                    {
+                        let inner_segment = inner_type_path.path.segments.last().unwrap();
+                        let inner_ident_str = inner_segment.ident.to_string();
 
-                            if inner_ident_str == "TypedHeader" {
-                                // TypedHeader always uses string schema regardless of inner type
-                                return Some(vec![Parameter {
-                                    name: param_name.replace("_", "-"),
-                                    r#in: ParameterLocation::Header,
-                                    description: None,
-                                    required: Some(false),
-                                    schema: Some(SchemaRef::Inline(Box::new(Schema::string()))),
-                                    example: None,
-                                }]);
-                            }
+                        if inner_ident_str == "TypedHeader" {
+                            // TypedHeader always uses string schema regardless of inner type
+                            return Some(vec![Parameter {
+                                name: param_name.replace("_", "-"),
+                                r#in: ParameterLocation::Header,
+                                description: None,
+                                required: Some(false),
+                                schema: Some(SchemaRef::Inline(Box::new(Schema::string()))),
+                                example: None,
+                            }]);
                         }
                     }
                 }
@@ -119,11 +118,11 @@ pub fn parse_function_parameter(
                                     }
                                 } else {
                                     // Single path parameter
-                            // Allow only when exactly one path parameter is provided
-                            if path_params.len() != 1 {
-                                return None;
-                            }
-                            let name = path_params[0].clone();
+                                    // Allow only when exactly one path parameter is provided
+                                    if path_params.len() != 1 {
+                                        return None;
+                                    }
+                                    let name = path_params[0].clone();
                                     return Some(vec![Parameter {
                                         name,
                                         r#in: ParameterLocation::Path,
@@ -268,16 +267,16 @@ fn is_primitive_like(ty: &Type) -> bool {
     if is_primitive_type(ty) {
         return true;
     }
-    if let Type::Path(type_path) = ty {
-        if let Some(seg) = type_path.path.segments.last() {
-            let ident = seg.ident.to_string();
-            if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
-                if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                    if (ident == "Vec" || ident == "Option") && is_primitive_like(inner_ty) {
-                        return true;
-                    }
-                }
-            }
+    if let Type::Path(type_path) = ty
+        && let Some(seg) = type_path.path.segments.last()
+    {
+        let ident = seg.ident.to_string();
+        if let syn::PathArguments::AngleBracketed(args) = &seg.arguments
+            && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+            && (ident == "Vec" || ident == "Option")
+            && is_primitive_like(inner_ty)
+        {
+            return true;
         }
     }
     false
@@ -459,15 +458,15 @@ fn parse_query_struct_to_parameters(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use insta::{assert_debug_snapshot, with_settings};
     use rstest::rstest;
     use std::collections::HashMap;
     use vespera_core::route::ParameterLocation;
-    use insta::{assert_debug_snapshot, with_settings};
 
     fn setup_test_data(func_src: &str) -> (HashMap<String, String>, HashMap<String, String>) {
         let mut struct_definitions = HashMap::new();
         let known_schemas: HashMap<String, String> = HashMap::new();
-        
+
         if func_src.contains("QueryParams") {
             struct_definitions.insert(
                 "QueryParams".to_string(),
@@ -480,7 +479,7 @@ mod tests {
                 .to_string(),
             );
         }
-        
+
         if func_src.contains("User") {
             struct_definitions.insert(
                 "User".to_string(),
@@ -493,7 +492,7 @@ mod tests {
                 .to_string(),
             );
         }
-        
+
         (known_schemas, struct_definitions)
     }
 
@@ -604,14 +603,10 @@ mod tests {
         let func: syn::ItemFn = syn::parse_str(func_src).unwrap();
         let (known_schemas, struct_definitions) = setup_test_data(func_src);
         let mut parameters = Vec::new();
-        
+
         for (idx, arg) in func.sig.inputs.iter().enumerate() {
-            let result = parse_function_parameter(
-                arg,
-                &path_params,
-                &known_schemas,
-                &struct_definitions,
-            );
+            let result =
+                parse_function_parameter(arg, &path_params, &known_schemas, &struct_definitions);
             let expected = expected_locations
                 .get(idx)
                 .unwrap_or_else(|| expected_locations.last().unwrap());
@@ -682,15 +677,14 @@ mod tests {
             "pub struct User { pub id: i32 }".to_string(),
         );
         let mut known_schemas = known_schemas;
-        known_schemas.insert("CustomHeader".to_string(), "#/components/schemas/CustomHeader".to_string());
+        known_schemas.insert(
+            "CustomHeader".to_string(),
+            "#/components/schemas/CustomHeader".to_string(),
+        );
 
         for (idx, arg) in func.sig.inputs.iter().enumerate() {
-            let result = parse_function_parameter(
-                arg,
-                &path_params,
-                &known_schemas,
-                &struct_definitions,
-            );
+            let result =
+                parse_function_parameter(arg, &path_params, &known_schemas, &struct_definitions);
             assert!(
                 result.is_none(),
                 "Expected None at arg index {}, func: {}, got: {:?}",

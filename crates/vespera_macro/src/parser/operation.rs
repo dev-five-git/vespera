@@ -160,45 +160,45 @@ pub fn build_operation_from_function(
     }
 
     // Fallback: if last arg is String/&str and no body yet, treat as text/plain body
-    if request_body.is_none() {
-        if let Some(FnArg::Typed(PatType { ty, .. })) = sig.inputs.last() {
-            let is_string = match ty.as_ref() {
-                Type::Path(type_path) => type_path
-                    .path
-                    .segments
-                    .last()
-                    .map(|s| s.ident == "String" || s.ident == "str")
-                    .unwrap_or(false),
-                Type::Reference(type_ref) => {
-                    if let Type::Path(p) = type_ref.elem.as_ref() {
-                        p.path
-                            .segments
-                            .last()
-                            .map(|s| s.ident == "String" || s.ident == "str")
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    }
+    if request_body.is_none()
+        && let Some(FnArg::Typed(PatType { ty, .. })) = sig.inputs.last()
+    {
+        let is_string = match ty.as_ref() {
+            Type::Path(type_path) => type_path
+                .path
+                .segments
+                .last()
+                .map(|s| s.ident == "String" || s.ident == "str")
+                .unwrap_or(false),
+            Type::Reference(type_ref) => {
+                if let Type::Path(p) = type_ref.elem.as_ref() {
+                    p.path
+                        .segments
+                        .last()
+                        .map(|s| s.ident == "String" || s.ident == "str")
+                        .unwrap_or(false)
+                } else {
+                    false
                 }
-                _ => false,
-            };
-
-            if is_string {
-                let mut content = BTreeMap::new();
-                content.insert(
-                    "text/plain".to_string(),
-                    MediaType {
-                        schema: Some(SchemaRef::Inline(Box::new(Schema::string()))),
-                        example: None,
-                        examples: None,
-                    },
-                );
-                request_body = Some(RequestBody {
-                    description: None,
-                    content,
-                    required: Some(true),
-                });
             }
+            _ => false,
+        };
+
+        if is_string {
+            let mut content = BTreeMap::new();
+            content.insert(
+                "text/plain".to_string(),
+                MediaType {
+                    schema: Some(SchemaRef::Inline(Box::new(Schema::string()))),
+                    example: None,
+                    examples: None,
+                },
+            );
+            request_body = Some(RequestBody {
+                description: None,
+                content,
+                required: Some(true),
+            });
         }
     }
 

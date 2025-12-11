@@ -34,7 +34,7 @@ Schema {
     enum: Some(
         [
             String("ok-status"),
-            String("ErrorCode"),
+            String("error-code"),
         ],
     ),
     all_of: None,
