@@ -9,25 +9,9 @@ pub struct RouteInfo {
 
 pub fn check_route_by_meta(meta: &syn::Meta) -> bool {
     match meta {
-        syn::Meta::List(meta_list) => {
-            (meta_list.path.segments.len() == 2
-                && meta_list.path.segments[0].ident == "vespera"
-                && meta_list.path.segments[1].ident == "route")
-                || (meta_list.path.segments.len() == 1
-                    && meta_list.path.segments[0].ident == "route")
-        }
-        syn::Meta::Path(path) => {
-            (path.segments.len() == 2
-                && path.segments[0].ident == "vespera"
-                && path.segments[1].ident == "route")
-                || (path.segments.len() == 1 && path.segments[0].ident == "route")
-        }
-        syn::Meta::NameValue(meta_nv) => {
-            (meta_nv.path.segments.len() == 2
-                && meta_nv.path.segments[0].ident == "vespera"
-                && meta_nv.path.segments[1].ident == "route")
-                || (meta_nv.path.segments.len() == 1 && meta_nv.path.segments[0].ident == "route")
-        }
+        syn::Meta::List(meta_list) => (meta_list.path.segments.len() == 2 && meta_list.path.segments[0].ident == "vespera" && meta_list.path.segments[1].ident == "route") || (meta_list.path.segments.len() == 1 && meta_list.path.segments[0].ident == "route"),
+        syn::Meta::Path(path) => (path.segments.len() == 2 && path.segments[0].ident == "vespera" && path.segments[1].ident == "route") || (path.segments.len() == 1 && path.segments[0].ident == "route"),
+        syn::Meta::NameValue(meta_nv) => (meta_nv.path.segments.len() == 2 && meta_nv.path.segments[0].ident == "vespera" && meta_nv.path.segments[1].ident == "route") || (meta_nv.path.segments.len() == 1 && meta_nv.path.segments[0].ident == "route"),
     }
 }
 
@@ -39,71 +23,37 @@ pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
                 syn::Meta::List(meta_list) => {
                     // Try to parse as RouteArgs
                     if let Ok(route_args) = meta_list.parse_args::<RouteArgs>() {
-                        let method = route_args
-                            .method
-                            .as_ref()
-                            .map(syn::Ident::to_string)
-                            .unwrap_or_else(|| "get".to_string());
+                        let method = route_args.method.as_ref().map(syn::Ident::to_string).unwrap_or_else(|| "get".to_string());
                         let path = route_args.path.as_ref().map(syn::LitStr::value);
 
                         // Parse error_status array if present
                         let error_status = route_args.error_status.as_ref().and_then(|array| {
                             let mut status_codes = Vec::new();
                             for elem in &array.elems {
-                                if let syn::Expr::Lit(syn::ExprLit {
-                                    lit: syn::Lit::Int(lit_int),
-                                    ..
-                                }) = elem
+                                if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit_int), .. }) = elem
                                     && let Ok(code) = lit_int.base10_parse::<u16>()
                                 {
                                     status_codes.push(code);
                                 }
                             }
-                            if status_codes.is_empty() {
-                                None
-                            } else {
-                                Some(status_codes)
-                            }
+                            if status_codes.is_empty() { None } else { Some(status_codes) }
                         });
 
-                        return Some(RouteInfo {
-                            method,
-                            path,
-                            error_status,
-                        });
+                        return Some(RouteInfo { method, path, error_status });
                     }
                 }
                 // Try to parse as Meta::NameValue (e.g., #[route = "patch"])
                 syn::Meta::NameValue(meta_nv) => {
-                    if let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(lit_str),
-                        ..
-                    }) = &meta_nv.value
-                    {
+                    if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(lit_str), .. }) = &meta_nv.value {
                         let method_str = lit_str.value().to_lowercase();
-                        if method_str == "get"
-                            || method_str == "post"
-                            || method_str == "put"
-                            || method_str == "patch"
-                            || method_str == "delete"
-                            || method_str == "head"
-                            || method_str == "options"
-                        {
-                            return Some(RouteInfo {
-                                method: method_str,
-                                path: None,
-                                error_status: None,
-                            });
+                        if method_str == "get" || method_str == "post" || method_str == "put" || method_str == "patch" || method_str == "delete" || method_str == "head" || method_str == "options" {
+                            return Some(RouteInfo { method: method_str, path: None, error_status: None });
                         }
                     }
                 }
                 // Try to parse as Meta::Path (e.g., #[route])
                 syn::Meta::Path(_) => {
-                    return Some(RouteInfo {
-                        method: "get".to_string(),
-                        path: None,
-                        error_status: None,
-                    });
+                    return Some(RouteInfo { method: "get".to_string(), path: None, error_status: None });
                 }
             }
         }
@@ -161,11 +111,7 @@ mod tests {
     fn test_check_route_by_meta(#[case] attr_str: &str, #[case] expected: bool) {
         let meta = parse_meta_from_attr(attr_str);
         let result = check_route_by_meta(&meta);
-        assert_eq!(
-            result, expected,
-            "Failed for attribute: {}, expected: {}",
-            attr_str, expected
-        );
+        assert_eq!(result, expected, "Failed for attribute: {}, expected: {}", attr_str, expected);
     }
 
     fn parse_attrs_from_code(code: &str) -> Vec<syn::Attribute> {
@@ -231,44 +177,20 @@ mod tests {
     #[case("#[route()] fn test() {}", Some(("get".to_string(), None, None)))] // method None, path None
     #[case("#[route(post)] fn test() {}", Some(("post".to_string(), None, None)))] // method Some, path None
     #[case("#[route(put, path = \"/test\")] fn test() {}", Some(("put".to_string(), Some("/test".to_string()), None)))] // method Some, path Some
-    fn test_extract_route_info(
-        #[case] code: &str,
-        #[case] expected: Option<(String, Option<String>, Option<Vec<u16>>)>,
-    ) {
+    fn test_extract_route_info(#[case] code: &str, #[case] expected: Option<(String, Option<String>, Option<Vec<u16>>)>) {
         let attrs = parse_attrs_from_code(code);
         let result = extract_route_info(&attrs);
 
         match expected {
             Some((exp_method, exp_path, exp_error_status)) => {
-                assert!(
-                    result.is_some(),
-                    "Expected Some but got None for code: {}",
-                    code
-                );
+                assert!(result.is_some(), "Expected Some but got None for code: {}", code);
                 let route_info = result.unwrap();
-                assert_eq!(
-                    route_info.method, exp_method,
-                    "Method mismatch for code: {}",
-                    code
-                );
-                assert_eq!(
-                    route_info.path, exp_path,
-                    "Path mismatch for code: {}",
-                    code
-                );
-                assert_eq!(
-                    route_info.error_status, exp_error_status,
-                    "Error status mismatch for code: {}",
-                    code
-                );
+                assert_eq!(route_info.method, exp_method, "Method mismatch for code: {}", code);
+                assert_eq!(route_info.path, exp_path, "Path mismatch for code: {}", code);
+                assert_eq!(route_info.error_status, exp_error_status, "Error status mismatch for code: {}", code);
             }
             None => {
-                assert!(
-                    result.is_none(),
-                    "Expected None but got Some({:?}) for code: {}",
-                    result,
-                    code
-                );
+                assert!(result.is_none(), "Expected None but got Some({:?}) for code: {}", result, code);
             }
         }
     }

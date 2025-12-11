@@ -30,8 +30,7 @@ pub fn route(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 // Schema Storage global variable
-static SCHEMA_STORAGE: LazyLock<Mutex<Vec<StructMetadata>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+static SCHEMA_STORAGE: LazyLock<Mutex<Vec<StructMetadata>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// Derive macro for Schema
 #[proc_macro_derive(Schema)]
@@ -41,10 +40,7 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
     let generics = &input.generics;
 
     let mut schema_storage = SCHEMA_STORAGE.lock().unwrap();
-    schema_storage.push(StructMetadata {
-        name: name.to_string(),
-        definition: quote::quote!(#input).to_string(),
-    });
+    schema_storage.push(StructMetadata { name: name.to_string(), definition: quote::quote!(#input).to_string() });
 
     // Mark both struct and enum as having SchemaBuilder
     // For generic types, include the generic parameters in the impl
@@ -107,13 +103,7 @@ impl Parse for AutoRouterInput {
                         version = Some(input.parse()?);
                     }
                     _ => {
-                        return Err(syn::Error::new(
-                            ident.span(),
-                            format!(
-                                "unknown field: `{}`. Expected `dir` or `openapi`",
-                                ident_str
-                            ),
-                        ));
+                        return Err(syn::Error::new(ident.span(), format!("unknown field: `{}`. Expected `dir` or `openapi`", ident_str)));
                     }
                 }
             } else if lookahead.peek(syn::LitStr) {
@@ -130,38 +120,7 @@ impl Parse for AutoRouterInput {
             }
         }
 
-        Ok(AutoRouterInput {
-            dir: dir.or_else(|| {
-                std::env::var("VESPERA_DIR")
-                    .map(|f| LitStr::new(&f, Span::call_site()))
-                    .ok()
-            }),
-            openapi: openapi.or_else(|| {
-                std::env::var("VESPERA_OPENAPI")
-                    .map(|f| vec![LitStr::new(&f, Span::call_site())])
-                    .ok()
-            }),
-            title: title.or_else(|| {
-                std::env::var("VESPERA_TITLE")
-                    .map(|f| LitStr::new(&f, Span::call_site()))
-                    .ok()
-            }),
-            version: version.or_else(|| {
-                std::env::var("VESPERA_VERSION")
-                    .map(|f| LitStr::new(&f, Span::call_site()))
-                    .ok()
-            }),
-            docs_url: docs_url.or_else(|| {
-                std::env::var("VESPERA_DOCS_URL")
-                    .map(|f| LitStr::new(&f, Span::call_site()))
-                    .ok()
-            }),
-            redoc_url: redoc_url.or_else(|| {
-                std::env::var("VESPERA_REDOC_URL")
-                    .map(|f| LitStr::new(&f, Span::call_site()))
-                    .ok()
-            }),
-        })
+        Ok(AutoRouterInput { dir: dir.or_else(|| std::env::var("VESPERA_DIR").map(|f| LitStr::new(&f, Span::call_site())).ok()), openapi: openapi.or_else(|| std::env::var("VESPERA_OPENAPI").map(|f| vec![LitStr::new(&f, Span::call_site())]).ok()), title: title.or_else(|| std::env::var("VESPERA_TITLE").map(|f| LitStr::new(&f, Span::call_site())).ok()), version: version.or_else(|| std::env::var("VESPERA_VERSION").map(|f| LitStr::new(&f, Span::call_site())).ok()), docs_url: docs_url.or_else(|| std::env::var("VESPERA_DOCS_URL").map(|f| LitStr::new(&f, Span::call_site())).ok()), redoc_url: redoc_url.or_else(|| std::env::var("VESPERA_REDOC_URL").map(|f| LitStr::new(&f, Span::call_site())).ok()) })
     }
 }
 
@@ -171,8 +130,7 @@ fn parse_openapi_values(input: ParseStream) -> syn::Result<Vec<LitStr>> {
     if input.peek(syn::token::Bracket) {
         let content;
         let _ = bracketed!(content in input);
-        let entries: Punctuated<LitStr, syn::Token![,]> =
-            content.parse_terminated(|input| input.parse::<LitStr>(), syn::Token![,])?;
+        let entries: Punctuated<LitStr, syn::Token![,]> = content.parse_terminated(|input| input.parse::<LitStr>(), syn::Token![,])?;
         Ok(entries.into_iter().collect())
     } else {
         let single: LitStr = input.parse()?;
@@ -184,17 +142,9 @@ fn parse_openapi_values(input: ParseStream) -> syn::Result<Vec<LitStr>> {
 pub fn vespera(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as AutoRouterInput);
 
-    let folder_name = input
-        .dir
-        .map(|f| f.value())
-        .unwrap_or_else(|| "routes".to_string());
+    let folder_name = input.dir.map(|f| f.value()).unwrap_or_else(|| "routes".to_string());
 
-    let openapi_file_names = input
-        .openapi
-        .unwrap_or_default()
-        .into_iter()
-        .map(|f| f.value())
-        .collect::<Vec<_>>();
+    let openapi_file_names = input.openapi.unwrap_or_default().into_iter().map(|f| f.value()).collect::<Vec<_>>();
 
     let title = input.title.map(|t| t.value());
     let version = input.version.map(|v| v.value());
@@ -204,23 +154,13 @@ pub fn vespera(input: TokenStream) -> TokenStream {
     let folder_path = find_folder_path(&folder_name);
 
     if !folder_path.exists() {
-        return syn::Error::new(
-            Span::call_site(),
-            format!("Folder not found: {}", folder_name),
-        )
-        .to_compile_error()
-        .into();
+        return syn::Error::new(Span::call_site(), format!("Folder not found: {}", folder_name)).to_compile_error().into();
     }
 
     let mut metadata = match collect_metadata(&folder_path, &folder_name) {
         Ok(metadata) => metadata,
         Err(e) => {
-            return syn::Error::new(
-                Span::call_site(),
-                format!("Failed to collect metadata: {}", e),
-            )
-            .to_compile_error()
-            .into();
+            return syn::Error::new(Span::call_site(), format!("Failed to collect metadata: {}", e)).to_compile_error().into();
         }
     };
     let schemas = SCHEMA_STORAGE.lock().unwrap().clone();
@@ -234,30 +174,15 @@ pub fn vespera(input: TokenStream) -> TokenStream {
         // Generate OpenAPI document using collected metadata
 
         // Serialize to JSON
-        let json_str = match serde_json::to_string_pretty(&generate_openapi_doc_with_metadata(
-            title, version, &metadata,
-        )) {
+        let json_str = match serde_json::to_string_pretty(&generate_openapi_doc_with_metadata(title, version, &metadata)) {
             Ok(json) => json,
             Err(e) => {
-                return syn::Error::new(
-                    Span::call_site(),
-                    format!("Failed to serialize OpenAPI document: {}", e),
-                )
-                .to_compile_error()
-                .into();
+                return syn::Error::new(Span::call_site(), format!("Failed to serialize OpenAPI document: {}", e)).to_compile_error().into();
             }
         };
         for openapi_file_name in &openapi_file_names {
             if let Err(e) = std::fs::write(openapi_file_name, &json_str) {
-                return syn::Error::new(
-                    Span::call_site(),
-                    format!(
-                        "Failed to write OpenAPI document to {}: {}",
-                        openapi_file_name, e
-                    ),
-                )
-                .to_compile_error()
-                .into();
+                return syn::Error::new(Span::call_site(), format!("Failed to write OpenAPI document to {}: {}", openapi_file_name, e)).to_compile_error().into();
             }
         }
         if let Some(docs_url) = docs_url {
@@ -282,11 +207,7 @@ fn find_folder_path(folder_name: &str) -> std::path::PathBuf {
     Path::new(folder_name).to_path_buf()
 }
 
-fn generate_router_code(
-    metadata: &CollectedMetadata,
-    docs_info: Option<(String, String)>,
-    redoc_info: Option<(String, String)>,
-) -> proc_macro2::TokenStream {
+fn generate_router_code(metadata: &CollectedMetadata, docs_info: Option<(String, String)>, redoc_info: Option<(String, String)>) -> proc_macro2::TokenStream {
     let mut router_nests = Vec::new();
 
     for route in &metadata.routes {
@@ -296,27 +217,9 @@ fn generate_router_code(
         let module_path = &route.module_path;
         let function_name = &route.function_name;
 
-        let mut p: syn::punctuated::Punctuated<syn::PathSegment, syn::Token![::]> =
-            syn::punctuated::Punctuated::new();
-        p.push(syn::PathSegment {
-            ident: syn::Ident::new("crate", Span::call_site()),
-            arguments: syn::PathArguments::None,
-        });
-        p.extend(
-            module_path
-                .split("::")
-                .filter_map(|s| {
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(syn::PathSegment {
-                            ident: syn::Ident::new(s, Span::call_site()),
-                            arguments: syn::PathArguments::None,
-                        })
-                    }
-                })
-                .collect::<Vec<syn::PathSegment>>(),
-        );
+        let mut p: syn::punctuated::Punctuated<syn::PathSegment, syn::Token![::]> = syn::punctuated::Punctuated::new();
+        p.push(syn::PathSegment { ident: syn::Ident::new("crate", Span::call_site()), arguments: syn::PathArguments::None });
+        p.extend(module_path.split("::").filter_map(|s| if s.is_empty() { None } else { Some(syn::PathSegment { ident: syn::Ident::new(s, Span::call_site()), arguments: syn::PathArguments::None }) }).collect::<Vec<syn::PathSegment>>());
         let func_name = syn::Ident::new(function_name, Span::call_site());
         router_nests.push(quote!(
             .route(#path, #method_path(#p::#func_name))
@@ -434,25 +337,13 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let folder_name = "routes";
 
-        let result = generate_router_code(
-            &collect_metadata(temp_dir.path(), folder_name).unwrap(),
-            None,
-            None,
-        );
+        let result = generate_router_code(&collect_metadata(temp_dir.path(), folder_name).unwrap(), None, None);
         let code = result.to_string();
 
         // Should generate empty router
         // quote! generates "vespera :: axum :: Router :: new ()" format
-        assert!(
-            code.contains("Router") && code.contains("new"),
-            "Code should contain Router::new(), got: {}",
-            code
-        );
-        assert!(
-            !code.contains("route"),
-            "Code should not contain route, got: {}",
-            code
-        );
+        assert!(code.contains("Router") && code.contains("new"), "Code should contain Router::new(), got: {}", code);
+        assert!(!code.contains("route"), "Code should not contain route, got: {}", code);
 
         drop(temp_dir);
     }
@@ -578,59 +469,30 @@ pub fn get_users() -> String {
         "/api/v1/users",
         "routes::api::v1::users::get_users",
     )]
-    fn test_generate_router_code_single_route(
-        #[case] folder_name: &str,
-        #[case] files: Vec<(&str, &str)>,
-        #[case] expected_method: &str,
-        #[case] expected_path: &str,
-        #[case] expected_function_path: &str,
-    ) {
+    fn test_generate_router_code_single_route(#[case] folder_name: &str, #[case] files: Vec<(&str, &str)>, #[case] expected_method: &str, #[case] expected_path: &str, #[case] expected_function_path: &str) {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
         for (filename, content) in files {
             create_temp_file(&temp_dir, filename, content);
         }
 
-        let result = generate_router_code(
-            &collect_metadata(temp_dir.path(), folder_name).unwrap(),
-            None,
-            None,
-        );
+        let result = generate_router_code(&collect_metadata(temp_dir.path(), folder_name).unwrap(), None, None);
         let code = result.to_string();
 
         // Check router initialization (quote! generates "vespera :: axum :: Router :: new ()")
-        assert!(
-            code.contains("Router") && code.contains("new"),
-            "Code should contain Router::new(), got: {}",
-            code
-        );
+        assert!(code.contains("Router") && code.contains("new"), "Code should contain Router::new(), got: {}", code);
 
         // Check route method
-        assert!(
-            code.contains(expected_method),
-            "Code should contain method: {}, got: {}",
-            expected_method,
-            code
-        );
+        assert!(code.contains(expected_method), "Code should contain method: {}, got: {}", expected_method, code);
 
         // Check route path
-        assert!(
-            code.contains(expected_path),
-            "Code should contain path: {}, got: {}",
-            expected_path,
-            code
-        );
+        assert!(code.contains(expected_path), "Code should contain path: {}, got: {}", expected_path, code);
 
         // Check function path (quote! adds spaces, so we check for parts)
         let function_parts: Vec<&str> = expected_function_path.split("::").collect();
         for part in &function_parts {
             if !part.is_empty() {
-                assert!(
-                    code.contains(part),
-                    "Code should contain function part: {}, got: {}",
-                    part,
-                    code
-                );
+                assert!(code.contains(part), "Code should contain function part: {}, got: {}", part, code);
             }
         }
 
@@ -676,11 +538,7 @@ pub fn update_user() -> String {
 "#,
         );
 
-        let result = generate_router_code(
-            &collect_metadata(temp_dir.path(), folder_name).unwrap(),
-            None,
-            None,
-        );
+        let result = generate_router_code(&collect_metadata(temp_dir.path(), folder_name).unwrap(), None, None);
         let code = result.to_string();
 
         // Check router initialization (quote! generates "vespera :: axum :: Router :: new ()")
@@ -699,11 +557,7 @@ pub fn update_user() -> String {
         // Count route calls (quote! generates ". route (" with spaces)
         // Count occurrences of ". route (" pattern
         let route_count = code.matches(". route (").count();
-        assert_eq!(
-            route_count, 3,
-            "Should have 3 route calls, got: {}, code: {}",
-            route_count, code
-        );
+        assert_eq!(route_count, 3, "Should have 3 route calls, got: {}, code: {}", route_count, code);
 
         drop(temp_dir);
     }
@@ -730,11 +584,7 @@ pub fn create_users() -> String {
 "#,
         );
 
-        let result = generate_router_code(
-            &collect_metadata(temp_dir.path(), folder_name).unwrap(),
-            None,
-            None,
-        );
+        let result = generate_router_code(&collect_metadata(temp_dir.path(), folder_name).unwrap(), None, None);
         let code = result.to_string();
 
         // Check router initialization (quote! generates "vespera :: axum :: Router :: new ()")
@@ -750,11 +600,7 @@ pub fn create_users() -> String {
 
         // Should have 2 routes (quote! generates ". route (" with spaces)
         let route_count = code.matches(". route (").count();
-        assert_eq!(
-            route_count, 2,
-            "Should have 2 routes, got: {}, code: {}",
-            route_count, code
-        );
+        assert_eq!(route_count, 2, "Should have 2 routes, got: {}, code: {}", route_count, code);
 
         drop(temp_dir);
     }
@@ -776,11 +622,7 @@ pub fn index() -> String {
 "#,
         );
 
-        let result = generate_router_code(
-            &collect_metadata(temp_dir.path(), folder_name).unwrap(),
-            None,
-            None,
-        );
+        let result = generate_router_code(&collect_metadata(temp_dir.path(), folder_name).unwrap(), None, None);
         let code = result.to_string();
 
         // Check router initialization (quote! generates "vespera :: axum :: Router :: new ()")
@@ -812,11 +654,7 @@ pub fn get_users() -> String {
 "#,
         );
 
-        let result = generate_router_code(
-            &collect_metadata(temp_dir.path(), folder_name).unwrap(),
-            None,
-            None,
-        );
+        let result = generate_router_code(&collect_metadata(temp_dir.path(), folder_name).unwrap(), None, None);
         let code = result.to_string();
 
         // Check router initialization (quote! generates "vespera :: axum :: Router :: new ()")

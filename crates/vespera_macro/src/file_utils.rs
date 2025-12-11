@@ -3,9 +3,7 @@ use std::path::{Path, PathBuf};
 
 pub fn collect_files(folder_path: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    for entry in std::fs::read_dir(folder_path)
-        .with_context(|| format!("Failed to read directory: {}", folder_path.display()))?
-    {
+    for entry in std::fs::read_dir(folder_path).with_context(|| format!("Failed to read directory: {}", folder_path.display()))? {
         let entry = entry.with_context(|| "Failed to read directory entry")?;
         let path = entry.path();
         if path.is_file() {
@@ -18,17 +16,9 @@ pub fn collect_files(folder_path: &Path) -> Result<Vec<PathBuf>> {
 }
 
 pub fn file_to_segments(file: &Path, base_path: &Path) -> Vec<String> {
-    let file_stem = if let Ok(file_stem) = file.strip_prefix(base_path) {
-        file_stem.display().to_string()
-    } else {
-        file.display().to_string()
-    };
+    let file_stem = if let Ok(file_stem) = file.strip_prefix(base_path) { file_stem.display().to_string() } else { file.display().to_string() };
     let file_stem = file_stem.replace(".rs", "").replace("\\", "/");
-    let mut segments: Vec<String> = file_stem
-        .split("/")
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
+    let mut segments: Vec<String> = file_stem.split("/").filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
     if let Some(last) = segments.last()
         && last == "mod"
     {
@@ -78,11 +68,7 @@ mod tests {
     // Root level files
     #[case("users.rs", ".", vec!["users"])]
     #[case("mod.rs", ".", vec![])]
-    fn test_file_to_segments(
-        #[case] file_path: &str,
-        #[case] base_path: &str,
-        #[case] expected: Vec<&str>,
-    ) {
+    fn test_file_to_segments(#[case] file_path: &str, #[case] base_path: &str, #[case] expected: Vec<&str>) {
         // Normalize paths by replacing backslashes with forward slashes
         // This ensures tests work cross-platform (Windows uses \, Unix uses /)
         let normalized_file_path = file_path.replace("\\", "/");
@@ -91,17 +77,10 @@ mod tests {
         let base = PathBuf::from(normalized_base_path);
         let result = file_to_segments(&file, &base);
         let expected_vec: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
-        assert_eq!(
-            result, expected_vec,
-            "Failed for file: {}, base: {}",
-            file_path, base_path
-        );
+        assert_eq!(result, expected_vec, "Failed for file: {}, base: {}", file_path, base_path);
     }
 
-    fn create_test_structure(
-        temp_dir: &TempDir,
-        structure: &[(&str, bool)],
-    ) -> Result<(), std::io::Error> {
+    fn create_test_structure(temp_dir: &TempDir, structure: &[(&str, bool)]) -> Result<(), std::io::Error> {
         // (path, is_file)
         for (path, is_file) in structure {
             let full_path = temp_dir.path().join(path);
@@ -118,15 +97,7 @@ mod tests {
     }
 
     fn normalize_paths(paths: &[PathBuf], base: &Path) -> Vec<String> {
-        let mut normalized: Vec<String> = paths
-            .iter()
-            .map(|p| {
-                p.strip_prefix(base)
-                    .unwrap_or(p)
-                    .to_string_lossy()
-                    .replace("\\", "/")
-            })
-            .collect();
+        let mut normalized: Vec<String> = paths.iter().map(|p| p.strip_prefix(base).unwrap_or(p).to_string_lossy().replace("\\", "/")).collect();
         normalized.sort();
         normalized
     }
@@ -204,15 +175,10 @@ mod tests {
         let mut normalized_result = normalize_paths(&result, temp_dir.path());
         normalized_result.sort();
 
-        let mut expected_normalized: Vec<String> =
-            expected_files.iter().map(|s| s.to_string()).collect();
+        let mut expected_normalized: Vec<String> = expected_files.iter().map(|s| s.to_string()).collect();
         expected_normalized.sort();
 
-        assert_eq!(
-            normalized_result, expected_normalized,
-            "Failed for structure: {:?}",
-            structure
-        );
+        assert_eq!(normalized_result, expected_normalized, "Failed for structure: {:?}", structure);
 
         temp_dir.close().expect("Failed to close temp dir");
     }

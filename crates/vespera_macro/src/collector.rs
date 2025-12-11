@@ -11,39 +11,21 @@ use syn::Item;
 pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> Result<CollectedMetadata> {
     let mut metadata = CollectedMetadata::new();
 
-    let files = collect_files(folder_path).with_context(|| {
-        format!(
-            "Failed to collect files from wtf: {}",
-            folder_path.display()
-        )
-    })?;
+    let files = collect_files(folder_path).with_context(|| format!("Failed to collect files from wtf: {}", folder_path.display()))?;
 
     for file in files {
         if !file.extension().map(|e| e == "rs").unwrap_or(false) {
             continue;
         }
 
-        let content = std::fs::read_to_string(&file)
-            .with_context(|| format!("Failed to read file: {}", file.display()))?;
+        let content = std::fs::read_to_string(&file).with_context(|| format!("Failed to read file: {}", file.display()))?;
 
-        let file_ast = syn::parse_file(&content)
-            .with_context(|| format!("Failed to parse file: {}", file.display()))?;
+        let file_ast = syn::parse_file(&content).with_context(|| format!("Failed to parse file: {}", file.display()))?;
 
         // Get module path
-        let segments = file
-            .strip_prefix(folder_path)
-            .map(|file_stem| file_to_segments(file_stem, folder_path))
-            .context(format!(
-                "Failed to strip prefix from file: {} (base: {})",
-                file.display(),
-                folder_path.display()
-            ))?;
+        let segments = file.strip_prefix(folder_path).map(|file_stem| file_to_segments(file_stem, folder_path)).context(format!("Failed to strip prefix from file: {} (base: {})", file.display(), folder_path.display()))?;
 
-        let module_path = if folder_name.is_empty() {
-            segments.join("::")
-        } else {
-            format!("{}::{}", folder_name, segments.join("::"))
-        };
+        let module_path = if folder_name.is_empty() { segments.join("::") } else { format!("{}::{}", folder_name, segments.join("::")) };
 
         let file_path = file.display().to_string();
 
@@ -61,15 +43,7 @@ pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> Result<Collect
                 };
                 let route_path = route_path.replace('_', "-");
 
-                metadata.routes.push(RouteMetadata {
-                    method: route_info.method,
-                    path: route_path,
-                    function_name: fn_item.sig.ident.to_string(),
-                    module_path: module_path.clone(),
-                    file_path: file_path.clone(),
-                    signature: quote::quote!(#fn_item).to_string(),
-                    error_status: route_info.error_status.clone(),
-                });
+                metadata.routes.push(RouteMetadata { method: route_info.method, path: route_path, function_name: fn_item.sig.ident.to_string(), module_path: module_path.clone(), file_path: file_path.clone(), signature: quote::quote!(#fn_item).to_string(), error_status: route_info.error_status.clone() });
             }
         }
     }
@@ -203,14 +177,7 @@ pub fn get_users() -> String {
         "get_users",
         "routes::api::v1::users",
     )]
-    fn test_collect_metadata_routes(
-        #[case] folder_name: &str,
-        #[case] files: Vec<(&str, &str)>,
-        #[case] expected_method: &str,
-        #[case] expected_path: &str,
-        #[case] expected_function_name: &str,
-        #[case] expected_module_path: &str,
-    ) {
+    fn test_collect_metadata_routes(#[case] folder_name: &str, #[case] files: Vec<(&str, &str)>, #[case] expected_method: &str, #[case] expected_path: &str, #[case] expected_function_name: &str, #[case] expected_module_path: &str) {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
         for (filename, content) in &files {
@@ -225,11 +192,7 @@ pub fn get_users() -> String {
         assert_eq!(route.function_name, expected_function_name);
         assert_eq!(route.module_path, expected_module_path);
         if let Some((first_filename, _)) = files.first() {
-            assert!(
-                route
-                    .file_path
-                    .contains(first_filename.split('/').next().unwrap())
-            );
+            assert!(route.file_path.contains(first_filename.split('/').next().unwrap()));
         }
 
         drop(temp_dir);
@@ -343,11 +306,7 @@ pub fn get_posts() -> String {
         assert_eq!(metadata.structs.len(), 0);
 
         // Check all routes are present
-        let function_names: Vec<&str> = metadata
-            .routes
-            .iter()
-            .map(|r| r.function_name.as_str())
-            .collect();
+        let function_names: Vec<&str> = metadata.routes.iter().map(|r| r.function_name.as_str()).collect();
         assert!(function_names.contains(&"get_users"));
         assert!(function_names.contains(&"create_users"));
         assert!(function_names.contains(&"get_posts"));

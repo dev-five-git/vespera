@@ -48,11 +48,7 @@ impl syn::parse::Parse for RouteArgs {
             }
         }
 
-        Ok(RouteArgs {
-            method,
-            path,
-            error_status,
-        })
+        Ok(RouteArgs { method, path, error_status })
     }
 }
 
@@ -109,103 +105,49 @@ mod tests {
     #[case(",", false, None, None, None)]
     #[case("get, 123", false, None, None, None)]
     #[case("get, =", false, None, None, None)]
-    fn test_route_args_parse(
-        #[case] input: &str,
-        #[case] should_parse: bool,
-        #[case] expected_method: Option<&str>,
-        #[case] expected_path: Option<&str>,
-        #[case] expected_error_status: Option<Vec<u16>>,
-    ) {
+    fn test_route_args_parse(#[case] input: &str, #[case] should_parse: bool, #[case] expected_method: Option<&str>, #[case] expected_path: Option<&str>, #[case] expected_error_status: Option<Vec<u16>>) {
         let result = syn::parse_str::<RouteArgs>(input);
 
         match (should_parse, result) {
             (true, Ok(route_args)) => {
                 // Check method
                 if let Some(exp_method) = expected_method {
-                    assert!(
-                        route_args.method.is_some(),
-                        "Expected method {} but got None for input: {}",
-                        exp_method,
-                        input
-                    );
-                    assert_eq!(
-                        route_args.method.as_ref().unwrap().to_string(),
-                        exp_method,
-                        "Method mismatch for input: {}",
-                        input
-                    );
+                    assert!(route_args.method.is_some(), "Expected method {} but got None for input: {}", exp_method, input);
+                    assert_eq!(route_args.method.as_ref().unwrap().to_string(), exp_method, "Method mismatch for input: {}", input);
                 } else {
-                    assert!(
-                        route_args.method.is_none(),
-                        "Expected no method but got {:?} for input: {}",
-                        route_args.method,
-                        input
-                    );
+                    assert!(route_args.method.is_none(), "Expected no method but got {:?} for input: {}", route_args.method, input);
                 }
 
                 // Check path
                 if let Some(exp_path) = expected_path {
-                    assert!(
-                        route_args.path.is_some(),
-                        "Expected path {} but got None for input: {}",
-                        exp_path,
-                        input
-                    );
-                    assert_eq!(
-                        route_args.path.as_ref().unwrap().value(),
-                        exp_path,
-                        "Path mismatch for input: {}",
-                        input
-                    );
+                    assert!(route_args.path.is_some(), "Expected path {} but got None for input: {}", exp_path, input);
+                    assert_eq!(route_args.path.as_ref().unwrap().value(), exp_path, "Path mismatch for input: {}", input);
                 } else {
-                    assert!(
-                        route_args.path.is_none(),
-                        "Expected no path but got {:?} for input: {}",
-                        route_args.path,
-                        input
-                    );
+                    assert!(route_args.path.is_none(), "Expected no path but got {:?} for input: {}", route_args.path, input);
                 }
 
                 // Check error_status
                 if let Some(exp_status) = expected_error_status {
-                    assert!(
-                        route_args.error_status.is_some(),
-                        "Expected error_status {:?} but got None for input: {}",
-                        exp_status,
-                        input
-                    );
+                    assert!(route_args.error_status.is_some(), "Expected error_status {:?} but got None for input: {}", exp_status, input);
                     let array = route_args.error_status.as_ref().unwrap();
                     let mut status_codes = Vec::new();
                     for elem in &array.elems {
-                        if let syn::Expr::Lit(syn::ExprLit {
-                            lit: syn::Lit::Int(lit_int),
-                            ..
-                        }) = elem &&  let Ok(code) = lit_int.base10_parse::<u16>() {
-                                status_codes.push(code);
+                        if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit_int), .. }) = elem
+                            && let Ok(code) = lit_int.base10_parse::<u16>()
+                        {
+                            status_codes.push(code);
                         }
                     }
-                    assert_eq!(
-                        status_codes, exp_status,
-                        "Error status mismatch for input: {}",
-                        input
-                    );
+                    assert_eq!(status_codes, exp_status, "Error status mismatch for input: {}", input);
                 } else {
-                    assert!(
-                        route_args.error_status.is_none(),
-                        "Expected no error_status but got {:?} for input: {}",
-                        route_args.error_status,
-                        input
-                    );
+                    assert!(route_args.error_status.is_none(), "Expected no error_status but got {:?} for input: {}", route_args.error_status, input);
                 }
             }
             (false, Err(_)) => {
                 // Expected error, test passes
             }
             (true, Err(e)) => {
-                panic!(
-                    "Expected successful parse but got error: {} for input: {}",
-                    e, input
-                );
+                panic!("Expected successful parse but got error: {} for input: {}", e, input);
             }
             (false, Ok(_)) => {
                 panic!("Expected parse error but got success for input: {}", input);

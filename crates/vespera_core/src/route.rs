@@ -319,48 +319,21 @@ mod tests {
 
     #[test]
     fn test_path_item_set_operation() {
-        let mut path_item = PathItem {
-            get: None,
-            post: None,
-            put: None,
-            patch: None,
-            delete: None,
-            head: None,
-            options: None,
-            trace: None,
-            parameters: None,
-            summary: None,
-            description: None,
-        };
+        let mut path_item = PathItem { get: None, post: None, put: None, patch: None, delete: None, head: None, options: None, trace: None, parameters: None, summary: None, description: None };
 
-        let operation = Operation {
-            operation_id: Some("test_operation".to_string()),
-            tags: None,
-            summary: None,
-            description: None,
-            parameters: None,
-            request_body: None,
-            responses: BTreeMap::new(),
-            security: None,
-        };
+        let operation = Operation { operation_id: Some("test_operation".to_string()), tags: None, summary: None, description: None, parameters: None, request_body: None, responses: BTreeMap::new(), security: None };
 
         // Test setting GET operation
         path_item.set_operation(HttpMethod::Get, operation.clone());
         assert!(path_item.get.is_some());
-        assert_eq!(
-            path_item.get.as_ref().unwrap().operation_id,
-            Some("test_operation".to_string())
-        );
+        assert_eq!(path_item.get.as_ref().unwrap().operation_id, Some("test_operation".to_string()));
 
         // Test setting POST operation
         let mut operation_post = operation.clone();
         operation_post.operation_id = Some("post_operation".to_string());
         path_item.set_operation(HttpMethod::Post, operation_post);
         assert!(path_item.post.is_some());
-        assert_eq!(
-            path_item.post.as_ref().unwrap().operation_id,
-            Some("post_operation".to_string())
-        );
+        assert_eq!(path_item.post.as_ref().unwrap().operation_id, Some("post_operation".to_string()));
 
         // Test setting PUT operation
         let mut operation_put = operation.clone();
@@ -401,30 +374,9 @@ mod tests {
 
     #[test]
     fn test_path_item_get_operation() {
-        let mut path_item = PathItem {
-            get: None,
-            post: None,
-            put: None,
-            patch: None,
-            delete: None,
-            head: None,
-            options: None,
-            trace: None,
-            parameters: None,
-            summary: None,
-            description: None,
-        };
+        let mut path_item = PathItem { get: None, post: None, put: None, patch: None, delete: None, head: None, options: None, trace: None, parameters: None, summary: None, description: None };
 
-        let operation = Operation {
-            operation_id: Some("test_operation".to_string()),
-            tags: None,
-            summary: None,
-            description: None,
-            parameters: None,
-            request_body: None,
-            responses: BTreeMap::new(),
-            security: None,
-        };
+        let operation = Operation { operation_id: Some("test_operation".to_string()), tags: None, summary: None, description: None, parameters: None, request_body: None, responses: BTreeMap::new(), security: None };
 
         // Initially, all operations should be None
         assert!(path_item.get_operation(&HttpMethod::Get).is_none());
@@ -434,10 +386,7 @@ mod tests {
         path_item.set_operation(HttpMethod::Get, operation.clone());
         let retrieved = path_item.get_operation(&HttpMethod::Get);
         assert!(retrieved.is_some());
-        assert_eq!(
-            retrieved.unwrap().operation_id,
-            Some("test_operation".to_string())
-        );
+        assert_eq!(retrieved.unwrap().operation_id, Some("test_operation".to_string()));
 
         // Set POST operation
         let mut operation_post = operation.clone();
@@ -445,10 +394,7 @@ mod tests {
         path_item.set_operation(HttpMethod::Post, operation_post);
         let retrieved = path_item.get_operation(&HttpMethod::Post);
         assert!(retrieved.is_some());
-        assert_eq!(
-            retrieved.unwrap().operation_id,
-            Some("post_operation".to_string())
-        );
+        assert_eq!(retrieved.unwrap().operation_id, Some("post_operation".to_string()));
 
         // Test all methods
         path_item.set_operation(HttpMethod::Put, operation.clone());
@@ -472,55 +418,19 @@ mod tests {
 
     #[test]
     fn test_path_item_set_operation_overwrites() {
-        let mut path_item = PathItem {
-            get: None,
-            post: None,
-            put: None,
-            patch: None,
-            delete: None,
-            head: None,
-            options: None,
-            trace: None,
-            parameters: None,
-            summary: None,
-            description: None,
-        };
+        let mut path_item = PathItem { get: None, post: None, put: None, patch: None, delete: None, head: None, options: None, trace: None, parameters: None, summary: None, description: None };
 
-        let operation1 = Operation {
-            operation_id: Some("first".to_string()),
-            tags: None,
-            summary: None,
-            description: None,
-            parameters: None,
-            request_body: None,
-            responses: BTreeMap::new(),
-            security: None,
-        };
+        let operation1 = Operation { operation_id: Some("first".to_string()), tags: None, summary: None, description: None, parameters: None, request_body: None, responses: BTreeMap::new(), security: None };
 
-        let operation2 = Operation {
-            operation_id: Some("second".to_string()),
-            tags: None,
-            summary: None,
-            description: None,
-            parameters: None,
-            request_body: None,
-            responses: BTreeMap::new(),
-            security: None,
-        };
+        let operation2 = Operation { operation_id: Some("second".to_string()), tags: None, summary: None, description: None, parameters: None, request_body: None, responses: BTreeMap::new(), security: None };
 
         // Set first operation
         path_item.set_operation(HttpMethod::Get, operation1);
-        assert_eq!(
-            path_item.get.as_ref().unwrap().operation_id,
-            Some("first".to_string())
-        );
+        assert_eq!(path_item.get.as_ref().unwrap().operation_id, Some("first".to_string()));
 
         // Overwrite with second operation
         path_item.set_operation(HttpMethod::Get, operation2);
-        assert_eq!(
-            path_item.get.as_ref().unwrap().operation_id,
-            Some("second".to_string())
-        );
+        assert_eq!(path_item.get.as_ref().unwrap().operation_id, Some("second".to_string()));
     }
 
     #[test]

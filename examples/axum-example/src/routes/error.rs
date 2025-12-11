@@ -24,42 +24,22 @@ impl IntoResponse for ErrorResponse2 {
 
 #[vespera::route()]
 pub async fn error_endpoint() -> Result<&'static str, Json<ErrorResponse>> {
-    Err(Json(ErrorResponse {
-        error: "Internal server error".to_string(),
-        code: 500,
-    }))
+    Err(Json(ErrorResponse { error: "Internal server error".to_string(), code: 500 }))
 }
 
 #[vespera::route(path = "/error-with-status")]
-pub async fn error_endpoint_with_status_code()
--> Result<&'static str, (StatusCode, Json<ErrorResponse>)> {
-    Err((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse {
-            error: "Internal server error".to_string(),
-            code: 500,
-        }),
-    ))
+pub async fn error_endpoint_with_status_code() -> Result<&'static str, (StatusCode, Json<ErrorResponse>)> {
+    Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Internal server error".to_string(), code: 500 })))
 }
 
 #[vespera::route(path = "/error2")]
 pub async fn error_endpoint2() -> Result<&'static str, ErrorResponse2> {
-    Err(ErrorResponse2 {
-        error: "Internal server error".to_string(),
-        code: 500,
-    })
+    Err(ErrorResponse2 { error: "Internal server error".to_string(), code: 500 })
 }
 
 #[vespera::route(path = "/error-with-status2", error_status = [500, 400, 404])]
-pub async fn error_endpoint_with_status_code2() -> Result<&'static str, (StatusCode, ErrorResponse2)>
-{
-    Err((
-        StatusCode::INTERNAL_SERVER_ERROR,
-        ErrorResponse2 {
-            error: "Internal server error".to_string(),
-            code: 500,
-        },
-    ))
+pub async fn error_endpoint_with_status_code2() -> Result<&'static str, (StatusCode, ErrorResponse2)> {
+    Err((StatusCode::INTERNAL_SERVER_ERROR, ErrorResponse2 { error: "Internal server error".to_string(), code: 500 }))
 }
 
 #[vespera::route(path = "/header-map")]
@@ -70,8 +50,7 @@ pub async fn header_map_endpoint() -> Result<(HeaderMap, &'static str), ErrorRes
 }
 
 #[vespera::route(path = "/header-map2")]
-pub async fn header_map_endpoint2() -> Result<(StatusCode, HeaderMap, &'static str), ErrorResponse2>
-{
+pub async fn header_map_endpoint2() -> Result<(StatusCode, HeaderMap, &'static str), ErrorResponse2> {
     let headers = HeaderMap::new();
     println!("headers: {:?}", headers);
     Ok((StatusCode::INTERNAL_SERVER_ERROR, headers, "ok"))

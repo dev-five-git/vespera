@@ -86,9 +86,7 @@ pub struct StructBodyWithOptional {
 }
 
 #[vespera::route(post, path = "/struct-body-with-optional")]
-pub async fn mod_file_with_struct_body_with_optional(
-    Json(body): Json<StructBodyWithOptional>,
-) -> String {
+pub async fn mod_file_with_struct_body_with_optional(Json(body): Json<StructBodyWithOptional>) -> String {
     format!("name: {:?}, age: {:?}", body.name, body.age)
 }
 
@@ -109,20 +107,7 @@ pub struct ComplexStructBody {
 
 #[vespera::route(post, path = "/complex-struct-body")]
 pub async fn mod_file_with_complex_struct_body(Json(body): Json<ComplexStructBody>) -> String {
-    format!(
-        "name: {}, age: {}, nested_struct: {:?}, array: {:?}, map: {:?}, nested_array: {:?}, nested_map: {:?}, nested_struct_array: {:?}, nested_struct_map: {:?}, nested_struct_array_map: {:?}, nested_struct_map_array: {:?}",
-        body.name,
-        body.age,
-        body.nested_struct,
-        body.array,
-        body.map,
-        body.nested_array,
-        body.nested_map,
-        body.nested_struct_array,
-        body.nested_struct_map,
-        body.nested_struct_array_map,
-        body.nested_struct_map_array
-    )
+    format!("name: {}, age: {}, nested_struct: {:?}, array: {:?}, map: {:?}, nested_array: {:?}, nested_map: {:?}, nested_struct_array: {:?}, nested_struct_map: {:?}, nested_struct_array_map: {:?}, nested_struct_map_array: {:?}", body.name, body.age, body.nested_struct, body.array, body.map, body.nested_array, body.nested_map, body.nested_struct_array, body.nested_struct_map, body.nested_struct_array_map, body.nested_struct_map_array)
 }
 
 #[derive(Deserialize, Schema)]
@@ -142,23 +127,8 @@ pub struct ComplexStructBodyWithRename {
 }
 
 #[vespera::route(post, path = "/complex-struct-body-with-rename")]
-pub async fn mod_file_with_complex_struct_body_with_rename(
-    Json(body): Json<ComplexStructBodyWithRename>,
-) -> String {
-    format!(
-        "name: {}, age: {}, nested_struct: {:?}, array: {:?}, map: {:?}, nested_array: {:?}, nested_map: {:?}, nested_struct_array: {:?}, nested_struct_map: {:?}, nested_struct_array_map: {:?}, nested_struct_map_array: {:?}",
-        body.name,
-        body.age,
-        body.nested_struct,
-        body.array,
-        body.map,
-        body.nested_array,
-        body.nested_map,
-        body.nested_struct_array,
-        body.nested_struct_map,
-        body.nested_struct_array_map,
-        body.nested_struct_map_array
-    )
+pub async fn mod_file_with_complex_struct_body_with_rename(Json(body): Json<ComplexStructBodyWithRename>) -> String {
+    format!("name: {}, age: {}, nested_struct: {:?}, array: {:?}, map: {:?}, nested_array: {:?}, nested_map: {:?}, nested_struct_array: {:?}, nested_struct_map: {:?}, nested_struct_array_map: {:?}, nested_struct_map_array: {:?}", body.name, body.age, body.nested_struct, body.array, body.map, body.nested_array, body.nested_map, body.nested_struct_array, body.nested_struct_map, body.nested_struct_array_map, body.nested_struct_map_array)
 }
 
 #[vespera::route(get, path = "/test_struct")]

@@ -131,8 +131,7 @@ pub(super) fn rename_field(field_name: &str, rename_all: Option<&str>) -> String
         Some("SCREAMING_SNAKE_CASE") => {
             // Convert to SCREAMING_SNAKE_CASE
             // If already in SCREAMING_SNAKE_CASE format, return as is
-            if field_name.chars().all(|c| c.is_uppercase() || c == '_') && field_name.contains('_')
-            {
+            if field_name.chars().all(|c| c.is_uppercase() || c == '_') && field_name.contains('_') {
                 return field_name.to_string();
             }
             // First convert to snake_case if needed, then uppercase
@@ -154,11 +153,7 @@ pub(super) fn rename_field(field_name: &str, rename_all: Option<&str>) -> String
             // First convert to kebab-case if needed, then uppercase
             let mut kebab_case = String::new();
             for (i, ch) in field_name.chars().enumerate() {
-                if ch.is_uppercase()
-                    && i > 0
-                    && !kebab_case.ends_with('-')
-                    && !kebab_case.ends_with('_')
-                {
+                if ch.is_uppercase() && i > 0 && !kebab_case.ends_with('-') && !kebab_case.ends_with('_') {
                     kebab_case.push('-');
                 }
                 if ch == '_' {
@@ -175,19 +170,12 @@ pub(super) fn rename_field(field_name: &str, rename_all: Option<&str>) -> String
     }
 }
 
-pub fn parse_enum_to_schema(
-    enum_item: &syn::ItemEnum,
-    known_schemas: &HashMap<String, String>,
-    struct_definitions: &HashMap<String, String>,
-) -> Schema {
+pub fn parse_enum_to_schema(enum_item: &syn::ItemEnum, known_schemas: &HashMap<String, String>, struct_definitions: &HashMap<String, String>) -> Schema {
     // Extract rename_all attribute from enum
     let rename_all = extract_rename_all(&enum_item.attrs);
 
     // Check if all variants are unit variants
-    let all_unit = enum_item
-        .variants
-        .iter()
-        .all(|v| matches!(v.fields, syn::Fields::Unit));
+    let all_unit = enum_item.variants.iter().all(|v| matches!(v.fields, syn::Fields::Unit));
 
     if all_unit {
         // Simple enum with string values
@@ -207,15 +195,7 @@ pub fn parse_enum_to_schema(
             enum_values.push(serde_json::Value::String(enum_value));
         }
 
-        Schema {
-            schema_type: Some(SchemaType::String),
-            r#enum: if enum_values.is_empty() {
-                None
-            } else {
-                Some(enum_values)
-            },
-            ..Schema::string()
-        }
+        Schema { schema_type: Some(SchemaType::String), r#enum: if enum_values.is_empty() { None } else { Some(enum_values) }, ..Schema::string() }
     } else {
         // Enum with data - use oneOf
         let mut one_of_schemas = Vec::new();
@@ -234,11 +214,7 @@ pub fn parse_enum_to_schema(
             let variant_schema = match &variant.fields {
                 syn::Fields::Unit => {
                     // Unit variant: {"const": "VariantName"}
-                    Schema {
-                        schema_type: Some(SchemaType::String),
-                        r#enum: Some(vec![serde_json::Value::String(variant_key)]),
-                        ..Schema::string()
-                    }
+                    Schema { r#enum: Some(vec![serde_json::Value::String(variant_key)]), ..Schema::string() }
                 }
                 syn::Fields::Unnamed(fields_unnamed) => {
                     // Tuple variant: {"VariantName": <inner_type>}
@@ -247,29 +223,19 @@ pub fn parse_enum_to_schema(
                     if fields_unnamed.unnamed.len() == 1 {
                         // Single field tuple variant
                         let inner_type = &fields_unnamed.unnamed[0].ty;
-                        let inner_schema =
-                            parse_type_to_schema_ref(inner_type, known_schemas, struct_definitions);
+                        let inner_schema = parse_type_to_schema_ref(inner_type, known_schemas, struct_definitions);
 
                         let mut properties = BTreeMap::new();
                         properties.insert(variant_key.clone(), inner_schema);
 
-                        Schema {
-                            schema_type: Some(SchemaType::Object),
-                            properties: Some(properties),
-                            required: Some(vec![variant_key]),
-                            ..Schema::object()
-                        }
+                        Schema { properties: Some(properties), required: Some(vec![variant_key]), ..Schema::object() }
                     } else {
                         // Multiple fields tuple variant - serialize as array
                         // serde serializes tuple variants as: {"VariantName": [value1, value2, ...]}
                         // For OpenAPI 3.1, we use prefixItems to represent tuple arrays
                         let mut tuple_item_schemas = Vec::new();
                         for field in &fields_unnamed.unnamed {
-                            let field_schema = parse_type_to_schema_ref(
-                                &field.ty,
-                                known_schemas,
-                                struct_definitions,
-                            );
+                            let field_schema = parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions);
                             tuple_item_schemas.push(field_schema);
                         }
 
@@ -277,7 +243,6 @@ pub fn parse_enum_to_schema(
 
                         // Create array schema with prefixItems for tuple arrays (OpenAPI 3.1)
                         let array_schema = Schema {
-                            schema_type: Some(SchemaType::Array),
                             prefix_items: Some(tuple_item_schemas),
                             min_items: Some(tuple_len),
                             max_items: Some(tuple_len),
@@ -286,17 +251,9 @@ pub fn parse_enum_to_schema(
                         };
 
                         let mut properties = BTreeMap::new();
-                        properties.insert(
-                            variant_key.clone(),
-                            SchemaRef::Inline(Box::new(array_schema)),
-                        );
+                        properties.insert(variant_key.clone(), SchemaRef::Inline(Box::new(array_schema)));
 
-                        Schema {
-                            schema_type: Some(SchemaType::Object),
-                            properties: Some(properties),
-                            required: Some(vec![variant_key]),
-                            ..Schema::object()
-                        }
+                        Schema { properties: Some(properties), required: Some(vec![variant_key]), ..Schema::object() }
                     }
                 }
                 syn::Fields::Named(fields_named) => {
@@ -306,26 +263,18 @@ pub fn parse_enum_to_schema(
                     let variant_rename_all = extract_rename_all(&variant.attrs);
 
                     for field in &fields_named.named {
-                        let rust_field_name = field
-                            .ident
-                            .as_ref()
-                            .map(|i| i.to_string())
-                            .unwrap_or_else(|| "unknown".to_string());
+                        let rust_field_name = field.ident.as_ref().map(|i| i.to_string()).unwrap_or_else(|| "unknown".to_string());
 
                         // Check for field-level rename attribute first (takes precedence)
                         let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
                             renamed
                         } else {
                             // Apply rename_all transformation if present
-                            rename_field(
-                                &rust_field_name,
-                                variant_rename_all.as_deref().or(rename_all.as_deref()),
-                            )
+                            rename_field(&rust_field_name, variant_rename_all.as_deref().or(rename_all.as_deref()))
                         };
 
                         let field_type = &field.ty;
-                        let schema_ref =
-                            parse_type_to_schema_ref(field_type, known_schemas, struct_definitions);
+                        let schema_ref = parse_type_to_schema_ref(field_type, known_schemas, struct_definitions);
 
                         variant_properties.insert(field_name.clone(), schema_ref);
 
@@ -347,33 +296,12 @@ pub fn parse_enum_to_schema(
                     }
 
                     // Wrap struct variant in an object with the variant name as key
-                    let inner_struct_schema = Schema {
-                        schema_type: Some(SchemaType::Object),
-                        properties: if variant_properties.is_empty() {
-                            None
-                        } else {
-                            Some(variant_properties)
-                        },
-                        required: if variant_required.is_empty() {
-                            None
-                        } else {
-                            Some(variant_required)
-                        },
-                        ..Schema::object()
-                    };
+                    let inner_struct_schema = Schema { properties: if variant_properties.is_empty() { None } else { Some(variant_properties) }, required: if variant_required.is_empty() { None } else { Some(variant_required) }, ..Schema::object() };
 
                     let mut properties = BTreeMap::new();
-                    properties.insert(
-                        variant_key.clone(),
-                        SchemaRef::Inline(Box::new(inner_struct_schema)),
-                    );
+                    properties.insert(variant_key.clone(), SchemaRef::Inline(Box::new(inner_struct_schema)));
 
-                    Schema {
-                        schema_type: Some(SchemaType::Object),
-                        properties: Some(properties),
-                        required: Some(vec![variant_key]),
-                        ..Schema::object()
-                    }
+                    Schema { properties: Some(properties), required: Some(vec![variant_key]), ..Schema::object() }
                 }
             };
 
@@ -382,21 +310,13 @@ pub fn parse_enum_to_schema(
 
         Schema {
             schema_type: None, // oneOf doesn't have a single type
-            one_of: if one_of_schemas.is_empty() {
-                None
-            } else {
-                Some(one_of_schemas)
-            },
+            one_of: if one_of_schemas.is_empty() { None } else { Some(one_of_schemas) },
             ..Schema::new(SchemaType::Object)
         }
     }
 }
 
-pub fn parse_struct_to_schema(
-    struct_item: &syn::ItemStruct,
-    known_schemas: &HashMap<String, String>,
-    struct_definitions: &HashMap<String, String>,
-) -> Schema {
+pub fn parse_struct_to_schema(struct_item: &syn::ItemStruct, known_schemas: &HashMap<String, String>, struct_definitions: &HashMap<String, String>) -> Schema {
     let mut properties = BTreeMap::new();
     let mut required = Vec::new();
 
@@ -406,11 +326,7 @@ pub fn parse_struct_to_schema(
     match &struct_item.fields {
         Fields::Named(fields_named) => {
             for field in &fields_named.named {
-                let rust_field_name = field
-                    .ident
-                    .as_ref()
-                    .map(|i| i.to_string())
-                    .unwrap_or_else(|| "unknown".to_string());
+                let rust_field_name = field.ident.as_ref().map(|i| i.to_string()).unwrap_or_else(|| "unknown".to_string());
 
                 // Check for field-level rename attribute first (takes precedence)
                 let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
@@ -422,8 +338,7 @@ pub fn parse_struct_to_schema(
 
                 let field_type = &field.ty;
 
-                let schema_ref =
-                    parse_type_to_schema_ref(field_type, known_schemas, struct_definitions);
+                let schema_ref = parse_type_to_schema_ref(field_type, known_schemas, struct_definitions);
 
                 properties.insert(field_name.clone(), schema_ref);
 
@@ -452,20 +367,7 @@ pub fn parse_struct_to_schema(
         }
     }
 
-    Schema {
-        schema_type: Some(SchemaType::Object),
-        properties: if properties.is_empty() {
-            None
-        } else {
-            Some(properties)
-        },
-        required: if required.is_empty() {
-            None
-        } else {
-            Some(required)
-        },
-        ..Schema::object()
-    }
+    Schema { schema_type: Some(SchemaType::Object), properties: if properties.is_empty() { None } else { Some(properties) }, required: if required.is_empty() { None } else { Some(required) }, ..Schema::object() }
 }
 
 fn substitute_type(ty: &Type, generic_params: &[String], concrete_types: &[&Type]) -> Type {
@@ -506,21 +408,7 @@ pub(super) fn is_primitive_type(ty: &Type) -> bool {
             let path = &type_path.path;
             if path.segments.len() == 1 {
                 let ident = path.segments[0].ident.to_string();
-                matches!(
-                    ident.as_str(),
-                    "i8" | "i16"
-                        | "i32"
-                        | "i64"
-                        | "u8"
-                        | "u16"
-                        | "u32"
-                        | "u64"
-                        | "f32"
-                        | "f64"
-                        | "bool"
-                        | "String"
-                        | "str"
-                )
+                matches!(ident.as_str(), "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64" | "bool" | "String" | "str")
             } else {
                 false
             }
@@ -529,19 +417,11 @@ pub(super) fn is_primitive_type(ty: &Type) -> bool {
     }
 }
 
-pub fn parse_type_to_schema_ref(
-    ty: &Type,
-    known_schemas: &HashMap<String, String>,
-    struct_definitions: &HashMap<String, String>,
-) -> SchemaRef {
+pub fn parse_type_to_schema_ref(ty: &Type, known_schemas: &HashMap<String, String>, struct_definitions: &HashMap<String, String>) -> SchemaRef {
     parse_type_to_schema_ref_with_schemas(ty, known_schemas, struct_definitions)
 }
 
-pub(super) fn parse_type_to_schema_ref_with_schemas(
-    ty: &Type,
-    known_schemas: &HashMap<String, String>,
-    struct_definitions: &HashMap<String, String>,
-) -> SchemaRef {
+pub(super) fn parse_type_to_schema_ref_with_schemas(ty: &Type, known_schemas: &HashMap<String, String>, struct_definitions: &HashMap<String, String>) -> SchemaRef {
     match ty {
         Type::Path(type_path) => {
             let path = &type_path.path;
@@ -558,11 +438,7 @@ pub(super) fn parse_type_to_schema_ref_with_schemas(
                 match ident_str.as_str() {
                     "Vec" | "Option" => {
                         if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                            let inner_schema = parse_type_to_schema_ref(
-                                inner_ty,
-                                known_schemas,
-                                struct_definitions,
-                            );
+                            let inner_schema = parse_type_to_schema_ref(inner_ty, known_schemas, struct_definitions);
                             if ident_str == "Vec" {
                                 return SchemaRef::Inline(Box::new(Schema::array(inner_schema)));
                             } else {
@@ -578,30 +454,17 @@ pub(super) fn parse_type_to_schema_ref_with_schemas(
                         // HashMap<K, V> or BTreeMap<K, V> -> object with additionalProperties
                         // K is typically String, we use V as the value type
                         if args.args.len() >= 2
-                            && let (
-                                Some(syn::GenericArgument::Type(_key_ty)),
-                                Some(syn::GenericArgument::Type(value_ty)),
-                            ) = (args.args.get(0), args.args.get(1))
+                            && let (Some(syn::GenericArgument::Type(_key_ty)), Some(syn::GenericArgument::Type(value_ty))) = (args.args.get(0), args.args.get(1))
                         {
-                            let value_schema = parse_type_to_schema_ref(
-                                value_ty,
-                                known_schemas,
-                                struct_definitions,
-                            );
+                            let value_schema = parse_type_to_schema_ref(value_ty, known_schemas, struct_definitions);
                             // Convert SchemaRef to serde_json::Value for additional_properties
                             let additional_props_value = match value_schema {
                                 SchemaRef::Ref(ref_ref) => {
                                     serde_json::json!({ "$ref": ref_ref.ref_path })
                                 }
-                                SchemaRef::Inline(schema) => {
-                                    serde_json::to_value(&*schema).unwrap_or(serde_json::json!({}))
-                                }
+                                SchemaRef::Inline(schema) => serde_json::to_value(&*schema).unwrap_or(serde_json::json!({})),
                             };
-                            return SchemaRef::Inline(Box::new(Schema {
-                                schema_type: Some(SchemaType::Object),
-                                additional_properties: Some(additional_props_value),
-                                ..Schema::object()
-                            }));
+                            return SchemaRef::Inline(Box::new(Schema { schema_type: Some(SchemaType::Object), additional_properties: Some(additional_props_value), ..Schema::object() }));
                         }
                     }
                     _ => {}
@@ -610,9 +473,7 @@ pub(super) fn parse_type_to_schema_ref_with_schemas(
 
             // Handle primitive types
             match ident_str.as_str() {
-                "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => {
-                    SchemaRef::Inline(Box::new(Schema::integer()))
-                }
+                "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => SchemaRef::Inline(Box::new(Schema::integer())),
                 "f32" | "f64" => SchemaRef::Inline(Box::new(Schema::number())),
                 "bool" => SchemaRef::Inline(Box::new(Schema::boolean())),
                 "String" | "str" => SchemaRef::Inline(Box::new(Schema::string())),
@@ -641,41 +502,16 @@ pub(super) fn parse_type_to_schema_ref_with_schemas(
                                 && let Ok(mut parsed) = syn::parse_str::<syn::ItemStruct>(base_def)
                             {
                                 // Extract generic parameter names from the struct definition
-                                let generic_params: Vec<String> = parsed
-                                    .generics
-                                    .params
-                                    .iter()
-                                    .filter_map(|param| {
-                                        if let syn::GenericParam::Type(type_param) = param {
-                                            Some(type_param.ident.to_string())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect();
+                                let generic_params: Vec<String> = parsed.generics.params.iter().filter_map(|param| if let syn::GenericParam::Type(type_param) = param { Some(type_param.ident.to_string()) } else { None }).collect();
 
                                 // Extract concrete type arguments
-                                let concrete_types: Vec<&Type> = args
-                                    .args
-                                    .iter()
-                                    .filter_map(|arg| {
-                                        if let syn::GenericArgument::Type(ty) = arg {
-                                            Some(ty)
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect();
+                                let concrete_types: Vec<&Type> = args.args.iter().filter_map(|arg| if let syn::GenericArgument::Type(ty) = arg { Some(ty) } else { None }).collect();
 
                                 // Substitute generic parameters with concrete types in all fields
                                 if generic_params.len() == concrete_types.len() {
                                     if let syn::Fields::Named(fields_named) = &mut parsed.fields {
                                         for field in &mut fields_named.named {
-                                            field.ty = substitute_type(
-                                                &field.ty,
-                                                &generic_params,
-                                                &concrete_types,
-                                            );
+                                            field.ty = substitute_type(&field.ty, &generic_params, &concrete_types);
                                         }
                                     }
 
@@ -684,11 +520,7 @@ pub(super) fn parse_type_to_schema_ref_with_schemas(
                                     parsed.generics.where_clause = None;
 
                                     // Parse the substituted struct to schema (inline)
-                                    let schema = parse_struct_to_schema(
-                                        &parsed,
-                                        known_schemas,
-                                        struct_definitions,
-                                    );
+                                    let schema = parse_struct_to_schema(&parsed, known_schemas, struct_definitions);
                                     return SchemaRef::Inline(Box::new(schema));
                                 }
                             }
@@ -722,11 +554,7 @@ mod tests {
     #[rstest]
     #[case("HashMap<String, i32>", Some(SchemaType::Object), true)]
     #[case("Option<String>", Some(SchemaType::String), false)] // nullable check
-    fn test_parse_type_to_schema_ref_cases(
-        #[case] ty_src: &str,
-        #[case] expected_type: Option<SchemaType>,
-        #[case] expect_additional_props: bool,
-    ) {
+    fn test_parse_type_to_schema_ref_cases(#[case] ty_src: &str, #[case] expected_type: Option<SchemaType>, #[case] expect_additional_props: bool) {
         let ty: syn::Type = syn::parse_str(ty_src).unwrap();
         let schema_ref = parse_type_to_schema_ref(&ty, &HashMap::new(), &HashMap::new());
         if let SchemaRef::Inline(schema) = schema_ref {
@@ -779,22 +607,11 @@ mod tests {
         vec!["first_item", "second_item"],
         "simple_snake"
     )]
-    fn test_parse_enum_to_schema_unit_variants(
-        #[case] enum_src: &str,
-        #[case] expected_type: SchemaType,
-        #[case] expected_enum: Vec<&str>,
-        #[case] suffix: &str,
-    ) {
+    fn test_parse_enum_to_schema_unit_variants(#[case] enum_src: &str, #[case] expected_type: SchemaType, #[case] expected_enum: Vec<&str>, #[case] suffix: &str) {
         let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
         let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
         assert_eq!(schema.schema_type, Some(expected_type));
-        let got = schema
-            .clone()
-            .r#enum
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap().to_string())
-            .collect::<Vec<_>>();
+        let got = schema.clone().r#enum.unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect::<Vec<_>>();
         assert_eq!(got, expected_enum);
         with_settings!({ snapshot_suffix => format!("unit_{}", suffix) }, {
             assert_debug_snapshot!(schema);
@@ -835,13 +652,7 @@ mod tests {
         0, // not an array; ignore prefix_items length
         "named_object"
     )]
-    fn test_parse_enum_to_schema_tuple_and_named_variants(
-        #[case] enum_src: &str,
-        #[case] expected_one_of_len: usize,
-        #[case] expected_inner_type: Option<SchemaType>,
-        #[case] expected_prefix_items_len: usize,
-        #[case] suffix: &str,
-    ) {
+    fn test_parse_enum_to_schema_tuple_and_named_variants(#[case] enum_src: &str, #[case] expected_one_of_len: usize, #[case] expected_inner_type: Option<SchemaType>, #[case] expected_prefix_items_len: usize, #[case] suffix: &str) {
         let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
         let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
         let one_of = schema.clone().one_of.expect("one_of missing");
@@ -857,10 +668,7 @@ mod tests {
                         if let SchemaRef::Inline(array_schema) = inner_schema {
                             assert_eq!(array_schema.schema_type, Some(SchemaType::Array));
                             if expected_prefix_items_len > 0 {
-                                assert_eq!(
-                                    array_schema.prefix_items.as_ref().unwrap().len(),
-                                    expected_prefix_items_len
-                                );
+                                assert_eq!(array_schema.prefix_items.as_ref().unwrap().len(), expected_prefix_items_len);
                             }
                         } else {
                             panic!("Expected inline array schema");
@@ -872,13 +680,7 @@ mod tests {
                             let inner_props = inner_obj.properties.as_ref().unwrap();
                             assert!(inner_props.contains_key("id"));
                             assert!(inner_props.contains_key("note"));
-                            assert!(
-                                inner_obj
-                                    .required
-                                    .as_ref()
-                                    .unwrap()
-                                    .contains(&"id".to_string())
-                            );
+                            assert!(inner_obj.required.as_ref().unwrap().contains(&"id".to_string()));
                         } else {
                             panic!("Expected inline object schema");
                         }
@@ -907,12 +709,7 @@ mod tests {
         SchemaType::String,
         "Ready"
     )]
-    fn test_parse_enum_to_schema_mixed_unit_variant(
-        #[case] enum_src: &str,
-        #[case] expected_one_of_len: usize,
-        #[case] expected_unit_type: SchemaType,
-        #[case] expected_unit_value: &str,
-    ) {
+    fn test_parse_enum_to_schema_mixed_unit_variant(#[case] enum_src: &str, #[case] expected_one_of_len: usize, #[case] expected_unit_type: SchemaType, #[case] expected_unit_value: &str) {
         let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
 
         let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
@@ -946,10 +743,7 @@ mod tests {
             SchemaRef::Inline(s) => s,
             _ => panic!("Expected inline schema"),
         };
-        let props = variant_obj
-            .properties
-            .as_ref()
-            .expect("variant props missing");
+        let props = variant_obj.properties.as_ref().expect("variant props missing");
         assert!(props.contains_key("data-item"));
     }
 
@@ -971,10 +765,7 @@ mod tests {
             SchemaRef::Inline(s) => s,
             _ => panic!("Expected inline schema"),
         };
-        let props = variant_obj
-            .properties
-            .as_ref()
-            .expect("variant props missing");
+        let props = variant_obj.properties.as_ref().expect("variant props missing");
         let inner = match props.get("detail").expect("variant key missing") {
             SchemaRef::Inline(s) => s,
             _ => panic!("Expected inline inner schema"),
@@ -1003,10 +794,7 @@ mod tests {
             SchemaRef::Inline(s) => s,
             _ => panic!("Expected inline schema"),
         };
-        let props = variant_obj
-            .properties
-            .as_ref()
-            .expect("variant props missing");
+        let props = variant_obj.properties.as_ref().expect("variant props missing");
         assert!(props.contains_key("Explicit"));
         assert!(!props.contains_key("data_item"));
     }
@@ -1030,15 +818,8 @@ mod tests {
             SchemaRef::Inline(s) => s,
             _ => panic!("Expected inline schema"),
         };
-        let props = variant_obj
-            .properties
-            .as_ref()
-            .expect("variant props missing");
-        let inner = match props
-            .get("detail")
-            .or_else(|| props.get("Detail"))
-            .expect("variant key missing")
-        {
+        let props = variant_obj.properties.as_ref().expect("variant props missing");
+        let inner = match props.get("detail").or_else(|| props.get("Detail")).expect("variant key missing") {
             SchemaRef::Inline(s) => s,
             _ => panic!("Expected inline inner schema"),
         };
@@ -1062,20 +843,8 @@ mod tests {
         let props = schema.properties.as_ref().unwrap();
         assert!(props.contains_key("id"));
         assert!(props.contains_key("name"));
-        assert!(
-            schema
-                .required
-                .as_ref()
-                .unwrap()
-                .contains(&"id".to_string())
-        );
-        assert!(
-            !schema
-                .required
-                .as_ref()
-                .unwrap()
-                .contains(&"name".to_string())
-        );
+        assert!(schema.required.as_ref().unwrap().contains(&"id".to_string()));
+        assert!(!schema.required.as_ref().unwrap().contains(&"name".to_string()));
     }
 
     #[test]
@@ -1114,13 +883,7 @@ mod tests {
     #[test]
     fn test_parse_type_to_schema_ref_empty_path_and_reference() {
         // Empty path segments returns object
-        let ty = Type::Path(syn::TypePath {
-            qself: None,
-            path: syn::Path {
-                leading_colon: None,
-                segments: syn::punctuated::Punctuated::new(),
-            },
-        });
+        let ty = Type::Path(syn::TypePath { qself: None, path: syn::Path { leading_colon: None, segments: syn::punctuated::Punctuated::new() } });
         let schema_ref = parse_type_to_schema_ref(&ty, &HashMap::new(), &HashMap::new());
         assert!(matches!(schema_ref, SchemaRef::Inline(_)));
 
@@ -1155,10 +918,7 @@ mod tests {
         known_schemas.insert("Wrapper".to_string(), "Wrapper".to_string());
 
         let mut struct_definitions = HashMap::new();
-        struct_definitions.insert(
-            "Wrapper".to_string(),
-            "struct Wrapper<T> { value: T }".to_string(),
-        );
+        struct_definitions.insert("Wrapper".to_string(), "struct Wrapper<T> { value: T }".to_string());
 
         let ty: syn::Type = syn::parse_str("Wrapper<String>").unwrap();
         let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &struct_definitions);
@@ -1178,10 +938,7 @@ mod tests {
 
     #[rstest]
     #[case("$invalid", "String")]
-    fn test_substitute_type_parse_failure_uses_original(
-        #[case] invalid: &str,
-        #[case] concrete_src: &str,
-    ) {
+    fn test_substitute_type_parse_failure_uses_original(#[case] invalid: &str, #[case] concrete_src: &str) {
         use proc_macro2::TokenStream;
         use std::str::FromStr;
 
@@ -1200,21 +957,11 @@ mod tests {
     }
 
     #[rstest]
-    #[case(
-        "HashMap<String, Value>",
-        true,
-        None,
-        Some("#/components/schemas/Value")
-    )]
+    #[case("HashMap<String, Value>", true, None, Some("#/components/schemas/Value"))]
     #[case("Result<String, i32>", false, Some(SchemaType::Object), None)]
     #[case("crate::Value", false, None, None)]
     #[case("(i32, bool)", false, Some(SchemaType::Object), None)]
-    fn test_parse_type_to_schema_ref_additional_cases(
-        #[case] ty_src: &str,
-        #[case] expect_additional_props: bool,
-        #[case] expected_type: Option<SchemaType>,
-        #[case] expected_ref: Option<&str>,
-    ) {
+    fn test_parse_type_to_schema_ref_additional_cases(#[case] ty_src: &str, #[case] expect_additional_props: bool, #[case] expected_type: Option<SchemaType>, #[case] expected_ref: Option<&str>) {
         let mut known_schemas = HashMap::new();
         known_schemas.insert("Value".to_string(), "Value".to_string());
 
@@ -1225,10 +972,7 @@ mod tests {
                 let SchemaRef::Inline(schema) = schema_ref else {
                     panic!("Expected inline schema for {}", ty_src);
                 };
-                let additional = schema
-                    .additional_properties
-                    .as_ref()
-                    .expect("additional_properties missing");
+                let additional = schema.additional_properties.as_ref().expect("additional_properties missing");
                 assert_eq!(additional.get("$ref").unwrap(), expected);
             }
             None => match schema_ref {
@@ -1308,11 +1052,7 @@ mod tests {
     #[case("firstName", None, "firstName")]
     #[case("LastName", None, "LastName")]
     #[case("user-id", None, "user-id")]
-    fn test_rename_field(
-        #[case] field_name: &str,
-        #[case] rename_all: Option<&str>,
-        #[case] expected: &str,
-    ) {
+    fn test_rename_field(#[case] field_name: &str, #[case] rename_all: Option<&str>, #[case] expected: &str) {
         assert_eq!(rename_field(field_name, rename_all), expected);
     }
 }

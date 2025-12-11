@@ -30,21 +30,8 @@ pub struct SignupResponse {
 }
 
 #[vespera::route(post, path = "/foo")]
-pub async fn signup(
-    State(app_state): State<Arc<AppState>>,
-    Json(request): Json<SignupRequest>,
-) -> Result<Json<SignupResponse>, String> {
+pub async fn signup(State(app_state): State<Arc<AppState>>, Json(request): Json<SignupRequest>) -> Result<Json<SignupResponse>, String> {
     println!("app_state: {:?}", app_state.config);
-    let response = SignupResponse {
-        id: 1,
-        email: request.email,
-        name: "John Doe".to_string(),
-        phone_number: "1234567890".to_string(),
-        nickname: Some("John".to_string()),
-        birthday: Some("1990-01-01".to_string()),
-        gender: Some("male".to_string()),
-        job: Some("engineer".to_string()),
-        created_at: "2021-01-01".to_string(),
-    };
+    let response = SignupResponse { id: 1, email: request.email, name: "John Doe".to_string(), phone_number: "1234567890".to_string(), nickname: Some("John".to_string()), birthday: Some("1990-01-01".to_string()), gender: Some("male".to_string()), job: Some("engineer".to_string()), created_at: "2021-01-01".to_string() };
     Ok(Json(response))
 }

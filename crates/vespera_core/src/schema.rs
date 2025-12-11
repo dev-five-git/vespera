@@ -214,46 +214,7 @@ pub struct Schema {
 impl Schema {
     /// Create a new schema
     pub fn new(schema_type: SchemaType) -> Self {
-        Self {
-            ref_path: None,
-            schema_type: Some(schema_type),
-            format: None,
-            title: None,
-            description: None,
-            default: None,
-            example: None,
-            examples: None,
-            minimum: None,
-            maximum: None,
-            exclusive_minimum: None,
-            exclusive_maximum: None,
-            multiple_of: None,
-            min_length: None,
-            max_length: None,
-            pattern: None,
-            items: None,
-            prefix_items: None,
-            min_items: None,
-            max_items: None,
-            unique_items: None,
-            properties: None,
-            required: None,
-            additional_properties: None,
-            min_properties: None,
-            max_properties: None,
-            r#enum: None,
-            all_of: None,
-            any_of: None,
-            one_of: None,
-            not: None,
-            nullable: None,
-            read_only: None,
-            write_only: None,
-            external_docs: None,
-            defs: None,
-            dynamic_anchor: None,
-            dynamic_ref: None,
-        }
+        Self { ref_path: None, schema_type: Some(schema_type), format: None, title: None, description: None, default: None, example: None, examples: None, minimum: None, maximum: None, exclusive_minimum: None, exclusive_maximum: None, multiple_of: None, min_length: None, max_length: None, pattern: None, items: None, prefix_items: None, min_items: None, max_items: None, unique_items: None, properties: None, required: None, additional_properties: None, min_properties: None, max_properties: None, r#enum: None, all_of: None, any_of: None, one_of: None, not: None, nullable: None, read_only: None, write_only: None, external_docs: None, defs: None, dynamic_anchor: None, dynamic_ref: None }
     }
 
     /// Create a string schema
@@ -278,19 +239,12 @@ impl Schema {
 
     /// Create an array schema
     pub fn array(items: SchemaRef) -> Self {
-        Self {
-            items: Some(Box::new(items)),
-            ..Self::new(SchemaType::Array)
-        }
+        Self { items: Some(Box::new(items)), ..Self::new(SchemaType::Array) }
     }
 
     /// Create an object schema
     pub fn object() -> Self {
-        Self {
-            properties: Some(BTreeMap::new()),
-            required: Some(Vec::new()),
-            ..Self::new(SchemaType::Object)
-        }
+        Self { properties: Some(BTreeMap::new()), required: Some(Vec::new()), ..Self::new(SchemaType::Object) }
     }
 }
 
@@ -370,4 +324,45 @@ pub struct SecurityScheme {
 pub trait SchemaBuilder: Sized {
     // This trait is used as a marker for derive macro
     // The actual schema conversion will be implemented separately
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case(Schema::string(), SchemaType::String)]
+    #[case(Schema::integer(), SchemaType::Integer)]
+    #[case(Schema::number(), SchemaType::Number)]
+    #[case(Schema::boolean(), SchemaType::Boolean)]
+    fn primitive_helpers_set_schema_type(#[case] schema: Schema, #[case] expected: SchemaType) {
+        assert_eq!(schema.schema_type, Some(expected));
+    }
+
+    #[test]
+    fn array_helper_sets_type_and_items() {
+        let item_schema = Schema::boolean();
+        let schema = Schema::array(SchemaRef::Inline(Box::new(item_schema.clone())));
+
+        assert_eq!(schema.schema_type, Some(SchemaType::Array));
+        let items = schema.items.expect("items should be set");
+        match *items {
+            SchemaRef::Inline(inner) => {
+                assert_eq!(inner.schema_type, Some(SchemaType::Boolean));
+            }
+            SchemaRef::Ref(_) => panic!("array helper should set inline items"),
+        }
+    }
+
+    #[test]
+    fn object_helper_initializes_collections() {
+        let schema = Schema::object();
+
+        assert_eq!(schema.schema_type, Some(SchemaType::Object));
+        let props = schema.properties.expect("properties should be initialized");
+        assert!(props.is_empty());
+        let required = schema.required.expect("required should be initialized");
+        assert!(required.is_empty());
+    }
 }
