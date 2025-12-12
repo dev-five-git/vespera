@@ -1467,6 +1467,17 @@
           "value2"
         ]
       },
+      "InSkipResponse": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
       "MapQuery": {
         "type": "object",
         "properties": {
@@ -1563,6 +1574,44 @@
             "type": "string",
             "default": "default42"
           },
+          "in_skip": {
+            "$ref": "#/components/schemas/InSkipResponse"
+          },
+          "in_skip2": {
+            "$ref": "#/components/schemas/InSkipResponse",
+            "nullable": true
+          },
+          "in_skip3": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InSkipResponse"
+            }
+          },
+          "in_skip4": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InSkipResponse"
+            },
+            "nullable": true
+          },
+          "in_skip5": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "$ref": "#/components/schemas/InSkipResponse"
+            },
+            "nullable": true
+          },
+          "in_skip6": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": {
+              "$ref": "#/components/schemas/InSkipResponse"
+            },
+            "nullable": true
+          },
           "name": {
             "type": "string"
           },
@@ -1572,7 +1621,9 @@
           }
         },
         "required": [
-          "name"
+          "name",
+          "in_skip",
+          "in_skip3"
         ]
       },
       "StructBody": {

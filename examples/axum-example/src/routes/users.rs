@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 use vespera::{
     Schema,
@@ -84,6 +86,18 @@ pub struct SkipResponse {
 
     #[serde(rename = "num", default)]
     pub num: i32,
+
+    pub in_skip: InSkipResponse,
+    pub in_skip2: Option<InSkipResponse>,
+    pub in_skip3: Vec<InSkipResponse>,
+    pub in_skip4: Option<Vec<InSkipResponse>>,
+    pub in_skip5: Option<HashMap<String, InSkipResponse>>,
+    pub in_skip6: Option<BTreeMap<String, InSkipResponse>>,
+}
+
+#[derive(Serialize, Deserialize, Schema)]
+pub struct InSkipResponse {
+    pub name: String,
 }
 
 fn default_value() -> String {
@@ -102,5 +116,23 @@ pub async fn skip_response() -> Json<SkipResponse> {
         email6: "john.doe6@example.com".to_string(),
         email7: "john.doe7@example.com".to_string(),
         num: 0,
+        in_skip: InSkipResponse {
+            name: "John Doe".to_string(),
+        },
+        in_skip2: Some(InSkipResponse {
+            name: "John Doe".to_string(),
+        }),
+        in_skip3: vec![InSkipResponse {
+            name: "John Doe".to_string(),
+        }],
+        in_skip4: Some(vec![InSkipResponse {
+            name: "John Doe".to_string(),
+        }]),
+        in_skip5: Some(HashMap::from([("John Doe".to_string(), InSkipResponse {
+            name: "John Doe".to_string(),
+        })]),),
+        in_skip6: Some(BTreeMap::from([("John Doe".to_string(), InSkipResponse {
+            name: "John Doe".to_string(),
+        })]),),
     })
 }

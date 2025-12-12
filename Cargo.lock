@@ -1672,7 +1672,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vespera"
-version = "0.1.13"
+version = "0.1.15"
 dependencies = [
  "axum",
  "axum-extra",
@@ -1682,7 +1682,7 @@ dependencies = [
 
 [[package]]
 name = "vespera_core"
-version = "0.1.13"
+version = "0.1.15"
 dependencies = [
  "rstest",
  "serde",
@@ -1691,7 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "vespera_macro"
-version = "0.1.13"
+version = "0.1.15"
 dependencies = [
  "anyhow",
  "insta",

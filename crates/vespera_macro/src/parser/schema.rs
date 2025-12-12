@@ -744,9 +744,20 @@ pub(super) fn parse_type_to_schema_ref_with_schemas(
                                 return SchemaRef::Inline(Box::new(Schema::array(inner_schema)));
                             } else {
                                 // Option<T> -> nullable schema
-                                if let SchemaRef::Inline(mut schema) = inner_schema {
-                                    schema.nullable = Some(true);
-                                    return SchemaRef::Inline(schema);
+                                match inner_schema {
+                                    SchemaRef::Inline(mut schema) => {
+                                        schema.nullable = Some(true);
+                                        return SchemaRef::Inline(schema);
+                                    }
+                                    SchemaRef::Ref(reference) => {
+                                        // Wrap reference in an inline schema to attach nullable flag
+                                        return SchemaRef::Inline(Box::new(Schema {
+                                            ref_path: Some(reference.ref_path),
+                                            schema_type: None,
+                                            nullable: Some(true),
+                                            ..Schema::new(SchemaType::Object)
+                                        }));
+                                    }
                                 }
                             }
                         }
@@ -916,6 +927,27 @@ mod tests {
             }
         } else {
             panic!("Expected inline schema for {}", ty_src);
+        }
+    }
+
+    #[test]
+    fn test_parse_type_to_schema_ref_option_ref_nullable() {
+        let mut known = HashMap::new();
+        known.insert("User".to_string(), "struct User;".to_string());
+
+        let ty: syn::Type = syn::parse_str("Option<User>").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &known, &HashMap::new());
+
+        match schema_ref {
+            SchemaRef::Inline(schema) => {
+                assert_eq!(
+                    schema.ref_path,
+                    Some("#/components/schemas/User".to_string())
+                );
+                assert_eq!(schema.nullable, Some(true));
+                assert_eq!(schema.schema_type, None);
+            }
+            _ => panic!("Expected inline schema for Option<User>"),
         }
     }
 
