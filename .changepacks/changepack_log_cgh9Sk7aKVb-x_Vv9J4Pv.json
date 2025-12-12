@@ -1,1 +1,0 @@
-{"changes":{"crates/vespera_macro/Cargo.toml":"Patch","crates/vespera_core/Cargo.toml":"Patch","crates/vespera/Cargo.toml":"Patch"},"note":"Fix struct in option issue","date":"2025-12-12T07:26:22.869740900Z"}
