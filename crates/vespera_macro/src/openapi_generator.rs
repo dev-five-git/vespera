@@ -87,9 +87,12 @@ pub fn generate_openapi_doc_with_metadata(
                     metadata.routes.first().map(|r| r.file_path.clone())
                 });
 
-            if let Some(file_path) = struct_file && let Ok(file_content) = std::fs::read_to_string(&file_path) && let Ok(file_ast) = syn::parse_file(&file_content) {
-                        // Process default functions for struct fields
-                        process_default_functions(struct_item, &file_ast, &mut schema);
+            if let Some(file_path) = struct_file
+                && let Ok(file_content) = std::fs::read_to_string(&file_path)
+                && let Ok(file_ast) = syn::parse_file(&file_content)
+            {
+                // Process default functions for struct fields
+                process_default_functions(struct_item, &file_ast, &mut schema);
             }
         }
 

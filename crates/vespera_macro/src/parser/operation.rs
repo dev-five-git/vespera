@@ -277,7 +277,14 @@ mod tests {
 
     fn build(sig_src: &str, path: &str, error_status: Option<&[u16]>) -> Operation {
         let sig: syn::Signature = syn::parse_str(sig_src).expect("signature parse failed");
-        build_operation_from_function(&sig, path, &HashMap::new(), &HashMap::new(), error_status, None)
+        build_operation_from_function(
+            &sig,
+            path,
+            &HashMap::new(),
+            &HashMap::new(),
+            error_status,
+            None,
+        )
     }
 
     #[derive(Clone, Debug)]

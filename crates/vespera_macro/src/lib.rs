@@ -43,7 +43,7 @@ pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Validate function is pub
     if !matches!(item_fn.vis, syn::Visibility::Public(_)) {
-        return syn::Error::new_spanned(&item_fn.sig.fn_token, "route function must be public")
+        return syn::Error::new_spanned(item_fn.sig.fn_token, "route function must be public")
             .to_compile_error()
             .into();
     }

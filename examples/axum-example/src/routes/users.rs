@@ -128,11 +128,17 @@ pub async fn skip_response() -> Json<SkipResponse> {
         in_skip4: Some(vec![InSkipResponse {
             name: "John Doe".to_string(),
         }]),
-        in_skip5: Some(HashMap::from([("John Doe".to_string(), InSkipResponse {
-            name: "John Doe".to_string(),
-        })]),),
-        in_skip6: Some(BTreeMap::from([("John Doe".to_string(), InSkipResponse {
-            name: "John Doe".to_string(),
-        })]),),
+        in_skip5: Some(HashMap::from([(
+            "John Doe".to_string(),
+            InSkipResponse {
+                name: "John Doe".to_string(),
+            },
+        )])),
+        in_skip6: Some(BTreeMap::from([(
+            "John Doe".to_string(),
+            InSkipResponse {
+                name: "John Doe".to_string(),
+            },
+        )])),
     })
 }
