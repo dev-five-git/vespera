@@ -13,6 +13,7 @@
     "/": {
       "get": {
         "operationId": "root_endpoint",
+        "description": "Health check endpoint",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -493,6 +494,7 @@
         "tags": [
           "hello"
         ],
+        "description": "Hello!!",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -895,6 +897,7 @@
     "/users": {
       "get": {
         "operationId": "get_users",
+        "description": "Get all users",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -913,6 +916,7 @@
       },
       "post": {
         "operationId": "create_user",
+        "description": "Create a new user",
         "requestBody": {
           "required": true,
           "content": {
@@ -957,6 +961,7 @@
     "/users/{id}": {
       "get": {
         "operationId": "get_user",
+        "description": "Get user by ID",
         "parameters": [
           {
             "name": "id",

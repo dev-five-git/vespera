@@ -1,11 +1,41 @@
 use crate::args::RouteArgs;
 
+/// Extract doc comments from attributes
+/// Returns concatenated doc comment string or None if no doc comments
+pub fn extract_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
+    let mut doc_lines = Vec::new();
+
+    for attr in attrs {
+        if attr.path().is_ident("doc") {
+            if let syn::Meta::NameValue(meta_nv) = &attr.meta {
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(lit_str),
+                    ..
+                }) = &meta_nv.value
+                {
+                    let line = lit_str.value();
+                    // Trim leading space that rustdoc adds
+                    let trimmed = line.strip_prefix(' ').unwrap_or(&line);
+                    doc_lines.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    if doc_lines.is_empty() {
+        None
+    } else {
+        Some(doc_lines.join("\n"))
+    }
+}
+
 #[derive(Debug)]
 pub struct RouteInfo {
     pub method: String,
     pub path: Option<String>,
     pub error_status: Option<Vec<u16>>,
     pub tags: Option<Vec<String>>,
+    pub description: Option<String>,
 }
 
 pub fn check_route_by_meta(meta: &syn::Meta) -> bool {
@@ -86,11 +116,15 @@ pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
                             }
                         });
 
+                        // Parse description if present
+                        let description = route_args.description.as_ref().map(|s| s.value());
+
                         return Some(RouteInfo {
                             method,
                             path,
                             error_status,
                             tags,
+                            description,
                         });
                     }
                 }
@@ -115,6 +149,7 @@ pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
                                 path: None,
                                 error_status: None,
                                 tags: None,
+                                description: None,
                             });
                         }
                     }
@@ -126,6 +161,7 @@ pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
                         path: None,
                         error_status: None,
                         tags: None,
+                        description: None,
                     });
                 }
             }

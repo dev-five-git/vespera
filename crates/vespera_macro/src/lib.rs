@@ -48,6 +48,16 @@ pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
             .into();
     }
 
+    // Validate function is async
+    if item_fn.sig.asyncness.is_none() {
+        return syn::Error::new_spanned(
+            item_fn.sig.fn_token,
+            "route function must be async",
+        )
+        .to_compile_error()
+        .into();
+    }
+
     item
 }
 

@@ -2,7 +2,7 @@
 
 use crate::file_utils::{collect_files, file_to_segments};
 use crate::metadata::{CollectedMetadata, RouteMetadata};
-use crate::route::extract_route_info;
+use crate::route::{extract_doc_comment, extract_route_info};
 use anyhow::{Context, Result};
 use std::path::Path;
 use syn::Item;
@@ -61,6 +61,12 @@ pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> Result<Collect
                 };
                 let route_path = route_path.replace('_', "-");
 
+                // Description priority: route attribute > doc comment
+                let description = route_info
+                    .description
+                    .clone()
+                    .or_else(|| extract_doc_comment(&fn_item.attrs));
+
                 metadata.routes.push(RouteMetadata {
                     method: route_info.method,
                     path: route_path,
@@ -70,6 +76,7 @@ pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> Result<Collect
                     signature: quote::quote!(#fn_item).to_string(),
                     error_status: route_info.error_status.clone(),
                     tags: route_info.tags.clone(),
+                    description,
                 });
             }
         }

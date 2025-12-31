@@ -67,6 +67,42 @@ pub async fn create_user(Json(user): Json<User>) -> Json<User> {
 }
 ```
 
+### 4. Tags and Description
+
+Add tags to group routes and descriptions for OpenAPI documentation.
+
+**Tags:** Use the `tags` parameter to group routes.
+
+```rust
+#[vespera::route(get, tags = ["users"])]
+pub async fn list_users() -> Json<Vec<User>> { ... }
+
+#[vespera::route(post, tags = ["users", "admin"])]
+pub async fn create_user(Json(user): Json<User>) -> Json<User> { ... }
+```
+
+**Description:** Two ways to add descriptions:
+
+1. **Doc comments (recommended):** Automatically extracted from `///` comments.
+```rust
+/// Get all users from the database
+#[vespera::route(get)]
+pub async fn list_users() -> Json<Vec<User>> { ... }
+```
+
+2. **Explicit `description` parameter:** Takes priority over doc comments.
+```rust
+#[vespera::route(get, description = "Custom description")]
+pub async fn list_users() -> Json<Vec<User>> { ... }
+```
+
+**Combined example:**
+```rust
+/// Get user by ID
+#[vespera::route(get, path = "/{id}", tags = ["users"])]
+pub async fn get_user(Path(id): Path<u32>) -> Json<User> { ... }
+```
+
 ### 5. Error Handling
 Vespera supports `Result<T, E>` return types. It automatically documents both the success capability (200 OK) and the error responses in the OpenAPI spec.
 

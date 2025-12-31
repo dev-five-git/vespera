@@ -23,6 +23,9 @@ pub struct RouteMetadata {
     /// Tags for OpenAPI grouping
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    /// Description for OpenAPI (from route attribute or doc comment)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Struct metadata

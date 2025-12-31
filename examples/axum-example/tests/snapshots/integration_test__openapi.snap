@@ -17,6 +17,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
     "/": {
       "get": {
         "operationId": "root_endpoint",
+        "description": "Health check endpoint",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -497,6 +498,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "tags": [
           "hello"
         ],
+        "description": "Hello!!",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -899,6 +901,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
     "/users": {
       "get": {
         "operationId": "get_users",
+        "description": "Get all users",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -917,6 +920,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
       },
       "post": {
         "operationId": "create_user",
+        "description": "Create a new user",
         "requestBody": {
           "required": true,
           "content": {
@@ -961,6 +965,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
     "/users/{id}": {
       "get": {
         "operationId": "get_user",
+        "description": "Get user by ID",
         "parameters": [
           {
             "name": "id",

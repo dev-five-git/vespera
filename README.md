@@ -299,6 +299,73 @@ pub async fn get_user(id: u32) -> Json<User> {
 }
 ```
 
+### Tags and Description
+
+You can add tags and descriptions to your routes for better OpenAPI documentation organization.
+
+#### Tags
+
+Use the `tags` parameter to group your routes in the OpenAPI documentation:
+
+```rust
+#[vespera::route(get, tags = ["users"])]
+pub async fn list_users() -> Json<Vec<User>> {
+    // ...
+}
+
+#[vespera::route(post, tags = ["users", "admin"])]
+pub async fn create_user(Json(user): Json<User>) -> Json<User> {
+    // ...
+}
+```
+
+#### Description
+
+There are two ways to add descriptions to your routes:
+
+**1. Using doc comments (recommended):**
+
+Doc comments (`///`) are automatically extracted and used as the route description in OpenAPI:
+
+```rust
+/// Get all users from the database
+///
+/// Returns a list of all registered users.
+#[vespera::route(get)]
+pub async fn list_users() -> Json<Vec<User>> {
+    // ...
+}
+```
+
+**2. Using the `description` parameter:**
+
+You can also explicitly set the description using the `description` parameter. This takes priority over doc comments:
+
+```rust
+/// This doc comment will be ignored
+#[vespera::route(get, description = "Custom description for OpenAPI")]
+pub async fn list_users() -> Json<Vec<User>> {
+    // ...
+}
+```
+
+#### Combined Example
+
+```rust
+/// Get user by ID
+///
+/// Retrieves a specific user by their unique identifier.
+#[vespera::route(get, path = "/{id}", tags = ["users"])]
+pub async fn get_user(Path(id): Path<u32>) -> Json<User> {
+    // ...
+}
+
+#[vespera::route(post, tags = ["users", "admin"], description = "Create a new user account")]
+pub async fn create_user(Json(user): Json<User>) -> Json<User> {
+    // ...
+}
+```
+
 ### Supported HTTP Methods
 
 - `GET`

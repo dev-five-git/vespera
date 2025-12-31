@@ -3,6 +3,7 @@ pub struct RouteArgs {
     pub path: Option<syn::LitStr>,
     pub error_status: Option<syn::ExprArray>,
     pub tags: Option<syn::ExprArray>,
+    pub description: Option<syn::LitStr>,
 }
 
 impl syn::parse::Parse for RouteArgs {
@@ -11,6 +12,7 @@ impl syn::parse::Parse for RouteArgs {
         let mut path: Option<syn::LitStr> = None;
         let mut error_status: Option<syn::ExprArray> = None;
         let mut tags: Option<syn::ExprArray> = None;
+        let mut description: Option<syn::LitStr> = None;
 
         // Parse comma-separated list of arguments
         while !input.is_empty() {
@@ -39,6 +41,11 @@ impl syn::parse::Parse for RouteArgs {
                         let array: syn::ExprArray = input.parse()?;
                         tags = Some(array);
                     }
+                    "description" => {
+                        input.parse::<syn::Token![=]>()?;
+                        let lit: syn::LitStr = input.parse()?;
+                        description = Some(lit);
+                    }
                     _ => {
                         return Err(lookahead.error());
                     }
@@ -60,6 +67,7 @@ impl syn::parse::Parse for RouteArgs {
             path,
             error_status,
             tags,
+            description,
         })
     }
 }

@@ -139,7 +139,7 @@ pub fn generate_openapi_doc_with_metadata(
                 }
 
                 // Build operation from function signature
-                let operation = build_operation_from_function(
+                let mut operation = build_operation_from_function(
                     &fn_item.sig,
                     &route_meta.path,
                     &known_schema_names,
@@ -147,6 +147,11 @@ pub fn generate_openapi_doc_with_metadata(
                     route_meta.error_status.as_deref(),
                     route_meta.tags.as_deref(),
                 );
+
+                // Set description from metadata
+                if let Some(desc) = &route_meta.description {
+                    operation.description = Some(desc.clone());
+                }
 
                 // Get or create PathItem
                 let path_item = paths
@@ -502,6 +507,7 @@ pub fn get_users() -> String {
             signature: "fn get_users() -> String".to_string(),
             error_status: None,
             tags: None,
+            description: None,
         });
 
         let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
@@ -584,6 +590,7 @@ pub fn get_status() -> Status {
             signature: "fn get_status() -> Status".to_string(),
             error_status: None,
             tags: None,
+            description: None,
         });
 
         let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
@@ -642,6 +649,7 @@ pub fn get_user() -> User {
             signature: "fn get_user() -> User".to_string(),
             error_status: None,
             tags: None,
+            description: None,
         });
 
         let doc = generate_openapi_doc_with_metadata(
@@ -689,6 +697,7 @@ pub fn create_user() -> String {
             signature: "fn get_users() -> String".to_string(),
             error_status: None,
             tags: None,
+            description: None,
         });
         metadata.routes.push(RouteMetadata {
             method: "POST".to_string(),
@@ -699,6 +708,7 @@ pub fn create_user() -> String {
             signature: "fn create_user() -> String".to_string(),
             error_status: None,
             tags: None,
+            description: None,
         });
 
         let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
@@ -722,6 +732,7 @@ pub fn create_user() -> String {
             signature: "fn get_users() -> String".to_string(),
             error_status: None,
             tags: None,
+            description: None,
         }),
         false, // struct should not be added
         false, // route should not be added
@@ -737,6 +748,7 @@ pub fn create_user() -> String {
             signature: "fn get_users() -> String".to_string(),
             error_status: None,
             tags: None,
+            description: None,
         }),
         false, // struct should not be added
         false, // route should not be added
