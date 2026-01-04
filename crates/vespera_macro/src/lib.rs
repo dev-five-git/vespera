@@ -175,11 +175,17 @@ impl Parse for AutoRouterInput {
                     .map(|f| LitStr::new(&f, Span::call_site()))
                     .ok()
             }),
-            version: version.or_else(|| {
-                std::env::var("VESPERA_VERSION")
-                    .map(|f| LitStr::new(&f, Span::call_site()))
-                    .ok()
-            }),
+            version: version
+                .or_else(|| {
+                    std::env::var("VESPERA_VERSION")
+                        .map(|f| LitStr::new(&f, Span::call_site()))
+                        .ok()
+                })
+                .or_else(|| {
+                    std::env::var("CARGO_PKG_VERSION")
+                        .map(|f| LitStr::new(&f, Span::call_site()))
+                        .ok()
+                }),
             docs_url: docs_url.or_else(|| {
                 std::env::var("VESPERA_DOCS_URL")
                     .map(|f| LitStr::new(&f, Span::call_site()))

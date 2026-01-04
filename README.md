@@ -248,7 +248,7 @@ let app = vespera!(
     dir = "routes",              // Route folder name (default: "routes")
     openapi = "openapi.json",    // OpenAPI JSON file path (optional)
     title = "My API",            // API title (optional, default: "API")
-    version = "1.0.0",           // API version (optional, default: "1.0.0")
+    version = "1.0.0",           // API version (optional, default: Cargo.toml version)
     docs_url = "/docs"           // Swagger UI documentation URL (optional)
 );
 ```
@@ -268,12 +268,52 @@ let app = vespera!(
 - **`title`**: API title (optional, default: `"API"`)
   - Used in the `info.title` field of the OpenAPI document
   
-- **`version`**: API version (optional, default: `"1.0.0"`)
+- **`version`**: API version (optional, default: your `Cargo.toml` version)
   - Used in the `info.version` field of the OpenAPI document
+  - If not specified, automatically uses the version from your project's `Cargo.toml` (`CARGO_PKG_VERSION`)
   
 - **`docs_url`**: Swagger UI documentation URL (optional)
   - If specified, you can view the API documentation through Swagger UI at that path
   - Example: Setting `docs_url = "/docs"` allows viewing documentation at `http://localhost:3000/docs`
+
+- **`redoc_url`**: ReDoc documentation URL (optional)
+  - If specified, you can view the API documentation through ReDoc at that path
+  - Example: Setting `redoc_url = "/redoc"` allows viewing documentation at `http://localhost:3000/redoc`
+
+#### Environment Variables
+
+All macro parameters can also be configured via environment variables. Environment variables are used as fallbacks when the corresponding macro parameter is not specified.
+
+| Macro Parameter | Environment Variable | Description |
+|-----------------|---------------------|-------------|
+| `dir` | `VESPERA_DIR` | Route folder name |
+| `openapi` | `VESPERA_OPENAPI` | OpenAPI JSON file path |
+| `title` | `VESPERA_TITLE` | API title |
+| `version` | `VESPERA_VERSION` | API version |
+| `docs_url` | `VESPERA_DOCS_URL` | Swagger UI documentation URL |
+| `redoc_url` | `VESPERA_REDOC_URL` | ReDoc documentation URL |
+
+**Priority Order** (highest to lowest):
+1. Macro parameter (e.g., `version = "1.0.0"`)
+2. Environment variable (e.g., `VESPERA_VERSION`)
+3. `CARGO_PKG_VERSION` (for `version` only)
+4. Default value
+
+**Example:**
+
+```bash
+# Set environment variables
+export VESPERA_TITLE="My Production API"
+export VESPERA_VERSION="2.0.0"
+export VESPERA_DOCS_URL="/api-docs"
+```
+
+```rust
+// These will use the environment variables as defaults
+let app = vespera!(
+    openapi = "openapi.json"
+);
+```
 
 ### `#[route]` Attribute Macro
 

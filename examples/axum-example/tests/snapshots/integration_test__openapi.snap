@@ -6,7 +6,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
   "openapi": "3.1.0",
   "info": {
     "title": "API",
-    "version": "1.0.0"
+    "version": "0.1.0"
   },
   "servers": [
     {
