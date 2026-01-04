@@ -17,6 +17,7 @@ use crate::parser::{
 pub fn generate_openapi_doc_with_metadata(
     title: Option<String>,
     version: Option<String>,
+    servers: Option<Vec<Server>>,
     metadata: &CollectedMetadata,
 ) -> OpenApi {
     let mut paths: BTreeMap<String, PathItem> = BTreeMap::new();
@@ -189,11 +190,13 @@ pub fn generate_openapi_doc_with_metadata(
             license: None,
             summary: None,
         },
-        servers: Some(vec![Server {
-            url: "http://localhost:3000".to_string(),
-            description: None,
-            variables: None,
-        }]),
+        servers: servers.or_else(|| {
+            Some(vec![Server {
+                url: "http://localhost:3000".to_string(),
+                description: None,
+                variables: None,
+            }])
+        }),
         paths,
         components: Some(Components {
             schemas: if schemas.is_empty() {
@@ -452,7 +455,7 @@ mod tests {
     fn test_generate_openapi_empty_metadata() {
         let metadata = CollectedMetadata::new();
 
-        let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
 
         assert_eq!(doc.openapi, OpenApiVersion::V3_1_0);
         assert_eq!(doc.info.title, "API");
@@ -479,7 +482,7 @@ mod tests {
     ) {
         let metadata = CollectedMetadata::new();
 
-        let doc = generate_openapi_doc_with_metadata(title, version, &metadata);
+        let doc = generate_openapi_doc_with_metadata(title, version, None, &metadata);
 
         assert_eq!(doc.info.title, expected_title);
         assert_eq!(doc.info.version, expected_version);
@@ -510,7 +513,7 @@ pub fn get_users() -> String {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
 
         assert!(doc.paths.contains_key("/users"));
         let path_item = doc.paths.get("/users").unwrap();
@@ -527,7 +530,7 @@ pub fn get_users() -> String {
             definition: "struct User { id: i32, name: String }".to_string(),
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
 
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
         let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
@@ -542,7 +545,7 @@ pub fn get_users() -> String {
             definition: "enum Status { Active, Inactive, Pending }".to_string(),
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
 
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
         let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
@@ -558,7 +561,7 @@ pub fn get_users() -> String {
             definition: "enum Message { Text(String), User { id: i32, name: String } }".to_string(),
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
 
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
         let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
@@ -593,7 +596,7 @@ pub fn get_status() -> Status {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
 
         // Check enum schema
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
@@ -620,7 +623,7 @@ pub fn get_status() -> Status {
         });
 
         // This should panic when fallback tries to parse const as struct
-        let _doc = generate_openapi_doc_with_metadata(None, None, &metadata);
+        let _doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
     }
 
     #[test]
@@ -655,6 +658,7 @@ pub fn get_user() -> User {
         let doc = generate_openapi_doc_with_metadata(
             Some("Test API".to_string()),
             Some("1.0.0".to_string()),
+            None,
             &metadata,
         );
 
@@ -711,7 +715,7 @@ pub fn create_user() -> String {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
 
         assert_eq!(doc.paths.len(), 1); // Same path, different methods
         let path_item = doc.paths.get("/users").unwrap();
@@ -780,7 +784,7 @@ pub fn create_user() -> String {
         }
 
         // Should not panic, just skip invalid files
-        let doc = generate_openapi_doc_with_metadata(None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
 
         // Check struct
         if expect_struct {

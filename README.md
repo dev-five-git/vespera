@@ -249,7 +249,11 @@ let app = vespera!(
     openapi = "openapi.json",    // OpenAPI JSON file path (optional)
     title = "My API",            // API title (optional, default: "API")
     version = "1.0.0",           // API version (optional, default: Cargo.toml version)
-    docs_url = "/docs"           // Swagger UI documentation URL (optional)
+    docs_url = "/docs",          // Swagger UI documentation URL (optional)
+    servers = [                  // Server URLs for OpenAPI (optional)
+        {url = "https://api.example.com", description = "Production"},
+        {url = "http://localhost:3000", description = "Development"}
+    ]
 );
 ```
 
@@ -280,6 +284,16 @@ let app = vespera!(
   - If specified, you can view the API documentation through ReDoc at that path
   - Example: Setting `redoc_url = "/redoc"` allows viewing documentation at `http://localhost:3000/redoc`
 
+- **`servers`**: Server URLs for OpenAPI (optional, default: `http://localhost:3000`)
+  - Configures the `servers` field in the OpenAPI document
+  - Accepts multiple formats:
+    - Single URL string: `servers = "https://api.example.com"`
+    - Array of URL strings: `servers = ["https://api.example.com", "http://localhost:3000"]`
+    - Tuple format with descriptions: `servers = [("https://api.example.com", "Production")]`
+    - Struct-like format: `servers = [{url = "https://api.example.com", description = "Production"}]`
+    - Single struct-like: `servers = {url = "https://api.example.com", description = "Production"}`
+    - Mixed formats in array: `servers = ["http://localhost:3000", ("https://staging.example.com", "Staging"), {url = "https://api.example.com", description = "Production"}]`
+
 #### Environment Variables
 
 All macro parameters can also be configured via environment variables. Environment variables are used as fallbacks when the corresponding macro parameter is not specified.
@@ -292,6 +306,8 @@ All macro parameters can also be configured via environment variables. Environme
 | `version` | `VESPERA_VERSION` | API version |
 | `docs_url` | `VESPERA_DOCS_URL` | Swagger UI documentation URL |
 | `redoc_url` | `VESPERA_REDOC_URL` | ReDoc documentation URL |
+| `servers` | `VESPERA_SERVER_URL` | Server URL (single server) |
+| | `VESPERA_SERVER_DESCRIPTION` | Server description (optional, used with `VESPERA_SERVER_URL`) |
 
 **Priority Order** (highest to lowest):
 1. Macro parameter (e.g., `version = "1.0.0"`)
@@ -306,6 +322,8 @@ All macro parameters can also be configured via environment variables. Environme
 export VESPERA_TITLE="My Production API"
 export VESPERA_VERSION="2.0.0"
 export VESPERA_DOCS_URL="/api-docs"
+export VESPERA_SERVER_URL="https://api.example.com"
+export VESPERA_SERVER_DESCRIPTION="Production Server"
 ```
 
 ```rust

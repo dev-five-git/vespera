@@ -21,6 +21,7 @@ use crate::collector::collect_metadata;
 use crate::metadata::{CollectedMetadata, StructMetadata};
 use crate::method::http_method_to_token_stream;
 use crate::openapi_generator::generate_openapi_doc_with_metadata;
+use vespera_core::openapi::Server;
 use vespera_core::route::HttpMethod;
 
 /// route attribute macro
@@ -86,6 +87,13 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
+/// Server configuration for OpenAPI
+#[derive(Clone)]
+struct ServerConfig {
+    url: String,
+    description: Option<String>,
+}
+
 struct AutoRouterInput {
     dir: Option<LitStr>,
     openapi: Option<Vec<LitStr>>,
@@ -93,6 +101,7 @@ struct AutoRouterInput {
     version: Option<LitStr>,
     docs_url: Option<LitStr>,
     redoc_url: Option<LitStr>,
+    servers: Option<Vec<ServerConfig>>,
 }
 
 impl Parse for AutoRouterInput {
@@ -103,6 +112,7 @@ impl Parse for AutoRouterInput {
         let mut version = None;
         let mut docs_url = None;
         let mut redoc_url = None;
+        let mut servers = None;
 
         while !input.is_empty() {
             let lookahead = input.lookahead1();
@@ -135,11 +145,14 @@ impl Parse for AutoRouterInput {
                         input.parse::<syn::Token![=]>()?;
                         version = Some(input.parse()?);
                     }
+                    "servers" => {
+                        servers = Some(parse_servers_values(input)?);
+                    }
                     _ => {
                         return Err(syn::Error::new(
                             ident.span(),
                             format!(
-                                "unknown field: `{}`. Expected `dir` or `openapi`",
+                                "unknown field: `{}`. Expected `dir`, `openapi`, `title`, `version`, `docs_url`, `redoc_url`, or `servers`",
                                 ident_str
                             ),
                         ));
@@ -196,6 +209,17 @@ impl Parse for AutoRouterInput {
                     .map(|f| LitStr::new(&f, Span::call_site()))
                     .ok()
             }),
+            servers: servers.or_else(|| {
+                std::env::var("VESPERA_SERVER_URL")
+                    .ok()
+                    .filter(|url| url.starts_with("http://") || url.starts_with("https://"))
+                    .map(|url| {
+                        vec![ServerConfig {
+                            url,
+                            description: std::env::var("VESPERA_SERVER_DESCRIPTION").ok(),
+                        }]
+                    })
+            }),
         })
     }
 }
@@ -213,6 +237,143 @@ fn parse_openapi_values(input: ParseStream) -> syn::Result<Vec<LitStr>> {
         let single: LitStr = input.parse()?;
         Ok(vec![single])
     }
+}
+
+/// Validate that a URL starts with http:// or https://
+fn validate_server_url(url: &LitStr) -> syn::Result<String> {
+    let url_value = url.value();
+    if !url_value.starts_with("http://") && !url_value.starts_with("https://") {
+        return Err(syn::Error::new(
+            url.span(),
+            format!(
+                "invalid server URL: `{}`. URL must start with `http://` or `https://`",
+                url_value
+            ),
+        ));
+    }
+    Ok(url_value)
+}
+
+/// Parse server values in various formats:
+/// - `servers = "url"` - single URL
+/// - `servers = ["url1", "url2"]` - multiple URLs (strings only)
+/// - `servers = [("url", "description")]` - tuple format with descriptions
+/// - `servers = [{url = "...", description = "..."}]` - struct-like format
+/// - `servers = {url = "...", description = "..."}` - single server struct-like format
+fn parse_servers_values(input: ParseStream) -> syn::Result<Vec<ServerConfig>> {
+    use syn::token::{Brace, Paren};
+
+    input.parse::<syn::Token![=]>()?;
+
+    if input.peek(syn::token::Bracket) {
+        // Array format: [...] 
+        let content;
+        let _ = bracketed!(content in input);
+
+        let mut servers = Vec::new();
+
+        while !content.is_empty() {
+            if content.peek(Paren) {
+                // Parse tuple: ("url", "description")
+                let tuple_content;
+                syn::parenthesized!(tuple_content in content);
+                let url: LitStr = tuple_content.parse()?;
+                let url_value = validate_server_url(&url)?;
+                let description = if tuple_content.peek(syn::Token![,]) {
+                    tuple_content.parse::<syn::Token![,]>()?;
+                    Some(tuple_content.parse::<LitStr>()?.value())
+                } else {
+                    None
+                };
+                servers.push(ServerConfig {
+                    url: url_value,
+                    description,
+                });
+            } else if content.peek(Brace) {
+                // Parse struct-like: {url = "...", description = "..."}
+                let server = parse_server_struct(&content)?;
+                servers.push(server);
+            } else {
+                // Parse simple string: "url"
+                let url: LitStr = content.parse()?;
+                let url_value = validate_server_url(&url)?;
+                servers.push(ServerConfig {
+                    url: url_value,
+                    description: None,
+                });
+            }
+
+            if content.peek(syn::Token![,]) {
+                content.parse::<syn::Token![,]>()?;
+            } else {
+                break;
+            }
+        }
+
+        Ok(servers)
+    } else if input.peek(syn::token::Brace) {
+        // Single struct-like format: servers = {url = "...", description = "..."}
+        let server = parse_server_struct(input)?;
+        Ok(vec![server])
+    } else {
+        // Single string: servers = "url"
+        let single: LitStr = input.parse()?;
+        let url_value = validate_server_url(&single)?;
+        Ok(vec![ServerConfig {
+            url: url_value,
+            description: None,
+        }])
+    }
+}
+
+/// Parse a single server in struct-like format: {url = "...", description = "..."}
+fn parse_server_struct(input: ParseStream) -> syn::Result<ServerConfig> {
+    let content;
+    syn::braced!(content in input);
+
+    let mut url: Option<String> = None;
+    let mut description: Option<String> = None;
+
+    while !content.is_empty() {
+        let ident: syn::Ident = content.parse()?;
+        let ident_str = ident.to_string();
+
+        match ident_str.as_str() {
+            "url" => {
+                content.parse::<syn::Token![=]>()?;
+                let url_lit: LitStr = content.parse()?;
+                url = Some(validate_server_url(&url_lit)?);
+            }
+            "description" => {
+                content.parse::<syn::Token![=]>()?;
+                description = Some(content.parse::<LitStr>()?.value());
+            }
+            _ => {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    format!(
+                        "unknown field: `{}`. Expected `url` or `description`",
+                        ident_str
+                    ),
+                ));
+            }
+        }
+
+        if content.peek(syn::Token![,]) {
+            content.parse::<syn::Token![,]>()?;
+        } else {
+            break;
+        }
+    }
+
+    let url = url.ok_or_else(|| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "server config requires `url` field",
+        )
+    })?;
+
+    Ok(ServerConfig { url, description })
 }
 
 #[proc_macro]
@@ -235,6 +396,15 @@ pub fn vespera(input: TokenStream) -> TokenStream {
     let version = input.version.map(|v| v.value());
     let docs_url = input.docs_url.map(|u| u.value());
     let redoc_url = input.redoc_url.map(|u| u.value());
+    let servers = input.servers.map(|svrs| {
+        svrs.into_iter()
+            .map(|s| Server {
+                url: s.url,
+                description: s.description,
+                variables: None,
+            })
+            .collect::<Vec<_>>()
+    });
 
     let folder_path = find_folder_path(&folder_name);
 
@@ -270,7 +440,7 @@ pub fn vespera(input: TokenStream) -> TokenStream {
 
         // Serialize to JSON
         let json_str = match serde_json::to_string_pretty(&generate_openapi_doc_with_metadata(
-            title, version, &metadata,
+            title, version, servers, &metadata,
         )) {
             Ok(json) => json,
             Err(e) => {
