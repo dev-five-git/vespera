@@ -1,0 +1,1 @@
+{"changes":{"crates/vespera_core/Cargo.toml":"Patch","crates/vespera_macro/Cargo.toml":"Patch","crates/vespera/Cargo.toml":"Patch"},"note":"add servers option with description","date":"2026-01-04T08:44:59.920211600Z"}
