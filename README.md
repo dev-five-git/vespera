@@ -1,472 +1,270 @@
 # Vespera
-A fully automated OpenAPI engine for Axum with zero-config route and schema discovery.
 
+**FastAPI-like developer experience for Rust.** Zero-config OpenAPI 3.1 generation for Axum.
+
+[![Crates.io](https://img.shields.io/crates/v/vespera.svg)](https://crates.io/crates/vespera)
+[![Documentation](https://docs.rs/vespera/badge.svg)](https://docs.rs/vespera)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![GitHub Actions](https://img.shields.io/github/actions/workflow/status/dev-five-git/vespera/CI.yml?branch=main&label=CI)](https://github.com/dev-five-git/vespera/actions)
+[![CI](https://img.shields.io/github/actions/workflow/status/dev-five-git/vespera/CI.yml?branch=main&label=CI)](https://github.com/dev-five-git/vespera/actions)
 [![Codecov](https://img.shields.io/codecov/c/github/dev-five-git/vespera)](https://codecov.io/gh/dev-five-git/vespera)
-[![GitHub stars](https://img.shields.io/github/stars/dev-five-git/vespera.svg?style=social&label=Star)](https://github.com/dev-five-git/vespera)
-[![GitHub forks](https://img.shields.io/github/forks/dev-five-git/vespera.svg?style=social&label=Fork)](https://github.com/dev-five-git/vespera/fork)
-[![GitHub issues](https://img.shields.io/github/issues/dev-five-git/vespera.svg)](https://github.com/dev-five-git/vespera/issues)
-[![GitHub pull requests](https://img.shields.io/github/issues-pr/dev-five-git/vespera.svg)](https://github.com/dev-five-git/vespera/pulls)
-[![GitHub last commit](https://img.shields.io/github/last-commit/dev-five-git/vespera.svg)](https://github.com/dev-five-git/vespera/commits/main)
-[![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1-green.svg)](https://www.openapis.org/)
-
----
-
-## Introduction
-
-Vespera is a fully automated OpenAPI engine for Axum — delivering a FastAPI-like developer experience to the Rust ecosystem.
-
-It automatically discovers routes, imports handlers and schemas, and generates a complete OpenAPI 3.1 specification with zero configuration.
-
-Just write your Axum API.  
-Vespera handles the rest.
-
----
-
-## Features
-
-### 1. Zero-Config Route Discovery
-Automatically scans Axum routers and submodules to detect all registered routes.
-
-### 2. Auto-Import of Handlers and Schemas
-Automatically pulls in handlers, request/response types, and data models into the OpenAPI spec.
-
-### 3. Fully Automated OpenAPI Engine
-Generates a complete OpenAPI 3.1 document from:
-- Routes
-- Extractors
-- Parameters
-- Request bodies
-- Response bodies
-- Rust data structures (Serde)
-
-### 4. Type-Safe Schema Extraction
-Rust types are converted into JSON Schema with full type fidelity.
-
-### 5. Built-in Swagger UI
-Automatically generates and serves Swagger UI documentation when `docs_url` is specified, providing interactive API exploration.
-
-### 6. Axum-First Design
-Built specifically for Axum's architecture while offering the productivity of modern API frameworks.
-
----
-
-## Example
-
-### Routes Auto Import
 
 ```rust
-use axum::{Router, routing::get};
-use vespera::vespera;
-use axum::Json;
-
-async fn health() -> &'static str {
-    "ok"
-}
-
-async fn get_user(id: u32) -> Json<User> {
-    Json(User { id, name: "Alice".into() })
-}
-
-#[tokio::main]
-async fn main() {
-    dotenv().ok();
-
-    let config = Config::from_env();
-    let port = config.port;
-    let db = create_db_connection(&config.database_url).await;
-
-    let state = AppState { db, config };
-
-    let app = vespera!(
-        openapi = "openapi.json",
-        title = "My API",
-        version = "1.0.0",
-        docs_url = "/docs"
-    )
-    .with_state(state)
-    .layer(
-        CorsLayer::new()
-            .allow_origin("http://localhost:3000".parse::<HeaderValue>().unwrap())
-            .allow_methods([
-                Method::GET,
-                Method::POST,
-                Method::PUT,
-                Method::DELETE,
-                Method::OPTIONS,
-            ])
-            .allow_headers([
-                axum::http::header::CONTENT_TYPE,
-                axum::http::header::AUTHORIZATION,
-            ]),
-    );
-
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    println!("API server is running on port {}", port);
-    println!("Swagger UI available at http://localhost:{}/docs", port);
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
-}
+// That's it. Swagger UI at /docs, OpenAPI at openapi.json
+let app = vespera!(openapi = "openapi.json", docs_url = "/docs");
 ```
 
----
+## Why Vespera?
 
-## Installation
+| Feature | Vespera | Manual Approach |
+|---------|---------|-----------------|
+| Route registration | Automatic (file-based) | Manual `Router::new().route(...)` |
+| OpenAPI spec | Generated at compile time | Hand-written or runtime generation |
+| Schema extraction | From Rust types | Manual JSON Schema |
+| Swagger UI | Built-in | Separate setup |
+| Type safety | Compile-time verified | Runtime errors |
 
-Add the following to your `Cargo.toml`:
+## Quick Start
+
+### 1. Add Dependencies
 
 ```toml
 [dependencies]
-vespera = "0.1.0"
+vespera = "0.1"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 ```
 
----
-
-## Quick Start
-
-### 1. Create Project Structure
-
-Create a `src/routes` folder in your project root and write route handlers:
+### 2. Create Route Handler
 
 ```
 src/
 ├── main.rs
 └── routes/
-    ├── mod.rs
-    ├── users.rs
-    └── posts.rs
+    └── users.rs
 ```
 
-### 2. Write Route Handlers
-
-`src/routes/users.rs`:
-
+**`src/routes/users.rs`**:
 ```rust
-use axum::{Json, Path, State};
+use axum::{Json, Path};
 use serde::{Deserialize, Serialize};
+use vespera::Schema;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Schema)]
 pub struct User {
     pub id: u32,
     pub name: String,
 }
 
-/// `/users/{id}` - default method is get
-#[vespera::route(path = "/{id}")]
-pub async fn get_user(
-    State(state): State<AppState>,
-    Path(id): Path<i32>) -> Json<User> {
-    Json(User {
-        id,
-        name: "Alice".into(),
-    })
+/// Get user by ID
+#[vespera::route(get, path = "/{id}", tags = ["users"])]
+pub async fn get_user(Path(id): Path<u32>) -> Json<User> {
+    Json(User { id, name: "Alice".into() })
 }
 
-/// /users
-#[vespera::route(method = "post")]
+/// Create a new user
+#[vespera::route(post, tags = ["users"])]
 pub async fn create_user(Json(user): Json<User>) -> Json<User> {
     Json(user)
 }
 ```
 
-### 3. Register Modules
+### 3. Setup Main
 
-`src/routes/mod.rs`:
-
-```rust
-pub mod users;
-pub mod posts;
-```
-
-### 4. Setup Main Application
-
-`src/main.rs`:
-
+**`src/main.rs`**:
 ```rust
 use vespera::vespera;
 
 #[tokio::main]
 async fn main() {
-    // Basic usage: scans "routes" folder by default
-    let app = vespera!();
-    
-    // Or with OpenAPI and Swagger UI support
     let app = vespera!(
         openapi = "openapi.json",
         title = "My API",
-        version = "1.0.0",
         docs_url = "/docs"
     );
-    
-    // Or specify a custom folder: vespera!("api")
-    
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    println!("Server running on http://localhost:3000");
-    println!("Swagger UI available at http://localhost:3000/docs");
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    println!("Swagger UI: http://localhost:3000/docs");
     axum::serve(listener, app).await.unwrap();
+}
+```
+
+### 4. Run
+
+```bash
+cargo run
+# Open http://localhost:3000/docs
+```
+
+---
+
+## Core Concepts
+
+### File-Based Routing
+
+File structure maps to URL paths automatically:
+
+```
+src/routes/
+├── mod.rs           → /
+├── users.rs         → /users
+├── posts.rs         → /posts
+└── admin/
+    ├── mod.rs       → /admin
+    └── stats.rs     → /admin/stats
+```
+
+### Route Handlers
+
+Handlers must be `pub async fn` with the `#[vespera::route]` attribute:
+
+```rust
+// GET /users (default method)
+#[vespera::route]
+pub async fn list_users() -> Json<Vec<User>> { ... }
+
+// POST /users
+#[vespera::route(post)]
+pub async fn create_user(Json(user): Json<User>) -> Json<User> { ... }
+
+// GET /users/{id}
+#[vespera::route(get, path = "/{id}")]
+pub async fn get_user(Path(id): Path<u32>) -> Json<User> { ... }
+
+// Full options
+#[vespera::route(put, path = "/{id}", tags = ["users"], description = "Update user")]
+pub async fn update_user(...) -> ... { ... }
+```
+
+### Schema Derivation
+
+Derive `Schema` on types used in request/response bodies:
+
+```rust
+#[derive(Serialize, Deserialize, vespera::Schema)]
+#[serde(rename_all = "camelCase")]  // Serde attributes are respected
+pub struct CreateUserRequest {
+    pub user_name: String,          // → "userName" in OpenAPI
+    pub email: String,
+    #[serde(default)]
+    pub bio: Option<String>,        // Optional field
+}
+```
+
+### Supported Extractors
+
+| Extractor | OpenAPI Mapping |
+|-----------|-----------------|
+| `Path<T>` | Path parameters |
+| `Query<T>` | Query parameters |
+| `Json<T>` | Request body (application/json) |
+| `Form<T>` | Request body (form-urlencoded) |
+| `TypedHeader<T>` | Header parameters |
+| `State<T>` | Ignored (internal) |
+
+### Error Handling
+
+```rust
+#[derive(Serialize, Schema)]
+pub struct ApiError {
+    pub message: String,
+}
+
+#[vespera::route(get, path = "/{id}")]
+pub async fn get_user(Path(id): Path<u32>) -> Result<Json<User>, (StatusCode, Json<ApiError>)> {
+    if id == 0 {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { message: "Not found".into() })));
+    }
+    Ok(Json(User { id, name: "Alice".into() }))
 }
 ```
 
 ---
 
-## Usage
-
-### `vespera!` Macro
-
-Automatically scans routes and generates an Axum Router with optional OpenAPI and Swagger UI support.
+## `vespera!` Macro Reference
 
 ```rust
-// Basic usage: scans "routes" folder
-let app = vespera!();
-
-// Specify a custom folder
-let app = vespera!("api");
-
-// With OpenAPI JSON file generation
 let app = vespera!(
-    openapi = "openapi.json"
-);
-
-// Generate multiple OpenAPI JSON files at once
-let app = vespera!(
-    openapi = ["openapi.json", "admin-openapi.json"]
-);
-
-// With OpenAPI and Swagger UI
-let app = vespera!(
-    openapi = "openapi.json",
-    docs_url = "/docs"
-);
-
-// Full configuration with all parameters
-let app = vespera!(
-    dir = "routes",              // Route folder name (default: "routes")
-    openapi = "openapi.json",    // OpenAPI JSON file path (optional)
-    title = "My API",            // API title (optional, default: "API")
-    version = "1.0.0",           // API version (optional, default: Cargo.toml version)
-    docs_url = "/docs",          // Swagger UI documentation URL (optional)
-    servers = [                  // Server URLs for OpenAPI (optional)
-        {url = "https://api.example.com", description = "Production"},
-        {url = "http://localhost:3000", description = "Development"}
+    dir = "routes",                    // Route folder (default: "routes")
+    openapi = "openapi.json",          // Output path (writes file at compile time)
+    title = "My API",                  // OpenAPI info.title
+    version = "1.0.0",                 // OpenAPI info.version (default: CARGO_PKG_VERSION)
+    docs_url = "/docs",                // Swagger UI endpoint
+    redoc_url = "/redoc",              // ReDoc endpoint
+    servers = [                        // OpenAPI servers
+        { url = "https://api.example.com", description = "Production" },
+        { url = "http://localhost:3000", description = "Development" }
     ]
 );
 ```
 
-#### Parameter Description
+### Environment Variable Fallbacks
 
-- **`dir`**: Route folder name (default: `"routes"`)
-  - You can also specify it directly as a string literal: `vespera!("api")`
-  
-- **`openapi`**: OpenAPI JSON file path(s) (optional)
-  - Accepts a single string or an array of strings
-  - If specified, an OpenAPI 3.1 spec is generated at compile time and **writes an `openapi.json` file to the specified path (or paths)**
-  - Example: `openapi = "openapi.json"` → creates `openapi.json` file in project root
-  - Example: `openapi = "docs/api.json"` → creates `docs/api.json` file
-  - Example: `openapi = ["openapi.json", "docs/admin.json"]` → writes both files
-  
-- **`title`**: API title (optional, default: `"API"`)
-  - Used in the `info.title` field of the OpenAPI document
-  
-- **`version`**: API version (optional, default: your `Cargo.toml` version)
-  - Used in the `info.version` field of the OpenAPI document
-  - If not specified, automatically uses the version from your project's `Cargo.toml` (`CARGO_PKG_VERSION`)
-  
-- **`docs_url`**: Swagger UI documentation URL (optional)
-  - If specified, you can view the API documentation through Swagger UI at that path
-  - Example: Setting `docs_url = "/docs"` allows viewing documentation at `http://localhost:3000/docs`
+All parameters support environment variable fallbacks:
 
-- **`redoc_url`**: ReDoc documentation URL (optional)
-  - If specified, you can view the API documentation through ReDoc at that path
-  - Example: Setting `redoc_url = "/redoc"` allows viewing documentation at `http://localhost:3000/redoc`
+| Parameter | Environment Variable |
+|-----------|---------------------|
+| `dir` | `VESPERA_DIR` |
+| `openapi` | `VESPERA_OPENAPI` |
+| `title` | `VESPERA_TITLE` |
+| `version` | `VESPERA_VERSION` |
+| `docs_url` | `VESPERA_DOCS_URL` |
+| `redoc_url` | `VESPERA_REDOC_URL` |
+| `servers` | `VESPERA_SERVER_URL` + `VESPERA_SERVER_DESCRIPTION` |
 
-- **`servers`**: Server URLs for OpenAPI (optional, default: `http://localhost:3000`)
-  - Configures the `servers` field in the OpenAPI document
-  - Accepts multiple formats:
-    - Single URL string: `servers = "https://api.example.com"`
-    - Array of URL strings: `servers = ["https://api.example.com", "http://localhost:3000"]`
-    - Tuple format with descriptions: `servers = [("https://api.example.com", "Production")]`
-    - Struct-like format: `servers = [{url = "https://api.example.com", description = "Production"}]`
-    - Single struct-like: `servers = {url = "https://api.example.com", description = "Production"}`
-    - Mixed formats in array: `servers = ["http://localhost:3000", ("https://staging.example.com", "Staging"), {url = "https://api.example.com", description = "Production"}]`
+**Priority**: Macro parameter > Environment variable > Default
 
-#### Environment Variables
+---
 
-All macro parameters can also be configured via environment variables. Environment variables are used as fallbacks when the corresponding macro parameter is not specified.
+## Advanced Usage
 
-| Macro Parameter | Environment Variable | Description |
-|-----------------|---------------------|-------------|
-| `dir` | `VESPERA_DIR` | Route folder name |
-| `openapi` | `VESPERA_OPENAPI` | OpenAPI JSON file path |
-| `title` | `VESPERA_TITLE` | API title |
-| `version` | `VESPERA_VERSION` | API version |
-| `docs_url` | `VESPERA_DOCS_URL` | Swagger UI documentation URL |
-| `redoc_url` | `VESPERA_REDOC_URL` | ReDoc documentation URL |
-| `servers` | `VESPERA_SERVER_URL` | Server URL (single server) |
-| | `VESPERA_SERVER_DESCRIPTION` | Server description (optional, used with `VESPERA_SERVER_URL`) |
-
-**Priority Order** (highest to lowest):
-1. Macro parameter (e.g., `version = "1.0.0"`)
-2. Environment variable (e.g., `VESPERA_VERSION`)
-3. `CARGO_PKG_VERSION` (for `version` only)
-4. Default value
-
-**Example:**
-
-```bash
-# Set environment variables
-export VESPERA_TITLE="My Production API"
-export VESPERA_VERSION="2.0.0"
-export VESPERA_DOCS_URL="/api-docs"
-export VESPERA_SERVER_URL="https://api.example.com"
-export VESPERA_SERVER_DESCRIPTION="Production Server"
-```
+### Adding State
 
 ```rust
-// These will use the environment variables as defaults
-let app = vespera!(
-    openapi = "openapi.json"
-);
+let app = vespera!(docs_url = "/docs")
+    .with_state(AppState { db: pool });
 ```
 
-### `#[route]` Attribute Macro
-
-Specify HTTP method and path for handler functions.
+### Adding Middleware
 
 ```rust
-// GET request
-#[vespera::route(get)]
-pub async fn list_users() -> Json<Vec<User>> {
-    // ...
-}
-
-// POST request (custom path)
-#[vespera::route(post, path = "/users")]
-pub async fn create_user(Json(user): Json<User>) -> Json<User> {
-    // ...
-}
-
-// Path parameter support
-#[vespera::route(get, path = "/users/:id")]
-pub async fn get_user(id: u32) -> Json<User> {
-    // ...
-}
+let app = vespera!(docs_url = "/docs")
+    .layer(CorsLayer::permissive())
+    .layer(TraceLayer::new_for_http());
 ```
 
-### Tags and Description
-
-You can add tags and descriptions to your routes for better OpenAPI documentation organization.
-
-#### Tags
-
-Use the `tags` parameter to group your routes in the OpenAPI documentation:
-
-```rust
-#[vespera::route(get, tags = ["users"])]
-pub async fn list_users() -> Json<Vec<User>> {
-    // ...
-}
-
-#[vespera::route(post, tags = ["users", "admin"])]
-pub async fn create_user(Json(user): Json<User>) -> Json<User> {
-    // ...
-}
-```
-
-#### Description
-
-There are two ways to add descriptions to your routes:
-
-**1. Using doc comments (recommended):**
-
-Doc comments (`///`) are automatically extracted and used as the route description in OpenAPI:
-
-```rust
-/// Get all users from the database
-///
-/// Returns a list of all registered users.
-#[vespera::route(get)]
-pub async fn list_users() -> Json<Vec<User>> {
-    // ...
-}
-```
-
-**2. Using the `description` parameter:**
-
-You can also explicitly set the description using the `description` parameter. This takes priority over doc comments:
-
-```rust
-/// This doc comment will be ignored
-#[vespera::route(get, description = "Custom description for OpenAPI")]
-pub async fn list_users() -> Json<Vec<User>> {
-    // ...
-}
-```
-
-#### Combined Example
-
-```rust
-/// Get user by ID
-///
-/// Retrieves a specific user by their unique identifier.
-#[vespera::route(get, path = "/{id}", tags = ["users"])]
-pub async fn get_user(Path(id): Path<u32>) -> Json<User> {
-    // ...
-}
-
-#[vespera::route(post, tags = ["users", "admin"], description = "Create a new user account")]
-pub async fn create_user(Json(user): Json<User>) -> Json<User> {
-    // ...
-}
-```
-
-### Supported HTTP Methods
-
-- `GET`
-- `POST`
-- `PUT`
-- `PATCH`
-- `DELETE`
-- `HEAD`
-- `OPTIONS`
-
-### OpenAPI JSON Generation and Swagger UI
-
-When you specify the `openapi` parameter in the `vespera!` macro, an OpenAPI 3.1 spec is automatically generated at compile time and **writes a file to the specified path**.
+### Multiple OpenAPI Files
 
 ```rust
 let app = vespera!(
-    openapi = "openapi.json",    // Creates openapi.json file at this path
-    title = "My API",            // API title
-    version = "1.0.0",           // API version
-    docs_url = "/docs"           // Swagger UI URL (optional)
+    openapi = ["openapi.json", "docs/api-spec.json"]
 );
 ```
 
-With this configuration:
-- An OpenAPI JSON file is automatically generated at the specified path during compilation
-  - `openapi = "openapi.json"` → creates `openapi.json` file in project root
-  - `openapi = "docs/api.json"` → creates `docs/api.json` file
-- If you specify `docs_url`, you can view the API documentation through Swagger UI at that path
-- The OpenAPI spec is automatically generated by analyzing routes, handlers, and request/response types
+### Custom Route Folder
 
-**Note**: The `build.rs` file is no longer needed. The `vespera!` macro automatically handles it at compile time.
+```rust
+// Scans src/api/ instead of src/routes/
+let app = vespera!("api");
 
-### File Structure and Route Mapping
-
-File structure is automatically converted to URL paths:
-
+// Or explicitly
+let app = vespera!(dir = "api");
 ```
-routes/
-├── users.rs          → /users
-├── posts.rs          → /posts
-└── admin/
-    └── users.rs      → /admin/users
-```
+
+---
+
+## Type Mapping
+
+| Rust Type | OpenAPI Schema |
+|-----------|----------------|
+| `String`, `&str` | `string` |
+| `i32`, `u64`, etc. | `integer` |
+| `f32`, `f64` | `number` |
+| `bool` | `boolean` |
+| `Vec<T>` | `array` with items |
+| `Option<T>` | nullable T |
+| `HashMap<K, V>` | `object` with additionalProperties |
+| Custom struct | `$ref` to components/schemas |
 
 ---
 
@@ -474,71 +272,61 @@ routes/
 
 ```
 vespera/
-├── Cargo.toml
-├── README.md
-└── crates/
-    └── vespera/
-        ├── Cargo.toml
-        └── src/
-            ├── lib.rs          # Main macro definitions
-            ├── args.rs         # Macro argument parsing
-            ├── file_utils.rs   # File system utilities
-            ├── method.rs       # HTTP method definitions
-            └── route/
-                ├── mod.rs
-                └── utils.rs    # Route information extraction
+├── crates/
+│   ├── vespera/           # Main crate - re-exports everything
+│   ├── vespera_core/      # OpenAPI types and abstractions
+│   └── vespera_macro/     # Proc-macros (compile-time magic)
+└── examples/
+    └── axum-example/      # Complete example application
 ```
-
----
-
-## How It Works
-
-1. **Compile-Time Scanning**: The `vespera!` macro scans the specified folder to discover all route handlers.
-
-2. **Attribute Parsing**: Extracts HTTP method and path information from each handler's `#[route]` attribute.
-
-3. **Code Generation**: Automatically generates Axum Router code based on discovered routes.
-
-4. **Type Safety**: Leverages Rust's type system to ensure all routes are correctly registered at compile time.
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or submit a Pull Request.
-
-### Development Setup
-
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/vespera.git
+git clone https://github.com/dev-five-git/vespera.git
 cd vespera
 
-# Build
+# Build & test
 cargo build
+cargo test --workspace
 
-# Run tests
-cargo test
+# Run example
+cd examples/axum-example
+cargo run
+# → http://localhost:3000/docs
 ```
+
+See [SKILL.md](./SKILL.md) for development guidelines and architecture details.
+
+---
+
+## Comparison
+
+### vs. utoipa
+
+- **Vespera**: Zero-config, file-based routing, compile-time generation
+- **utoipa**: Manual annotations, more control, works with any router
+
+### vs. aide
+
+- **Vespera**: Automatic discovery, built-in Swagger UI
+- **aide**: More flexible, supports multiple doc formats
+
+### vs. paperclip
+
+- **Vespera**: Axum-first, modern OpenAPI 3.1
+- **paperclip**: Actix-focused, OpenAPI 2.0/3.0
 
 ---
 
 ## License
 
-This project is licensed under the Apache 2.0 License. See the `LICENSE` file for details.
-
----
-
-## Roadmap
-
-- [x] Automatic routes importing
-- [x] Automatic OpenAPI 3.1 spec generation (via `vespera!` macro)
-- [x] Automatic request/response schema extraction
-- [x] Swagger UI integration
-- [ ] Support for more Axum extractors
+Apache-2.0
 
 ---
 
 ## Acknowledgments
 
-Vespera is inspired by FastAPI’s developer experience and also takes inspiration from Next.js, all designed for the Rust ecosystem.
+Inspired by [FastAPI](https://fastapi.tiangolo.com/)'s developer experience and [Next.js](https://nextjs.org/)'s file-based routing.
