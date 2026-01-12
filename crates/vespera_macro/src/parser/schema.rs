@@ -6,20 +6,43 @@ use vespera_core::schema::{Reference, Schema, SchemaRef, SchemaType};
 pub fn extract_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
     for attr in attrs {
         if attr.path().is_ident("serde") {
-            // Parse the attribute tokens manually
-            // Format: #[serde(rename_all = "camelCase")]
-            let tokens = attr.meta.require_list().ok()?;
+            // Try using parse_nested_meta for robust parsing
+            let mut found_rename_all = None;
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("rename_all")
+                    && let Ok(value) = meta.value()
+                    && let Ok(syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(s),
+                        ..
+                    })) = value.parse::<syn::Expr>()
+                {
+                    found_rename_all = Some(s.value());
+                }
+                Ok(())
+            });
+            if found_rename_all.is_some() {
+                return found_rename_all;
+            }
+
+            // Fallback: manual token parsing
+            let tokens = match attr.meta.require_list() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
             let token_str = tokens.tokens.to_string();
 
             // Look for rename_all = "..." pattern
             if let Some(start) = token_str.find("rename_all") {
                 let remaining = &token_str[start + "rename_all".len()..];
                 if let Some(equals_pos) = remaining.find('=') {
-                    let value_part = &remaining[equals_pos + 1..].trim();
-                    // Extract string value (remove quotes)
-                    if value_part.starts_with('"') && value_part.ends_with('"') {
-                        let value = &value_part[1..value_part.len() - 1];
-                        return Some(value.to_string());
+                    let value_part = remaining[equals_pos + 1..].trim();
+                    // Extract string value - find the closing quote
+                    if let Some(quote_start) = value_part.find('"') {
+                        let after_quote = &value_part[quote_start + 1..];
+                        if let Some(quote_end) = after_quote.find('"') {
+                            let value = &after_quote[..quote_end];
+                            return Some(value.to_string());
+                        }
                     }
                 }
             }
@@ -222,12 +245,28 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
     // "lowercase", "UPPERCASE", "PascalCase", "camelCase", "snake_case", "SCREAMING_SNAKE_CASE", "kebab-case", "SCREAMING-KEBAB-CASE"
     match rename_all {
         Some("camelCase") => {
-            // Convert snake_case to camelCase
+            // Convert snake_case or PascalCase to camelCase
             let mut result = String::new();
             let mut capitalize_next = false;
-            for ch in field_name.chars() {
+            let mut in_first_word = true;
+            let chars: Vec<char> = field_name.chars().collect();
+
+            for (i, &ch) in chars.iter().enumerate() {
                 if ch == '_' {
                     capitalize_next = true;
+                    in_first_word = false;
+                } else if in_first_word {
+                    // In first word: lowercase until we hit a word boundary
+                    // Word boundary: uppercase char followed by lowercase (e.g., "XMLParser" -> "P" starts new word)
+                    let next_is_lower = chars.get(i + 1).is_some_and(|c| c.is_lowercase());
+                    if ch.is_uppercase() && next_is_lower && i > 0 {
+                        // This uppercase starts a new word (e.g., 'P' in "XMLParser")
+                        in_first_word = false;
+                        result.push(ch);
+                    } else {
+                        // Still in first word, lowercase it
+                        result.push(ch.to_lowercase().next().unwrap_or(ch));
+                    }
                 } else if capitalize_next {
                     result.push(ch.to_uppercase().next().unwrap_or(ch));
                     capitalize_next = false;
@@ -1257,6 +1296,88 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_enum_to_schema_rename_all_with_other_attrs_unit() {
+        // Test rename_all combined with other serde attributes for unit variants
+        let enum_item: syn::ItemEnum = syn::parse_str(
+            r#"
+            #[serde(rename_all = "kebab-case", default)]
+            enum Status {
+                ActiveUser,
+                InactiveUser,
+            }
+        "#,
+        )
+        .unwrap();
+
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let enum_values = schema.r#enum.expect("enum values missing");
+        assert_eq!(enum_values[0].as_str().unwrap(), "active-user");
+        assert_eq!(enum_values[1].as_str().unwrap(), "inactive-user");
+    }
+
+    #[test]
+    fn test_parse_enum_to_schema_rename_all_with_other_attrs_data() {
+        // Test rename_all combined with other serde attributes for data variants
+        let enum_item: syn::ItemEnum = syn::parse_str(
+            r#"
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            enum Event {
+                UserCreated { user_name: String, created_at: i64 },
+                UserDeleted(i32),
+            }
+        "#,
+        )
+        .unwrap();
+
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let one_of = schema.one_of.expect("one_of missing");
+
+        // Check UserCreated variant key is camelCase
+        let variant_obj = match &one_of[0] {
+            SchemaRef::Inline(s) => s,
+            _ => panic!("Expected inline schema"),
+        };
+        let props = variant_obj
+            .properties
+            .as_ref()
+            .expect("variant props missing");
+        assert!(props.contains_key("userCreated"));
+        assert!(!props.contains_key("UserCreated"));
+        assert!(!props.contains_key("user_created"));
+
+        // Check UserDeleted variant key is camelCase
+        let variant_obj2 = match &one_of[1] {
+            SchemaRef::Inline(s) => s,
+            _ => panic!("Expected inline schema"),
+        };
+        let props2 = variant_obj2
+            .properties
+            .as_ref()
+            .expect("variant props missing");
+        assert!(props2.contains_key("userDeleted"));
+    }
+
+    #[test]
+    fn test_parse_enum_to_schema_rename_all_not_first_attr() {
+        // Test rename_all when it's not the first attribute
+        let enum_item: syn::ItemEnum = syn::parse_str(
+            r#"
+            #[serde(default, rename_all = "SCREAMING_SNAKE_CASE")]
+            enum Priority {
+                HighPriority,
+                LowPriority,
+            }
+        "#,
+        )
+        .unwrap();
+
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let enum_values = schema.r#enum.expect("enum values missing");
+        assert_eq!(enum_values[0].as_str().unwrap(), "HIGH_PRIORITY");
+        assert_eq!(enum_values[1].as_str().unwrap(), "LOW_PRIORITY");
+    }
+
+    #[test]
     fn test_parse_struct_to_schema_required_optional() {
         let struct_item: syn::ItemStruct = syn::parse_str(
             r#"
@@ -1456,13 +1577,20 @@ mod tests {
     }
 
     #[rstest]
-    // camelCase tests
+    // camelCase tests (snake_case input)
     #[case("user_name", Some("camelCase"), "userName")]
     #[case("first_name", Some("camelCase"), "firstName")]
     #[case("last_name", Some("camelCase"), "lastName")]
     #[case("user_id", Some("camelCase"), "userId")]
     #[case("api_key", Some("camelCase"), "apiKey")]
     #[case("already_camel", Some("camelCase"), "alreadyCamel")]
+    // camelCase tests (PascalCase input)
+    #[case("UserName", Some("camelCase"), "userName")]
+    #[case("UserCreated", Some("camelCase"), "userCreated")]
+    #[case("FirstName", Some("camelCase"), "firstName")]
+    #[case("ID", Some("camelCase"), "id")]
+    #[case("XMLParser", Some("camelCase"), "xmlParser")]
+    #[case("HTTPSConnection", Some("camelCase"), "httpsConnection")]
     // snake_case tests
     #[case("userName", Some("snake_case"), "user_name")]
     #[case("firstName", Some("snake_case"), "first_name")]
@@ -1523,5 +1651,51 @@ mod tests {
         #[case] expected: &str,
     ) {
         assert_eq!(rename_field(field_name, rename_all), expected);
+    }
+
+    #[rstest]
+    #[case(r#"#[serde(rename_all = "camelCase")] struct Foo;"#, Some("camelCase"))]
+    #[case(
+        r#"#[serde(rename_all = "snake_case")] struct Foo;"#,
+        Some("snake_case")
+    )]
+    #[case(
+        r#"#[serde(rename_all = "kebab-case")] struct Foo;"#,
+        Some("kebab-case")
+    )]
+    #[case(
+        r#"#[serde(rename_all = "PascalCase")] struct Foo;"#,
+        Some("PascalCase")
+    )]
+    // Multiple attributes - this is the bug case
+    #[case(
+        r#"#[serde(rename_all = "camelCase", default)] struct Foo;"#,
+        Some("camelCase")
+    )]
+    #[case(
+        r#"#[serde(default, rename_all = "snake_case")] struct Foo;"#,
+        Some("snake_case")
+    )]
+    #[case(r#"#[serde(rename_all = "kebab-case", skip_serializing_if = "Option::is_none")] struct Foo;"#, Some("kebab-case"))]
+    // No rename_all
+    #[case(r#"#[serde(default)] struct Foo;"#, None)]
+    #[case(r#"#[derive(Debug)] struct Foo;"#, None)]
+    fn test_extract_rename_all(#[case] item_src: &str, #[case] expected: Option<&str>) {
+        let item: syn::ItemStruct = syn::parse_str(item_src).unwrap();
+        let result = extract_rename_all(&item.attrs);
+        assert_eq!(result.as_deref(), expected);
+    }
+
+    #[test]
+    fn test_extract_rename_all_enum_with_deny_unknown_fields() {
+        let enum_item: syn::ItemEnum = syn::parse_str(
+            r#"
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            enum Foo { A, B }
+        "#,
+        )
+        .unwrap();
+        let result = extract_rename_all(&enum_item.attrs);
+        assert_eq!(result.as_deref(), Some("camelCase"));
     }
 }

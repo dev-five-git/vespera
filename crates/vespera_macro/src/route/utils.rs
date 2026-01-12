@@ -8,16 +8,16 @@ pub fn extract_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
     for attr in attrs {
         if attr.path().is_ident("doc")
             && let syn::Meta::NameValue(meta_nv) = &attr.meta
-                && let syn::Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Str(lit_str),
-                    ..
-                }) = &meta_nv.value
-                {
-                    let line = lit_str.value();
-                    // Trim leading space that rustdoc adds
-                    let trimmed = line.strip_prefix(' ').unwrap_or(&line);
-                    doc_lines.push(trimmed.to_string());
-                }
+            && let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(lit_str),
+                ..
+            }) = &meta_nv.value
+        {
+            let line = lit_str.value();
+            // Trim leading space that rustdoc adds
+            let trimmed = line.strip_prefix(' ').unwrap_or(&line);
+            doc_lines.push(trimmed.to_string());
+        }
     }
 
     if doc_lines.is_empty() {

@@ -1,2 +1,4 @@
 target
 lcov.info
+tarplin-report.html
+build_rs_cov.profraw
