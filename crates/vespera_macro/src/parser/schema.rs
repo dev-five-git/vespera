@@ -6,20 +6,43 @@ use vespera_core::schema::{Reference, Schema, SchemaRef, SchemaType};
 pub fn extract_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
     for attr in attrs {
         if attr.path().is_ident("serde") {
-            // Parse the attribute tokens manually
-            // Format: #[serde(rename_all = "camelCase")]
-            let tokens = attr.meta.require_list().ok()?;
+            // Try using parse_nested_meta for robust parsing
+            let mut found_rename_all = None;
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("rename_all")
+                    && let Ok(value) = meta.value()
+                    && let Ok(syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(s),
+                        ..
+                    })) = value.parse::<syn::Expr>()
+                {
+                    found_rename_all = Some(s.value());
+                }
+                Ok(())
+            });
+            if found_rename_all.is_some() {
+                return found_rename_all;
+            }
+
+            // Fallback: manual token parsing
+            let tokens = match attr.meta.require_list() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
             let token_str = tokens.tokens.to_string();
 
             // Look for rename_all = "..." pattern
             if let Some(start) = token_str.find("rename_all") {
                 let remaining = &token_str[start + "rename_all".len()..];
                 if let Some(equals_pos) = remaining.find('=') {
-                    let value_part = &remaining[equals_pos + 1..].trim();
-                    // Extract string value (remove quotes)
-                    if value_part.starts_with('"') && value_part.ends_with('"') {
-                        let value = &value_part[1..value_part.len() - 1];
-                        return Some(value.to_string());
+                    let value_part = remaining[equals_pos + 1..].trim();
+                    // Extract string value - find the closing quote
+                    if let Some(quote_start) = value_part.find('"') {
+                        let after_quote = &value_part[quote_start + 1..];
+                        if let Some(quote_end) = after_quote.find('"') {
+                            let value = &after_quote[..quote_end];
+                            return Some(value.to_string());
+                        }
                     }
                 }
             }
@@ -222,12 +245,28 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
     // "lowercase", "UPPERCASE", "PascalCase", "camelCase", "snake_case", "SCREAMING_SNAKE_CASE", "kebab-case", "SCREAMING-KEBAB-CASE"
     match rename_all {
         Some("camelCase") => {
-            // Convert snake_case to camelCase
+            // Convert snake_case or PascalCase to camelCase
             let mut result = String::new();
             let mut capitalize_next = false;
-            for ch in field_name.chars() {
+            let mut in_first_word = true;
+            let chars: Vec<char> = field_name.chars().collect();
+
+            for (i, &ch) in chars.iter().enumerate() {
                 if ch == '_' {
                     capitalize_next = true;
+                    in_first_word = false;
+                } else if in_first_word {
+                    // In first word: lowercase until we hit a word boundary
+                    // Word boundary: uppercase char followed by lowercase (e.g., "XMLParser" -> "P" starts new word)
+                    let next_is_lower = chars.get(i + 1).is_some_and(|c| c.is_lowercase());
+                    if ch.is_uppercase() && next_is_lower && i > 0 {
+                        // This uppercase starts a new word (e.g., 'P' in "XMLParser")
+                        in_first_word = false;
+                        result.push(ch);
+                    } else {
+                        // Still in first word, lowercase it
+                        result.push(ch.to_lowercase().next().unwrap_or(ch));
+                    }
                 } else if capitalize_next {
                     result.push(ch.to_uppercase().next().unwrap_or(ch));
                     capitalize_next = false;
@@ -1257,6 +1296,88 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_enum_to_schema_rename_all_with_other_attrs_unit() {
+        // Test rename_all combined with other serde attributes for unit variants
+        let enum_item: syn::ItemEnum = syn::parse_str(
+            r#"
+            #[serde(rename_all = "kebab-case", default)]
+            enum Status {
+                ActiveUser,
+                InactiveUser,
+            }
+        "#,
+        )
+        .unwrap();
+
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let enum_values = schema.r#enum.expect("enum values missing");
+        assert_eq!(enum_values[0].as_str().unwrap(), "active-user");
+        assert_eq!(enum_values[1].as_str().unwrap(), "inactive-user");
+    }
+
+    #[test]
+    fn test_parse_enum_to_schema_rename_all_with_other_attrs_data() {
+        // Test rename_all combined with other serde attributes for data variants
+        let enum_item: syn::ItemEnum = syn::parse_str(
+            r#"
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            enum Event {
+                UserCreated { user_name: String, created_at: i64 },
+                UserDeleted(i32),
+            }
+        "#,
+        )
+        .unwrap();
+
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let one_of = schema.one_of.expect("one_of missing");
+
+        // Check UserCreated variant key is camelCase
+        let variant_obj = match &one_of[0] {
+            SchemaRef::Inline(s) => s,
+            _ => panic!("Expected inline schema"),
+        };
+        let props = variant_obj
+            .properties
+            .as_ref()
+            .expect("variant props missing");
+        assert!(props.contains_key("userCreated"));
+        assert!(!props.contains_key("UserCreated"));
+        assert!(!props.contains_key("user_created"));
+
+        // Check UserDeleted variant key is camelCase
+        let variant_obj2 = match &one_of[1] {
+            SchemaRef::Inline(s) => s,
+            _ => panic!("Expected inline schema"),
+        };
+        let props2 = variant_obj2
+            .properties
+            .as_ref()
+            .expect("variant props missing");
+        assert!(props2.contains_key("userDeleted"));
+    }
+
+    #[test]
+    fn test_parse_enum_to_schema_rename_all_not_first_attr() {
+        // Test rename_all when it's not the first attribute
+        let enum_item: syn::ItemEnum = syn::parse_str(
+            r#"
+            #[serde(default, rename_all = "SCREAMING_SNAKE_CASE")]
+            enum Priority {
+                HighPriority,
+                LowPriority,
+            }
+        "#,
+        )
+        .unwrap();
+
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let enum_values = schema.r#enum.expect("enum values missing");
+        assert_eq!(enum_values[0].as_str().unwrap(), "HIGH_PRIORITY");
+        assert_eq!(enum_values[1].as_str().unwrap(), "LOW_PRIORITY");
+    }
+
+    #[test]
     fn test_parse_struct_to_schema_required_optional() {
         let struct_item: syn::ItemStruct = syn::parse_str(
             r#"
@@ -1456,13 +1577,20 @@ mod tests {
     }
 
     #[rstest]
-    // camelCase tests
+    // camelCase tests (snake_case input)
     #[case("user_name", Some("camelCase"), "userName")]
     #[case("first_name", Some("camelCase"), "firstName")]
     #[case("last_name", Some("camelCase"), "lastName")]
     #[case("user_id", Some("camelCase"), "userId")]
     #[case("api_key", Some("camelCase"), "apiKey")]
     #[case("already_camel", Some("camelCase"), "alreadyCamel")]
+    // camelCase tests (PascalCase input)
+    #[case("UserName", Some("camelCase"), "userName")]
+    #[case("UserCreated", Some("camelCase"), "userCreated")]
+    #[case("FirstName", Some("camelCase"), "firstName")]
+    #[case("ID", Some("camelCase"), "id")]
+    #[case("XMLParser", Some("camelCase"), "xmlParser")]
+    #[case("HTTPSConnection", Some("camelCase"), "httpsConnection")]
     // snake_case tests
     #[case("userName", Some("snake_case"), "user_name")]
     #[case("firstName", Some("snake_case"), "first_name")]
@@ -1523,5 +1651,263 @@ mod tests {
         #[case] expected: &str,
     ) {
         assert_eq!(rename_field(field_name, rename_all), expected);
+    }
+
+    #[rstest]
+    #[case(r#"#[serde(rename_all = "camelCase")] struct Foo;"#, Some("camelCase"))]
+    #[case(
+        r#"#[serde(rename_all = "snake_case")] struct Foo;"#,
+        Some("snake_case")
+    )]
+    #[case(
+        r#"#[serde(rename_all = "kebab-case")] struct Foo;"#,
+        Some("kebab-case")
+    )]
+    #[case(
+        r#"#[serde(rename_all = "PascalCase")] struct Foo;"#,
+        Some("PascalCase")
+    )]
+    // Multiple attributes - this is the bug case
+    #[case(
+        r#"#[serde(rename_all = "camelCase", default)] struct Foo;"#,
+        Some("camelCase")
+    )]
+    #[case(
+        r#"#[serde(default, rename_all = "snake_case")] struct Foo;"#,
+        Some("snake_case")
+    )]
+    #[case(r#"#[serde(rename_all = "kebab-case", skip_serializing_if = "Option::is_none")] struct Foo;"#, Some("kebab-case"))]
+    // No rename_all
+    #[case(r#"#[serde(default)] struct Foo;"#, None)]
+    #[case(r#"#[derive(Debug)] struct Foo;"#, None)]
+    fn test_extract_rename_all(#[case] item_src: &str, #[case] expected: Option<&str>) {
+        let item: syn::ItemStruct = syn::parse_str(item_src).unwrap();
+        let result = extract_rename_all(&item.attrs);
+        assert_eq!(result.as_deref(), expected);
+    }
+
+    #[test]
+    fn test_extract_rename_all_enum_with_deny_unknown_fields() {
+        let enum_item: syn::ItemEnum = syn::parse_str(
+            r#"
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            enum Foo { A, B }
+        "#,
+        )
+        .unwrap();
+        let result = extract_rename_all(&enum_item.attrs);
+        assert_eq!(result.as_deref(), Some("camelCase"));
+    }
+
+    // Tests for extract_field_rename function
+    #[rstest]
+    #[case(r#"#[serde(rename = "custom_name")] field: i32"#, Some("custom_name"))]
+    #[case(r#"#[serde(rename = "userId")] field: i32"#, Some("userId"))]
+    #[case(r#"#[serde(rename = "ID")] field: i32"#, Some("ID"))]
+    #[case(r#"#[serde(default)] field: i32"#, None)]
+    #[case(r#"#[serde(skip)] field: i32"#, None)]
+    #[case(r#"field: i32"#, None)]
+    // rename_all should NOT be extracted as rename
+    #[case(r#"#[serde(rename_all = "camelCase")] field: i32"#, None)]
+    // Multiple attributes
+    #[case(r#"#[serde(rename = "custom", default)] field: i32"#, Some("custom"))]
+    #[case(
+        r#"#[serde(default, rename = "my_field")] field: i32"#,
+        Some("my_field")
+    )]
+    fn test_extract_field_rename(#[case] field_src: &str, #[case] expected: Option<&str>) {
+        // Parse field from struct context
+        let struct_src = format!("struct Foo {{ {} }}", field_src);
+        let item: syn::ItemStruct = syn::parse_str(&struct_src).unwrap();
+        if let syn::Fields::Named(fields) = &item.fields {
+            let field = fields.named.first().unwrap();
+            let result = extract_field_rename(&field.attrs);
+            assert_eq!(result.as_deref(), expected, "Failed for: {}", field_src);
+        }
+    }
+
+    // Tests for extract_skip function
+    #[rstest]
+    #[case(r#"#[serde(skip)] field: i32"#, true)]
+    #[case(r#"#[serde(default)] field: i32"#, false)]
+    #[case(r#"#[serde(rename = "x")] field: i32"#, false)]
+    #[case(r#"field: i32"#, false)]
+    // skip_serializing_if should NOT be treated as skip
+    #[case(
+        r#"#[serde(skip_serializing_if = "Option::is_none")] field: i32"#,
+        false
+    )]
+    // skip_deserializing should NOT be treated as skip
+    #[case(r#"#[serde(skip_deserializing)] field: i32"#, false)]
+    // Combined attributes
+    #[case(r#"#[serde(skip, default)] field: i32"#, true)]
+    #[case(r#"#[serde(default, skip)] field: i32"#, true)]
+    fn test_extract_skip(#[case] field_src: &str, #[case] expected: bool) {
+        let struct_src = format!("struct Foo {{ {} }}", field_src);
+        let item: syn::ItemStruct = syn::parse_str(&struct_src).unwrap();
+        if let syn::Fields::Named(fields) = &item.fields {
+            let field = fields.named.first().unwrap();
+            let result = extract_skip(&field.attrs);
+            assert_eq!(result, expected, "Failed for: {}", field_src);
+        }
+    }
+
+    // Tests for extract_skip_serializing_if function
+    #[rstest]
+    #[case(
+        r#"#[serde(skip_serializing_if = "Option::is_none")] field: i32"#,
+        true
+    )]
+    #[case(r#"#[serde(skip_serializing_if = "is_zero")] field: i32"#, true)]
+    #[case(r#"#[serde(default)] field: i32"#, false)]
+    #[case(r#"#[serde(skip)] field: i32"#, false)]
+    #[case(r#"field: i32"#, false)]
+    fn test_extract_skip_serializing_if(#[case] field_src: &str, #[case] expected: bool) {
+        let struct_src = format!("struct Foo {{ {} }}", field_src);
+        let item: syn::ItemStruct = syn::parse_str(&struct_src).unwrap();
+        if let syn::Fields::Named(fields) = &item.fields {
+            let field = fields.named.first().unwrap();
+            let result = extract_skip_serializing_if(&field.attrs);
+            assert_eq!(result, expected, "Failed for: {}", field_src);
+        }
+    }
+
+    // Tests for extract_default function
+    #[rstest]
+    // Simple default (no function)
+    #[case(r#"#[serde(default)] field: i32"#, Some(None))]
+    // Default with function name
+    #[case(
+        r#"#[serde(default = "default_value")] field: i32"#,
+        Some(Some("default_value"))
+    )]
+    #[case(
+        r#"#[serde(default = "Default::default")] field: i32"#,
+        Some(Some("Default::default"))
+    )]
+    // No default
+    #[case(r#"#[serde(skip)] field: i32"#, None)]
+    #[case(r#"#[serde(rename = "x")] field: i32"#, None)]
+    #[case(r#"field: i32"#, None)]
+    // Combined attributes
+    #[case(
+        r#"#[serde(default, skip_serializing_if = "Option::is_none")] field: i32"#,
+        Some(None)
+    )]
+    #[case(
+        r#"#[serde(skip_serializing_if = "Option::is_none", default = "my_default")] field: i32"#,
+        Some(Some("my_default"))
+    )]
+    fn test_extract_default(#[case] field_src: &str, #[case] expected: Option<Option<&str>>) {
+        let struct_src = format!("struct Foo {{ {} }}", field_src);
+        let item: syn::ItemStruct = syn::parse_str(&struct_src).unwrap();
+        if let syn::Fields::Named(fields) = &item.fields {
+            let field = fields.named.first().unwrap();
+            let result = extract_default(&field.attrs);
+            let expected_owned = expected.map(|o| o.map(|s| s.to_string()));
+            assert_eq!(result, expected_owned, "Failed for: {}", field_src);
+        }
+    }
+
+    // Test struct with skip field
+    #[test]
+    fn test_parse_struct_to_schema_with_skip_field() {
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r#"
+            struct User {
+                id: i32,
+                #[serde(skip)]
+                internal_data: String,
+                name: String,
+            }
+        "#,
+        )
+        .unwrap();
+        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let props = schema.properties.as_ref().unwrap();
+        assert!(props.contains_key("id"));
+        assert!(props.contains_key("name"));
+        assert!(!props.contains_key("internal_data")); // Should be skipped
+    }
+
+    // Test struct with default and skip_serializing_if
+    #[test]
+    fn test_parse_struct_to_schema_with_default_fields() {
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r#"
+            struct Config {
+                required_field: i32,
+                #[serde(default)]
+                optional_with_default: String,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                maybe_skip: Option<i32>,
+            }
+        "#,
+        )
+        .unwrap();
+        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let props = schema.properties.as_ref().unwrap();
+        assert!(props.contains_key("required_field"));
+        assert!(props.contains_key("optional_with_default"));
+        assert!(props.contains_key("maybe_skip"));
+
+        let required = schema.required.as_ref().unwrap();
+        assert!(required.contains(&"required_field".to_string()));
+        // Fields with default should NOT be required
+        assert!(!required.contains(&"optional_with_default".to_string()));
+        // Fields with skip_serializing_if should NOT be required
+        assert!(!required.contains(&"maybe_skip".to_string()));
+    }
+
+    // Test BTreeMap type
+    #[test]
+    fn test_parse_type_to_schema_ref_btreemap() {
+        let ty: Type = syn::parse_str("BTreeMap<String, i32>").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &HashMap::new(), &HashMap::new());
+        if let SchemaRef::Inline(schema) = schema_ref {
+            assert_eq!(schema.schema_type, Some(SchemaType::Object));
+            assert!(schema.additional_properties.is_some());
+        } else {
+            panic!("Expected inline schema for BTreeMap");
+        }
+    }
+
+    // Test Vec without inner type (edge case)
+    #[test]
+    fn test_parse_type_to_schema_ref_vec_without_args() {
+        let ty: Type = syn::parse_str("Vec").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &HashMap::new(), &HashMap::new());
+        // Vec without angle brackets should return object schema
+        assert!(matches!(schema_ref, SchemaRef::Inline(_)));
+    }
+
+    // Test enum with empty variants (edge case)
+    #[test]
+    fn test_parse_enum_to_schema_empty_enum() {
+        let enum_item: syn::ItemEnum = syn::parse_str(
+            r#"
+            enum Empty {}
+        "#,
+        )
+        .unwrap();
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        // Empty enum should have no enum values
+        assert!(schema.r#enum.is_none() || schema.r#enum.as_ref().unwrap().is_empty());
+    }
+
+    // Test enum with all struct variants having empty properties
+    #[test]
+    fn test_parse_enum_to_schema_struct_variant_no_fields() {
+        let enum_item: syn::ItemEnum = syn::parse_str(
+            r#"
+            enum Event {
+                Empty {},
+            }
+        "#,
+        )
+        .unwrap();
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let one_of = schema.one_of.expect("one_of missing");
+        assert_eq!(one_of.len(), 1);
     }
 }

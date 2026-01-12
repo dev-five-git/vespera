@@ -266,7 +266,7 @@ fn parse_servers_values(input: ParseStream) -> syn::Result<Vec<ServerConfig>> {
     input.parse::<syn::Token![=]>()?;
 
     if input.peek(syn::token::Bracket) {
-        // Array format: [...] 
+        // Array format: [...]
         let content;
         let _ = bracketed!(content in input);
 
