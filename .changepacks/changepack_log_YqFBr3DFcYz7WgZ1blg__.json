@@ -1,1 +1,0 @@
-{"changes":{"crates/vespera_macro/Cargo.toml":"Patch","crates/vespera_core/Cargo.toml":"Patch","crates/vespera/Cargo.toml":"Patch"},"note":"Fix rename_all","date":"2026-01-12T04:26:20.440174200Z"}
