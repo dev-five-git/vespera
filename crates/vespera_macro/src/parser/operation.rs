@@ -367,6 +367,30 @@ mod tests {
         }
     }
 
+    fn build_with_tags(sig_src: &str, path: &str, tags: Option<&[String]>) -> Operation {
+        let sig: syn::Signature = syn::parse_str(sig_src).expect("signature parse failed");
+        build_operation_from_function(&sig, path, &HashMap::new(), &HashMap::new(), None, tags)
+    }
+
+    #[test]
+    fn test_build_operation_with_tags() {
+        let tags = vec!["users".to_string(), "admin".to_string()];
+        let op = build_with_tags("fn test() -> String", "/test", Some(&tags));
+        assert_eq!(op.tags, Some(tags));
+    }
+
+    #[test]
+    fn test_build_operation_without_tags() {
+        let op = build_with_tags("fn test() -> String", "/test", None);
+        assert_eq!(op.tags, None);
+    }
+
+    #[test]
+    fn test_build_operation_operation_id() {
+        let op = build("fn my_handler() -> String", "/test", None);
+        assert_eq!(op.operation_id, Some("my_handler".to_string()));
+    }
+
     #[rstest]
     #[case(
         "fn upload(data: String) -> String",

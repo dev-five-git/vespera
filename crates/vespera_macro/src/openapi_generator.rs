@@ -805,4 +805,353 @@ pub fn create_user() -> String {
         // Ensure TempDir is properly closed
         drop(temp_dir);
     }
+
+    #[test]
+    fn test_generate_openapi_with_tags_and_description() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let route_content = r#"
+pub fn get_users() -> String {
+    "users".to_string()
+}
+"#;
+        let route_file = create_temp_file(&temp_dir, "users.rs", route_content);
+
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "GET".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "test::users".to_string(),
+            file_path: route_file.to_string_lossy().to_string(),
+            signature: "fn get_users() -> String".to_string(),
+            error_status: Some(vec![404]),
+            tags: Some(vec!["users".to_string(), "admin".to_string()]),
+            description: Some("Get all users".to_string()),
+        });
+
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+
+        // Check route has description
+        let path_item = doc.paths.get("/users").unwrap();
+        let operation = path_item.get.as_ref().unwrap();
+        assert_eq!(operation.description, Some("Get all users".to_string()));
+
+        // Check tags are collected
+        assert!(doc.tags.is_some());
+        let tags = doc.tags.as_ref().unwrap();
+        assert!(tags.iter().any(|t| t.name == "users"));
+        assert!(tags.iter().any(|t| t.name == "admin"));
+    }
+
+    #[test]
+    fn test_generate_openapi_with_servers() {
+        let metadata = CollectedMetadata::new();
+        let servers = vec![
+            Server {
+                url: "https://api.example.com".to_string(),
+                description: Some("Production".to_string()),
+                variables: None,
+            },
+            Server {
+                url: "http://localhost:3000".to_string(),
+                description: Some("Development".to_string()),
+                variables: None,
+            },
+        ];
+
+        let doc = generate_openapi_doc_with_metadata(None, None, Some(servers), &metadata);
+
+        assert!(doc.servers.is_some());
+        let doc_servers = doc.servers.unwrap();
+        assert_eq!(doc_servers.len(), 2);
+        assert_eq!(doc_servers[0].url, "https://api.example.com");
+        assert_eq!(doc_servers[1].url, "http://localhost:3000");
+    }
+
+    #[test]
+    fn test_extract_value_from_expr_int() {
+        let expr: syn::Expr = syn::parse_str("42").unwrap();
+        let value = extract_value_from_expr(&expr);
+        assert_eq!(value, Some(serde_json::Value::Number(42.into())));
+    }
+
+    #[test]
+    fn test_extract_value_from_expr_float() {
+        let expr: syn::Expr = syn::parse_str("3.14").unwrap();
+        let value = extract_value_from_expr(&expr);
+        assert!(value.is_some());
+        if let Some(serde_json::Value::Number(n)) = value {
+            assert!((n.as_f64().unwrap() - 3.14).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn test_extract_value_from_expr_bool() {
+        let expr_true: syn::Expr = syn::parse_str("true").unwrap();
+        let expr_false: syn::Expr = syn::parse_str("false").unwrap();
+        assert_eq!(
+            extract_value_from_expr(&expr_true),
+            Some(serde_json::Value::Bool(true))
+        );
+        assert_eq!(
+            extract_value_from_expr(&expr_false),
+            Some(serde_json::Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn test_extract_value_from_expr_string() {
+        let expr: syn::Expr = syn::parse_str(r#""hello""#).unwrap();
+        let value = extract_value_from_expr(&expr);
+        assert_eq!(value, Some(serde_json::Value::String("hello".to_string())));
+    }
+
+    #[test]
+    fn test_extract_value_from_expr_to_string() {
+        let expr: syn::Expr = syn::parse_str(r#""hello".to_string()"#).unwrap();
+        let value = extract_value_from_expr(&expr);
+        assert_eq!(value, Some(serde_json::Value::String("hello".to_string())));
+    }
+
+    #[test]
+    fn test_extract_value_from_expr_vec_macro() {
+        let expr: syn::Expr = syn::parse_str("vec![]").unwrap();
+        let value = extract_value_from_expr(&expr);
+        assert_eq!(value, Some(serde_json::Value::Array(vec![])));
+    }
+
+    #[test]
+    fn test_extract_value_from_expr_unsupported() {
+        // Binary expression is not supported
+        let expr: syn::Expr = syn::parse_str("1 + 2").unwrap();
+        let value = extract_value_from_expr(&expr);
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn test_extract_value_from_expr_method_call_non_to_string() {
+        // Method call that's not to_string()
+        let expr: syn::Expr = syn::parse_str(r#""hello".len()"#).unwrap();
+        let value = extract_value_from_expr(&expr);
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn test_extract_value_from_expr_unsupported_literal() {
+        // Byte literal is not directly supported
+        let expr: syn::Expr = syn::parse_str("b'a'").unwrap();
+        let value = extract_value_from_expr(&expr);
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn test_extract_value_from_expr_non_vec_macro() {
+        // Other macros like println! are not supported
+        let expr: syn::Expr = syn::parse_str(r#"println!("test")"#).unwrap();
+        let value = extract_value_from_expr(&expr);
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn test_get_type_default_string() {
+        let ty: syn::Type = syn::parse_str("String").unwrap();
+        let value = get_type_default(&ty);
+        assert_eq!(value, Some(serde_json::Value::String(String::new())));
+    }
+
+    #[test]
+    fn test_get_type_default_integers() {
+        for type_name in &["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"] {
+            let ty: syn::Type = syn::parse_str(type_name).unwrap();
+            let value = get_type_default(&ty);
+            assert_eq!(
+                value,
+                Some(serde_json::Value::Number(0.into())),
+                "Failed for type {}",
+                type_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_get_type_default_floats() {
+        for type_name in &["f32", "f64"] {
+            let ty: syn::Type = syn::parse_str(type_name).unwrap();
+            let value = get_type_default(&ty);
+            assert!(value.is_some(), "Failed for type {}", type_name);
+        }
+    }
+
+    #[test]
+    fn test_get_type_default_bool() {
+        let ty: syn::Type = syn::parse_str("bool").unwrap();
+        let value = get_type_default(&ty);
+        assert_eq!(value, Some(serde_json::Value::Bool(false)));
+    }
+
+    #[test]
+    fn test_get_type_default_unknown() {
+        let ty: syn::Type = syn::parse_str("CustomType").unwrap();
+        let value = get_type_default(&ty);
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn test_get_type_default_non_path() {
+        // Reference type is not a path type
+        let ty: syn::Type = syn::parse_str("&str").unwrap();
+        let value = get_type_default(&ty);
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn test_find_function_in_file() {
+        let file_content = r#"
+fn foo() {}
+fn bar() -> i32 { 42 }
+fn baz(x: i32) -> i32 { x }
+"#;
+        let file_ast: syn::File = syn::parse_str(file_content).unwrap();
+
+        assert!(find_function_in_file(&file_ast, "foo").is_some());
+        assert!(find_function_in_file(&file_ast, "bar").is_some());
+        assert!(find_function_in_file(&file_ast, "baz").is_some());
+        assert!(find_function_in_file(&file_ast, "nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_extract_default_value_from_function() {
+        // Test direct expression return
+        let func: syn::ItemFn = syn::parse_str(
+            r#"
+            fn default_value() -> i32 {
+                42
+            }
+        "#,
+        )
+        .unwrap();
+        let value = extract_default_value_from_function(&func);
+        assert_eq!(value, Some(serde_json::Value::Number(42.into())));
+    }
+
+    #[test]
+    fn test_extract_default_value_from_function_with_return() {
+        // Test explicit return statement
+        let func: syn::ItemFn = syn::parse_str(
+            r#"
+            fn default_value() -> String {
+                return "hello".to_string()
+            }
+        "#,
+        )
+        .unwrap();
+        let value = extract_default_value_from_function(&func);
+        assert_eq!(value, Some(serde_json::Value::String("hello".to_string())));
+    }
+
+    #[test]
+    fn test_extract_default_value_from_function_empty() {
+        // Test function with no extractable value
+        let func: syn::ItemFn = syn::parse_str(
+            r#"
+            fn default_value() {
+                let x = 1;
+            }
+        "#,
+        )
+        .unwrap();
+        let value = extract_default_value_from_function(&func);
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn test_generate_openapi_with_default_functions() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create a file with struct that has default function
+        let route_content = r#"
+fn default_name() -> String {
+    "John".to_string()
+}
+
+struct User {
+    #[serde(default = "default_name")]
+    name: String,
+}
+
+pub fn get_user() -> User {
+    User { name: "Alice".to_string() }
+}
+"#;
+        let route_file = create_temp_file(&temp_dir, "user.rs", route_content);
+
+        let mut metadata = CollectedMetadata::new();
+        metadata.structs.push(StructMetadata {
+            name: "User".to_string(),
+            definition: r#"struct User { #[serde(default = "default_name")] name: String }"#
+                .to_string(),
+        });
+        metadata.routes.push(RouteMetadata {
+            method: "GET".to_string(),
+            path: "/user".to_string(),
+            function_name: "get_user".to_string(),
+            module_path: "test::user".to_string(),
+            file_path: route_file.to_string_lossy().to_string(),
+            signature: "fn get_user() -> User".to_string(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+
+        // Struct should be present
+        assert!(doc.components.as_ref().unwrap().schemas.is_some());
+        let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
+        assert!(schemas.contains_key("User"));
+    }
+
+    #[test]
+    fn test_generate_openapi_with_simple_default() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        let route_content = r#"
+struct Config {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    count: i32,
+}
+
+pub fn get_config() -> Config {
+    Config { enabled: true, count: 0 }
+}
+"#;
+        let route_file = create_temp_file(&temp_dir, "config.rs", route_content);
+
+        let mut metadata = CollectedMetadata::new();
+        metadata.structs.push(StructMetadata {
+            name: "Config".to_string(),
+            definition:
+                r#"struct Config { #[serde(default)] enabled: bool, #[serde(default)] count: i32 }"#
+                    .to_string(),
+        });
+        metadata.routes.push(RouteMetadata {
+            method: "GET".to_string(),
+            path: "/config".to_string(),
+            function_name: "get_config".to_string(),
+            module_path: "test::config".to_string(),
+            file_path: route_file.to_string_lossy().to_string(),
+            signature: "fn get_config() -> Config".to_string(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+
+        assert!(doc.components.as_ref().unwrap().schemas.is_some());
+        let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
+        assert!(schemas.contains_key("Config"));
+    }
 }

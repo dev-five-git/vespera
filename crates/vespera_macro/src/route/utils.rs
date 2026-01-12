@@ -329,4 +329,146 @@ mod tests {
             }
         }
     }
+
+    // Tests for extract_doc_comment function
+    #[test]
+    fn test_extract_doc_comment_single_line() {
+        let code = r#"
+            /// This is a doc comment
+            fn test() {}
+        "#;
+        let file: syn::File = syn::parse_str(code).unwrap();
+        if let Some(syn::Item::Fn(fn_item)) = file.items.first() {
+            let doc = extract_doc_comment(&fn_item.attrs);
+            assert_eq!(doc, Some("This is a doc comment".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_extract_doc_comment_multi_line() {
+        let code = r#"
+            /// First line
+            /// Second line
+            /// Third line
+            fn test() {}
+        "#;
+        let file: syn::File = syn::parse_str(code).unwrap();
+        if let Some(syn::Item::Fn(fn_item)) = file.items.first() {
+            let doc = extract_doc_comment(&fn_item.attrs);
+            assert_eq!(doc, Some("First line\nSecond line\nThird line".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_extract_doc_comment_empty() {
+        let code = "fn test() {}";
+        let file: syn::File = syn::parse_str(code).unwrap();
+        if let Some(syn::Item::Fn(fn_item)) = file.items.first() {
+            let doc = extract_doc_comment(&fn_item.attrs);
+            assert_eq!(doc, None);
+        }
+    }
+
+    #[test]
+    fn test_extract_doc_comment_with_other_attrs() {
+        let code = r#"
+            #[inline]
+            /// Doc comment
+            #[test]
+            fn test() {}
+        "#;
+        let file: syn::File = syn::parse_str(code).unwrap();
+        if let Some(syn::Item::Fn(fn_item)) = file.items.first() {
+            let doc = extract_doc_comment(&fn_item.attrs);
+            assert_eq!(doc, Some("Doc comment".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_extract_doc_comment_no_leading_space() {
+        let code = r#"
+            ///No leading space
+            fn test() {}
+        "#;
+        let file: syn::File = syn::parse_str(code).unwrap();
+        if let Some(syn::Item::Fn(fn_item)) = file.items.first() {
+            let doc = extract_doc_comment(&fn_item.attrs);
+            assert_eq!(doc, Some("No leading space".to_string()));
+        }
+    }
+
+    // Tests for tags and description in extract_route_info
+    #[test]
+    fn test_extract_route_info_with_tags() {
+        let code = r#"#[route(get, tags = ["users", "admin"])] fn test() {}"#;
+        let attrs = parse_attrs_from_code(code);
+        let result = extract_route_info(&attrs);
+        assert!(result.is_some());
+        let route_info = result.unwrap();
+        assert_eq!(
+            route_info.tags,
+            Some(vec!["users".to_string(), "admin".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_extract_route_info_with_single_tag() {
+        let code = r#"#[route(get, tags = ["users"])] fn test() {}"#;
+        let attrs = parse_attrs_from_code(code);
+        let result = extract_route_info(&attrs);
+        assert!(result.is_some());
+        let route_info = result.unwrap();
+        assert_eq!(route_info.tags, Some(vec!["users".to_string()]));
+    }
+
+    #[test]
+    fn test_extract_route_info_with_empty_tags() {
+        let code = r#"#[route(get, tags = [])] fn test() {}"#;
+        let attrs = parse_attrs_from_code(code);
+        let result = extract_route_info(&attrs);
+        assert!(result.is_some());
+        let route_info = result.unwrap();
+        assert_eq!(route_info.tags, None); // Empty array should return None
+    }
+
+    #[test]
+    fn test_extract_route_info_with_description() {
+        let code = r#"#[route(get, description = "Get all users")] fn test() {}"#;
+        let attrs = parse_attrs_from_code(code);
+        let result = extract_route_info(&attrs);
+        assert!(result.is_some());
+        let route_info = result.unwrap();
+        assert_eq!(route_info.description, Some("Get all users".to_string()));
+    }
+
+    #[test]
+    fn test_extract_route_info_with_tags_and_description() {
+        let code = r#"#[route(get, tags = ["users"], description = "Get users")] fn test() {}"#;
+        let attrs = parse_attrs_from_code(code);
+        let result = extract_route_info(&attrs);
+        assert!(result.is_some());
+        let route_info = result.unwrap();
+        assert_eq!(route_info.tags, Some(vec!["users".to_string()]));
+        assert_eq!(route_info.description, Some("Get users".to_string()));
+    }
+
+    #[test]
+    fn test_extract_route_info_all_options() {
+        let code = r#"#[route(post, path = "/api/users", error_status = [400, 404], tags = ["users", "api"], description = "Create a new user")] fn test() {}"#;
+        let attrs = parse_attrs_from_code(code);
+        let result = extract_route_info(&attrs);
+        assert!(result.is_some());
+        let route_info = result.unwrap();
+        assert_eq!(route_info.method, "post");
+        assert_eq!(route_info.path, Some("/api/users".to_string()));
+        assert_eq!(route_info.error_status, Some(vec![400, 404]));
+        assert_eq!(
+            route_info.tags,
+            Some(vec!["users".to_string(), "api".to_string()])
+        );
+        assert_eq!(
+            route_info.description,
+            Some("Create a new user".to_string())
+        );
+    }
 }
