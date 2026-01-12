@@ -877,11 +877,11 @@ pub fn get_users() -> String {
 
     #[test]
     fn test_extract_value_from_expr_float() {
-        let expr: syn::Expr = syn::parse_str("3.14").unwrap();
+        let expr: syn::Expr = syn::parse_str("12.34").unwrap();
         let value = extract_value_from_expr(&expr);
         assert!(value.is_some());
         if let Some(serde_json::Value::Number(n)) = value {
-            assert!((n.as_f64().unwrap() - 3.14).abs() < 0.001);
+            assert!((n.as_f64().unwrap() - 12.34).abs() < 0.001);
         }
     }
 
