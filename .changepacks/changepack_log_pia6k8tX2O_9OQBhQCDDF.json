@@ -1,0 +1,1 @@
+{"changes":{"crates/vespera_core/Cargo.toml":"Patch","crates/vespera_macro/Cargo.toml":"Patch","crates/vespera/Cargo.toml":"Patch"},"note":"Remove raw prefix","date":"2026-01-14T03:53:02.608967800Z"}

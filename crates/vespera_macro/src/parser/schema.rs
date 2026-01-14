@@ -3,6 +3,12 @@ use std::collections::{BTreeMap, HashMap};
 use syn::{Fields, Type};
 use vespera_core::schema::{Reference, Schema, SchemaRef, SchemaType};
 
+/// Strips the `r#` prefix from raw identifiers.
+/// E.g., `r#type` becomes `type`.
+pub fn strip_raw_prefix(ident: &str) -> &str {
+    ident.strip_prefix("r#").unwrap_or(ident)
+}
+
 pub fn extract_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
     for attr in attrs {
         if attr.path().is_ident("serde") {
@@ -394,7 +400,7 @@ pub fn parse_enum_to_schema(
         let mut enum_values = Vec::new();
 
         for variant in &enum_item.variants {
-            let variant_name = variant.ident.to_string();
+            let variant_name = strip_raw_prefix(&variant.ident.to_string()).to_string();
 
             // Check for variant-level rename attribute first (takes precedence)
             let enum_value = if let Some(renamed) = extract_field_rename(&variant.attrs) {
@@ -421,7 +427,7 @@ pub fn parse_enum_to_schema(
         let mut one_of_schemas = Vec::new();
 
         for variant in &enum_item.variants {
-            let variant_name = variant.ident.to_string();
+            let variant_name = strip_raw_prefix(&variant.ident.to_string()).to_string();
 
             // Check for variant-level rename attribute first (takes precedence)
             let variant_key = if let Some(renamed) = extract_field_rename(&variant.attrs) {
@@ -505,7 +511,7 @@ pub fn parse_enum_to_schema(
                         let rust_field_name = field
                             .ident
                             .as_ref()
-                            .map(|i| i.to_string())
+                            .map(|i| strip_raw_prefix(&i.to_string()).to_string())
                             .unwrap_or_else(|| "unknown".to_string());
 
                         // Check for field-level rename attribute first (takes precedence)
@@ -608,7 +614,7 @@ pub fn parse_struct_to_schema(
                 let rust_field_name = field
                     .ident
                     .as_ref()
-                    .map(|i| i.to_string())
+                    .map(|i| strip_raw_prefix(&i.to_string()).to_string())
                     .unwrap_or_else(|| "unknown".to_string());
 
                 // Check for field-level rename attribute first (takes precedence)

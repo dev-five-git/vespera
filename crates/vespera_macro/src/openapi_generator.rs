@@ -10,7 +10,7 @@ use vespera_core::{
 use crate::metadata::CollectedMetadata;
 use crate::parser::{
     build_operation_from_function, extract_default, extract_field_rename, extract_rename_all,
-    parse_enum_to_schema, parse_struct_to_schema, rename_field,
+    parse_enum_to_schema, parse_struct_to_schema, rename_field, strip_raw_prefix,
 };
 
 /// Generate OpenAPI document from collected metadata
@@ -260,7 +260,7 @@ fn process_default_functions(
                     let rust_field_name = field
                         .ident
                         .as_ref()
-                        .map(|i| i.to_string())
+                        .map(|i| strip_raw_prefix(&i.to_string()).to_string())
                         .unwrap_or_else(|| "unknown".to_string());
 
                     let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
@@ -291,7 +291,7 @@ fn process_default_functions(
                     let rust_field_name = field
                         .ident
                         .as_ref()
-                        .map(|i| i.to_string())
+                        .map(|i| strip_raw_prefix(&i.to_string()).to_string())
                         .unwrap_or_else(|| "unknown".to_string());
 
                     let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
