@@ -896,13 +896,8 @@ pub(super) fn parse_type_to_schema_ref_with_schemas(
                 }
                 _ => {
                     // Check if this is a known schema (struct with Schema derive)
-                    // Try both the full path and just the type name
-                    let type_name = if path.segments.len() > 1 {
-                        // For paths like crate::TestStruct, use just the type name
-                        ident_str.clone()
-                    } else {
-                        ident_str.clone()
-                    };
+                    // Use just the type name (handles both crate::TestStruct and TestStruct)
+                    let type_name = ident_str.clone();
 
                     if known_schemas.contains_key(&type_name) {
                         // Check if this is a generic type with type parameters
@@ -2482,5 +2477,56 @@ mod tests {
         let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
         let one_of = schema.one_of.expect("one_of missing");
         assert_eq!(one_of.len(), 1);
+    }
+
+    // Test rename_field with unknown/invalid rename_all format - should return original field name
+    #[test]
+    fn test_rename_field_unknown_format() {
+        // Unknown format should return the original field name unchanged
+        let result = rename_field("my_field", Some("unknown_format"));
+        assert_eq!(result, "my_field");
+
+        let result = rename_field("myField", Some("invalid"));
+        assert_eq!(result, "myField");
+
+        let result = rename_field("test_name", Some("not_a_real_format"));
+        assert_eq!(result, "test_name");
+    }
+
+    // Test parse_type_to_schema_ref with unknown custom type (not in known_schemas)
+    #[test]
+    fn test_parse_type_to_schema_ref_unknown_custom_type() {
+        // MyUnknownType is not in known_schemas, should return inline object schema
+        let ty: Type = syn::parse_str("MyUnknownType").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &HashMap::new(), &HashMap::new());
+        if let SchemaRef::Inline(schema) = schema_ref {
+            assert_eq!(schema.schema_type, Some(SchemaType::Object));
+        } else {
+            panic!("Expected inline schema for unknown type");
+        }
+    }
+
+    // Test parse_type_to_schema_ref with qualified path to unknown type
+    #[test]
+    fn test_parse_type_to_schema_ref_qualified_unknown_type() {
+        // crate::models::UnknownStruct is not in known_schemas
+        let ty: Type = syn::parse_str("crate::models::UnknownStruct").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &HashMap::new(), &HashMap::new());
+        if let SchemaRef::Inline(schema) = schema_ref {
+            assert_eq!(schema.schema_type, Some(SchemaType::Object));
+        } else {
+            panic!("Expected inline schema for unknown qualified type");
+        }
+    }
+
+    // Test camelCase transformation with mixed characters (covers line 263)
+    #[test]
+    fn test_rename_field_camelcase_with_digits() {
+        // Tests the regular character branch in camelCase
+        let result = rename_field("user_id_123", Some("camelCase"));
+        assert_eq!(result, "userId123");
+
+        let result = rename_field("get_user_by_id", Some("camelCase"));
+        assert_eq!(result, "getUserById");
     }
 }
