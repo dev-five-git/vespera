@@ -14,6 +14,6 @@ serde_json = "1"
 vespera = { path = "../../crates/vespera" }
 
 [dev-dependencies]
-axum-test = "18.5"
-insta = "1.45"
+axum-test = "18.7"
+insta = "1.46"
 

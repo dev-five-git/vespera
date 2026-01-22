@@ -2353,6 +2353,95 @@ mod tests {
                 // Empty string between quotes
                 assert_eq!(result.as_deref(), Some(""));
             }
+
+            /// Test extract_rename_all with QUALIFIED PATH to force fallback (CRITICAL for lines 44-47)
+            /// parse_nested_meta checks meta.path.is_ident("rename_all") which returns false for qualified paths
+            /// But manual token parsing finds "rename_all" in the string
+            #[test]
+            fn test_extract_rename_all_qualified_path_forces_fallback() {
+                // Create tokens with a qualified path: serde_with::rename_all = "camelCase"
+                // parse_nested_meta sees path with segments ["serde_with", "rename_all"]
+                // is_ident("rename_all") returns false because path has multiple segments
+                // Manual token parsing finds "rename_all" in the string and extracts value
+                let tokens = quote!(serde_with::rename_all = "camelCase");
+                let attr = create_attr_with_raw_tokens(tokens);
+                let result = extract_rename_all(&[attr]);
+                // This MUST hit lines 44-47 (fallback path)
+                assert_eq!(result.as_deref(), Some("camelCase"));
+            }
+
+            /// Test extract_rename_all with another qualified path variation
+            #[test]
+            fn test_extract_rename_all_module_qualified_forces_fallback() {
+                // Another variation with qualified path
+                let tokens = quote!(my_module::rename_all = "snake_case");
+                let attr = create_attr_with_raw_tokens(tokens);
+                let result = extract_rename_all(&[attr]);
+                // Fallback path extracts the value
+                assert_eq!(result.as_deref(), Some("snake_case"));
+            }
+
+            /// Test extract_rename_all with deeply qualified path
+            #[test]
+            fn test_extract_rename_all_deeply_qualified_forces_fallback() {
+                // Deeply qualified path: a::b::rename_all = "PascalCase"
+                let tokens = quote!(a::b::rename_all = "PascalCase");
+                let attr = create_attr_with_raw_tokens(tokens);
+                let result = extract_rename_all(&[attr]);
+                assert_eq!(result.as_deref(), Some("PascalCase"));
+            }
+
+            /// CRITICAL TEST: This test MUST hit lines 44-47 by using raw token manipulation
+            /// We create a TokenStream where parse_nested_meta cannot find rename_all
+            /// but the manual token string search DOES find it
+            #[test]
+            fn test_extract_rename_all_raw_tokens_force_fallback() {
+                // Create raw tokens that look like: __rename_all_prefix::rename_all = "lowercase"
+                // parse_nested_meta will see path "__rename_all_prefix::rename_all"
+                // is_ident("rename_all") returns false (qualified path)
+                // Manual parsing finds "rename_all" and extracts "lowercase"
+                let tokens: TokenStream = "__rename_all_prefix::rename_all = \"lowercase\""
+                    .parse()
+                    .unwrap();
+                let attr = create_attr_with_raw_tokens(tokens);
+
+                // Verify the token string contains what we expect
+                if let syn::Meta::List(list) = &attr.meta {
+                    let token_str = list.tokens.to_string();
+                    assert!(
+                        token_str.contains("rename_all"),
+                        "Token string should contain rename_all: {}",
+                        token_str
+                    );
+                }
+
+                let result = extract_rename_all(&[attr]);
+                // This MUST succeed via fallback path (lines 44-47)
+                assert_eq!(
+                    result.as_deref(),
+                    Some("lowercase"),
+                    "Fallback parsing must extract the value"
+                );
+            }
+
+            /// Another critical test with different qualified path format
+            #[test]
+            fn test_extract_rename_all_crate_qualified_forces_fallback() {
+                // Use crate:: prefix which is definitely a qualified path
+                let tokens: TokenStream = "crate::rename_all = \"UPPERCASE\"".parse().unwrap();
+                let attr = create_attr_with_raw_tokens(tokens);
+                let result = extract_rename_all(&[attr]);
+                assert_eq!(result.as_deref(), Some("UPPERCASE"));
+            }
+
+            /// Test with self:: prefix
+            #[test]
+            fn test_extract_rename_all_self_qualified_forces_fallback() {
+                let tokens: TokenStream = "self::rename_all = \"kebab-case\"".parse().unwrap();
+                let attr = create_attr_with_raw_tokens(tokens);
+                let result = extract_rename_all(&[attr]);
+                assert_eq!(result.as_deref(), Some("kebab-case"));
+            }
         }
     }
 

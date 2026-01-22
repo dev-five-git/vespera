@@ -907,13 +907,23 @@ mod tests {
     #[test]
     fn test_is_known_type_empty_segments() {
         // Test line 209: empty path segments returns false
-        // Note: It's hard to create a Type::Path with empty segments via parse,
-        // but we can test the normal path behavior and document the edge case
+        // Create a Type::Path programmatically with empty segments
+        use syn::punctuated::Punctuated;
+
         let known_schemas = HashMap::new();
         let struct_definitions = HashMap::new();
 
-        // Non-path type returns false (line 209 is for empty segments which is rare)
-        let ty: Type = syn::parse_str("&str").unwrap();
+        // Create Type::Path with empty segments
+        let type_path = syn::TypePath {
+            qself: None,
+            path: syn::Path {
+                leading_colon: None,
+                segments: Punctuated::new(), // Empty segments!
+            },
+        };
+        let ty = Type::Path(type_path);
+
+        // This MUST hit line 209 because path.segments.is_empty() is true
         assert!(!is_known_type(&ty, &known_schemas, &struct_definitions));
     }
 
@@ -937,15 +947,28 @@ mod tests {
     #[test]
     fn test_parse_query_struct_empty_path_segments() {
         // Test line 245: empty path segments in parse_query_struct_to_parameters
-        // This is the early return when path.segments.is_empty()
+        // Create a Type::Path programmatically with empty segments
+        use syn::punctuated::Punctuated;
+
         let known_schemas = HashMap::new();
         let struct_definitions = HashMap::new();
 
-        // A reference type (not a path type) should return None
-        let ty: Type = syn::parse_str("&QueryParams").unwrap();
+        // Create Type::Path with empty segments
+        let type_path = syn::TypePath {
+            qself: None,
+            path: syn::Path {
+                leading_colon: None,
+                segments: Punctuated::new(), // Empty segments!
+            },
+        };
+        let ty = Type::Path(type_path);
+
+        // This MUST hit line 245 because path.segments.is_empty() is true
         let result = parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions);
-        // Line 242 matches Type::Path, but &QueryParams is Type::Reference
-        assert!(result.is_none());
+        assert!(
+            result.is_none(),
+            "Empty path segments should return None (line 245)"
+        );
     }
 
     #[test]
@@ -987,6 +1010,23 @@ mod tests {
             _ => panic!("Expected inline schema with nullable"),
         }
     }
+
+    // NOTE: Line 313 is defensive/unreachable code.
+    //
+    // Analysis: Line 313 requires:
+    // 1. is_optional == true (field type starts with "Option")
+    // 2. field_schema is still SchemaRef::Ref after the conversion at lines 294-304
+    //
+    // However, parse_type_to_schema_ref_with_schemas("Option<T>") ALWAYS returns
+    // SchemaRef::Inline because:
+    // - schema.rs lines 650-668 handle Option specially
+    // - If inner type is Inline → returns Inline (line 660)
+    // - If inner type is Ref → wraps in Inline (line 664)
+    //
+    // Therefore, for any field whose type starts with "Option", field_schema at line 290
+    // will always be SchemaRef::Inline, making the else branch at line 312-313 unreachable.
+    //
+    // This is defensive code guarding against future changes to Option handling in schema.rs.
 
     #[test]
     fn test_schema_ref_to_inline_conversion_required() {

@@ -474,15 +474,55 @@ mod tests {
     #[test]
     fn test_extract_result_types_empty_path_segments() {
         // Test line 48: path.segments.is_empty() returns None
-        // Note: It's very hard to create a valid Type::Path with empty segments via parse
-        // because syn won't parse it. But we can test the behavior indirectly.
+        // Create a Type::Path programmatically with empty segments
+        use syn::punctuated::Punctuated;
 
-        // A global path like "::Result<T, E>" still has segments
-        // Test with a simple non-Result path to exercise the code path
-        let ty: syn::Type = syn::parse_str("String").unwrap();
+        let type_path = syn::TypePath {
+            qself: None,
+            path: syn::Path {
+                leading_colon: None,
+                segments: Punctuated::new(), // Empty segments!
+            },
+        };
+        let ty = syn::Type::Path(type_path);
+
+        // This MUST hit line 48 because path.segments.is_empty() is true
         let result = extract_result_types(&ty);
-        // String is not Result, so is_keyword_type_by_type_path fails at line 51
-        assert!(result.is_none());
+        assert!(
+            result.is_none(),
+            "Empty path segments should return None (line 48)"
+        );
+    }
+
+    #[test]
+    fn test_extract_result_types_empty_path_via_reference() {
+        // Test line 48 via reference path: &Type::Path with empty segments
+        use syn::punctuated::Punctuated;
+
+        // Create inner Type::Path with empty segments
+        let inner_type_path = syn::TypePath {
+            qself: None,
+            path: syn::Path {
+                leading_colon: None,
+                segments: Punctuated::new(),
+            },
+        };
+        let inner_ty = syn::Type::Path(inner_type_path);
+
+        // Wrap in a reference
+        let ty = syn::Type::Reference(syn::TypeReference {
+            and_token: syn::token::And::default(),
+            lifetime: None,
+            mutability: None,
+            elem: Box::new(inner_ty),
+        });
+
+        // This goes through line 38-41 (reference to path), then hits line 48
+        let result = extract_result_types(&ty);
+        assert!(
+            result.is_none(),
+            "Empty path segments via reference should return None (line 48)"
+        );
     }
 
     #[test]
