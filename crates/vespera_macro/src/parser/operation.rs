@@ -1,10 +1,7 @@
 use std::collections::BTreeMap;
 
 use syn::{FnArg, PatType, Type};
-use vespera_core::{
-    route::{MediaType, Operation, Parameter, ParameterLocation, RequestBody, Response},
-    schema::{Schema, SchemaRef},
-};
+use vespera_core::route::{MediaType, Operation, Parameter, ParameterLocation, Response};
 
 use super::{
     parameters::parse_function_parameter, path::extract_path_parameters,
@@ -157,49 +154,6 @@ pub fn build_operation_from_function(
             {
                 parameters.extend(params);
             }
-        }
-    }
-
-    // Fallback: if last arg is String/&str and no body yet, treat as text/plain body
-    if request_body.is_none()
-        && let Some(FnArg::Typed(PatType { ty, .. })) = sig.inputs.last()
-    {
-        let is_string = match ty.as_ref() {
-            Type::Path(type_path) => type_path
-                .path
-                .segments
-                .last()
-                .map(|s| s.ident == "String" || s.ident == "str")
-                .unwrap_or(false),
-            Type::Reference(type_ref) => {
-                if let Type::Path(p) = type_ref.elem.as_ref() {
-                    p.path
-                        .segments
-                        .last()
-                        .map(|s| s.ident == "String" || s.ident == "str")
-                        .unwrap_or(false)
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        };
-
-        if is_string {
-            let mut content = BTreeMap::new();
-            content.insert(
-                "text/plain".to_string(),
-                MediaType {
-                    schema: Some(SchemaRef::Inline(Box::new(Schema::string()))),
-                    example: None,
-                    examples: None,
-                },
-            );
-            request_body = Some(RequestBody {
-                description: None,
-                content,
-                required: Some(true),
-            });
         }
     }
 
@@ -588,8 +542,8 @@ mod tests {
     }
 
     #[test]
-    fn test_string_body_fallback() {
-        // Test lines 100-107: String as last arg becomes text/plain body
+    fn test_string_body() {
+        // String arg is handled by parse_request_body via is_string_like()
         let op = build("fn upload(content: String) -> String", "/upload", None);
 
         let body = op.request_body.as_ref().expect("request body expected");
@@ -604,8 +558,8 @@ mod tests {
     }
 
     #[test]
-    fn test_str_ref_body_fallback() {
-        // Test lines 100-106: &str as last arg becomes text/plain body
+    fn test_str_ref_body() {
+        // &str arg is handled by parse_request_body via is_string_like()
         let op = build("fn upload(content: &str) -> String", "/upload", None);
 
         let body = op.request_body.as_ref().expect("request body expected");
@@ -613,23 +567,18 @@ mod tests {
     }
 
     #[test]
-    fn test_type_reference_with_string() {
-        // Test lines 100-102, 104: Type::Reference branch - &String
+    fn test_string_ref_body() {
+        // &String arg is handled by parse_request_body via is_string_like()
         let op = build("fn upload(content: &String) -> String", "/upload", None);
 
-        // &String reference should be detected as string type
-        // Line 101-102 checks if Type::Reference elem is a Path with String/str
         let body = op.request_body.as_ref().expect("request body expected");
         assert!(body.content.contains_key("text/plain"));
     }
 
     #[test]
-    fn test_non_string_last_arg_not_body() {
-        // Test line 107: last arg that's NOT String/&str should NOT become body
+    fn test_non_string_arg_not_body() {
+        // Non-string args don't become request body
         let op = build("fn process(count: i32) -> String", "/process", None);
-
-        // i32 is not String/&str, so line 107 returns false, no body created
-        // However, bare i32 without extractor is also ignored
         assert!(op.request_body.is_none());
     }
 
@@ -651,38 +600,33 @@ mod tests {
 
     #[test]
     fn test_reference_to_non_path_type_not_body() {
-        // Test line 104: &(tuple) reference where elem is NOT a Path type
-        // This hits the else branch at line 104 returning false
+        // &(tuple) is not string-like, no body created
         let op = build("fn process(data: &(i32, i32)) -> String", "/process", None);
-        // Reference to tuple is not String/&str, so no body created
         assert!(op.request_body.is_none());
     }
 
     #[test]
     fn test_reference_to_slice_not_body() {
-        // Test line 104: &[T] reference where elem is NOT a simple Path type
+        // &[T] is not string-like, no body created
         let op = build("fn process(data: &[u8]) -> String", "/process", None);
-        // Reference to slice is not String/&str
         assert!(op.request_body.is_none());
     }
 
     #[test]
     fn test_tuple_type_not_body() {
-        // Test line 107: tuple type (not Path, not Reference) returns false
+        // Tuple type is not string-like, no body created
         let op = build(
             "fn process(data: (i32, String)) -> String",
             "/process",
             None,
         );
-        // Tuple is neither Path nor Reference, hits line 107
         assert!(op.request_body.is_none());
     }
 
     #[test]
     fn test_array_type_not_body() {
-        // Test line 107: array type (not Path, not Reference) returns false
+        // Array type is not string-like, no body created
         let op = build("fn process(data: [u8; 4]) -> String", "/process", None);
-        // Array is neither Path nor Reference
         assert!(op.request_body.is_none());
     }
 
