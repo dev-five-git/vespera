@@ -1041,4 +1041,301 @@ pub fn get_users() -> String {
 
         drop(temp_dir);
     }
+
+    // ========== Tests for parsing functions ==========
+
+    #[test]
+    fn test_parse_openapi_values_single() {
+        // Test that single string openapi value parses correctly via AutoRouterInput
+        let tokens = quote::quote!(openapi = "openapi.json");
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let openapi = input.openapi.unwrap();
+        assert_eq!(openapi.len(), 1);
+        assert_eq!(openapi[0].value(), "openapi.json");
+    }
+
+    #[test]
+    fn test_parse_openapi_values_array() {
+        // Test that array openapi value parses correctly via AutoRouterInput
+        let tokens = quote::quote!(openapi = ["openapi.json", "api.json"]);
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let openapi = input.openapi.unwrap();
+        assert_eq!(openapi.len(), 2);
+        assert_eq!(openapi[0].value(), "openapi.json");
+        assert_eq!(openapi[1].value(), "api.json");
+    }
+
+    #[test]
+    fn test_validate_server_url_valid_http() {
+        let lit = LitStr::new("http://localhost:3000", Span::call_site());
+        let result = validate_server_url(&lit);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "http://localhost:3000");
+    }
+
+    #[test]
+    fn test_validate_server_url_valid_https() {
+        let lit = LitStr::new("https://api.example.com", Span::call_site());
+        let result = validate_server_url(&lit);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "https://api.example.com");
+    }
+
+    #[test]
+    fn test_validate_server_url_invalid() {
+        let lit = LitStr::new("ftp://example.com", Span::call_site());
+        let result = validate_server_url(&lit);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_server_url_no_scheme() {
+        let lit = LitStr::new("example.com", Span::call_site());
+        let result = validate_server_url(&lit);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_auto_router_input_parse_dir_only() {
+        let tokens = quote::quote!(dir = "api");
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.dir.unwrap().value(), "api");
+        assert!(input.openapi.is_none());
+    }
+
+    #[test]
+    fn test_auto_router_input_parse_string_as_dir() {
+        let tokens = quote::quote!("routes");
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.dir.unwrap().value(), "routes");
+    }
+
+    #[test]
+    fn test_auto_router_input_parse_openapi_single() {
+        let tokens = quote::quote!(openapi = "openapi.json");
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let openapi = input.openapi.unwrap();
+        assert_eq!(openapi.len(), 1);
+        assert_eq!(openapi[0].value(), "openapi.json");
+    }
+
+    #[test]
+    fn test_auto_router_input_parse_openapi_array() {
+        let tokens = quote::quote!(openapi = ["a.json", "b.json"]);
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let openapi = input.openapi.unwrap();
+        assert_eq!(openapi.len(), 2);
+    }
+
+    #[test]
+    fn test_auto_router_input_parse_title_version() {
+        let tokens = quote::quote!(title = "My API", version = "2.0.0");
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.title.unwrap().value(), "My API");
+        assert_eq!(input.version.unwrap().value(), "2.0.0");
+    }
+
+    #[test]
+    fn test_auto_router_input_parse_docs_redoc() {
+        let tokens = quote::quote!(docs_url = "/docs", redoc_url = "/redoc");
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.docs_url.unwrap().value(), "/docs");
+        assert_eq!(input.redoc_url.unwrap().value(), "/redoc");
+    }
+
+    #[test]
+    fn test_auto_router_input_parse_servers_single() {
+        let tokens = quote::quote!(servers = "http://localhost:3000");
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let servers = input.servers.unwrap();
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].url, "http://localhost:3000");
+        assert!(servers[0].description.is_none());
+    }
+
+    #[test]
+    fn test_auto_router_input_parse_servers_array_strings() {
+        let tokens = quote::quote!(servers = ["http://localhost:3000", "https://api.example.com"]);
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let servers = input.servers.unwrap();
+        assert_eq!(servers.len(), 2);
+    }
+
+    #[test]
+    fn test_auto_router_input_parse_servers_tuple() {
+        let tokens = quote::quote!(servers = [("http://localhost:3000", "Development")]);
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let servers = input.servers.unwrap();
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].url, "http://localhost:3000");
+        assert_eq!(servers[0].description, Some("Development".to_string()));
+    }
+
+    #[test]
+    fn test_auto_router_input_parse_servers_struct() {
+        let tokens =
+            quote::quote!(servers = [{ url = "http://localhost:3000", description = "Dev" }]);
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let servers = input.servers.unwrap();
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].url, "http://localhost:3000");
+        assert_eq!(servers[0].description, Some("Dev".to_string()));
+    }
+
+    #[test]
+    fn test_auto_router_input_parse_servers_single_struct() {
+        let tokens = quote::quote!(servers = { url = "https://api.example.com" });
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let servers = input.servers.unwrap();
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].url, "https://api.example.com");
+    }
+
+    #[test]
+    fn test_auto_router_input_parse_unknown_field() {
+        let tokens = quote::quote!(unknown_field = "value");
+        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_auto_router_input_parse_all_fields() {
+        let tokens = quote::quote!(
+            dir = "api",
+            openapi = "openapi.json",
+            title = "Test API",
+            version = "1.0.0",
+            docs_url = "/docs",
+            redoc_url = "/redoc",
+            servers = "http://localhost:3000"
+        );
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        assert!(input.dir.is_some());
+        assert!(input.openapi.is_some());
+        assert!(input.title.is_some());
+        assert!(input.version.is_some());
+        assert!(input.docs_url.is_some());
+        assert!(input.redoc_url.is_some());
+        assert!(input.servers.is_some());
+    }
+
+    #[test]
+    fn test_generate_router_code_with_docs() {
+        let metadata = CollectedMetadata::new();
+        let docs_info = Some(("/docs".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+
+        let result = generate_router_code(&metadata, docs_info, None);
+        let code = result.to_string();
+
+        assert!(code.contains("/docs"));
+        assert!(code.contains("swagger-ui"));
+    }
+
+    #[test]
+    fn test_generate_router_code_with_redoc() {
+        let metadata = CollectedMetadata::new();
+        let redoc_info = Some(("/redoc".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+
+        let result = generate_router_code(&metadata, None, redoc_info);
+        let code = result.to_string();
+
+        assert!(code.contains("/redoc"));
+        assert!(code.contains("redoc"));
+    }
+
+    #[test]
+    fn test_generate_router_code_with_both_docs() {
+        let metadata = CollectedMetadata::new();
+        let docs_info = Some(("/docs".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+        let redoc_info = Some(("/redoc".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+
+        let result = generate_router_code(&metadata, docs_info, redoc_info);
+        let code = result.to_string();
+
+        assert!(code.contains("/docs"));
+        assert!(code.contains("/redoc"));
+    }
+
+    #[test]
+    fn test_parse_server_struct_url_only() {
+        // Test server struct parsing via AutoRouterInput
+        let tokens = quote::quote!(servers = { url = "http://localhost:3000" });
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let servers = input.servers.unwrap();
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].url, "http://localhost:3000");
+        assert!(servers[0].description.is_none());
+    }
+
+    #[test]
+    fn test_parse_server_struct_with_description() {
+        let tokens =
+            quote::quote!(servers = { url = "http://localhost:3000", description = "Local" });
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let servers = input.servers.unwrap();
+        assert_eq!(servers[0].description, Some("Local".to_string()));
+    }
+
+    #[test]
+    fn test_parse_server_struct_unknown_field() {
+        let tokens = quote::quote!(servers = { url = "http://localhost:3000", unknown = "test" });
+        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_server_struct_missing_url() {
+        let tokens = quote::quote!(servers = { description = "test" });
+        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_servers_tuple_url_only() {
+        let tokens = quote::quote!(servers = [("http://localhost:3000")]);
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let servers = input.servers.unwrap();
+        assert_eq!(servers.len(), 1);
+        assert!(servers[0].description.is_none());
+    }
+
+    #[test]
+    fn test_parse_servers_invalid_url() {
+        let tokens = quote::quote!(servers = "invalid-url");
+        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_auto_router_input_parse_invalid_token() {
+        // Test line 149: neither ident nor string literal triggers lookahead error
+        let tokens = quote::quote!(123);
+        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_auto_router_input_empty() {
+        // Test empty input - should use defaults/env vars
+        let tokens = quote::quote!();
+        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_auto_router_input_multiple_commas() {
+        // Test input with trailing comma
+        let tokens = quote::quote!(dir = "api",);
+        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_auto_router_input_no_comma() {
+        // Test input without comma between fields (should stop at second field)
+        let tokens = quote::quote!(dir = "api" title = "Test");
+        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+        // This should fail or only parse first field
+        assert!(result.is_err());
+    }
 }
