@@ -648,4 +648,72 @@ mod tests {
         assert_eq!(param_schema_type(&params[0]), Some(SchemaType::String));
         assert_eq!(param_schema_type(&params[1]), Some(SchemaType::String));
     }
+
+    #[test]
+    fn test_reference_to_non_path_type_not_body() {
+        // Test line 104: &(tuple) reference where elem is NOT a Path type
+        // This hits the else branch at line 104 returning false
+        let op = build("fn process(data: &(i32, i32)) -> String", "/process", None);
+        // Reference to tuple is not String/&str, so no body created
+        assert!(op.request_body.is_none());
+    }
+
+    #[test]
+    fn test_reference_to_slice_not_body() {
+        // Test line 104: &[T] reference where elem is NOT a simple Path type
+        let op = build("fn process(data: &[u8]) -> String", "/process", None);
+        // Reference to slice is not String/&str
+        assert!(op.request_body.is_none());
+    }
+
+    #[test]
+    fn test_tuple_type_not_body() {
+        // Test line 107: tuple type (not Path, not Reference) returns false
+        let op = build(
+            "fn process(data: (i32, String)) -> String",
+            "/process",
+            None,
+        );
+        // Tuple is neither Path nor Reference, hits line 107
+        assert!(op.request_body.is_none());
+    }
+
+    #[test]
+    fn test_array_type_not_body() {
+        // Test line 107: array type (not Path, not Reference) returns false
+        let op = build("fn process(data: [u8; 4]) -> String", "/process", None);
+        // Array is neither Path nor Reference
+        assert!(op.request_body.is_none());
+    }
+
+    #[test]
+    fn test_non_path_extractor_generates_params_and_extends() {
+        // Test lines 85, 89: non-Path extractor that DOES generate params
+        // Query<T> where T is a known struct generates query parameters
+        let sig: syn::Signature = syn::parse_str("fn search(Query(params): Query<SearchParams>, TypedHeader(auth): TypedHeader<Authorization>) -> String").unwrap();
+
+        let mut struct_definitions = HashMap::new();
+        struct_definitions.insert(
+            "SearchParams".to_string(),
+            "pub struct SearchParams { pub q: String }".to_string(),
+        );
+
+        let op = build_operation_from_function(
+            &sig,
+            "/search",
+            &HashMap::new(),
+            &struct_definitions,
+            None,
+            None,
+        );
+
+        // Query is not Path (line 85 returns false)
+        // parse_function_parameter returns Some for Query<SearchParams>
+        // Line 89: parameters.extend(params)
+        // TypedHeader also generates a header parameter
+        assert!(op.parameters.is_some());
+        let params = op.parameters.unwrap();
+        // Should have query param(s) and header param
+        assert!(!params.is_empty());
+    }
 }
