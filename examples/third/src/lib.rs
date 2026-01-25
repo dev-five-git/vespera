@@ -18,12 +18,11 @@ pub struct TestStruct {
 /// Create the application router for testing
 pub fn create_app() -> axum::Router {
     vespera!(
-        openapi = ["examples/axum-example/openapi.json", "openapi.json"],
+        openapi = ["examples/third/openapi.json"],
         docs_url = "/docs",
         redoc_url = "/redoc"
     )
     .with_state(Arc::new(AppState {
         config: "test".to_string(),
     }))
-    .merge(third::create_app())
 }
