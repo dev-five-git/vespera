@@ -1,6 +1,6 @@
 [package]
 name = "vespera_core"
-version = "0.1.22"
+version = "0.1.23"
 edition = "2024"
 description = "Core types and utilities for Vespera"
 license = "Apache-2.0"
