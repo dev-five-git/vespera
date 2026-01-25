@@ -1,4 +1,4 @@
-use axum_example::create_app;
+use axum_example::{create_app, create_app_with_layer};
 use axum_test::TestServer;
 use serde_json::json;
 
@@ -292,6 +292,111 @@ async fn test_mod_file_with_complex_struct_body_with_rename() {
     assert!(response_text.contains("age: 35"));
     assert!(response_text.contains("renamed1"));
     assert!(response_text.contains("renamed_value1"));
+}
+
+// Tests for merged routes from third app
+#[tokio::test]
+async fn test_third_app_root_endpoint() {
+    let app = create_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server.get("/third").await;
+
+    response.assert_status_ok();
+    response.assert_text("third app root endpoint");
+}
+
+#[tokio::test]
+async fn test_third_app_hello_endpoint() {
+    let app = create_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server.get("/third/hello").await;
+
+    response.assert_status_ok();
+    response.assert_text("third app hello endpoint");
+}
+
+#[tokio::test]
+async fn test_third_app_map_query_endpoint() {
+    let app = create_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server.get("/third/map-query?name=test&age=25").await;
+
+    response.assert_status_ok();
+    response.assert_text("third app map query endpoint");
+}
+
+#[tokio::test]
+async fn test_third_app_map_query_with_optional() {
+    let app = create_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server
+        .get("/third/map-query?name=test&age=25&optional_age=30")
+        .await;
+
+    response.assert_status_ok();
+    response.assert_text("third app map query endpoint");
+}
+
+#[tokio::test]
+async fn test_openapi_contains_third_app_routes() {
+    let openapi_content = std::fs::read_to_string("openapi.json").unwrap();
+    let openapi: serde_json::Value = serde_json::from_str(&openapi_content).unwrap();
+
+    let paths = openapi.get("paths").unwrap();
+
+    // Verify third app routes are included in the merged OpenAPI spec
+    assert!(
+        paths.get("/third").is_some(),
+        "Missing /third route in OpenAPI spec"
+    );
+    assert!(
+        paths.get("/third/hello").is_some(),
+        "Missing /third/hello route in OpenAPI spec"
+    );
+    assert!(
+        paths.get("/third/map-query").is_some(),
+        "Missing /third/map-query route in OpenAPI spec"
+    );
+}
+
+#[tokio::test]
+async fn test_openapi_contains_third_app_schemas() {
+    let openapi_content = std::fs::read_to_string("openapi.json").unwrap();
+    let openapi: serde_json::Value = serde_json::from_str(&openapi_content).unwrap();
+
+    let schemas = openapi.get("components").and_then(|c| c.get("schemas"));
+
+    // Verify third app schemas are included
+    assert!(
+        schemas.is_some(),
+        "Missing components/schemas in OpenAPI spec"
+    );
+    let schemas = schemas.unwrap();
+    assert!(
+        schemas.get("ThirdMapQuery").is_some(),
+        "Missing ThirdMapQuery schema in OpenAPI spec"
+    );
+}
+
+// Test VesperaRouter::layer functionality
+#[tokio::test]
+async fn test_app_with_layer() {
+    let app = create_app_with_layer();
+    let server = TestServer::new(app).unwrap();
+
+    // Test that routes still work with the layer applied
+    let response = server.get("/health").await;
+    response.assert_status_ok();
+    response.assert_text("ok");
+
+    // Test merged routes also work with layer
+    let response = server.get("/third").await;
+    response.assert_status_ok();
+    response.assert_text("third app root endpoint");
 }
 
 #[tokio::test]

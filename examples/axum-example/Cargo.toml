@@ -9,6 +9,7 @@ vespera = { path = "../../crates/vespera" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tower-http = { version = "0.6", features = ["cors"] }
 
 third = { path = "../third" }
 

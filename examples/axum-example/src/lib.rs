@@ -28,3 +28,24 @@ pub fn create_app() -> axum::Router {
         config: "test".to_string(),
     }))
 }
+
+/// Create the application router with a layer for testing VesperaRouter::layer
+pub fn create_app_with_layer() -> axum::Router {
+    use tower_http::cors::{Any, CorsLayer};
+
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    vespera!(
+        openapi = ["examples/axum-example/openapi.json", "openapi.json"],
+        docs_url = "/docs",
+        redoc_url = "/redoc",
+        merge = [ThirdApp]
+    )
+    .layer(cors)
+    .with_state(Arc::new(AppState {
+        config: "test".to_string(),
+    }))
+}

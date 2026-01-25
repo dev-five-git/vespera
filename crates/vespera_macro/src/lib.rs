@@ -461,26 +461,27 @@ fn generate_and_write_openapi(
 
     // Merge specs from child apps at compile time
     if !input.merge.is_empty()
-        && let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-            let manifest_path = Path::new(&manifest_dir);
-            let target_dir = find_target_dir(manifest_path);
-            let vespera_dir = target_dir.join("vespera");
+        && let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR")
+    {
+        let manifest_path = Path::new(&manifest_dir);
+        let target_dir = find_target_dir(manifest_path);
+        let vespera_dir = target_dir.join("vespera");
 
-            for merge_path in &input.merge {
-                // Extract the struct name (last segment, e.g., "ThirdApp" from "third::ThirdApp")
-                if let Some(last_segment) = merge_path.segments.last() {
-                    let struct_name = last_segment.ident.to_string();
-                    let spec_file = vespera_dir.join(format!("{}.openapi.json", struct_name));
+        for merge_path in &input.merge {
+            // Extract the struct name (last segment, e.g., "ThirdApp" from "third::ThirdApp")
+            if let Some(last_segment) = merge_path.segments.last() {
+                let struct_name = last_segment.ident.to_string();
+                let spec_file = vespera_dir.join(format!("{}.openapi.json", struct_name));
 
-                    if let Ok(spec_content) = std::fs::read_to_string(&spec_file)
-                        && let Ok(child_spec) =
-                            serde_json::from_str::<vespera_core::openapi::OpenApi>(&spec_content)
-                        {
-                            openapi_doc.merge(child_spec);
-                        }
+                if let Ok(spec_content) = std::fs::read_to_string(&spec_file)
+                    && let Ok(child_spec) =
+                        serde_json::from_str::<vespera_core::openapi::OpenApi>(&spec_content)
+                {
+                    openapi_doc.merge(child_spec);
                 }
             }
         }
+    }
 
     let json_str = serde_json::to_string_pretty(&openapi_doc)
         .map_err(|e| format!("Failed to serialize OpenAPI document: {}", e))?;
@@ -577,9 +578,10 @@ fn find_target_dir(manifest_path: &Path) -> std::path::PathBuf {
         let cargo_toml = dir.join("Cargo.toml");
         if cargo_toml.exists()
             && let Ok(contents) = std::fs::read_to_string(&cargo_toml)
-                && contents.contains("[workspace]") {
-                    return dir.join("target");
-                }
+            && contents.contains("[workspace]")
+        {
+            return dir.join("target");
+        }
 
         current = dir.parent();
     }

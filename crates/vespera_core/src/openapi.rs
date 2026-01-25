@@ -200,3 +200,317 @@ impl OpenApi {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::route::{Operation, PathItem};
+    use crate::schema::{Components, Schema, SchemaType, SecurityScheme, SecuritySchemeType};
+
+    fn create_base_openapi() -> OpenApi {
+        OpenApi {
+            openapi: OpenApiVersion::V3_1_0,
+            info: Info {
+                title: "Base API".to_string(),
+                version: "1.0.0".to_string(),
+                description: None,
+                terms_of_service: None,
+                contact: None,
+                license: None,
+                summary: None,
+            },
+            servers: None,
+            paths: BTreeMap::new(),
+            components: None,
+            security: None,
+            tags: None,
+            external_docs: None,
+        }
+    }
+
+    fn create_path_item(summary: &str) -> PathItem {
+        PathItem {
+            get: Some(Operation {
+                summary: Some(summary.to_string()),
+                description: None,
+                operation_id: None,
+                tags: None,
+                parameters: None,
+                request_body: None,
+                responses: BTreeMap::new(),
+                security: None,
+            }),
+            post: None,
+            put: None,
+            delete: None,
+            patch: None,
+            options: None,
+            head: None,
+            trace: None,
+            parameters: None,
+            summary: None,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn test_merge_paths() {
+        let mut base = create_base_openapi();
+        base.paths
+            .insert("/users".to_string(), create_path_item("Get users"));
+
+        let mut other = create_base_openapi();
+        other
+            .paths
+            .insert("/posts".to_string(), create_path_item("Get posts"));
+        other
+            .paths
+            .insert("/users".to_string(), create_path_item("Other users")); // Conflict
+
+        base.merge(other);
+
+        // Both paths should exist
+        assert!(base.paths.contains_key("/users"));
+        assert!(base.paths.contains_key("/posts"));
+        // Self takes precedence on conflict
+        assert_eq!(
+            base.paths
+                .get("/users")
+                .unwrap()
+                .get
+                .as_ref()
+                .unwrap()
+                .summary,
+            Some("Get users".to_string())
+        );
+    }
+
+    #[test]
+    fn test_merge_schemas() {
+        let mut base = create_base_openapi();
+        let mut base_schemas = BTreeMap::new();
+        base_schemas.insert("User".to_string(), Schema::object());
+        base.components = Some(Components {
+            schemas: Some(base_schemas),
+            responses: None,
+            parameters: None,
+            examples: None,
+            request_bodies: None,
+            headers: None,
+            security_schemes: None,
+        });
+
+        let mut other = create_base_openapi();
+        let mut other_schemas = BTreeMap::new();
+        other_schemas.insert("Post".to_string(), Schema::object());
+        other_schemas.insert("User".to_string(), Schema::string()); // Conflict
+        other.components = Some(Components {
+            schemas: Some(other_schemas),
+            responses: None,
+            parameters: None,
+            examples: None,
+            request_bodies: None,
+            headers: None,
+            security_schemes: None,
+        });
+
+        base.merge(other);
+
+        let schemas = base.components.as_ref().unwrap().schemas.as_ref().unwrap();
+        assert!(schemas.contains_key("User"));
+        assert!(schemas.contains_key("Post"));
+        // Self takes precedence on conflict
+        assert_eq!(
+            schemas.get("User").unwrap().schema_type,
+            Some(SchemaType::Object)
+        );
+    }
+
+    #[test]
+    fn test_merge_schemas_when_self_has_no_components() {
+        let mut base = create_base_openapi();
+        assert!(base.components.is_none());
+
+        let mut other = create_base_openapi();
+        let mut other_schemas = BTreeMap::new();
+        other_schemas.insert("Post".to_string(), Schema::object());
+        other.components = Some(Components {
+            schemas: Some(other_schemas),
+            responses: None,
+            parameters: None,
+            examples: None,
+            request_bodies: None,
+            headers: None,
+            security_schemes: None,
+        });
+
+        base.merge(other);
+
+        assert!(base.components.is_some());
+        let schemas = base.components.as_ref().unwrap().schemas.as_ref().unwrap();
+        assert!(schemas.contains_key("Post"));
+    }
+
+    #[test]
+    fn test_merge_security_schemes() {
+        let mut base = create_base_openapi();
+        let mut base_security_schemes = HashMap::new();
+        base_security_schemes.insert(
+            "bearerAuth".to_string(),
+            SecurityScheme {
+                r#type: SecuritySchemeType::Http,
+                description: None,
+                name: None,
+                r#in: None,
+                scheme: Some("bearer".to_string()),
+                bearer_format: Some("JWT".to_string()),
+            },
+        );
+        base.components = Some(Components {
+            schemas: None,
+            responses: None,
+            parameters: None,
+            examples: None,
+            request_bodies: None,
+            headers: None,
+            security_schemes: Some(base_security_schemes),
+        });
+
+        let mut other = create_base_openapi();
+        let mut other_security_schemes = HashMap::new();
+        other_security_schemes.insert(
+            "apiKey".to_string(),
+            SecurityScheme {
+                r#type: SecuritySchemeType::ApiKey,
+                description: None,
+                name: Some("X-API-Key".to_string()),
+                r#in: Some("header".to_string()),
+                scheme: None,
+                bearer_format: None,
+            },
+        );
+        other.components = Some(Components {
+            schemas: None,
+            responses: None,
+            parameters: None,
+            examples: None,
+            request_bodies: None,
+            headers: None,
+            security_schemes: Some(other_security_schemes),
+        });
+
+        base.merge(other);
+
+        let security_schemes = base
+            .components
+            .as_ref()
+            .unwrap()
+            .security_schemes
+            .as_ref()
+            .unwrap();
+        assert!(security_schemes.contains_key("bearerAuth"));
+        assert!(security_schemes.contains_key("apiKey"));
+    }
+
+    #[test]
+    fn test_merge_tags() {
+        let mut base = create_base_openapi();
+        base.tags = Some(vec![Tag {
+            name: "users".to_string(),
+            description: Some("User operations".to_string()),
+            external_docs: None,
+        }]);
+
+        let mut other = create_base_openapi();
+        other.tags = Some(vec![
+            Tag {
+                name: "posts".to_string(),
+                description: Some("Post operations".to_string()),
+                external_docs: None,
+            },
+            Tag {
+                name: "users".to_string(),
+                description: Some("Duplicate users tag".to_string()),
+                external_docs: None,
+            }, // Duplicate
+        ]);
+
+        base.merge(other);
+
+        let tags = base.tags.as_ref().unwrap();
+        assert_eq!(tags.len(), 2); // No duplicates
+        assert!(tags.iter().any(|t| t.name == "users"));
+        assert!(tags.iter().any(|t| t.name == "posts"));
+        // Self's description takes precedence
+        let users_tag = tags.iter().find(|t| t.name == "users").unwrap();
+        assert_eq!(users_tag.description, Some("User operations".to_string()));
+    }
+
+    #[test]
+    fn test_merge_tags_when_self_has_none() {
+        let mut base = create_base_openapi();
+        assert!(base.tags.is_none());
+
+        let mut other = create_base_openapi();
+        other.tags = Some(vec![Tag {
+            name: "posts".to_string(),
+            description: None,
+            external_docs: None,
+        }]);
+
+        base.merge(other);
+
+        assert!(base.tags.is_some());
+        assert_eq!(base.tags.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_merge_from_str() {
+        let mut base = create_base_openapi();
+        base.paths
+            .insert("/users".to_string(), create_path_item("Get users"));
+
+        let other_json = r#"{
+            "openapi": "3.1.0",
+            "info": { "title": "Other API", "version": "2.0.0" },
+            "paths": {
+                "/posts": { "get": { "summary": "Get posts", "responses": {} } }
+            }
+        }"#;
+
+        let result = base.merge_from_str(other_json);
+        assert!(result.is_ok());
+        assert!(base.paths.contains_key("/users"));
+        assert!(base.paths.contains_key("/posts"));
+    }
+
+    #[test]
+    fn test_merge_from_str_invalid_json() {
+        let mut base = create_base_openapi();
+        let invalid_json = "{ invalid json }";
+
+        let result = base.merge_from_str(invalid_json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_merge_empty_other() {
+        let mut base = create_base_openapi();
+        base.paths
+            .insert("/users".to_string(), create_path_item("Get users"));
+        base.tags = Some(vec![Tag {
+            name: "users".to_string(),
+            description: None,
+            external_docs: None,
+        }]);
+
+        let other = create_base_openapi(); // Empty paths, no components, no tags
+
+        base.merge(other);
+
+        // Base should remain unchanged
+        assert_eq!(base.paths.len(), 1);
+        assert!(base.paths.contains_key("/users"));
+        assert_eq!(base.tags.as_ref().unwrap().len(), 1);
+    }
+}
