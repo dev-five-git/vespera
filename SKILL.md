@@ -159,3 +159,61 @@ npx @apidevtools/swagger-cli validate openapi.json
 | `VESPERA_DOCS_URL` | Swagger UI path | none |
 | `VESPERA_REDOC_URL` | ReDoc path | none |
 | `VESPERA_SERVER_URL` | Server URL | `http://localhost:3000` |
+
+---
+
+## Merging Multiple Vespera Apps
+
+Combine routes and OpenAPI specs from multiple apps at compile time.
+
+### export_app! Macro
+
+Export an app for merging:
+
+```rust
+// Child crate (e.g., third/src/lib.rs)
+mod routes;
+
+// Basic - scans "routes" folder by default
+vespera::export_app!(ThirdApp);
+
+// Custom directory
+vespera::export_app!(ThirdApp, dir = "api");
+```
+
+Generates:
+- `ThirdApp::OPENAPI_SPEC: &'static str` - OpenAPI JSON
+- `ThirdApp::router() -> Router` - Axum router
+
+### merge Parameter
+
+Merge child apps in parent:
+
+```rust
+let app = vespera!(
+    openapi = "openapi.json",
+    docs_url = "/docs",
+    merge = [third::ThirdApp, other::OtherApp]
+)
+.with_state(state);
+```
+
+**What happens:**
+1. Child routers merged into parent router
+2. OpenAPI specs merged (paths, schemas, tags)
+3. Swagger UI shows all routes
+
+### How It Works (Compile-Time)
+
+```
+Child compilation (export_app!):
+  1. Scan routes/ folder
+  2. Generate OpenAPI spec
+  3. Write to target/vespera/{Name}.openapi.json
+
+Parent compilation (vespera! with merge):
+  1. Generate parent OpenAPI spec
+  2. Read child specs from target/vespera/
+  3. Merge all specs together
+  4. Write merged openapi.json
+```

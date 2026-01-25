@@ -104,6 +104,8 @@ struct AutoRouterInput {
     docs_url: Option<LitStr>,
     redoc_url: Option<LitStr>,
     servers: Option<Vec<ServerConfig>>,
+    /// Apps to merge (e.g., [third::ThirdApp, another::AnotherApp])
+    merge: Option<Vec<syn::Path>>,
 }
 
 impl Parse for AutoRouterInput {
@@ -115,6 +117,7 @@ impl Parse for AutoRouterInput {
         let mut docs_url = None;
         let mut redoc_url = None;
         let mut servers = None;
+        let mut merge = None;
 
         while !input.is_empty() {
             let lookahead = input.lookahead1();
@@ -150,11 +153,14 @@ impl Parse for AutoRouterInput {
                     "servers" => {
                         servers = Some(parse_servers_values(input)?);
                     }
+                    "merge" => {
+                        merge = Some(parse_merge_values(input)?);
+                    }
                     _ => {
                         return Err(syn::Error::new(
                             ident.span(),
                             format!(
-                                "unknown field: `{}`. Expected `dir`, `openapi`, `title`, `version`, `docs_url`, `redoc_url`, or `servers`",
+                                "unknown field: `{}`. Expected `dir`, `openapi`, `title`, `version`, `docs_url`, `redoc_url`, `servers`, or `merge`",
                                 ident_str
                             ),
                         ));
@@ -222,8 +228,20 @@ impl Parse for AutoRouterInput {
                         }]
                     })
             }),
+            merge,
         })
     }
+}
+
+/// Parse merge values: merge = [path::to::App, another::App]
+fn parse_merge_values(input: ParseStream) -> syn::Result<Vec<syn::Path>> {
+    input.parse::<syn::Token![=]>()?;
+
+    let content;
+    let _ = bracketed!(content in input);
+    let paths: Punctuated<syn::Path, syn::Token![,]> =
+        content.parse_terminated(syn::Path::parse, syn::Token![,])?;
+    Ok(paths.into_iter().collect())
 }
 
 fn parse_openapi_values(input: ParseStream) -> syn::Result<Vec<LitStr>> {
@@ -390,6 +408,8 @@ struct ProcessedVesperaInput {
     docs_url: Option<String>,
     redoc_url: Option<String>,
     servers: Option<Vec<Server>>,
+    /// Apps to merge (syn::Path for code generation)
+    merge: Vec<syn::Path>,
 }
 
 /// Process AutoRouterInput into extracted values
@@ -418,6 +438,7 @@ fn process_vespera_input(input: AutoRouterInput) -> ProcessedVesperaInput {
                 })
                 .collect()
         }),
+        merge: input.merge.unwrap_or_default(),
     }
 }
 
@@ -431,13 +452,40 @@ fn generate_and_write_openapi(
         return Ok((None, None));
     }
 
-    let json_str = serde_json::to_string_pretty(&generate_openapi_doc_with_metadata(
+    let mut openapi_doc = generate_openapi_doc_with_metadata(
         input.title.clone(),
         input.version.clone(),
         input.servers.clone(),
         metadata,
-    ))
-    .map_err(|e| format!("Failed to serialize OpenAPI document: {}", e))?;
+    );
+
+    // Merge specs from child apps at compile time
+    if !input.merge.is_empty() {
+        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+            let manifest_path = Path::new(&manifest_dir);
+            let target_dir = find_target_dir(manifest_path);
+            let vespera_dir = target_dir.join("vespera");
+
+            for merge_path in &input.merge {
+                // Extract the struct name (last segment, e.g., "ThirdApp" from "third::ThirdApp")
+                if let Some(last_segment) = merge_path.segments.last() {
+                    let struct_name = last_segment.ident.to_string();
+                    let spec_file = vespera_dir.join(format!("{}.openapi.json", struct_name));
+
+                    if let Ok(spec_content) = std::fs::read_to_string(&spec_file) {
+                        if let Ok(child_spec) =
+                            serde_json::from_str::<vespera_core::openapi::OpenApi>(&spec_content)
+                        {
+                            openapi_doc.merge(child_spec);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let json_str = serde_json::to_string_pretty(&openapi_doc)
+        .map_err(|e| format!("Failed to serialize OpenAPI document: {}", e))?;
 
     for openapi_file_name in &input.openapi_file_names {
         let file_path = Path::new(openapi_file_name);
@@ -501,7 +549,7 @@ pub fn vespera(input: TokenStream) -> TokenStream {
         }
     };
 
-    generate_router_code(&metadata, docs_info, redoc_info).into()
+    generate_router_code(&metadata, docs_info, redoc_info, &processed.merge).into()
 }
 
 fn find_folder_path(folder_name: &str) -> std::path::PathBuf {
@@ -515,10 +563,45 @@ fn find_folder_path(folder_name: &str) -> std::path::PathBuf {
     Path::new(folder_name).to_path_buf()
 }
 
+/// Find the workspace root's target directory
+fn find_target_dir(manifest_path: &Path) -> std::path::PathBuf {
+    // Look for workspace root by finding a Cargo.toml with [workspace] section
+    let mut current = Some(manifest_path);
+    let mut last_with_lock = None;
+
+    while let Some(dir) = current {
+        // Check if this directory has Cargo.lock
+        if dir.join("Cargo.lock").exists() {
+            last_with_lock = Some(dir.to_path_buf());
+        }
+
+        // Check if this is a workspace root (has Cargo.toml with [workspace])
+        let cargo_toml = dir.join("Cargo.toml");
+        if cargo_toml.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&cargo_toml) {
+                if contents.contains("[workspace]") {
+                    return dir.join("target");
+                }
+            }
+        }
+
+        current = dir.parent();
+    }
+
+    // If we found a Cargo.lock but no [workspace], use the topmost one
+    if let Some(lock_dir) = last_with_lock {
+        return lock_dir.join("target");
+    }
+
+    // Fallback: use manifest dir's target
+    manifest_path.join("target")
+}
+
 fn generate_router_code(
     metadata: &CollectedMetadata,
     docs_info: Option<(String, String)>,
     redoc_info: Option<(String, String)>,
+    merge_apps: &[syn::Path],
 ) -> proc_macro2::TokenStream {
     let mut router_nests = Vec::new();
 
@@ -556,94 +639,262 @@ fn generate_router_code(
         ));
     }
 
+    // Check if we need to merge specs at runtime
+    let has_merge = !merge_apps.is_empty();
+
     if let Some((docs_url, spec)) = docs_info {
         let method_path = http_method_to_token_stream(HttpMethod::Get);
 
-        let html = format!(
-            r#"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Swagger UI</title>
-  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css" />
-</head>
-<body style="margin: 0; padding: 0;">
-<div id="swagger-ui"></div>
+        if has_merge {
+            // Generate code that merges specs at runtime using OnceLock
+            let merge_spec_code: Vec<_> = merge_apps
+                .iter()
+                .map(|app_path| {
+                    quote! {
+                        if let Ok(other) = vespera::serde_json::from_str::<vespera::OpenApi>(#app_path::OPENAPI_SPEC) {
+                            merged.merge(other);
+                        }
+                    }
+                })
+                .collect();
 
-<script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script>
-<script src="https://unpkg.com/swagger-ui-dist/swagger-ui-standalone-preset.js"></script>
+            router_nests.push(quote!(
+                .route(#docs_url, #method_path(|| async {
+                    static MERGED_SPEC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+                    let spec = MERGED_SPEC.get_or_init(|| {
+                        let base_spec = #spec;
+                        let mut merged: vespera::OpenApi = vespera::serde_json::from_str(base_spec).unwrap();
+                        #(#merge_spec_code)*
+                        vespera::serde_json::to_string(&merged).unwrap()
+                    });
+                    let html = format!(
+                        r#"<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Swagger UI</title><link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css" /></head><body style="margin: 0; padding: 0;"><div id="swagger-ui"></div><script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script><script src="https://unpkg.com/swagger-ui-dist/swagger-ui-standalone-preset.js"></script><script>const openapiSpec = {};window.onload = () => {{ SwaggerUIBundle({{ spec: openapiSpec, dom_id: "\#swagger-ui", presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset], layout: "StandaloneLayout" }}); }};</script></body></html>"#,
+                        spec
+                    );
+                    vespera::axum::response::Html(html)
+                }))
+            ));
+        } else {
+            let html = format!(
+                r#"<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Swagger UI</title><link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css" /></head><body style="margin: 0; padding: 0;"><div id="swagger-ui"></div><script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script><script src="https://unpkg.com/swagger-ui-dist/swagger-ui-standalone-preset.js"></script><script>const openapiSpec = {spec_json};window.onload = () => {{ SwaggerUIBundle({{ spec: openapiSpec, dom_id: "\#swagger-ui", presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset], layout: "StandaloneLayout" }}); }};</script></body></html>"#,
+                spec_json = spec
+            );
 
-<script>
-  const openapiSpec = {spec_json};
-
-  window.onload = () => {{
-    SwaggerUIBundle({{
-      spec: openapiSpec,
-      dom_id: "\#swagger-ui",
-      presets: [
-        SwaggerUIBundle.presets.apis,
-        SwaggerUIStandalonePreset
-      ],
-      layout: "StandaloneLayout"
-    }});
-  }};
-</script>
-
-</body>
-</html>
-"#,
-            spec_json = spec
-        )
-        .replace("\n", "");
-
-        router_nests.push(quote!(
-            .route(#docs_url, #method_path(|| async { vespera::axum::response::Html(#html) }))
-        ));
+            router_nests.push(quote!(
+                .route(#docs_url, #method_path(|| async { vespera::axum::response::Html(#html) }))
+            ));
+        }
     }
 
     if let Some((redoc_url, spec)) = redoc_info {
         let method_path = http_method_to_token_stream(HttpMethod::Get);
 
-        let html = format!(
-            r#"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>ReDoc</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body {{
-      margin: 0;
-      padding: 0;
-    }}
-  </style>
-  <link rel="stylesheet" href="https://unpkg.com/redoc/bundles/redoc.standalone.css" />
-</head>
-<body>
-  <div id="redoc-container"></div>
-  <script src="https://unpkg.com/redoc/bundles/redoc.standalone.js"></script>
-  <script>
-    const openapiSpec = {spec_json};
-    Redoc.init(openapiSpec, {{}}, document.getElementById("redoc-container"));
-  </script>
-</body>
-</html>
-"#,
-            spec_json = spec
-        )
-        .replace("\n", "");
+        if has_merge {
+            // Generate code that merges specs at runtime using OnceLock
+            let merge_spec_code: Vec<_> = merge_apps
+                .iter()
+                .map(|app_path| {
+                    quote! {
+                        if let Ok(other) = vespera::serde_json::from_str::<vespera::OpenApi>(#app_path::OPENAPI_SPEC) {
+                            merged.merge(other);
+                        }
+                    }
+                })
+                .collect();
 
-        router_nests.push(quote!(
-            .route(#redoc_url, #method_path(|| async { vespera::axum::response::Html(#html) }))
-        ));
+            router_nests.push(quote!(
+                .route(#redoc_url, #method_path(|| async {
+                    static MERGED_SPEC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+                    let spec = MERGED_SPEC.get_or_init(|| {
+                        let base_spec = #spec;
+                        let mut merged: vespera::OpenApi = vespera::serde_json::from_str(base_spec).unwrap();
+                        #(#merge_spec_code)*
+                        vespera::serde_json::to_string(&merged).unwrap()
+                    });
+                    let html = format!(
+                        r#"<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>ReDoc</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body {{ margin: 0; padding: 0; }}</style><link rel="stylesheet" href="https://unpkg.com/redoc/bundles/redoc.standalone.css" /></head><body><div id="redoc-container"></div><script src="https://unpkg.com/redoc/bundles/redoc.standalone.js"></script><script>const openapiSpec = {};Redoc.init(openapiSpec, {{}}, document.getElementById("redoc-container"));</script></body></html>"#,
+                        spec
+                    );
+                    vespera::axum::response::Html(html)
+                }))
+            ));
+        } else {
+            let html = format!(
+                r#"<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>ReDoc</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body {{ margin: 0; padding: 0; }}</style><link rel="stylesheet" href="https://unpkg.com/redoc/bundles/redoc.standalone.css" /></head><body><div id="redoc-container"></div><script src="https://unpkg.com/redoc/bundles/redoc.standalone.js"></script><script>const openapiSpec = {spec_json};Redoc.init(openapiSpec, {{}}, document.getElementById("redoc-container"));</script></body></html>"#,
+                spec_json = spec
+            );
+
+            router_nests.push(quote!(
+                .route(#redoc_url, #method_path(|| async { vespera::axum::response::Html(#html) }))
+            ));
+        }
     }
+
+    if merge_apps.is_empty() {
+        quote! {
+            vespera::axum::Router::new()
+                #( #router_nests )*
+        }
+    } else {
+        // When merging apps, return VesperaRouter which defers the merge
+        // until with_state() is called. This is necessary because Axum requires
+        // merged routers to have the same state type.
+        quote! {
+            vespera::VesperaRouter::new(
+                vespera::axum::Router::new()
+                    #( #router_nests )*,
+                vec![#( #merge_apps::router ),*]
+            )
+        }
+    }
+}
+
+/// Input for export_app! macro
+struct ExportAppInput {
+    /// App name (struct name to generate)
+    name: syn::Ident,
+    /// Route directory
+    dir: Option<LitStr>,
+}
+
+impl Parse for ExportAppInput {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: syn::Ident = input.parse()?;
+
+        let mut dir = None;
+
+        // Parse optional comma and arguments
+        while input.peek(syn::Token![,]) {
+            input.parse::<syn::Token![,]>()?;
+
+            if input.is_empty() {
+                break;
+            }
+
+            let ident: syn::Ident = input.parse()?;
+            let ident_str = ident.to_string();
+
+            match ident_str.as_str() {
+                "dir" => {
+                    input.parse::<syn::Token![=]>()?;
+                    dir = Some(input.parse()?);
+                }
+                _ => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!("unknown field: `{}`. Expected `dir`", ident_str),
+                    ));
+                }
+            }
+        }
+
+        Ok(ExportAppInput { name, dir })
+    }
+}
+
+/// Export a vespera app as a reusable component.
+///
+/// Generates a struct with:
+/// - `OPENAPI_SPEC: &'static str` - The OpenAPI JSON spec
+/// - `router() -> Router` - Function returning the Axum router
+///
+/// # Example
+/// ```ignore
+/// // Simple - uses "routes" folder by default
+/// vespera::export_app!(MyApp);
+///
+/// // Custom directory
+/// vespera::export_app!(MyApp, dir = "api");
+///
+/// // Generates:
+/// // pub struct MyApp;
+/// // impl MyApp {
+/// //     pub const OPENAPI_SPEC: &'static str = "...";
+/// //     pub fn router() -> axum::Router { ... }
+/// // }
+/// ```
+#[proc_macro]
+pub fn export_app(input: TokenStream) -> TokenStream {
+    let ExportAppInput { name, dir } = syn::parse_macro_input!(input as ExportAppInput);
+
+    let folder_name = dir
+        .map(|d| d.value())
+        .or_else(|| std::env::var("VESPERA_DIR").ok())
+        .unwrap_or_else(|| "routes".to_string());
+
+    let folder_path = find_folder_path(&folder_name);
+    if !folder_path.exists() {
+        return syn::Error::new(
+            Span::call_site(),
+            format!("Folder not found: {}", folder_name),
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let mut metadata = match collect_metadata(&folder_path, &folder_name) {
+        Ok(m) => m,
+        Err(e) => {
+            return syn::Error::new(
+                Span::call_site(),
+                format!("Failed to collect metadata: {}", e),
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+    metadata
+        .structs
+        .extend(SCHEMA_STORAGE.lock().unwrap().clone());
+
+    // Generate OpenAPI spec JSON string
+    let openapi_doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+    let spec_json = match serde_json::to_string(&openapi_doc) {
+        Ok(json) => json,
+        Err(e) => {
+            return syn::Error::new(
+                Span::call_site(),
+                format!("Failed to serialize OpenAPI spec: {}", e),
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    // Write spec to temp file for compile-time merging by parent apps
+    // The file is written to target/vespera/{StructName}.openapi.json
+    let name_str = name.to_string();
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR not set");
+    // Find target directory (go up from manifest dir to workspace root if needed)
+    let manifest_path = Path::new(&manifest_dir);
+    let target_dir = find_target_dir(manifest_path);
+    let vespera_dir = target_dir.join("vespera");
+    std::fs::create_dir_all(&vespera_dir)
+        .unwrap_or_else(|e| panic!("Failed to create vespera dir {:?}: {}", vespera_dir, e));
+    let spec_file = vespera_dir.join(format!("{}.openapi.json", name_str));
+    std::fs::write(&spec_file, &spec_json)
+        .unwrap_or_else(|e| panic!("Failed to write spec file {:?}: {}", spec_file, e));
+
+    // Generate router code (without docs routes, no merge)
+    let router_code = generate_router_code(&metadata, None, None, &[]);
 
     quote! {
-        vespera::axum::Router::new()
-            #( #router_nests )*
+        /// Auto-generated vespera app struct
+        pub struct #name;
+
+        impl #name {
+            /// OpenAPI specification as JSON string
+            pub const OPENAPI_SPEC: &'static str = #spec_json;
+
+            /// Create the router for this app.
+            /// Returns `Router<()>` which can be merged into any other router.
+            pub fn router() -> vespera::axum::Router<()> {
+                #router_code
+            }
+        }
     }
+    .into()
 }
 
 #[cfg(test)]
@@ -671,6 +922,7 @@ mod tests {
             &collect_metadata(temp_dir.path(), folder_name).unwrap(),
             None,
             None,
+            &[],
         );
         let code = result.to_string();
 
@@ -828,6 +1080,7 @@ pub fn get_users() -> String {
             &collect_metadata(temp_dir.path(), folder_name).unwrap(),
             None,
             None,
+            &[],
         );
         let code = result.to_string();
 
@@ -913,6 +1166,7 @@ pub fn update_user() -> String {
             &collect_metadata(temp_dir.path(), folder_name).unwrap(),
             None,
             None,
+            &[],
         );
         let code = result.to_string();
 
@@ -967,6 +1221,7 @@ pub fn create_users() -> String {
             &collect_metadata(temp_dir.path(), folder_name).unwrap(),
             None,
             None,
+            &[],
         );
         let code = result.to_string();
 
@@ -1013,6 +1268,7 @@ pub fn index() -> String {
             &collect_metadata(temp_dir.path(), folder_name).unwrap(),
             None,
             None,
+            &[],
         );
         let code = result.to_string();
 
@@ -1049,6 +1305,7 @@ pub fn get_users() -> String {
             &collect_metadata(temp_dir.path(), folder_name).unwrap(),
             None,
             None,
+            &[],
         );
         let code = result.to_string();
 
@@ -1246,7 +1503,7 @@ pub fn get_users() -> String {
         let metadata = CollectedMetadata::new();
         let docs_info = Some(("/docs".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
 
-        let result = generate_router_code(&metadata, docs_info, None);
+        let result = generate_router_code(&metadata, docs_info, None, &[]);
         let code = result.to_string();
 
         assert!(code.contains("/docs"));
@@ -1258,7 +1515,7 @@ pub fn get_users() -> String {
         let metadata = CollectedMetadata::new();
         let redoc_info = Some(("/redoc".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
 
-        let result = generate_router_code(&metadata, None, redoc_info);
+        let result = generate_router_code(&metadata, None, redoc_info, &[]);
         let code = result.to_string();
 
         assert!(code.contains("/redoc"));
@@ -1271,7 +1528,7 @@ pub fn get_users() -> String {
         let docs_info = Some(("/docs".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
         let redoc_info = Some(("/redoc".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
 
-        let result = generate_router_code(&metadata, docs_info, redoc_info);
+        let result = generate_router_code(&metadata, docs_info, redoc_info, &[]);
         let code = result.to_string();
 
         assert!(code.contains("/docs"));
@@ -1510,6 +1767,7 @@ pub fn get_users() -> String {
             docs_url: None,
             redoc_url: None,
             servers: None,
+            merge: vec![],
         };
         let metadata = CollectedMetadata::new();
         let result = generate_and_write_openapi(&processed, &metadata);
@@ -1529,6 +1787,7 @@ pub fn get_users() -> String {
             docs_url: Some("/docs".to_string()),
             redoc_url: None,
             servers: None,
+            merge: vec![],
         };
         let metadata = CollectedMetadata::new();
         let result = generate_and_write_openapi(&processed, &metadata);
@@ -1552,6 +1811,7 @@ pub fn get_users() -> String {
             docs_url: None,
             redoc_url: Some("/redoc".to_string()),
             servers: None,
+            merge: vec![],
         };
         let metadata = CollectedMetadata::new();
         let result = generate_and_write_openapi(&processed, &metadata);
@@ -1573,6 +1833,7 @@ pub fn get_users() -> String {
             docs_url: Some("/docs".to_string()),
             redoc_url: Some("/redoc".to_string()),
             servers: None,
+            merge: vec![],
         };
         let metadata = CollectedMetadata::new();
         let result = generate_and_write_openapi(&processed, &metadata);
@@ -1595,6 +1856,7 @@ pub fn get_users() -> String {
             docs_url: None,
             redoc_url: None,
             servers: None,
+            merge: vec![],
         };
         let metadata = CollectedMetadata::new();
         let result = generate_and_write_openapi(&processed, &metadata);
@@ -1621,6 +1883,7 @@ pub fn get_users() -> String {
             docs_url: None,
             redoc_url: None,
             servers: None,
+            merge: vec![],
         };
         let metadata = CollectedMetadata::new();
         let result = generate_and_write_openapi(&processed, &metadata);

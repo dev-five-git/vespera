@@ -194,9 +194,26 @@ let app = vespera!(
     servers = [                        // OpenAPI servers
         { url = "https://api.example.com", description = "Production" },
         { url = "http://localhost:3000", description = "Development" }
-    ]
+    ],
+    merge = [crate1::App1, crate2::App2]  // Merge child vespera apps
 );
 ```
+
+## `export_app!` Macro Reference
+
+Export a vespera app for merging into other apps:
+
+```rust
+// Basic usage (scans "routes" folder by default)
+vespera::export_app!(MyApp);
+
+// Custom directory
+vespera::export_app!(MyApp, dir = "api");
+```
+
+Generates a struct with:
+- `MyApp::OPENAPI_SPEC: &'static str` - The OpenAPI JSON spec
+- `MyApp::router() -> Router` - Function returning the Axum router
 
 ### Environment Variable Fallbacks
 
@@ -250,6 +267,40 @@ let app = vespera!("api");
 // Or explicitly
 let app = vespera!(dir = "api");
 ```
+
+### Merging Multiple Vespera Apps
+
+Combine routes and OpenAPI specs from multiple vespera apps at compile time:
+
+**Child app (e.g., `third` crate):**
+```rust
+// src/lib.rs
+mod routes;
+
+// Export app for merging (dir defaults to "routes")
+vespera::export_app!(ThirdApp);
+
+// Or with custom directory
+// vespera::export_app!(ThirdApp, dir = "api");
+```
+
+**Parent app:**
+```rust
+// src/main.rs
+use vespera::vespera;
+
+let app = vespera!(
+    openapi = "openapi.json",
+    docs_url = "/docs",
+    merge = [third::ThirdApp]  // Merges router AND OpenAPI spec
+)
+.with_state(app_state);
+```
+
+This automatically:
+- Merges all routes from child apps into the parent router
+- Combines OpenAPI specs (paths, schemas, tags) into a single spec
+- Makes Swagger UI show all routes from all apps
 
 ---
 

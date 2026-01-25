@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use vespera::{Schema, axum, vespera};
+use third::ThirdApp;
 
 pub struct AppState {
     pub config: String,
@@ -20,10 +21,10 @@ pub fn create_app() -> axum::Router {
     vespera!(
         openapi = ["examples/axum-example/openapi.json", "openapi.json"],
         docs_url = "/docs",
-        redoc_url = "/redoc"
+        redoc_url = "/redoc",
+        merge = [ThirdApp]
     )
     .with_state(Arc::new(AppState {
         config: "test".to_string(),
     }))
-    .merge(third::create_app())
 }

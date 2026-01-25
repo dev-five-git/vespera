@@ -834,6 +834,92 @@
         }
       }
     },
+    "/third": {
+      "get": {
+        "operationId": "third_root_endpoint",
+        "description": "Third app root endpoint",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/third/hello": {
+      "get": {
+        "operationId": "third_hello_endpoint",
+        "tags": [
+          "third"
+        ],
+        "description": "Third app hello endpoint",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/third/map-query": {
+      "get": {
+        "operationId": "third_map_query",
+        "tags": [
+          "third"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "age",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "optional_age",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/typed-header": {
       "get": {
         "operationId": "typed_header_jwt",
@@ -1692,6 +1778,25 @@
           "age"
         ]
       },
+      "ThirdMapQuery": {
+        "type": "object",
+        "properties": {
+          "age": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "optional_age": {
+            "type": "integer",
+            "nullable": true
+          }
+        },
+        "required": [
+          "name",
+          "age"
+        ]
+      },
       "User": {
         "type": "object",
         "properties": {
@@ -1716,6 +1821,9 @@
   "tags": [
     {
       "name": "hello"
+    },
+    {
+      "name": "third"
     }
   ]
 }

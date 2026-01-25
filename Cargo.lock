@@ -1691,6 +1691,9 @@ version = "0.1.22"
 dependencies = [
  "axum",
  "axum-extra",
+ "serde_json",
+ "tower-layer",
+ "tower-service",
  "vespera_core",
  "vespera_macro",
 ]

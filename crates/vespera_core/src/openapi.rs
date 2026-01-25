@@ -140,3 +140,63 @@ pub struct OpenApi {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_docs: Option<ExternalDocumentation>,
 }
+
+impl OpenApi {
+    /// Merge another OpenAPI document into this one.
+    /// Paths, schemas, and tags from `other` are added to `self`.
+    /// If there are conflicts, `self` takes precedence.
+    pub fn merge(&mut self, other: OpenApi) {
+        // Merge paths (self takes precedence on conflict)
+        for (path, item) in other.paths {
+            self.paths.entry(path).or_insert(item);
+        }
+
+        // Merge components
+        if let Some(other_components) = other.components {
+            let self_components = self.components.get_or_insert_with(|| Components {
+                schemas: None,
+                responses: None,
+                parameters: None,
+                examples: None,
+                request_bodies: None,
+                headers: None,
+                security_schemes: None,
+            });
+
+            // Merge schemas
+            if let Some(other_schemas) = other_components.schemas {
+                let self_schemas = self_components.schemas.get_or_insert_with(BTreeMap::new);
+                for (name, schema) in other_schemas {
+                    self_schemas.entry(name).or_insert(schema);
+                }
+            }
+
+            // Merge security schemes
+            if let Some(other_security_schemes) = other_components.security_schemes {
+                let self_security_schemes = self_components
+                    .security_schemes
+                    .get_or_insert_with(HashMap::new);
+                for (name, scheme) in other_security_schemes {
+                    self_security_schemes.entry(name).or_insert(scheme);
+                }
+            }
+        }
+
+        // Merge tags (deduplicate by name)
+        if let Some(other_tags) = other.tags {
+            let self_tags = self.tags.get_or_insert_with(Vec::new);
+            for tag in other_tags {
+                if !self_tags.iter().any(|t| t.name == tag.name) {
+                    self_tags.push(tag);
+                }
+            }
+        }
+    }
+
+    /// Merge from a JSON string. Returns error if parsing fails.
+    pub fn merge_from_str(&mut self, json_str: &str) -> Result<(), serde_json::Error> {
+        let other: OpenApi = serde_json::from_str(json_str)?;
+        self.merge(other);
+        Ok(())
+    }
+}

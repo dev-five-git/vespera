@@ -15,3 +15,6 @@ vespera_core = { workspace = true }
 vespera_macro = { workspace = true }
 axum = "0.8"
 axum-extra = { version = "0.12", optional = true }
+serde_json = "1"
+tower-layer = "0.3"
+tower-service = "0.3"
