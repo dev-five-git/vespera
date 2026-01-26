@@ -1645,6 +1645,107 @@ mod tests {
     }
 
     #[rstest]
+    // Direct generic param substitution
+    #[case("T", &["T"], &["String"], "String")]
+    // Vec<T> substitution
+    #[case("Vec<T>", &["T"], &["String"], "Vec < String >")]
+    // Option<T> substitution
+    #[case("Option<T>", &["T"], &["i32"], "Option < i32 >")]
+    // Nested: Vec<Option<T>>
+    #[case("Vec<Option<T>>", &["T"], &["String"], "Vec < Option < String > >")]
+    // Deeply nested: Option<Vec<Option<T>>>
+    #[case("Option<Vec<Option<T>>>", &["T"], &["bool"], "Option < Vec < Option < bool > > >")]
+    // Multiple generic params
+    #[case("HashMap<K, V>", &["K", "V"], &["String", "i32"], "HashMap < String , i32 >")]
+    // Generic param not in list (unchanged)
+    #[case("Vec<U>", &["T"], &["String"], "Vec < U >")]
+    // Non-generic type (unchanged)
+    #[case("String", &["T"], &["i32"], "String")]
+    // Reference type: &T
+    #[case("&T", &["T"], &["String"], "& String")]
+    // Mutable reference: &mut T
+    #[case("&mut T", &["T"], &["i32"], "& mut i32")]
+    // Slice type: [T]
+    #[case("[T]", &["T"], &["String"], "[String]")]
+    // Array type: [T; 5]
+    #[case("[T; 5]", &["T"], &["u8"], "[u8 ; 5]")]
+    // Tuple type: (T, U)
+    #[case("(T, U)", &["T", "U"], &["String", "i32"], "(String , i32)")]
+    // Complex nested tuple
+    #[case("(Vec<T>, Option<U>)", &["T", "U"], &["String", "bool"], "(Vec < String > , Option < bool >)")]
+    // Reference to Vec<T>
+    #[case("&Vec<T>", &["T"], &["String"], "& Vec < String >")]
+    // Multi-segment path (no substitution for crate::Type)
+    #[case("std::vec::Vec<T>", &["T"], &["String"], "std :: vec :: Vec < String >")]
+    fn test_substitute_type_comprehensive(
+        #[case] input: &str,
+        #[case] params: &[&str],
+        #[case] concrete: &[&str],
+        #[case] expected: &str,
+    ) {
+        let ty: Type = syn::parse_str(input).unwrap();
+        let generic_params: Vec<String> = params.iter().map(|s| s.to_string()).collect();
+        let concrete_types: Vec<Type> = concrete.iter().map(|s| syn::parse_str(s).unwrap()).collect();
+        let concrete_refs: Vec<&Type> = concrete_types.iter().collect();
+
+        let result = substitute_type(&ty, &generic_params, &concrete_refs);
+        let result_str = quote::quote!(#result).to_string();
+
+        assert_eq!(result_str, expected, "Input: {}", input);
+    }
+
+    #[test]
+    fn test_substitute_type_empty_path_segments() {
+        // Create a TypePath with empty segments
+        let ty = Type::Path(syn::TypePath {
+            qself: None,
+            path: syn::Path {
+                leading_colon: None,
+                segments: syn::punctuated::Punctuated::new(),
+            },
+        });
+        let concrete: Type = syn::parse_str("String").unwrap();
+        let result = substitute_type(&ty, &[String::from("T")], &[&concrete]);
+        // Should return the original type unchanged
+        assert_eq!(result, ty);
+    }
+
+    #[test]
+    fn test_substitute_type_with_lifetime_generic_argument() {
+        // Test type with lifetime: Cow<'static, T>
+        // The lifetime argument should be preserved while T is substituted
+        let ty: Type = syn::parse_str("std::borrow::Cow<'static, T>").unwrap();
+        let concrete: Type = syn::parse_str("String").unwrap();
+        let result = substitute_type(&ty, &[String::from("T")], &[&concrete]);
+        let result_str = quote::quote!(#result).to_string();
+        // Lifetime 'static should be preserved, T should be substituted
+        assert_eq!(result_str, "std :: borrow :: Cow < 'static , String >");
+    }
+
+    #[test]
+    fn test_substitute_type_parenthesized_args() {
+        // Fn(T) -> U style (parenthesized arguments)
+        // This tests the `other => other.clone()` branch for PathArguments
+        let ty: Type = syn::parse_str("fn(T) -> U").unwrap();
+        let concrete_t: Type = syn::parse_str("String").unwrap();
+        let concrete_u: Type = syn::parse_str("i32").unwrap();
+        let result = substitute_type(&ty, &[String::from("T"), String::from("U")], &[&concrete_t, &concrete_u]);
+        // Type::BareFn doesn't go through the Path branch, falls to _ => ty.clone()
+        assert_eq!(result, ty);
+    }
+
+    #[test]
+    fn test_substitute_type_path_without_angle_brackets() {
+        // Test path with parenthesized arguments: Fn(T) -> U as a trait
+        let ty: Type = syn::parse_str("dyn Fn(T) -> U").unwrap();
+        let concrete_t: Type = syn::parse_str("String").unwrap();
+        let concrete_u: Type = syn::parse_str("i32").unwrap();
+        let result = substitute_type(&ty, &[String::from("T"), String::from("U")], &[&concrete_t, &concrete_u]);
+        // Type::TraitObject falls to _ => ty.clone()
+        assert_eq!(result, ty);
+    }
+
+    #[rstest]
     #[case("&i32")]
     #[case("std::string::String")]
     fn test_is_primitive_type_non_path_variants(#[case] ty_src: &str) {
