@@ -699,35 +699,111 @@ pub fn parse_struct_to_schema(
 }
 
 fn substitute_type(ty: &Type, generic_params: &[String], concrete_types: &[&Type]) -> Type {
-    // Check if this is a generic parameter
-    if let Type::Path(type_path) = ty
-        && let Some(segment) = type_path.path.segments.last()
-    {
-        let ident_str = segment.ident.to_string();
-        if generic_params.contains(&ident_str) && segment.arguments.is_none() {
-            // Find the index and substitute
-            if let Some(index) = generic_params.iter().position(|p| p == &ident_str)
-                && let Some(concrete_ty) = concrete_types.get(index)
-            {
-                return (*concrete_ty).clone();
+    match ty {
+        Type::Path(type_path) => {
+            let path = &type_path.path;
+            if path.segments.is_empty() {
+                return ty.clone();
             }
+
+            // Check if this is a direct generic parameter (e.g., just "T" with no arguments)
+            if path.segments.len() == 1 {
+                let segment = &path.segments[0];
+                let ident_str = segment.ident.to_string();
+
+                if let syn::PathArguments::None = &segment.arguments {
+                    // Direct generic parameter substitution
+                    if let Some(index) = generic_params.iter().position(|p| p == &ident_str) {
+                        if let Some(concrete_ty) = concrete_types.get(index) {
+                            return (*concrete_ty).clone();
+                        }
+                    }
+                }
+            }
+
+            // For types with generic arguments (e.g., Vec<T>, Option<T>, HashMap<K, V>),
+            // recursively substitute the type arguments
+            let mut new_segments = syn::punctuated::Punctuated::new();
+            for segment in &path.segments {
+                let new_arguments = match &segment.arguments {
+                    syn::PathArguments::AngleBracketed(args) => {
+                        let mut new_args = syn::punctuated::Punctuated::new();
+                        for arg in &args.args {
+                            let new_arg = match arg {
+                                syn::GenericArgument::Type(inner_ty) => {
+                                    syn::GenericArgument::Type(substitute_type(
+                                        inner_ty,
+                                        generic_params,
+                                        concrete_types,
+                                    ))
+                                }
+                                other => other.clone(),
+                            };
+                            new_args.push(new_arg);
+                        }
+                        syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+                            colon2_token: args.colon2_token,
+                            lt_token: args.lt_token,
+                            args: new_args,
+                            gt_token: args.gt_token,
+                        })
+                    }
+                    other => other.clone(),
+                };
+
+                new_segments.push(syn::PathSegment {
+                    ident: segment.ident.clone(),
+                    arguments: new_arguments,
+                });
+            }
+
+            Type::Path(syn::TypePath {
+                qself: type_path.qself.clone(),
+                path: syn::Path {
+                    leading_colon: path.leading_colon,
+                    segments: new_segments,
+                },
+            })
         }
+        Type::Reference(type_ref) => {
+            // Handle &T, &mut T
+            Type::Reference(syn::TypeReference {
+                and_token: type_ref.and_token,
+                lifetime: type_ref.lifetime.clone(),
+                mutability: type_ref.mutability,
+                elem: Box::new(substitute_type(&type_ref.elem, generic_params, concrete_types)),
+            })
+        }
+        Type::Slice(type_slice) => {
+            // Handle [T]
+            Type::Slice(syn::TypeSlice {
+                bracket_token: type_slice.bracket_token,
+                elem: Box::new(substitute_type(&type_slice.elem, generic_params, concrete_types)),
+            })
+        }
+        Type::Array(type_array) => {
+            // Handle [T; N]
+            Type::Array(syn::TypeArray {
+                bracket_token: type_array.bracket_token,
+                elem: Box::new(substitute_type(&type_array.elem, generic_params, concrete_types)),
+                semi_token: type_array.semi_token,
+                len: type_array.len.clone(),
+            })
+        }
+        Type::Tuple(type_tuple) => {
+            // Handle (T1, T2, ...)
+            let new_elems = type_tuple
+                .elems
+                .iter()
+                .map(|elem| substitute_type(elem, generic_params, concrete_types))
+                .collect();
+            Type::Tuple(syn::TypeTuple {
+                paren_token: type_tuple.paren_token,
+                elems: new_elems,
+            })
+        }
+        _ => ty.clone(),
     }
-
-    // For complex types, use quote! to regenerate with substitutions
-    let tokens = quote::quote! { #ty };
-    let mut new_tokens = tokens.to_string();
-
-    // Replace generic parameter names with concrete types
-    for (param, concrete_ty) in generic_params.iter().zip(concrete_types.iter()) {
-        // Replace standalone generic parameter (not part of another identifier)
-        let pattern = format!(r"\b{}\b", param);
-        let replacement = quote::quote! { #concrete_ty }.to_string();
-        new_tokens = new_tokens.replace(&pattern, &replacement);
-    }
-
-    // Parse the substituted type
-    syn::parse_str::<Type>(&new_tokens).unwrap_or_else(|_| ty.clone())
 }
 
 pub(super) fn is_primitive_type(ty: &Type) -> bool {

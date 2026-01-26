@@ -475,6 +475,56 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         }
       }
     },
+    "/generic/generic5": {
+      "get": {
+        "operationId": "generic_endpoint5",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ContactResponse"
+                      }
+                    },
+                    "page": {
+                      "type": "integer"
+                    },
+                    "size": {
+                      "type": "integer"
+                    },
+                    "totalPage": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "page",
+                    "size",
+                    "totalPage"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "operationId": "health",
@@ -1261,6 +1311,49 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "nestedStructMapArray"
         ]
       },
+      "ContactResponse": {
+        "type": "object",
+        "properties": {
+          "adminReply": {
+            "type": "string",
+            "nullable": true
+          },
+          "category": {
+            "type": "string",
+            "nullable": true
+          },
+          "content": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "repliedAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "title": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "userId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "title",
+          "content",
+          "createdAt"
+        ]
+      },
       "CreateUserRequest": {
         "type": "object",
         "properties": {
@@ -1593,6 +1686,32 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "name",
           "age"
+        ]
+      },
+      "PaginatedResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "page": {
+            "type": "integer"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "totalPage": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "size",
+          "totalPage"
         ]
       },
       "SignupRequest": {

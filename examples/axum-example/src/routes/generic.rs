@@ -1,5 +1,5 @@
 use serde::Serialize;
-use vespera::axum::Json;
+use vespera::{Schema, axum::Json};
 
 use crate::TestStruct;
 
@@ -56,4 +56,44 @@ pub async fn generic_endpoint4() -> Json<GenericStruct2<bool, bool>> {
         value2: false,
         name: "John Doe".to_string(),
     })
+}
+#[derive(Debug, Serialize, Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactResponse {
+    pub id: i64,
+    pub user_id: i64,
+    pub category: Option<String>,
+    pub title: String,
+    pub content: String,
+    pub admin_reply: Option<String>,
+    pub replied_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: Option<String>,
+}
+#[derive(Debug, Serialize, Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct PaginatedResponse<T: Serialize> {
+    pub items: Vec<T>,
+    pub page: i32,
+    pub size: i32,
+    pub total_page: i32,
+}
+#[vespera::route(get, path = "/generic5")]
+pub async fn generic_endpoint5() -> Result<Json<PaginatedResponse<ContactResponse>>, (vespera::axum::http::StatusCode, String)> {
+    Ok(Json(PaginatedResponse {
+        items: vec![ContactResponse {
+            id: 1,
+            user_id: 1,
+            category: Some("test".to_string()),
+            title: "test".to_string(),
+            content: "test".to_string(),
+            admin_reply: None,
+            replied_at: None,
+            created_at: "2021-01-01".to_string(),
+            updated_at: None,
+        }],
+        page: 1,
+        size: 10,
+        total_page: 1,
+    }))
 }
