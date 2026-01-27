@@ -285,6 +285,34 @@ Json(model.into())  // Automatic conversion!
 
 ---
 
+## `schema!` Macro
+
+Get a `Schema` value at runtime with optional field filtering. Useful for programmatic schema access.
+
+```rust
+use vespera::{Schema, schema};
+
+#[derive(Schema)]
+pub struct User {
+    pub id: i32,
+    pub name: String,
+    pub password: String,
+}
+
+// Full schema
+let full: vespera::schema::Schema = schema!(User);
+
+// With fields omitted
+let safe: vespera::schema::Schema = schema!(User, omit = ["password"]);
+
+// With only specified fields
+let summary: vespera::schema::Schema = schema!(User, pick = ["id", "name"]);
+```
+
+> **Note:** For creating request/response types, use `schema_type!` instead - it generates actual struct types with `From` impl.
+
+---
+
 ## Advanced Usage
 
 ### Adding State
