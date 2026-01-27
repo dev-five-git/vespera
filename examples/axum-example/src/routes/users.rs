@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 use vespera::{
-    Schema, schema_type,
+    Schema,
     axum::{Json, extract::Path},
+    schema_type,
 };
 
 /// Full user model with all fields
@@ -112,7 +113,9 @@ pub async fn create_user(Json(user): Json<CreateUserRequest>) -> Json<UserPublic
 /// Create a new user with metadata (demonstrates `add` feature)
 /// Request body uses CreateUserWithMeta (picks name/email, adds request_id/created_at)
 #[vespera::route(post, path = "/with-meta")]
-pub async fn create_user_with_meta(Json(user): Json<CreateUserWithMeta>) -> Json<CreateUserWithMeta> {
+pub async fn create_user_with_meta(
+    Json(user): Json<CreateUserWithMeta>,
+) -> Json<CreateUserWithMeta> {
     // Input: CreateUserWithMeta (auto-generated with added fields)
     // The struct has: name, email (from User) + request_id, created_at (added)
     Json(CreateUserWithMeta {

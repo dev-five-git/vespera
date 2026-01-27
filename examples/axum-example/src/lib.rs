@@ -1,5 +1,5 @@
-mod routes;
 mod models;
+mod routes;
 
 use std::sync::Arc;
 

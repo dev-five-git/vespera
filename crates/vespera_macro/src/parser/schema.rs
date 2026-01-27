@@ -714,9 +714,10 @@ fn substitute_type(ty: &Type, generic_params: &[String], concrete_types: &[&Type
                 if let syn::PathArguments::None = &segment.arguments {
                     // Direct generic parameter substitution
                     if let Some(index) = generic_params.iter().position(|p| p == &ident_str)
-                        && let Some(concrete_ty) = concrete_types.get(index) {
-                            return (*concrete_ty).clone();
-                        }
+                        && let Some(concrete_ty) = concrete_types.get(index)
+                    {
+                        return (*concrete_ty).clone();
+                    }
                 }
             }
 
@@ -941,7 +942,11 @@ pub(super) fn parse_type_to_schema_ref_with_schemas(
                 "bool" => SchemaRef::Inline(Box::new(Schema::boolean())),
                 "String" | "str" => SchemaRef::Inline(Box::new(Schema::string())),
                 // Date-time types from chrono crate
-                "DateTime" | "NaiveDateTime" | "DateTimeWithTimeZone" | "DateTimeUtc" | "DateTimeLocal" => SchemaRef::Inline(Box::new(Schema {
+                "DateTime"
+                | "NaiveDateTime"
+                | "DateTimeWithTimeZone"
+                | "DateTimeUtc"
+                | "DateTimeLocal" => SchemaRef::Inline(Box::new(Schema {
                     format: Some("date-time".to_string()),
                     ..Schema::string()
                 })),
@@ -1685,7 +1690,10 @@ mod tests {
     ) {
         let ty: Type = syn::parse_str(input).unwrap();
         let generic_params: Vec<String> = params.iter().map(|s| s.to_string()).collect();
-        let concrete_types: Vec<Type> = concrete.iter().map(|s| syn::parse_str(s).unwrap()).collect();
+        let concrete_types: Vec<Type> = concrete
+            .iter()
+            .map(|s| syn::parse_str(s).unwrap())
+            .collect();
         let concrete_refs: Vec<&Type> = concrete_types.iter().collect();
 
         let result = substitute_type(&ty, &generic_params, &concrete_refs);
@@ -1729,7 +1737,11 @@ mod tests {
         let ty: Type = syn::parse_str("fn(T) -> U").unwrap();
         let concrete_t: Type = syn::parse_str("String").unwrap();
         let concrete_u: Type = syn::parse_str("i32").unwrap();
-        let result = substitute_type(&ty, &[String::from("T"), String::from("U")], &[&concrete_t, &concrete_u]);
+        let result = substitute_type(
+            &ty,
+            &[String::from("T"), String::from("U")],
+            &[&concrete_t, &concrete_u],
+        );
         // Type::BareFn doesn't go through the Path branch, falls to _ => ty.clone()
         assert_eq!(result, ty);
     }
@@ -1740,7 +1752,11 @@ mod tests {
         let ty: Type = syn::parse_str("dyn Fn(T) -> U").unwrap();
         let concrete_t: Type = syn::parse_str("String").unwrap();
         let concrete_u: Type = syn::parse_str("i32").unwrap();
-        let result = substitute_type(&ty, &[String::from("T"), String::from("U")], &[&concrete_t, &concrete_u]);
+        let result = substitute_type(
+            &ty,
+            &[String::from("T"), String::from("U")],
+            &[&concrete_t, &concrete_u],
+        );
         // Type::TraitObject falls to _ => ty.clone()
         assert_eq!(result, ty);
     }

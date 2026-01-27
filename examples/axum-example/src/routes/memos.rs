@@ -9,7 +9,10 @@
 
 // Import types used by the source model that we want to include in generated structs
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
-use vespera::{axum::{Json, extract::Path}, schema_type};
+use vespera::{
+    axum::{Json, extract::Path},
+    schema_type,
+};
 
 // ============================================================================
 // schema_type! generates request/response types from models in OTHER FILES

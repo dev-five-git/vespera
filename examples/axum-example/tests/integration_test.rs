@@ -1,7 +1,7 @@
 use axum_example::{create_app, create_app_with_layer};
 use axum_test::TestServer;
-use serde_json::json;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use vespera::{Schema, schema};
 
 #[tokio::test]
@@ -476,7 +476,10 @@ fn test_schema_macro_with_omit() {
     let properties = user_schema.properties.unwrap();
     assert!(properties.contains_key("id"), "Missing 'id' property");
     assert!(properties.contains_key("name"), "Missing 'name' property");
-    assert!(!properties.contains_key("email"), "'email' should be omitted");
+    assert!(
+        !properties.contains_key("email"),
+        "'email' should be omitted"
+    );
 
     // Verify required fields - email should not be in required
     let required = user_schema.required.unwrap();
@@ -494,7 +497,10 @@ fn test_schema_macro_with_multiple_omit() {
     let properties = user_schema.properties.unwrap();
     assert!(!properties.contains_key("id"), "'id' should be omitted");
     assert!(properties.contains_key("name"), "Missing 'name' property");
-    assert!(!properties.contains_key("email"), "'email' should be omitted");
+    assert!(
+        !properties.contains_key("email"),
+        "'email' should be omitted"
+    );
 
     // Verify only 'name' is required
     let required = user_schema.required.unwrap();
@@ -511,7 +517,10 @@ fn test_schema_macro_with_pick() {
     let properties = user_schema.properties.unwrap();
     assert!(properties.contains_key("id"), "Missing 'id' property");
     assert!(properties.contains_key("name"), "Missing 'name' property");
-    assert!(!properties.contains_key("email"), "'email' should not be picked");
+    assert!(
+        !properties.contains_key("email"),
+        "'email' should not be picked"
+    );
 
     // Verify required fields
     let required = user_schema.required.unwrap();
@@ -532,8 +541,14 @@ fn test_schema_macro_with_optional_fields() {
     let required = user_schema.required.unwrap();
     assert!(required.contains(&"id".to_string()));
     assert!(required.contains(&"name".to_string()));
-    assert!(!required.contains(&"email".to_string()), "'email' is Option<T>, should not be required");
-    assert!(!required.contains(&"bio".to_string()), "'bio' has default, should not be required");
+    assert!(
+        !required.contains(&"email".to_string()),
+        "'email' is Option<T>, should not be required"
+    );
+    assert!(
+        !required.contains(&"bio".to_string()),
+        "'bio' has default, should not be required"
+    );
 }
 
 #[test]
@@ -544,9 +559,18 @@ fn test_schema_macro_with_rename_all() {
     let properties = user_schema.properties.unwrap();
 
     // Properties should have camelCase names
-    assert!(properties.contains_key("userId"), "Missing 'userId' property (renamed from user_id)");
-    assert!(properties.contains_key("userName"), "Missing 'userName' property (renamed from user_name)");
-    assert!(properties.contains_key("emailAddress"), "Missing 'emailAddress' property (renamed from email_address)");
+    assert!(
+        properties.contains_key("userId"),
+        "Missing 'userId' property (renamed from user_id)"
+    );
+    assert!(
+        properties.contains_key("userName"),
+        "Missing 'userName' property (renamed from user_name)"
+    );
+    assert!(
+        properties.contains_key("emailAddress"),
+        "Missing 'emailAddress' property (renamed from email_address)"
+    );
 
     // Should NOT have snake_case names
     assert!(!properties.contains_key("user_id"));
@@ -562,7 +586,10 @@ fn test_schema_macro_omit_with_renamed_field() {
     let properties = user_schema.properties.unwrap();
     assert!(properties.contains_key("userId"));
     assert!(properties.contains_key("userName"));
-    assert!(!properties.contains_key("emailAddress"), "'emailAddress' should be omitted");
+    assert!(
+        !properties.contains_key("emailAddress"),
+        "'emailAddress' should be omitted"
+    );
 }
 
 #[test]
@@ -573,7 +600,10 @@ fn test_schema_macro_omit_with_rust_field_name() {
     let properties = user_schema.properties.unwrap();
     assert!(properties.contains_key("userId"));
     assert!(properties.contains_key("userName"));
-    assert!(!properties.contains_key("emailAddress"), "'email_address' (rust name) should omit 'emailAddress'");
+    assert!(
+        !properties.contains_key("emailAddress"),
+        "'email_address' (rust name) should omit 'emailAddress'"
+    );
 }
 
 // Tests for schema_type! with rename option
@@ -591,11 +621,20 @@ async fn test_get_user_dto_with_renamed_fields() {
     // JSON should use original field names (id, name) due to serde(rename)
     // even though Rust struct uses user_id, display_name
     assert_eq!(user["id"], 42, "JSON should serialize 'user_id' as 'id'");
-    assert_eq!(user["name"], "User 42", "JSON should serialize 'display_name' as 'name'");
-    
+    assert_eq!(
+        user["name"], "User 42",
+        "JSON should serialize 'display_name' as 'name'"
+    );
+
     // Verify renamed field names are NOT in JSON
-    assert!(user.get("user_id").is_none(), "'user_id' should not appear in JSON");
-    assert!(user.get("display_name").is_none(), "'display_name' should not appear in JSON");
+    assert!(
+        user.get("user_id").is_none(),
+        "'user_id' should not appear in JSON"
+    );
+    assert!(
+        user.get("display_name").is_none(),
+        "'display_name' should not appear in JSON"
+    );
 }
 
 // Tests for schema_type! with add option
@@ -621,7 +660,7 @@ async fn test_create_user_with_meta_add_fields() {
     // Verify fields from User (picked)
     assert_eq!(result["name"], "Test User");
     assert_eq!(result["email"], "test@example.com");
-    
+
     // Verify added fields
     assert_eq!(result["request_id"], "req-12345");
     assert_eq!(result["created_at"], "2024-01-27T12:00:00Z"); // Server fills this in
@@ -647,10 +686,16 @@ async fn test_memo_create_with_picked_fields() {
 
     assert_eq!(result["title"], "Test Memo");
     assert_eq!(result["content"], "This is test content");
-    
+
     // These fields should NOT be in the response (not picked)
-    assert!(result.get("id").is_none(), "id should not be in CreateMemoRequest");
-    assert!(result.get("created_at").is_none(), "created_at should not be in CreateMemoRequest");
+    assert!(
+        result.get("id").is_none(),
+        "id should not be in CreateMemoRequest"
+    );
+    assert!(
+        result.get("created_at").is_none(),
+        "created_at should not be in CreateMemoRequest"
+    );
 }
 
 #[tokio::test]
@@ -673,7 +718,7 @@ async fn test_memo_update_with_added_id_field() {
     // Verify picked fields
     assert_eq!(result["title"], "Updated Memo");
     assert_eq!(result["content"], "Updated content");
-    
+
     // Verify added field
     assert_eq!(result["id"], 42, "id should be present (added field)");
 }

@@ -16,7 +16,6 @@ pub struct Model {
     pub updated_at: DateTimeWithTimeZone,
 }
 
-
 // Index definitions (SeaORM uses Statement builders externally)
 // (unnamed) on [created_at]
 impl ActiveModelBehavior for ActiveModel {}
