@@ -1048,4 +1048,495 @@ mod tests {
         assert_eq!(add.len(), 1);
         assert_eq!(add[0].0, "tags");
     }
+
+    // =========================================================================
+    // Tests for generate_schema_code() - success paths
+    // =========================================================================
+
+    fn create_test_struct_metadata(
+        name: &str,
+        definition: &str,
+    ) -> crate::metadata::StructMetadata {
+        crate::metadata::StructMetadata::new(name.to_string(), definition.to_string())
+    }
+
+    #[test]
+    fn test_generate_schema_code_simple_struct() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )];
+
+        let tokens = quote::quote!(User);
+        let input: SchemaInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let output = result.unwrap().to_string();
+        assert!(output.contains("properties"));
+        assert!(output.contains("Schema"));
+    }
+
+    #[test]
+    fn test_generate_schema_code_with_omit() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String, pub password: String }",
+        )];
+
+        let tokens = quote::quote!(User, omit = ["password"]);
+        let input: SchemaInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let output = result.unwrap().to_string();
+        // Should have id and name but not password in properties
+        assert!(output.contains("properties"));
+    }
+
+    #[test]
+    fn test_generate_schema_code_with_pick() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String, pub email: String }",
+        )];
+
+        let tokens = quote::quote!(User, pick = ["id", "name"]);
+        let input: SchemaInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let output = result.unwrap().to_string();
+        assert!(output.contains("properties"));
+    }
+
+    // =========================================================================
+    // Tests for generate_schema_code() - error paths
+    // =========================================================================
+
+    #[test]
+    fn test_generate_schema_code_type_not_found() {
+        let storage: Vec<crate::metadata::StructMetadata> = vec![];
+
+        let tokens = quote::quote!(NonExistent);
+        let input: SchemaInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_code(&input, &storage);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn test_generate_schema_code_malformed_definition() {
+        let storage = vec![create_test_struct_metadata(
+            "BadStruct",
+            "this is not valid rust code {{{",
+        )];
+
+        let tokens = quote::quote!(BadStruct);
+        let input: SchemaInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_code(&input, &storage);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("failed to parse"));
+    }
+
+    // =========================================================================
+    // Tests for schema_ref_to_tokens()
+    // =========================================================================
+
+    #[test]
+    fn test_schema_ref_to_tokens_ref_variant() {
+        use vespera_core::schema::{Reference, SchemaRef};
+
+        let schema_ref = SchemaRef::Ref(Reference::new("#/components/schemas/User".to_string()));
+        let tokens = schema_ref_to_tokens(&schema_ref);
+        let output = tokens.to_string();
+
+        assert!(output.contains("SchemaRef :: Ref"));
+        assert!(output.contains("Reference :: new"));
+    }
+
+    #[test]
+    fn test_schema_ref_to_tokens_inline_variant() {
+        use vespera_core::schema::{Schema, SchemaRef, SchemaType};
+
+        let schema = Schema::new(SchemaType::String);
+        let schema_ref = SchemaRef::Inline(Box::new(schema));
+        let tokens = schema_ref_to_tokens(&schema_ref);
+        let output = tokens.to_string();
+
+        assert!(output.contains("SchemaRef :: Inline"));
+        assert!(output.contains("Box :: new"));
+    }
+
+    // =========================================================================
+    // Tests for schema_to_tokens()
+    // =========================================================================
+
+    #[test]
+    fn test_schema_to_tokens_string_type() {
+        use vespera_core::schema::{Schema, SchemaType};
+
+        let schema = Schema::new(SchemaType::String);
+        let tokens = schema_to_tokens(&schema);
+        let output = tokens.to_string();
+
+        assert!(output.contains("SchemaType :: String"));
+    }
+
+    #[test]
+    fn test_schema_to_tokens_integer_type() {
+        use vespera_core::schema::{Schema, SchemaType};
+
+        let schema = Schema::new(SchemaType::Integer);
+        let tokens = schema_to_tokens(&schema);
+        let output = tokens.to_string();
+
+        assert!(output.contains("SchemaType :: Integer"));
+    }
+
+    #[test]
+    fn test_schema_to_tokens_number_type() {
+        use vespera_core::schema::{Schema, SchemaType};
+
+        let schema = Schema::new(SchemaType::Number);
+        let tokens = schema_to_tokens(&schema);
+        let output = tokens.to_string();
+
+        assert!(output.contains("SchemaType :: Number"));
+    }
+
+    #[test]
+    fn test_schema_to_tokens_boolean_type() {
+        use vespera_core::schema::{Schema, SchemaType};
+
+        let schema = Schema::new(SchemaType::Boolean);
+        let tokens = schema_to_tokens(&schema);
+        let output = tokens.to_string();
+
+        assert!(output.contains("SchemaType :: Boolean"));
+    }
+
+    #[test]
+    fn test_schema_to_tokens_array_type() {
+        use vespera_core::schema::{Schema, SchemaType};
+
+        let schema = Schema::new(SchemaType::Array);
+        let tokens = schema_to_tokens(&schema);
+        let output = tokens.to_string();
+
+        assert!(output.contains("SchemaType :: Array"));
+    }
+
+    #[test]
+    fn test_schema_to_tokens_object_type() {
+        use vespera_core::schema::{Schema, SchemaType};
+
+        let schema = Schema::new(SchemaType::Object);
+        let tokens = schema_to_tokens(&schema);
+        let output = tokens.to_string();
+
+        assert!(output.contains("SchemaType :: Object"));
+    }
+
+    #[test]
+    fn test_schema_to_tokens_null_type() {
+        use vespera_core::schema::{Schema, SchemaType};
+
+        let schema = Schema::new(SchemaType::Null);
+        let tokens = schema_to_tokens(&schema);
+        let output = tokens.to_string();
+
+        assert!(output.contains("SchemaType :: Null"));
+    }
+
+    #[test]
+    fn test_schema_to_tokens_with_format() {
+        use vespera_core::schema::{Schema, SchemaType};
+
+        let mut schema = Schema::new(SchemaType::String);
+        schema.format = Some("date-time".to_string());
+        let tokens = schema_to_tokens(&schema);
+        let output = tokens.to_string();
+
+        assert!(output.contains("date-time"));
+    }
+
+    #[test]
+    fn test_schema_to_tokens_with_nullable() {
+        use vespera_core::schema::{Schema, SchemaType};
+
+        let mut schema = Schema::new(SchemaType::String);
+        schema.nullable = Some(true);
+        let tokens = schema_to_tokens(&schema);
+        let output = tokens.to_string();
+
+        assert!(output.contains("Some (true)"));
+    }
+
+    #[test]
+    fn test_schema_to_tokens_with_ref_path() {
+        use vespera_core::schema::{Schema, SchemaType};
+
+        let mut schema = Schema::new(SchemaType::Object);
+        schema.ref_path = Some("#/components/schemas/User".to_string());
+        let tokens = schema_to_tokens(&schema);
+        let output = tokens.to_string();
+
+        assert!(output.contains("#/components/schemas/User"));
+    }
+
+    #[test]
+    fn test_schema_to_tokens_with_items() {
+        use vespera_core::schema::{Schema, SchemaRef, SchemaType};
+
+        let mut schema = Schema::new(SchemaType::Array);
+        let item_schema = Schema::new(SchemaType::String);
+        schema.items = Some(Box::new(SchemaRef::Inline(Box::new(item_schema))));
+        let tokens = schema_to_tokens(&schema);
+        let output = tokens.to_string();
+
+        assert!(output.contains("items"));
+        assert!(output.contains("Some (Box :: new"));
+    }
+
+    #[test]
+    fn test_schema_to_tokens_with_properties() {
+        use std::collections::BTreeMap;
+        use vespera_core::schema::{Schema, SchemaRef, SchemaType};
+
+        let mut schema = Schema::new(SchemaType::Object);
+        let mut props = BTreeMap::new();
+        props.insert(
+            "name".to_string(),
+            SchemaRef::Inline(Box::new(Schema::new(SchemaType::String))),
+        );
+        schema.properties = Some(props);
+        let tokens = schema_to_tokens(&schema);
+        let output = tokens.to_string();
+
+        assert!(output.contains("properties"));
+        assert!(output.contains("name"));
+    }
+
+    #[test]
+    fn test_schema_to_tokens_with_required() {
+        use vespera_core::schema::{Schema, SchemaType};
+
+        let mut schema = Schema::new(SchemaType::Object);
+        schema.required = Some(vec!["id".to_string(), "name".to_string()]);
+        let tokens = schema_to_tokens(&schema);
+        let output = tokens.to_string();
+
+        assert!(output.contains("required"));
+        assert!(output.contains("id"));
+        assert!(output.contains("name"));
+    }
+
+    // =========================================================================
+    // Tests for generate_schema_type_code() - validation errors
+    // =========================================================================
+
+    #[test]
+    fn test_generate_schema_type_code_pick_nonexistent_field() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )];
+
+        let tokens = quote::quote!(NewUser from User, pick = ["nonexistent"]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("does not exist"));
+        assert!(err.contains("nonexistent"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_omit_nonexistent_field() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )];
+
+        let tokens = quote::quote!(NewUser from User, omit = ["nonexistent"]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("does not exist"));
+        assert!(err.contains("nonexistent"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_rename_nonexistent_field() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )];
+
+        let tokens = quote::quote!(NewUser from User, rename = [("nonexistent", "new_name")]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("does not exist"));
+        assert!(err.contains("nonexistent"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_type_not_found() {
+        let storage: Vec<crate::metadata::StructMetadata> = vec![];
+
+        let tokens = quote::quote!(NewUser from NonExistent);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_success() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )];
+
+        let tokens = quote::quote!(CreateUser from User, pick = ["name"]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let output = result.unwrap().to_string();
+        assert!(output.contains("CreateUser"));
+        assert!(output.contains("name"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_with_omit() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String, pub password: String }",
+        )];
+
+        let tokens = quote::quote!(SafeUser from User, omit = ["password"]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let output = result.unwrap().to_string();
+        assert!(output.contains("SafeUser"));
+        // Should not contain password
+        assert!(!output.contains("password"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_with_add() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )];
+
+        let tokens = quote::quote!(UserWithExtra from User, add = [("extra": String)]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let output = result.unwrap().to_string();
+        assert!(output.contains("UserWithExtra"));
+        assert!(output.contains("extra"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_generates_from_impl() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )];
+
+        // Without add parameter, should generate From impl
+        let tokens = quote::quote!(UserResponse from User, pick = ["id", "name"]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let output = result.unwrap().to_string();
+        assert!(output.contains("impl From"));
+        assert!(output.contains("for UserResponse"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_no_from_impl_with_add() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )];
+
+        // With add parameter, should NOT generate From impl
+        let tokens = quote::quote!(UserWithExtra from User, add = [("extra": String)]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let output = result.unwrap().to_string();
+        // Should NOT contain From impl when add is used
+        assert!(!output.contains("impl From"));
+    }
+
+    // =========================================================================
+    // Tests for is_option_type()
+    // =========================================================================
+
+    #[test]
+    fn test_is_option_type_true() {
+        let ty: syn::Type = syn::parse_str("Option<String>").unwrap();
+        assert!(is_option_type(&ty));
+    }
+
+    #[test]
+    fn test_is_option_type_false() {
+        let ty: syn::Type = syn::parse_str("String").unwrap();
+        assert!(!is_option_type(&ty));
+    }
+
+    #[test]
+    fn test_is_option_type_vec_false() {
+        let ty: syn::Type = syn::parse_str("Vec<String>").unwrap();
+        assert!(!is_option_type(&ty));
+    }
+
+    // =========================================================================
+    // Tests for extract_type_name()
+    // =========================================================================
+
+    #[test]
+    fn test_extract_type_name_simple() {
+        let ty: syn::Type = syn::parse_str("User").unwrap();
+        let name = extract_type_name(&ty).unwrap();
+        assert_eq!(name, "User");
+    }
+
+    #[test]
+    fn test_extract_type_name_with_path() {
+        let ty: syn::Type = syn::parse_str("crate::models::User").unwrap();
+        let name = extract_type_name(&ty).unwrap();
+        assert_eq!(name, "User");
+    }
+
+    #[test]
+    fn test_extract_type_name_non_path_error() {
+        // Reference type is not a Type::Path
+        let ty: syn::Type = syn::parse_str("&str").unwrap();
+        let result = extract_type_name(&ty);
+        assert!(result.is_err());
+    }
 }

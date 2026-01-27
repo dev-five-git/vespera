@@ -93,3 +93,67 @@ impl CollectedMetadata {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_struct_metadata_new() {
+        let meta = StructMetadata::new("User".to_string(), "struct User {}".to_string());
+        assert_eq!(meta.name, "User");
+        assert_eq!(meta.definition, "struct User {}");
+        assert!(meta.include_in_openapi); // Should default to true
+    }
+
+    #[test]
+    fn test_struct_metadata_new_model() {
+        let meta = StructMetadata::new_model("Model".to_string(), "struct Model {}".to_string());
+        assert_eq!(meta.name, "Model");
+        assert_eq!(meta.definition, "struct Model {}");
+        assert!(!meta.include_in_openapi); // Should be false for models
+    }
+
+    #[test]
+    fn test_struct_metadata_default() {
+        let meta = StructMetadata::default();
+        assert_eq!(meta.name, "");
+        assert_eq!(meta.definition, "");
+        assert!(meta.include_in_openapi); // Default to true
+    }
+
+    #[test]
+    fn test_struct_metadata_serde_with_include_in_openapi() {
+        let json = r#"{"name":"User","definition":"struct User {}","include_in_openapi":false}"#;
+        let meta: StructMetadata = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.name, "User");
+        assert!(!meta.include_in_openapi);
+    }
+
+    #[test]
+    fn test_struct_metadata_serde_without_include_in_openapi() {
+        // This triggers the default_include_in_openapi() function (lines 45-46)
+        let json = r#"{"name":"User","definition":"struct User {}"}"#;
+        let meta: StructMetadata = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.name, "User");
+        assert!(meta.include_in_openapi); // Should default to true via serde default
+    }
+
+    #[test]
+    fn test_struct_metadata_roundtrip() {
+        let original =
+            StructMetadata::new("Test".to_string(), "struct Test { x: i32 }".to_string());
+        let json = serde_json::to_string(&original).unwrap();
+        let restored: StructMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(original.name, restored.name);
+        assert_eq!(original.definition, restored.definition);
+        assert_eq!(original.include_in_openapi, restored.include_in_openapi);
+    }
+
+    #[test]
+    fn test_collected_metadata_new() {
+        let meta = CollectedMetadata::new();
+        assert!(meta.routes.is_empty());
+        assert!(meta.structs.is_empty());
+    }
+}
