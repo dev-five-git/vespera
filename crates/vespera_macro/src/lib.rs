@@ -171,6 +171,8 @@ pub fn schema(input: TokenStream) -> TokenStream {
 /// - `pick = [...]`: List of field names to include (excludes all others)
 /// - `omit = [...]`: List of field names to exclude
 /// - `clone = bool`: Whether to derive Clone (default: true)
+/// - `partial`: Make all fields `Option<T>` (fields already `Option<T>` are unchanged)
+/// - `partial = [...]`: Make only listed fields `Option<T>`
 ///
 /// Note: `omit` and `pick` cannot be used together.
 ///
