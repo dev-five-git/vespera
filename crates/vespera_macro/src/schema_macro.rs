@@ -9,7 +9,7 @@ use quote::quote;
 use std::collections::HashSet;
 use std::path::Path;
 use syn::punctuated::Punctuated;
-use syn::{bracketed, parenthesized, parse::Parse, parse::ParseStream, Ident, LitStr, Token, Type};
+use syn::{Ident, LitStr, Token, Type, bracketed, parenthesized, parse::Parse, parse::ParseStream};
 
 use crate::metadata::StructMetadata;
 use crate::parser::{
