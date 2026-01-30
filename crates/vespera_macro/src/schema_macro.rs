@@ -9,7 +9,7 @@ use quote::quote;
 use std::collections::HashSet;
 use std::path::Path;
 use syn::punctuated::Punctuated;
-use syn::{Ident, LitStr, Token, Type, bracketed, parenthesized, parse::Parse, parse::ParseStream};
+use syn::{bracketed, parenthesized, parse::Parse, parse::ParseStream, Ident, LitStr, Token, Type};
 
 use crate::metadata::StructMetadata;
 use crate::parser::{
@@ -469,6 +469,20 @@ pub struct SchemaTypeInput {
     pub add: Option<Vec<(String, Type)>>,
     /// Whether to derive Clone (default: true)
     pub derive_clone: bool,
+    /// Fields to wrap in Option<T> for partial updates.
+    /// - `partial` (bare) = all fields become Option<T>
+    /// - `partial = ["field1", "field2"]` = only listed fields become Option<T>
+    /// Fields already Option<T> are left unchanged.
+    pub partial: Option<PartialMode>,
+}
+
+/// Mode for the `partial` keyword in schema_type!
+#[derive(Clone, Debug)]
+pub enum PartialMode {
+    /// All fields become Option<T>
+    All,
+    /// Only listed fields become Option<T>
+    Fields(Vec<String>),
 }
 
 /// Helper struct to parse an add field: ("field_name": Type)
@@ -533,6 +547,7 @@ impl Parse for SchemaTypeInput {
         let mut rename = None;
         let mut add = None;
         let mut derive_clone = true;
+        let mut partial = None;
 
         // Parse optional parameters
         while input.peek(Token![,]) {
@@ -583,11 +598,27 @@ impl Parse for SchemaTypeInput {
                     let value: syn::LitBool = input.parse()?;
                     derive_clone = value.value();
                 }
+                "partial" => {
+                    if input.peek(Token![=]) {
+                        // partial = ["field1", "field2"]
+                        input.parse::<Token![=]>()?;
+                        let content;
+                        let _ = bracketed!(content in input);
+                        let fields: Punctuated<LitStr, Token![,]> =
+                            content.parse_terminated(|input| input.parse::<LitStr>(), Token![,])?;
+                        partial = Some(PartialMode::Fields(
+                            fields.into_iter().map(|s| s.value()).collect(),
+                        ));
+                    } else {
+                        // bare `partial` — all fields
+                        partial = Some(PartialMode::All);
+                    }
+                }
                 _ => {
                     return Err(syn::Error::new(
                         ident.span(),
                         format!(
-                            "unknown parameter: `{}`. Expected `omit`, `pick`, `rename`, `add`, or `clone`",
+                            "unknown parameter: `{}`. Expected `omit`, `pick`, `rename`, `add`, `clone`, or `partial`",
                             ident_str
                         ),
                     ));
@@ -611,6 +642,7 @@ impl Parse for SchemaTypeInput {
             rename,
             add,
             derive_clone,
+            partial,
         })
     }
 }
@@ -719,11 +751,35 @@ pub fn generate_schema_type_code(
         }
     }
 
+    // Validate partial fields exist (when specific fields are listed)
+    if let Some(PartialMode::Fields(ref partial_fields)) = input.partial {
+        for field in partial_fields {
+            if !source_field_names.contains(field) {
+                return Err(syn::Error::new_spanned(
+                    &input.source_type,
+                    format!(
+                        "partial field `{}` does not exist in type `{}`. Available fields: {:?}",
+                        field,
+                        source_type_name,
+                        source_field_names.iter().collect::<Vec<_>>()
+                    ),
+                ));
+            }
+        }
+    }
+
     // Build omit set (use Rust field names)
     let omit_set: HashSet<String> = input.omit.clone().unwrap_or_default().into_iter().collect();
 
     // Build pick set (use Rust field names)
     let pick_set: HashSet<String> = input.pick.clone().unwrap_or_default().into_iter().collect();
+
+    // Build partial set
+    let partial_all = matches!(input.partial, Some(PartialMode::All));
+    let partial_set: HashSet<String> = match &input.partial {
+        Some(PartialMode::Fields(fields)) => fields.iter().cloned().collect(),
+        _ => HashSet::new(),
+    };
 
     // Build rename map: source_field_name -> new_field_name
     let rename_map: std::collections::HashMap<String, String> = input
@@ -743,8 +799,8 @@ pub fn generate_schema_type_code(
     // Generate new struct with filtered fields
     let new_type_name = &input.new_type;
     let mut field_tokens = Vec::new();
-    // Track field mappings for From impl: (new_field_ident, source_field_ident)
-    let mut field_mappings: Vec<(syn::Ident, syn::Ident)> = Vec::new();
+    // Track field mappings for From impl: (new_field_ident, source_field_ident, wrapped_in_option)
+    let mut field_mappings: Vec<(syn::Ident, syn::Ident, bool)> = Vec::new();
 
     if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
         for field in &fields_named.named {
@@ -764,8 +820,15 @@ pub fn generate_schema_type_code(
                 continue;
             }
 
-            // Get field components
-            let field_ty = &field.ty;
+            // Get field components, applying partial wrapping if needed
+            let original_ty = &field.ty;
+            let should_wrap_option = (partial_all || partial_set.contains(&rust_field_name))
+                && !is_option_type(original_ty);
+            let field_ty: Box<dyn quote::ToTokens> = if should_wrap_option {
+                Box::new(quote! { Option<#original_ty> })
+            } else {
+                Box::new(quote! { #original_ty })
+            };
             let vis = &field.vis;
             let source_field_ident = field.ident.clone().unwrap();
 
@@ -811,7 +874,7 @@ pub fn generate_schema_type_code(
                 });
 
                 // Track mapping: new field name <- source field name
-                field_mappings.push((new_field_ident, source_field_ident));
+                field_mappings.push((new_field_ident, source_field_ident, should_wrap_option));
             } else {
                 // No rename, keep field with only serde attrs
                 let field_ident = field.ident.clone().unwrap();
@@ -822,7 +885,7 @@ pub fn generate_schema_type_code(
                 });
 
                 // Track mapping: same name
-                field_mappings.push((field_ident.clone(), field_ident));
+                field_mappings.push((field_ident.clone(), field_ident, should_wrap_option));
             }
         }
     }
@@ -849,8 +912,12 @@ pub fn generate_schema_type_code(
     let from_impl = if input.add.is_none() {
         let field_assignments: Vec<_> = field_mappings
             .iter()
-            .map(|(new_ident, source_ident)| {
-                quote! { #new_ident: source.#source_ident }
+            .map(|(new_ident, source_ident, wrapped)| {
+                if *wrapped {
+                    quote! { #new_ident: Some(source.#source_ident) }
+                } else {
+                    quote! { #new_ident: source.#source_ident }
+                }
             })
             .collect();
 
@@ -1049,6 +1116,119 @@ mod tests {
         let add = input.add.unwrap();
         assert_eq!(add.len(), 1);
         assert_eq!(add[0].0, "tags");
+    }
+
+    // Tests for `partial` parameter
+
+    #[test]
+    fn test_parse_schema_type_input_with_partial_all() {
+        let tokens = quote::quote!(UpdateUser from User, partial);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        assert!(matches!(input.partial, Some(PartialMode::All)));
+    }
+
+    #[test]
+    fn test_parse_schema_type_input_with_partial_fields() {
+        let tokens = quote::quote!(UpdateUser from User, partial = ["name", "email"]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        match input.partial {
+            Some(PartialMode::Fields(fields)) => {
+                assert_eq!(fields, vec!["name", "email"]);
+            }
+            _ => panic!("Expected PartialMode::Fields"),
+        }
+    }
+
+    #[test]
+    fn test_parse_schema_type_input_with_pick_and_partial() {
+        let tokens = quote::quote!(UpdateUser from User, pick = ["name", "email"], partial);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.pick.unwrap(), vec!["name", "email"]);
+        assert!(matches!(input.partial, Some(PartialMode::All)));
+    }
+
+    #[test]
+    fn test_parse_schema_type_input_with_pick_and_partial_fields() {
+        let tokens =
+            quote::quote!(UpdateUser from User, pick = ["name", "email"], partial = ["name"]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.pick.unwrap(), vec!["name", "email"]);
+        match input.partial {
+            Some(PartialMode::Fields(fields)) => {
+                assert_eq!(fields, vec!["name"]);
+            }
+            _ => panic!("Expected PartialMode::Fields"),
+        }
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_with_partial_all() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String, pub bio: Option<String> }",
+        )];
+
+        let tokens = quote::quote!(UpdateUser from User, partial);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let output = result.unwrap().to_string();
+        // id and name should be wrapped in Option, bio already Option stays unchanged
+        assert!(output.contains("Option < i32 >"));
+        assert!(output.contains("Option < String >"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_with_partial_fields() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String, pub email: String }",
+        )];
+
+        let tokens = quote::quote!(UpdateUser from User, partial = ["name"]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let output = result.unwrap().to_string();
+        // name should be Option<String>, but id and email should remain unwrapped
+        assert!(output.contains("UpdateUser"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_partial_nonexistent_field() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )];
+
+        let tokens = quote::quote!(UpdateUser from User, partial = ["nonexistent"]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("does not exist"));
+        assert!(err.contains("nonexistent"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_partial_from_impl_wraps_some() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )];
+
+        let tokens = quote::quote!(UpdateUser from User, partial);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let output = result.unwrap().to_string();
+        // From impl should wrap values in Some()
+        assert!(output.contains("Some (source . id)"));
+        assert!(output.contains("Some (source . name)"));
     }
 
     // =========================================================================
