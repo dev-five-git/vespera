@@ -1,1 +1,0 @@
-{"changes":{"crates/vespera_core/Cargo.toml":"Patch","crates/vespera_macro/Cargo.toml":"Patch","crates/vespera/Cargo.toml":"Patch"},"note":"Remain serde by schema_type macro","date":"2026-01-30T09:35:47.612796500Z"}

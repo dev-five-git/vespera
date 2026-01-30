@@ -1,6 +1,6 @@
 [package]
 name = "vespera"
-version = "0.1.26"
+version = "0.1.27"
 edition = "2024"
 description = "A fully automated OpenAPI engine for Axum with zero-config route and schema discovery"
 license = "Apache-2.0"

@@ -1,6 +1,6 @@
 [package]
 name = "vespera_macro"
-version = "0.1.26"
+version = "0.1.27"
 edition = "2024"
 description = "Procedural macros for Vespera - automatic route discovery and OpenAPI generation"
 license = "Apache-2.0"
