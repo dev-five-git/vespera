@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/dev-five-git/vespertide/refs/heads/main/schemas/model.schema.json",
+  "name": "comment",
+  "columns": [
+    { "name": "id", "type": "integer", "nullable": false, "primary_key": { "auto_increment": true } },
+    { 
+      "name": "user_id", 
+      "type": "integer", 
+      "nullable": false, 
+      "foreign_key": { "ref_table": "user", "ref_columns": ["id"], "on_delete": "cascade" },
+      "index": true
+    },
+    { 
+      "name": "memo_id", 
+      "type": "integer", 
+      "nullable": false, 
+      "foreign_key": { "ref_table": "memo", "ref_columns": ["id"], "on_delete": "cascade" },
+      "index": true
+    },
+    { "name": "content", "type": "text", "nullable": false },
+    { "name": "created_at", "type": "timestamptz", "nullable": false, "default": "NOW()" },
+    { "name": "updated_at", "type": "timestamptz", "nullable": false, "default": "NOW()" }
+  ]
+}

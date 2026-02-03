@@ -15,12 +15,14 @@ pub struct Model {
     pub updated_at: DateTimeWithTimeZone,
     #[sea_orm(has_many)]
     pub memos: HasMany<super::memo::Entity>,
+    #[sea_orm(has_many)]
+    pub comments: HasMany<super::comment::Entity>,
 }
 
 // Schema WITH memos relation - circular refs are auto-handled
 // When embedded in MemoSchema.user, the memos field will be defaulted to vec![]
 // Custom OpenAPI name: "UserSchema"
-vespera::schema_type!(Schema from crate::models::user::Model, name = "UserSchema");
+vespera::schema_type!(Schema from Model, name = "UserSchema");
 
 // Index definitions (SeaORM uses Statement builders externally)
 // (unnamed) on [email]

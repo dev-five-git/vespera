@@ -1333,6 +1333,47 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
   },
   "components": {
     "schemas": {
+      "CommentSchema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "memo": {
+            "$ref": "#/components/schemas/MemoSchema"
+          },
+          "memoId": {
+            "type": "integer"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserSchema"
+          },
+          "userId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "memoId",
+          "content",
+          "createdAt",
+          "updatedAt",
+          "user",
+          "memo"
+        ]
+      },
       "ComplexStructBody": {
         "type": "object",
         "properties": {
@@ -1958,6 +1999,53 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "createdAt"
         ]
       },
+      "MemoResponseComments": {
+        "type": "object",
+        "properties": {
+          "comments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemoResponseComments_Comments"
+            }
+          }
+        },
+        "required": [
+          "comments"
+        ]
+      },
+      "MemoResponseComments_Comments": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "memoId": {
+            "type": "integer"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "userId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "memoId",
+          "content",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
       "MemoResponseRel": {
         "type": "object",
         "properties": {
@@ -2025,6 +2113,26 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "createdAt",
           "updatedAt",
           "user"
+        ]
+      },
+      "MemoSnakeCase": {
+        "type": "object",
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "user_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "created_at"
         ]
       },
       "PaginatedResponse": {
@@ -2348,12 +2456,6 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "id": {
             "type": "integer"
           },
-          "memos": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/MemoSchema"
-            }
-          },
           "name": {
             "type": "string"
           },
@@ -2367,8 +2469,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "email",
           "name",
           "createdAt",
-          "updatedAt",
-          "memos"
+          "updatedAt"
         ]
       },
       "UserSummary": {

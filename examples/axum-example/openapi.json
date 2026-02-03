@@ -1329,6 +1329,47 @@
   },
   "components": {
     "schemas": {
+      "CommentSchema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "memo": {
+            "$ref": "#/components/schemas/MemoSchema"
+          },
+          "memoId": {
+            "type": "integer"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserSchema"
+          },
+          "userId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "memoId",
+          "content",
+          "createdAt",
+          "updatedAt",
+          "user",
+          "memo"
+        ]
+      },
       "ComplexStructBody": {
         "type": "object",
         "properties": {
@@ -1954,6 +1995,53 @@
           "createdAt"
         ]
       },
+      "MemoResponseComments": {
+        "type": "object",
+        "properties": {
+          "comments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemoResponseComments_Comments"
+            }
+          }
+        },
+        "required": [
+          "comments"
+        ]
+      },
+      "MemoResponseComments_Comments": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "memoId": {
+            "type": "integer"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "userId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "memoId",
+          "content",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
       "MemoResponseRel": {
         "type": "object",
         "properties": {
@@ -2364,12 +2452,6 @@
           "id": {
             "type": "integer"
           },
-          "memos": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/MemoSchema"
-            }
-          },
           "name": {
             "type": "string"
           },
@@ -2383,8 +2465,7 @@
           "email",
           "name",
           "createdAt",
-          "updatedAt",
-          "memos"
+          "updatedAt"
         ]
       },
       "UserSummary": {

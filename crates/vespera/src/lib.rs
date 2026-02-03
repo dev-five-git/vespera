@@ -25,6 +25,10 @@ pub use vespera_macro::{Schema, export_app, route, schema, schema_type, vespera}
 // Re-export serde_json for merge feature (runtime spec merging)
 pub use serde_json;
 
+// Re-export chrono for schema_type! datetime conversion
+// This allows generated types to use chrono::DateTime without users adding chrono dependency
+pub use chrono;
+
 // Re-export axum for convenience
 pub mod axum {
     pub use axum::*;

@@ -916,7 +916,11 @@ pub(super) fn parse_type_to_schema_ref_with_schemas(
                     // Box<T> -> T's schema (Box is just heap allocation, transparent for schema)
                     "Box" => {
                         if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                            return parse_type_to_schema_ref(inner_ty, known_schemas, struct_definitions);
+                            return parse_type_to_schema_ref(
+                                inner_ty,
+                                known_schemas,
+                                struct_definitions,
+                            );
                         }
                     }
                     "Vec" | "Option" => {
@@ -951,27 +955,29 @@ pub(super) fn parse_type_to_schema_ref_with_schemas(
                     // SeaORM relation types: convert Entity to Schema reference
                     "HasOne" => {
                         // HasOne<Entity> -> nullable reference to corresponding Schema
-                        if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                            if let Some(schema_name) = extract_schema_name_from_entity(inner_ty) {
-                                return SchemaRef::Inline(Box::new(Schema {
-                                    ref_path: Some(format!("#/components/schemas/{}", schema_name)),
-                                    schema_type: None,
-                                    nullable: Some(true),
-                                    ..Schema::new(SchemaType::Object)
-                                }));
-                            }
+                        if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+                            && let Some(schema_name) = extract_schema_name_from_entity(inner_ty)
+                        {
+                            return SchemaRef::Inline(Box::new(Schema {
+                                ref_path: Some(format!("#/components/schemas/{}", schema_name)),
+                                schema_type: None,
+                                nullable: Some(true),
+                                ..Schema::new(SchemaType::Object)
+                            }));
                         }
                         // Fallback: generic object
                         return SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)));
                     }
                     "HasMany" => {
                         // HasMany<Entity> -> array of references to corresponding Schema
-                        if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                            if let Some(schema_name) = extract_schema_name_from_entity(inner_ty) {
-                                let inner_ref =
-                                    SchemaRef::Ref(Reference::new(format!("#/components/schemas/{}", schema_name)));
-                                return SchemaRef::Inline(Box::new(Schema::array(inner_ref)));
-                            }
+                        if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+                            && let Some(schema_name) = extract_schema_name_from_entity(inner_ty)
+                        {
+                            let inner_ref = SchemaRef::Ref(Reference::new(format!(
+                                "#/components/schemas/{}",
+                                schema_name
+                            )));
+                            return SchemaRef::Inline(Box::new(Schema::array(inner_ref)));
                         }
                         // Fallback: array of generic objects
                         return SchemaRef::Inline(Box::new(Schema::array(SchemaRef::Inline(
