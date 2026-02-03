@@ -74,7 +74,7 @@ pub enum StringFormat {
 }
 
 /// JSON Schema definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Schema {
     /// Schema reference ($ref) - if present, other fields are ignored

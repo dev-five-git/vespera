@@ -1396,11 +1396,11 @@ fn generate_inline_relation_type(
                 continue;
             }
 
-            // Keep only serde attributes
-            let serde_attrs: Vec<syn::Attribute> = field
+            // Keep serde and doc attributes
+            let kept_attrs: Vec<syn::Attribute> = field
                 .attrs
                 .iter()
-                .filter(|attr| attr.path().is_ident("serde"))
+                .filter(|attr| attr.path().is_ident("serde") || attr.path().is_ident("doc"))
                 .cloned()
                 .collect();
 
@@ -1408,7 +1408,7 @@ fn generate_inline_relation_type(
             fields.push(InlineField {
                 name: field_ident.clone(),
                 ty: quote::quote!(#field_ty),
-                attrs: serde_attrs,
+                attrs: kept_attrs,
             });
         }
     }
@@ -1472,11 +1472,11 @@ fn generate_inline_relation_type_no_relations(
                 continue;
             }
 
-            // Keep only serde attributes
-            let serde_attrs: Vec<syn::Attribute> = field
+            // Keep serde and doc attributes
+            let kept_attrs: Vec<syn::Attribute> = field
                 .attrs
                 .iter()
-                .filter(|attr| attr.path().is_ident("serde"))
+                .filter(|attr| attr.path().is_ident("serde") || attr.path().is_ident("doc"))
                 .cloned()
                 .collect();
 
@@ -1484,7 +1484,7 @@ fn generate_inline_relation_type_no_relations(
             fields.push(InlineField {
                 name: field_ident.clone(),
                 ty: quote::quote!(#field_ty),
-                attrs: serde_attrs,
+                attrs: kept_attrs,
             });
         }
     }
@@ -2683,6 +2683,13 @@ pub fn generate_schema_type_code(
         })
         .collect();
 
+    // Extract doc comments from source struct to carry over to generated struct
+    let struct_doc_attrs: Vec<_> = parsed_struct
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("doc"))
+        .collect();
+
     // Determine the rename_all strategy:
     // 1. If input.rename_all is specified, use it
     // 2. Else if source has rename_all, use it
@@ -2838,13 +2845,20 @@ pub fn generate_schema_type_code(
             let vis = &field.vis;
             let source_field_ident = field.ident.clone().unwrap();
 
-            // Filter field attributes: only keep serde attributes, remove sea_orm and others
+            // Filter field attributes: keep serde and doc attributes, remove sea_orm and others
             // This is important when using schema_type! with models from other files
             // that may have ORM-specific attributes we don't want in the generated struct
             let serde_field_attrs: Vec<_> = field
                 .attrs
                 .iter()
                 .filter(|attr| attr.path().is_ident("serde"))
+                .collect();
+
+            // Extract doc attributes to carry over comments to the generated struct
+            let doc_attrs: Vec<_> = field
+                .attrs
+                .iter()
+                .filter(|attr| attr.path().is_ident("doc"))
                 .collect();
 
             // Check if field should be renamed
@@ -2874,6 +2888,7 @@ pub fn generate_schema_type_code(
                     extract_field_rename(&field.attrs).unwrap_or_else(|| rust_field_name.clone());
 
                 field_tokens.push(quote! {
+                    #(#doc_attrs)*
                     #(#filtered_attrs)*
                     #[serde(rename = #json_name)]
                     #vis #new_field_ident: #field_ty
@@ -2887,10 +2902,11 @@ pub fn generate_schema_type_code(
                     is_relation,
                 ));
             } else {
-                // No rename, keep field with only serde attrs
+                // No rename, keep field with serde and doc attrs
                 let field_ident = field.ident.clone().unwrap();
 
                 field_tokens.push(quote! {
+                    #(#doc_attrs)*
                     #(#serde_field_attrs)*
                     #vis #field_ident: #field_ty
                 });
@@ -2989,6 +3005,7 @@ pub fn generate_schema_type_code(
         // Inline types for circular relation references
         #(#inline_type_definitions)*
 
+        #(#struct_doc_attrs)*
         #[derive(serde::Serialize, serde::Deserialize, #clone_derive #schema_derive)]
         #schema_name_attr
         #[serde(rename_all = #effective_rename_all)]

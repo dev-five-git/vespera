@@ -1612,6 +1612,7 @@
       },
       "CreateUserRequest": {
         "type": "object",
+        "description": "Full user model with all fields",
         "properties": {
           "email": {
             "type": "string"
@@ -1627,6 +1628,7 @@
       },
       "CreateUserWithMeta": {
         "type": "object",
+        "description": "Full user model with all fields",
         "properties": {
           "createdAt": {
             "type": "string",
@@ -1657,6 +1659,7 @@
         ]
       },
       "Enum2": {
+        "description": "Enum2 Description",
         "oneOf": [
           {
             "type": "object",
@@ -2404,6 +2407,7 @@
       },
       "User": {
         "type": "object",
+        "description": "Full user model with all fields",
         "properties": {
           "email": {
             "type": "string"
@@ -2413,6 +2417,7 @@
           },
           "internal_score": {
             "type": "integer",
+            "description": "Internal field - should be omitted in public APIs",
             "nullable": true
           },
           "name": {
@@ -2427,6 +2432,7 @@
       },
       "UserDTO": {
         "type": "object",
+        "description": "Full user model with all fields",
         "properties": {
           "id": {
             "type": "integer"
@@ -2442,6 +2448,7 @@
       },
       "UserPublicResponse": {
         "type": "object",
+        "description": "Full user model with all fields",
         "properties": {
           "email": {
             "type": "string"
@@ -2461,23 +2468,29 @@
       },
       "UserSchema": {
         "type": "object",
+        "description": "User model",
         "properties": {
           "createdAt": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "Created at"
           },
           "email": {
-            "type": "string"
+            "type": "string",
+            "description": "User email"
           },
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "description": "User ID"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "User name"
           },
           "updatedAt": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "Updated at"
           }
         },
         "required": [
@@ -2490,6 +2503,7 @@
       },
       "UserSummary": {
         "type": "object",
+        "description": "Full user model with all fields",
         "properties": {
           "id": {
             "type": "integer"

@@ -3,6 +3,33 @@ use std::collections::{BTreeMap, HashMap};
 use syn::{Fields, Type};
 use vespera_core::schema::{Reference, Schema, SchemaRef, SchemaType};
 
+/// Extract doc comments from attributes.
+/// Returns concatenated doc comment string or None if no doc comments.
+pub fn extract_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
+    let mut doc_lines = Vec::new();
+
+    for attr in attrs {
+        if attr.path().is_ident("doc")
+            && let syn::Meta::NameValue(meta_nv) = &attr.meta
+            && let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(lit_str),
+                ..
+            }) = &meta_nv.value
+        {
+            let line = lit_str.value();
+            // Trim leading space that rustdoc adds
+            let trimmed = line.strip_prefix(' ').unwrap_or(&line);
+            doc_lines.push(trimmed.to_string());
+        }
+    }
+
+    if doc_lines.is_empty() {
+        None
+    } else {
+        Some(doc_lines.join("\n"))
+    }
+}
+
 /// Strips the `r#` prefix from raw identifiers.
 /// E.g., `r#type` becomes `type`.
 pub fn strip_raw_prefix(ident: &str) -> &str {
@@ -437,6 +464,9 @@ pub fn parse_enum_to_schema(
     known_schemas: &HashMap<String, String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Schema {
+    // Extract enum-level doc comment for schema description
+    let enum_description = extract_doc_comment(&enum_item.attrs);
+
     // Extract rename_all attribute from enum
     let rename_all = extract_rename_all(&enum_item.attrs);
 
@@ -466,6 +496,7 @@ pub fn parse_enum_to_schema(
 
         Schema {
             schema_type: Some(SchemaType::String),
+            description: enum_description,
             r#enum: if enum_values.is_empty() {
                 None
             } else {
@@ -488,10 +519,14 @@ pub fn parse_enum_to_schema(
                 rename_field(&variant_name, rename_all.as_deref())
             };
 
+            // Extract variant-level doc comment
+            let variant_description = extract_doc_comment(&variant.attrs);
+
             let variant_schema = match &variant.fields {
                 syn::Fields::Unit => {
                     // Unit variant: {"const": "VariantName"}
                     Schema {
+                        description: variant_description,
                         r#enum: Some(vec![serde_json::Value::String(variant_key)]),
                         ..Schema::string()
                     }
@@ -510,6 +545,7 @@ pub fn parse_enum_to_schema(
                         properties.insert(variant_key.clone(), inner_schema);
 
                         Schema {
+                            description: variant_description.clone(),
                             properties: Some(properties),
                             required: Some(vec![variant_key]),
                             ..Schema::object()
@@ -546,6 +582,7 @@ pub fn parse_enum_to_schema(
                         );
 
                         Schema {
+                            description: variant_description.clone(),
                             properties: Some(properties),
                             required: Some(vec![variant_key]),
                             ..Schema::object()
@@ -577,8 +614,30 @@ pub fn parse_enum_to_schema(
                         };
 
                         let field_type = &field.ty;
-                        let schema_ref =
+                        let mut schema_ref =
                             parse_type_to_schema_ref(field_type, known_schemas, struct_definitions);
+
+                        // Extract doc comment from field and set as description
+                        if let Some(doc) = extract_doc_comment(&field.attrs) {
+                            match &mut schema_ref {
+                                SchemaRef::Inline(schema) => {
+                                    schema.description = Some(doc);
+                                }
+                                SchemaRef::Ref(_) => {
+                                    let ref_schema = std::mem::replace(
+                                        &mut schema_ref,
+                                        SchemaRef::Inline(Box::new(Schema::object())),
+                                    );
+                                    if let SchemaRef::Ref(reference) = ref_schema {
+                                        schema_ref = SchemaRef::Inline(Box::new(Schema {
+                                            description: Some(doc),
+                                            all_of: Some(vec![SchemaRef::Ref(reference)]),
+                                            ..Default::default()
+                                        }));
+                                    }
+                                }
+                            }
+                        }
 
                         variant_properties.insert(field_name.clone(), schema_ref);
 
@@ -621,6 +680,7 @@ pub fn parse_enum_to_schema(
                     );
 
                     Schema {
+                        description: variant_description,
                         properties: Some(properties),
                         required: Some(vec![variant_key]),
                         ..Schema::object()
@@ -633,6 +693,7 @@ pub fn parse_enum_to_schema(
 
         Schema {
             schema_type: None, // oneOf doesn't have a single type
+            description: enum_description,
             one_of: if one_of_schemas.is_empty() {
                 None
             } else {
@@ -650,6 +711,9 @@ pub fn parse_struct_to_schema(
 ) -> Schema {
     let mut properties = BTreeMap::new();
     let mut required = Vec::new();
+
+    // Extract struct-level doc comment for schema description
+    let struct_description = extract_doc_comment(&struct_item.attrs);
 
     // Extract rename_all attribute from struct
     let rename_all = extract_rename_all(&struct_item.attrs);
@@ -680,6 +744,31 @@ pub fn parse_struct_to_schema(
 
                 let mut schema_ref =
                     parse_type_to_schema_ref(field_type, known_schemas, struct_definitions);
+
+                // Extract doc comment from field and set as description
+                if let Some(doc) = extract_doc_comment(&field.attrs) {
+                    match &mut schema_ref {
+                        SchemaRef::Inline(schema) => {
+                            schema.description = Some(doc);
+                        }
+                        SchemaRef::Ref(_) => {
+                            // For $ref schemas, we need to wrap in an allOf to add description
+                            // OpenAPI 3.1 allows siblings to $ref, so we can add description directly
+                            // by converting to inline schema with description + allOf[$ref]
+                            let ref_schema = std::mem::replace(
+                                &mut schema_ref,
+                                SchemaRef::Inline(Box::new(Schema::object())),
+                            );
+                            if let SchemaRef::Ref(reference) = ref_schema {
+                                schema_ref = SchemaRef::Inline(Box::new(Schema {
+                                    description: Some(doc),
+                                    all_of: Some(vec![SchemaRef::Ref(reference)]),
+                                    ..Default::default()
+                                }));
+                            }
+                        }
+                    }
+                }
 
                 // Check for default attribute
                 let has_default = extract_default(&field.attrs).is_some();
@@ -727,6 +816,7 @@ pub fn parse_struct_to_schema(
 
     Schema {
         schema_type: Some(SchemaType::Object),
+        description: struct_description,
         properties: if properties.is_empty() {
             None
         } else {
