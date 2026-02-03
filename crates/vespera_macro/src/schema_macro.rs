@@ -1090,6 +1090,7 @@ impl Parse for SchemaTypeInput {
                 }
                 "rename_all" => {
                     // rename_all = "camelCase" — serde rename_all strategy
+                    // Validation is delegated to serde at compile time
                     input.parse::<Token![=]>()?;
                     let rename_all_lit: LitStr = input.parse()?;
                     rename_all = Some(rename_all_lit.value());
@@ -2889,5 +2890,26 @@ mod tests {
         let ty: syn::Type = syn::parse_str("&str").unwrap();
         let result = extract_type_name(&ty);
         assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // Tests for rename_all parsing
+    // =========================================================================
+
+    #[test]
+    fn test_parse_schema_type_input_with_rename_all() {
+        let tokens = quote::quote!(NewType from User, rename_all = "snake_case");
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.rename_all.as_deref(), Some("snake_case"));
+    }
+
+    #[test]
+    fn test_parse_schema_type_input_rename_all_with_other_params() {
+        // rename_all should work alongside other parameters
+        let tokens =
+            quote::quote!(NewType from User, pick = ["id", "name"], rename_all = "snake_case");
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.pick.unwrap(), vec!["id", "name"]);
+        assert_eq!(input.rename_all.as_deref(), Some("snake_case"));
     }
 }
