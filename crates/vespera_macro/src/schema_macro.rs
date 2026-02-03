@@ -207,8 +207,6 @@ struct RelationFieldInfo {
     schema_path: TokenStream,
     /// Whether the relation is optional
     is_optional: bool,
-    /// Foreign key field name (for BelongsTo)
-    fk_field: Option<String>,
 }
 
 /// Extract the "from" field name from a sea_orm belongs_to attribute.
@@ -369,7 +367,6 @@ fn convert_relation_type_to_schema_with_info(
                 relation_type: "HasOne".to_string(),
                 schema_path: schema_path.clone(),
                 is_optional,
-                fk_field,
             };
             Some((converted, info))
         }
@@ -380,7 +377,6 @@ fn convert_relation_type_to_schema_with_info(
                 relation_type: "HasMany".to_string(),
                 schema_path: schema_path.clone(),
                 is_optional: false,
-                fk_field: None,
             };
             Some((converted, info))
         }
@@ -404,7 +400,6 @@ fn convert_relation_type_to_schema_with_info(
                 relation_type: "BelongsTo".to_string(),
                 schema_path: schema_path.clone(),
                 is_optional,
-                fk_field,
             };
             Some((converted, info))
         }

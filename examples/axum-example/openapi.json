@@ -1014,7 +1014,7 @@
     "/third": {
       "get": {
         "operationId": "third_root_endpoint",
-        "description": "/ Third app root endpoint",
+        "description": "Third app root endpoint",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1035,7 +1035,7 @@
         "tags": [
           "third"
         ],
-        "description": "/ Third app hello endpoint",
+        "description": "Third app hello endpoint",
         "responses": {
           "200": {
             "description": "Successful response",
