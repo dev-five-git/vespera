@@ -2058,4 +2058,86 @@ pub fn get_users() -> String {
         // It should return a PathBuf (either from src/nonexistent... or just the folder name)
         assert!(result.to_string_lossy().contains("nonexistent_folder_xyz"));
     }
+
+    // ========== Tests for extract_schema_name_attr ==========
+
+    #[test]
+    fn test_extract_schema_name_attr_with_name() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[schema(name = "CustomName")]
+        };
+        let result = extract_schema_name_attr(&attrs);
+        assert_eq!(result, Some("CustomName".to_string()));
+    }
+
+    #[test]
+    fn test_extract_schema_name_attr_without_name() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[derive(Debug)]
+        };
+        let result = extract_schema_name_attr(&attrs);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_schema_name_attr_empty_schema() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[schema]
+        };
+        let result = extract_schema_name_attr(&attrs);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_schema_name_attr_with_other_attrs() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[derive(Clone)]
+            #[schema(name = "MySchema")]
+            #[serde(rename_all = "camelCase")]
+        };
+        let result = extract_schema_name_attr(&attrs);
+        assert_eq!(result, Some("MySchema".to_string()));
+    }
+
+    // ========== Tests for process_derive_schema ==========
+
+    #[test]
+    fn test_process_derive_schema_simple() {
+        let input: syn::DeriveInput = syn::parse_quote! {
+            struct User {
+                id: i32,
+                name: String,
+            }
+        };
+        let (metadata, tokens) = process_derive_schema(&input);
+        assert_eq!(metadata.name, "User");
+        assert!(metadata.definition.contains("User"));
+        let tokens_str = tokens.to_string();
+        assert!(tokens_str.contains("SchemaBuilder"));
+    }
+
+    #[test]
+    fn test_process_derive_schema_with_custom_name() {
+        let input: syn::DeriveInput = syn::parse_quote! {
+            #[schema(name = "CustomUserSchema")]
+            struct User {
+                id: i32,
+            }
+        };
+        let (metadata, _) = process_derive_schema(&input);
+        assert_eq!(metadata.name, "CustomUserSchema");
+    }
+
+    #[test]
+    fn test_process_derive_schema_with_generics() {
+        let input: syn::DeriveInput = syn::parse_quote! {
+            struct Container<T> {
+                value: T,
+            }
+        };
+        let (metadata, tokens) = process_derive_schema(&input);
+        assert_eq!(metadata.name, "Container");
+        let tokens_str = tokens.to_string();
+        assert!(tokens_str.contains("< T >") || tokens_str.contains("<T>"));
+    }
 }

@@ -102,18 +102,7 @@ pub fn generate_schema_code(
     let type_name = extract_type_name(&input.ty)?;
 
     // Find struct definition in storage
-    let struct_def = schema_storage
-        .iter()
-        .find(|s| s.name == type_name)
-        .ok_or_else(|| {
-            syn::Error::new_spanned(
-                &input.ty,
-                format!(
-                    "type `{}` not found. Make sure it has #[derive(Schema)] before this macro invocation",
-                    type_name
-                ),
-            )
-        })?;
+    let struct_def = schema_storage.iter().find(|s| s.name == type_name).ok_or_else(|| syn::Error::new_spanned(&input.ty, format!("type `{}` not found. Make sure it has #[derive(Schema)] before this macro invocation", type_name)))?;
 
     // Parse the struct definition
     let parsed_struct: syn::ItemStruct = syn::parse_str(&struct_def.definition).map_err(|e| {
@@ -2244,19 +2233,12 @@ fn generate_from_model_with_relations(
                     let related_model_from_file = find_struct_from_schema_path(&model_path_str);
 
                     // Get the definition string
-                    let related_def_str = related_model_from_file
-                        .as_ref()
-                        .map(|s| s.definition.as_str())
-                        .unwrap_or("");
+                    let related_def_str = related_model_from_file.as_ref().map(|s| s.definition.as_str()).unwrap_or("");
 
                     // Check for circular references
                     // The source module path tells us what module we're in (e.g., ["crate", "models", "memo"])
                     // We need to check if the related model has any relation fields pointing back to our module
-                    let circular_fields = detect_circular_fields(
-                        new_type_name.to_string().as_str(),
-                        source_module_path,
-                        related_def_str,
-                    );
+                    let circular_fields = detect_circular_fields(new_type_name.to_string().as_str(), source_module_path, related_def_str);
 
                     let has_circular = !circular_fields.is_empty();
 
@@ -2264,12 +2246,7 @@ fn generate_from_model_with_relations(
                     // instead of the original schema path
                     if let Some((ref inline_type_name, ref included_fields)) = rel.inline_type_info {
                         // Use inline type construction
-                        let inline_construct = generate_inline_type_construction(
-                            inline_type_name,
-                            included_fields,
-                            related_def_str,
-                            "r",
-                        );
+                        let inline_construct = generate_inline_type_construction(inline_type_name, included_fields, related_def_str, "r");
 
                         match rel.relation_type.as_str() {
                             "HasOne" | "BelongsTo" => {
@@ -2301,12 +2278,7 @@ fn generate_from_model_with_relations(
                             "HasOne" | "BelongsTo" => {
                                 if has_circular {
                                     // Use inline construction to break circular ref
-                                    let inline_construct = generate_inline_struct_construction(
-                                        schema_path,
-                                        related_def_str,
-                                        &circular_fields,
-                                        "r",
-                                    );
+                                    let inline_construct = generate_inline_struct_construction(schema_path, related_def_str, &circular_fields, "r");
                                     if rel.is_optional {
                                         quote! {
                                             #new_ident: #source_ident.map(|r| Box::new(#inline_construct))
@@ -2367,12 +2339,7 @@ fn generate_from_model_with_relations(
                                 // when explicitly picked. Use inline construction (no relations).
                                 if has_circular {
                                     // Use inline construction to break circular ref
-                                    let inline_construct = generate_inline_struct_construction(
-                                        schema_path,
-                                        related_def_str,
-                                        &circular_fields,
-                                        "r",
-                                    );
+                                    let inline_construct = generate_inline_struct_construction(schema_path, related_def_str, &circular_fields, "r");
                                     quote! {
                                         #new_ident: #source_ident.into_iter().map(|r| #inline_construct).collect()
                                     }
@@ -2386,7 +2353,7 @@ fn generate_from_model_with_relations(
                                         let inline_construct = generate_inline_struct_construction(
                                             schema_path,
                                             related_def_str,
-                                            &[],  // no circular fields to exclude
+                                            &[], // no circular fields to exclude
                                             "r",
                                         );
                                         quote! {
@@ -3843,5 +3810,178 @@ mod tests {
         let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
         assert_eq!(input.pick.unwrap(), vec!["id", "name"]);
         assert_eq!(input.rename_all.as_deref(), Some("snake_case"));
+    }
+
+    // =========================================================================
+    // Tests for helper functions
+    // =========================================================================
+
+    #[test]
+    fn test_is_qualified_path_simple() {
+        let ty: syn::Type = syn::parse_str("User").unwrap();
+        assert!(!is_qualified_path(&ty));
+    }
+
+    #[test]
+    fn test_is_qualified_path_crate_path() {
+        let ty: syn::Type = syn::parse_str("crate::models::User").unwrap();
+        assert!(is_qualified_path(&ty));
+    }
+
+    #[test]
+    fn test_is_qualified_path_non_path_type() {
+        let ty: syn::Type = syn::parse_str("&str").unwrap();
+        assert!(!is_qualified_path(&ty));
+    }
+
+    #[test]
+    fn test_is_seaorm_relation_type_has_one() {
+        let ty: syn::Type = syn::parse_str("HasOne<User>").unwrap();
+        assert!(is_seaorm_relation_type(&ty));
+    }
+
+    #[test]
+    fn test_is_seaorm_relation_type_has_many() {
+        let ty: syn::Type = syn::parse_str("HasMany<Post>").unwrap();
+        assert!(is_seaorm_relation_type(&ty));
+    }
+
+    #[test]
+    fn test_is_seaorm_relation_type_belongs_to() {
+        let ty: syn::Type = syn::parse_str("BelongsTo<User>").unwrap();
+        assert!(is_seaorm_relation_type(&ty));
+    }
+
+    #[test]
+    fn test_is_seaorm_relation_type_regular_type() {
+        let ty: syn::Type = syn::parse_str("String").unwrap();
+        assert!(!is_seaorm_relation_type(&ty));
+    }
+
+    #[test]
+    fn test_is_seaorm_relation_type_non_path() {
+        let ty: syn::Type = syn::parse_str("&str").unwrap();
+        assert!(!is_seaorm_relation_type(&ty));
+    }
+
+    #[test]
+    fn test_is_seaorm_model_with_sea_orm_attr() {
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r#"
+            #[sea_orm(table_name = "users")]
+            struct Model {
+                id: i32,
+            }
+        "#,
+        )
+        .unwrap();
+        assert!(is_seaorm_model(&struct_item));
+    }
+
+    #[test]
+    fn test_is_seaorm_model_with_qualified_attr() {
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r#"
+            #[sea_orm::model]
+            struct Model {
+                id: i32,
+            }
+        "#,
+        )
+        .unwrap();
+        assert!(is_seaorm_model(&struct_item));
+    }
+
+    #[test]
+    fn test_is_seaorm_model_regular_struct() {
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r#"
+            #[derive(Debug)]
+            struct User {
+                id: i32,
+            }
+        "#,
+        )
+        .unwrap();
+        assert!(!is_seaorm_model(&struct_item));
+    }
+
+    #[test]
+    fn test_parse_schema_input_trailing_comma() {
+        // Test that trailing comma is handled
+        let tokens = quote::quote!(User, omit = ["password"],);
+        let input: SchemaInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.omit.unwrap(), vec!["password"]);
+    }
+
+    #[test]
+    fn test_parse_schema_input_unknown_param() {
+        let tokens = quote::quote!(User, unknown = ["a"]);
+        let result: syn::Result<SchemaInput> = syn::parse2(tokens);
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.to_string().contains("unknown parameter"));
+        }
+    }
+
+    #[test]
+    fn test_parse_schema_type_input_with_ignore() {
+        let tokens = quote::quote!(NewType from User, ignore);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        assert!(input.ignore_schema);
+    }
+
+    #[test]
+    fn test_parse_schema_type_input_with_name() {
+        let tokens = quote::quote!(NewType from User, name = "CustomName");
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.schema_name.as_deref(), Some("CustomName"));
+    }
+
+    #[test]
+    fn test_parse_schema_type_input_with_name_and_ignore() {
+        let tokens = quote::quote!(NewType from User, name = "CustomName", ignore);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.schema_name.as_deref(), Some("CustomName"));
+        assert!(input.ignore_schema);
+    }
+
+    // Test doc comment preservation in schema_type
+    #[test]
+    fn test_generate_schema_type_code_preserves_struct_doc() {
+        let input = SchemaTypeInput {
+            new_type: syn::Ident::new("NewUser", proc_macro2::Span::call_site()),
+            source_type: syn::parse_str("User").unwrap(),
+            omit: None,
+            pick: None,
+            rename: None,
+            add: None,
+            derive_clone: true,
+            partial: None,
+            schema_name: None,
+            ignore_schema: false,
+            rename_all: None,
+        };
+        // Create a struct with doc comments
+        let struct_def = StructMetadata {
+            name: "User".to_string(),
+            definition: r#"
+                /// User struct documentation
+                pub struct User {
+                    /// The user ID
+                    pub id: i32,
+                    /// The user name
+                    pub name: String,
+                }
+            "#
+            .to_string(),
+            include_in_openapi: true,
+        };
+        let result = generate_schema_type_code(&input, &[struct_def]);
+        assert!(result.is_ok());
+        let (tokens, _) = result.unwrap();
+        let tokens_str = tokens.to_string();
+        // Should contain doc comments
+        assert!(tokens_str.contains("User struct documentation") || tokens_str.contains("doc"));
     }
 }

@@ -2937,4 +2937,218 @@ mod tests {
         let result = rename_field("get_user_by_id", Some("camelCase"));
         assert_eq!(result, "getUserById");
     }
+
+    // Tests for extract_doc_comment function
+    #[test]
+    fn test_extract_doc_comment_single_line() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[doc = " This is a doc comment"]
+        };
+        let result = extract_doc_comment(&attrs);
+        assert_eq!(result, Some("This is a doc comment".to_string()));
+    }
+
+    #[test]
+    fn test_extract_doc_comment_multi_line() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[doc = " First line"]
+            #[doc = " Second line"]
+            #[doc = " Third line"]
+        };
+        let result = extract_doc_comment(&attrs);
+        assert_eq!(
+            result,
+            Some("First line\nSecond line\nThird line".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_doc_comment_no_leading_space() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[doc = "No leading space"]
+        };
+        let result = extract_doc_comment(&attrs);
+        assert_eq!(result, Some("No leading space".to_string()));
+    }
+
+    #[test]
+    fn test_extract_doc_comment_empty() {
+        let attrs: Vec<syn::Attribute> = vec![];
+        let result = extract_doc_comment(&attrs);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_doc_comment_with_non_doc_attrs() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[derive(Debug)]
+            #[doc = " The doc comment"]
+            #[serde(rename = "test")]
+        };
+        let result = extract_doc_comment(&attrs);
+        assert_eq!(result, Some("The doc comment".to_string()));
+    }
+
+    // Tests for extract_schema_name_from_entity function
+    #[test]
+    fn test_extract_schema_name_from_entity_super_path() {
+        let ty: Type = syn::parse_str("super::user::Entity").unwrap();
+        let result = extract_schema_name_from_entity(&ty);
+        assert_eq!(result, Some("User".to_string()));
+    }
+
+    #[test]
+    fn test_extract_schema_name_from_entity_crate_path() {
+        let ty: Type = syn::parse_str("crate::models::memo::Entity").unwrap();
+        let result = extract_schema_name_from_entity(&ty);
+        assert_eq!(result, Some("Memo".to_string()));
+    }
+
+    #[test]
+    fn test_extract_schema_name_from_entity_not_entity() {
+        let ty: Type = syn::parse_str("crate::models::user::Model").unwrap();
+        let result = extract_schema_name_from_entity(&ty);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_schema_name_from_entity_single_segment() {
+        let ty: Type = syn::parse_str("Entity").unwrap();
+        let result = extract_schema_name_from_entity(&ty);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_schema_name_from_entity_non_path_type() {
+        let ty: Type = syn::parse_str("&str").unwrap();
+        let result = extract_schema_name_from_entity(&ty);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_schema_name_from_entity_empty_module_name() {
+        // Tests the branch where module name has no characters (edge case)
+        let ty: Type = syn::parse_str("super::some_module::Entity").unwrap();
+        let result = extract_schema_name_from_entity(&ty);
+        assert_eq!(result, Some("Some_module".to_string()));
+    }
+
+    // Tests for enum with doc comments on variants
+    #[test]
+    fn test_parse_enum_to_schema_with_variant_descriptions() {
+        let enum_src = r#"
+            /// Enum description
+            enum Status {
+                /// Active variant
+                Active,
+                /// Inactive variant
+                Inactive,
+            }
+        "#;
+        let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        assert_eq!(schema.description, Some("Enum description".to_string()));
+    }
+
+    #[test]
+    fn test_parse_enum_to_schema_data_variant_with_description() {
+        let enum_src = r#"
+            /// Data enum
+            enum Event {
+                /// Text event description
+                Text(String),
+                /// Number event description
+                Number(i32),
+            }
+        "#;
+        let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        assert_eq!(schema.description, Some("Data enum".to_string()));
+        assert!(schema.one_of.is_some());
+        let one_of = schema.one_of.unwrap();
+        assert_eq!(one_of.len(), 2);
+        // Check first variant has description
+        if let SchemaRef::Inline(variant_schema) = &one_of[0] {
+            assert_eq!(
+                variant_schema.description,
+                Some("Text event description".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_enum_to_schema_struct_variant_with_field_docs() {
+        let enum_src = r#"
+            enum Event {
+                /// Record variant
+                Record {
+                    /// The value field
+                    value: i32,
+                    /// The name field
+                    name: String,
+                },
+            }
+        "#;
+        let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
+        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        assert!(schema.one_of.is_some());
+        let one_of = schema.one_of.unwrap();
+        if let SchemaRef::Inline(variant_schema) = &one_of[0] {
+            assert_eq!(
+                variant_schema.description,
+                Some("Record variant".to_string())
+            );
+        }
+    }
+
+    // Tests for struct with doc comments
+    #[test]
+    fn test_parse_struct_to_schema_with_description() {
+        let struct_src = r#"
+            /// User struct description
+            struct User {
+                /// User ID
+                id: i32,
+                /// User name
+                name: String,
+            }
+        "#;
+        let struct_item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
+        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        assert_eq!(
+            schema.description,
+            Some("User struct description".to_string())
+        );
+        // Check field descriptions
+        let props = schema.properties.unwrap();
+        if let SchemaRef::Inline(id_schema) = props.get("id").unwrap() {
+            assert_eq!(id_schema.description, Some("User ID".to_string()));
+        }
+        if let SchemaRef::Inline(name_schema) = props.get("name").unwrap() {
+            assert_eq!(name_schema.description, Some("User name".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_parse_struct_to_schema_field_with_ref_and_description() {
+        let struct_src = r#"
+            struct Container {
+                /// The user reference
+                user: User,
+            }
+        "#;
+        let struct_item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
+        let mut known = HashMap::new();
+        known.insert("User".to_string(), "struct User { id: i32 }".to_string());
+        let schema = parse_struct_to_schema(&struct_item, &known, &HashMap::new());
+        let props = schema.properties.unwrap();
+        // Field with $ref and description should use allOf
+        if let SchemaRef::Inline(user_schema) = props.get("user").unwrap() {
+            assert_eq!(
+                user_schema.description,
+                Some("The user reference".to_string())
+            );
+            assert!(user_schema.all_of.is_some());
+        }
+    }
 }

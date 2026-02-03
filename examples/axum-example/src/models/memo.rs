@@ -1,7 +1,9 @@
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize, vespera::Schema)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize, vespera::Schema,
+)]
 #[serde(rename_all = "camelCase")]
 #[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "memo_memo_status")]
 pub enum MemoStatus {
@@ -34,7 +36,6 @@ pub struct Model {
     #[sea_orm(has_many)]
     pub comments: HasMany<super::comment::Entity>,
 }
-
 
 // Index definitions (SeaORM uses Statement builders externally)
 // (unnamed) on [user_id]
