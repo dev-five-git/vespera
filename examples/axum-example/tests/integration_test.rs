@@ -645,11 +645,12 @@ async fn test_create_user_with_meta_add_fields() {
     let server = TestServer::new(app).unwrap();
 
     // CreateUserWithMeta has: name, email (from User) + request_id, created_at (added)
+    // Note: Field names are camelCase in JSON due to serde rename_all = "camelCase"
     let request_body = json!({
         "name": "Test User",
         "email": "test@example.com",
-        "request_id": "req-12345",
-        "created_at": null
+        "requestId": "req-12345",
+        "createdAt": null
     });
 
     let response = server.post("/users/with-meta").json(&request_body).await;
@@ -661,9 +662,9 @@ async fn test_create_user_with_meta_add_fields() {
     assert_eq!(result["name"], "Test User");
     assert_eq!(result["email"], "test@example.com");
 
-    // Verify added fields
-    assert_eq!(result["request_id"], "req-12345");
-    assert_eq!(result["created_at"], "2024-01-27T12:00:00Z"); // Server fills this in
+    // Verify added fields (camelCase in JSON)
+    assert_eq!(result["requestId"], "req-12345");
+    assert_eq!(result["createdAt"], "2024-01-27T12:00:00Z"); // Server fills this in
 }
 
 // Tests for schema_type! with sea-orm-like models

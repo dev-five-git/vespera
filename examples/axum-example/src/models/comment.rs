@@ -21,10 +21,9 @@ pub struct Model {
     pub memo: HasOne<super::memo::Entity>,
 }
 
-// Schema WITH both user and memo relations
-// This tests complex circular reference handling:
-// - Comment.user -> User (which has memos and comments)
-// - Comment.memo -> Memo (which has user and comments)
 vespera::schema_type!(Schema from Model, name = "CommentSchema");
 
+// Index definitions (SeaORM uses Statement builders externally)
+// (unnamed) on [user_id]
+// (unnamed) on [memo_id]
 impl ActiveModelBehavior for ActiveModel {}

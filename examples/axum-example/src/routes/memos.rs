@@ -76,6 +76,7 @@ pub async fn get_memo(Path(id): Path<i32>) -> Json<MemoResponse> {
         user_id: 1, // Example user ID
         title: "Test Memo".to_string(),
         content: "This is test content".to_string(),
+        status: crate::models::memo::MemoStatus::Published,
         created_at: DateTimeWithTimeZone::default(),
         updated_at: DateTimeWithTimeZone::default(),
     };
@@ -94,6 +95,7 @@ pub async fn get_memo_rel(
         user_id: 1, // Example user ID
         title: "Test Memo".to_string(),
         content: "This is test content".to_string(),
+        status: crate::models::memo::MemoStatus::Published,
         created_at: DateTimeWithTimeZone::default(),
         updated_at: DateTimeWithTimeZone::default(),
     };

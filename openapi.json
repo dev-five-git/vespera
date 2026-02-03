@@ -1980,6 +1980,9 @@
           "id": {
             "type": "integer"
           },
+          "status": {
+            "$ref": "#/components/schemas/MemoStatus"
+          },
           "title": {
             "type": "string"
           },
@@ -1992,6 +1995,7 @@
           "userId",
           "title",
           "content",
+          "status",
           "createdAt"
         ]
       },
@@ -2055,6 +2059,9 @@
           "id": {
             "type": "integer"
           },
+          "status": {
+            "$ref": "#/components/schemas/MemoStatus"
+          },
           "title": {
             "type": "string"
           },
@@ -2070,6 +2077,7 @@
           "userId",
           "title",
           "content",
+          "status",
           "createdAt",
           "user"
         ]
@@ -2086,6 +2094,9 @@
           },
           "id": {
             "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MemoStatus"
           },
           "title": {
             "type": "string"
@@ -2106,6 +2117,7 @@
           "userId",
           "title",
           "content",
+          "status",
           "createdAt",
           "updatedAt",
           "user"
@@ -2129,6 +2141,14 @@
           "id",
           "user_id",
           "created_at"
+        ]
+      },
+      "MemoStatus": {
+        "type": "string",
+        "enum": [
+          "draft",
+          "published",
+          "archived"
         ]
       },
       "PaginatedResponse": {

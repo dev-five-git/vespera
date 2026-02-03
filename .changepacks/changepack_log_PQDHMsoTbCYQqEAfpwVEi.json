@@ -1,0 +1,1 @@
+{"changes":{"crates/vespera/Cargo.toml":"Patch","crates/vespera_core/Cargo.toml":"Patch","crates/vespera_macro/Cargo.toml":"Patch"},"note":"Support rel, nested object","date":"2026-02-03T17:14:35.195097800Z"}

@@ -162,9 +162,32 @@ npx @apidevtools/swagger-cli validate openapi.json
 
 ---
 
-## schema_type! Macro
+## schema_type! Macro (RECOMMENDED)
 
-Generate request/response types from existing structs with field filtering. Supports cross-file references and auto-generates `From` impl.
+> **ALWAYS prefer `schema_type!` over manually defining request/response structs.**
+> 
+> Benefits:
+> - Single source of truth (your model)
+> - Auto-generated `From` impl for easy conversion
+> - Automatic type resolution (enums, custom types → absolute paths)
+> - SeaORM relation support (HasOne, BelongsTo, HasMany)
+> - No manual field synchronization
+
+### Why Not Manual Structs?
+
+```rust
+// ❌ BAD: Manual struct definition - requires sync with Model
+#[derive(Serialize, Deserialize, Schema)]
+pub struct UserResponse {
+    pub id: i32,
+    pub name: String,
+    pub email: String,
+    // Forgot to add new field? Schema out of sync!
+}
+
+// ✅ GOOD: Derive from Model - always in sync
+schema_type!(UserResponse from crate::models::user::Model, omit = ["password_hash"]);
+```
 
 ### Basic Syntax
 
@@ -181,8 +204,41 @@ schema_type!(UpdateUserRequest from crate::models::user::Model, pick = ["name"],
 // Rename fields
 schema_type!(UserDTO from crate::models::user::Model, rename = [("id", "user_id")]);
 
+// Partial updates (all fields become Option<T>)
+schema_type!(UserPatch from crate::models::user::Model, partial);
+
+// Partial updates (specific fields only)
+schema_type!(UserPatch from crate::models::user::Model, partial = ["name", "email"]);
+
+// Custom serde rename strategy
+schema_type!(UserSnakeCase from crate::models::user::Model, rename_all = "snake_case");
+
+// Custom OpenAPI schema name
+schema_type!(Schema from Model, name = "UserSchema");
+
+// Skip Schema derive (won't appear in OpenAPI)
+schema_type!(InternalDTO from Model, ignore);
+
 // Disable Clone derive
 schema_type!(LargeResponse from SomeType, clone = false);
+```
+
+### Same-File Model Reference
+
+When the model is in the same file, use simple name with `name` parameter:
+
+```rust
+// In src/models/user.rs
+pub struct Model {
+    pub id: i32,
+    pub name: String,
+    pub status: UserStatus,  // Custom enum - auto-resolved to absolute path
+}
+
+pub enum UserStatus { Active, Inactive }
+
+// Simple `Model` path works - module path inferred from file location
+vespera::schema_type!(Schema from Model, name = "UserSchema");
 ```
 
 ### Cross-File References
@@ -231,11 +287,51 @@ Json(model.into())  // Easy conversion!
 | `omit` | Exclude these fields | `omit = ["password"]` |
 | `rename` | Rename fields | `rename = [("id", "user_id")]` |
 | `add` | Add new fields (disables From impl) | `add = [("extra": String)]` |
+| `partial` | Make fields optional for PATCH | `partial` or `partial = ["name"]` |
+| `name` | Custom OpenAPI schema name | `name = "UserSchema"` |
+| `rename_all` | Serde rename strategy | `rename_all = "camelCase"` |
+| `ignore` | Skip Schema derive | bare keyword |
 | `clone` | Control Clone derive (default: true) | `clone = false` |
 
-### Use Case: Sea-ORM Models
+### SeaORM Integration (RECOMMENDED)
 
-Perfect for creating API types from database models:
+`schema_type!` has first-class SeaORM support with automatic relation handling:
+
+```rust
+// src/models/memo.rs
+#[derive(Clone, Debug, DeriveEntityModel)]
+#[sea_orm(table_name = "memo")]
+pub struct Model {
+    #[sea_orm(primary_key)]
+    pub id: i32,
+    pub title: String,
+    pub user_id: i32,
+    pub status: MemoStatus,                      // Custom enum
+    pub user: BelongsTo<super::user::Entity>,    // → Option<Box<UserSchema>>
+    pub comments: HasMany<super::comment::Entity>, // → Vec<CommentSchema>
+    pub created_at: DateTimeWithTimeZone,        // → chrono::DateTime<FixedOffset>
+}
+
+#[derive(EnumIter, DeriveActiveEnum, Serialize, Deserialize, Schema)]
+pub enum MemoStatus { Draft, Published, Archived }
+
+// Generates Schema with proper types - no imports needed!
+vespera::schema_type!(Schema from Model, name = "MemoSchema");
+```
+
+**Automatic Type Conversions:**
+
+| SeaORM Type | Generated Type | Notes |
+|-------------|---------------|-------|
+| `HasOne<Entity>` | `Box<Schema>` or `Option<Box<Schema>>` | Based on FK nullability |
+| `BelongsTo<Entity>` | `Option<Box<Schema>>` | Always optional |
+| `HasMany<Entity>` | `Vec<Schema>` | |
+| `DateTimeWithTimeZone` | `vespera::chrono::DateTime<FixedOffset>` | No SeaORM import needed |
+| Custom enums | `crate::module::EnumName` | Auto-resolved to absolute path |
+
+**Circular Reference Handling:** Automatically detected and handled by inlining fields.
+
+### Complete Example
 
 ```rust
 // src/models/user.rs (Sea-ORM entity)
@@ -246,18 +342,31 @@ pub struct Model {
     pub id: i32,
     pub name: String,
     pub email: String,
+    pub status: UserStatus,
     pub password_hash: String,  // Never expose!
     pub created_at: DateTimeWithTimeZone,
 }
 
-// src/routes/users.rs
+// Generate Schema in same file - simple Model path
+vespera::schema_type!(Schema from Model, name = "UserSchema");
+
+// src/routes/users.rs - use full path for cross-file reference
 schema_type!(CreateUserRequest from crate::models::user::Model, pick = ["name", "email"]);
 schema_type!(UserResponse from crate::models::user::Model, omit = ["password_hash"]);
+schema_type!(UserPatch from crate::models::user::Model, omit = ["password_hash", "id"], partial);
 
 #[vespera::route(get, path = "/{id}")]
 pub async fn get_user(Path(id): Path<i32>, State(db): State<DbPool>) -> Json<UserResponse> {
     let user = User::find_by_id(id).one(&db).await.unwrap().unwrap();
     Json(user.into())  // From impl handles conversion
+}
+
+#[vespera::route(patch, path = "/{id}")]
+pub async fn patch_user(
+    Path(id): Path<i32>,
+    Json(patch): Json<UserPatch>,  // All fields are Option<T>
+) -> Json<UserResponse> {
+    // Apply partial update...
 }
 ```
 

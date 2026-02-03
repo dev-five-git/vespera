@@ -252,9 +252,27 @@ schema_type!(UserResponse from crate::models::user::Model, omit = ["password_has
 schema_type!(UpdateUserRequest from crate::models::user::Model, pick = ["name"], add = [("id": i32)]);
 ```
 
+### Same-File Model Reference
+
+When the model is in the same file, you can use a simple name with `name` parameter:
+
+```rust
+// In src/models/user.rs
+pub struct Model {
+    pub id: i32,
+    pub name: String,
+    pub email: String,
+}
+
+// Simple `Model` path works when using `name` parameter
+vespera::schema_type!(Schema from Model, name = "UserSchema");
+```
+
+The macro infers the module path from the file location, so relation types like `HasOne<super::user::Entity>` are resolved correctly.
+
 ### Cross-File References
 
-Reference structs from other files using module paths:
+Reference structs from other files using full module paths:
 
 ```rust
 // In src/routes/users.rs - references src/models/user.rs
@@ -273,6 +291,62 @@ let model: Model = db.find_user(id).await?;
 Json(model.into())  // Automatic conversion!
 ```
 
+### Partial Updates (PATCH)
+
+Use `partial` to make fields optional for PATCH-style updates:
+
+```rust
+// All fields become Option<T>
+schema_type!(UserPatch from User, partial);
+
+// Only specific fields become Option<T>
+schema_type!(UserPatch from User, partial = ["name", "email"]);
+```
+
+### Serde Rename All
+
+Apply serde rename_all strategy:
+
+```rust
+// Convert field names to camelCase in JSON
+schema_type!(UserDTO from User, rename_all = "camelCase");
+
+// Available: "camelCase", "snake_case", "PascalCase", "SCREAMING_SNAKE_CASE", etc.
+```
+
+### SeaORM Integration
+
+`schema_type!` has first-class support for SeaORM models with relations:
+
+```rust
+use sea_orm::entity::prelude::*;
+
+#[derive(Clone, Debug, DeriveEntityModel)]
+#[sea_orm(table_name = "memos")]
+pub struct Model {
+    #[sea_orm(primary_key)]
+    pub id: i32,
+    pub title: String,
+    pub user_id: i32,
+    pub user: BelongsTo<super::user::Entity>,     // → Option<Box<UserSchema>>
+    pub comments: HasMany<super::comment::Entity>, // → Vec<CommentSchema>
+}
+
+// Generates Schema with proper relation types
+vespera::schema_type!(Schema from Model, name = "MemoSchema");
+```
+
+**Relation Type Conversions:**
+
+| SeaORM Type | Generated Schema Type |
+|-------------|----------------------|
+| `HasOne<Entity>` | `Box<Schema>` or `Option<Box<Schema>>` |
+| `BelongsTo<Entity>` | `Option<Box<Schema>>` |
+| `HasMany<Entity>` | `Vec<Schema>` |
+| `DateTimeWithTimeZone` | `chrono::DateTime<FixedOffset>` |
+
+**Circular Reference Handling:** When schemas reference each other (e.g., User ↔ Memo), the macro automatically detects and handles circular references by inlining fields to prevent infinite recursion.
+
 ### Parameters
 
 | Parameter | Description |
@@ -282,6 +356,10 @@ Json(model.into())  // Automatic conversion!
 | `rename` | Rename fields: `rename = [("old", "new")]` |
 | `add` | Add new fields (disables auto `From` impl) |
 | `clone` | Control Clone derive (default: true) |
+| `partial` | Make fields optional: `partial` or `partial = ["field1"]` |
+| `name` | Custom OpenAPI schema name: `name = "UserSchema"` |
+| `rename_all` | Serde rename strategy: `rename_all = "camelCase"` |
+| `ignore` | Skip Schema derive (bare keyword, no value) |
 
 ---
 

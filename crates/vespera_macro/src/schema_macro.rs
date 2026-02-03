@@ -196,6 +196,106 @@ fn is_seaorm_model(struct_item: &syn::ItemStruct) -> bool {
     false
 }
 
+/// Check if a type name is a primitive or well-known type that doesn't need path resolution.
+fn is_primitive_or_known_type(name: &str) -> bool {
+    matches!(
+        name,
+        // Rust primitives
+        "bool"
+            | "char"
+            | "str"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+            // Common std types
+            | "String"
+            | "Vec"
+            | "Option"
+            | "Result"
+            | "Box"
+            | "Rc"
+            | "Arc"
+            | "HashMap"
+            | "HashSet"
+            | "BTreeMap"
+            | "BTreeSet"
+            // Chrono types
+            | "DateTime"
+            | "NaiveDateTime"
+            | "NaiveDate"
+            | "NaiveTime"
+            | "Utc"
+            | "Local"
+            | "FixedOffset"
+            // SeaORM types (will be converted separately)
+            | "DateTimeWithTimeZone"
+            | "DateTimeUtc"
+            | "DateTimeLocal"
+            // UUID
+            | "Uuid"
+            // Serde JSON
+            | "Value"
+    )
+}
+
+/// Resolve a simple type to an absolute path using the source module path.
+///
+/// For example, if source_module_path is ["crate", "models", "memo"] and
+/// the type is `MemoStatus`, it returns `crate::models::memo::MemoStatus`.
+///
+/// If the type is already qualified (has `::`) or is a primitive/known type,
+/// returns the original type unchanged.
+fn resolve_type_to_absolute_path(ty: &Type, source_module_path: &[String]) -> TokenStream {
+    let type_path = match ty {
+        Type::Path(tp) => tp,
+        _ => return quote! { #ty },
+    };
+
+    // If path has multiple segments (already qualified like `crate::foo::Bar`), return as-is
+    if type_path.path.segments.len() > 1 {
+        return quote! { #ty };
+    }
+
+    // Get the single segment
+    let segment = match type_path.path.segments.first() {
+        Some(s) => s,
+        None => return quote! { #ty },
+    };
+
+    let ident_str = segment.ident.to_string();
+
+    // If it's a primitive or known type, return as-is
+    if is_primitive_or_known_type(&ident_str) {
+        return quote! { #ty };
+    }
+
+    // If no source module path, return as-is
+    if source_module_path.is_empty() {
+        return quote! { #ty };
+    }
+
+    // Build absolute path: source_module_path + type_name
+    let path_idents: Vec<syn::Ident> = source_module_path
+        .iter()
+        .map(|s| syn::Ident::new(s, proc_macro2::Span::call_site()))
+        .collect();
+    let type_ident = &segment.ident;
+    let args = &segment.arguments;
+
+    quote! { #(#path_idents)::* :: #type_ident #args }
+}
+
 /// Convert SeaORM datetime types to chrono equivalents.
 ///
 /// This allows generated schemas to use standard chrono types instead of
@@ -210,7 +310,7 @@ fn is_seaorm_model(struct_item: &syn::ItemStruct) -> bool {
 /// - `Time` (SeaORM) → `chrono::NaiveTime`
 ///
 /// Returns the original type as TokenStream if not a SeaORM datetime type.
-fn convert_seaorm_type_to_chrono(ty: &Type) -> TokenStream {
+fn convert_seaorm_type_to_chrono(ty: &Type, source_module_path: &[String]) -> TokenStream {
     let type_path = match ty {
         Type::Path(tp) => tp,
         _ => return quote! { #ty },
@@ -230,9 +330,8 @@ fn convert_seaorm_type_to_chrono(ty: &Type) -> TokenStream {
         }
         "DateTimeUtc" => quote! { vespera::chrono::DateTime<vespera::chrono::Utc> },
         "DateTimeLocal" => quote! { vespera::chrono::DateTime<vespera::chrono::Local> },
-        // Note: NaiveDateTime, NaiveDate, NaiveTime are already chrono types
-        // so they don't need conversion. Only convert SeaORM-specific aliases.
-        _ => quote! { #ty },
+        // Not a SeaORM datetime type - resolve to absolute path if needed
+        _ => resolve_type_to_absolute_path(ty, source_module_path),
     }
 }
 
@@ -240,7 +339,10 @@ fn convert_seaorm_type_to_chrono(ty: &Type) -> TokenStream {
 ///
 /// If the type is `Option<SeaOrmType>`, converts to `Option<ChronoType>`.
 /// If the type is just `SeaOrmType`, converts to `ChronoType`.
-fn convert_type_with_chrono(ty: &Type) -> TokenStream {
+///
+/// Also resolves local types (like `MemoStatus`) to absolute paths
+/// (like `crate::models::memo::MemoStatus`) using source_module_path.
+fn convert_type_with_chrono(ty: &Type, source_module_path: &[String]) -> TokenStream {
     // Check if it's Option<T>
     if let Type::Path(type_path) = ty
         && let Some(segment) = type_path.path.segments.first()
@@ -250,13 +352,27 @@ fn convert_type_with_chrono(ty: &Type) -> TokenStream {
         if let syn::PathArguments::AngleBracketed(args) = &segment.arguments
             && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
         {
-            let converted_inner = convert_seaorm_type_to_chrono(inner_ty);
+            let converted_inner = convert_seaorm_type_to_chrono(inner_ty, source_module_path);
             return quote! { Option<#converted_inner> };
         }
     }
 
-    // Not Option, convert directly
-    convert_seaorm_type_to_chrono(ty)
+    // Check if it's Vec<T>
+    if let Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.first()
+        && segment.ident == "Vec"
+    {
+        // Extract the inner type from Vec<T>
+        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+            && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+        {
+            let converted_inner = convert_seaorm_type_to_chrono(inner_ty, source_module_path);
+            return quote! { Vec<#converted_inner> };
+        }
+    }
+
+    // Not Option or Vec, convert directly
+    convert_seaorm_type_to_chrono(ty, source_module_path)
 }
 
 /// Relation field info for generating from_model code
@@ -2706,7 +2822,8 @@ pub fn generate_schema_type_code(
                     }
                 } else {
                     // Convert SeaORM datetime types to chrono equivalents
-                    let converted_ty = convert_type_with_chrono(original_ty);
+                    // Also resolves local types to absolute paths
+                    let converted_ty = convert_type_with_chrono(original_ty, &source_module_path);
                     if should_wrap_option {
                         (Box::new(quote! { Option<#converted_ty> }), None)
                     } else {

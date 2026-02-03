@@ -21,7 +21,7 @@ pub struct TestStruct {
 
 /// Create the application router for testing
 pub async fn create_app() -> axum::Router {
-    let db = Database::connect("sqlite://:memory:").await.unwrap();
+    let db = Database::connect("sqlite::memory:").await.unwrap();
     vespera!(
         openapi = ["examples/axum-example/openapi.json", "openapi.json"],
         docs_url = "/docs",
@@ -43,7 +43,7 @@ pub async fn create_app_with_layer() -> axum::Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let db = Database::connect("sqlite://:memory:").await.unwrap();
+    let db = Database::connect("sqlite::memory:").await.unwrap();
     vespera!(
         openapi = ["examples/axum-example/openapi.json", "openapi.json"],
         docs_url = "/docs",

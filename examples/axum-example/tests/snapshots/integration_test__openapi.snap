@@ -1984,6 +1984,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "id": {
             "type": "integer"
           },
+          "status": {
+            "$ref": "#/components/schemas/MemoStatus"
+          },
           "title": {
             "type": "string"
           },
@@ -1996,6 +1999,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "userId",
           "title",
           "content",
+          "status",
           "createdAt"
         ]
       },
@@ -2059,6 +2063,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "id": {
             "type": "integer"
           },
+          "status": {
+            "$ref": "#/components/schemas/MemoStatus"
+          },
           "title": {
             "type": "string"
           },
@@ -2074,6 +2081,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "userId",
           "title",
           "content",
+          "status",
           "createdAt",
           "user"
         ]
@@ -2090,6 +2098,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           },
           "id": {
             "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MemoStatus"
           },
           "title": {
             "type": "string"
@@ -2110,6 +2121,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "userId",
           "title",
           "content",
+          "status",
           "createdAt",
           "updatedAt",
           "user"
@@ -2133,6 +2145,14 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "id",
           "user_id",
           "created_at"
+        ]
+      },
+      "MemoStatus": {
+        "type": "string",
+        "enum": [
+          "draft",
+          "published",
+          "archived"
         ]
       },
       "PaginatedResponse": {

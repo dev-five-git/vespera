@@ -12,6 +12,12 @@
     },
     { "name": "title", "type": { "kind": "varchar", "length": 200 }, "nullable": false },
     { "name": "content", "type": "text", "nullable": false },
+    { 
+      "name": "status", 
+      "type": { "kind": "enum", "name": "memo_status", "values": ["draft", "published", "archived"] }, 
+      "nullable": false, 
+      "default": "'draft'" 
+    },
     { "name": "created_at", "type": "timestamptz", "nullable": false, "default": "NOW()" },
     { "name": "updated_at", "type": "timestamptz", "nullable": false, "default": "NOW()" }
   ]
