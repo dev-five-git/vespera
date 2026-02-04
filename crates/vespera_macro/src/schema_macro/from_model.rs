@@ -1671,4 +1671,173 @@ pub struct Model {
             output
         );
     }
+
+    #[test]
+    #[serial]
+    fn test_generate_from_model_parent_stub_all_relation_types() {
+        // Coverage for lines 114, 117, 120
+        // Tests: Parent stub generation with:
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create memo.rs with REQUIRED circular back-ref to user
+        // This triggers needs_parent_stub = true
+        let memo_model = r#"
+pub struct Model {
+    pub id: i32,
+    pub title: String,
+    pub user_id: i32,
+    #[sea_orm(belongs_to = "super::user::Entity", from = "user_id")]
+    pub user: BelongsTo<super::user::Entity>,
+}
+"#;
+        std::fs::write(models_dir.join("memo.rs"), memo_model).unwrap();
+
+        // Create profile.rs (for optional single relation)
+        let profile_model = r#"
+pub struct Model {
+    pub id: i32,
+    pub bio: String,
+}
+"#;
+        std::fs::write(models_dir.join("profile.rs"), profile_model).unwrap();
+
+        // Create settings.rs (for required single relation)
+        let settings_model = r#"
+pub struct Model {
+    pub id: i32,
+    pub theme: String,
+}
+"#;
+        std::fs::write(models_dir.join("settings.rs"), settings_model).unwrap();
+
+        // Save and set CARGO_MANIFEST_DIR
+        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let new_type_name = syn::Ident::new("UserSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("crate::models::user::Model").unwrap();
+
+        // Field mappings with various relation types
+        let field_mappings = vec![
+            // Regular field
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            // HasMany (line 113) - this one triggers needs_parent_stub
+            (
+                syn::Ident::new("memos", proc_macro2::Span::call_site()),
+                syn::Ident::new("memos", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+            // Optional single relation (line 114)
+            (
+                syn::Ident::new("profile", proc_macro2::Span::call_site()),
+                syn::Ident::new("profile", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+            // Required single relation (line 117)
+            (
+                syn::Ident::new("settings", proc_macro2::Span::call_site()),
+                syn::Ident::new("settings", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+            // Relation field NOT in relation_fields (line 120)
+            (
+                syn::Ident::new("orphan_rel", proc_macro2::Span::call_site()),
+                syn::Ident::new("orphan_rel", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+
+        // Relation fields - note: orphan_rel is NOT included here (hits line 120)
+        let relation_fields = vec![
+            // HasMany without inline_type_info (triggers needs_parent_stub)
+            create_test_relation_info(
+                "memos",
+                "HasMany",
+                quote! { crate::models::memo::Schema },
+                false,
+            ),
+            // Optional HasOne (hits line 114)
+            create_test_relation_info(
+                "profile",
+                "HasOne",
+                quote! { crate::models::profile::Schema },
+                true, // optional
+            ),
+            // Required BelongsTo (hits line 117)
+            create_test_relation_info(
+                "settings",
+                "BelongsTo",
+                quote! { crate::models::settings::Schema },
+                false, // required
+            ),
+            // Note: orphan_rel is NOT in relation_fields (hits line 120)
+        ];
+
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "user".to_string(),
+        ];
+
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+
+        // Restore CARGO_MANIFEST_DIR
+        unsafe {
+            if let Some(dir) = original_manifest_dir {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        let output = tokens.to_string();
+        assert!(output.contains("impl UserSchema"));
+        // Should have parent stub (line 307)
+        assert!(
+            output.contains("__parent_stub__"),
+            "Should have parent stub: {}",
+            output
+        );
+        // Parent stub should have various default values
+        // Line 113: memos: vec![]
+        assert!(
+            output.contains("memos : vec ! []"),
+            "Should have memos: vec![]: {}",
+            output
+        );
+        // Line 114 & 117: profile/settings: None (both optional and required single relations)
+        // (Both produce None in parent stub)
+        assert!(
+            output.contains("profile : None") || output.contains("settings : None"),
+            "Should have None for single relations: {}",
+            output
+        );
+        // Line 120: orphan_rel: Default::default()
+        assert!(
+            output.contains("Default :: default ()"),
+            "Should have Default::default() for orphan: {}",
+            output
+        );
+    }
 }
