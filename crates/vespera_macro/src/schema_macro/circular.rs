@@ -890,4 +890,108 @@ mod tests {
         assert!(!output.contains("name : r . name"));
         assert!(!output.contains("email : r . email"));
     }
+
+    // Coverage tests for lines 121-123, 156: FK field lookup and required relation handling
+
+    #[test]
+    fn test_is_circular_relation_required_belongs_to_with_from_attr_required_fk() {
+        // Model has BelongsTo with sea_orm(from = "user_id") attribute and required FK
+        let model_def = r#"pub struct Model {
+            pub id: i32,
+            pub user_id: i32,
+            #[sea_orm(from = "user_id")]
+            pub user: BelongsTo<user::Entity>,
+        }"#;
+        // FK field 'user_id' is i32 (required), so should return true
+        let result = is_circular_relation_required(model_def, "user");
+        assert!(result);
+    }
+
+    #[test]
+    fn test_is_circular_relation_required_belongs_to_with_from_attr_optional_fk() {
+        // Model has BelongsTo with sea_orm(from = "user_id") attribute and optional FK
+        let model_def = r#"pub struct Model {
+            pub id: i32,
+            pub user_id: Option<i32>,
+            #[sea_orm(from = "user_id")]
+            pub user: BelongsTo<user::Entity>,
+        }"#;
+        // FK field 'user_id' is Option<i32>, so should return false
+        let result = is_circular_relation_required(model_def, "user");
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_is_circular_relation_required_has_one_with_from_attr_required_fk() {
+        // Model has HasOne with sea_orm(from = "profile_id") attribute and required FK
+        let model_def = r#"pub struct Model {
+            pub id: i32,
+            pub profile_id: i64,
+            #[sea_orm(from = "profile_id")]
+            pub profile: HasOne<profile::Entity>,
+        }"#;
+        // FK field 'profile_id' is i64 (required), so should return true
+        let result = is_circular_relation_required(model_def, "profile");
+        assert!(result);
+    }
+
+    #[test]
+    fn test_is_circular_relation_required_from_attr_fk_field_not_found() {
+        // Model has from attribute but FK field doesn't exist
+        let model_def = r#"pub struct Model {
+            pub id: i32,
+            #[sea_orm(from = "nonexistent_field")]
+            pub user: BelongsTo<user::Entity>,
+        }"#;
+        // FK field doesn't exist, so should return false
+        let result = is_circular_relation_required(model_def, "user");
+        assert!(!result);
+    }
+
+    // Coverage test for line 156: generate_default_for_relation_field with required FK
+
+    #[test]
+    fn test_generate_default_for_relation_field_belongs_to_with_from_attr_required() {
+        let ty: syn::Type = syn::parse_str("BelongsTo<user::Entity>").unwrap();
+        let field_ident = syn::Ident::new("user", proc_macro2::Span::call_site());
+        // FK field is required (not Option)
+        let all_fields: syn::FieldsNamed = syn::parse_str("{ pub user_id: i32 }").unwrap();
+        // Create proper sea_orm attribute with from
+        let attr: syn::Attribute = syn::parse_quote!(#[sea_orm(from = "user_id")]);
+        let tokens = generate_default_for_relation_field(&ty, &field_ident, &[attr], &all_fields);
+        let output = tokens.to_string();
+        // Should produce Box::new(__parent_stub__.clone()) for required FK
+        assert!(output.contains("__parent_stub__"));
+        assert!(output.contains("Box :: new"));
+    }
+
+    #[test]
+    fn test_generate_default_for_relation_field_has_one_with_from_attr_required() {
+        let ty: syn::Type = syn::parse_str("HasOne<profile::Entity>").unwrap();
+        let field_ident = syn::Ident::new("profile", proc_macro2::Span::call_site());
+        // FK field is required (not Option)
+        let all_fields: syn::FieldsNamed = syn::parse_str("{ pub profile_id: i64 }").unwrap();
+        // Create proper sea_orm attribute with from
+        let attr: syn::Attribute = syn::parse_quote!(#[sea_orm(from = "profile_id")]);
+        let tokens = generate_default_for_relation_field(&ty, &field_ident, &[attr], &all_fields);
+        let output = tokens.to_string();
+        // Should produce Box::new(__parent_stub__.clone()) for required FK
+        assert!(output.contains("__parent_stub__"));
+        assert!(output.contains("Box :: new"));
+    }
+
+    #[test]
+    fn test_generate_default_for_relation_field_has_one_with_from_attr_optional() {
+        let ty: syn::Type = syn::parse_str("HasOne<profile::Entity>").unwrap();
+        let field_ident = syn::Ident::new("profile", proc_macro2::Span::call_site());
+        // FK field is optional
+        let all_fields: syn::FieldsNamed =
+            syn::parse_str("{ pub profile_id: Option<i64> }").unwrap();
+        // Create proper sea_orm attribute with from
+        let attr: syn::Attribute = syn::parse_quote!(#[sea_orm(from = "profile_id")]);
+        let tokens = generate_default_for_relation_field(&ty, &field_ident, &[attr], &all_fields);
+        let output = tokens.to_string();
+        // Should produce None for optional FK
+        assert!(output.contains("profile : None"));
+    }
 }

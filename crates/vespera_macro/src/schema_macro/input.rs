@@ -603,4 +603,63 @@ mod tests {
         assert_eq!(input.schema_name.as_deref(), Some("CustomName"));
         assert_eq!(input.rename_all.as_deref(), Some("snake_case"));
     }
+
+    // Line 164: Error when "from" keyword is wrong
+    #[test]
+    fn test_parse_schema_type_input_wrong_from_keyword() {
+        let tokens = quote::quote!(NewType xyz User);
+        let result: syn::Result<SchemaTypeInput> = syn::parse2(tokens);
+        assert!(result.is_err());
+        match result {
+            Err(e) => assert!(e.to_string().contains("expected `from`"), "Error: {}", e),
+            Ok(_) => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_parse_schema_type_input_misspelled_from() {
+        let tokens = quote::quote!(NewType fron User);
+        let result: syn::Result<SchemaTypeInput> = syn::parse2(tokens);
+        assert!(result.is_err());
+        match result {
+            Err(e) => assert!(
+                e.to_string().contains("expected `from`, found `fron`"),
+                "Error: {}",
+                e
+            ),
+            Ok(_) => panic!("Expected error"),
+        }
+    }
+
+    // Line 263: Error when both omit and pick are used
+    #[test]
+    fn test_parse_schema_type_input_omit_and_pick_error_schema_type() {
+        let tokens = quote::quote!(NewType from User, omit = ["a"], pick = ["b"]);
+        let result: syn::Result<SchemaTypeInput> = syn::parse2(tokens);
+        assert!(result.is_err());
+        match result {
+            Err(e) => assert!(
+                e.to_string().contains("cannot use both `omit` and `pick`"),
+                "Error: {}",
+                e
+            ),
+            Ok(_) => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_parse_schema_type_input_pick_then_omit_error() {
+        // Test the reverse order to ensure both orderings trigger the error
+        let tokens = quote::quote!(NewType from User, pick = ["a"], omit = ["b"]);
+        let result: syn::Result<SchemaTypeInput> = syn::parse2(tokens);
+        assert!(result.is_err());
+        match result {
+            Err(e) => assert!(
+                e.to_string().contains("cannot use both `omit` and `pick`"),
+                "Error: {}",
+                e
+            ),
+            Ok(_) => panic!("Expected error"),
+        }
+    }
 }

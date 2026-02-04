@@ -978,4 +978,261 @@ mod tests {
         let tokens_str = tokens.to_string();
         assert!(tokens_str.contains("User struct documentation") || tokens_str.contains("doc"));
     }
+
+    // Coverage tests for lines 187-206: Serde attribute filtering from source struct
+
+    #[test]
+    fn test_generate_schema_type_code_inherits_source_rename_all() {
+        // Source struct has serde(rename_all = "snake_case")
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            r#"#[serde(rename_all = "snake_case")]
+            pub struct User { pub id: i32, pub user_name: String }"#,
+        )];
+
+        let tokens = quote!(UserResponse from User);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        // Should use snake_case from source
+        assert!(output.contains("rename_all"));
+        assert!(output.contains("snake_case"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_override_rename_all() {
+        // Source has snake_case, but we override with camelCase
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            r#"#[serde(rename_all = "snake_case")]
+            pub struct User { pub id: i32, pub user_name: String }"#,
+        )];
+
+        let tokens = quote!(UserResponse from User, rename_all = "camelCase");
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        // Should use camelCase (our override)
+        assert!(output.contains("camelCase"));
+    }
+
+    // Coverage tests for lines 313-358: Field rename processing
+
+    #[test]
+    fn test_generate_schema_type_code_with_rename() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )];
+
+        let tokens = quote!(UserDTO from User, rename = [("id", "user_id")]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("user_id"));
+        // The From impl should map user_id from source.id
+        assert!(output.contains("From"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_rename_preserves_serde_rename() {
+        // Source field already has serde(rename), which should be preserved as the JSON name
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            r#"pub struct User {
+                pub id: i32,
+                #[serde(rename = "userName")]
+                pub name: String
+            }"#,
+        )];
+
+        let tokens = quote!(UserDTO from User, rename = [("name", "user_name")]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        // The Rust field is renamed to user_name
+        assert!(output.contains("user_name"));
+        // The JSON name should be preserved as userName
+        assert!(output.contains("userName") || output.contains("rename"));
+    }
+
+    // Coverage tests for lines 389-400: Schema derive and name attribute generation
+
+    #[test]
+    fn test_generate_schema_type_code_with_ignore_schema() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )];
+
+        let tokens = quote!(UserInternal from User, ignore);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        // Should NOT contain vespera::Schema derive
+        assert!(!output.contains("vespera :: Schema"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_with_custom_name() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )];
+
+        let tokens = quote!(UserResponse from User, name = "CustomUserSchema");
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, metadata) = result.unwrap();
+        let output = tokens.to_string();
+        // Should contain schema(name = "...") attribute
+        assert!(output.contains("schema"));
+        assert!(output.contains("CustomUserSchema"));
+        // Metadata should be returned
+        assert!(metadata.is_some());
+        let meta = metadata.unwrap();
+        assert_eq!(meta.name, "CustomUserSchema");
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_with_clone_false() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )];
+
+        let tokens = quote!(UserNonClone from User, clone = false);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        // Should NOT contain Clone derive
+        assert!(!output.contains("Clone ,"));
+    }
+
+    // Coverage test for SeaORM model detection (lines 212-213)
+
+    #[test]
+    fn test_generate_schema_type_code_seaorm_model_detection() {
+        // Source struct has sea_orm attribute - should be detected as SeaORM model
+        let storage = vec![create_test_struct_metadata(
+            "Model",
+            r#"#[sea_orm(table_name = "users")]
+            pub struct Model { pub id: i32, pub name: String }"#,
+        )];
+
+        let tokens = quote!(UserSchema from Model);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("UserSchema"));
+    }
+
+    // Test tuple struct handling
+
+    #[test]
+    fn test_generate_schema_type_code_tuple_struct() {
+        // Tuple structs have no named fields
+        let storage = vec![create_test_struct_metadata(
+            "Point",
+            "pub struct Point(pub i32, pub i32);",
+        )];
+
+        let tokens = quote!(PointDTO from Point);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("PointDTO"));
+    }
+
+    // Test raw identifier fields
+
+    #[test]
+    fn test_generate_schema_type_code_raw_identifier_field() {
+        // Field name is a Rust keyword with r# prefix
+        let storage = vec![create_test_struct_metadata(
+            "Config",
+            "pub struct Config { pub id: i32, pub r#type: String }",
+        )];
+
+        let tokens = quote!(ConfigDTO from Config);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("ConfigDTO"));
+    }
+
+    // Test Option field not double-wrapped with partial
+
+    #[test]
+    fn test_generate_schema_type_code_partial_no_double_option() {
+        // bio is already Option<String>, partial should NOT wrap it again
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub bio: Option<String> }",
+        )];
+
+        let tokens = quote!(UpdateUser from User, partial);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        // bio should remain Option<String>, not Option<Option<String>>
+        assert!(!output.contains("Option < Option"));
+    }
+
+    // Test serde(skip) fields are excluded
+
+    #[test]
+    fn test_generate_schema_code_excludes_serde_skip_fields() {
+        let storage = vec![create_test_struct_metadata(
+            "User",
+            r#"pub struct User {
+                pub id: i32,
+                #[serde(skip)]
+                pub internal_state: String,
+                pub name: String
+            }"#,
+        )];
+
+        let tokens = quote!(User);
+        let input: SchemaInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let output = result.unwrap().to_string();
+        // internal_state should be excluded from schema properties
+        assert!(!output.contains("internal_state"));
+        assert!(output.contains("name"));
+    }
 }
