@@ -42,24 +42,26 @@ fn validate_route_fn(item_fn: &syn::ItemFn) -> Result<(), syn::Error> {
     Ok(())
 }
 
+/// Process route attribute - extracted for testability
+fn process_route_attribute(
+    attr: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    syn::parse2::<args::RouteArgs>(attr)?;
+    let item_fn: syn::ItemFn = syn::parse2(item.clone()).map_err(|e| {
+        syn::Error::new(e.span(), "route attribute can only be applied to functions")
+    })?;
+    validate_route_fn(&item_fn)?;
+    Ok(item)
+}
+
 /// route attribute macro
 #[proc_macro_attribute]
 pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
-    if let Err(e) = syn::parse::<args::RouteArgs>(attr) {
-        return e.to_compile_error().into();
+    match process_route_attribute(attr.into(), item.into()) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
     }
-    let item_fn = match syn::parse::<syn::ItemFn>(item.clone()) {
-        Ok(f) => f,
-        Err(e) => {
-            return syn::Error::new(e.span(), "route attribute can only be applied to functions")
-                .to_compile_error()
-                .into();
-        }
-    };
-    if let Err(e) = validate_route_fn(&item_fn) {
-        return e.to_compile_error().into();
-    }
-    item
 }
 
 // Schema Storage global variable
@@ -2427,5 +2429,112 @@ pub fn get_users() -> String {
         let input: ExportAppInput = syn::parse2(tokens).unwrap();
         assert_eq!(input.name.to_string(), "MyApp");
         assert_eq!(input.dir.unwrap().value(), "api");
+    }
+
+    // ========== Tests for process_route_attribute ==========
+
+    #[test]
+    fn test_process_route_attribute_valid() {
+        let attr = quote::quote!(get);
+        let item = quote::quote!(
+            pub async fn handler() -> String {
+                "ok".to_string()
+            }
+        );
+        let result = process_route_attribute(attr, item.clone());
+        assert!(result.is_ok());
+        // Should return the original item unchanged
+        assert_eq!(result.unwrap().to_string(), item.to_string());
+    }
+
+    #[test]
+    fn test_process_route_attribute_invalid_attr() {
+        let attr = quote::quote!(invalid_method);
+        let item = quote::quote!(
+            pub async fn handler() -> String {
+                "ok".to_string()
+            }
+        );
+        let result = process_route_attribute(attr, item);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_process_route_attribute_not_function() {
+        let attr = quote::quote!(get);
+        let item = quote::quote!(
+            struct NotAFunction;
+        );
+        let result = process_route_attribute(attr, item);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("can only be applied to functions"));
+    }
+
+    #[test]
+    fn test_process_route_attribute_not_public() {
+        let attr = quote::quote!(get);
+        let item = quote::quote!(
+            async fn private_handler() -> String {
+                "ok".to_string()
+            }
+        );
+        let result = process_route_attribute(attr, item);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must be public"));
+    }
+
+    #[test]
+    fn test_process_route_attribute_not_async() {
+        let attr = quote::quote!(get);
+        let item = quote::quote!(
+            pub fn sync_handler() -> String {
+                "ok".to_string()
+            }
+        );
+        let result = process_route_attribute(attr, item);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must be async"));
+    }
+
+    #[test]
+    fn test_process_route_attribute_with_path() {
+        let attr = quote::quote!(get, path = "/users/{id}");
+        let item = quote::quote!(
+            pub async fn get_user() -> String {
+                "user".to_string()
+            }
+        );
+        let result = process_route_attribute(attr, item);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_process_route_attribute_with_tags() {
+        let attr = quote::quote!(post, tags = ["users", "admin"]);
+        let item = quote::quote!(
+            pub async fn create_user() -> String {
+                "created".to_string()
+            }
+        );
+        let result = process_route_attribute(attr, item);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_process_route_attribute_all_methods() {
+        let methods = ["get", "post", "put", "patch", "delete", "head", "options"];
+        for method in methods {
+            let attr: proc_macro2::TokenStream = method.parse().unwrap();
+            let item = quote::quote!(
+                pub async fn handler() -> String {
+                    "ok".to_string()
+                }
+            );
+            let result = process_route_attribute(attr, item);
+            assert!(result.is_ok(), "Method {} should be valid", method);
+        }
     }
 }
