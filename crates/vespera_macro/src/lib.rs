@@ -25,6 +25,8 @@ use crate::openapi_generator::generate_openapi_doc_with_metadata;
 use vespera_core::openapi::Server;
 use vespera_core::route::HttpMethod;
 
+type SchemaStorage = LazyLock<Mutex<Vec<StructMetadata>>>;
+
 /// Validate route function - must be pub and async
 fn validate_route_fn(item_fn: &syn::ItemFn) -> Result<(), syn::Error> {
     if !matches!(item_fn.vis, syn::Visibility::Public(_)) {
@@ -64,8 +66,6 @@ pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => e.to_compile_error().into(),
     }
 }
-
-type SchemaStorage = LazyLock<Mutex<Vec<StructMetadata>>>;
 
 static SCHEMA_STORAGE: SchemaStorage = LazyLock::new(|| Mutex::new(Vec::new()));
 
