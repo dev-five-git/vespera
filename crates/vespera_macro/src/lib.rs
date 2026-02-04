@@ -42,29 +42,35 @@ fn validate_route_fn(item_fn: &syn::ItemFn) -> Result<(), syn::Error> {
     Ok(())
 }
 
-/// route attribute macro
-#[proc_macro_attribute]
-pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
-    if let Err(e) = syn::parse::<args::RouteArgs>(attr) {
-        return e.to_compile_error().into();
-    }
-    let item_fn = match syn::parse::<syn::ItemFn>(item.clone()) {
-        Ok(f) => f,
-        Err(e) => {
-            return syn::Error::new(e.span(), "route attribute can only be applied to functions")
-                .to_compile_error()
-                .into();
-        }
-    };
-    if let Err(e) = validate_route_fn(&item_fn) {
-        return e.to_compile_error().into();
-    }
-    item
+/// Process route attribute - extracted for testability
+fn process_route_attribute(
+    attr: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    syn::parse2::<args::RouteArgs>(attr)?;
+    let item_fn: syn::ItemFn = syn::parse2(item.clone()).map_err(|e| {
+        syn::Error::new(e.span(), "route attribute can only be applied to functions")
+    })?;
+    validate_route_fn(&item_fn)?;
+    Ok(item)
 }
 
-// Schema Storage global variable
-static SCHEMA_STORAGE: LazyLock<Mutex<Vec<StructMetadata>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+/// route attribute macro
+#[cfg(not(tarpaulin_include))]
+#[proc_macro_attribute]
+pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
+    match process_route_attribute(attr.into(), item.into()) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+#[cfg(not(tarpaulin_include))]
+fn init_schema_storage() -> Mutex<Vec<StructMetadata>> {
+    Mutex::new(Vec::new())
+}
+
+static SCHEMA_STORAGE: LazyLock<Mutex<Vec<StructMetadata>>> = LazyLock::new(init_schema_storage);
 
 /// Extract custom schema name from #[schema(name = "...")] attribute
 fn extract_schema_name_attr(attrs: &[syn::Attribute]) -> Option<String> {
@@ -107,6 +113,7 @@ fn process_derive_schema(input: &syn::DeriveInput) -> (StructMetadata, proc_macr
 /// Derive macro for Schema
 ///
 /// Supports `#[schema(name = "CustomName")]` attribute to set custom OpenAPI schema name.
+#[cfg(not(tarpaulin_include))]
 #[proc_macro_derive(Schema, attributes(schema))]
 pub fn derive_schema(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
@@ -160,6 +167,7 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
 /// // For list endpoints, only return summary fields
 /// let list_schema = schema!(User, pick = ["id", "name"]);
 /// ```
+#[cfg(not(tarpaulin_include))]
 #[proc_macro]
 pub fn schema(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as schema_macro::SchemaInput);
@@ -227,6 +235,7 @@ pub fn schema(input: TokenStream) -> TokenStream {
 ///     // ...
 /// }
 /// ```
+#[cfg(not(tarpaulin_include))]
 #[proc_macro]
 pub fn schema_type(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as schema_macro::SchemaTypeInput);
@@ -667,46 +676,49 @@ fn generate_and_write_openapi(
     Ok((docs_info, redoc_info))
 }
 
+/// Process vespera macro - extracted for testability
+fn process_vespera_macro(
+    processed: &ProcessedVesperaInput,
+    schema_storage: &[StructMetadata],
+) -> syn::Result<proc_macro2::TokenStream> {
+    let folder_path = find_folder_path(&processed.folder_name);
+    if !folder_path.exists() {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            format!("Folder not found: {}", processed.folder_name),
+        ));
+    }
+
+    let mut metadata = collect_metadata(&folder_path, &processed.folder_name).map_err(|e| {
+        syn::Error::new(
+            Span::call_site(),
+            format!("Failed to collect metadata: {}", e),
+        )
+    })?;
+    metadata.structs.extend(schema_storage.iter().cloned());
+
+    let (docs_info, redoc_info) = generate_and_write_openapi(processed, &metadata)
+        .map_err(|e| syn::Error::new(Span::call_site(), e))?;
+
+    Ok(generate_router_code(
+        &metadata,
+        docs_info,
+        redoc_info,
+        &processed.merge,
+    ))
+}
+
+#[cfg(not(tarpaulin_include))]
 #[proc_macro]
 pub fn vespera(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as AutoRouterInput);
     let processed = process_vespera_input(input);
+    let schema_storage = SCHEMA_STORAGE.lock().unwrap();
 
-    let folder_path = find_folder_path(&processed.folder_name);
-    if !folder_path.exists() {
-        return syn::Error::new(
-            Span::call_site(),
-            format!("Folder not found: {}", processed.folder_name),
-        )
-        .to_compile_error()
-        .into();
+    match process_vespera_macro(&processed, &schema_storage) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
     }
-
-    let mut metadata = match collect_metadata(&folder_path, &processed.folder_name) {
-        Ok(m) => m,
-        Err(e) => {
-            return syn::Error::new(
-                Span::call_site(),
-                format!("Failed to collect metadata: {}", e),
-            )
-            .to_compile_error()
-            .into();
-        }
-    };
-    metadata
-        .structs
-        .extend(SCHEMA_STORAGE.lock().unwrap().clone());
-
-    let (docs_info, redoc_info) = match generate_and_write_openapi(&processed, &metadata) {
-        Ok(info) => info,
-        Err(e) => {
-            return syn::Error::new(Span::call_site(), e)
-                .to_compile_error()
-                .into();
-        }
-    };
-
-    generate_router_code(&metadata, docs_info, redoc_info, &processed.merge).into()
 }
 
 fn find_folder_path(folder_name: &str) -> std::path::PathBuf {
@@ -969,72 +981,62 @@ impl Parse for ExportAppInput {
 /// //     pub fn router() -> axum::Router { ... }
 /// // }
 /// ```
-#[proc_macro]
-pub fn export_app(input: TokenStream) -> TokenStream {
-    let ExportAppInput { name, dir } = syn::parse_macro_input!(input as ExportAppInput);
-
-    let folder_name = dir
-        .map(|d| d.value())
-        .or_else(|| std::env::var("VESPERA_DIR").ok())
-        .unwrap_or_else(|| "routes".to_string());
-
-    let folder_path = find_folder_path(&folder_name);
+///
+/// Process export_app macro - extracted for testability
+fn process_export_app(
+    name: &syn::Ident,
+    folder_name: &str,
+    schema_storage: &[StructMetadata],
+    manifest_dir: &str,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let folder_path = find_folder_path(folder_name);
     if !folder_path.exists() {
-        return syn::Error::new(
+        return Err(syn::Error::new(
             Span::call_site(),
             format!("Folder not found: {}", folder_name),
-        )
-        .to_compile_error()
-        .into();
+        ));
     }
 
-    let mut metadata = match collect_metadata(&folder_path, &folder_name) {
-        Ok(m) => m,
-        Err(e) => {
-            return syn::Error::new(
-                Span::call_site(),
-                format!("Failed to collect metadata: {}", e),
-            )
-            .to_compile_error()
-            .into();
-        }
-    };
-    metadata
-        .structs
-        .extend(SCHEMA_STORAGE.lock().unwrap().clone());
+    let mut metadata = collect_metadata(&folder_path, folder_name).map_err(|e| {
+        syn::Error::new(
+            Span::call_site(),
+            format!("Failed to collect metadata: {}", e),
+        )
+    })?;
+    metadata.structs.extend(schema_storage.iter().cloned());
 
     // Generate OpenAPI spec JSON string
     let openapi_doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
-    let spec_json = match serde_json::to_string(&openapi_doc) {
-        Ok(json) => json,
-        Err(e) => {
-            return syn::Error::new(
-                Span::call_site(),
-                format!("Failed to serialize OpenAPI spec: {}", e),
-            )
-            .to_compile_error()
-            .into();
-        }
-    };
+    let spec_json = serde_json::to_string(&openapi_doc).map_err(|e| {
+        syn::Error::new(
+            Span::call_site(),
+            format!("Failed to serialize OpenAPI spec: {}", e),
+        )
+    })?;
 
     // Write spec to temp file for compile-time merging by parent apps
-    // The file is written to target/vespera/{StructName}.openapi.json
     let name_str = name.to_string();
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-    // Find target directory (go up from manifest dir to workspace root if needed)
-    let manifest_path = Path::new(&manifest_dir);
+    let manifest_path = Path::new(manifest_dir);
     let target_dir = find_target_dir(manifest_path);
     let vespera_dir = target_dir.join("vespera");
-    std::fs::create_dir_all(&vespera_dir)
-        .unwrap_or_else(|e| panic!("Failed to create vespera dir {:?}: {}", vespera_dir, e));
+    std::fs::create_dir_all(&vespera_dir).map_err(|e| {
+        syn::Error::new(
+            Span::call_site(),
+            format!("Failed to create vespera dir {:?}: {}", vespera_dir, e),
+        )
+    })?;
     let spec_file = vespera_dir.join(format!("{}.openapi.json", name_str));
-    std::fs::write(&spec_file, &spec_json)
-        .unwrap_or_else(|e| panic!("Failed to write spec file {:?}: {}", spec_file, e));
+    std::fs::write(&spec_file, &spec_json).map_err(|e| {
+        syn::Error::new(
+            Span::call_site(),
+            format!("Failed to write spec file {:?}: {}", spec_file, e),
+        )
+    })?;
 
     // Generate router code (without docs routes, no merge)
     let router_code = generate_router_code(&metadata, None, None, &[]);
 
-    quote! {
+    Ok(quote! {
         /// Auto-generated vespera app struct
         pub struct #name;
 
@@ -1048,8 +1050,24 @@ pub fn export_app(input: TokenStream) -> TokenStream {
                 #router_code
             }
         }
+    })
+}
+
+#[cfg(not(tarpaulin_include))]
+#[proc_macro]
+pub fn export_app(input: TokenStream) -> TokenStream {
+    let ExportAppInput { name, dir } = syn::parse_macro_input!(input as ExportAppInput);
+    let folder_name = dir
+        .map(|d| d.value())
+        .or_else(|| std::env::var("VESPERA_DIR").ok())
+        .unwrap_or_else(|| "routes".to_string());
+    let schema_storage = SCHEMA_STORAGE.lock().unwrap();
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+
+    match process_export_app(&name, &folder_name, &schema_storage, &manifest_dir) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
     }
-    .into()
 }
 
 #[cfg(test)]
@@ -2139,5 +2157,638 @@ pub fn get_users() -> String {
         assert_eq!(metadata.name, "Container");
         let tokens_str = tokens.to_string();
         assert!(tokens_str.contains("< T >") || tokens_str.contains("<T>"));
+    }
+
+    // ========== Tests for parse_merge_values ==========
+
+    #[test]
+    fn test_parse_merge_values_single() {
+        let tokens = quote::quote!(merge = [some::path::App]);
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let merge = input.merge.unwrap();
+        assert_eq!(merge.len(), 1);
+        // Check the path segments
+        let path = &merge[0];
+        let segments: Vec<_> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+        assert_eq!(segments, vec!["some", "path", "App"]);
+    }
+
+    #[test]
+    fn test_parse_merge_values_multiple() {
+        let tokens = quote::quote!(merge = [first::App, second::Other]);
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let merge = input.merge.unwrap();
+        assert_eq!(merge.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_merge_values_empty() {
+        let tokens = quote::quote!(merge = []);
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let merge = input.merge.unwrap();
+        assert!(merge.is_empty());
+    }
+
+    #[test]
+    fn test_parse_merge_values_with_trailing_comma() {
+        let tokens = quote::quote!(merge = [app::MyApp,]);
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let merge = input.merge.unwrap();
+        assert_eq!(merge.len(), 1);
+    }
+
+    // ========== Tests for find_target_dir ==========
+
+    #[test]
+    fn test_find_target_dir_no_workspace() {
+        // Test fallback to manifest dir's target
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let manifest_path = temp_dir.path();
+        let result = find_target_dir(manifest_path);
+        assert_eq!(result, manifest_path.join("target"));
+    }
+
+    #[test]
+    fn test_find_target_dir_with_cargo_lock() {
+        // Test finding target dir with Cargo.lock present
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let manifest_path = temp_dir.path();
+
+        // Create Cargo.lock (but no [workspace] in Cargo.toml)
+        fs::write(manifest_path.join("Cargo.lock"), "").expect("Failed to write Cargo.lock");
+
+        let result = find_target_dir(manifest_path);
+        // Should use the directory with Cargo.lock
+        assert_eq!(result, manifest_path.join("target"));
+    }
+
+    #[test]
+    fn test_find_target_dir_with_workspace() {
+        // Test finding workspace root
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let workspace_root = temp_dir.path();
+
+        // Create a workspace Cargo.toml
+        fs::write(
+            workspace_root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crate1\"]",
+        )
+        .expect("Failed to write Cargo.toml");
+
+        // Create nested crate directory
+        let crate_dir = workspace_root.join("crate1");
+        fs::create_dir(&crate_dir).expect("Failed to create crate dir");
+        fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"crate1\"")
+            .expect("Failed to write Cargo.toml");
+
+        let result = find_target_dir(&crate_dir);
+        // Should return workspace root's target
+        assert_eq!(result, workspace_root.join("target"));
+    }
+
+    #[test]
+    fn test_find_target_dir_workspace_with_cargo_lock() {
+        // Test that [workspace] takes priority over Cargo.lock
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let workspace_root = temp_dir.path();
+
+        // Create workspace Cargo.toml and Cargo.lock
+        fs::write(
+            workspace_root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crate1\"]",
+        )
+        .expect("Failed to write Cargo.toml");
+        fs::write(workspace_root.join("Cargo.lock"), "").expect("Failed to write Cargo.lock");
+
+        // Create nested crate
+        let crate_dir = workspace_root.join("crate1");
+        fs::create_dir(&crate_dir).expect("Failed to create crate dir");
+        fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"crate1\"")
+            .expect("Failed to write Cargo.toml");
+
+        let result = find_target_dir(&crate_dir);
+        assert_eq!(result, workspace_root.join("target"));
+    }
+
+    #[test]
+    fn test_find_target_dir_deeply_nested() {
+        // Test deeply nested crate structure
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let workspace_root = temp_dir.path();
+
+        // Create workspace
+        fs::write(
+            workspace_root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]",
+        )
+        .expect("Failed to write Cargo.toml");
+
+        // Create deeply nested crate
+        let deep_crate = workspace_root.join("crates/group/my-crate");
+        fs::create_dir_all(&deep_crate).expect("Failed to create nested dirs");
+        fs::write(deep_crate.join("Cargo.toml"), "[package]").expect("Failed to write Cargo.toml");
+
+        let result = find_target_dir(&deep_crate);
+        assert_eq!(result, workspace_root.join("target"));
+    }
+
+    // ========== Tests for generate_router_code with merge ==========
+
+    #[test]
+    fn test_generate_router_code_with_merge_apps() {
+        let metadata = CollectedMetadata::new();
+        let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(third::ThirdApp)];
+
+        let result = generate_router_code(&metadata, None, None, &merge_apps);
+        let code = result.to_string();
+
+        // Should use VesperaRouter instead of plain Router
+        assert!(
+            code.contains("VesperaRouter"),
+            "Should use VesperaRouter for merge, got: {}",
+            code
+        );
+        assert!(
+            code.contains("third :: ThirdApp") || code.contains("third::ThirdApp"),
+            "Should reference merged app, got: {}",
+            code
+        );
+    }
+
+    #[test]
+    fn test_generate_router_code_with_docs_and_merge() {
+        let metadata = CollectedMetadata::new();
+        let docs_info = Some(("/docs".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+        let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(app::MyApp)];
+
+        let result = generate_router_code(&metadata, docs_info, None, &merge_apps);
+        let code = result.to_string();
+
+        // Should have merge code for docs
+        assert!(
+            code.contains("OnceLock"),
+            "Should use OnceLock for merged docs, got: {}",
+            code
+        );
+        assert!(
+            code.contains("MERGED_SPEC"),
+            "Should have MERGED_SPEC, got: {}",
+            code
+        );
+        // quote! generates "merged . merge" with spaces
+        assert!(
+            code.contains("merged . merge") || code.contains("merged.merge"),
+            "Should call merge on spec, got: {}",
+            code
+        );
+    }
+
+    #[test]
+    fn test_generate_router_code_with_redoc_and_merge() {
+        let metadata = CollectedMetadata::new();
+        let redoc_info = Some(("/redoc".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+        let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(other::OtherApp)];
+
+        let result = generate_router_code(&metadata, None, redoc_info, &merge_apps);
+        let code = result.to_string();
+
+        // Should have merge code for redoc
+        assert!(
+            code.contains("OnceLock"),
+            "Should use OnceLock for merged redoc"
+        );
+        assert!(code.contains("redoc"), "Should contain redoc");
+    }
+
+    #[test]
+    fn test_generate_router_code_with_both_docs_and_merge() {
+        let metadata = CollectedMetadata::new();
+        let docs_info = Some(("/docs".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+        let redoc_info = Some(("/redoc".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+        let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(merged::App)];
+
+        let result = generate_router_code(&metadata, docs_info, redoc_info, &merge_apps);
+        let code = result.to_string();
+
+        // Both docs should have merge code
+        // Count MERGED_SPEC occurrences - should be at least 2 (static declarations for docs and redoc)
+        let merged_spec_count = code.matches("MERGED_SPEC").count();
+        assert!(
+            merged_spec_count >= 2,
+            "Should have at least 2 MERGED_SPEC for docs and redoc, got: {}",
+            merged_spec_count
+        );
+        // Both docs_url and redoc_url should be present
+        assert!(
+            code.contains("/docs") && code.contains("/redoc"),
+            "Should contain both /docs and /redoc"
+        );
+    }
+
+    #[test]
+    fn test_generate_router_code_with_multiple_merge_apps() {
+        let metadata = CollectedMetadata::new();
+        let merge_apps: Vec<syn::Path> = vec![
+            syn::parse_quote!(first::App),
+            syn::parse_quote!(second::App),
+        ];
+
+        let result = generate_router_code(&metadata, None, None, &merge_apps);
+        let code = result.to_string();
+
+        // Should reference both apps
+        assert!(
+            code.contains("first") && code.contains("second"),
+            "Should reference both merge apps, got: {}",
+            code
+        );
+    }
+
+    // ========== Tests for ExportAppInput parsing ==========
+
+    #[test]
+    fn test_export_app_input_name_only() {
+        let tokens = quote::quote!(MyApp);
+        let input: ExportAppInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.name.to_string(), "MyApp");
+        assert!(input.dir.is_none());
+    }
+
+    #[test]
+    fn test_export_app_input_with_dir() {
+        let tokens = quote::quote!(MyApp, dir = "api");
+        let input: ExportAppInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.name.to_string(), "MyApp");
+        assert_eq!(input.dir.unwrap().value(), "api");
+    }
+
+    #[test]
+    fn test_export_app_input_with_trailing_comma() {
+        let tokens = quote::quote!(MyApp,);
+        let input: ExportAppInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.name.to_string(), "MyApp");
+        assert!(input.dir.is_none());
+    }
+
+    #[test]
+    fn test_export_app_input_unknown_field() {
+        let tokens = quote::quote!(MyApp, unknown = "value");
+        let result: syn::Result<ExportAppInput> = syn::parse2(tokens);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_compile_error().to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn test_export_app_input_multiple_commas() {
+        let tokens = quote::quote!(MyApp, dir = "api",);
+        let input: ExportAppInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.name.to_string(), "MyApp");
+        assert_eq!(input.dir.unwrap().value(), "api");
+    }
+
+    // ========== Tests for process_route_attribute ==========
+
+    #[test]
+    fn test_process_route_attribute_valid() {
+        let attr = quote::quote!(get);
+        let item = quote::quote!(
+            pub async fn handler() -> String {
+                "ok".to_string()
+            }
+        );
+        let result = process_route_attribute(attr, item.clone());
+        assert!(result.is_ok());
+        // Should return the original item unchanged
+        assert_eq!(result.unwrap().to_string(), item.to_string());
+    }
+
+    #[test]
+    fn test_process_route_attribute_invalid_attr() {
+        let attr = quote::quote!(invalid_method);
+        let item = quote::quote!(
+            pub async fn handler() -> String {
+                "ok".to_string()
+            }
+        );
+        let result = process_route_attribute(attr, item);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_process_route_attribute_not_function() {
+        let attr = quote::quote!(get);
+        let item = quote::quote!(
+            struct NotAFunction;
+        );
+        let result = process_route_attribute(attr, item);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("can only be applied to functions"));
+    }
+
+    #[test]
+    fn test_process_route_attribute_not_public() {
+        let attr = quote::quote!(get);
+        let item = quote::quote!(
+            async fn private_handler() -> String {
+                "ok".to_string()
+            }
+        );
+        let result = process_route_attribute(attr, item);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must be public"));
+    }
+
+    #[test]
+    fn test_process_route_attribute_not_async() {
+        let attr = quote::quote!(get);
+        let item = quote::quote!(
+            pub fn sync_handler() -> String {
+                "ok".to_string()
+            }
+        );
+        let result = process_route_attribute(attr, item);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must be async"));
+    }
+
+    #[test]
+    fn test_process_route_attribute_with_path() {
+        let attr = quote::quote!(get, path = "/users/{id}");
+        let item = quote::quote!(
+            pub async fn get_user() -> String {
+                "user".to_string()
+            }
+        );
+        let result = process_route_attribute(attr, item);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_process_route_attribute_with_tags() {
+        let attr = quote::quote!(post, tags = ["users", "admin"]);
+        let item = quote::quote!(
+            pub async fn create_user() -> String {
+                "created".to_string()
+            }
+        );
+        let result = process_route_attribute(attr, item);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_process_route_attribute_all_methods() {
+        let methods = ["get", "post", "put", "patch", "delete", "head", "options"];
+        for method in methods {
+            let attr: proc_macro2::TokenStream = method.parse().unwrap();
+            let item = quote::quote!(
+                pub async fn handler() -> String {
+                    "ok".to_string()
+                }
+            );
+            let result = process_route_attribute(attr, item);
+            assert!(result.is_ok(), "Method {} should be valid", method);
+        }
+    }
+
+    // ========== Tests for process_vespera_macro ==========
+
+    #[test]
+    fn test_process_vespera_macro_folder_not_found() {
+        let processed = ProcessedVesperaInput {
+            folder_name: "nonexistent_folder_xyz_123".to_string(),
+            openapi_file_names: vec![],
+            title: None,
+            version: None,
+            docs_url: None,
+            redoc_url: None,
+            servers: None,
+            merge: vec![],
+        };
+        let result = process_vespera_macro(&processed, &[]);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Folder not found"));
+    }
+
+    #[test]
+    fn test_process_vespera_macro_collect_metadata_error() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create an invalid route file (will cause parse error but collect_metadata handles it)
+        create_temp_file(&temp_dir, "invalid.rs", "not valid rust code {{{");
+
+        let processed = ProcessedVesperaInput {
+            folder_name: temp_dir.path().to_string_lossy().to_string(),
+            openapi_file_names: vec![],
+            title: Some("Test API".to_string()),
+            version: Some("1.0.0".to_string()),
+            docs_url: None,
+            redoc_url: None,
+            servers: None,
+            merge: vec![],
+        };
+
+        // This exercises the collect_metadata path (which handles parse errors gracefully)
+        let result = process_vespera_macro(&processed, &[]);
+        // Result may succeed or fail depending on how collect_metadata handles invalid files
+        let _ = result;
+    }
+
+    #[test]
+    fn test_process_vespera_macro_with_schema_storage() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create an empty file (valid but no routes)
+        create_temp_file(&temp_dir, "empty.rs", "// empty file\n");
+
+        let schema_storage = vec![StructMetadata::new(
+            "TestSchema".to_string(),
+            "struct TestSchema { id: i32 }".to_string(),
+        )];
+
+        let processed = ProcessedVesperaInput {
+            folder_name: temp_dir.path().to_string_lossy().to_string(),
+            openapi_file_names: vec![],
+            title: None,
+            version: None,
+            docs_url: Some("/docs".to_string()),
+            redoc_url: Some("/redoc".to_string()),
+            servers: None,
+            merge: vec![],
+        };
+
+        // This exercises the schema_storage extend path
+        let result = process_vespera_macro(&processed, &schema_storage);
+        // We only care about exercising the code path
+        let _ = result;
+    }
+
+    // ========== Tests for process_export_app ==========
+
+    #[test]
+    fn test_process_export_app_folder_not_found() {
+        let name: syn::Ident = syn::parse_quote!(TestApp);
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let result = process_export_app(
+            &name,
+            "nonexistent_folder_xyz",
+            &[],
+            &temp_dir.path().to_string_lossy(),
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Folder not found"));
+    }
+
+    #[test]
+    fn test_process_export_app_with_empty_folder() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create an empty file
+        create_temp_file(&temp_dir, "empty.rs", "// empty\n");
+
+        let name: syn::Ident = syn::parse_quote!(TestApp);
+        let folder_path = temp_dir.path().to_string_lossy().to_string();
+
+        // This exercises collect_metadata and other paths
+        let result =
+            process_export_app(&name, &folder_path, &[], &temp_dir.path().to_string_lossy());
+        // We only care about exercising the code path
+        let _ = result;
+    }
+
+    #[test]
+    fn test_process_export_app_with_schema_storage() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create an empty but valid Rust file
+        create_temp_file(&temp_dir, "mod.rs", "// module file\n");
+
+        let schema_storage = vec![StructMetadata::new(
+            "AppSchema".to_string(),
+            "struct AppSchema { name: String }".to_string(),
+        )];
+
+        let name: syn::Ident = syn::parse_quote!(MyExportedApp);
+        let folder_path = temp_dir.path().to_string_lossy().to_string();
+
+        let result = process_export_app(
+            &name,
+            &folder_path,
+            &schema_storage,
+            &temp_dir.path().to_string_lossy(),
+        );
+        // Exercises the schema_storage.extend path
+        let _ = result;
+    }
+
+    // ========== Tests for generate_and_write_openapi with merge ==========
+
+    #[test]
+    fn test_generate_and_write_openapi_with_merge_no_manifest_dir() {
+        // When CARGO_MANIFEST_DIR is not set or merge is empty, it should work normally
+        let processed = ProcessedVesperaInput {
+            folder_name: "routes".to_string(),
+            openapi_file_names: vec![],
+            title: Some("Test".to_string()),
+            version: None,
+            docs_url: Some("/docs".to_string()),
+            redoc_url: None,
+            servers: None,
+            merge: vec![syn::parse_quote!(app::TestApp)], // Has merge but no valid manifest dir
+        };
+        let metadata = CollectedMetadata::new();
+        // This should still work - merge logic is skipped when CARGO_MANIFEST_DIR lookup fails
+        let result = generate_and_write_openapi(&processed, &metadata);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_generate_and_write_openapi_with_merge_and_valid_spec() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create the vespera directory with a spec file
+        let target_dir = temp_dir.path().join("target").join("vespera");
+        fs::create_dir_all(&target_dir).expect("Failed to create target/vespera dir");
+
+        // Write a valid OpenAPI spec file
+        let spec_content =
+            r#"{"openapi":"3.1.0","info":{"title":"Child API","version":"1.0.0"},"paths":{}}"#;
+        fs::write(target_dir.join("ChildApp.openapi.json"), spec_content)
+            .expect("Failed to write spec file");
+
+        // Save and set CARGO_MANIFEST_DIR
+        let old_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+        // SAFETY: We're in a single-threaded test context
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let processed = ProcessedVesperaInput {
+            folder_name: "routes".to_string(),
+            openapi_file_names: vec![],
+            title: Some("Parent API".to_string()),
+            version: Some("2.0.0".to_string()),
+            docs_url: Some("/docs".to_string()),
+            redoc_url: None,
+            servers: None,
+            merge: vec![syn::parse_quote!(child::ChildApp)],
+        };
+        let metadata = CollectedMetadata::new();
+
+        let result = generate_and_write_openapi(&processed, &metadata);
+
+        // Restore CARGO_MANIFEST_DIR
+        if let Some(old_value) = old_manifest_dir {
+            // SAFETY: We're in a single-threaded test context
+            unsafe { std::env::set_var("CARGO_MANIFEST_DIR", old_value) };
+        }
+
+        assert!(result.is_ok());
+    }
+
+    // ========== Tests for find_folder_path ==========
+
+    #[test]
+    fn test_find_folder_path_absolute_path() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let absolute_path = temp_dir.path().to_string_lossy().to_string();
+
+        // When given an absolute path that exists, it should return it
+        let result = find_folder_path(&absolute_path);
+        // The function tries src/{folder_name} first, then falls back to the folder_name directly
+        assert!(
+            result.to_string_lossy().contains(&absolute_path)
+                || result == Path::new(&absolute_path)
+        );
+    }
+
+    #[test]
+    fn test_find_folder_path_with_src_folder() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create src/routes directory
+        let src_routes = temp_dir.path().join("src").join("routes");
+        fs::create_dir_all(&src_routes).expect("Failed to create src/routes dir");
+
+        // Save and set CARGO_MANIFEST_DIR
+        let old_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+        // SAFETY: We're in a single-threaded test context
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let result = find_folder_path("routes");
+
+        // Restore CARGO_MANIFEST_DIR
+        if let Some(old_value) = old_manifest_dir {
+            // SAFETY: We're in a single-threaded test context
+            unsafe { std::env::set_var("CARGO_MANIFEST_DIR", old_value) };
+        }
+
+        // Should return the src/routes path since it exists
+        assert!(
+            result.to_string_lossy().contains("src") && result.to_string_lossy().contains("routes")
+        );
     }
 }

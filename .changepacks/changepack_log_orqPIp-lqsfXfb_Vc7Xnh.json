@@ -1,0 +1,1 @@
+{"changes":{"crates/vespera_core/Cargo.toml":"Patch","crates/vespera/Cargo.toml":"Patch","crates/vespera_macro/Cargo.toml":"Patch"},"note":"Fix path issue, refactor code","date":"2026-02-04T16:34:14.848142700Z"}
