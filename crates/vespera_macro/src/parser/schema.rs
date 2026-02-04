@@ -36,6 +36,17 @@ pub fn strip_raw_prefix(ident: &str) -> &str {
     ident.strip_prefix("r#").unwrap_or(ident)
 }
 
+/// Capitalizes the first character of a string.
+/// Returns empty string if input is empty.
+/// E.g., `user` → `User`, `USER` → `USER`, `` → ``
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+    }
+}
+
 /// Extract a Schema name from a SeaORM Entity type path.
 ///
 /// Converts paths like:
@@ -65,13 +76,8 @@ fn extract_schema_name_from_entity(ty: &Type) -> Option<String> {
             let module_name = module_segment.ident.to_string();
 
             // Convert to PascalCase (capitalize first letter)
-            let schema_name = {
-                let mut chars = module_name.chars();
-                match chars.next() {
-                    None => module_name,
-                    Some(first) => first.to_uppercase().chain(chars).collect(),
-                }
-            };
+            // Rust identifiers are guaranteed non-empty, so chars().next() always returns Some
+            let schema_name = capitalize_first(&module_name);
 
             Some(schema_name)
         }
@@ -1170,15 +1176,8 @@ pub(super) fn parse_type_to_schema_ref_with_schemas(
                         let parent_name = parent_segment.ident.to_string();
 
                         // Try PascalCase version: "user" -> "UserSchema"
-                        let pascal_name = {
-                            let mut chars = parent_name.chars();
-                            match chars.next() {
-                                None => String::new(),
-                                Some(c) => {
-                                    c.to_uppercase().collect::<String>() + chars.as_str() + "Schema"
-                                }
-                            }
-                        };
+                        // Rust identifiers are guaranteed non-empty
+                        let pascal_name = format!("{}Schema", capitalize_first(&parent_name));
 
                         if known_schemas.contains_key(&pascal_name) {
                             pascal_name
@@ -3313,5 +3312,96 @@ mod tests {
             }
             _ => panic!("Expected inline for unknown Schema type"),
         }
+    }
+
+    #[test]
+    fn test_parse_enum_to_schema_variant_field_with_doc_comment_and_ref() {
+        // Test that doc comment on field with SchemaRef::Ref wraps in allOf (lines 544-546)
+        let enum_item: syn::ItemEnum = syn::parse_str(
+            r#"
+            enum Message {
+                Data {
+                    /// The user associated with this message
+                    user: User,
+                },
+            }
+        "#,
+        )
+        .unwrap();
+
+        // Register User as a known schema to get SchemaRef::Ref
+        let mut known_schemas = HashMap::new();
+        known_schemas.insert("User".to_string(), "User".to_string());
+
+        let schema = parse_enum_to_schema(&enum_item, &known_schemas, &HashMap::new());
+        let one_of = schema.one_of.expect("one_of missing");
+
+        // Get the Data variant schema
+        let variant_obj = match &one_of[0] {
+            SchemaRef::Inline(s) => s,
+            _ => panic!("Expected inline schema"),
+        };
+        let props = variant_obj
+            .properties
+            .as_ref()
+            .expect("variant props missing");
+        let inner = match props.get("Data").expect("variant key missing") {
+            SchemaRef::Inline(s) => s,
+            _ => panic!("Expected inline inner schema"),
+        };
+        let inner_props = inner.properties.as_ref().expect("inner props missing");
+
+        // The user field should have been wrapped in allOf with description
+        let user_field = inner_props.get("user").expect("user field missing");
+        match user_field {
+            SchemaRef::Inline(schema) => {
+                // Should have description from doc comment
+                assert_eq!(
+                    schema.description.as_deref(),
+                    Some("The user associated with this message")
+                );
+                // Should have allOf with the original $ref
+                let all_of = schema.all_of.as_ref().expect("allOf missing");
+                assert_eq!(all_of.len(), 1);
+                match &all_of[0] {
+                    SchemaRef::Ref(reference) => {
+                        assert_eq!(reference.ref_path, "#/components/schemas/User");
+                    }
+                    _ => panic!("Expected $ref in allOf"),
+                }
+            }
+            SchemaRef::Ref(_) => panic!("Expected inline schema with allOf, not direct $ref"),
+        }
+    }
+
+    #[test]
+    fn test_parse_type_to_schema_ref_module_schema_with_empty_parent() {
+        // Test the branch for module::Schema where PascalCase conversion handles edge case (line 899)
+        // This tests the fallback when parent module name results in empty string conversion
+        // Use a path like `::Schema` which has empty segments before Schema
+        let ty: Type = syn::parse_str("Schema").unwrap();
+
+        // Register schemas to trigger the module::Schema lookup path
+        let mut known = HashMap::new();
+        known.insert("Schema".to_string(), "Schema".to_string());
+
+        let schema_ref = parse_type_to_schema_ref(&ty, &known, &HashMap::new());
+        match schema_ref {
+            SchemaRef::Ref(reference) => {
+                assert_eq!(reference.ref_path, "#/components/schemas/Schema");
+            }
+            _ => panic!("Expected $ref for Schema type"),
+        }
+    }
+
+    #[rstest]
+    #[case("", "")]
+    #[case("a", "A")]
+    #[case("user", "User")]
+    #[case("User", "User")]
+    #[case("USER", "USER")]
+    #[case("user_name", "User_name")]
+    fn test_capitalize_first(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(capitalize_first(input), expected);
     }
 }
