@@ -570,21 +570,13 @@ pub struct Target { pub id: i32 }
 
     #[test]
     #[serial]
-    fn test_find_struct_by_name_unreadable_file() {
-        // Note: This is hard to test reliably on all platforms
-        // We'll test by having a valid file alongside
+    fn test_find_struct_by_name_with_valid_files() {
+        // Line 122 (Err(_) => continue) is defensive error handling
+        // Hard to trigger reliably cross-platform - just verify function works
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path();
 
-        // Create a valid file with the struct
-        std::fs::write(
-            src_dir.join("valid.rs"),
-            "pub struct Target { pub id: i32 }",
-        )
-        .unwrap();
-
-        let mut files = Vec::new();
-        collect_rs_files_recursive(src_dir, &mut files);
+        std::fs::write(src_dir.join("valid.rs"), "pub struct Target { pub id: i32 }").unwrap();
 
         let result = find_struct_by_name_in_all_files(src_dir, "Target", None);
 
