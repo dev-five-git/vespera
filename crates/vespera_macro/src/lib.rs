@@ -906,6 +906,7 @@ fn generate_router_code(
 }
 
 /// Input for export_app! macro
+#[derive(Debug)]
 struct ExportAppInput {
     /// App name (struct name to generate)
     name: syn::Ident,
@@ -2139,5 +2140,293 @@ pub fn get_users() -> String {
         assert_eq!(metadata.name, "Container");
         let tokens_str = tokens.to_string();
         assert!(tokens_str.contains("< T >") || tokens_str.contains("<T>"));
+    }
+
+    // ========== Tests for parse_merge_values ==========
+
+    #[test]
+    fn test_parse_merge_values_single() {
+        let tokens = quote::quote!(merge = [some::path::App]);
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let merge = input.merge.unwrap();
+        assert_eq!(merge.len(), 1);
+        // Check the path segments
+        let path = &merge[0];
+        let segments: Vec<_> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+        assert_eq!(segments, vec!["some", "path", "App"]);
+    }
+
+    #[test]
+    fn test_parse_merge_values_multiple() {
+        let tokens = quote::quote!(merge = [first::App, second::Other]);
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let merge = input.merge.unwrap();
+        assert_eq!(merge.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_merge_values_empty() {
+        let tokens = quote::quote!(merge = []);
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let merge = input.merge.unwrap();
+        assert!(merge.is_empty());
+    }
+
+    #[test]
+    fn test_parse_merge_values_with_trailing_comma() {
+        let tokens = quote::quote!(merge = [app::MyApp,]);
+        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+        let merge = input.merge.unwrap();
+        assert_eq!(merge.len(), 1);
+    }
+
+    // ========== Tests for find_target_dir ==========
+
+    #[test]
+    fn test_find_target_dir_no_workspace() {
+        // Test fallback to manifest dir's target
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let manifest_path = temp_dir.path();
+        let result = find_target_dir(manifest_path);
+        assert_eq!(result, manifest_path.join("target"));
+    }
+
+    #[test]
+    fn test_find_target_dir_with_cargo_lock() {
+        // Test finding target dir with Cargo.lock present
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let manifest_path = temp_dir.path();
+
+        // Create Cargo.lock (but no [workspace] in Cargo.toml)
+        fs::write(manifest_path.join("Cargo.lock"), "").expect("Failed to write Cargo.lock");
+
+        let result = find_target_dir(manifest_path);
+        // Should use the directory with Cargo.lock
+        assert_eq!(result, manifest_path.join("target"));
+    }
+
+    #[test]
+    fn test_find_target_dir_with_workspace() {
+        // Test finding workspace root
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let workspace_root = temp_dir.path();
+
+        // Create a workspace Cargo.toml
+        fs::write(
+            workspace_root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crate1\"]",
+        )
+        .expect("Failed to write Cargo.toml");
+
+        // Create nested crate directory
+        let crate_dir = workspace_root.join("crate1");
+        fs::create_dir(&crate_dir).expect("Failed to create crate dir");
+        fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"crate1\"")
+            .expect("Failed to write Cargo.toml");
+
+        let result = find_target_dir(&crate_dir);
+        // Should return workspace root's target
+        assert_eq!(result, workspace_root.join("target"));
+    }
+
+    #[test]
+    fn test_find_target_dir_workspace_with_cargo_lock() {
+        // Test that [workspace] takes priority over Cargo.lock
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let workspace_root = temp_dir.path();
+
+        // Create workspace Cargo.toml and Cargo.lock
+        fs::write(
+            workspace_root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crate1\"]",
+        )
+        .expect("Failed to write Cargo.toml");
+        fs::write(workspace_root.join("Cargo.lock"), "").expect("Failed to write Cargo.lock");
+
+        // Create nested crate
+        let crate_dir = workspace_root.join("crate1");
+        fs::create_dir(&crate_dir).expect("Failed to create crate dir");
+        fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"crate1\"")
+            .expect("Failed to write Cargo.toml");
+
+        let result = find_target_dir(&crate_dir);
+        assert_eq!(result, workspace_root.join("target"));
+    }
+
+    #[test]
+    fn test_find_target_dir_deeply_nested() {
+        // Test deeply nested crate structure
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let workspace_root = temp_dir.path();
+
+        // Create workspace
+        fs::write(
+            workspace_root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]",
+        )
+        .expect("Failed to write Cargo.toml");
+
+        // Create deeply nested crate
+        let deep_crate = workspace_root.join("crates/group/my-crate");
+        fs::create_dir_all(&deep_crate).expect("Failed to create nested dirs");
+        fs::write(deep_crate.join("Cargo.toml"), "[package]").expect("Failed to write Cargo.toml");
+
+        let result = find_target_dir(&deep_crate);
+        assert_eq!(result, workspace_root.join("target"));
+    }
+
+    // ========== Tests for generate_router_code with merge ==========
+
+    #[test]
+    fn test_generate_router_code_with_merge_apps() {
+        let metadata = CollectedMetadata::new();
+        let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(third::ThirdApp)];
+
+        let result = generate_router_code(&metadata, None, None, &merge_apps);
+        let code = result.to_string();
+
+        // Should use VesperaRouter instead of plain Router
+        assert!(
+            code.contains("VesperaRouter"),
+            "Should use VesperaRouter for merge, got: {}",
+            code
+        );
+        assert!(
+            code.contains("third :: ThirdApp") || code.contains("third::ThirdApp"),
+            "Should reference merged app, got: {}",
+            code
+        );
+    }
+
+    #[test]
+    fn test_generate_router_code_with_docs_and_merge() {
+        let metadata = CollectedMetadata::new();
+        let docs_info = Some(("/docs".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+        let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(app::MyApp)];
+
+        let result = generate_router_code(&metadata, docs_info, None, &merge_apps);
+        let code = result.to_string();
+
+        // Should have merge code for docs
+        assert!(
+            code.contains("OnceLock"),
+            "Should use OnceLock for merged docs, got: {}",
+            code
+        );
+        assert!(
+            code.contains("MERGED_SPEC"),
+            "Should have MERGED_SPEC, got: {}",
+            code
+        );
+        // quote! generates "merged . merge" with spaces
+        assert!(
+            code.contains("merged . merge") || code.contains("merged.merge"),
+            "Should call merge on spec, got: {}",
+            code
+        );
+    }
+
+    #[test]
+    fn test_generate_router_code_with_redoc_and_merge() {
+        let metadata = CollectedMetadata::new();
+        let redoc_info = Some(("/redoc".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+        let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(other::OtherApp)];
+
+        let result = generate_router_code(&metadata, None, redoc_info, &merge_apps);
+        let code = result.to_string();
+
+        // Should have merge code for redoc
+        assert!(
+            code.contains("OnceLock"),
+            "Should use OnceLock for merged redoc"
+        );
+        assert!(code.contains("redoc"), "Should contain redoc");
+    }
+
+    #[test]
+    fn test_generate_router_code_with_both_docs_and_merge() {
+        let metadata = CollectedMetadata::new();
+        let docs_info = Some(("/docs".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+        let redoc_info = Some(("/redoc".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+        let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(merged::App)];
+
+        let result = generate_router_code(&metadata, docs_info, redoc_info, &merge_apps);
+        let code = result.to_string();
+
+        // Both docs should have merge code
+        // Count MERGED_SPEC occurrences - should be at least 2 (static declarations for docs and redoc)
+        let merged_spec_count = code.matches("MERGED_SPEC").count();
+        assert!(
+            merged_spec_count >= 2,
+            "Should have at least 2 MERGED_SPEC for docs and redoc, got: {}",
+            merged_spec_count
+        );
+        // Both docs_url and redoc_url should be present
+        assert!(
+            code.contains("/docs") && code.contains("/redoc"),
+            "Should contain both /docs and /redoc"
+        );
+    }
+
+    #[test]
+    fn test_generate_router_code_with_multiple_merge_apps() {
+        let metadata = CollectedMetadata::new();
+        let merge_apps: Vec<syn::Path> = vec![
+            syn::parse_quote!(first::App),
+            syn::parse_quote!(second::App),
+        ];
+
+        let result = generate_router_code(&metadata, None, None, &merge_apps);
+        let code = result.to_string();
+
+        // Should reference both apps
+        assert!(
+            code.contains("first") && code.contains("second"),
+            "Should reference both merge apps, got: {}",
+            code
+        );
+    }
+
+    // ========== Tests for ExportAppInput parsing ==========
+
+    #[test]
+    fn test_export_app_input_name_only() {
+        let tokens = quote::quote!(MyApp);
+        let input: ExportAppInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.name.to_string(), "MyApp");
+        assert!(input.dir.is_none());
+    }
+
+    #[test]
+    fn test_export_app_input_with_dir() {
+        let tokens = quote::quote!(MyApp, dir = "api");
+        let input: ExportAppInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.name.to_string(), "MyApp");
+        assert_eq!(input.dir.unwrap().value(), "api");
+    }
+
+    #[test]
+    fn test_export_app_input_with_trailing_comma() {
+        let tokens = quote::quote!(MyApp,);
+        let input: ExportAppInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.name.to_string(), "MyApp");
+        assert!(input.dir.is_none());
+    }
+
+    #[test]
+    fn test_export_app_input_unknown_field() {
+        let tokens = quote::quote!(MyApp, unknown = "value");
+        let result: syn::Result<ExportAppInput> = syn::parse2(tokens);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unknown field"));
+    }
+
+    #[test]
+    fn test_export_app_input_multiple_commas() {
+        let tokens = quote::quote!(MyApp, dir = "api",);
+        let input: ExportAppInput = syn::parse2(tokens).unwrap();
+        assert_eq!(input.name.to_string(), "MyApp");
+        assert_eq!(input.dir.unwrap().value(), "api");
     }
 }
