@@ -384,6 +384,7 @@ pub fn find_model_from_schema_path(schema_path_str: &str) -> Option<StructMetada
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -457,5 +458,453 @@ mod tests {
 
         assert_eq!(files.len(), 2);
         assert!(files.iter().all(|f| f.extension().unwrap() == "rs"));
+    }
+
+    // ============================================================
+    // Coverage tests for find_struct_from_path
+    // ============================================================
+
+    #[test]
+    fn test_find_struct_from_path_non_path_type() {
+        // Tests: Type is not a Path type -> returns None
+        use syn::Type;
+
+        // Create a reference type (not a path type)
+        let ty: Type = syn::parse_str("&str").unwrap();
+
+        // Save original CARGO_MANIFEST_DIR
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+
+        // Set a temporary manifest dir (doesn't matter since we'll return early)
+        let temp_dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let result = find_struct_from_path(&ty, None);
+
+        // Restore
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(result.is_none(), "Non-path type should return None");
+    }
+
+    #[test]
+    fn test_find_struct_from_path_empty_segments() {
+        // Tests: Type path with empty segments -> returns None
+        use syn::{Path, TypePath};
+
+        // Construct a TypePath with empty segments
+        let empty_path = Path {
+            leading_colon: None,
+            segments: syn::punctuated::Punctuated::new(),
+        };
+        let ty = Type::Path(TypePath {
+            qself: None,
+            path: empty_path,
+        });
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        let temp_dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let result = find_struct_from_path(&ty, None);
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(result.is_none(), "Empty segments should return None");
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_struct_from_path_file_with_non_matching_items() {
+        // Tests: File contains items that are not the target struct
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create a file with multiple items, only one matching
+        let content = r#"
+pub enum SomeEnum { A, B }
+pub fn some_function() {}
+pub const SOME_CONST: i32 = 42;
+pub trait SomeTrait {}
+pub struct NotTarget { pub x: i32 }
+pub struct Target { pub id: i32 }
+"#;
+        std::fs::write(models_dir.join("mixed.rs"), content).unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let ty: Type = syn::parse_str("crate::models::mixed::Target").unwrap();
+        let result = find_struct_from_path(&ty, None);
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(result.is_some(), "Should find Target struct");
+        let (metadata, _) = result.unwrap();
+        assert!(metadata.definition.contains("Target"));
+    }
+
+    // ============================================================
+    // Coverage tests for find_struct_by_name_in_all_files
+    // ============================================================
+
+    #[test]
+    #[serial]
+    fn test_find_struct_by_name_unreadable_file() {
+        // Note: This is hard to test reliably on all platforms
+        // We'll test by having a valid file alongside
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path();
+
+        // Create a valid file with the struct
+        std::fs::write(
+            src_dir.join("valid.rs"),
+            "pub struct Target { pub id: i32 }",
+        )
+        .unwrap();
+
+        let mut files = Vec::new();
+        collect_rs_files_recursive(src_dir, &mut files);
+
+        let result = find_struct_by_name_in_all_files(src_dir, "Target", None);
+
+        assert!(result.is_some(), "Should find Target in valid file");
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_struct_by_name_unparseable_file() {
+        // Tests: File cannot be parsed -> continue to next file
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path();
+
+        // Create an unparseable file
+        std::fs::write(src_dir.join("broken.rs"), "this is not valid rust {{{{").unwrap();
+
+        // Create a valid file with the struct
+        std::fs::write(
+            src_dir.join("valid.rs"),
+            "pub struct Target { pub id: i32 }",
+        )
+        .unwrap();
+
+        let result = find_struct_by_name_in_all_files(src_dir, "Target", None);
+
+        assert!(
+            result.is_some(),
+            "Should find Target in valid file, skipping broken"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_struct_disambiguation_with_hint() {
+        // Tests: Multiple structs with same name, schema_name_hint disambiguates
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path();
+
+        // Create user.rs with Model
+        std::fs::create_dir(src_dir.join("models")).unwrap();
+        std::fs::write(
+            src_dir.join("models").join("user.rs"),
+            "pub struct Model { pub id: i32, pub name: String }",
+        )
+        .unwrap();
+
+        // Create memo.rs with Model (same struct name)
+        std::fs::write(
+            src_dir.join("models").join("memo.rs"),
+            "pub struct Model { pub id: i32, pub title: String }",
+        )
+        .unwrap();
+
+        // Without hint - should return None (ambiguous)
+        let result_no_hint = find_struct_by_name_in_all_files(src_dir, "Model", None);
+        assert!(
+            result_no_hint.is_none(),
+            "Without hint, multiple Models should be ambiguous"
+        );
+
+        // With hint "UserSchema" - should find user.rs
+        let result_with_hint =
+            find_struct_by_name_in_all_files(src_dir, "Model", Some("UserSchema"));
+        assert!(
+            result_with_hint.is_some(),
+            "With UserSchema hint, should find user.rs"
+        );
+        let (metadata, module_path) = result_with_hint.unwrap();
+        assert!(
+            metadata.definition.contains("name"),
+            "Should be user Model with name field"
+        );
+        assert!(
+            module_path.contains(&"user".to_string()),
+            "Module path should contain 'user'"
+        );
+
+        // With hint "MemoSchema" - should find memo.rs
+        let result_memo = find_struct_by_name_in_all_files(src_dir, "Model", Some("MemoSchema"));
+        assert!(
+            result_memo.is_some(),
+            "With MemoSchema hint, should find memo.rs"
+        );
+        let (metadata_memo, _) = result_memo.unwrap();
+        assert!(
+            metadata_memo.definition.contains("title"),
+            "Should be memo Model with title field"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_struct_disambiguation_with_response_suffix() {
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path();
+
+        std::fs::create_dir(src_dir.join("models")).unwrap();
+        std::fs::write(
+            src_dir.join("models").join("user.rs"),
+            "pub struct Data { pub id: i32 }",
+        )
+        .unwrap();
+        std::fs::write(
+            src_dir.join("models").join("item.rs"),
+            "pub struct Data { pub name: String }",
+        )
+        .unwrap();
+
+        // With hint "UserResponse" - should find user.rs
+        let result = find_struct_by_name_in_all_files(src_dir, "Data", Some("UserResponse"));
+        assert!(
+            result.is_some(),
+            "With UserResponse hint, should find user.rs"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_struct_disambiguation_with_request_suffix() {
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path();
+
+        std::fs::create_dir(src_dir.join("models")).unwrap();
+        std::fs::write(
+            src_dir.join("models").join("user.rs"),
+            "pub struct Input { pub id: i32 }",
+        )
+        .unwrap();
+        std::fs::write(
+            src_dir.join("models").join("item.rs"),
+            "pub struct Input { pub name: String }",
+        )
+        .unwrap();
+
+        // With hint "UserRequest" - should find user.rs
+        let result = find_struct_by_name_in_all_files(src_dir, "Input", Some("UserRequest"));
+        assert!(
+            result.is_some(),
+            "With UserRequest hint, should find user.rs"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_struct_disambiguation_still_ambiguous() {
+        // Tests: Multiple matches even after applying hint -> returns None
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path();
+
+        // Create two files that both match the hint
+        std::fs::create_dir(src_dir.join("models")).unwrap();
+        std::fs::write(
+            src_dir.join("models").join("user_admin.rs"),
+            "pub struct Model { pub id: i32 }",
+        )
+        .unwrap();
+        std::fs::write(
+            src_dir.join("models").join("user_regular.rs"),
+            "pub struct Model { pub name: String }",
+        )
+        .unwrap();
+
+        // With hint "UserSchema" - both user_admin.rs and user_regular.rs match
+        let result = find_struct_by_name_in_all_files(src_dir, "Model", Some("UserSchema"));
+        assert!(
+            result.is_none(),
+            "Multiple files matching hint should still be ambiguous"
+        );
+    }
+
+    // ============================================================
+    // Coverage tests for find_struct_from_schema_path
+    // ============================================================
+
+    #[test]
+    fn test_find_struct_from_schema_path_empty_string() {
+        // Tests: Empty path string -> returns None
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        let temp_dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let result = find_struct_from_schema_path("");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(result.is_none(), "Empty path should return None");
+    }
+
+    #[test]
+    fn test_find_struct_from_schema_path_no_module() {
+        // Tests: Path with only struct name (no module) -> returns None
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        let temp_dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        // Only "Schema" with no module path - after filtering crate/self/super, module_segments is empty
+        let result = find_struct_from_schema_path("crate::Schema");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(result.is_none(), "Path with no module should return None");
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_struct_from_schema_path_with_non_struct_items() {
+        // Tests: File contains non-struct items that get skipped
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        let content = r#"
+pub enum NotStruct { A, B }
+pub fn not_struct() {}
+pub struct Target { pub id: i32 }
+pub const NOT_STRUCT: i32 = 1;
+"#;
+        std::fs::write(models_dir.join("item.rs"), content).unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let result = find_struct_from_schema_path("crate::models::item::Target");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(result.is_some(), "Should find Target struct");
+        assert!(result.unwrap().definition.contains("Target"));
+    }
+
+    // ============================================================
+    // Coverage tests for find_model_from_schema_path
+    // ============================================================
+
+    #[test]
+    fn test_find_model_from_schema_path_empty_after_filter() {
+        // Tests: After filtering "Schema" and other keywords, segments is empty
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        let temp_dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        // Only "Schema" - after filtering, empty
+        let result = find_model_from_schema_path("Schema");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(result.is_none(), "Empty segments should return None");
+    }
+
+    #[test]
+    fn test_find_model_from_schema_path_no_module() {
+        // Tests: After filtering crate/self/super, module_segments is empty
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        let temp_dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        // "crate::Schema" - after filtering "Schema" and "crate", module_segments is empty
+        let result = find_model_from_schema_path("crate::Schema");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(result.is_none(), "No module segments should return None");
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_model_from_schema_path_success() {
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        let content = "pub struct Model { pub id: i32, pub name: String }";
+        std::fs::write(models_dir.join("user.rs"), content).unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let result = find_model_from_schema_path("crate::models::user::Schema");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(result.is_some(), "Should find Model");
+        assert!(result.unwrap().definition.contains("Model"));
     }
 }
