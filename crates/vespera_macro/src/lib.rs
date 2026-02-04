@@ -66,6 +66,7 @@ pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 // Schema Storage global variable
+#[cfg(not(tarpaulin_include))]
 static SCHEMA_STORAGE: LazyLock<Mutex<Vec<StructMetadata>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
