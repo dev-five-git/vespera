@@ -277,4 +277,123 @@ mod tests {
         assert!(output.contains("TestType"));
         assert!(output.contains("snake_case"));
     }
+
+    #[test]
+    fn test_generate_inline_type_definition_empty_fields() {
+        let inline_type = InlineRelationType {
+            type_name: syn::Ident::new("EmptyType", proc_macro2::Span::call_site()),
+            fields: vec![],
+            rename_all: "camelCase".to_string(),
+        };
+
+        let tokens = generate_inline_type_definition(&inline_type);
+        let output = tokens.to_string();
+
+        assert!(output.contains("pub struct EmptyType"));
+        assert!(output.contains("Clone"));
+        assert!(output.contains("vespera :: Schema"));
+    }
+
+    #[test]
+    fn test_generate_inline_type_definition_multiple_attrs() {
+        let inline_type = InlineRelationType {
+            type_name: syn::Ident::new("MultiAttrType", proc_macro2::Span::call_site()),
+            fields: vec![InlineField {
+                name: syn::Ident::new("field", proc_macro2::Span::call_site()),
+                ty: quote!(String),
+                attrs: vec![
+                    syn::parse_quote!(#[serde(default)]),
+                    syn::parse_quote!(#[serde(skip_serializing_if = "Option::is_none")]),
+                ],
+            }],
+            rename_all: "PascalCase".to_string(),
+        };
+
+        let tokens = generate_inline_type_definition(&inline_type);
+        let output = tokens.to_string();
+
+        assert!(output.contains("MultiAttrType"));
+        assert!(output.contains("PascalCase"));
+        assert!(output.contains("default"));
+    }
+
+    #[test]
+    fn test_generate_inline_type_definition_complex_type() {
+        let inline_type = InlineRelationType {
+            type_name: syn::Ident::new("ComplexType", proc_macro2::Span::call_site()),
+            fields: vec![
+                InlineField {
+                    name: syn::Ident::new("id", proc_macro2::Span::call_site()),
+                    ty: quote!(i32),
+                    attrs: vec![],
+                },
+                InlineField {
+                    name: syn::Ident::new("tags", proc_macro2::Span::call_site()),
+                    ty: quote!(Vec<String>),
+                    attrs: vec![],
+                },
+                InlineField {
+                    name: syn::Ident::new("metadata", proc_macro2::Span::call_site()),
+                    ty: quote!(Option<std::collections::HashMap<String, serde_json::Value>>),
+                    attrs: vec![],
+                },
+            ],
+            rename_all: "camelCase".to_string(),
+        };
+
+        let tokens = generate_inline_type_definition(&inline_type);
+        let output = tokens.to_string();
+
+        assert!(output.contains("pub struct ComplexType"));
+        assert!(output.contains("pub id : i32"));
+        assert!(output.contains("Vec < String >"));
+        assert!(output.contains("Option <"));
+    }
+
+    #[test]
+    fn test_inline_field_struct() {
+        // Test InlineField struct construction
+        let field = InlineField {
+            name: syn::Ident::new("test_field", proc_macro2::Span::call_site()),
+            ty: quote!(Option<i32>),
+            attrs: vec![syn::parse_quote!(#[doc = "Test doc"])],
+        };
+
+        assert_eq!(field.name.to_string(), "test_field");
+        assert!(!field.attrs.is_empty());
+    }
+
+    #[test]
+    fn test_inline_relation_type_struct() {
+        // Test InlineRelationType struct construction
+        let inline_type = InlineRelationType {
+            type_name: syn::Ident::new("TestRelation", proc_macro2::Span::call_site()),
+            fields: vec![],
+            rename_all: "SCREAMING_SNAKE_CASE".to_string(),
+        };
+
+        assert_eq!(inline_type.type_name.to_string(), "TestRelation");
+        assert_eq!(inline_type.rename_all, "SCREAMING_SNAKE_CASE");
+        assert!(inline_type.fields.is_empty());
+    }
+
+    #[test]
+    fn test_generate_inline_type_definition_doc_attr() {
+        let inline_type = InlineRelationType {
+            type_name: syn::Ident::new("DocType", proc_macro2::Span::call_site()),
+            fields: vec![InlineField {
+                name: syn::Ident::new("documented_field", proc_macro2::Span::call_site()),
+                ty: quote!(String),
+                attrs: vec![syn::parse_quote!(#[doc = "This is a documented field"])],
+            }],
+            rename_all: "camelCase".to_string(),
+        };
+
+        let tokens = generate_inline_type_definition(&inline_type);
+        let output = tokens.to_string();
+
+        assert!(output.contains("DocType"));
+        assert!(output.contains("documented_field"));
+        assert!(output.contains("doc"));
+    }
 }

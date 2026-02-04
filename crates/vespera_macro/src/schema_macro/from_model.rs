@@ -393,4 +393,466 @@ mod tests {
         assert!(output.contains("user"));
         assert!(output.contains("Entity"));
     }
+
+    #[test]
+    fn test_build_entity_path_deeply_nested() {
+        let schema_path = quote! { crate::api::models::entities::user::Schema };
+        let result = build_entity_path_from_schema_path(&schema_path, &[]);
+        let output = result.to_string();
+        assert!(output.contains("api"));
+        assert!(output.contains("models"));
+        assert!(output.contains("entities"));
+        assert!(output.contains("user"));
+        assert!(output.contains("Entity"));
+        assert!(!output.contains("Schema"));
+    }
+
+    #[test]
+    fn test_build_entity_path_single_segment() {
+        let schema_path = quote! { Schema };
+        let result = build_entity_path_from_schema_path(&schema_path, &[]);
+        let output = result.to_string();
+        assert!(output.contains("Entity"));
+    }
+
+    // Tests for generate_from_model_with_relations
+
+    fn create_test_relation_info(
+        field_name: &str,
+        relation_type: &str,
+        schema_path: TokenStream,
+        is_optional: bool,
+    ) -> RelationFieldInfo {
+        RelationFieldInfo {
+            field_name: syn::Ident::new(field_name, proc_macro2::Span::call_site()),
+            relation_type: relation_type.to_string(),
+            schema_path,
+            is_optional,
+            inline_type_info: None,
+        }
+    }
+
+    #[test]
+    fn test_generate_from_model_with_required_relation() {
+        let new_type_name = syn::Ident::new("MemoSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("Model").unwrap();
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("user", proc_macro2::Span::call_site()),
+                syn::Ident::new("user", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+        // Required relation (is_optional = false)
+        let relation_fields = vec![create_test_relation_info(
+            "user",
+            "HasOne",
+            quote! { user::Schema },
+            false,
+        )];
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+        let output = tokens.to_string();
+
+        assert!(output.contains("impl MemoSchema"));
+        // Required relations should have RecordNotFound error handling
+        assert!(output.contains("DbErr :: RecordNotFound"));
+    }
+
+    #[test]
+    fn test_generate_from_model_with_wrapped_fields() {
+        let new_type_name = syn::Ident::new("TestSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("Model").unwrap();
+        // Field with wrapped=true means it needs Some() wrapping
+        let field_mappings = vec![(
+            syn::Ident::new("id", proc_macro2::Span::call_site()),
+            syn::Ident::new("id", proc_macro2::Span::call_site()),
+            true, // wrapped
+            false,
+        )];
+        let relation_fields = vec![];
+        let source_module_path = vec!["crate".to_string()];
+
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+        let output = tokens.to_string();
+
+        assert!(output.contains("Some (model . id)"));
+    }
+
+    #[test]
+    fn test_generate_from_model_with_has_one_optional() {
+        let new_type_name = syn::Ident::new("MemoSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("Model").unwrap();
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("user", proc_macro2::Span::call_site()),
+                syn::Ident::new("user", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+        let relation_fields = vec![create_test_relation_info(
+            "user",
+            "HasOne",
+            quote! { user::Schema },
+            true,
+        )];
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+        let output = tokens.to_string();
+
+        assert!(output.contains("impl MemoSchema"));
+        assert!(output.contains("pub async fn from_model"));
+        // quote! produces spaced output like "sea_orm :: DatabaseConnection"
+        assert!(output.contains("sea_orm :: DatabaseConnection"));
+        assert!(output.contains("Result < Self , sea_orm :: DbErr >"));
+        assert!(output.contains("find_related"));
+        assert!(output.contains(". one (db)"));
+    }
+
+    #[test]
+    fn test_generate_from_model_with_has_many() {
+        let new_type_name = syn::Ident::new("UserSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("Model").unwrap();
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("memos", proc_macro2::Span::call_site()),
+                syn::Ident::new("memos", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+        let relation_fields = vec![create_test_relation_info(
+            "memos",
+            "HasMany",
+            quote! { memo::Schema },
+            false,
+        )];
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "user".to_string(),
+        ];
+
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+        let output = tokens.to_string();
+
+        assert!(output.contains("impl UserSchema"));
+        assert!(output.contains("pub async fn from_model"));
+        assert!(output.contains(". all (db)"));
+    }
+
+    #[test]
+    fn test_generate_from_model_with_belongs_to() {
+        let new_type_name = syn::Ident::new("MemoSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("Model").unwrap();
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("user", proc_macro2::Span::call_site()),
+                syn::Ident::new("user", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+        let relation_fields = vec![create_test_relation_info(
+            "user",
+            "BelongsTo",
+            quote! { user::Schema },
+            true,
+        )];
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+        let output = tokens.to_string();
+
+        assert!(output.contains("impl MemoSchema"));
+        assert!(output.contains("find_related"));
+        assert!(output.contains(". one (db)"));
+    }
+
+    #[test]
+    fn test_generate_from_model_no_relations() {
+        let new_type_name = syn::Ident::new("SimpleSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("Model").unwrap();
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("name", proc_macro2::Span::call_site()),
+                syn::Ident::new("name", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+        ];
+        let relation_fields = vec![];
+        let source_module_path = vec!["crate".to_string()];
+
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+        let output = tokens.to_string();
+
+        assert!(output.contains("impl SimpleSchema"));
+        assert!(output.contains("id : model . id"));
+        assert!(output.contains("name : model . name"));
+    }
+
+    #[test]
+    fn test_generate_from_model_with_inline_type() {
+        let new_type_name = syn::Ident::new("MemoSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("Model").unwrap();
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("user", proc_macro2::Span::call_site()),
+                syn::Ident::new("user", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+        // Relation with inline type info (for circular references)
+        let mut rel_info =
+            create_test_relation_info("user", "HasOne", quote! { user::Schema }, true);
+        rel_info.inline_type_info = Some((
+            syn::Ident::new("MemoSchema_User", proc_macro2::Span::call_site()),
+            vec!["id".to_string(), "name".to_string()],
+        ));
+        let relation_fields = vec![rel_info];
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+        let output = tokens.to_string();
+
+        assert!(output.contains("impl MemoSchema"));
+        assert!(output.contains("find_related"));
+    }
+
+    #[test]
+    fn test_generate_from_model_unknown_relation_type() {
+        let new_type_name = syn::Ident::new("TestSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("Model").unwrap();
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("unknown", proc_macro2::Span::call_site()),
+                syn::Ident::new("unknown", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+        // Unknown relation type
+        let relation_fields = vec![create_test_relation_info(
+            "unknown",
+            "UnknownType",
+            quote! { some::Schema },
+            true,
+        )];
+        let source_module_path = vec!["crate".to_string()];
+
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+        let output = tokens.to_string();
+
+        // Unknown relation type should generate empty token (no load statement)
+        assert!(output.contains("impl TestSchema"));
+    }
+
+    #[test]
+    fn test_generate_from_model_relation_field_not_in_mappings() {
+        let new_type_name = syn::Ident::new("TestSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("Model").unwrap();
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            // Relation field with different source_ident
+            (
+                syn::Ident::new("owner", proc_macro2::Span::call_site()),
+                syn::Ident::new("different_name", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+        let relation_fields = vec![create_test_relation_info(
+            "user",
+            "HasOne",
+            quote! { user::Schema },
+            true,
+        )];
+        let source_module_path = vec!["crate".to_string()];
+
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+        let output = tokens.to_string();
+
+        // Should still generate valid code
+        assert!(output.contains("impl TestSchema"));
+    }
+
+    #[test]
+    fn test_generate_from_model_with_has_many_inline() {
+        let new_type_name = syn::Ident::new("UserSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("Model").unwrap();
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("memos", proc_macro2::Span::call_site()),
+                syn::Ident::new("memos", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+        // HasMany with inline type
+        let mut rel_info =
+            create_test_relation_info("memos", "HasMany", quote! { memo::Schema }, false);
+        rel_info.inline_type_info = Some((
+            syn::Ident::new("UserSchema_Memos", proc_macro2::Span::call_site()),
+            vec!["id".to_string(), "title".to_string()],
+        ));
+        let relation_fields = vec![rel_info];
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "user".to_string(),
+        ];
+
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+        let output = tokens.to_string();
+
+        assert!(output.contains("impl UserSchema"));
+        assert!(output.contains(". all (db)"));
+        assert!(output.contains("into_iter"));
+        assert!(output.contains("collect"));
+    }
 }

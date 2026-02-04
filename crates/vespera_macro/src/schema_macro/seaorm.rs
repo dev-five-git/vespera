@@ -585,4 +585,556 @@ mod tests {
             syn::parse_str("struct TupleStruct(i32, Option<String>);").unwrap();
         assert!(!is_field_optional_in_struct(&struct_item, "0"));
     }
+
+    // =========================================================================
+    // Tests for convert_seaorm_type_to_chrono edge cases
+    // =========================================================================
+
+    #[test]
+    fn test_convert_seaorm_type_to_chrono_empty_path() {
+        let ty = syn::Type::Path(syn::TypePath {
+            qself: None,
+            path: syn::Path {
+                leading_colon: None,
+                segments: syn::punctuated::Punctuated::new(),
+            },
+        });
+        let tokens = convert_seaorm_type_to_chrono(&ty, &[]);
+        // Should return the original type unchanged
+        assert!(tokens.to_string().is_empty() || tokens.to_string().trim().is_empty());
+    }
+
+    // =========================================================================
+    // Tests for convert_relation_type_to_schema_with_info
+    // =========================================================================
+
+    fn make_test_struct(def: &str) -> syn::ItemStruct {
+        syn::parse_str(def).unwrap()
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_with_info_non_path_type() {
+        let ty: syn::Type = syn::parse_str("&str").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let field_name = syn::Ident::new("user", proc_macro2::Span::call_site());
+        let result =
+            convert_relation_type_to_schema_with_info(&ty, &[], &struct_item, &[], field_name);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_with_info_empty_segments() {
+        let ty = syn::Type::Path(syn::TypePath {
+            qself: None,
+            path: syn::Path {
+                leading_colon: None,
+                segments: syn::punctuated::Punctuated::new(),
+            },
+        });
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let field_name = syn::Ident::new("user", proc_macro2::Span::call_site());
+        let result =
+            convert_relation_type_to_schema_with_info(&ty, &[], &struct_item, &[], field_name);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_with_info_no_angle_brackets() {
+        let ty: syn::Type = syn::parse_str("HasOne").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let field_name = syn::Ident::new("user", proc_macro2::Span::call_site());
+        let result =
+            convert_relation_type_to_schema_with_info(&ty, &[], &struct_item, &[], field_name);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_with_info_non_type_generic() {
+        // Test with lifetime generic instead of type
+        let ty: syn::Type = syn::parse_str("HasOne<'a>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let field_name = syn::Ident::new("user", proc_macro2::Span::call_site());
+        let result =
+            convert_relation_type_to_schema_with_info(&ty, &[], &struct_item, &[], field_name);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_with_info_non_path_inner() {
+        // Inner type is a reference, not a path
+        let ty: syn::Type = syn::parse_str("HasOne<&str>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let field_name = syn::Ident::new("user", proc_macro2::Span::call_site());
+        let result =
+            convert_relation_type_to_schema_with_info(&ty, &[], &struct_item, &[], field_name);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_with_info_has_one_optional() {
+        let ty: syn::Type = syn::parse_str("HasOne<user::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32, user_id: Option<i32> }");
+        let attrs: Vec<syn::Attribute> =
+            vec![syn::parse_quote!(#[sea_orm(belongs_to, from = "user_id")])];
+        let field_name = syn::Ident::new("user", proc_macro2::Span::call_site());
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+        let result = convert_relation_type_to_schema_with_info(
+            &ty,
+            &attrs,
+            &struct_item,
+            &module_path,
+            field_name,
+        );
+        assert!(result.is_some());
+        let (tokens, info) = result.unwrap();
+        assert_eq!(info.relation_type, "HasOne");
+        assert!(info.is_optional);
+        assert!(tokens.to_string().contains("Option"));
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_with_info_has_one_required() {
+        let ty: syn::Type = syn::parse_str("HasOne<user::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32, user_id: i32 }");
+        let attrs: Vec<syn::Attribute> =
+            vec![syn::parse_quote!(#[sea_orm(belongs_to, from = "user_id")])];
+        let field_name = syn::Ident::new("user", proc_macro2::Span::call_site());
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+        let result = convert_relation_type_to_schema_with_info(
+            &ty,
+            &attrs,
+            &struct_item,
+            &module_path,
+            field_name,
+        );
+        assert!(result.is_some());
+        let (tokens, info) = result.unwrap();
+        assert_eq!(info.relation_type, "HasOne");
+        assert!(!info.is_optional);
+        assert!(tokens.to_string().contains("Box"));
+        assert!(!tokens.to_string().contains("Option"));
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_with_info_has_one_no_fk() {
+        let ty: syn::Type = syn::parse_str("HasOne<user::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let field_name = syn::Ident::new("user", proc_macro2::Span::call_site());
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+        // No attributes, so defaults to optional
+        let result = convert_relation_type_to_schema_with_info(
+            &ty,
+            &[],
+            &struct_item,
+            &module_path,
+            field_name,
+        );
+        assert!(result.is_some());
+        let (tokens, info) = result.unwrap();
+        assert!(info.is_optional); // Default when FK not determinable
+        assert!(tokens.to_string().contains("Option"));
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_with_info_has_many() {
+        let ty: syn::Type = syn::parse_str("HasMany<memo::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let field_name = syn::Ident::new("memos", proc_macro2::Span::call_site());
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "user".to_string(),
+        ];
+        let result = convert_relation_type_to_schema_with_info(
+            &ty,
+            &[],
+            &struct_item,
+            &module_path,
+            field_name,
+        );
+        assert!(result.is_some());
+        let (tokens, info) = result.unwrap();
+        assert_eq!(info.relation_type, "HasMany");
+        assert!(!info.is_optional);
+        assert!(tokens.to_string().contains("Vec"));
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_with_info_belongs_to_optional() {
+        let ty: syn::Type = syn::parse_str("BelongsTo<user::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32, user_id: Option<i32> }");
+        let attrs: Vec<syn::Attribute> =
+            vec![syn::parse_quote!(#[sea_orm(belongs_to, from = "user_id")])];
+        let field_name = syn::Ident::new("user", proc_macro2::Span::call_site());
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+        let result = convert_relation_type_to_schema_with_info(
+            &ty,
+            &attrs,
+            &struct_item,
+            &module_path,
+            field_name,
+        );
+        assert!(result.is_some());
+        let (tokens, info) = result.unwrap();
+        assert_eq!(info.relation_type, "BelongsTo");
+        assert!(info.is_optional);
+        assert!(tokens.to_string().contains("Option"));
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_with_info_belongs_to_required() {
+        let ty: syn::Type = syn::parse_str("BelongsTo<user::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32, user_id: i32 }");
+        let attrs: Vec<syn::Attribute> =
+            vec![syn::parse_quote!(#[sea_orm(belongs_to, from = "user_id")])];
+        let field_name = syn::Ident::new("user", proc_macro2::Span::call_site());
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+        let result = convert_relation_type_to_schema_with_info(
+            &ty,
+            &attrs,
+            &struct_item,
+            &module_path,
+            field_name,
+        );
+        assert!(result.is_some());
+        let (tokens, info) = result.unwrap();
+        assert_eq!(info.relation_type, "BelongsTo");
+        assert!(!info.is_optional);
+        assert!(!tokens.to_string().contains("Option"));
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_with_info_unknown_relation() {
+        let ty: syn::Type = syn::parse_str("SomeOtherType<user::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let field_name = syn::Ident::new("user", proc_macro2::Span::call_site());
+        let result =
+            convert_relation_type_to_schema_with_info(&ty, &[], &struct_item, &[], field_name);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_with_info_super_path() {
+        let ty: syn::Type = syn::parse_str("HasMany<super::memo::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let field_name = syn::Ident::new("memos", proc_macro2::Span::call_site());
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "user".to_string(),
+        ];
+        let result = convert_relation_type_to_schema_with_info(
+            &ty,
+            &[],
+            &struct_item,
+            &module_path,
+            field_name,
+        );
+        assert!(result.is_some());
+        let (tokens, _info) = result.unwrap();
+        let output = tokens.to_string();
+        // super:: should resolve: crate::models::user -> crate::models::memo
+        assert!(output.contains("crate"));
+        assert!(output.contains("models"));
+        assert!(output.contains("memo"));
+        assert!(output.contains("Schema"));
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_with_info_crate_path() {
+        let ty: syn::Type = syn::parse_str("HasMany<crate::models::memo::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let field_name = syn::Ident::new("memos", proc_macro2::Span::call_site());
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "user".to_string(),
+        ];
+        let result = convert_relation_type_to_schema_with_info(
+            &ty,
+            &[],
+            &struct_item,
+            &module_path,
+            field_name,
+        );
+        assert!(result.is_some());
+        let (tokens, _info) = result.unwrap();
+        let output = tokens.to_string();
+        // crate:: path should preserve and replace Entity with Schema
+        assert!(output.contains("crate"));
+        assert!(output.contains("models"));
+        assert!(output.contains("memo"));
+        assert!(output.contains("Schema"));
+        assert!(!output.contains("Entity"));
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_with_info_relative_path() {
+        let ty: syn::Type = syn::parse_str("HasOne<user::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let field_name = syn::Ident::new("user", proc_macro2::Span::call_site());
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+        let result = convert_relation_type_to_schema_with_info(
+            &ty,
+            &[],
+            &struct_item,
+            &module_path,
+            field_name,
+        );
+        assert!(result.is_some());
+        let (tokens, _info) = result.unwrap();
+        let output = tokens.to_string();
+        // Relative path should be resolved relative to parent
+        assert!(output.contains("crate"));
+        assert!(output.contains("models"));
+        assert!(output.contains("user"));
+        assert!(output.contains("Schema"));
+    }
+
+    // =========================================================================
+    // Tests for convert_relation_type_to_schema
+    // =========================================================================
+
+    #[test]
+    fn test_convert_relation_type_to_schema_non_path_type() {
+        let ty: syn::Type = syn::parse_str("&str").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_empty_segments() {
+        let ty = syn::Type::Path(syn::TypePath {
+            qself: None,
+            path: syn::Path {
+                leading_colon: None,
+                segments: syn::punctuated::Punctuated::new(),
+            },
+        });
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_no_angle_brackets() {
+        let ty: syn::Type = syn::parse_str("HasOne").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_non_type_generic() {
+        let ty: syn::Type = syn::parse_str("HasOne<'a>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_non_path_inner() {
+        let ty: syn::Type = syn::parse_str("HasOne<&str>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_has_one() {
+        let ty: syn::Type = syn::parse_str("HasOne<user::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &module_path);
+        assert!(result.is_some());
+        let tokens = result.unwrap();
+        let output = tokens.to_string();
+        // HasOne always returns Option<Box<Schema>>
+        assert!(output.contains("Option"));
+        assert!(output.contains("Box"));
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_has_many() {
+        let ty: syn::Type = syn::parse_str("HasMany<memo::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "user".to_string(),
+        ];
+        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &module_path);
+        assert!(result.is_some());
+        let tokens = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("Vec"));
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_belongs_to_optional() {
+        let ty: syn::Type = syn::parse_str("BelongsTo<user::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32, user_id: Option<i32> }");
+        let attrs: Vec<syn::Attribute> =
+            vec![syn::parse_quote!(#[sea_orm(belongs_to, from = "user_id")])];
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+        let result = convert_relation_type_to_schema(&ty, &attrs, &struct_item, &module_path);
+        assert!(result.is_some());
+        let tokens = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("Option"));
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_belongs_to_required() {
+        let ty: syn::Type = syn::parse_str("BelongsTo<user::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32, user_id: i32 }");
+        let attrs: Vec<syn::Attribute> =
+            vec![syn::parse_quote!(#[sea_orm(belongs_to, from = "user_id")])];
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+        let result = convert_relation_type_to_schema(&ty, &attrs, &struct_item, &module_path);
+        assert!(result.is_some());
+        let tokens = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("Box"));
+        assert!(!output.contains("Option"));
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_belongs_to_no_from_attr() {
+        let ty: syn::Type = syn::parse_str("BelongsTo<user::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+        // No attributes - should fallback to optional
+        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &module_path);
+        assert!(result.is_some());
+        let tokens = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("Option")); // Fallback
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_unknown_relation() {
+        let ty: syn::Type = syn::parse_str("SomeOtherType<user::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_super_path() {
+        let ty: syn::Type = syn::parse_str("HasMany<super::memo::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "user".to_string(),
+        ];
+        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &module_path);
+        assert!(result.is_some());
+        let tokens = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("crate"));
+        assert!(output.contains("models"));
+        assert!(output.contains("memo"));
+        assert!(output.contains("Schema"));
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_crate_path() {
+        let ty: syn::Type = syn::parse_str("HasMany<crate::models::memo::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "user".to_string(),
+        ];
+        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &module_path);
+        assert!(result.is_some());
+        let tokens = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("crate"));
+        assert!(output.contains("memo"));
+        assert!(output.contains("Schema"));
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_relative_path() {
+        let ty: syn::Type = syn::parse_str("HasOne<user::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &module_path);
+        assert!(result.is_some());
+        let tokens = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("crate"));
+        assert!(output.contains("models"));
+        assert!(output.contains("user"));
+        assert!(output.contains("Schema"));
+    }
+
+    #[test]
+    fn test_convert_relation_type_to_schema_multiple_super() {
+        let ty: syn::Type = syn::parse_str("HasMany<super::super::other::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let module_path = vec![
+            "crate".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+        ];
+        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &module_path);
+        assert!(result.is_some());
+        let tokens = result.unwrap();
+        let output = tokens.to_string();
+        // super::super:: from crate::a::b::c should go to crate::a
+        assert!(output.contains("crate"));
+        assert!(output.contains("a"));
+        assert!(output.contains("other"));
+        assert!(output.contains("Schema"));
+    }
 }
