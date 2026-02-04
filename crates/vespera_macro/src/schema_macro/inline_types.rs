@@ -791,4 +791,221 @@ mod tests {
         // Should use the override name, not the struct name
         assert_eq!(inline_type.type_name.to_string(), "UserSchema_Memos");
     }
+
+    // Tests for public functions with file lookup (lines 43, 45, 114, 116-118, 120)
+    // These require setting up a temp directory with model files
+
+    #[test]
+    fn test_generate_inline_relation_type_with_file_lookup() {
+        use tempfile::TempDir;
+
+        // Create temp directory structure
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create a user.rs file with Model struct that has circular reference
+        let user_model = r#"
+pub struct Model {
+    pub id: i32,
+    pub name: String,
+    pub memo: BelongsTo<memo::Entity>,
+}
+"#;
+        std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
+
+        // Save original CARGO_MANIFEST_DIR and set to temp dir
+        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+        // SAFETY: This is a test that runs single-threaded
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        // Test generate_inline_relation_type (lines 43, 45)
+        let parent_type_name = syn::Ident::new("MemoSchema", proc_macro2::Span::call_site());
+        let rel_info = RelationFieldInfo {
+            field_name: syn::Ident::new("user", proc_macro2::Span::call_site()),
+            relation_type: "BelongsTo".to_string(),
+            schema_path: quote!(crate::models::user::Schema),
+            is_optional: false,
+            inline_type_info: None,
+        };
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+
+        let result =
+            generate_inline_relation_type(&parent_type_name, &rel_info, &source_module_path, None);
+
+        // Restore original CARGO_MANIFEST_DIR
+        // SAFETY: This is a test that runs single-threaded
+        unsafe {
+            if let Some(dir) = original_manifest_dir {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        // Verify result
+        assert!(result.is_some());
+        let inline_type = result.unwrap();
+        assert_eq!(inline_type.type_name.to_string(), "MemoSchema_User");
+
+        // Should have id and name, but not memo (circular)
+        let field_names: Vec<String> = inline_type
+            .fields
+            .iter()
+            .map(|f| f.name.to_string())
+            .collect();
+        assert!(field_names.contains(&"id".to_string()));
+        assert!(field_names.contains(&"name".to_string()));
+        assert!(!field_names.contains(&"memo".to_string()));
+    }
+
+    #[test]
+    fn test_generate_inline_relation_type_no_relations_with_file_lookup() {
+        use tempfile::TempDir;
+
+        // Create temp directory structure
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create a memo.rs file with Model struct that has relations
+        let memo_model = r#"
+pub struct Model {
+    pub id: i32,
+    pub title: String,
+    pub user: BelongsTo<user::Entity>,
+    pub comments: HasMany<comment::Entity>,
+}
+"#;
+        std::fs::write(models_dir.join("memo.rs"), memo_model).unwrap();
+
+        // Save original CARGO_MANIFEST_DIR and set to temp dir
+        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+        // SAFETY: This is a test that runs single-threaded
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        // Test generate_inline_relation_type_no_relations (lines 114, 116-118, 120)
+        let parent_type_name = syn::Ident::new("UserSchema", proc_macro2::Span::call_site());
+        let rel_info = RelationFieldInfo {
+            field_name: syn::Ident::new("memos", proc_macro2::Span::call_site()),
+            relation_type: "HasMany".to_string(),
+            schema_path: quote!(crate::models::memo::Schema),
+            is_optional: false,
+            inline_type_info: None,
+        };
+
+        let result = generate_inline_relation_type_no_relations(&parent_type_name, &rel_info, None);
+
+        // Restore original CARGO_MANIFEST_DIR
+        // SAFETY: This is a test that runs single-threaded
+        unsafe {
+            if let Some(dir) = original_manifest_dir {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        // Verify result
+        assert!(result.is_some());
+        let inline_type = result.unwrap();
+        assert_eq!(inline_type.type_name.to_string(), "UserSchema_Memos");
+
+        // Should have id and title, but not user or comments (relations)
+        let field_names: Vec<String> = inline_type
+            .fields
+            .iter()
+            .map(|f| f.name.to_string())
+            .collect();
+        assert!(field_names.contains(&"id".to_string()));
+        assert!(field_names.contains(&"title".to_string()));
+        assert!(!field_names.contains(&"user".to_string()));
+        assert!(!field_names.contains(&"comments".to_string()));
+    }
+
+    #[test]
+    fn test_generate_inline_relation_type_file_not_found() {
+        use tempfile::TempDir;
+
+        // Create temp directory structure without the model file
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        // Save original CARGO_MANIFEST_DIR and set to temp dir
+        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+        // SAFETY: This is a test that runs single-threaded
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let parent_type_name = syn::Ident::new("TestSchema", proc_macro2::Span::call_site());
+        let rel_info = RelationFieldInfo {
+            field_name: syn::Ident::new("user", proc_macro2::Span::call_site()),
+            relation_type: "BelongsTo".to_string(),
+            schema_path: quote!(crate::models::nonexistent::Schema),
+            is_optional: false,
+            inline_type_info: None,
+        };
+        let source_module_path = vec!["crate".to_string()];
+
+        let result =
+            generate_inline_relation_type(&parent_type_name, &rel_info, &source_module_path, None);
+
+        // Restore original CARGO_MANIFEST_DIR
+        // SAFETY: This is a test that runs single-threaded
+        unsafe {
+            if let Some(dir) = original_manifest_dir {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        // Should return None when file not found
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_generate_inline_relation_type_no_relations_file_not_found() {
+        use tempfile::TempDir;
+
+        // Create temp directory structure without the model file
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        // Save original CARGO_MANIFEST_DIR and set to temp dir
+        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+        // SAFETY: This is a test that runs single-threaded
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let parent_type_name = syn::Ident::new("TestSchema", proc_macro2::Span::call_site());
+        let rel_info = RelationFieldInfo {
+            field_name: syn::Ident::new("items", proc_macro2::Span::call_site()),
+            relation_type: "HasMany".to_string(),
+            schema_path: quote!(crate::models::nonexistent::Schema),
+            is_optional: false,
+            inline_type_info: None,
+        };
+
+        let result = generate_inline_relation_type_no_relations(&parent_type_name, &rel_info, None);
+
+        // Restore original CARGO_MANIFEST_DIR
+        // SAFETY: This is a test that runs single-threaded
+        unsafe {
+            if let Some(dir) = original_manifest_dir {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        // Should return None when file not found
+        assert!(result.is_none());
+    }
 }
