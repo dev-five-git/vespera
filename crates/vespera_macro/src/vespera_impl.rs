@@ -760,4 +760,102 @@ mod tests {
             result.to_string_lossy().contains("src") && result.to_string_lossy().contains("routes")
         );
     }
+
+    // ========== Error path coverage tests ==========
+
+    #[test]
+    fn test_generate_and_write_openapi_file_write_error() {
+        // Line 95: fs::write failure when output path is a directory
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create a directory where the output file should be
+        let output_path = temp_dir.path().join("openapi.json");
+        fs::create_dir(&output_path).expect("Failed to create directory");
+
+        let processed = ProcessedVesperaInput {
+            folder_name: "routes".to_string(),
+            openapi_file_names: vec![output_path.to_string_lossy().to_string()],
+            title: Some("Test API".to_string()),
+            version: Some("1.0.0".to_string()),
+            docs_url: None,
+            redoc_url: None,
+            servers: None,
+            merge: vec![],
+        };
+        let metadata = CollectedMetadata::new();
+
+        let result = generate_and_write_openapi(&processed, &metadata);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("failed to write file"));
+    }
+
+    #[test]
+    fn test_process_export_app_collect_metadata_error() {
+        // Lines 210-212: collect_metadata returns error for invalid Rust syntax
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create a file with invalid Rust syntax that will cause parse error
+        create_temp_file(&temp_dir, "invalid.rs", "fn broken( { syntax error");
+
+        let name: syn::Ident = syn::parse_quote!(TestApp);
+        let folder_path = temp_dir.path().to_string_lossy().to_string();
+
+        let result =
+            process_export_app(&name, &folder_path, &[], &temp_dir.path().to_string_lossy());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("failed to scan route folder"));
+    }
+
+    #[test]
+    fn test_process_export_app_create_dir_error() {
+        // Lines 232-234: create_dir_all failure when path contains a file
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create an empty valid Rust file
+        create_temp_file(&temp_dir, "empty.rs", "// empty file\n");
+
+        // Create target directory but make 'vespera' a file instead of directory
+        let target_dir = temp_dir.path().join("target");
+        fs::create_dir(&target_dir).expect("Failed to create target dir");
+        fs::write(target_dir.join("vespera"), "blocking file").expect("Failed to write file");
+
+        let name: syn::Ident = syn::parse_quote!(TestApp);
+        let folder_path = temp_dir.path().to_string_lossy().to_string();
+
+        let result =
+            process_export_app(&name, &folder_path, &[], &temp_dir.path().to_string_lossy());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("failed to create build cache directory"));
+    }
+
+    #[test]
+    fn test_process_export_app_write_spec_error() {
+        // Lines 239-241: fs::write failure when spec file path is a directory
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create an empty valid Rust file
+        create_temp_file(&temp_dir, "empty.rs", "// empty file\n");
+
+        // Create target/vespera directory and make spec file name a directory
+        let vespera_dir = temp_dir.path().join("target").join("vespera");
+        fs::create_dir_all(&vespera_dir).expect("Failed to create vespera dir");
+        // Create a directory where the spec file should be written
+        fs::create_dir(vespera_dir.join("TestApp.openapi.json"))
+            .expect("Failed to create blocking dir");
+
+        let name: syn::Ident = syn::parse_quote!(TestApp);
+        let folder_path = temp_dir.path().to_string_lossy().to_string();
+
+        let result =
+            process_export_app(&name, &folder_path, &[], &temp_dir.path().to_string_lossy());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("failed to write OpenAPI spec file"));
+    }
 }
