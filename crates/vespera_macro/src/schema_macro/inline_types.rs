@@ -10,7 +10,9 @@ use super::{
     circular::detect_circular_fields,
     file_lookup::find_model_from_schema_path,
     seaorm::{RelationFieldInfo, convert_type_with_chrono},
-    type_utils::{is_seaorm_relation_type, snake_to_pascal_case},
+    type_utils::{
+        extract_module_path_from_schema_path, is_seaorm_relation_type, snake_to_pascal_case,
+    },
 };
 use crate::parser::{extract_rename_all, extract_skip};
 
@@ -69,6 +71,16 @@ pub fn generate_inline_relation_type_from_def(
     // Parse the model struct
     let parsed_model: syn::ItemStruct = syn::parse_str(model_def).ok()?;
 
+    // IMPORTANT: Use the TARGET model's module path for type resolution, not the parent's.
+    // This ensures enum types like `AuthProvider` are resolved to `crate::models::user::AuthProvider`
+    // instead of incorrectly using the parent module path.
+    let target_module_path = extract_module_path_from_schema_path(&rel_info.schema_path);
+    let effective_module_path = if target_module_path.is_empty() {
+        source_module_path
+    } else {
+        &target_module_path
+    };
+
     // Detect circular fields
     let circular_fields = detect_circular_fields("", source_module_path, model_def);
 
@@ -125,7 +137,8 @@ pub fn generate_inline_relation_type_from_def(
 
             // Convert SeaORM datetime types to chrono equivalents
             // This prevents users from needing to import sea_orm::prelude::DateTimeWithTimeZone
-            let converted_ty = convert_type_with_chrono(&field.ty, source_module_path);
+            // Use the target model's module path to correctly resolve enum types
+            let converted_ty = convert_type_with_chrono(&field.ty, effective_module_path);
             fields.push(InlineField {
                 name: field_ident.clone(),
                 ty: converted_ty,
@@ -180,6 +193,16 @@ pub fn generate_inline_relation_type_no_relations_from_def(
     // Parse the model struct
     let parsed_model: syn::ItemStruct = syn::parse_str(model_def).ok()?;
 
+    // IMPORTANT: Use the TARGET model's module path for type resolution, not the parent's.
+    // This ensures enum types like `StoryStatus` are resolved to `crate::models::story::StoryStatus`
+    // instead of incorrectly using the parent module path.
+    let target_module_path = extract_module_path_from_schema_path(&rel_info.schema_path);
+    let effective_module_path = if target_module_path.is_empty() {
+        source_module_path
+    } else {
+        &target_module_path
+    };
+
     // Get rename_all from model (or default to camelCase)
     let rename_all =
         extract_rename_all(&parsed_model.attrs).unwrap_or_else(|| "camelCase".to_string());
@@ -221,7 +244,8 @@ pub fn generate_inline_relation_type_no_relations_from_def(
 
             // Convert SeaORM datetime types to chrono equivalents
             // This prevents users from needing to import sea_orm::prelude::DateTimeWithTimeZone
-            let converted_ty = convert_type_with_chrono(&field.ty, source_module_path);
+            // Use the target model's module path to correctly resolve enum types
+            let converted_ty = convert_type_with_chrono(&field.ty, effective_module_path);
             fields.push(InlineField {
                 name: field_ident.clone(),
                 ty: converted_ty,

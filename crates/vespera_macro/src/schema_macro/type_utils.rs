@@ -121,6 +121,8 @@ pub fn is_primitive_or_known_type(name: &str) -> bool {
             | "DateTimeWithTimeZone"
             | "DateTimeUtc"
             | "DateTimeLocal"
+            | "Date"  // SeaORM re-export of chrono::NaiveDate
+            | "Time"  // SeaORM re-export of chrono::NaiveTime
             // UUID
             | "Uuid"
             // Serde JSON
@@ -173,6 +175,30 @@ pub fn resolve_type_to_absolute_path(ty: &Type, source_module_path: &[String]) -
     let args = &segment.arguments;
 
     quote! { #(#path_idents)::* :: #type_ident #args }
+}
+
+/// Extract module path from a schema path TokenStream.
+///
+/// The schema_path is something like `crate::models::user::Schema`.
+/// This returns `["crate", "models", "user"]` (excluding the final type name).
+pub fn extract_module_path_from_schema_path(schema_path: &proc_macro2::TokenStream) -> Vec<String> {
+    let path_str = schema_path.to_string();
+    // Parse segments: "crate :: models :: user :: Schema" -> ["crate", "models", "user", "Schema"]
+    let segments: Vec<&str> = path_str
+        .split("::")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // Return all but the last segment (which is "Schema" or "Entity")
+    if segments.len() > 1 {
+        segments[..segments.len() - 1]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        vec![]
+    }
 }
 
 /// Extract the module path from a type (excluding the type name itself).
