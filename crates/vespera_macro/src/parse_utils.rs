@@ -234,6 +234,50 @@ mod tests {
     }
 
     #[test]
+    fn test_try_parse_key_litstr() {
+        // When input is a LitStr, try_parse_key returns Ok(None) without consuming
+        let parser = |input: ParseStream| {
+            let result = try_parse_key(input)?;
+            // LitStr remains unconsumed, parse it to clear the buffer
+            let _: LitStr = input.parse()?;
+            Ok(result)
+        };
+
+        let tokens = quote::quote!("some_string");
+        let result = parser.parse2(tokens);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[test]
+    fn test_try_parse_key_invalid_token() {
+        // When input is neither Ident nor LitStr, try_parse_key returns error
+        let parser = |input: ParseStream| try_parse_key(input);
+
+        // Use a number literal which is neither Ident nor LitStr
+        let tokens = quote::quote!(42);
+        let result = parser.parse2(tokens);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_try_consume_comma_no_comma() {
+        // When there's no comma, try_consume_comma returns false without consuming
+        let parser = |input: ParseStream| {
+            let has_comma = try_consume_comma(input);
+            // Token remains unconsumed, parse it to clear the buffer
+            let _: Ident = input.parse()?;
+            Ok(has_comma)
+        };
+
+        // Some token that's not a comma
+        let tokens = quote::quote!(foo);
+        let result = parser.parse2(tokens);
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[test]
     fn test_parse_key_value_handler() {
         let parser = |input: ParseStream| {
             let mut title = None;
@@ -268,5 +312,45 @@ mod tests {
         let (title, version) = result.unwrap();
         assert_eq!(title, Some("Test".to_string()));
         assert_eq!(version, Some("1.0".to_string()));
+    }
+
+    #[test]
+    fn test_parse_key_value_list_litstr_breaks() {
+        // When a LitStr is encountered in parse_key_value_list, it breaks (doesn't error)
+        let parser = |input: ParseStream| {
+            let mut keys = Vec::new();
+            parse_key_value_list(input, |key, input| {
+                input.parse::<Token![=]>()?;
+                let _: LitStr = input.parse()?;
+                keys.push(key);
+                Ok(())
+            })?;
+            // The remaining LitStr is left unconsumed, parse it to clear the buffer
+            let _: LitStr = input.parse()?;
+            Ok(keys)
+        };
+
+        // "remaining" is a LitStr at the end, should break without error
+        let tokens = quote::quote!(title = "Test", "remaining");
+        let result = parser.parse2(tokens);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec!["title"]);
+    }
+
+    #[test]
+    fn test_parse_key_value_list_invalid_token() {
+        // When an invalid token (not Ident or LitStr) is encountered, returns error
+        let parser = |input: ParseStream| {
+            parse_key_value_list(input, |_key, input| {
+                input.parse::<Token![=]>()?;
+                let _: LitStr = input.parse()?;
+                Ok(())
+            })
+        };
+
+        // 42 is neither Ident nor LitStr, should error
+        let tokens = quote::quote!(42);
+        let result = parser.parse2(tokens);
+        assert!(result.is_err());
     }
 }

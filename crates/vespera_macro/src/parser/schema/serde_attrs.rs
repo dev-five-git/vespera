@@ -1558,6 +1558,87 @@ mod tests {
             let result = extract_rename_all(&[attr]);
             assert_eq!(result.as_deref(), Some("kebab-case"));
         }
+
+        // =================================================================
+        // FALLBACK PATH TESTS (Lines 173, 258-265, 573, 583-590, 626)
+        // =================================================================
+
+        /// Test extract_field_rename fallback path - Line 173
+        /// Tests the word boundary check when "rename" appears with other attributes
+        /// This triggers the manual token parsing fallback when parse_nested_meta
+        /// doesn't extract the value in expected format
+        #[test]
+        fn test_extract_field_rename_fallback_word_boundary() {
+            // Create attribute with qualified path to force fallback
+            let tokens: TokenStream = "my_module::rename = \"value\"".parse().unwrap();
+            let attr = create_attr_with_raw_tokens(tokens);
+            let result = extract_field_rename(&[attr]);
+            assert_eq!(result.as_deref(), Some("value"));
+        }
+
+        /// Test extract_field_rename fallback - complex combined attributes
+        /// Line 173: Tests the edge case of word boundary checking
+        #[test]
+        fn test_extract_field_rename_fallback_complex_attr() {
+            // Qualified path forces parse_nested_meta to not find "rename"
+            let tokens: TokenStream = "crate::other::rename = \"custom_field\", default"
+                .parse()
+                .unwrap();
+            let attr = create_attr_with_raw_tokens(tokens);
+            let result = extract_field_rename(&[attr]);
+            assert_eq!(result.as_deref(), Some("custom_field"));
+        }
+
+        /// Test extract_field_rename - ensure rename_all is not matched as rename
+        /// This tests the word boundary logic at lines 168-181
+        #[test]
+        fn test_extract_field_rename_fallback_avoids_rename_all() {
+            let tokens: TokenStream = "some::rename_all = \"camelCase\"".parse().unwrap();
+            let attr = create_attr_with_raw_tokens(tokens);
+            let result = extract_field_rename(&[attr]);
+            // Should NOT match rename_all as rename
+            assert_eq!(result, None);
+        }
+
+        /// Test extract_flatten fallback path - Lines 258-265
+        /// Forces manual token parsing by using qualified path
+        #[test]
+        fn test_extract_flatten_fallback_path() {
+            let tokens: TokenStream = "my_module::flatten".parse().unwrap();
+            let attr = create_attr_with_raw_tokens(tokens);
+            let result = extract_flatten(&[attr]);
+            assert!(result, "Fallback should find 'flatten' in token string");
+        }
+
+        /// Test extract_flatten fallback with complex attributes
+        /// Lines 258-263: Tests word boundary checking in fallback
+        #[test]
+        fn test_extract_flatten_fallback_complex() {
+            let tokens: TokenStream = "crate::flatten, default = \"my_fn\"".parse().unwrap();
+            let attr = create_attr_with_raw_tokens(tokens);
+            let result = extract_flatten(&[attr]);
+            assert!(result, "Fallback should detect flatten with other attrs");
+        }
+
+        /// Test extract_flatten fallback with flatten at different positions
+        /// Line 265: Tests the return true path in fallback
+        #[test]
+        fn test_extract_flatten_fallback_at_end() {
+            let tokens: TokenStream = "default, some::flatten".parse().unwrap();
+            let attr = create_attr_with_raw_tokens(tokens);
+            let result = extract_flatten(&[attr]);
+            assert!(result);
+        }
+
+        /// Test extract_flatten fallback doesn't match partial words
+        #[test]
+        fn test_extract_flatten_fallback_no_partial_match() {
+            // "flattened" should not match "flatten"
+            let tokens: TokenStream = "flattened".parse().unwrap();
+            let attr = create_attr_with_raw_tokens(tokens);
+            let result = extract_flatten(&[attr]);
+            assert!(!result, "Should not match 'flattened' as 'flatten'");
+        }
     }
 
     // Tests for enum representation extraction (tag, content, untagged)
@@ -1700,6 +1781,138 @@ mod tests {
             let repr = extract_enum_repr(&attrs);
             // Content without tag should be externally tagged (content is ignored)
             assert_eq!(repr, SerdeEnumRepr::ExternallyTagged);
+        }
+
+        // =================================================================
+        // FALLBACK PATH TESTS FOR TAG/CONTENT (Lines 573, 583-590, 626)
+        // =================================================================
+
+        use proc_macro2::{Span, TokenStream};
+
+        /// Helper to create a serde attribute with raw tokens
+        fn create_enum_attr_with_raw_tokens(tokens: TokenStream) -> syn::Attribute {
+            syn::Attribute {
+                pound_token: syn::token::Pound::default(),
+                style: syn::AttrStyle::Outer,
+                bracket_token: syn::token::Bracket::default(),
+                meta: syn::Meta::List(syn::MetaList {
+                    path: syn::Path::from(syn::Ident::new("serde", Span::call_site())),
+                    delimiter: syn::MacroDelimiter::Paren(syn::token::Paren::default()),
+                    tokens,
+                }),
+            }
+        }
+
+        /// Test extract_tag fallback path - Lines 573, 583-590
+        /// Forces manual token parsing by using qualified path
+        #[test]
+        fn test_extract_tag_fallback_path() {
+            let tokens: TokenStream = "my_module::tag = \"type\"".parse().unwrap();
+            let attr = create_enum_attr_with_raw_tokens(tokens);
+            let result = extract_tag(&[attr]);
+            assert_eq!(
+                result.as_deref(),
+                Some("type"),
+                "Fallback should extract tag value"
+            );
+        }
+
+        /// Test extract_tag fallback with complex attributes
+        /// Lines 583-590: Tests the value extraction in fallback
+        #[test]
+        fn test_extract_tag_fallback_complex() {
+            let tokens: TokenStream = "crate::tag = \"kind\", rename_all = \"camelCase\""
+                .parse()
+                .unwrap();
+            let attr = create_enum_attr_with_raw_tokens(tokens);
+            let result = extract_tag(&[attr]);
+            assert_eq!(result.as_deref(), Some("kind"));
+        }
+
+        /// Test extract_tag fallback doesn't match "untagged"
+        /// Line 581: before_char != 'n' check
+        #[test]
+        fn test_extract_tag_fallback_avoids_untagged() {
+            // "untagged" contains "tag" but should not be matched as tag = "..."
+            let tokens: TokenStream = "untagged".parse().unwrap();
+            let attr = create_enum_attr_with_raw_tokens(tokens);
+            let result = extract_tag(&[attr]);
+            assert_eq!(result, None, "Should not extract tag from 'untagged'");
+        }
+
+        /// Test extract_tag fallback with tag after other attributes
+        #[test]
+        fn test_extract_tag_fallback_at_end() {
+            let tokens: TokenStream = "default, some_module::tag = \"variant\"".parse().unwrap();
+            let attr = create_enum_attr_with_raw_tokens(tokens);
+            let result = extract_tag(&[attr]);
+            assert_eq!(result.as_deref(), Some("variant"));
+        }
+
+        /// Test extract_content fallback path - Line 626
+        /// Forces manual token parsing by using qualified path
+        #[test]
+        fn test_extract_content_fallback_path() {
+            let tokens: TokenStream = "my_module::content = \"data\"".parse().unwrap();
+            let attr = create_enum_attr_with_raw_tokens(tokens);
+            let result = extract_content(&[attr]);
+            assert_eq!(
+                result.as_deref(),
+                Some("data"),
+                "Fallback should extract content value"
+            );
+        }
+
+        /// Test extract_content fallback with complex attributes
+        /// Line 626+: Tests the fallback token parsing branch
+        #[test]
+        fn test_extract_content_fallback_complex() {
+            let tokens: TokenStream = "crate::tag = \"type\", other::content = \"payload\""
+                .parse()
+                .unwrap();
+            let attr = create_enum_attr_with_raw_tokens(tokens);
+            let result = extract_content(&[attr]);
+            assert_eq!(result.as_deref(), Some("payload"));
+        }
+
+        /// Test extract_content fallback with content at different position
+        #[test]
+        fn test_extract_content_fallback_at_start() {
+            let tokens: TokenStream = "some::content = \"body\", tag = \"kind\"".parse().unwrap();
+            let attr = create_enum_attr_with_raw_tokens(tokens);
+            let result = extract_content(&[attr]);
+            assert_eq!(result.as_deref(), Some("body"));
+        }
+
+        /// Test adjacently tagged using fallback paths for both tag and content
+        #[test]
+        fn test_extract_enum_repr_adjacently_tagged_fallback() {
+            let tokens: TokenStream = "mod1::tag = \"type\", mod2::content = \"data\""
+                .parse()
+                .unwrap();
+            let attr = create_enum_attr_with_raw_tokens(tokens);
+            let repr = extract_enum_repr(&[attr]);
+            assert_eq!(
+                repr,
+                SerdeEnumRepr::AdjacentlyTagged {
+                    tag: "type".to_string(),
+                    content: "data".to_string()
+                }
+            );
+        }
+
+        /// Test internally tagged using fallback path
+        #[test]
+        fn test_extract_enum_repr_internally_tagged_fallback() {
+            let tokens: TokenStream = "qualified::tag = \"discriminator\"".parse().unwrap();
+            let attr = create_enum_attr_with_raw_tokens(tokens);
+            let repr = extract_enum_repr(&[attr]);
+            assert_eq!(
+                repr,
+                SerdeEnumRepr::InternallyTagged {
+                    tag: "discriminator".to_string()
+                }
+            );
         }
     }
 }

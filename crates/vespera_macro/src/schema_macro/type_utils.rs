@@ -593,4 +593,81 @@ mod tests {
         let ty: syn::Type = syn::parse_str("User").unwrap();
         assert!(!is_primitive_like(&ty));
     }
+
+    // Edge case tests for type_utils functions
+
+    #[test]
+    fn test_extract_type_name_empty_path_error() {
+        let ty = empty_type_path();
+        let result = extract_type_name(&ty);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("type path has no segments")
+        );
+    }
+
+    #[test]
+    fn test_is_map_type_empty_path() {
+        let ty = empty_type_path();
+        assert!(!is_map_type(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_vec_string() {
+        let ty: syn::Type = syn::parse_str("Vec<String>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_vec_i32() {
+        let ty: syn::Type = syn::parse_str("Vec<i32>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_option_string() {
+        let ty: syn::Type = syn::parse_str("Option<String>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_option_bool() {
+        let ty: syn::Type = syn::parse_str("Option<bool>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_vec_of_custom_type() {
+        // Vec is a known type, so Vec<User> is considered primitive-like
+        let ty: syn::Type = syn::parse_str("Vec<User>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_option_of_custom_type() {
+        // Option is a known type, so Option<User> is considered primitive-like
+        let ty: syn::Type = syn::parse_str("Option<User>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_nested_vec_option() {
+        let ty: syn::Type = syn::parse_str("Vec<Option<String>>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_nested_option_vec() {
+        let ty: syn::Type = syn::parse_str("Option<Vec<i32>>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_vec_of_datetime() {
+        let ty: syn::Type = syn::parse_str("Vec<DateTime<Utc>>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
 }

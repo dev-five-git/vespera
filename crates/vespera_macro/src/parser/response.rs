@@ -576,4 +576,37 @@ mod tests {
         assert!(responses.contains_key("200"));
         assert_eq!(responses.len(), 1);
     }
+
+    #[test]
+    fn test_extract_ok_payload_and_headers_tuple_without_headermap() {
+        // Test line 95: tuple without HeaderMap returns None for headers
+        let ty: syn::Type = syn::parse_str("(StatusCode, String)").unwrap();
+        let (payload, headers) = extract_ok_payload_and_headers(&ty);
+
+        // Payload should be String (last element unwrapped)
+        if let syn::Type::Path(type_path) = &payload {
+            assert_eq!(
+                type_path.path.segments.last().unwrap().ident.to_string(),
+                "String"
+            );
+        }
+        // Headers should be None (no HeaderMap in tuple) - this is line 95
+        assert!(headers.is_none());
+    }
+
+    #[test]
+    fn test_parse_return_type_result_with_ok_tuple_no_headermap() {
+        // Test line 95 via full parse_return_type: Result<(StatusCode, Json<T>), E>
+        let known_schemas = HashMap::new();
+        let struct_definitions = HashMap::new();
+        let return_type = parse_return_type_str("-> Result<(StatusCode, Json<String>), String>");
+
+        let responses = parse_return_type(&return_type, &known_schemas, &struct_definitions);
+
+        // Should have 200 and 400 responses
+        assert!(responses.contains_key("200"));
+        let ok_response = responses.get("200").unwrap();
+        // Headers should be None (line 95)
+        assert!(ok_response.headers.is_none());
+    }
 }

@@ -1581,5 +1581,133 @@ mod tests {
                 assert_debug_snapshot!(schema);
             });
         }
+
+        // Edge case: Empty struct variant (lines 275, 280 - empty properties/required)
+        #[test]
+        fn test_externally_tagged_empty_struct_variant() {
+            let enum_item: syn::ItemEnum = syn::parse_str(
+                r#"
+                enum Event {
+                    /// Empty struct variant
+                    Empty {},
+                    Data { value: i32 },
+                }
+                "#,
+            )
+            .unwrap();
+
+            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+
+            let one_of = schema.clone().one_of.expect("one_of missing");
+            assert_eq!(one_of.len(), 2);
+
+            // Empty variant should have properties with Empty key pointing to object with no properties
+            if let SchemaRef::Inline(empty_variant) = &one_of[0] {
+                let props = empty_variant
+                    .properties
+                    .as_ref()
+                    .expect("variant props missing");
+                let inner = match props.get("Empty").expect("Empty key missing") {
+                    SchemaRef::Inline(s) => s,
+                    _ => panic!("Expected inline schema"),
+                };
+                // Empty struct should have properties: None and required: None
+                assert!(inner.properties.is_none());
+                assert!(inner.required.is_none());
+            }
+
+            with_settings!({ snapshot_suffix => "externally_tagged_empty_struct" }, {
+                assert_debug_snapshot!(schema);
+            });
+        }
+
+        // Edge case: Internally tagged enum with tuple variant (line 468 - continue/skip)
+        #[test]
+        fn test_internally_tagged_skips_tuple_variant() {
+            let enum_item: syn::ItemEnum = syn::parse_str(
+                r#"
+                #[serde(tag = "type")]
+                enum Message {
+                    Text { content: String },
+                    Number(i32),
+                    Empty,
+                }
+                "#,
+            )
+            .unwrap();
+
+            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+
+            // Tuple variant `Number(i32)` should be skipped, only 2 variants should remain
+            let one_of = schema.clone().one_of.expect("one_of missing");
+            assert_eq!(one_of.len(), 2); // Text and Empty only
+
+            // Verify discriminator is present
+            let discriminator = schema
+                .discriminator
+                .as_ref()
+                .expect("discriminator missing");
+            assert_eq!(discriminator.property_name, "type");
+
+            with_settings!({ snapshot_suffix => "internally_tagged_skip_tuple" }, {
+                assert_debug_snapshot!(schema);
+            });
+        }
+
+        // Edge case: Untagged enum with multi-field tuple variant (lines 592, 600-611)
+        #[test]
+        fn test_untagged_multi_field_tuple_variant() {
+            let enum_item: syn::ItemEnum = syn::parse_str(
+                r#"
+                #[serde(untagged)]
+                enum Message {
+                    Text(String),
+                    Pair(i32, String),
+                    Triple(i32, String, bool),
+                }
+                "#,
+            )
+            .unwrap();
+
+            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+
+            assert!(schema.discriminator.is_none());
+
+            let one_of = schema.clone().one_of.expect("one_of missing");
+            assert_eq!(one_of.len(), 3);
+
+            // Single-field tuple should be string schema directly
+            if let SchemaRef::Inline(text_variant) = &one_of[0] {
+                assert_eq!(text_variant.schema_type, Some(SchemaType::String));
+            }
+
+            // Multi-field tuple (Pair) should be array with prefixItems
+            if let SchemaRef::Inline(pair_variant) = &one_of[1] {
+                assert_eq!(pair_variant.schema_type, Some(SchemaType::Array));
+                let prefix_items = pair_variant
+                    .prefix_items
+                    .as_ref()
+                    .expect("prefix_items missing for Pair");
+                assert_eq!(prefix_items.len(), 2);
+                assert_eq!(pair_variant.min_items, Some(2));
+                assert_eq!(pair_variant.max_items, Some(2));
+            }
+
+            // Multi-field tuple (Triple) should be array with 3 prefixItems
+            if let SchemaRef::Inline(triple_variant) = &one_of[2] {
+                assert_eq!(triple_variant.schema_type, Some(SchemaType::Array));
+                let prefix_items = triple_variant
+                    .prefix_items
+                    .as_ref()
+                    .expect("prefix_items missing for Triple");
+                assert_eq!(prefix_items.len(), 3);
+                assert_eq!(triple_variant.min_items, Some(3));
+                assert_eq!(triple_variant.max_items, Some(3));
+            }
+
+            with_settings!({ snapshot_suffix => "untagged_multi_field_tuple" }, {
+                assert_debug_snapshot!(schema);
+            });
+        }
     }
 }

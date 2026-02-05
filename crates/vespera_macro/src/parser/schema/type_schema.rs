@@ -748,4 +748,252 @@ mod tests {
             _ => panic!("Expected $ref for Schema type"),
         }
     }
+
+    // Tests for date/time types from chrono crate (lines 205-215)
+    #[rstest]
+    #[case("DateTime", "date-time")]
+    #[case("NaiveDateTime", "date-time")]
+    #[case("DateTimeWithTimeZone", "date-time")]
+    #[case("DateTimeUtc", "date-time")]
+    #[case("DateTimeLocal", "date-time")]
+    #[case("NaiveDate", "date")]
+    #[case("NaiveTime", "time")]
+    fn test_parse_type_to_schema_ref_chrono_date_time_types(
+        #[case] ty_name: &str,
+        #[case] expected_format: &str,
+    ) {
+        let ty: Type = syn::parse_str(ty_name).unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &HashMap::new(), &HashMap::new());
+
+        if let SchemaRef::Inline(schema) = schema_ref {
+            assert_eq!(
+                schema.schema_type,
+                Some(SchemaType::String),
+                "Type {} should be string schema",
+                ty_name
+            );
+            assert_eq!(
+                schema.format,
+                Some(expected_format.to_string()),
+                "Type {} should have format {}",
+                ty_name,
+                expected_format
+            );
+        } else {
+            panic!("Expected inline schema for {}", ty_name);
+        }
+    }
+
+    // Tests for date/time types from time crate (lines 218-228)
+    #[rstest]
+    #[case("OffsetDateTime", "date-time")]
+    #[case("PrimitiveDateTime", "date-time")]
+    #[case("Date", "date")]
+    #[case("Time", "time")]
+    fn test_parse_type_to_schema_ref_time_crate_types(
+        #[case] ty_name: &str,
+        #[case] expected_format: &str,
+    ) {
+        let ty: Type = syn::parse_str(ty_name).unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &HashMap::new(), &HashMap::new());
+
+        if let SchemaRef::Inline(schema) = schema_ref {
+            assert_eq!(
+                schema.schema_type,
+                Some(SchemaType::String),
+                "Type {} should be string schema",
+                ty_name
+            );
+            assert_eq!(
+                schema.format,
+                Some(expected_format.to_string()),
+                "Type {} should have format {}",
+                ty_name,
+                expected_format
+            );
+        } else {
+            panic!("Expected inline schema for {}", ty_name);
+        }
+    }
+
+    // Test for Duration type (line 231-233)
+    #[test]
+    fn test_parse_type_to_schema_ref_duration() {
+        let ty: Type = syn::parse_str("Duration").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &HashMap::new(), &HashMap::new());
+
+        if let SchemaRef::Inline(schema) = schema_ref {
+            assert_eq!(schema.schema_type, Some(SchemaType::String));
+            assert_eq!(schema.format, Some("duration".to_string()));
+        } else {
+            panic!("Expected inline schema for Duration");
+        }
+    }
+
+    // Test for qualified chrono types (e.g., chrono::DateTime<Utc>)
+    #[test]
+    fn test_parse_type_to_schema_ref_qualified_chrono_types() {
+        // Test with module-qualified paths
+        let qualified_types = vec![
+            ("chrono::DateTime<chrono::Utc>", "date-time"),
+            ("chrono::NaiveDate", "date"),
+            ("chrono::NaiveTime", "time"),
+        ];
+
+        for (ty_str, expected_format) in qualified_types {
+            let ty: Type = syn::parse_str(ty_str).unwrap();
+            let schema_ref = parse_type_to_schema_ref(&ty, &HashMap::new(), &HashMap::new());
+
+            if let SchemaRef::Inline(schema) = schema_ref {
+                assert_eq!(
+                    schema.schema_type,
+                    Some(SchemaType::String),
+                    "Type {} should be string schema",
+                    ty_str
+                );
+                assert_eq!(
+                    schema.format,
+                    Some(expected_format.to_string()),
+                    "Type {} should have format {}",
+                    ty_str,
+                    expected_format
+                );
+            } else {
+                panic!("Expected inline schema for {}", ty_str);
+            }
+        }
+    }
+
+    // Test for Option<date/time type> (ensures nullable is preserved)
+    #[rstest]
+    #[case("Option<DateTime>", "date-time")]
+    #[case("Option<NaiveDate>", "date")]
+    #[case("Option<Duration>", "duration")]
+    fn test_parse_type_to_schema_ref_optional_date_time_types(
+        #[case] ty_str: &str,
+        #[case] expected_format: &str,
+    ) {
+        let ty: Type = syn::parse_str(ty_str).unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &HashMap::new(), &HashMap::new());
+
+        if let SchemaRef::Inline(schema) = schema_ref {
+            assert_eq!(schema.schema_type, Some(SchemaType::String));
+            assert_eq!(schema.format, Some(expected_format.to_string()));
+            assert_eq!(schema.nullable, Some(true), "{} should be nullable", ty_str);
+        } else {
+            panic!("Expected inline schema for {}", ty_str);
+        }
+    }
+
+    // Test for Vec<date/time type> (array of date/time values)
+    #[test]
+    fn test_parse_type_to_schema_ref_vec_date_time_types() {
+        let ty: Type = syn::parse_str("Vec<DateTime>").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &HashMap::new(), &HashMap::new());
+
+        if let SchemaRef::Inline(schema) = schema_ref {
+            assert_eq!(schema.schema_type, Some(SchemaType::Array));
+            if let Some(SchemaRef::Inline(items)) = schema.items.as_deref() {
+                assert_eq!(items.schema_type, Some(SchemaType::String));
+                assert_eq!(items.format, Some("date-time".to_string()));
+            } else {
+                panic!("Expected inline items schema");
+            }
+        } else {
+            panic!("Expected inline schema for Vec<DateTime>");
+        }
+    }
+
+    // Test for Box<date/time type> (should be transparent)
+    #[test]
+    fn test_parse_type_to_schema_ref_box_date_time_types() {
+        let ty: Type = syn::parse_str("Box<NaiveDate>").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &HashMap::new(), &HashMap::new());
+
+        if let SchemaRef::Inline(schema) = schema_ref {
+            assert_eq!(schema.schema_type, Some(SchemaType::String));
+            assert_eq!(schema.format, Some("date".to_string()));
+        } else {
+            panic!("Expected inline schema for Box<NaiveDate>");
+        }
+    }
+
+    // Test generic struct with date/time type parameter (lines 289, 302)
+    #[test]
+    fn test_parse_type_to_schema_ref_generic_with_date_time_parameter() {
+        let mut known_schemas = HashMap::new();
+        known_schemas.insert("Event".to_string(), "Event".to_string());
+
+        let mut struct_definitions = HashMap::new();
+        // Generic struct with a date/time type parameter
+        struct_definitions.insert(
+            "Event".to_string(),
+            "struct Event<T> { timestamp: T, name: String }".to_string(),
+        );
+
+        // Concrete instantiation with DateTime
+        let ty: Type = syn::parse_str("Event<DateTime>").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &struct_definitions);
+
+        if let SchemaRef::Inline(schema) = schema_ref {
+            let props = schema.properties.as_ref().unwrap();
+
+            // Check timestamp field is DateTime with correct format
+            let timestamp_schema = props.get("timestamp").unwrap();
+            if let SchemaRef::Inline(ts) = timestamp_schema {
+                assert_eq!(ts.schema_type, Some(SchemaType::String));
+                assert_eq!(ts.format, Some("date-time".to_string()));
+            } else {
+                panic!("Expected inline schema for timestamp field");
+            }
+
+            // Check name field is String
+            let name_schema = props.get("name").unwrap();
+            if let SchemaRef::Inline(n) = name_schema {
+                assert_eq!(n.schema_type, Some(SchemaType::String));
+            } else {
+                panic!("Expected inline schema for name field");
+            }
+        } else {
+            panic!("Expected inline schema for generic Event<DateTime>");
+        }
+    }
+
+    // Test multiple generic parameters with date/time types
+    #[test]
+    fn test_parse_type_to_schema_ref_generic_multiple_date_time_params() {
+        let mut known_schemas = HashMap::new();
+        known_schemas.insert("TimeRange".to_string(), "TimeRange".to_string());
+
+        let mut struct_definitions = HashMap::new();
+        struct_definitions.insert(
+            "TimeRange".to_string(),
+            "struct TimeRange<T, U> { start: T, end: U }".to_string(),
+        );
+
+        let ty: Type = syn::parse_str("TimeRange<DateTime, NaiveDate>").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &struct_definitions);
+
+        if let SchemaRef::Inline(schema) = schema_ref {
+            let props = schema.properties.as_ref().unwrap();
+
+            // Check start field is DateTime
+            let start = props.get("start").unwrap();
+            if let SchemaRef::Inline(s) = start {
+                assert_eq!(s.format, Some("date-time".to_string()));
+            } else {
+                panic!("Expected inline for start");
+            }
+
+            // Check end field is NaiveDate
+            let end = props.get("end").unwrap();
+            if let SchemaRef::Inline(e) = end {
+                assert_eq!(e.format, Some("date".to_string()));
+            } else {
+                panic!("Expected inline for end");
+            }
+        } else {
+            panic!("Expected inline schema for TimeRange");
+        }
+    }
 }
