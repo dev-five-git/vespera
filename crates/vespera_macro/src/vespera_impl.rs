@@ -163,7 +163,10 @@ pub(crate) fn process_vespera_macro(
     if !folder_path.exists() {
         return Err(syn::Error::new(
             Span::call_site(),
-            format!("vespera! macro: route folder '{}' not found. Create src/{} or specify a different folder with `dir = \"your_folder\"`.", processed.folder_name, processed.folder_name),
+            format!(
+                "vespera! macro: route folder '{}' not found. Create src/{} or specify a different folder with `dir = \"your_folder\"`.",
+                processed.folder_name, processed.folder_name
+            ),
         ));
     }
 
@@ -196,7 +199,10 @@ pub(crate) fn process_export_app(
     if !folder_path.exists() {
         return Err(syn::Error::new(
             Span::call_site(),
-            format!("export_app! macro: route folder '{}' not found. Create src/{} or specify a different folder with `dir = \"your_folder\"`.", folder_name, folder_name),
+            format!(
+                "export_app! macro: route folder '{}' not found. Create src/{} or specify a different folder with `dir = \"your_folder\"`.",
+                folder_name, folder_name
+            ),
         ));
     }
 

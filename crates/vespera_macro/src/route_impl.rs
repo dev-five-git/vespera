@@ -81,10 +81,12 @@ mod tests {
         };
         let result = validate_route_fn(&item);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("function must be public"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("function must be public")
+        );
     }
 
     #[test]
@@ -96,10 +98,12 @@ mod tests {
         };
         let result = validate_route_fn(&item);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("function must be async"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("function must be async")
+        );
     }
 
     #[test]

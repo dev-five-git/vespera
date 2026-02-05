@@ -342,7 +342,6 @@ pub fn generate_from_model_with_relations(
     // Generate parent stub definition if needed
     let parent_stub_def = if needs_parent_stub {
         quote! {
-            #[allow(unused_variables)]
             let __parent_stub__ = Self {
                 #(#parent_stub_fields),*
             };

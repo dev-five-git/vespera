@@ -3,10 +3,9 @@
 //! Defines input structures for `schema!` and `schema_type!` macros.
 
 use syn::{
-    bracketed, parenthesized,
+    Ident, LitStr, Token, Type, bracketed, parenthesized,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
-    Ident, LitStr, Token, Type,
 };
 
 /// Input for the schema! macro
@@ -184,7 +183,10 @@ impl Parse for SchemaTypeInput {
         if from_ident != "from" {
             return Err(syn::Error::new(
                 from_ident.span(),
-                format!("schema_type! macro: expected `from` keyword, found `{}`. Use format: `schema_type!(NewType from SourceType, ...)`.", from_ident),
+                format!(
+                    "schema_type! macro: expected `from` keyword, found `{}`. Use format: `schema_type!(NewType from SourceType, ...)`.",
+                    from_ident
+                ),
             ));
         }
 

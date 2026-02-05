@@ -36,10 +36,9 @@
 use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    bracketed,
+    LitStr, bracketed,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
-    LitStr,
 };
 use vespera_core::{openapi::Server, route::HttpMethod};
 

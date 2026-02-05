@@ -683,7 +683,6 @@ pub fn get_users() -> String {
             &temp_dir,
             "user.rs",
             r#"
-#[allow(dead_code)]
 pub struct User {
     pub id: i32,
     pub name: String,

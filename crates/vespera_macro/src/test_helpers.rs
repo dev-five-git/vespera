@@ -87,12 +87,6 @@ pub fn assert_schema_type(schema: &serde_json::Value, expected_type: &str) {
     );
 }
 
-/// Create temp directory for tests
-#[allow(dead_code)]
-pub fn create_test_temp_dir() -> tempfile::TempDir {
-    tempfile::TempDir::new().expect("Failed to create temp dir")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
