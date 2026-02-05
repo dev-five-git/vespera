@@ -8,6 +8,8 @@
 
 #![allow(dead_code)]
 
+use proc_macro2::Delimiter;
+use syn::parse::discouraged::AnyDelimiter;
 use syn::{Ident, LitStr, Token, parse::ParseStream};
 
 /// Parse a comma-separated list with optional trailing comma.
@@ -52,8 +54,10 @@ pub fn parse_bracketed_list<T, F>(input: ParseStream, parser: F) -> syn::Result<
 where
     F: Fn(ParseStream) -> syn::Result<T>,
 {
-    let content;
-    syn::bracketed!(content in input);
+    let (delim, _span, content) = input.parse_any_delimiter()?;
+    if delim != Delimiter::Bracket {
+        return Err(content.error("expected brackets"));
+    }
     parse_comma_list(&content, parser)
 }
 
@@ -419,5 +423,51 @@ mod tests {
         assert!(result.is_ok());
         let items: Vec<i32> = result.unwrap();
         assert_eq!(items, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_parse_bracketed_list_wrong_delimiter_parens() {
+        // Test parse_bracketed_list with parentheses instead of brackets - should error
+        let parser = |input: ParseStream| {
+            parse_bracketed_list(input, |input| {
+                input.parse::<LitStr>().map(|lit| lit.value())
+            })
+        };
+
+        let tokens = quote::quote!(("a", "b"));
+        let result = parser.parse2(tokens);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("expected brackets"));
+    }
+
+    #[test]
+    fn test_parse_bracketed_list_wrong_delimiter_braces() {
+        // Test parse_bracketed_list with braces instead of brackets - should error
+        let parser = |input: ParseStream| {
+            parse_bracketed_list(input, |input| {
+                input.parse::<LitStr>().map(|lit| lit.value())
+            })
+        };
+
+        let tokens = quote::quote!({"a", "b"});
+        let result = parser.parse2(tokens);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("expected brackets"));
+    }
+
+    #[test]
+    fn test_parse_bracketed_list_no_delimiter() {
+        // Test parse_bracketed_list with no delimiter at all - should error
+        let parser = |input: ParseStream| {
+            parse_bracketed_list(input, |input| {
+                input.parse::<LitStr>().map(|lit| lit.value())
+            })
+        };
+
+        let tokens = quote::quote!("just_a_string");
+        let result = parser.parse2(tokens);
+        assert!(result.is_err());
     }
 }
