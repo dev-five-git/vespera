@@ -651,6 +651,18 @@ pub fn get_users() -> String {
         let permissions = fs::Permissions::from_mode(0o000);
         fs::set_permissions(&file_path, permissions).expect("Failed to set permissions");
 
+        // Verify permissions actually took effect (they don't on WSL with Windows filesystem)
+        // If we can still read the file, skip this test
+        if fs::read_to_string(&file_path).is_ok() {
+            // Restore permissions for cleanup
+            let permissions = fs::Permissions::from_mode(0o644);
+            fs::set_permissions(&file_path, permissions).ok();
+            eprintln!(
+                "Skipping test: filesystem doesn't respect Unix permissions (likely WSL with NTFS)"
+            );
+            return;
+        }
+
         // Attempt to collect metadata - should fail with "failed to read route file" error
         let result = collect_metadata(temp_dir.path(), folder_name);
 
