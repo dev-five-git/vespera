@@ -1,12 +1,46 @@
-use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
-pub fn collect_files(folder_path: &Path) -> Result<Vec<PathBuf>> {
+/// Read and parse a Rust source file, returning None on error (silent).
+pub fn try_read_and_parse_file(path: &Path) -> Option<syn::File> {
+    let content = std::fs::read_to_string(path).ok()?;
+    syn::parse_file(&content).ok()
+}
+
+/// Read and parse a Rust source file, printing warnings on error.
+pub fn read_and_parse_file_warn(path: &Path, context: &str) -> Option<syn::File> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "Warning: {}: Cannot read '{}': {}",
+                context,
+                path.display(),
+                e
+            );
+            return None;
+        }
+    };
+    match syn::parse_file(&content) {
+        Ok(ast) => Some(ast),
+        Err(e) => {
+            eprintln!(
+                "Warning: {}: Parse error in '{}': {}",
+                context,
+                path.display(),
+                e
+            );
+            None
+        }
+    }
+}
+
+pub fn collect_files(folder_path: &Path) -> io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    for entry in std::fs::read_dir(folder_path)
-        .with_context(|| format!("Failed to read directory: {}", folder_path.display()))?
-    {
-        let entry = entry.with_context(|| "Failed to read directory entry")?;
+    for entry in std::fs::read_dir(folder_path)? {
+        let entry = entry?;
         let path = entry.path();
         if path.is_file() {
             files.push(folder_path.join(path));
@@ -39,11 +73,12 @@ pub fn file_to_segments(file: &Path, base_path: &Path) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::{fs, path::PathBuf};
+
     use rstest::rstest;
-    use std::fs;
-    use std::path::PathBuf;
     use tempfile::TempDir;
+
+    use super::*;
 
     #[rstest]
     // Simple file paths

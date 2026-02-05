@@ -1,3 +1,5 @@
+use crate::http::is_http_method;
+
 pub struct RouteArgs {
     pub method: Option<syn::Ident>,
     pub path: Option<syn::LitStr>,
@@ -22,33 +24,26 @@ impl syn::parse::Parse for RouteArgs {
                 // Try to parse as method identifier (get, post, etc.)
                 let ident: syn::Ident = input.parse()?;
                 let ident_str = ident.to_string().to_lowercase();
-                match ident_str.as_str() {
-                    "get" | "post" | "put" | "patch" | "delete" | "head" | "options" => {
-                        method = Some(ident);
-                    }
-                    "path" => {
-                        input.parse::<syn::Token![=]>()?;
-                        let lit: syn::LitStr = input.parse()?;
-                        path = Some(lit);
-                    }
-                    "error_status" => {
-                        input.parse::<syn::Token![=]>()?;
-                        let array: syn::ExprArray = input.parse()?;
-                        error_status = Some(array);
-                    }
-                    "tags" => {
-                        input.parse::<syn::Token![=]>()?;
-                        let array: syn::ExprArray = input.parse()?;
-                        tags = Some(array);
-                    }
-                    "description" => {
-                        input.parse::<syn::Token![=]>()?;
-                        let lit: syn::LitStr = input.parse()?;
-                        description = Some(lit);
-                    }
-                    _ => {
-                        return Err(lookahead.error());
-                    }
+                if is_http_method(&ident_str) {
+                    method = Some(ident);
+                } else if ident_str == "path" {
+                    input.parse::<syn::Token![=]>()?;
+                    let lit: syn::LitStr = input.parse()?;
+                    path = Some(lit);
+                } else if ident_str == "error_status" {
+                    input.parse::<syn::Token![=]>()?;
+                    let array: syn::ExprArray = input.parse()?;
+                    error_status = Some(array);
+                } else if ident_str == "tags" {
+                    input.parse::<syn::Token![=]>()?;
+                    let array: syn::ExprArray = input.parse()?;
+                    tags = Some(array);
+                } else if ident_str == "description" {
+                    input.parse::<syn::Token![=]>()?;
+                    let lit: syn::LitStr = input.parse()?;
+                    description = Some(lit);
+                } else {
+                    return Err(lookahead.error());
                 }
 
                 // Check if there's a comma
@@ -74,8 +69,9 @@ impl syn::parse::Parse for RouteArgs {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rstest::rstest;
+
+    use super::*;
 
     #[rstest]
     // Method only

@@ -1,21 +1,26 @@
 //! Collector for routes and structs
 
-use crate::file_utils::{collect_files, file_to_segments};
-use crate::metadata::{CollectedMetadata, RouteMetadata};
-use crate::route::{extract_doc_comment, extract_route_info};
-use anyhow::{Context, Result};
 use std::path::Path;
+
 use syn::Item;
 
+use crate::{
+    error::{MacroResult, err_call_site},
+    file_utils::{collect_files, file_to_segments},
+    metadata::{CollectedMetadata, RouteMetadata},
+    route::{extract_doc_comment, extract_route_info},
+};
+
 /// Collect routes and structs from a folder
-pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> Result<CollectedMetadata> {
+pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> MacroResult<CollectedMetadata> {
     let mut metadata = CollectedMetadata::new();
 
-    let files = collect_files(folder_path).with_context(|| {
-        format!(
-            "Failed to collect files from wtf: {}",
-            folder_path.display()
-        )
+    let files = collect_files(folder_path).map_err(|e| {
+        err_call_site(format!(
+            "vespera! macro: failed to scan route folder '{}': {}. Verify the folder exists and is readable.",
+            folder_path.display(),
+            e
+        ))
     })?;
 
     for file in files {
@@ -23,21 +28,34 @@ pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> Result<Collect
             continue;
         }
 
-        let content = std::fs::read_to_string(&file)
-            .with_context(|| format!("Failed to read file: {}", file.display()))?;
+        let content = std::fs::read_to_string(&file).map_err(|e| {
+            err_call_site(format!(
+                "vespera! macro: failed to read route file '{}': {}. Check file permissions.",
+                file.display(),
+                e
+            ))
+        })?;
 
-        let file_ast = syn::parse_file(&content)
-            .with_context(|| format!("Failed to parse file: {}", file.display()))?;
+        let file_ast = syn::parse_file(&content).map_err(|e| {
+            err_call_site(format!(
+                "vespera! macro: syntax error in '{}': {}. Fix the Rust syntax errors in this file.",
+                file.display(),
+                e
+            ))
+        })?;
 
         // Get module path
         let segments = file
             .strip_prefix(folder_path)
             .map(|file_stem| file_to_segments(file_stem, folder_path))
-            .context(format!(
-                "Failed to strip prefix from file: {} (base: {})",
-                file.display(),
-                folder_path.display()
-            ))?;
+            .map_err(|e| {
+                err_call_site(format!(
+                    "Failed to strip prefix from file: {} (base: {}): {}",
+                    file.display(),
+                    folder_path.display(),
+                    e
+                ))
+            })?;
 
         let module_path = if folder_name.is_empty() {
             segments.join("::")
@@ -87,10 +105,12 @@ pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> Result<Collect
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rstest::rstest;
     use std::fs;
+
+    use rstest::rstest;
     use tempfile::TempDir;
+
+    use super::*;
 
     fn create_temp_file(dir: &TempDir, filename: &str, content: &str) -> std::path::PathBuf {
         let file_path = dir.path().join(filename);
@@ -600,7 +620,7 @@ pub fn options_handler() -> String { "options".to_string() }
         // Should return error when collect_files fails
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
-        assert!(error_msg.contains("Failed to collect files"));
+        assert!(error_msg.contains("failed to scan route folder"));
     }
 
     #[test]

@@ -3139,7 +3139,6 @@ dependencies = [
 name = "vespera_macro"
 version = "0.1.29"
 dependencies = [
- "anyhow",
  "insta",
  "proc-macro2",
  "quote",

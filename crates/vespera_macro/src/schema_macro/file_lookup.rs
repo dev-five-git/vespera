@@ -4,8 +4,9 @@
 
 use std::path::Path;
 
-use crate::metadata::StructMetadata;
 use syn::Type;
+
+use crate::{file_utils::try_read_and_parse_file, metadata::StructMetadata};
 
 /// Try to find a struct definition from a module path by reading source files.
 ///
@@ -90,8 +91,7 @@ pub fn find_struct_from_path(
             continue;
         }
 
-        let content = std::fs::read_to_string(&file_path).ok()?;
-        let file_ast = syn::parse_file(&content).ok()?;
+        let file_ast = try_read_and_parse_file(&file_path)?;
 
         // Look for the struct in the file
         for item in &file_ast.items {
@@ -142,14 +142,8 @@ pub fn find_struct_by_name_in_all_files(
     let mut found_structs: Vec<(std::path::PathBuf, StructMetadata)> = Vec::new();
 
     for file_path in rs_files {
-        let content = match std::fs::read_to_string(&file_path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let file_ast = match syn::parse_file(&content) {
-            Ok(ast) => ast,
-            Err(_) => continue,
+        let Some(file_ast) = try_read_and_parse_file(&file_path) else {
+            continue;
         };
 
         // Look for the struct in the file
@@ -328,8 +322,7 @@ pub fn find_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
             continue;
         }
 
-        let content = std::fs::read_to_string(&file_path).ok()?;
-        let file_ast = syn::parse_file(&content).ok()?;
+        let file_ast = try_read_and_parse_file(&file_path)?;
 
         // Look for the struct in the file
         for item in &file_ast.items {
@@ -389,8 +382,7 @@ pub fn find_model_from_schema_path(schema_path_str: &str) -> Option<StructMetada
             continue;
         }
 
-        let content = std::fs::read_to_string(&file_path).ok()?;
-        let file_ast = syn::parse_file(&content).ok()?;
+        let file_ast = try_read_and_parse_file(&file_path)?;
 
         // Look for Model struct in the file
         for item in &file_ast.items {
@@ -410,10 +402,12 @@ pub fn find_model_from_schema_path(schema_path_str: &str) -> Option<StructMetada
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use serial_test::serial;
     use std::path::Path;
+
+    use serial_test::serial;
     use tempfile::TempDir;
+
+    use super::*;
 
     #[test]
     fn test_file_path_to_module_path_simple() {

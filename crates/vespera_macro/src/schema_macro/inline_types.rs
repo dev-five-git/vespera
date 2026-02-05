@@ -6,10 +6,12 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::circular::detect_circular_fields;
-use super::file_lookup::find_model_from_schema_path;
-use super::seaorm::RelationFieldInfo;
-use super::type_utils::{capitalize_first, is_seaorm_relation_type};
+use super::{
+    circular::detect_circular_fields,
+    file_lookup::find_model_from_schema_path,
+    seaorm::RelationFieldInfo,
+    type_utils::{capitalize_first, is_seaorm_relation_type},
+};
 use crate::parser::{extract_rename_all, extract_skip};
 
 /// Information about an inline relation type to generate
@@ -258,8 +260,9 @@ pub fn generate_inline_type_definition(inline_type: &InlineRelationType) -> Toke
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serial_test::serial;
+
+    use super::*;
 
     #[test]
     fn test_generate_inline_type_definition() {

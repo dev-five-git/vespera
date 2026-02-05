@@ -41,9 +41,10 @@ pub fn is_keyword_type_by_type_path(ty: &TypePath, keyword: &KeywordType) -> boo
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rstest::rstest;
     use syn::parse_str;
+
+    use super::*;
 
     fn syn_type(ty: &str) -> Type {
         parse_str::<Type>(ty).expect("Failed to parse type")

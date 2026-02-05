@@ -2,8 +2,12 @@
 //!
 //! Defines input structures for `schema!` and `schema_type!` macros.
 
-use syn::punctuated::Punctuated;
-use syn::{Ident, LitStr, Token, Type, bracketed, parenthesized, parse::Parse, parse::ParseStream};
+use syn::{
+    bracketed, parenthesized,
+    parse::{Parse, ParseStream},
+    punctuated::Punctuated,
+    Ident, LitStr, Token, Type,
+};
 
 /// Input for the schema! macro
 ///
@@ -72,7 +76,7 @@ impl Parse for SchemaInput {
         if omit.is_some() && pick.is_some() {
             return Err(syn::Error::new(
                 input.span(),
-                "cannot use both `omit` and `pick` in the same schema! invocation",
+                "schema! macro: cannot use both `omit` and `pick` in the same invocation. Use one or the other to filter fields.",
             ));
         }
 
@@ -180,7 +184,7 @@ impl Parse for SchemaTypeInput {
         if from_ident != "from" {
             return Err(syn::Error::new(
                 from_ident.span(),
-                format!("expected `from`, found `{}`", from_ident),
+                format!("schema_type! macro: expected `from` keyword, found `{}`. Use format: `schema_type!(NewType from SourceType, ...)`.", from_ident),
             ));
         }
 
@@ -295,7 +299,7 @@ impl Parse for SchemaTypeInput {
         if omit.is_some() && pick.is_some() {
             return Err(syn::Error::new(
                 input.span(),
-                "cannot use both `omit` and `pick` in the same schema_type! invocation",
+                "schema_type! macro: cannot use both `omit` and `pick` in the same invocation. Use one or the other to filter fields.",
             ));
         }
 
@@ -623,7 +627,8 @@ mod tests {
         assert!(result.is_err());
         match result {
             Err(e) => assert!(
-                e.to_string().contains("expected `from`, found `fron`"),
+                e.to_string()
+                    .contains("expected `from` keyword, found `fron`"),
                 "Error: {}",
                 e
             ),

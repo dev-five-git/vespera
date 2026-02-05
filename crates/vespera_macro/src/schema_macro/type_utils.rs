@@ -4,6 +4,7 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
+use serde_json;
 use syn::Type;
 
 /// Extract type name from a Type
@@ -12,13 +13,16 @@ pub fn extract_type_name(ty: &Type) -> Result<String, syn::Error> {
         Type::Path(type_path) => {
             // Get the last segment (handles paths like crate::User)
             let segment = type_path.path.segments.last().ok_or_else(|| {
-                syn::Error::new_spanned(ty, "expected a type path with at least one segment")
+                syn::Error::new_spanned(
+                    ty,
+                    "extract_type_name: type path has no segments. Provide a valid type like `User` or `crate::models::User`.",
+                )
             })?;
             Ok(segment.ident.to_string())
         }
         _ => Err(syn::Error::new_spanned(
             ty,
-            "expected a type path (e.g., `User` or `crate::User`)",
+            "extract_type_name: expected a type path, not a reference or other type. Use a type like `User` or `crate::User` instead of `&User`.",
         )),
     }
 }
@@ -207,10 +211,156 @@ pub fn capitalize_first(s: &str) -> String {
     }
 }
 
+/// Check if a type is Vec<T>
+#[allow(dead_code)]
+pub fn is_vec_type(ty: &Type) -> bool {
+    match ty {
+        Type::Path(type_path) => type_path
+            .path
+            .segments
+            .first()
+            .map(|s| s.ident == "Vec")
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// Check if a type is Box<T>
+#[allow(dead_code)]
+pub fn is_box_type(ty: &Type) -> bool {
+    match ty {
+        Type::Path(type_path) => type_path
+            .path
+            .segments
+            .first()
+            .map(|s| s.ident == "Box")
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// Check if a type is Result<T, E>
+#[allow(dead_code)]
+pub fn is_result_type(ty: &Type) -> bool {
+    match ty {
+        Type::Path(type_path) => type_path
+            .path
+            .segments
+            .first()
+            .map(|s| s.ident == "Result")
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// Check if a type is HashMap or BTreeMap
+pub fn is_map_type(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        let path = &type_path.path;
+        if !path.segments.is_empty() {
+            let segment = path.segments.last().unwrap();
+            let ident_str = segment.ident.to_string();
+            return ident_str == "HashMap" || ident_str == "BTreeMap";
+        }
+    }
+    false
+}
+
+/// Check if a type is a primitive type OR a known well-behaved container with primitive contents
+pub fn is_primitive_like(ty: &Type) -> bool {
+    if is_primitive_or_known_type(&extract_type_name(ty).unwrap_or_default()) {
+        return true;
+    }
+    if let Type::Path(type_path) = ty
+        && let Some(seg) = type_path.path.segments.last()
+    {
+        let ident = seg.ident.to_string();
+        if let syn::PathArguments::AngleBracketed(args) = &seg.arguments
+            && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+            && (ident == "Vec" || ident == "Option")
+            && is_primitive_like(inner_ty)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Extract the inner type from a generic type (e.g., Vec<T> -> T, Option<T> -> T)
+#[allow(dead_code)]
+pub fn extract_inner_type(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Path(type_path) => type_path.path.segments.last().and_then(|segment| {
+            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                args.args.first().and_then(|arg| {
+                    if let syn::GenericArgument::Type(inner_ty) = arg {
+                        Some(inner_ty)
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            }
+        }),
+        _ => None,
+    }
+}
+
+/// Extract a Type::Path from a Type if it is one
+#[allow(dead_code)]
+pub fn extract_type_path(ty: &Type) -> Option<&syn::TypePath> {
+    match ty {
+        Type::Path(type_path) => Some(type_path),
+        _ => None,
+    }
+}
+
+/// Recursively unwrap wrapper types (Option, Box, Vec) to get the innermost type
+#[allow(dead_code)]
+pub fn unwrap_to_inner(ty: &Type) -> &Type {
+    match ty {
+        Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                let ident_str = segment.ident.to_string();
+                if (ident_str == "Option" || ident_str == "Box" || ident_str == "Vec")
+                    && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+                    && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+                {
+                    return unwrap_to_inner(inner_ty);
+                }
+            }
+            ty
+        }
+        _ => ty,
+    }
+}
+
+/// Get type-specific default value for simple #[serde(default)]
+pub fn get_type_default(ty: &Type) -> Option<serde_json::Value> {
+    match ty {
+        Type::Path(type_path) => type_path.path.segments.last().and_then(|segment| {
+            match segment.ident.to_string().as_str() {
+                "String" => Some(serde_json::Value::String(String::new())),
+                "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => {
+                    Some(serde_json::Value::Number(serde_json::Number::from(0)))
+                }
+                "f32" | "f64" => Some(serde_json::Value::Number(
+                    serde_json::Number::from_f64(0.0).unwrap_or(serde_json::Number::from(0)),
+                )),
+                "bool" => Some(serde_json::Value::Bool(false)),
+                _ => None,
+            }
+        }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rstest::rstest;
+
+    use super::*;
     fn empty_type_path() -> syn::Type {
         syn::Type::Path(syn::TypePath {
             qself: None,
@@ -481,5 +631,149 @@ mod tests {
         let tokens = resolve_type_to_absolute_path(&ty, &module_path);
         let output = tokens.to_string();
         assert!(output.trim().is_empty());
+    }
+
+    #[test]
+    fn test_is_vec_type_true() {
+        let ty: syn::Type = syn::parse_str("Vec<String>").unwrap();
+        assert!(is_vec_type(&ty));
+    }
+
+    #[test]
+    fn test_is_vec_type_false() {
+        let ty: syn::Type = syn::parse_str("String").unwrap();
+        assert!(!is_vec_type(&ty));
+    }
+
+    #[test]
+    fn test_is_box_type_true() {
+        let ty: syn::Type = syn::parse_str("Box<String>").unwrap();
+        assert!(is_box_type(&ty));
+    }
+
+    #[test]
+    fn test_is_box_type_false() {
+        let ty: syn::Type = syn::parse_str("String").unwrap();
+        assert!(!is_box_type(&ty));
+    }
+
+    #[test]
+    fn test_is_result_type_true() {
+        let ty: syn::Type = syn::parse_str("Result<String, Error>").unwrap();
+        assert!(is_result_type(&ty));
+    }
+
+    #[test]
+    fn test_is_result_type_false() {
+        let ty: syn::Type = syn::parse_str("String").unwrap();
+        assert!(!is_result_type(&ty));
+    }
+
+    #[rstest]
+    #[case("HashMap<String, i32>", true)]
+    #[case("BTreeMap<String, i32>", true)]
+    #[case("String", false)]
+    #[case("Vec<String>", false)]
+    fn test_is_map_type(#[case] type_str: &str, #[case] expected: bool) {
+        let ty: syn::Type = syn::parse_str(type_str).unwrap();
+        assert_eq!(is_map_type(&ty), expected);
+    }
+
+    #[test]
+    fn test_extract_inner_type_vec() {
+        let ty: syn::Type = syn::parse_str("Vec<String>").unwrap();
+        let inner = extract_inner_type(&ty);
+        assert!(inner.is_some());
+        let inner_str = quote!(#inner).to_string();
+        assert!(inner_str.contains("String"));
+    }
+
+    #[test]
+    fn test_extract_inner_type_option() {
+        let ty: syn::Type = syn::parse_str("Option<i32>").unwrap();
+        let inner = extract_inner_type(&ty);
+        assert!(inner.is_some());
+        let inner_str = quote!(#inner).to_string();
+        assert!(inner_str.contains("i32"));
+    }
+
+    #[test]
+    fn test_extract_inner_type_non_generic() {
+        let ty: syn::Type = syn::parse_str("String").unwrap();
+        let inner = extract_inner_type(&ty);
+        assert!(inner.is_none());
+    }
+
+    #[test]
+    fn test_extract_type_path_simple() {
+        let ty: syn::Type = syn::parse_str("User").unwrap();
+        let path = extract_type_path(&ty);
+        assert!(path.is_some());
+    }
+
+    #[test]
+    fn test_extract_type_path_reference() {
+        let ty: syn::Type = syn::parse_str("&str").unwrap();
+        let path = extract_type_path(&ty);
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn test_unwrap_to_inner_nested() {
+        let ty: syn::Type = syn::parse_str("Option<Box<Vec<String>>>").unwrap();
+        let inner = unwrap_to_inner(&ty);
+        let inner_str = quote!(#inner).to_string();
+        assert!(inner_str.contains("String"));
+    }
+
+    #[test]
+    fn test_unwrap_to_inner_no_wrappers() {
+        let ty: syn::Type = syn::parse_str("String").unwrap();
+        let inner = unwrap_to_inner(&ty);
+        let inner_str = quote!(#inner).to_string();
+        assert!(inner_str.contains("String"));
+    }
+
+    #[rstest]
+    #[case("String", Some(serde_json::Value::String(String::new())))]
+    #[case("i32", Some(serde_json::Value::Number(serde_json::Number::from(0))))]
+    #[case("bool", Some(serde_json::Value::Bool(false)))]
+    #[case("f64", Some(serde_json::Value::Number(serde_json::Number::from_f64(0.0).unwrap())))]
+    #[case("CustomType", None)]
+    fn test_get_type_default(#[case] type_str: &str, #[case] expected: Option<serde_json::Value>) {
+        let ty: syn::Type = syn::parse_str(type_str).unwrap();
+        let result = get_type_default(&ty);
+        match expected {
+            Some(exp) => {
+                assert!(result.is_some());
+                let res = result.unwrap();
+                assert_eq!(res, exp);
+            }
+            None => assert!(result.is_none()),
+        }
+    }
+
+    #[test]
+    fn test_is_primitive_like_true() {
+        let ty: syn::Type = syn::parse_str("String").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_vec_of_primitives() {
+        let ty: syn::Type = syn::parse_str("Vec<String>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_option_of_primitives() {
+        let ty: syn::Type = syn::parse_str("Option<i32>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_custom_type() {
+        let ty: syn::Type = syn::parse_str("User").unwrap();
+        assert!(!is_primitive_like(&ty));
     }
 }

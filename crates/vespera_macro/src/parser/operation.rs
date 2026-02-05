@@ -217,10 +217,12 @@ pub fn build_operation_from_function(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rstest::rstest;
     use std::collections::HashMap;
+
+    use rstest::rstest;
     use vespera_core::schema::{SchemaRef, SchemaType};
+
+    use super::*;
 
     fn param_schema_type(param: &Parameter) -> Option<SchemaType> {
         match param.schema.as_ref()? {

@@ -448,8 +448,9 @@ pub fn convert_relation_type_to_schema(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rstest::rstest;
+
+    use super::*;
 
     #[rstest]
     #[case(

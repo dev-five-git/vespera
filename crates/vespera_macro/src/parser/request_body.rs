@@ -86,10 +86,12 @@ pub fn parse_request_body(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::HashMap;
+
     use insta::{assert_debug_snapshot, with_settings};
     use rstest::rstest;
-    use std::collections::HashMap;
+
+    use super::*;
 
     #[rstest]
     #[case("String", true)]

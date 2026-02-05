@@ -3,9 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use syn::{ReturnType, Type};
 use vespera_core::route::{Header, MediaType, Response};
 
-use crate::parser::is_keyword_type::{KeywordType, is_keyword_type, is_keyword_type_by_type_path};
-
 use super::schema::parse_type_to_schema_ref_with_schemas;
+use crate::parser::is_keyword_type::{KeywordType, is_keyword_type, is_keyword_type_by_type_path};
 
 /// Unwrap Json<T> to get T
 /// Handles both Json<T> and vespera::axum::Json<T> by checking the last segment
@@ -242,10 +241,12 @@ pub fn parse_return_type(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rstest::rstest;
     use std::collections::HashMap;
+
+    use rstest::rstest;
     use vespera_core::schema::{SchemaRef, SchemaType};
+
+    use super::*;
 
     #[derive(Debug)]
     struct ExpectedSchema {

@@ -6,12 +6,14 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Type;
 
-use super::circular::{
-    detect_circular_fields, generate_inline_struct_construction, generate_inline_type_construction,
-    has_fk_relations, is_circular_relation_required,
+use super::{
+    circular::{
+        detect_circular_fields, generate_inline_struct_construction,
+        generate_inline_type_construction, has_fk_relations, is_circular_relation_required,
+    },
+    file_lookup::find_struct_from_schema_path,
+    seaorm::RelationFieldInfo,
 };
-use super::file_lookup::find_struct_from_schema_path;
-use super::seaorm::RelationFieldInfo;
 use crate::metadata::StructMetadata;
 
 /// Build Entity path from Schema path.
@@ -371,8 +373,9 @@ pub fn generate_from_model_with_relations(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serial_test::serial;
+
+    use super::*;
 
     #[test]
     fn test_build_entity_path_from_schema_path() {

@@ -6,8 +6,10 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::seaorm::extract_belongs_to_from_field;
-use super::type_utils::{capitalize_first, is_option_type, is_seaorm_relation_type};
+use super::{
+    seaorm::extract_belongs_to_from_field,
+    type_utils::{capitalize_first, is_option_type, is_seaorm_relation_type},
+};
 use crate::parser::extract_skip;
 
 /// Detect circular reference fields in a related schema.
@@ -327,8 +329,9 @@ pub fn generate_inline_type_construction(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rstest::rstest;
+
+    use super::*;
 
     #[rstest]
     #[case(

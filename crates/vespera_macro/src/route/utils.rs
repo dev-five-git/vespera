@@ -1,4 +1,4 @@
-use crate::args::RouteArgs;
+use crate::{args::RouteArgs, http::is_http_method};
 
 /// Extract doc comments from attributes
 /// Returns concatenated doc comment string or None if no doc comments
@@ -134,14 +134,7 @@ pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
                     }) = &meta_nv.value
                     {
                         let method_str = lit_str.value().to_lowercase();
-                        if method_str == "get"
-                            || method_str == "post"
-                            || method_str == "put"
-                            || method_str == "patch"
-                            || method_str == "delete"
-                            || method_str == "head"
-                            || method_str == "options"
-                        {
+                        if is_http_method(&method_str) {
                             return Some(RouteInfo {
                                 method: method_str,
                                 path: None,
@@ -170,8 +163,9 @@ pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rstest::rstest;
+
+    use super::*;
 
     fn parse_meta_from_attr(attr_str: &str) -> syn::Meta {
         // Parse attribute from string like "#[route()]" or "#[vespera::route(get)]"
