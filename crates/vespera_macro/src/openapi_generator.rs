@@ -58,13 +58,8 @@ pub fn generate_openapi_doc_with_metadata(
             syn::Item::Enum(enum_item) => {
                 parse_enum_to_schema(enum_item, &known_schema_names, &struct_definitions)
             }
-            _ => {
-                // Skip items that can't be parsed as struct (defensive - should not happen)
-                let Ok(struct_item) = syn::parse_str(&struct_meta.definition) else {
-                    continue;
-                };
-                parse_struct_to_schema(&struct_item, &known_schema_names, &struct_definitions)
-            }
+            // Metadata definitions should only contain structs or enums - skip anything else
+            _ => continue,
         };
 
         // Process default values for struct fields

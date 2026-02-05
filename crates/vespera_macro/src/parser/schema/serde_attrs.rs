@@ -1914,5 +1914,66 @@ mod tests {
                 }
             );
         }
+
+        /// Helper to create a path-only serde attribute (#[serde] without parentheses)
+        /// This format causes require_list() to fail (returns Err)
+        fn create_path_only_serde_attr() -> syn::Attribute {
+            syn::Attribute {
+                pound_token: syn::token::Pound::default(),
+                style: syn::AttrStyle::Outer,
+                bracket_token: syn::token::Bracket::default(),
+                meta: syn::Meta::Path(syn::Path::from(syn::Ident::new("serde", Span::call_site()))),
+            }
+        }
+
+        /// Test extract_tag with non-list serde attribute (line 524)
+        /// When require_list() fails, extract_tag should continue to next attribute
+        #[test]
+        fn test_extract_tag_non_list_attr_continues() {
+            // First attr is path-only (#[serde]), second has the actual tag
+            let path_attr = create_path_only_serde_attr();
+            let list_attr = {
+                let src = r#"#[serde(tag = "type")] enum Foo { A }"#;
+                let item: syn::ItemEnum = syn::parse_str(src).unwrap();
+                item.attrs.into_iter().next().unwrap()
+            };
+
+            // extract_tag should skip the path-only attr and find tag in second attr
+            let result = extract_tag(&[path_attr, list_attr]);
+            assert_eq!(result.as_deref(), Some("type"));
+        }
+
+        /// Test extract_tag with only non-list serde attribute returns None (line 524)
+        #[test]
+        fn test_extract_tag_only_non_list_attr_returns_none() {
+            let path_attr = create_path_only_serde_attr();
+            let result = extract_tag(&[path_attr]);
+            assert_eq!(result, None);
+        }
+
+        /// Test extract_content with non-list serde attribute (line 574)
+        /// When require_list() fails, extract_content should continue to next attribute
+        #[test]
+        fn test_extract_content_non_list_attr_continues() {
+            // First attr is path-only (#[serde]), second has the actual content
+            let path_attr = create_path_only_serde_attr();
+            let list_attr = {
+                let src = r#"#[serde(content = "data")] enum Foo { A }"#;
+                let item: syn::ItemEnum = syn::parse_str(src).unwrap();
+                item.attrs.into_iter().next().unwrap()
+            };
+
+            // extract_content should skip the path-only attr and find content in second attr
+            let result = extract_content(&[path_attr, list_attr]);
+            assert_eq!(result.as_deref(), Some("data"));
+        }
+
+        /// Test extract_content with only non-list serde attribute returns None (line 574)
+        #[test]
+        fn test_extract_content_only_non_list_attr_returns_none() {
+            let path_attr = create_path_only_serde_attr();
+            let result = extract_content(&[path_attr]);
+            assert_eq!(result, None);
+        }
     }
 }

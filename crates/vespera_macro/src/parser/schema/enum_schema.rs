@@ -1654,6 +1654,56 @@ mod tests {
             });
         }
 
+        // Edge case: Untagged enum with tuple variant referencing a known schema (line 338)
+        #[test]
+        fn test_untagged_tuple_variant_with_known_schema_ref() {
+            let enum_item: syn::ItemEnum = syn::parse_str(
+                r#"
+                #[serde(untagged)]
+                enum Payload {
+                    User(UserData),
+                    Simple(String),
+                }
+                "#,
+            )
+            .unwrap();
+
+            // Provide UserData as a known schema so it returns SchemaRef::Ref
+            let mut known_schemas = HashMap::new();
+            known_schemas.insert("UserData".to_string(), "UserData".to_string());
+
+            let schema = parse_enum_to_schema(&enum_item, &known_schemas, &HashMap::new());
+
+            assert!(schema.discriminator.is_none());
+
+            let one_of = schema.one_of.expect("one_of missing");
+            assert_eq!(one_of.len(), 2);
+
+            // First variant (UserData) should have all_of with a $ref since it's a known schema
+            if let SchemaRef::Inline(user_variant) = &one_of[0] {
+                // The schema should have all_of containing the reference
+                let all_of = user_variant
+                    .all_of
+                    .as_ref()
+                    .expect("all_of missing for known schema ref");
+                assert_eq!(all_of.len(), 1);
+                if let SchemaRef::Ref(reference) = &all_of[0] {
+                    assert!(reference.ref_path.contains("UserData"));
+                } else {
+                    panic!("Expected SchemaRef::Ref inside all_of");
+                }
+            } else {
+                panic!("Expected inline schema");
+            }
+
+            // Second variant (String) should be inline string schema directly
+            if let SchemaRef::Inline(simple_variant) = &one_of[1] {
+                assert_eq!(simple_variant.schema_type, Some(SchemaType::String));
+            } else {
+                panic!("Expected inline schema");
+            }
+        }
+
         // Edge case: Untagged enum with multi-field tuple variant (lines 592, 600-611)
         #[test]
         fn test_untagged_multi_field_tuple_variant() {
