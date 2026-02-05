@@ -57,9 +57,7 @@ pub(crate) fn process_route_attribute(
     item: proc_macro2::TokenStream,
 ) -> syn::Result<proc_macro2::TokenStream> {
     syn::parse2::<args::RouteArgs>(attr)?;
-    let item_fn: syn::ItemFn = syn::parse2(item.clone()).map_err(|e| {
-        syn::Error::new(e.span(), "#[route] attribute: can only be applied to functions, not other items. Move or remove the attribute.")
-    })?;
+    let item_fn: syn::ItemFn = syn::parse2(item.clone()).map_err(|e| syn::Error::new(e.span(), "#[route] attribute: can only be applied to functions, not other items. Move or remove the attribute."))?;
     validate_route_fn(&item_fn)?;
     Ok(item)
 }

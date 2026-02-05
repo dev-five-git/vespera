@@ -12,12 +12,7 @@ pub fn extract_type_name(ty: &Type) -> Result<String, syn::Error> {
     match ty {
         Type::Path(type_path) => {
             // Get the last segment (handles paths like crate::User)
-            let segment = type_path.path.segments.last().ok_or_else(|| {
-                syn::Error::new_spanned(
-                    ty,
-                    "extract_type_name: type path has no segments. Provide a valid type like `User` or `crate::models::User`.",
-                )
-            })?;
+            let segment = type_path.path.segments.last().ok_or_else(|| syn::Error::new_spanned(ty, "extract_type_name: type path has no segments. Provide a valid type like `User` or `crate::models::User`."))?;
             Ok(segment.ident.to_string())
         }
         _ => Err(syn::Error::new_spanned(

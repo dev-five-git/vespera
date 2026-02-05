@@ -15,13 +15,7 @@ use crate::{
 pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> MacroResult<CollectedMetadata> {
     let mut metadata = CollectedMetadata::new();
 
-    let files = collect_files(folder_path).map_err(|e| {
-        err_call_site(format!(
-            "vespera! macro: failed to scan route folder '{}': {}. Verify the folder exists and is readable.",
-            folder_path.display(),
-            e
-        ))
-    })?;
+    let files = collect_files(folder_path).map_err(|e| err_call_site(format!("vespera! macro: failed to scan route folder '{}': {}. Verify the folder exists and is readable.", folder_path.display(), e)))?;
 
     for file in files {
         if !file.extension().map(|e| e == "rs").unwrap_or(false) {
@@ -36,13 +30,7 @@ pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> MacroResult<Co
             ))
         })?;
 
-        let file_ast = syn::parse_file(&content).map_err(|e| {
-            err_call_site(format!(
-                "vespera! macro: syntax error in '{}': {}. Fix the Rust syntax errors in this file.",
-                file.display(),
-                e
-            ))
-        })?;
+        let file_ast = syn::parse_file(&content).map_err(|e| err_call_site(format!("vespera! macro: syntax error in '{}': {}. Fix the Rust syntax errors in this file.", file.display(), e)))?;
 
         // Get module path
         let segments = file

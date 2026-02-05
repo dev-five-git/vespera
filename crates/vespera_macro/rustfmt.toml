@@ -1,3 +1,0 @@
-# Only stable rustfmt options
-# For nightly-only features (imports_granularity, group_imports), use: cargo +nightly fmt
-reorder_imports = true

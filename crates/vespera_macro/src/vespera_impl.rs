@@ -82,21 +82,14 @@ pub(crate) fn generate_and_write_openapi(
         }
     }
 
-    let json_str = serde_json::to_string_pretty(&openapi_doc)
-        .map_err(|e| err_call_site(format!("OpenAPI generation: failed to serialize document to JSON. Error: {}. Check that all schema types are serializable.", e)))?;
+    let json_str = serde_json::to_string_pretty(&openapi_doc).map_err(|e| err_call_site(format!("OpenAPI generation: failed to serialize document to JSON. Error: {}. Check that all schema types are serializable.", e)))?;
 
     for openapi_file_name in &input.openapi_file_names {
         let file_path = Path::new(openapi_file_name);
         if let Some(parent) = file_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| err_call_site(format!("OpenAPI output: failed to create directory '{}'. Error: {}. Ensure the path is valid and writable.", parent.display(), e)))?;
+            std::fs::create_dir_all(parent).map_err(|e| err_call_site(format!("OpenAPI output: failed to create directory '{}'. Error: {}. Ensure the path is valid and writable.", parent.display(), e)))?;
         }
-        std::fs::write(file_path, &json_str).map_err(|e| {
-            err_call_site(format!(
-                "OpenAPI output: failed to write file '{}'. Error: {}. Ensure the file path is writable.",
-                openapi_file_name, e
-            ))
-        })?;
+        std::fs::write(file_path, &json_str).map_err(|e| err_call_site(format!("OpenAPI output: failed to write file '{}'. Error: {}. Ensure the file path is writable.", openapi_file_name, e)))?;
     }
 
     let docs_info = input
@@ -170,12 +163,7 @@ pub(crate) fn process_vespera_macro(
         ));
     }
 
-    let mut metadata = collect_metadata(&folder_path, &processed.folder_name).map_err(|e| {
-        syn::Error::new(
-            Span::call_site(),
-            format!("vespera! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", processed.folder_name, e),
-        )
-    })?;
+    let mut metadata = collect_metadata(&folder_path, &processed.folder_name).map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", processed.folder_name, e)))?;
     metadata.structs.extend(schema_storage.iter().cloned());
 
     let (docs_info, redoc_info) = generate_and_write_openapi(processed, &metadata)?;
@@ -206,41 +194,21 @@ pub(crate) fn process_export_app(
         ));
     }
 
-    let mut metadata = collect_metadata(&folder_path, folder_name).map_err(|e| {
-        syn::Error::new(
-            Span::call_site(),
-            format!("export_app! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", folder_name, e),
-        )
-    })?;
+    let mut metadata = collect_metadata(&folder_path, folder_name).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", folder_name, e)))?;
     metadata.structs.extend(schema_storage.iter().cloned());
 
     // Generate OpenAPI spec JSON string
     let openapi_doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
-    let spec_json = serde_json::to_string(&openapi_doc).map_err(|e| {
-        syn::Error::new(
-            Span::call_site(),
-            format!("export_app! macro: failed to serialize OpenAPI spec to JSON. Error: {}. Check that all schema types are serializable.", e),
-        )
-    })?;
+    let spec_json = serde_json::to_string(&openapi_doc).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to serialize OpenAPI spec to JSON. Error: {}. Check that all schema types are serializable.", e)))?;
 
     // Write spec to temp file for compile-time merging by parent apps
     let name_str = name.to_string();
     let manifest_path = Path::new(manifest_dir);
     let target_dir = find_target_dir(manifest_path);
     let vespera_dir = target_dir.join("vespera");
-    std::fs::create_dir_all(&vespera_dir).map_err(|e| {
-        syn::Error::new(
-            Span::call_site(),
-            format!("export_app! macro: failed to create build cache directory '{}'. Error: {}. Ensure the target directory is writable.", vespera_dir.display(), e),
-        )
-    })?;
+    std::fs::create_dir_all(&vespera_dir).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to create build cache directory '{}'. Error: {}. Ensure the target directory is writable.", vespera_dir.display(), e)))?;
     let spec_file = vespera_dir.join(format!("{}.openapi.json", name_str));
-    std::fs::write(&spec_file, &spec_json).map_err(|e| {
-        syn::Error::new(
-            Span::call_site(),
-            format!("export_app! macro: failed to write OpenAPI spec file '{}'. Error: {}. Ensure the file path is writable.", spec_file.display(), e),
-        )
-    })?;
+    std::fs::write(&spec_file, &spec_json).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to write OpenAPI spec file '{}'. Error: {}. Ensure the file path is writable.", spec_file.display(), e)))?;
 
     // Generate router code (without docs routes, no merge)
     let router_code = generate_router_code(&metadata, None, None, &[]);

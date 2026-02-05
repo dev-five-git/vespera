@@ -342,12 +342,7 @@ fn parse_server_struct(input: ParseStream) -> syn::Result<ServerConfig> {
         }
     }
 
-    let url = url.ok_or_else(|| {
-        syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "vespera! macro: server configuration missing required `url` field. Use format: `servers = { url = \"http://localhost:3000\" }` or `servers = { url = \"...\", description = \"...\" }`.",
-        )
-    })?;
+    let url = url.ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "vespera! macro: server configuration missing required `url` field. Use format: `servers = { url = \"http://localhost:3000\" }` or `servers = { url = \"...\", description = \"...\" }`."))?;
 
     Ok(ServerConfig { url, description })
 }
