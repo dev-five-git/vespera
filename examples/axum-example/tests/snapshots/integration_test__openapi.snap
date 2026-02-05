@@ -2416,7 +2416,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "memoComments": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/MemoResponseComments_Memo_comments"
+              "$ref": "#/components/schemas/MemoResponseComments_MemoComments"
             }
           }
         },
@@ -2424,7 +2424,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "memoComments"
         ]
       },
-      "MemoResponseComments_Memo_comments": {
+      "MemoResponseComments_MemoComments": {
         "type": "object",
         "properties": {
           "content": {
