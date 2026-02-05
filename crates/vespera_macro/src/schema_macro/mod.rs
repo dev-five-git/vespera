@@ -279,6 +279,7 @@ pub fn generate_schema_type_code(
                             if let Some(inline_type) = generate_inline_relation_type_no_relations(
                                 new_type_name,
                                 &rel_info,
+                                &source_module_path,
                                 input.schema_name.as_deref(),
                             ) {
                                 let inline_type_def = generate_inline_type_definition(&inline_type);
