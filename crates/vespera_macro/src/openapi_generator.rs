@@ -569,7 +569,6 @@ pub fn get_status() -> Status {
             // which now safely skips this item instead of panicking
             definition: "const CONFIG: i32 = 42;".to_string(),
             include_in_openapi: true,
-            ..Default::default()
         });
 
         // This should gracefully handle the invalid item (skip it) instead of panicking

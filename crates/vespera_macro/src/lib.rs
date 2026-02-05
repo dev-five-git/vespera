@@ -57,9 +57,6 @@ mod schema_impl;
 mod schema_macro;
 mod vespera_impl;
 
-#[cfg(test)]
-mod test_helpers;
-
 use proc_macro::TokenStream;
 pub(crate) use schema_impl::SCHEMA_STORAGE;
 

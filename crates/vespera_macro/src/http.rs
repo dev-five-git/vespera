@@ -56,7 +56,7 @@ mod tests {
         for method in HTTP_METHODS {
             assert!(is_http_method(method));
             assert!(is_http_method(&method.to_uppercase()));
-            assert!(is_http_method(method.as_ref()));
+            assert!(is_http_method(method));
         }
     }
 
