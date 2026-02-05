@@ -6,12 +6,15 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Type;
 
-use super::circular::{
-    detect_circular_fields, generate_inline_struct_construction, generate_inline_type_construction,
-    has_fk_relations, is_circular_relation_required,
+use super::{
+    circular::{
+        detect_circular_fields, generate_inline_struct_construction,
+        generate_inline_type_construction, has_fk_relations, is_circular_relation_required,
+    },
+    file_lookup::{find_fk_column_from_target_entity, find_struct_from_schema_path},
+    seaorm::RelationFieldInfo,
+    type_utils::snake_to_pascal_case,
 };
-use super::file_lookup::find_struct_from_schema_path;
-use super::seaorm::RelationFieldInfo;
 use crate::metadata::StructMetadata;
 
 /// Build Entity path from Schema path.
@@ -82,20 +85,125 @@ pub fn generate_from_model_with_relations(
         .iter()
         .map(|rel| {
             let field_name = &rel.field_name;
-            let entity_path =
-                build_entity_path_from_schema_path(&rel.schema_path, source_module_path);
+            let entity_path = build_entity_path_from_schema_path(&rel.schema_path, source_module_path);
 
             match rel.relation_type.as_str() {
                 "HasOne" | "BelongsTo" => {
-                    // Load single related entity
-                    quote! {
-                        let #field_name = model.find_related(#entity_path).one(db).await?;
+                    // When relation_enum is specified, use the specific Relation variant
+                    // This handles cases where multiple relations point to the same Entity type
+                    if let Some(ref relation_enum_name) = rel.relation_enum {
+                        let relation_variant = syn::Ident::new(relation_enum_name, proc_macro2::Span::call_site());
+
+                        if rel.is_optional {
+                            // Optional FK: load only if FK value exists
+                            if let Some(ref fk_col) = rel.fk_column {
+                                let fk_ident = syn::Ident::new(fk_col, proc_macro2::Span::call_site());
+                                quote! {
+                                    let #field_name = match &model.#fk_ident {
+                                        Some(fk_value) => #entity_path::find_by_id(fk_value.clone()).one(db).await?,
+                                        None => None,
+                                    };
+                                }
+                            } else {
+                                // Fallback: use find_related with Relation enum
+                                quote! {
+                                    let #field_name = Entity::find_related(Relation::#relation_variant)
+                                        .filter(<Entity as sea_orm::EntityTrait>::PrimaryKey::eq(&model))
+                                        .one(db)
+                                        .await?;
+                                }
+                            }
+                        } else {
+                            // Required FK: directly query by FK value
+                            if let Some(ref fk_col) = rel.fk_column {
+                                let fk_ident = syn::Ident::new(fk_col, proc_macro2::Span::call_site());
+                                quote! {
+                                    let #field_name = #entity_path::find_by_id(model.#fk_ident.clone()).one(db).await?;
+                                }
+                            } else {
+                                // Fallback: use find_related with Relation enum
+                                quote! {
+                                    let #field_name = Entity::find_related(Relation::#relation_variant)
+                                        .filter(<Entity as sea_orm::EntityTrait>::PrimaryKey::eq(&model))
+                                        .one(db)
+                                        .await?;
+                                }
+                            }
+                        }
+                    } else {
+                        // Standard case: single relation to target entity, use find_related
+                        quote! {
+                            let #field_name = model.find_related(#entity_path).one(db).await?;
+                        }
                     }
                 }
                 "HasMany" => {
-                    // Load multiple related entities
-                    quote! {
-                        let #field_name = model.find_related(#entity_path).all(db).await?;
+                    // HasMany with relation_enum: use FK-based query on target entity
+                    // HasMany without relation_enum: use standard find_related
+                    if let Some(ref via_rel_value) = rel.via_rel {
+                        // Look up the FK column from the target entity
+                        let schema_path_str = rel.schema_path.to_string().replace(' ', "");
+                        if let Some(fk_col_name) = find_fk_column_from_target_entity(&schema_path_str, via_rel_value) {
+                            // Convert snake_case FK column to PascalCase for Column enum
+                            let fk_col_pascal = snake_to_pascal_case(&fk_col_name);
+                            let fk_col_ident = syn::Ident::new(&fk_col_pascal, proc_macro2::Span::call_site());
+
+                            // Build the Column path: entity_path without ::Entity, then ::Column::FkCol
+                            // e.g., crate::models::notification::Entity -> crate::models::notification::Column::TargetUserId
+                            let entity_path_str = entity_path.to_string().replace(' ', "");
+                            let column_path_str = entity_path_str.replace(":: Entity", ":: Column");
+                            let column_path_idents: Vec<syn::Ident> = column_path_str.split("::").map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| syn::Ident::new(s, proc_macro2::Span::call_site())).collect();
+
+                            quote! {
+                                let #field_name = #(#column_path_idents)::*::#fk_col_ident
+                                    .into_column()
+                                    .eq(model.id.clone())
+                                    .into_condition();
+                                let #field_name = #entity_path::find()
+                                    .filter(#field_name)
+                                    .all(db)
+                                    .await?;
+                            }
+                        } else {
+                            // FK column not found - fall back to empty vec with warning comment
+                            quote! {
+                                // WARNING: Could not find FK column for relation_enum, using empty vec
+                                let #field_name: Vec<_> = vec![];
+                            }
+                        }
+                    } else if let Some(via_rel_value) = &rel.relation_enum {
+                        // Has relation_enum but no via_rel - try using relation_enum as via_rel
+                        let schema_path_str = rel.schema_path.to_string().replace(' ', "");
+                        if let Some(fk_col_name) = find_fk_column_from_target_entity(&schema_path_str, via_rel_value) {
+                            let fk_col_pascal = snake_to_pascal_case(&fk_col_name);
+                            let fk_col_ident = syn::Ident::new(&fk_col_pascal, proc_macro2::Span::call_site());
+
+                            let entity_path_str = entity_path.to_string().replace(' ', "");
+                            let column_path_str = entity_path_str.replace(":: Entity", ":: Column");
+                            let column_path_idents: Vec<syn::Ident> = column_path_str.split("::").map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| syn::Ident::new(s, proc_macro2::Span::call_site())).collect();
+
+                            quote! {
+                                let #field_name = #(#column_path_idents)::*::#fk_col_ident
+                                    .into_column()
+                                    .eq(model.id.clone())
+                                    .into_condition();
+                                let #field_name = #entity_path::find()
+                                    .filter(#field_name)
+                                    .all(db)
+                                    .await?;
+                            }
+                        } else {
+                            // FK column not found - fall back to empty vec
+                            quote! {
+                                // WARNING: Could not find FK column for relation_enum, using empty vec
+                                let #field_name: Vec<_> = vec![];
+                            }
+                        }
+                    } else {
+                        // Standard HasMany - use find_related
+                        quote! {
+                            let #field_name = model.find_related(#entity_path).all(db).await?;
+                        }
                     }
                 }
                 _ => quote! {},
@@ -340,7 +448,6 @@ pub fn generate_from_model_with_relations(
     // Generate parent stub definition if needed
     let parent_stub_def = if needs_parent_stub {
         quote! {
-            #[allow(unused_variables)]
             let __parent_stub__ = Self {
                 #(#parent_stub_fields),*
             };
@@ -371,8 +478,9 @@ pub fn generate_from_model_with_relations(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serial_test::serial;
+
+    use super::*;
 
     #[test]
     fn test_build_entity_path_from_schema_path() {
@@ -430,6 +538,9 @@ mod tests {
             schema_path,
             is_optional,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         }
     }
 
@@ -1837,6 +1948,644 @@ pub struct Model {
         assert!(
             output.contains("Default :: default ()"),
             "Should have Default::default() for orphan: {}",
+            output
+        );
+    }
+
+    // ============================================================
+    // Coverage tests for relation_enum + fk_column branches (lines 70-106)
+    // ============================================================
+
+    fn create_test_relation_info_full(
+        field_name: &str,
+        relation_type: &str,
+        schema_path: TokenStream,
+        is_optional: bool,
+        relation_enum: Option<String>,
+        fk_column: Option<String>,
+        via_rel: Option<String>,
+    ) -> RelationFieldInfo {
+        RelationFieldInfo {
+            field_name: syn::Ident::new(field_name, proc_macro2::Span::call_site()),
+            relation_type: relation_type.to_string(),
+            schema_path,
+            is_optional,
+            inline_type_info: None,
+            relation_enum,
+            fk_column,
+            via_rel,
+        }
+    }
+
+    #[test]
+    fn test_generate_from_model_has_one_with_relation_enum_optional_with_fk() {
+        // Coverage for lines 70, 72, 74-76
+        // Tests: HasOne with relation_enum + optional + fk_column present
+        let new_type_name = syn::Ident::new("MemoSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("Model").unwrap();
+
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("target_user", proc_macro2::Span::call_site()),
+                syn::Ident::new("target_user", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+
+        // HasOne with relation_enum, optional, WITH fk_column
+        let relation_fields = vec![create_test_relation_info_full(
+            "target_user",
+            "HasOne",
+            quote! { user::Schema },
+            true,                               // optional
+            Some("TargetUser".to_string()),     // relation_enum
+            Some("target_user_id".to_string()), // fk_column
+            None,                               // via_rel
+        )];
+
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+        let output = tokens.to_string();
+
+        assert!(output.contains("impl MemoSchema"));
+        // Should have match statement checking FK field
+        assert!(
+            output.contains("match & model . target_user_id"),
+            "Should match on FK field: {}",
+            output
+        );
+        assert!(
+            output.contains("Some (fk_value)"),
+            "Should have Some(fk_value) arm: {}",
+            output
+        );
+        assert!(
+            output.contains("find_by_id"),
+            "Should use find_by_id: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_generate_from_model_has_one_with_relation_enum_optional_no_fk() {
+        // Coverage for line 84
+        // Tests: HasOne with relation_enum + optional + NO fk_column (fallback)
+        let new_type_name = syn::Ident::new("MemoSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("Model").unwrap();
+
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("author", proc_macro2::Span::call_site()),
+                syn::Ident::new("author", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+
+        // HasOne with relation_enum, optional, WITHOUT fk_column
+        let relation_fields = vec![create_test_relation_info_full(
+            "author",
+            "HasOne",
+            quote! { user::Schema },
+            true,                       // optional
+            Some("Author".to_string()), // relation_enum
+            None,                       // NO fk_column
+            None,                       // via_rel
+        )];
+
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+        let output = tokens.to_string();
+
+        assert!(output.contains("impl MemoSchema"));
+        // Fallback: use Entity::find_related(Relation::Variant)
+        assert!(
+            output.contains("Entity :: find_related (Relation :: Author)"),
+            "Should use find_related with Relation enum: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_generate_from_model_belongs_to_with_relation_enum_required_with_fk() {
+        // Coverage for lines 93-95
+        // Tests: BelongsTo with relation_enum + required + fk_column present
+        let new_type_name = syn::Ident::new("CommentSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("Model").unwrap();
+
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("post", proc_macro2::Span::call_site()),
+                syn::Ident::new("post", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+
+        // BelongsTo with relation_enum, required, WITH fk_column
+        let relation_fields = vec![create_test_relation_info_full(
+            "post",
+            "BelongsTo",
+            quote! { post::Schema },
+            false,                       // required
+            Some("Post".to_string()),    // relation_enum
+            Some("post_id".to_string()), // fk_column
+            None,                        // via_rel
+        )];
+
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "comment".to_string(),
+        ];
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+        let output = tokens.to_string();
+
+        assert!(output.contains("impl CommentSchema"));
+        // Should directly query by FK value
+        assert!(
+            output.contains("find_by_id (model . post_id . clone ())"),
+            "Should use find_by_id with FK: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_generate_from_model_belongs_to_with_relation_enum_required_no_fk() {
+        // Coverage for line 100
+        // Tests: BelongsTo with relation_enum + required + NO fk_column (fallback)
+        let new_type_name = syn::Ident::new("CommentSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("Model").unwrap();
+
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("author", proc_macro2::Span::call_site()),
+                syn::Ident::new("author", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+
+        // BelongsTo with relation_enum, required, WITHOUT fk_column
+        let relation_fields = vec![create_test_relation_info_full(
+            "author",
+            "BelongsTo",
+            quote! { user::Schema },
+            false,                      // required
+            Some("Author".to_string()), // relation_enum
+            None,                       // NO fk_column
+            None,                       // via_rel
+        )];
+
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "comment".to_string(),
+        ];
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+        let output = tokens.to_string();
+
+        assert!(output.contains("impl CommentSchema"));
+        // Fallback: use Entity::find_related(Relation::Variant)
+        assert!(
+            output.contains("Entity :: find_related (Relation :: Author)"),
+            "Should use find_related with Relation enum: {}",
+            output
+        );
+    }
+
+    // ============================================================
+    // Coverage tests for HasMany with via_rel/relation_enum (lines 118-182)
+    // ============================================================
+
+    #[test]
+    #[serial]
+    fn test_generate_from_model_has_many_with_via_rel_fk_found() {
+        // Coverage for lines 120-121, 123-124, 128-130, 132
+        // Tests: HasMany with via_rel + FK column found in target entity
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create notification.rs with matching relation_enum
+        let notification_model = r#"
+pub struct Model {
+    pub id: i32,
+    pub message: String,
+    pub target_user_id: i32,
+    #[sea_orm(belongs_to = "super::user::Entity", from = "target_user_id", to = "id", relation_enum = "TargetUser")]
+    pub target_user: BelongsTo<super::user::Entity>,
+}
+"#;
+        std::fs::write(models_dir.join("notification.rs"), notification_model).unwrap();
+
+        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let new_type_name = syn::Ident::new("UserSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("crate::models::user::Model").unwrap();
+
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("target_user_notifications", proc_macro2::Span::call_site()),
+                syn::Ident::new("target_user_notifications", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+
+        // HasMany with via_rel
+        let relation_fields = vec![create_test_relation_info_full(
+            "target_user_notifications",
+            "HasMany",
+            quote! { crate::models::notification::Schema },
+            false,
+            None,
+            None,
+            Some("TargetUser".to_string()), // via_rel
+        )];
+
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "user".to_string(),
+        ];
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+
+        unsafe {
+            if let Some(dir) = original_manifest_dir {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        let output = tokens.to_string();
+        assert!(output.contains("impl UserSchema"));
+        // Should generate FK-based query
+        assert!(
+            output.contains("TargetUserId"),
+            "Should have FK column identifier: {}",
+            output
+        );
+        assert!(
+            output.contains("into_column ()"),
+            "Should have into_column: {}",
+            output
+        );
+        assert!(
+            output.contains("eq (model . id . clone ())"),
+            "Should compare with model.id: {}",
+            output
+        );
+        assert!(
+            output.contains(". all (db)"),
+            "Should use .all(db): {}",
+            output
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_generate_from_model_has_many_with_via_rel_fk_not_found() {
+        // Coverage for line 144
+        // Tests: HasMany with via_rel but FK column NOT found in target entity
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create notification.rs WITHOUT matching relation_enum
+        let notification_model = r#"
+pub struct Model {
+    pub id: i32,
+    pub message: String,
+}
+"#;
+        std::fs::write(models_dir.join("notification.rs"), notification_model).unwrap();
+
+        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let new_type_name = syn::Ident::new("UserSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("crate::models::user::Model").unwrap();
+
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("notifications", proc_macro2::Span::call_site()),
+                syn::Ident::new("notifications", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+
+        // HasMany with via_rel that won't find FK
+        let relation_fields = vec![create_test_relation_info_full(
+            "notifications",
+            "HasMany",
+            quote! { crate::models::notification::Schema },
+            false,
+            None,
+            None,
+            Some("NonExistentRelation".to_string()), // via_rel that won't match
+        )];
+
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "user".to_string(),
+        ];
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+
+        unsafe {
+            if let Some(dir) = original_manifest_dir {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        let output = tokens.to_string();
+        assert!(output.contains("impl UserSchema"));
+        // Should fall back to empty vec (WARNING comment won't appear in TokenStream)
+        assert!(
+            output.contains("vec ! []"),
+            "Should fall back to empty vec: {}",
+            output
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_generate_from_model_has_many_with_relation_enum_fk_found() {
+        // Coverage for lines 151-154, 156-158, 160
+        // Tests: HasMany with relation_enum (no via_rel) + FK column found
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create comment.rs with matching relation_enum
+        let comment_model = r#"
+pub struct Model {
+    pub id: i32,
+    pub content: String,
+    pub author_id: i32,
+    #[sea_orm(belongs_to = "super::user::Entity", from = "author_id", to = "id", relation_enum = "AuthorComments")]
+    pub author: BelongsTo<super::user::Entity>,
+}
+"#;
+        std::fs::write(models_dir.join("comment.rs"), comment_model).unwrap();
+
+        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let new_type_name = syn::Ident::new("UserSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("crate::models::user::Model").unwrap();
+
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("author_comments", proc_macro2::Span::call_site()),
+                syn::Ident::new("author_comments", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+
+        // HasMany with relation_enum (no via_rel)
+        let relation_fields = vec![create_test_relation_info_full(
+            "author_comments",
+            "HasMany",
+            quote! { crate::models::comment::Schema },
+            false,
+            Some("AuthorComments".to_string()), // relation_enum
+            None,
+            None, // NO via_rel - will use relation_enum as via_rel
+        )];
+
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "user".to_string(),
+        ];
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+
+        unsafe {
+            if let Some(dir) = original_manifest_dir {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        let output = tokens.to_string();
+        assert!(output.contains("impl UserSchema"));
+        // Should generate FK-based query using relation_enum as via_rel
+        assert!(
+            output.contains("AuthorId"),
+            "Should have FK column identifier: {}",
+            output
+        );
+        assert!(
+            output.contains("into_column ()"),
+            "Should have into_column: {}",
+            output
+        );
+        assert!(
+            output.contains(". all (db)"),
+            "Should use .all(db): {}",
+            output
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_generate_from_model_has_many_with_relation_enum_fk_not_found() {
+        // Coverage for line 172
+        // Tests: HasMany with relation_enum (no via_rel) + FK column NOT found
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create post.rs WITHOUT matching relation_enum
+        let post_model = r#"
+pub struct Model {
+    pub id: i32,
+    pub title: String,
+}
+"#;
+        std::fs::write(models_dir.join("post.rs"), post_model).unwrap();
+
+        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let new_type_name = syn::Ident::new("UserSchema", proc_macro2::Span::call_site());
+        let source_type: Type = syn::parse_str("crate::models::user::Model").unwrap();
+
+        let field_mappings = vec![
+            (
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                syn::Ident::new("id", proc_macro2::Span::call_site()),
+                false,
+                false,
+            ),
+            (
+                syn::Ident::new("authored_posts", proc_macro2::Span::call_site()),
+                syn::Ident::new("authored_posts", proc_macro2::Span::call_site()),
+                false,
+                true,
+            ),
+        ];
+
+        // HasMany with relation_enum that won't match (no via_rel)
+        let relation_fields = vec![create_test_relation_info_full(
+            "authored_posts",
+            "HasMany",
+            quote! { crate::models::post::Schema },
+            false,
+            Some("NonExistentRelation".to_string()), // relation_enum that won't match
+            None,
+            None, // NO via_rel
+        )];
+
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "user".to_string(),
+        ];
+        let tokens = generate_from_model_with_relations(
+            &new_type_name,
+            &source_type,
+            &field_mappings,
+            &relation_fields,
+            &source_module_path,
+            &[],
+        );
+
+        unsafe {
+            if let Some(dir) = original_manifest_dir {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        let output = tokens.to_string();
+        assert!(output.contains("impl UserSchema"));
+        // Should fall back to empty vec (WARNING comment won't appear in TokenStream)
+        assert!(
+            output.contains("vec ! []"),
+            "Should fall back to empty vec: {}",
             output
         );
     }

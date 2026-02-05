@@ -1,16 +1,21 @@
 //! OpenAPI document generator
 
 use std::collections::{BTreeMap, BTreeSet};
+
 use vespera_core::{
     openapi::{Info, OpenApi, OpenApiVersion, Server, Tag},
     route::{HttpMethod, PathItem},
     schema::Components,
 };
 
-use crate::metadata::CollectedMetadata;
-use crate::parser::{
-    build_operation_from_function, extract_default, extract_field_rename, extract_rename_all,
-    parse_enum_to_schema, parse_struct_to_schema, rename_field, strip_raw_prefix,
+use crate::{
+    file_utils::read_and_parse_file_warn,
+    metadata::CollectedMetadata,
+    parser::{
+        build_operation_from_function, extract_default, extract_field_rename, extract_rename_all,
+        parse_enum_to_schema, parse_struct_to_schema, rename_field, strip_raw_prefix,
+    },
+    schema_macro::type_utils::get_type_default as utils_get_type_default,
 };
 
 /// Generate OpenAPI document from collected metadata
@@ -41,7 +46,11 @@ pub fn generate_openapi_doc_with_metadata(
     // Only include structs where include_in_openapi is true
     // (i.e., from #[derive(Schema)], not from cross-file lookup)
     for struct_meta in metadata.structs.iter().filter(|s| s.include_in_openapi) {
-        let parsed = syn::parse_str::<syn::Item>(&struct_meta.definition).unwrap();
+        // Parse the stored definition - this should always succeed since
+        // the definition was captured from successfully compiled code
+        let Ok(parsed) = syn::parse_str::<syn::Item>(&struct_meta.definition) else {
+            continue;
+        };
         let mut schema = match &parsed {
             syn::Item::Struct(struct_item) => {
                 parse_struct_to_schema(struct_item, &known_schema_names, &struct_definitions)
@@ -49,14 +58,8 @@ pub fn generate_openapi_doc_with_metadata(
             syn::Item::Enum(enum_item) => {
                 parse_enum_to_schema(enum_item, &known_schema_names, &struct_definitions)
             }
-            _ => {
-                // Fallback to struct parsing for backward compatibility
-                parse_struct_to_schema(
-                    &syn::parse_str(&struct_meta.definition).unwrap(),
-                    &known_schema_names,
-                    &struct_definitions,
-                )
-            }
+            // Metadata definitions should only contain structs or enums - skip anything else
+            _ => continue,
         };
 
         // Process default values for struct fields
@@ -76,8 +79,8 @@ pub fn generate_openapi_doc_with_metadata(
                 .or_else(|| metadata.routes.first().map(|r| r.file_path.clone()));
 
             if let Some(file_path) = struct_file
-                && let Ok(file_content) = std::fs::read_to_string(&file_path)
-                && let Ok(file_ast) = syn::parse_file(&file_content)
+                && let Some(file_ast) =
+                    read_and_parse_file_warn(std::path::Path::new(&file_path), "OpenAPI generation")
             {
                 // Process default functions for struct fields
                 process_default_functions(struct_item, &file_ast, &mut schema);
@@ -91,26 +94,11 @@ pub fn generate_openapi_doc_with_metadata(
     // Process routes from metadata
     for route_meta in &metadata.routes {
         // Try to parse the file to get the actual function
-        let content = match std::fs::read_to_string(&route_meta.file_path) {
-            Ok(content) => content,
-            Err(e) => {
-                eprintln!(
-                    "Warning: Failed to read file {}: {}",
-                    route_meta.file_path, e
-                );
-                continue;
-            }
-        };
-
-        let file_ast = match syn::parse_file(&content) {
-            Ok(ast) => ast,
-            Err(e) => {
-                eprintln!(
-                    "Warning: Failed to parse file {}: {}",
-                    route_meta.file_path, e
-                );
-                continue;
-            }
+        let Some(file_ast) = read_and_parse_file_warn(
+            std::path::Path::new(&route_meta.file_path),
+            "OpenAPI generation",
+        ) else {
+            continue;
         };
 
         for item in file_ast.items {
@@ -256,7 +244,7 @@ fn process_default_functions(
                     if let Some(prop_schema_ref) = properties.get_mut(&field_name)
                         && let SchemaRef::Inline(prop_schema) = prop_schema_ref
                         && prop_schema.default.is_none()
-                        && let Some(default_value) = get_type_default(&field.ty)
+                        && let Some(default_value) = utils_get_type_default(&field.ty)
                     {
                         prop_schema.default = Some(default_value);
                     }
@@ -387,35 +375,15 @@ fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Value> {
     }
 }
 
-/// Get type-specific default value for simple #[serde(default)]
-fn get_type_default(ty: &syn::Type) -> Option<serde_json::Value> {
-    use syn::Type;
-    match ty {
-        Type::Path(type_path) => type_path.path.segments.last().and_then(|segment| {
-            match segment.ident.to_string().as_str() {
-                "String" => Some(serde_json::Value::String(String::new())),
-                "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => {
-                    Some(serde_json::Value::Number(serde_json::Number::from(0)))
-                }
-                "f32" | "f64" => Some(serde_json::Value::Number(
-                    serde_json::Number::from_f64(0.0).unwrap_or(serde_json::Number::from(0)),
-                )),
-                "bool" => Some(serde_json::Value::Bool(false)),
-                _ => None,
-            }
-        }),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::PathBuf};
+
+    use rstest::rstest;
+    use tempfile::TempDir;
+
     use super::*;
     use crate::metadata::{CollectedMetadata, RouteMetadata, StructMetadata};
-    use rstest::rstest;
-    use std::fs;
-    use std::path::PathBuf;
-    use tempfile::TempDir;
 
     fn create_temp_file(dir: &TempDir, filename: &str, content: &str) -> PathBuf {
         let file_path = dir.path().join(filename);
@@ -584,23 +552,24 @@ pub fn get_status() -> Status {
     }
 
     #[test]
-    #[should_panic(expected = "expected `struct`")]
     fn test_generate_openapi_with_fallback_item() {
-        // Test fallback case for non-struct, non-enum items (lines 46-48)
+        // Test fallback case for non-struct, non-enum items
         // Use a const item which will be parsed as syn::Item::Const first
-        // This triggers the fallback case (_ branch) which tries to parse as struct
-        // The fallback will fail to parse const as struct, causing a panic
-        // This test verifies that the fallback path (46-48) is executed
+        // This triggers the fallback case (_ branch) which now gracefully skips
+        // items that cannot be parsed as structs (defensive error handling)
         let mut metadata = CollectedMetadata::new();
         metadata.structs.push(StructMetadata {
             name: "Config".to_string(),
             // This will be parsed as syn::Item::Const, triggering the fallback case
+            // which now safely skips this item instead of panicking
             definition: "const CONFIG: i32 = 42;".to_string(),
-            ..Default::default()
+            include_in_openapi: true,
         });
 
-        // This should panic when fallback tries to parse const as struct
-        let _doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        // This should gracefully handle the invalid item (skip it) instead of panicking
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        // The invalid struct definition should be skipped, resulting in no schemas
+        assert!(doc.components.is_none() || doc.components.as_ref().unwrap().schemas.is_none());
     }
 
     #[test]
@@ -933,7 +902,7 @@ pub fn get_users() -> String {
     #[test]
     fn test_get_type_default_string() {
         let ty: syn::Type = syn::parse_str("String").unwrap();
-        let value = get_type_default(&ty);
+        let value = utils_get_type_default(&ty);
         assert_eq!(value, Some(serde_json::Value::String(String::new())));
     }
 
@@ -941,7 +910,7 @@ pub fn get_users() -> String {
     fn test_get_type_default_integers() {
         for type_name in &["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"] {
             let ty: syn::Type = syn::parse_str(type_name).unwrap();
-            let value = get_type_default(&ty);
+            let value = utils_get_type_default(&ty);
             assert_eq!(
                 value,
                 Some(serde_json::Value::Number(0.into())),
@@ -955,7 +924,7 @@ pub fn get_users() -> String {
     fn test_get_type_default_floats() {
         for type_name in &["f32", "f64"] {
             let ty: syn::Type = syn::parse_str(type_name).unwrap();
-            let value = get_type_default(&ty);
+            let value = utils_get_type_default(&ty);
             assert!(value.is_some(), "Failed for type {}", type_name);
         }
     }
@@ -963,14 +932,14 @@ pub fn get_users() -> String {
     #[test]
     fn test_get_type_default_bool() {
         let ty: syn::Type = syn::parse_str("bool").unwrap();
-        let value = get_type_default(&ty);
+        let value = utils_get_type_default(&ty);
         assert_eq!(value, Some(serde_json::Value::Bool(false)));
     }
 
     #[test]
     fn test_get_type_default_unknown() {
         let ty: syn::Type = syn::parse_str("CustomType").unwrap();
-        let value = get_type_default(&ty);
+        let value = utils_get_type_default(&ty);
         assert!(value.is_none());
     }
 
@@ -978,7 +947,7 @@ pub fn get_users() -> String {
     fn test_get_type_default_non_path() {
         // Reference type is not a path type
         let ty: syn::Type = syn::parse_str("&str").unwrap();
-        let value = get_type_default(&ty);
+        let value = utils_get_type_default(&ty);
         assert!(value.is_none());
     }
 
@@ -1280,36 +1249,54 @@ pub fn get_user() -> User {
 
     #[test]
     fn test_get_type_default_empty_path_segments() {
-        // Test line 307: empty path segments returns None
+        // Test empty path segments returns None
         // Create a type with empty path segments
 
         // Use parse to create a valid type, then we verify the normal path works
         let ty: syn::Type = syn::parse_str("::String").unwrap();
         // This has segments, so it should work
-        let value = get_type_default(&ty);
+        let value = utils_get_type_default(&ty);
         // Global path ::String still has "String" as last segment
         assert!(value.is_some());
 
         // Test reference type (non-path type)
         let ref_ty: syn::Type = syn::parse_str("&str").unwrap();
-        let ref_value = get_type_default(&ref_ty);
-        // Reference is not a Path type, so returns None via line 310
+        let ref_value = utils_get_type_default(&ref_ty);
+        // Reference is not a Path type, so returns None
         assert!(ref_value.is_none());
     }
 
     #[test]
     fn test_get_type_default_tuple_type() {
-        // Test line 310: non-Path type returns None
+        // Test non-Path type returns None
         let ty: syn::Type = syn::parse_str("(i32, String)").unwrap();
-        let value = get_type_default(&ty);
+        let value = utils_get_type_default(&ty);
         assert!(value.is_none());
     }
 
     #[test]
     fn test_get_type_default_array_type() {
-        // Test line 310: array type returns None
+        // Test array type returns None
         let ty: syn::Type = syn::parse_str("[i32; 3]").unwrap();
-        let value = get_type_default(&ty);
+        let value = utils_get_type_default(&ty);
         assert!(value.is_none());
+    }
+
+    #[test]
+    fn test_generate_openapi_with_unparseable_definition() {
+        // Test line 42: syn::parse_str fails with invalid Rust syntax
+        // This triggers the `continue` branch when parsing fails
+        let mut metadata = CollectedMetadata::new();
+        metadata.structs.push(StructMetadata {
+            name: "Invalid".to_string(),
+            // Invalid Rust syntax - cannot be parsed by syn
+            definition: "struct { invalid syntax {{{{".to_string(),
+            include_in_openapi: true,
+        });
+
+        // Should gracefully skip unparseable definitions
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        // The unparseable definition should be skipped
+        assert!(doc.components.is_none() || doc.components.as_ref().unwrap().schemas.is_none());
     }
 }

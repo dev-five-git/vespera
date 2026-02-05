@@ -4,8 +4,9 @@
 
 use std::path::Path;
 
-use crate::metadata::StructMetadata;
 use syn::Type;
+
+use crate::{file_utils::try_read_and_parse_file, metadata::StructMetadata};
 
 /// Try to find a struct definition from a module path by reading source files.
 ///
@@ -90,8 +91,7 @@ pub fn find_struct_from_path(
             continue;
         }
 
-        let content = std::fs::read_to_string(&file_path).ok()?;
-        let file_ast = syn::parse_file(&content).ok()?;
+        let file_ast = try_read_and_parse_file(&file_path)?;
 
         // Look for the struct in the file
         for item in &file_ast.items {
@@ -142,14 +142,8 @@ pub fn find_struct_by_name_in_all_files(
     let mut found_structs: Vec<(std::path::PathBuf, StructMetadata)> = Vec::new();
 
     for file_path in rs_files {
-        let content = match std::fs::read_to_string(&file_path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let file_ast = match syn::parse_file(&content) {
-            Ok(ast) => ast,
-            Err(_) => continue,
+        let Some(file_ast) = try_read_and_parse_file(&file_path) else {
+            continue;
         };
 
         // Look for the struct in the file
@@ -328,8 +322,7 @@ pub fn find_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
             continue;
         }
 
-        let content = std::fs::read_to_string(&file_path).ok()?;
-        let file_ast = syn::parse_file(&content).ok()?;
+        let file_ast = try_read_and_parse_file(&file_path)?;
 
         // Look for the struct in the file
         for item in &file_ast.items {
@@ -341,6 +334,77 @@ pub fn find_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
                     ));
                 }
                 _ => continue,
+            }
+        }
+    }
+
+    None
+}
+
+/// Find the FK column name from the target entity for a HasMany relation with via_rel.
+///
+/// When a HasMany relation has `via_rel = "TargetUser"`, this function:
+/// 1. Looks up the target entity file (e.g., notification.rs from schema path)
+/// 2. Finds the field with matching `relation_enum = "TargetUser"`
+/// 3. Extracts and returns the `from` attribute value (e.g., "target_user_id")
+///
+/// Returns None if the target file can't be found or parsed, or if no matching relation exists.
+pub fn find_fk_column_from_target_entity(
+    target_schema_path: &str,
+    via_rel: &str,
+) -> Option<String> {
+    use crate::schema_macro::seaorm::{extract_belongs_to_from_field, extract_relation_enum};
+
+    // Get CARGO_MANIFEST_DIR to locate src folder
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+    let src_dir = Path::new(&manifest_dir).join("src");
+
+    // Parse the schema path to get file path
+    // e.g., "crate :: models :: notification :: Schema" -> src/models/notification.rs
+    let segments: Vec<&str> = target_schema_path
+        .split("::")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && *s != "Schema" && *s != "Entity")
+        .collect();
+
+    let module_segments: Vec<&str> = segments
+        .iter()
+        .filter(|s| **s != "crate" && **s != "self" && **s != "super")
+        .copied()
+        .collect();
+
+    if module_segments.is_empty() {
+        return None;
+    }
+
+    // Try different file path patterns
+    let file_paths = vec![
+        src_dir.join(format!("{}.rs", module_segments.join("/"))),
+        src_dir.join(format!("{}/mod.rs", module_segments.join("/"))),
+    ];
+
+    for file_path in file_paths {
+        if !file_path.exists() {
+            continue;
+        }
+
+        let file_ast = try_read_and_parse_file(&file_path)?;
+
+        // Look for Model struct in the file
+        for item in &file_ast.items {
+            if let syn::Item::Struct(struct_item) = item
+                && struct_item.ident == "Model"
+            {
+                // Search through fields for the one with matching relation_enum
+                if let syn::Fields::Named(fields_named) = &struct_item.fields {
+                    for field in &fields_named.named {
+                        let field_relation_enum = extract_relation_enum(&field.attrs);
+                        if field_relation_enum.as_deref() == Some(via_rel) {
+                            // Found the matching field, extract FK column from `from` attribute
+                            return extract_belongs_to_from_field(&field.attrs);
+                        }
+                    }
+                }
             }
         }
     }
@@ -389,8 +453,7 @@ pub fn find_model_from_schema_path(schema_path_str: &str) -> Option<StructMetada
             continue;
         }
 
-        let content = std::fs::read_to_string(&file_path).ok()?;
-        let file_ast = syn::parse_file(&content).ok()?;
+        let file_ast = try_read_and_parse_file(&file_path)?;
 
         // Look for Model struct in the file
         for item in &file_ast.items {
@@ -410,10 +473,12 @@ pub fn find_model_from_schema_path(schema_path_str: &str) -> Option<StructMetada
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use serial_test::serial;
     use std::path::Path;
+
+    use serial_test::serial;
     use tempfile::TempDir;
+
+    use super::*;
 
     #[test]
     fn test_file_path_to_module_path_simple() {
@@ -1033,6 +1098,321 @@ pub const NOT_STRUCT: i32 = 1;
         assert!(
             module_path.contains(&"special_item".to_string()),
             "Module path should contain 'special_item'"
+        );
+    }
+
+    // ============================================================
+    // Coverage tests for find_fk_column_from_target_entity (lines 287-333)
+    // ============================================================
+
+    #[test]
+    #[serial]
+    fn test_find_fk_column_from_target_entity_success() {
+        // Tests: Full success path - find FK column from target entity
+        // Covers lines 287, 291-292, 296, 298, 305, 307-309, 312, 315-317, 320-323, 325
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create notification.rs with a BelongsTo relation that has relation_enum matching via_rel
+        let notification_model = r#"
+pub struct Model {
+    pub id: i32,
+    pub message: String,
+    pub target_user_id: i32,
+    #[sea_orm(belongs_to = "super::user::Entity", from = "target_user_id", to = "id", relation_enum = "TargetUser")]
+    pub target_user: BelongsTo<super::user::Entity>,
+}
+"#;
+        std::fs::write(models_dir.join("notification.rs"), notification_model).unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let result =
+            find_fk_column_from_target_entity("crate::models::notification::Schema", "TargetUser");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert_eq!(
+            result,
+            Some("target_user_id".to_string()),
+            "Should find FK column 'target_user_id'"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_fk_column_from_target_entity_mod_rs() {
+        // Tests: Find FK column from mod.rs file (line 305 second path)
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models").join("notification");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        let notification_model = r#"
+pub struct Model {
+    pub id: i32,
+    pub sender_id: i32,
+    #[sea_orm(belongs_to = "super::super::user::Entity", from = "sender_id", to = "id", relation_enum = "Sender")]
+    pub sender: BelongsTo<super::super::user::Entity>,
+}
+"#;
+        std::fs::write(models_dir.join("mod.rs"), notification_model).unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let result =
+            find_fk_column_from_target_entity("crate::models::notification::Schema", "Sender");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert_eq!(
+            result,
+            Some("sender_id".to_string()),
+            "Should find FK column from mod.rs"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_fk_column_from_target_entity_empty_module_segments() {
+        // Tests lines 300-301: Empty module segments return None
+        let temp_dir = TempDir::new().unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        // After filtering "crate", "Schema", segments is empty
+        let result = find_fk_column_from_target_entity("crate::Schema", "SomeRelation");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(result.is_none(), "Empty module segments should return None");
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_fk_column_from_target_entity_file_not_found() {
+        // Tests lines 307-309: File doesn't exist -> continue, then return None (line 333)
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        // Path to non-existent file
+        let result =
+            find_fk_column_from_target_entity("crate::models::nonexistent::Schema", "SomeRelation");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(result.is_none(), "Non-existent file should return None");
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_fk_column_from_target_entity_unparseable_file() {
+        // Tests line 312: File can't be parsed -> returns None
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create unparseable file
+        std::fs::write(models_dir.join("broken.rs"), "this is not valid rust {{{{").unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let result =
+            find_fk_column_from_target_entity("crate::models::broken::Schema", "SomeRelation");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(result.is_none(), "Unparseable file should return None");
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_fk_column_from_target_entity_no_model_struct() {
+        // Tests lines 315-317: File exists but has no Model struct
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create file without Model struct
+        let content = r#"
+pub struct SomethingElse {
+    pub id: i32,
+}
+pub enum Status { Active, Inactive }
+"#;
+        std::fs::write(models_dir.join("nomodel.rs"), content).unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let result =
+            find_fk_column_from_target_entity("crate::models::nomodel::Schema", "SomeRelation");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(
+            result.is_none(),
+            "File without Model struct should return None"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_fk_column_from_target_entity_no_matching_relation_enum() {
+        // Tests lines 320-323: Model exists but no field matches the via_rel
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create model with different relation_enum
+        let model = r#"
+pub struct Model {
+    pub id: i32,
+    pub user_id: i32,
+    #[sea_orm(belongs_to = "super::user::Entity", from = "user_id", to = "id", relation_enum = "Author")]
+    pub user: BelongsTo<super::user::Entity>,
+}
+"#;
+        std::fs::write(models_dir.join("comment.rs"), model).unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        // Search for "TargetUser" but only "Author" exists
+        let result =
+            find_fk_column_from_target_entity("crate::models::comment::Schema", "TargetUser");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(
+            result.is_none(),
+            "Non-matching relation_enum should return None"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_fk_column_from_target_entity_tuple_struct() {
+        // Tests line 320: Model is a tuple struct (not named fields) -> skip
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create tuple struct Model
+        let model = "pub struct Model(i32, String);";
+        std::fs::write(models_dir.join("tuple.rs"), model).unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let result =
+            find_fk_column_from_target_entity("crate::models::tuple::Schema", "SomeRelation");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(result.is_none(), "Tuple struct Model should return None");
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_fk_column_from_target_entity_field_no_from_attr() {
+        // Tests line 325: Field matches relation_enum but has no `from` attribute
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create model with relation_enum but no `from` attribute
+        let model = r#"
+pub struct Model {
+    pub id: i32,
+    pub user_id: i32,
+    #[sea_orm(belongs_to = "super::user::Entity", to = "id", relation_enum = "TargetUser")]
+    pub user: BelongsTo<super::user::Entity>,
+}
+"#;
+        std::fs::write(models_dir.join("nofrom.rs"), model).unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let result =
+            find_fk_column_from_target_entity("crate::models::nofrom::Schema", "TargetUser");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        // extract_belongs_to_from_field returns None when no `from` attr
+        assert!(
+            result.is_none(),
+            "Field without 'from' attribute should return None"
         );
     }
 }

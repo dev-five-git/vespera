@@ -6,10 +6,12 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::circular::detect_circular_fields;
-use super::file_lookup::find_model_from_schema_path;
-use super::seaorm::RelationFieldInfo;
-use super::type_utils::{capitalize_first, is_seaorm_relation_type};
+use super::{
+    circular::detect_circular_fields,
+    file_lookup::find_model_from_schema_path,
+    seaorm::{RelationFieldInfo, convert_type_with_chrono},
+    type_utils::{is_seaorm_relation_type, snake_to_pascal_case},
+};
 use crate::parser::{extract_rename_all, extract_skip};
 
 /// Information about an inline relation type to generate
@@ -85,7 +87,7 @@ pub fn generate_inline_relation_type_from_def(
         Some(name) => name.to_string(),
         None => parent_type_name.to_string(),
     };
-    let field_name_pascal = capitalize_first(&rel_info.field_name.to_string());
+    let field_name_pascal = snake_to_pascal_case(&rel_info.field_name.to_string());
     let inline_type_name = syn::Ident::new(
         &format!("{}_{}", parent_name, field_name_pascal),
         proc_macro2::Span::call_site(),
@@ -121,10 +123,12 @@ pub fn generate_inline_relation_type_from_def(
                 .cloned()
                 .collect();
 
-            let field_ty = &field.ty;
+            // Convert SeaORM datetime types to chrono equivalents
+            // This prevents users from needing to import sea_orm::prelude::DateTimeWithTimeZone
+            let converted_ty = convert_type_with_chrono(&field.ty, source_module_path);
             fields.push(InlineField {
                 name: field_ident.clone(),
-                ty: quote!(#field_ty),
+                ty: converted_ty,
                 attrs: kept_attrs,
             });
         }
@@ -148,6 +152,7 @@ pub fn generate_inline_relation_type_from_def(
 pub fn generate_inline_relation_type_no_relations(
     parent_type_name: &syn::Ident,
     rel_info: &RelationFieldInfo,
+    source_module_path: &[String],
     schema_name_override: Option<&str>,
 ) -> Option<InlineRelationType> {
     // Find the target model definition
@@ -158,6 +163,7 @@ pub fn generate_inline_relation_type_no_relations(
     generate_inline_relation_type_no_relations_from_def(
         parent_type_name,
         rel_info,
+        source_module_path,
         schema_name_override,
         model_def,
     )
@@ -167,6 +173,7 @@ pub fn generate_inline_relation_type_no_relations(
 pub fn generate_inline_relation_type_no_relations_from_def(
     parent_type_name: &syn::Ident,
     rel_info: &RelationFieldInfo,
+    source_module_path: &[String],
     schema_name_override: Option<&str>,
     model_def: &str,
 ) -> Option<InlineRelationType> {
@@ -182,7 +189,7 @@ pub fn generate_inline_relation_type_no_relations_from_def(
         Some(name) => name.to_string(),
         None => parent_type_name.to_string(),
     };
-    let field_name_pascal = capitalize_first(&rel_info.field_name.to_string());
+    let field_name_pascal = snake_to_pascal_case(&rel_info.field_name.to_string());
     let inline_type_name = syn::Ident::new(
         &format!("{}_{}", parent_name, field_name_pascal),
         proc_macro2::Span::call_site(),
@@ -212,10 +219,12 @@ pub fn generate_inline_relation_type_no_relations_from_def(
                 .cloned()
                 .collect();
 
-            let field_ty = &field.ty;
+            // Convert SeaORM datetime types to chrono equivalents
+            // This prevents users from needing to import sea_orm::prelude::DateTimeWithTimeZone
+            let converted_ty = convert_type_with_chrono(&field.ty, source_module_path);
             fields.push(InlineField {
                 name: field_ident.clone(),
-                ty: quote!(#field_ty),
+                ty: converted_ty,
                 attrs: kept_attrs,
             });
         }
@@ -258,8 +267,9 @@ pub fn generate_inline_type_definition(inline_type: &InlineRelationType) -> Toke
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serial_test::serial;
+
+    use super::*;
 
     #[test]
     fn test_generate_inline_type_definition() {
@@ -440,6 +450,9 @@ mod tests {
             schema_path: quote!(super::user::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec![
             "crate".to_string(),
@@ -503,6 +516,9 @@ mod tests {
             schema_path: quote!(super::other::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec![
             "crate".to_string(),
@@ -535,6 +551,9 @@ mod tests {
             schema_path: quote!(super::user::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec![
             "crate".to_string(),
@@ -568,6 +587,9 @@ mod tests {
             schema_path: quote!(super::memo::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
 
         // Model with relations that should be stripped
@@ -581,6 +603,7 @@ mod tests {
         let result = generate_inline_relation_type_no_relations_from_def(
             &parent_type_name,
             &rel_info,
+            &[],
             None,
             model_def,
         );
@@ -610,6 +633,9 @@ mod tests {
             schema_path: quote!(super::item::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
 
         // Model with serde(skip) field
@@ -623,6 +649,7 @@ mod tests {
         let result = generate_inline_relation_type_no_relations_from_def(
             &parent_type_name,
             &rel_info,
+            &[],
             None,
             model_def,
         );
@@ -648,6 +675,9 @@ mod tests {
             schema_path: quote!(super::user::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec!["crate".to_string()];
 
@@ -671,6 +701,9 @@ mod tests {
             schema_path: quote!(super::user::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec![
             "crate".to_string(),
@@ -722,6 +755,9 @@ mod tests {
             schema_path: quote!(super::user::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec![
             "crate".to_string(),
@@ -772,6 +808,9 @@ mod tests {
             schema_path: quote!(super::memo::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
 
         let model_def = r#"pub struct Model {
@@ -783,6 +822,7 @@ mod tests {
         let result = generate_inline_relation_type_no_relations_from_def(
             &parent_type_name,
             &rel_info,
+            &[],
             Some("UserSchema"),
             model_def,
         );
@@ -830,6 +870,9 @@ pub struct Model {
             schema_path: quote!(crate::models::user::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec![
             "crate".to_string(),
@@ -901,9 +944,22 @@ pub struct Model {
             schema_path: quote!(crate::models::memo::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
 
-        let result = generate_inline_relation_type_no_relations(&parent_type_name, &rel_info, None);
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "user".to_string(),
+        ];
+        let result = generate_inline_relation_type_no_relations(
+            &parent_type_name,
+            &rel_info,
+            &source_module_path,
+            None,
+        );
 
         // Restore original CARGO_MANIFEST_DIR
         // SAFETY: This is a test that runs single-threaded
@@ -954,6 +1010,9 @@ pub struct Model {
             schema_path: quote!(crate::models::nonexistent::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec!["crate".to_string()];
 
@@ -996,9 +1055,13 @@ pub struct Model {
             schema_path: quote!(crate::models::nonexistent::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
 
-        let result = generate_inline_relation_type_no_relations(&parent_type_name, &rel_info, None);
+        let result =
+            generate_inline_relation_type_no_relations(&parent_type_name, &rel_info, &[], None);
 
         // Restore original CARGO_MANIFEST_DIR
         // SAFETY: This is a test that runs single-threaded
@@ -1012,5 +1075,135 @@ pub struct Model {
 
         // Should return None when file not found
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_generate_inline_relation_type_converts_datetime_types() {
+        // Test that DateTimeWithTimeZone is converted to vespera::chrono::DateTime<FixedOffset>
+        let parent_type_name = syn::Ident::new("MemoSchema", proc_macro2::Span::call_site());
+        let rel_info = RelationFieldInfo {
+            field_name: syn::Ident::new("user", proc_macro2::Span::call_site()),
+            relation_type: "BelongsTo".to_string(),
+            schema_path: quote!(super::user::Schema),
+            is_optional: false,
+            inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
+        };
+        let source_module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+
+        // Model with DateTimeWithTimeZone field AND circular reference
+        let model_def = r#"pub struct Model {
+            pub id: i32,
+            pub name: String,
+            pub created_at: DateTimeWithTimeZone,
+            pub memo: BelongsTo<memo::Entity>
+        }"#;
+
+        let result = generate_inline_relation_type_from_def(
+            &parent_type_name,
+            &rel_info,
+            &source_module_path,
+            None,
+            model_def,
+        );
+        assert!(result.is_some());
+
+        let inline_type = result.unwrap();
+        assert_eq!(inline_type.type_name.to_string(), "MemoSchema_User");
+
+        // Find created_at field and check its type was converted
+        let created_at_field = inline_type
+            .fields
+            .iter()
+            .find(|f| f.name == "created_at")
+            .expect("created_at field should exist");
+
+        let ty_str = created_at_field.ty.to_string();
+        // Should be converted to vespera::chrono::DateTime<FixedOffset>
+        assert!(
+            ty_str.contains("vespera :: chrono :: DateTime"),
+            "DateTimeWithTimeZone should be converted to vespera::chrono::DateTime, got: {}",
+            ty_str
+        );
+        assert!(
+            ty_str.contains("FixedOffset"),
+            "Should contain FixedOffset, got: {}",
+            ty_str
+        );
+    }
+
+    #[test]
+    fn test_generate_inline_relation_type_no_relations_converts_datetime_types() {
+        // Test that DateTimeWithTimeZone is converted in no_relations variant too
+        let parent_type_name = syn::Ident::new("UserSchema", proc_macro2::Span::call_site());
+        let rel_info = RelationFieldInfo {
+            field_name: syn::Ident::new("memos", proc_macro2::Span::call_site()),
+            relation_type: "HasMany".to_string(),
+            schema_path: quote!(super::memo::Schema),
+            is_optional: false,
+            inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
+        };
+
+        // Model with DateTimeWithTimeZone field
+        let model_def = r#"pub struct Model {
+            pub id: i32,
+            pub title: String,
+            pub created_at: DateTimeWithTimeZone,
+            pub updated_at: Option<DateTimeWithTimeZone>,
+            pub user: BelongsTo<user::Entity>
+        }"#;
+
+        let result = generate_inline_relation_type_no_relations_from_def(
+            &parent_type_name,
+            &rel_info,
+            &[],
+            None,
+            model_def,
+        );
+        assert!(result.is_some());
+
+        let inline_type = result.unwrap();
+
+        // Find created_at field and check its type was converted
+        let created_at_field = inline_type
+            .fields
+            .iter()
+            .find(|f| f.name == "created_at")
+            .expect("created_at field should exist");
+
+        let ty_str = created_at_field.ty.to_string();
+        assert!(
+            ty_str.contains("vespera :: chrono :: DateTime"),
+            "DateTimeWithTimeZone should be converted, got: {}",
+            ty_str
+        );
+
+        // Also check Option<DateTimeWithTimeZone>
+        let updated_at_field = inline_type
+            .fields
+            .iter()
+            .find(|f| f.name == "updated_at")
+            .expect("updated_at field should exist");
+
+        let updated_ty_str = updated_at_field.ty.to_string();
+        assert!(
+            updated_ty_str.contains("Option"),
+            "Should be Option type, got: {}",
+            updated_ty_str
+        );
+        assert!(
+            updated_ty_str.contains("vespera :: chrono :: DateTime"),
+            "Option<DateTimeWithTimeZone> should be converted, got: {}",
+            updated_ty_str
+        );
     }
 }

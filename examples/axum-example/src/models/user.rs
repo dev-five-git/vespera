@@ -20,9 +20,9 @@ pub struct Model {
     #[sea_orm(default_value = "NOW()")]
     pub updated_at: DateTimeWithTimeZone,
     #[sea_orm(has_many)]
-    pub comments: HasMany<super::comment::Entity>,
-    #[sea_orm(has_many)]
     pub memos: HasMany<super::memo::Entity>,
+    #[sea_orm(has_many)]
+    pub memo_comments: HasMany<super::memo_comment::Entity>,
 }
 
 // Index definitions (SeaORM uses Statement builders externally)

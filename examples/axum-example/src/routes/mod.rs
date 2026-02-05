@@ -10,6 +10,7 @@ use crate::TestStruct;
 
 pub mod enums;
 pub mod error;
+pub mod flatten;
 pub mod foo;
 pub mod generic;
 pub mod health;

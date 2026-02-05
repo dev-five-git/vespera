@@ -1,0 +1,1 @@
+{"changes":{"crates/vespera/Cargo.toml":"Patch","crates/vespera_macro/Cargo.toml":"Patch","crates/vespera_core/Cargo.toml":"Patch"},"note":"Support serde flatten","date":"2026-02-05T04:33:01.526326100Z"}

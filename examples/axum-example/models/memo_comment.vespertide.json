@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/dev-five-git/vespertide/refs/heads/main/schemas/model.schema.json",
-  "name": "comment",
+  "name": "memo_comment",
   "columns": [
     { "name": "id", "type": "integer", "nullable": false, "primary_key": { "auto_increment": true } },
     { 

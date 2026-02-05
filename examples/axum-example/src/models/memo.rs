@@ -34,7 +34,7 @@ pub struct Model {
     #[sea_orm(belongs_to, from = "user_id", to = "id")]
     pub user: HasOne<super::user::Entity>,
     #[sea_orm(has_many)]
-    pub comments: HasMany<super::comment::Entity>,
+    pub memo_comments: HasMany<super::memo_comment::Entity>,
 }
 
 // Index definitions (SeaORM uses Statement builders externally)

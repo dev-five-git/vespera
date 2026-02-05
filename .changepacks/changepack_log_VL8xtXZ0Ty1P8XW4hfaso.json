@@ -1,0 +1,1 @@
+{"changes":{"crates/vespera_core/Cargo.toml":"Patch","crates/vespera/Cargo.toml":"Patch","crates/vespera_macro/Cargo.toml":"Patch"},"note":"Support serde flatten, tagged, untagged","date":"2026-02-05T12:30:36.574038700Z"}

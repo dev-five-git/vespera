@@ -103,6 +103,33 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         }
       }
     },
+    "/enums/adjacently-tagged": {
+      "post": {
+        "operationId": "adjacently_tagged_endpoint",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdjacentlyTaggedResponse"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdjacentlyTaggedResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/enums/enum2": {
       "get": {
         "operationId": "enum_endpoint2",
@@ -113,6 +140,87 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Enum2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/enums/externally-tagged": {
+      "post": {
+        "operationId": "externally_tagged_endpoint",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExternallyTaggedEvent"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExternallyTaggedEvent"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/enums/internally-tagged": {
+      "post": {
+        "operationId": "internally_tagged_endpoint",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InternallyTaggedMessage"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternallyTaggedMessage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/enums/untagged": {
+      "post": {
+        "operationId": "untagged_endpoint",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UntaggedValue"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UntaggedValue"
                 }
               }
             }
@@ -297,6 +405,68 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/flatten": {
+      "post": {
+        "operationId": "list_users",
+        "tags": [
+          "flatten"
+        ],
+        "description": "List users with pagination (demonstrates flatten for request/response)\n\nThe request accepts flattened pagination parameters (page, per_page)\nand returns a response with flattened metadata (total, has_more).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserListRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/flatten/search": {
+      "post": {
+        "operationId": "advanced_search",
+        "tags": [
+          "flatten"
+        ],
+        "description": "Advanced search endpoint with multiple flatten fields",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdvancedSearchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
                 }
               }
             }
@@ -1333,45 +1503,108 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
   },
   "components": {
     "schemas": {
-      "CommentSchema": {
-        "type": "object",
-        "properties": {
-          "content": {
-            "type": "string"
+      "AdjacentlyTaggedResponse": {
+        "description": "Adjacently tagged enum - serializes as `{\"type\": \"...\", \"data\": ...}`\nExample: `{\"type\": \"Success\", \"data\": {\"items\": [\"a\", \"b\"]}}`",
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Successful response with items",
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "items"
+                ]
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Success"
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "data"
+            ]
           },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
+          {
+            "type": "object",
+            "description": "Error response with code and message",
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "integer"
+                  },
+                  "message": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "message"
+                ]
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Error"
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "data"
+            ]
           },
-          "id": {
-            "type": "integer"
-          },
-          "memo": {
-            "$ref": "#/components/schemas/MemoSchema"
-          },
-          "memoId": {
-            "type": "integer"
-          },
-          "updatedAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "user": {
-            "$ref": "#/components/schemas/UserSchema"
-          },
-          "userId": {
-            "type": "integer"
+          {
+            "type": "object",
+            "description": "Empty response (unit variant)",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Empty"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
           }
-        },
-        "required": [
-          "id",
-          "userId",
-          "memoId",
-          "content",
-          "createdAt",
-          "updatedAt",
-          "user",
-          "memo"
+        ],
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
+      "AdvancedSearchRequest": {
+        "description": "Request combining multiple flattened structs",
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "Search query string"
+              }
+            },
+            "required": [
+              "query"
+            ]
+          },
+          {
+            "$ref": "#/components/schemas/Pagination"
+          }
         ]
       },
       "ComplexStructBody": {
@@ -1910,6 +2143,67 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "code"
         ]
       },
+      "ExternallyTaggedEvent": {
+        "description": "Externally tagged enum (default) - serializes as `{\"VariantName\": ...}`\nExample: `{\"Created\": {\"id\": 1, \"name\": \"test\"}}`\nThis is included for comparison with the other representations.",
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Item was created",
+            "properties": {
+              "Created": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "name"
+                ]
+              }
+            },
+            "required": [
+              "Created"
+            ]
+          },
+          {
+            "type": "object",
+            "description": "Item was updated",
+            "properties": {
+              "Updated": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              }
+            },
+            "required": [
+              "Updated"
+            ]
+          },
+          {
+            "type": "object",
+            "description": "Item was deleted",
+            "properties": {
+              "Deleted": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "Deleted"
+            ]
+          }
+        ]
+      },
       "GenericStruct": {
         "type": "object",
         "properties": {
@@ -1955,6 +2249,75 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "name"
         ]
       },
+      "InternallyTaggedMessage": {
+        "description": "Internally tagged enum - serializes as `{\"type\": \"...\", ...fields...}`\nExample: `{\"type\": \"Request\", \"id\": 1, \"method\": \"GET\"}`",
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A request message",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "method": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Request"
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "method"
+            ]
+          },
+          {
+            "type": "object",
+            "description": "A response message",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "result": {
+                "type": "string",
+                "nullable": true
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Response"
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "description": "A notification (no payload)",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Notification"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
       "MapQuery": {
         "type": "object",
         "properties": {
@@ -1972,6 +2335,47 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "name",
           "age"
+        ]
+      },
+      "MemoCommentSchema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "memo": {
+            "$ref": "#/components/schemas/MemoSchema"
+          },
+          "memoId": {
+            "type": "integer"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserSchema"
+          },
+          "userId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "memoId",
+          "content",
+          "createdAt",
+          "updatedAt",
+          "user",
+          "memo"
         ]
       },
       "MemoResponse": {
@@ -2009,18 +2413,18 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
       "MemoResponseComments": {
         "type": "object",
         "properties": {
-          "comments": {
+          "memoComments": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/MemoResponseComments_Comments"
+              "$ref": "#/components/schemas/MemoResponseComments_MemoComments"
             }
           }
         },
         "required": [
-          "comments"
+          "memoComments"
         ]
       },
-      "MemoResponseComments_Comments": {
+      "MemoResponseComments_MemoComments": {
         "type": "object",
         "properties": {
           "content": {
@@ -2182,6 +2586,68 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "page",
           "size",
           "totalPage"
+        ]
+      },
+      "Pagination": {
+        "type": "object",
+        "description": "Common pagination parameters that can be reused across requests",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "Page number (1-indexed)",
+            "default": 1
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Items per page",
+            "default": 20
+          }
+        }
+      },
+      "ResponseMeta": {
+        "type": "object",
+        "description": "Common metadata for responses",
+        "properties": {
+          "has_more": {
+            "type": "boolean",
+            "description": "Whether there are more pages"
+          },
+          "total": {
+            "type": "integer",
+            "description": "Total number of items"
+          }
+        },
+        "required": [
+          "total",
+          "has_more"
+        ]
+      },
+      "SearchResponse": {
+        "description": "Response combining multiple flattened structs",
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "found": {
+                "type": "boolean",
+                "description": "Whether any results were found"
+              },
+              "results": {
+                "type": "array",
+                "description": "Search results",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "results",
+              "found"
+            ]
+          },
+          {
+            "$ref": "#/components/schemas/ResponseMeta"
+          }
         ]
       },
       "SignupRequest": {
@@ -2390,6 +2856,39 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "age"
         ]
       },
+      "UntaggedValue": {
+        "description": "Untagged enum - serializes as just the variant data, no tag\nThe deserializer tries each variant in order until one matches.\nExample: `\"hello\"` or `42` or `{\"key\": \"value\"}`",
+        "oneOf": [
+          {
+            "type": "string",
+            "description": "A string value"
+          },
+          {
+            "type": "integer",
+            "description": "A numeric value"
+          },
+          {
+            "type": "boolean",
+            "description": "A boolean value"
+          },
+          {
+            "type": "object",
+            "description": "An object with key-value pairs",
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "value"
+            ]
+          }
+        ]
+      },
       "UpdateMemoRequest": {
         "type": "object",
         "properties": {
@@ -2448,6 +2947,71 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "id",
           "name"
+        ]
+      },
+      "UserItem": {
+        "type": "object",
+        "description": "Simple user representation",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "email"
+        ]
+      },
+      "UserListRequest": {
+        "description": "Request with flattened pagination parameters\n\nThe pagination fields (page, per_page) are merged into this struct's JSON representation.",
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "filter": {
+                "type": "string",
+                "description": "Filter users by name (optional)",
+                "nullable": true
+              },
+              "sort": {
+                "type": "string",
+                "description": "Sort order: \"asc\" or \"desc\""
+              }
+            }
+          },
+          {
+            "$ref": "#/components/schemas/Pagination"
+          }
+        ]
+      },
+      "UserListResponse": {
+        "description": "Paginated response with flattened metadata\n\nThe response meta fields (total, has_more) are merged into this struct's JSON representation.",
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "array",
+                "description": "List of users",
+                "items": {
+                  "$ref": "#/components/schemas/UserItem"
+                }
+              }
+            },
+            "required": [
+              "data"
+            ]
+          },
+          {
+            "$ref": "#/components/schemas/ResponseMeta"
+          }
         ]
       },
       "UserPublicResponse": {
@@ -2524,6 +3088,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
     }
   },
   "tags": [
+    {
+      "name": "flatten"
+    },
     {
       "name": "hello"
     },

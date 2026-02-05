@@ -10,7 +10,6 @@
 use std::sync::Arc;
 
 // Import types used by the source model that we want to include in generated structs
-use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use vespera::{
     axum::{
         Json,
@@ -36,11 +35,11 @@ schema_type!(UpdateMemoRequest from crate::models::memo::Model, pick = ["title",
 
 // Response type: all fields except updated_at and relations
 // Has From impl since we omit all relation fields
-schema_type!(MemoResponse from crate::models::memo::Model, omit = ["updated_at", "user", "comments"]);
+schema_type!(MemoResponse from crate::models::memo::Model, omit = ["updated_at", "user", "memo_comments"]);
 
 schema_type!(MemoResponseRel from crate::models::memo::Model, omit = ["updated_at"]);
 
-schema_type!(MemoResponseComments from crate::models::memo::Model, pick = ["comments"]);
+schema_type!(MemoResponseComments from crate::models::memo::Model, pick = ["memo_comments"]);
 
 // Test rename_all override: use snake_case instead of default camelCase
 schema_type!(MemoSnakeCase from crate::models::memo::Model, pick = ["id", "user_id", "created_at"], rename_all = "snake_case");
@@ -71,14 +70,17 @@ pub async fn update_memo(Json(req): Json<UpdateMemoRequest>) -> Json<UpdateMemoR
 pub async fn get_memo(Path(id): Path<i32>) -> Json<MemoResponse> {
     // In real app, this would be a DB query returning Model
     // schema_type! generates From<Model> for MemoResponse, so .into() works
+    // Create a default datetime using vespera's chrono re-export
+    let now: vespera::chrono::DateTime<vespera::chrono::FixedOffset> =
+        vespera::chrono::Utc::now().fixed_offset();
     let model = crate::models::memo::Model {
         id,
         user_id: 1, // Example user ID
         title: "Test Memo".to_string(),
         content: "This is test content".to_string(),
         status: crate::models::memo::MemoStatus::Published,
-        created_at: DateTimeWithTimeZone::default(),
-        updated_at: DateTimeWithTimeZone::default(),
+        created_at: now,
+        updated_at: now,
     };
     Json(model.into())
 }
@@ -90,14 +92,16 @@ pub async fn get_memo_rel(
 ) -> Json<MemoResponseRel> {
     // In real app, this would be a DB query returning Model
     // schema_type! generates From<Model> for MemoResponse, so .into() works
+    let now: vespera::chrono::DateTime<vespera::chrono::FixedOffset> =
+        vespera::chrono::Utc::now().fixed_offset();
     let model = crate::models::memo::Model {
         id,
         user_id: 1, // Example user ID
         title: "Test Memo".to_string(),
         content: "This is test content".to_string(),
         status: crate::models::memo::MemoStatus::Published,
-        created_at: DateTimeWithTimeZone::default(),
-        updated_at: DateTimeWithTimeZone::default(),
+        created_at: now,
+        updated_at: now,
     };
     Json(
         MemoResponseRel::from_model(model, app_state.db.as_ref())

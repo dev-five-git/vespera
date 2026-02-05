@@ -18,8 +18,9 @@ pub fn extract_path_parameters(path: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rstest::rstest;
+
+    use super::*;
 
     #[rstest]
     #[case("/test", vec![])]

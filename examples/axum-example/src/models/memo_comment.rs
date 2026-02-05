@@ -2,7 +2,7 @@ use sea_orm::entity::prelude::*;
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
-#[sea_orm(table_name = "comment")]
+#[sea_orm(table_name = "memo_comment")]
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
@@ -24,5 +24,5 @@ pub struct Model {
 // Index definitions (SeaORM uses Statement builders externally)
 // (unnamed) on [user_id]
 // (unnamed) on [memo_id]
-vespera::schema_type!(Schema from Model, name = "CommentSchema");
+vespera::schema_type!(Schema from Model, name = "MemoCommentSchema");
 impl ActiveModelBehavior for ActiveModel {}

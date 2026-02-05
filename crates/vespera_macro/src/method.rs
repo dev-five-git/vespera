@@ -18,8 +18,9 @@ pub fn http_method_to_token_stream(method: HttpMethod) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rstest::rstest;
+
+    use super::*;
 
     #[rstest]
     #[case(HttpMethod::Get, "get")]

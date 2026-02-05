@@ -183,6 +183,10 @@ pub struct Schema {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub not: Option<Box<SchemaRef>>,
 
+    /// Discriminator for polymorphic schemas (used with oneOf/anyOf/allOf)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discriminator: Option<Discriminator>,
+
     /// Nullable flag
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nullable: Option<bool>,
@@ -246,6 +250,7 @@ impl Schema {
             any_of: None,
             one_of: None,
             not: None,
+            discriminator: None,
             nullable: None,
             read_only: None,
             write_only: None,
@@ -303,6 +308,20 @@ pub struct ExternalDocumentation {
     pub description: Option<String>,
     /// Documentation URL
     pub url: String,
+}
+
+/// Discriminator object for polymorphism support (OpenAPI 3.0/3.1)
+///
+/// Used with `oneOf`, `anyOf`, `allOf` to aid in serialization, deserialization,
+/// and validation when request bodies or response payloads may be one of several types.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Discriminator {
+    /// The name of the property in the payload that will hold the discriminator value
+    pub property_name: String,
+    /// An object to hold mappings between payload values and schema names or references
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mapping: Option<BTreeMap<String, String>>,
 }
 
 /// OpenAPI Components (reusable components)

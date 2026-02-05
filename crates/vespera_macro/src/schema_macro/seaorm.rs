@@ -23,6 +23,14 @@ pub struct RelationFieldInfo {
     /// If Some, this relation has circular refs and uses an inline type
     /// Contains: (inline_type_name, circular_fields_to_exclude)
     pub inline_type_info: Option<(syn::Ident, Vec<String>)>,
+    /// The `relation_enum` attribute value (e.g., "TargetUser", "CreatedByUser")
+    /// When present, indicates multiple relations to the same Entity type exist
+    pub relation_enum: Option<String>,
+    /// The FK column name from `from` attribute (e.g., "user_id", "target_user_id")
+    pub fk_column: Option<String>,
+    /// The `via_rel` attribute value for HasMany relations (e.g., "TargetUser")
+    /// This specifies which Relation variant on the TARGET entity to use
+    pub via_rel: Option<String>,
 }
 
 /// Convert SeaORM datetime types to chrono equivalents.
@@ -130,6 +138,64 @@ pub fn extract_belongs_to_from_field(attrs: &[syn::Attribute]) -> Option<String>
             Ok(())
         });
         from_field
+    })
+}
+
+/// Extract the "relation_enum" value from a sea_orm attribute.
+/// e.g., `#[sea_orm(belongs_to, relation_enum = "TargetUser", from = "target_user_id")]` -> Some("TargetUser")
+///
+/// When relation_enum is present, it indicates that multiple relations to the same
+/// Entity type exist, and we need to use the specific Relation enum variant for queries.
+pub fn extract_relation_enum(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs.iter().find_map(|attr| {
+        if !attr.path().is_ident("sea_orm") {
+            return None;
+        }
+
+        let mut relation_enum_value = None;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("relation_enum") {
+                relation_enum_value = meta
+                    .value()
+                    .ok()
+                    .and_then(|v| v.parse::<syn::LitStr>().ok())
+                    .map(|lit| lit.value());
+            } else if meta.input.peek(syn::Token![=]) {
+                // Consume value for other key=value pairs
+                drop(meta.value().and_then(|v| v.parse::<syn::LitStr>()));
+            }
+            Ok(())
+        });
+        relation_enum_value
+    })
+}
+
+/// Extract the "via_rel" value from a sea_orm attribute.
+/// e.g., `#[sea_orm(has_many, relation_enum = "TargetUser", via_rel = "TargetUser")]` -> Some("TargetUser")
+///
+/// For HasMany relations with relation_enum, via_rel specifies which Relation variant
+/// on the TARGET entity corresponds to this relation. This allows us to find the FK column.
+pub fn extract_via_rel(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs.iter().find_map(|attr| {
+        if !attr.path().is_ident("sea_orm") {
+            return None;
+        }
+
+        let mut via_rel_value = None;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("via_rel") {
+                via_rel_value = meta
+                    .value()
+                    .ok()
+                    .and_then(|v| v.parse::<syn::LitStr>().ok())
+                    .map(|lit| lit.value());
+            } else if meta.input.peek(syn::Token![=]) {
+                // Consume value for other key=value pairs
+                drop(meta.value().and_then(|v| v.parse::<syn::LitStr>()));
+            }
+            Ok(())
+        });
+        via_rel_value
     })
 }
 
@@ -252,6 +318,7 @@ pub fn convert_relation_type_to_schema_with_info(
             // If FK is Option<T> -> relation is optional: Option<Box<Schema>>
             // If FK is required -> relation is required: Box<Schema>
             let fk_field = extract_belongs_to_from_field(field_attrs);
+            let relation_enum = extract_relation_enum(field_attrs);
             let is_optional = fk_field
                 .as_ref()
                 .map(|f| is_field_optional_in_struct(parsed_struct, f))
@@ -268,10 +335,15 @@ pub fn convert_relation_type_to_schema_with_info(
                 schema_path: schema_path.clone(),
                 is_optional,
                 inline_type_info: None, // Will be populated later if circular
+                relation_enum,
+                fk_column: fk_field,
+                via_rel: None, // Not used for HasOne
             };
             Some((converted, info))
         }
         "HasMany" => {
+            let relation_enum = extract_relation_enum(field_attrs);
+            let via_rel = extract_via_rel(field_attrs);
             let converted = quote! { Vec<#schema_path> };
             let info = RelationFieldInfo {
                 field_name,
@@ -279,6 +351,9 @@ pub fn convert_relation_type_to_schema_with_info(
                 schema_path: schema_path.clone(),
                 is_optional: false,
                 inline_type_info: None, // Will be populated later if circular
+                relation_enum,
+                fk_column: None, // HasMany doesn't have FK on this side
+                via_rel,         // Used to find FK on target entity
             };
             Some((converted, info))
         }
@@ -287,6 +362,7 @@ pub fn convert_relation_type_to_schema_with_info(
             // If FK is Option<T> -> relation is optional: Option<Box<Schema>>
             // If FK is required -> relation is required: Box<Schema>
             let fk_field = extract_belongs_to_from_field(field_attrs);
+            let relation_enum = extract_relation_enum(field_attrs);
             let is_optional = fk_field
                 .as_ref()
                 .map(|f| is_field_optional_in_struct(parsed_struct, f))
@@ -303,6 +379,9 @@ pub fn convert_relation_type_to_schema_with_info(
                 schema_path: schema_path.clone(),
                 is_optional,
                 inline_type_info: None, // Will be populated later if circular
+                relation_enum,
+                fk_column: fk_field,
+                via_rel: None, // Not used for BelongsTo
             };
             Some((converted, info))
         }
@@ -318,138 +397,11 @@ pub fn convert_relation_type_to_schema_with_info(
 ///   - If `from` field is `Option<T>` -> `Option<Box<Schema>>`
 ///   - If `from` field is required -> `Box<Schema>`
 ///
-/// The `source_module_path` is used to resolve relative paths like `super::`.
-/// e.g., if source is `crate::models::memo::Model`, module path is `crate::models::memo`
-///
-/// Returns None if the type is not a relation type or conversion fails.
-#[allow(dead_code)]
-pub fn convert_relation_type_to_schema(
-    ty: &Type,
-    field_attrs: &[syn::Attribute],
-    parsed_struct: &syn::ItemStruct,
-    source_module_path: &[String],
-) -> Option<TokenStream> {
-    let type_path = match ty {
-        Type::Path(tp) => tp,
-        _ => return None,
-    };
-
-    let segment = type_path.path.segments.last()?;
-    let ident_str = segment.ident.to_string();
-
-    // Check if this is a relation type with generic argument
-    let args = match &segment.arguments {
-        syn::PathArguments::AngleBracketed(args) => args,
-        _ => return None,
-    };
-
-    // Get the inner Entity type
-    let inner_ty = match args.args.first()? {
-        syn::GenericArgument::Type(ty) => ty,
-        _ => return None,
-    };
-
-    // Extract the path and convert to absolute Schema path
-    let inner_path = match inner_ty {
-        Type::Path(tp) => tp,
-        _ => return None,
-    };
-
-    // Collect segments as strings
-    let segments: Vec<String> = inner_path
-        .path
-        .segments
-        .iter()
-        .map(|s| s.ident.to_string())
-        .collect();
-
-    // Convert path to absolute, resolving `super::` relative to source module
-    // e.g., super::user::Entity with source_module_path = [crate, models, memo]
-    //       -> [crate, models, user, Schema]
-    let absolute_segments: Vec<String> = if !segments.is_empty() && segments[0] == "super" {
-        // Count how many `super` segments
-        let super_count = segments.iter().take_while(|s| *s == "super").count();
-
-        // Go up `super_count` levels from source module path
-        let parent_path_len = source_module_path.len().saturating_sub(super_count);
-        let mut abs = source_module_path[..parent_path_len].to_vec();
-
-        // Append remaining segments (after super::), replacing Entity with Schema
-        for seg in segments.iter().skip(super_count) {
-            if seg == "Entity" {
-                abs.push("Schema".to_string());
-            } else {
-                abs.push(seg.clone());
-            }
-        }
-        abs
-    } else if !segments.is_empty() && segments[0] == "crate" {
-        // Already absolute path, just replace Entity with Schema
-        segments
-            .iter()
-            .map(|s| {
-                if s == "Entity" {
-                    "Schema".to_string()
-                } else {
-                    s.clone()
-                }
-            })
-            .collect()
-    } else {
-        // Relative path without super, assume same module level
-        // Prepend source module's parent path
-        let parent_path_len = source_module_path.len().saturating_sub(1);
-        let mut abs = source_module_path[..parent_path_len].to_vec();
-        for seg in &segments {
-            if seg == "Entity" {
-                abs.push("Schema".to_string());
-            } else {
-                abs.push(seg.clone());
-            }
-        }
-        abs
-    };
-
-    // Build the absolute path as tokens
-    let path_idents: Vec<syn::Ident> = absolute_segments
-        .iter()
-        .map(|s| syn::Ident::new(s, proc_macro2::Span::call_site()))
-        .collect();
-    let schema_path = quote! { #(#path_idents)::* };
-
-    // Convert based on relation type
-    match ident_str.as_str() {
-        "HasOne" => {
-            // HasOne -> Always Option<Box<Schema>>
-            Some(quote! { Option<Box<#schema_path>> })
-        }
-        "HasMany" => {
-            // HasMany -> Vec<Schema>
-            Some(quote! { Vec<#schema_path> })
-        }
-        "BelongsTo" => {
-            // BelongsTo -> Check if "from" field is optional
-            if let Some(from_field) = extract_belongs_to_from_field(field_attrs) {
-                if is_field_optional_in_struct(parsed_struct, &from_field) {
-                    // from field is Option -> relation is optional
-                    Some(quote! { Option<Box<#schema_path>> })
-                } else {
-                    // from field is required -> relation is required
-                    Some(quote! { Box<#schema_path> })
-                }
-            } else {
-                // Fallback: treat as optional if we can't determine
-                Some(quote! { Option<Box<#schema_path>> })
-            }
-        }
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rstest::rstest;
+
+    use super::*;
 
     #[rstest]
     #[case(
@@ -541,6 +493,37 @@ mod tests {
     #[test]
     fn test_extract_belongs_to_from_field_empty_attrs() {
         let result = extract_belongs_to_from_field(&[]);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_relation_enum_with_value() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+            #[sea_orm(belongs_to, relation_enum = "TargetUser", from = "target_user_id", to = "id")]
+        )];
+        let result = extract_relation_enum(&attrs);
+        assert_eq!(result, Some("TargetUser".to_string()));
+    }
+
+    #[test]
+    fn test_extract_relation_enum_without_relation_enum() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+            #[sea_orm(belongs_to, from = "user_id", to = "id")]
+        )];
+        let result = extract_relation_enum(&attrs);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_relation_enum_no_sea_orm_attr() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[serde(skip)])];
+        let result = extract_relation_enum(&attrs);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_relation_enum_empty_attrs() {
+        let result = extract_relation_enum(&[]);
         assert_eq!(result, None);
     }
 
@@ -922,225 +905,72 @@ mod tests {
     }
 
     // =========================================================================
-    // Tests for convert_relation_type_to_schema
+    // Tests for extract_via_rel (coverage for lines 172-186)
     // =========================================================================
 
     #[test]
-    fn test_convert_relation_type_to_schema_non_path_type() {
-        let ty: syn::Type = syn::parse_str("&str").unwrap();
-        let struct_item = make_test_struct("struct Model { id: i32 }");
-        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &[]);
-        assert!(result.is_none());
+    fn test_extract_via_rel_with_value() {
+        // Tests line 178-179: via_rel = "..." found
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+            #[sea_orm(has_many, via_rel = "TargetUser")]
+        )];
+        let result = extract_via_rel(&attrs);
+        assert_eq!(result, Some("TargetUser".to_string()));
     }
 
     #[test]
-    fn test_convert_relation_type_to_schema_empty_segments() {
-        let ty = syn::Type::Path(syn::TypePath {
-            qself: None,
-            path: syn::Path {
-                leading_colon: None,
-                segments: syn::punctuated::Punctuated::new(),
-            },
-        });
-        let struct_item = make_test_struct("struct Model { id: i32 }");
-        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &[]);
-        assert!(result.is_none());
+    fn test_extract_via_rel_with_relation_enum() {
+        // Tests line 178-179: via_rel alongside other attributes
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+            #[sea_orm(has_many, relation_enum = "TargetUserNotifications", via_rel = "TargetUser")]
+        )];
+        let result = extract_via_rel(&attrs);
+        assert_eq!(result, Some("TargetUser".to_string()));
     }
 
     #[test]
-    fn test_convert_relation_type_to_schema_no_angle_brackets() {
-        let ty: syn::Type = syn::parse_str("HasOne").unwrap();
-        let struct_item = make_test_struct("struct Model { id: i32 }");
-        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &[]);
-        assert!(result.is_none());
+    fn test_extract_via_rel_without_via_rel() {
+        // Tests: No via_rel attribute present
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+            #[sea_orm(has_many, relation_enum = "Memos")]
+        )];
+        let result = extract_via_rel(&attrs);
+        assert_eq!(result, None);
     }
 
     #[test]
-    fn test_convert_relation_type_to_schema_non_type_generic() {
-        let ty: syn::Type = syn::parse_str("HasOne<'a>").unwrap();
-        let struct_item = make_test_struct("struct Model { id: i32 }");
-        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &[]);
-        assert!(result.is_none());
+    fn test_extract_via_rel_non_sea_orm_attr() {
+        // Tests line 172-173: Non-sea_orm attribute returns None
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[serde(skip)])];
+        let result = extract_via_rel(&attrs);
+        assert_eq!(result, None);
     }
 
     #[test]
-    fn test_convert_relation_type_to_schema_non_path_inner() {
-        let ty: syn::Type = syn::parse_str("HasOne<&str>").unwrap();
-        let struct_item = make_test_struct("struct Model { id: i32 }");
-        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &[]);
-        assert!(result.is_none());
+    fn test_extract_via_rel_empty_attrs() {
+        // Tests: Empty attributes
+        let result = extract_via_rel(&[]);
+        assert_eq!(result, None);
     }
 
     #[test]
-    fn test_convert_relation_type_to_schema_has_one() {
-        let ty: syn::Type = syn::parse_str("HasOne<user::Entity>").unwrap();
-        let struct_item = make_test_struct("struct Model { id: i32 }");
-        let module_path = vec![
-            "crate".to_string(),
-            "models".to_string(),
-            "memo".to_string(),
+    fn test_extract_via_rel_with_other_key_value_pairs() {
+        // Tests line 180-182: Other key=value pairs are consumed without error
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+            #[sea_orm(belongs_to = "super::user::Entity", from = "user_id", to = "id", via_rel = "Author")]
+        )];
+        let result = extract_via_rel(&attrs);
+        assert_eq!(result, Some("Author".to_string()));
+    }
+
+    #[test]
+    fn test_extract_via_rel_multiple_sea_orm_attrs() {
+        // Tests: Multiple sea_orm attributes, via_rel in second one
+        let attrs: Vec<syn::Attribute> = vec![
+            syn::parse_quote!(#[sea_orm(has_many)]),
+            syn::parse_quote!(#[sea_orm(via_rel = "Comments")]),
         ];
-        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &module_path);
-        assert!(result.is_some());
-        let tokens = result.unwrap();
-        let output = tokens.to_string();
-        // HasOne always returns Option<Box<Schema>>
-        assert!(output.contains("Option"));
-        assert!(output.contains("Box"));
-    }
-
-    #[test]
-    fn test_convert_relation_type_to_schema_has_many() {
-        let ty: syn::Type = syn::parse_str("HasMany<memo::Entity>").unwrap();
-        let struct_item = make_test_struct("struct Model { id: i32 }");
-        let module_path = vec![
-            "crate".to_string(),
-            "models".to_string(),
-            "user".to_string(),
-        ];
-        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &module_path);
-        assert!(result.is_some());
-        let tokens = result.unwrap();
-        let output = tokens.to_string();
-        assert!(output.contains("Vec"));
-    }
-
-    #[test]
-    fn test_convert_relation_type_to_schema_belongs_to_optional() {
-        let ty: syn::Type = syn::parse_str("BelongsTo<user::Entity>").unwrap();
-        let struct_item = make_test_struct("struct Model { id: i32, user_id: Option<i32> }");
-        let attrs: Vec<syn::Attribute> =
-            vec![syn::parse_quote!(#[sea_orm(belongs_to, from = "user_id")])];
-        let module_path = vec![
-            "crate".to_string(),
-            "models".to_string(),
-            "memo".to_string(),
-        ];
-        let result = convert_relation_type_to_schema(&ty, &attrs, &struct_item, &module_path);
-        assert!(result.is_some());
-        let tokens = result.unwrap();
-        let output = tokens.to_string();
-        assert!(output.contains("Option"));
-    }
-
-    #[test]
-    fn test_convert_relation_type_to_schema_belongs_to_required() {
-        let ty: syn::Type = syn::parse_str("BelongsTo<user::Entity>").unwrap();
-        let struct_item = make_test_struct("struct Model { id: i32, user_id: i32 }");
-        let attrs: Vec<syn::Attribute> =
-            vec![syn::parse_quote!(#[sea_orm(belongs_to, from = "user_id")])];
-        let module_path = vec![
-            "crate".to_string(),
-            "models".to_string(),
-            "memo".to_string(),
-        ];
-        let result = convert_relation_type_to_schema(&ty, &attrs, &struct_item, &module_path);
-        assert!(result.is_some());
-        let tokens = result.unwrap();
-        let output = tokens.to_string();
-        assert!(output.contains("Box"));
-        assert!(!output.contains("Option"));
-    }
-
-    #[test]
-    fn test_convert_relation_type_to_schema_belongs_to_no_from_attr() {
-        let ty: syn::Type = syn::parse_str("BelongsTo<user::Entity>").unwrap();
-        let struct_item = make_test_struct("struct Model { id: i32 }");
-        let module_path = vec![
-            "crate".to_string(),
-            "models".to_string(),
-            "memo".to_string(),
-        ];
-        // No attributes - should fallback to optional
-        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &module_path);
-        assert!(result.is_some());
-        let tokens = result.unwrap();
-        let output = tokens.to_string();
-        assert!(output.contains("Option")); // Fallback
-    }
-
-    #[test]
-    fn test_convert_relation_type_to_schema_unknown_relation() {
-        let ty: syn::Type = syn::parse_str("SomeOtherType<user::Entity>").unwrap();
-        let struct_item = make_test_struct("struct Model { id: i32 }");
-        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &[]);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_convert_relation_type_to_schema_super_path() {
-        let ty: syn::Type = syn::parse_str("HasMany<super::memo::Entity>").unwrap();
-        let struct_item = make_test_struct("struct Model { id: i32 }");
-        let module_path = vec![
-            "crate".to_string(),
-            "models".to_string(),
-            "user".to_string(),
-        ];
-        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &module_path);
-        assert!(result.is_some());
-        let tokens = result.unwrap();
-        let output = tokens.to_string();
-        assert!(output.contains("crate"));
-        assert!(output.contains("models"));
-        assert!(output.contains("memo"));
-        assert!(output.contains("Schema"));
-    }
-
-    #[test]
-    fn test_convert_relation_type_to_schema_crate_path() {
-        let ty: syn::Type = syn::parse_str("HasMany<crate::models::memo::Entity>").unwrap();
-        let struct_item = make_test_struct("struct Model { id: i32 }");
-        let module_path = vec![
-            "crate".to_string(),
-            "models".to_string(),
-            "user".to_string(),
-        ];
-        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &module_path);
-        assert!(result.is_some());
-        let tokens = result.unwrap();
-        let output = tokens.to_string();
-        assert!(output.contains("crate"));
-        assert!(output.contains("memo"));
-        assert!(output.contains("Schema"));
-    }
-
-    #[test]
-    fn test_convert_relation_type_to_schema_relative_path() {
-        let ty: syn::Type = syn::parse_str("HasOne<user::Entity>").unwrap();
-        let struct_item = make_test_struct("struct Model { id: i32 }");
-        let module_path = vec![
-            "crate".to_string(),
-            "models".to_string(),
-            "memo".to_string(),
-        ];
-        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &module_path);
-        assert!(result.is_some());
-        let tokens = result.unwrap();
-        let output = tokens.to_string();
-        assert!(output.contains("crate"));
-        assert!(output.contains("models"));
-        assert!(output.contains("user"));
-        assert!(output.contains("Schema"));
-    }
-
-    #[test]
-    fn test_convert_relation_type_to_schema_multiple_super() {
-        let ty: syn::Type = syn::parse_str("HasMany<super::super::other::Entity>").unwrap();
-        let struct_item = make_test_struct("struct Model { id: i32 }");
-        let module_path = vec![
-            "crate".to_string(),
-            "a".to_string(),
-            "b".to_string(),
-            "c".to_string(),
-        ];
-        let result = convert_relation_type_to_schema(&ty, &[], &struct_item, &module_path);
-        assert!(result.is_some());
-        let tokens = result.unwrap();
-        let output = tokens.to_string();
-        // super::super:: from crate::a::b::c should go to crate::a
-        assert!(output.contains("crate"));
-        assert!(output.contains("a"));
-        assert!(output.contains("other"));
-        assert!(output.contains("Schema"));
+        let result = extract_via_rel(&attrs);
+        assert_eq!(result, Some("Comments".to_string()));
     }
 }

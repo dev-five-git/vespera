@@ -3,3 +3,7 @@ lcov.info
 coverage
 build_rs_cov.profraw
 .sisyphus/
+/docs
+.claude
+.DS_Store
+coverage-report

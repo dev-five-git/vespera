@@ -10,6 +10,9 @@ use super::schema::{
     extract_field_rename, extract_rename_all, is_primitive_type, parse_struct_to_schema,
     parse_type_to_schema_ref_with_schemas, rename_field,
 };
+use crate::schema_macro::type_utils::{
+    is_map_type as utils_is_map_type, is_primitive_like as utils_is_primitive_like,
+};
 
 /// Convert SchemaRef to inline schema for query parameters
 /// Query parameters should always use inline schemas, not refs
@@ -166,7 +169,7 @@ pub fn parse_function_parameter(
                                     args.args.first()
                             {
                                 // Check if it's HashMap or BTreeMap - ignore these
-                                if is_map_type(inner_ty) {
+                                if utils_is_map_type(inner_ty) {
                                     return None;
                                 }
 
@@ -180,7 +183,8 @@ pub fn parse_function_parameter(
                                 }
 
                                 // Ignore primitive-like query params (including Vec/Option of primitive)
-                                if is_primitive_like(inner_ty) {
+                                if is_primitive_type(inner_ty) || utils_is_primitive_like(inner_ty)
+                                {
                                     return None;
                                 }
 
@@ -212,7 +216,8 @@ pub fn parse_function_parameter(
                                     args.args.first()
                             {
                                 // Ignore primitive-like headers
-                                if is_primitive_like(inner_ty) {
+                                if is_primitive_type(inner_ty) || utils_is_primitive_like(inner_ty)
+                                {
                                     return None;
                                 }
                                 return Some(vec![Parameter {
@@ -270,37 +275,6 @@ pub fn parse_function_parameter(
             None
         }
     }
-}
-
-fn is_map_type(ty: &Type) -> bool {
-    if let Type::Path(type_path) = ty {
-        let path = &type_path.path;
-        if !path.segments.is_empty() {
-            let segment = path.segments.last().unwrap();
-            let ident_str = segment.ident.to_string();
-            return ident_str == "HashMap" || ident_str == "BTreeMap";
-        }
-    }
-    false
-}
-
-fn is_primitive_like(ty: &Type) -> bool {
-    if is_primitive_type(ty) {
-        return true;
-    }
-    if let Type::Path(type_path) = ty
-        && let Some(seg) = type_path.path.segments.last()
-    {
-        let ident = seg.ident.to_string();
-        if let syn::PathArguments::AngleBracketed(args) = &seg.arguments
-            && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
-            && (ident == "Vec" || ident == "Option")
-            && is_primitive_like(inner_ty)
-        {
-            return true;
-        }
-    }
-    false
 }
 
 fn is_known_type(
@@ -455,11 +429,13 @@ fn parse_query_struct_to_parameters(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::HashMap;
+
     use insta::{assert_debug_snapshot, with_settings};
     use rstest::rstest;
-    use std::collections::HashMap;
     use vespera_core::route::ParameterLocation;
+
+    use super::*;
 
     fn setup_test_data(func_src: &str) -> (HashMap<String, String>, HashMap<String, String>) {
         let mut struct_definitions = HashMap::new();
@@ -694,13 +670,15 @@ mod tests {
     }
 
     #[rstest]
+    #[case("String", true)]
     #[case("i32", true)]
     #[case("Vec<String>", true)]
     #[case("Option<bool>", true)]
     #[case("CustomType", false)]
     fn test_is_primitive_like_fn(#[case] type_str: &str, #[case] expected: bool) {
         let ty: Type = syn::parse_str(type_str).unwrap();
-        assert_eq!(is_primitive_like(&ty), expected, "type_str={}", type_str);
+        let result = is_primitive_type(&ty) || utils_is_primitive_like(&ty);
+        assert_eq!(result, expected, "type_str={}", type_str);
     }
 
     #[rstest]
@@ -710,7 +688,7 @@ mod tests {
     #[case("Vec<i32>", false)]
     fn test_is_map_type(#[case] type_str: &str, #[case] expected: bool) {
         let ty: Type = syn::parse_str(type_str).unwrap();
-        assert_eq!(is_map_type(&ty), expected, "type_str={}", type_str);
+        assert_eq!(utils_is_map_type(&ty), expected, "type_str={}", type_str);
     }
 
     #[rstest]
@@ -890,16 +868,6 @@ mod tests {
             assert_eq!(params[0].r#in, ParameterLocation::Path);
             assert_eq!(params[0].name, "user_id");
         }
-    }
-
-    #[test]
-    fn test_is_map_type_false_for_non_path() {
-        // Test line 177: is_map_type returns false for non-Path type
-        let ty: Type = syn::parse_str("&str").unwrap();
-        assert!(!is_map_type(&ty)); // Line 177: returns false for non-Path type
-
-        let ty: Type = syn::parse_str("(i32, String)").unwrap();
-        assert!(!is_map_type(&ty)); // Tuple is also not a Path type
     }
 
     #[test]

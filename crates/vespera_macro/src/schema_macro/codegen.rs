@@ -6,14 +6,16 @@ use std::collections::HashSet;
 
 use proc_macro2::TokenStream;
 use quote::quote;
+use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
 use super::type_utils::is_option_type;
-use crate::metadata::StructMetadata;
-use crate::parser::{
-    extract_default, extract_field_rename, extract_rename_all, extract_skip,
-    extract_skip_serializing_if, parse_type_to_schema_ref, rename_field, strip_raw_prefix,
+use crate::{
+    metadata::StructMetadata,
+    parser::{
+        extract_default, extract_field_rename, extract_rename_all, extract_skip,
+        extract_skip_serializing_if, parse_type_to_schema_ref, rename_field, strip_raw_prefix,
+    },
 };
-use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
 /// Generate Schema construction code with field filtering
 pub fn generate_filtered_schema(
@@ -211,9 +213,11 @@ pub fn schema_to_tokens(schema: &Schema) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashSet;
+
     use vespera_core::schema::{Reference, Schema, SchemaRef, SchemaType};
+
+    use super::*;
 
     #[test]
     fn test_generate_filtered_schema_empty_properties() {

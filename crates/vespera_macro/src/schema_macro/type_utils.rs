@@ -4,6 +4,7 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
+use serde_json;
 use syn::Type;
 
 /// Extract type name from a Type
@@ -11,14 +12,12 @@ pub fn extract_type_name(ty: &Type) -> Result<String, syn::Error> {
     match ty {
         Type::Path(type_path) => {
             // Get the last segment (handles paths like crate::User)
-            let segment = type_path.path.segments.last().ok_or_else(|| {
-                syn::Error::new_spanned(ty, "expected a type path with at least one segment")
-            })?;
+            let segment = type_path.path.segments.last().ok_or_else(|| syn::Error::new_spanned(ty, "extract_type_name: type path has no segments. Provide a valid type like `User` or `crate::models::User`."))?;
             Ok(segment.ident.to_string())
         }
         _ => Err(syn::Error::new_spanned(
             ty,
-            "expected a type path (e.g., `User` or `crate::User`)",
+            "extract_type_name: expected a type path, not a reference or other type. Use a type like `User` or `crate::User` instead of `&User`.",
         )),
     }
 }
@@ -207,10 +206,66 @@ pub fn capitalize_first(s: &str) -> String {
     }
 }
 
+/// Convert snake_case to PascalCase.
+/// e.g., "target_user_id" -> "TargetUserId", "comments" -> "Comments"
+pub fn snake_to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+            }
+        })
+        .collect()
+}
+
+/// Check if a type is HashMap or BTreeMap
+pub fn is_map_type(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        let path = &type_path.path;
+        if !path.segments.is_empty() {
+            let segment = path.segments.last().unwrap();
+            let ident_str = segment.ident.to_string();
+            return ident_str == "HashMap" || ident_str == "BTreeMap";
+        }
+    }
+    false
+}
+
+/// Check if a type is a primitive type OR a known well-behaved container.
+///
+/// This checks the outer type name against a list of known types (primitives, std containers, etc.).
+/// Types like `Vec`, `Option`, `HashMap` are considered primitive-like regardless of their contents.
+pub fn is_primitive_like(ty: &Type) -> bool {
+    is_primitive_or_known_type(&extract_type_name(ty).unwrap_or_default())
+}
+
+/// Get type-specific default value for simple #[serde(default)]
+pub fn get_type_default(ty: &Type) -> Option<serde_json::Value> {
+    match ty {
+        Type::Path(type_path) => type_path.path.segments.last().and_then(|segment| {
+            match segment.ident.to_string().as_str() {
+                "String" => Some(serde_json::Value::String(String::new())),
+                "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => {
+                    Some(serde_json::Value::Number(serde_json::Number::from(0)))
+                }
+                "f32" | "f64" => Some(serde_json::Value::Number(
+                    serde_json::Number::from_f64(0.0).unwrap_or(serde_json::Number::from(0)),
+                )),
+                "bool" => Some(serde_json::Value::Bool(false)),
+                _ => None,
+            }
+        }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rstest::rstest;
+
+    use super::*;
     fn empty_type_path() -> syn::Type {
         syn::Type::Path(syn::TypePath {
             qself: None,
@@ -230,6 +285,18 @@ mod tests {
     #[case("camelCase", "CamelCase")]
     fn test_capitalize_first(#[case] input: &str, #[case] expected: &str) {
         assert_eq!(capitalize_first(input), expected);
+    }
+
+    #[rstest]
+    #[case("comments", "Comments")]
+    #[case("target_user_notifications", "TargetUserNotifications")]
+    #[case("memo_comments", "MemoComments")]
+    #[case("", "")]
+    #[case("a", "A")]
+    #[case("user_id", "UserId")]
+    #[case("ABC", "ABC")]
+    fn test_snake_to_pascal_case(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(snake_to_pascal_case(input), expected);
     }
 
     #[rstest]
@@ -481,5 +548,135 @@ mod tests {
         let tokens = resolve_type_to_absolute_path(&ty, &module_path);
         let output = tokens.to_string();
         assert!(output.trim().is_empty());
+    }
+
+    #[rstest]
+    #[case("HashMap<String, i32>", true)]
+    #[case("BTreeMap<String, i32>", true)]
+    #[case("String", false)]
+    #[case("Vec<String>", false)]
+    fn test_is_map_type(#[case] type_str: &str, #[case] expected: bool) {
+        let ty: syn::Type = syn::parse_str(type_str).unwrap();
+        assert_eq!(is_map_type(&ty), expected);
+    }
+
+    #[rstest]
+    #[case("String", Some(serde_json::Value::String(String::new())))]
+    #[case("i32", Some(serde_json::Value::Number(serde_json::Number::from(0))))]
+    #[case("bool", Some(serde_json::Value::Bool(false)))]
+    #[case("f64", Some(serde_json::Value::Number(serde_json::Number::from_f64(0.0).unwrap())))]
+    #[case("CustomType", None)]
+    fn test_get_type_default(#[case] type_str: &str, #[case] expected: Option<serde_json::Value>) {
+        let ty: syn::Type = syn::parse_str(type_str).unwrap();
+        let result = get_type_default(&ty);
+        match expected {
+            Some(exp) => {
+                assert!(result.is_some());
+                let res = result.unwrap();
+                assert_eq!(res, exp);
+            }
+            None => assert!(result.is_none()),
+        }
+    }
+
+    #[test]
+    fn test_is_primitive_like_true() {
+        let ty: syn::Type = syn::parse_str("String").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_vec_of_primitives() {
+        let ty: syn::Type = syn::parse_str("Vec<String>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_option_of_primitives() {
+        let ty: syn::Type = syn::parse_str("Option<i32>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_custom_type() {
+        let ty: syn::Type = syn::parse_str("User").unwrap();
+        assert!(!is_primitive_like(&ty));
+    }
+
+    // Edge case tests for type_utils functions
+
+    #[test]
+    fn test_extract_type_name_empty_path_error() {
+        let ty = empty_type_path();
+        let result = extract_type_name(&ty);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("type path has no segments")
+        );
+    }
+
+    #[test]
+    fn test_is_map_type_empty_path() {
+        let ty = empty_type_path();
+        assert!(!is_map_type(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_vec_string() {
+        let ty: syn::Type = syn::parse_str("Vec<String>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_vec_i32() {
+        let ty: syn::Type = syn::parse_str("Vec<i32>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_option_string() {
+        let ty: syn::Type = syn::parse_str("Option<String>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_option_bool() {
+        let ty: syn::Type = syn::parse_str("Option<bool>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_vec_of_custom_type() {
+        // Vec is a known type, so Vec<User> is considered primitive-like
+        let ty: syn::Type = syn::parse_str("Vec<User>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_option_of_custom_type() {
+        // Option is a known type, so Option<User> is considered primitive-like
+        let ty: syn::Type = syn::parse_str("Option<User>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_nested_vec_option() {
+        let ty: syn::Type = syn::parse_str("Vec<Option<String>>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_nested_option_vec() {
+        let ty: syn::Type = syn::parse_str("Option<Vec<i32>>").unwrap();
+        assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_is_primitive_like_vec_of_datetime() {
+        let ty: syn::Type = syn::parse_str("Vec<DateTime<Utc>>").unwrap();
+        assert!(is_primitive_like(&ty));
     }
 }
