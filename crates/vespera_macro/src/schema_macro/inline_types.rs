@@ -10,7 +10,7 @@ use super::{
     circular::detect_circular_fields,
     file_lookup::find_model_from_schema_path,
     seaorm::{RelationFieldInfo, convert_type_with_chrono},
-    type_utils::{capitalize_first, is_seaorm_relation_type},
+    type_utils::{is_seaorm_relation_type, snake_to_pascal_case},
 };
 use crate::parser::{extract_rename_all, extract_skip};
 
@@ -87,7 +87,7 @@ pub fn generate_inline_relation_type_from_def(
         Some(name) => name.to_string(),
         None => parent_type_name.to_string(),
     };
-    let field_name_pascal = capitalize_first(&rel_info.field_name.to_string());
+    let field_name_pascal = snake_to_pascal_case(&rel_info.field_name.to_string());
     let inline_type_name = syn::Ident::new(
         &format!("{}_{}", parent_name, field_name_pascal),
         proc_macro2::Span::call_site(),
@@ -189,7 +189,7 @@ pub fn generate_inline_relation_type_no_relations_from_def(
         Some(name) => name.to_string(),
         None => parent_type_name.to_string(),
     };
-    let field_name_pascal = capitalize_first(&rel_info.field_name.to_string());
+    let field_name_pascal = snake_to_pascal_case(&rel_info.field_name.to_string());
     let inline_type_name = syn::Ident::new(
         &format!("{}_{}", parent_name, field_name_pascal),
         proc_macro2::Span::call_site(),

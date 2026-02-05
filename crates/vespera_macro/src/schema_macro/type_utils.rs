@@ -206,6 +206,20 @@ pub fn capitalize_first(s: &str) -> String {
     }
 }
 
+/// Convert snake_case to PascalCase.
+/// e.g., "target_user_id" -> "TargetUserId", "comments" -> "Comments"
+pub fn snake_to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+            }
+        })
+        .collect()
+}
+
 /// Check if a type is HashMap or BTreeMap
 pub fn is_map_type(ty: &Type) -> bool {
     if let Type::Path(type_path) = ty {
@@ -271,6 +285,18 @@ mod tests {
     #[case("camelCase", "CamelCase")]
     fn test_capitalize_first(#[case] input: &str, #[case] expected: &str) {
         assert_eq!(capitalize_first(input), expected);
+    }
+
+    #[rstest]
+    #[case("comments", "Comments")]
+    #[case("target_user_notifications", "TargetUserNotifications")]
+    #[case("memo_comments", "MemoComments")]
+    #[case("", "")]
+    #[case("a", "A")]
+    #[case("user_id", "UserId")]
+    #[case("ABC", "ABC")]
+    fn test_snake_to_pascal_case(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(snake_to_pascal_case(input), expected);
     }
 
     #[rstest]

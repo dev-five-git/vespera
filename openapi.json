@@ -2412,7 +2412,7 @@
           "memoComments": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/MemoResponseComments_Memo_comments"
+              "$ref": "#/components/schemas/MemoResponseComments_MemoComments"
             }
           }
         },
@@ -2420,7 +2420,7 @@
           "memoComments"
         ]
       },
-      "MemoResponseComments_Memo_comments": {
+      "MemoResponseComments_MemoComments": {
         "type": "object",
         "properties": {
           "content": {

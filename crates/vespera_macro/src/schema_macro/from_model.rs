@@ -13,22 +13,9 @@ use super::{
     },
     file_lookup::{find_fk_column_from_target_entity, find_struct_from_schema_path},
     seaorm::RelationFieldInfo,
+    type_utils::snake_to_pascal_case,
 };
 use crate::metadata::StructMetadata;
-
-/// Convert snake_case to PascalCase for Column enum names.
-/// e.g., "target_user_id" -> "TargetUserId"
-fn snake_to_pascal_case(s: &str) -> String {
-    s.split('_')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().chain(chars).collect(),
-            }
-        })
-        .collect()
-}
 
 /// Build Entity path from Schema path.
 /// e.g., `crate::models::user::Schema` -> `crate::models::user::Entity`
