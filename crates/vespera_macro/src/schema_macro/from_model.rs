@@ -11,10 +11,24 @@ use super::{
         detect_circular_fields, generate_inline_struct_construction,
         generate_inline_type_construction, has_fk_relations, is_circular_relation_required,
     },
-    file_lookup::find_struct_from_schema_path,
+    file_lookup::{find_fk_column_from_target_entity, find_struct_from_schema_path},
     seaorm::RelationFieldInfo,
 };
 use crate::metadata::StructMetadata;
+
+/// Convert snake_case to PascalCase for Column enum names.
+/// e.g., "target_user_id" -> "TargetUserId"
+fn snake_to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+            }
+        })
+        .collect()
+}
 
 /// Build Entity path from Schema path.
 /// e.g., `crate::models::user::Schema` -> `crate::models::user::Entity`
@@ -89,15 +103,143 @@ pub fn generate_from_model_with_relations(
 
             match rel.relation_type.as_str() {
                 "HasOne" | "BelongsTo" => {
-                    // Load single related entity
-                    quote! {
-                        let #field_name = model.find_related(#entity_path).one(db).await?;
+                    // When relation_enum is specified, use the specific Relation variant
+                    // This handles cases where multiple relations point to the same Entity type
+                    if let Some(ref relation_enum_name) = rel.relation_enum {
+                        let relation_variant =
+                            syn::Ident::new(relation_enum_name, proc_macro2::Span::call_site());
+
+                        if rel.is_optional {
+                            // Optional FK: load only if FK value exists
+                            if let Some(ref fk_col) = rel.fk_column {
+                                let fk_ident =
+                                    syn::Ident::new(fk_col, proc_macro2::Span::call_site());
+                                quote! {
+                                    let #field_name = match &model.#fk_ident {
+                                        Some(fk_value) => #entity_path::find_by_id(fk_value.clone()).one(db).await?,
+                                        None => None,
+                                    };
+                                }
+                            } else {
+                                // Fallback: use find_related with Relation enum
+                                quote! {
+                                    let #field_name = Entity::find_related(Relation::#relation_variant)
+                                        .filter(<Entity as sea_orm::EntityTrait>::PrimaryKey::eq(&model))
+                                        .one(db)
+                                        .await?;
+                                }
+                            }
+                        } else {
+                            // Required FK: directly query by FK value
+                            if let Some(ref fk_col) = rel.fk_column {
+                                let fk_ident =
+                                    syn::Ident::new(fk_col, proc_macro2::Span::call_site());
+                                quote! {
+                                    let #field_name = #entity_path::find_by_id(model.#fk_ident.clone()).one(db).await?;
+                                }
+                            } else {
+                                // Fallback: use find_related with Relation enum
+                                quote! {
+                                    let #field_name = Entity::find_related(Relation::#relation_variant)
+                                        .filter(<Entity as sea_orm::EntityTrait>::PrimaryKey::eq(&model))
+                                        .one(db)
+                                        .await?;
+                                }
+                            }
+                        }
+                    } else {
+                        // Standard case: single relation to target entity, use find_related
+                        quote! {
+                            let #field_name = model.find_related(#entity_path).one(db).await?;
+                        }
                     }
                 }
                 "HasMany" => {
-                    // Load multiple related entities
-                    quote! {
-                        let #field_name = model.find_related(#entity_path).all(db).await?;
+                    // HasMany with relation_enum: use FK-based query on target entity
+                    // HasMany without relation_enum: use standard find_related
+                    if let Some(ref via_rel_value) = rel.via_rel {
+                        // Look up the FK column from the target entity
+                        let schema_path_str = rel.schema_path.to_string().replace(' ', "");
+                        if let Some(fk_col_name) =
+                            find_fk_column_from_target_entity(&schema_path_str, via_rel_value)
+                        {
+                            // Convert snake_case FK column to PascalCase for Column enum
+                            let fk_col_pascal = snake_to_pascal_case(&fk_col_name);
+                            let fk_col_ident =
+                                syn::Ident::new(&fk_col_pascal, proc_macro2::Span::call_site());
+
+                            // Build the Column path: entity_path without ::Entity, then ::Column::FkCol
+                            // e.g., crate::models::notification::Entity -> crate::models::notification::Column::TargetUserId
+                            let entity_path_str = entity_path.to_string().replace(' ', "");
+                            let column_path_str =
+                                entity_path_str.replace(":: Entity", ":: Column");
+                            let column_path_idents: Vec<syn::Ident> = column_path_str
+                                .split("::")
+                                .map(|s| s.trim())
+                                .filter(|s| !s.is_empty())
+                                .map(|s| syn::Ident::new(s, proc_macro2::Span::call_site()))
+                                .collect();
+
+                            quote! {
+                                let #field_name = #(#column_path_idents)::*::#fk_col_ident
+                                    .into_column()
+                                    .eq(model.id.clone())
+                                    .into_condition();
+                                let #field_name = #entity_path::find()
+                                    .filter(#field_name)
+                                    .all(db)
+                                    .await?;
+                            }
+                        } else {
+                            // FK column not found - fall back to empty vec with warning comment
+                            quote! {
+                                // WARNING: Could not find FK column for relation_enum, using empty vec
+                                let #field_name: Vec<_> = vec![];
+                            }
+                        }
+                    } else if rel.relation_enum.is_some() {
+                        // Has relation_enum but no via_rel - try using relation_enum as via_rel
+                        let via_rel_value = rel.relation_enum.as_ref().unwrap();
+                        let schema_path_str = rel.schema_path.to_string().replace(' ', "");
+                        if let Some(fk_col_name) =
+                            find_fk_column_from_target_entity(&schema_path_str, via_rel_value)
+                        {
+                            let fk_col_pascal = snake_to_pascal_case(&fk_col_name);
+                            let fk_col_ident =
+                                syn::Ident::new(&fk_col_pascal, proc_macro2::Span::call_site());
+
+                            let entity_path_str = entity_path.to_string().replace(' ', "");
+                            let column_path_str =
+                                entity_path_str.replace(":: Entity", ":: Column");
+                            let column_path_idents: Vec<syn::Ident> = column_path_str
+                                .split("::")
+                                .map(|s| s.trim())
+                                .filter(|s| !s.is_empty())
+                                .map(|s| syn::Ident::new(s, proc_macro2::Span::call_site()))
+                                .collect();
+
+                            quote! {
+                                let #field_name = #(#column_path_idents)::*::#fk_col_ident
+                                    .into_column()
+                                    .eq(model.id.clone())
+                                    .into_condition();
+                                let #field_name = #entity_path::find()
+                                    .filter(#field_name)
+                                    .all(db)
+                                    .await?;
+                            }
+                        } else {
+                            // FK column not found - fall back to empty vec
+                            quote! {
+                                // WARNING: Could not find FK column for relation_enum, using empty vec
+                                let #field_name: Vec<_> = vec![];
+                            }
+                        }
+                    } else {
+                        // Standard HasMany - use find_related
+                        quote! {
+                            let #field_name = model.find_related(#entity_path).all(db).await?;
+                        }
                     }
                 }
                 _ => quote! {},
@@ -432,6 +574,9 @@ mod tests {
             schema_path,
             is_optional,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         }
     }
 

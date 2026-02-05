@@ -1607,47 +1607,6 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           }
         ]
       },
-      "CommentSchema": {
-        "type": "object",
-        "properties": {
-          "content": {
-            "type": "string"
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "id": {
-            "type": "integer"
-          },
-          "memo": {
-            "$ref": "#/components/schemas/MemoSchema"
-          },
-          "memoId": {
-            "type": "integer"
-          },
-          "updatedAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "user": {
-            "$ref": "#/components/schemas/UserSchema"
-          },
-          "userId": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "id",
-          "userId",
-          "memoId",
-          "content",
-          "createdAt",
-          "updatedAt",
-          "user",
-          "memo"
-        ]
-      },
       "ComplexStructBody": {
         "type": "object",
         "properties": {
@@ -2378,6 +2337,47 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "age"
         ]
       },
+      "MemoCommentSchema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "memo": {
+            "$ref": "#/components/schemas/MemoSchema"
+          },
+          "memoId": {
+            "type": "integer"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserSchema"
+          },
+          "userId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "memoId",
+          "content",
+          "createdAt",
+          "updatedAt",
+          "user",
+          "memo"
+        ]
+      },
       "MemoResponse": {
         "type": "object",
         "properties": {
@@ -2413,18 +2413,18 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
       "MemoResponseComments": {
         "type": "object",
         "properties": {
-          "comments": {
+          "memoComments": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/MemoResponseComments_Comments"
+              "$ref": "#/components/schemas/MemoResponseComments_Memo_comments"
             }
           }
         },
         "required": [
-          "comments"
+          "memoComments"
         ]
       },
-      "MemoResponseComments_Comments": {
+      "MemoResponseComments_Memo_comments": {
         "type": "object",
         "properties": {
           "content": {

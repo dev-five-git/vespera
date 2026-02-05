@@ -450,6 +450,9 @@ mod tests {
             schema_path: quote!(super::user::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec![
             "crate".to_string(),
@@ -513,6 +516,9 @@ mod tests {
             schema_path: quote!(super::other::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec![
             "crate".to_string(),
@@ -545,6 +551,9 @@ mod tests {
             schema_path: quote!(super::user::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec![
             "crate".to_string(),
@@ -578,6 +587,9 @@ mod tests {
             schema_path: quote!(super::memo::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
 
         // Model with relations that should be stripped
@@ -621,6 +633,9 @@ mod tests {
             schema_path: quote!(super::item::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
 
         // Model with serde(skip) field
@@ -660,6 +675,9 @@ mod tests {
             schema_path: quote!(super::user::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec!["crate".to_string()];
 
@@ -683,6 +701,9 @@ mod tests {
             schema_path: quote!(super::user::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec![
             "crate".to_string(),
@@ -734,6 +755,9 @@ mod tests {
             schema_path: quote!(super::user::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec![
             "crate".to_string(),
@@ -784,6 +808,9 @@ mod tests {
             schema_path: quote!(super::memo::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
 
         let model_def = r#"pub struct Model {
@@ -843,6 +870,9 @@ pub struct Model {
             schema_path: quote!(crate::models::user::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec![
             "crate".to_string(),
@@ -914,6 +944,9 @@ pub struct Model {
             schema_path: quote!(crate::models::memo::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
 
         let source_module_path = vec![
@@ -977,6 +1010,9 @@ pub struct Model {
             schema_path: quote!(crate::models::nonexistent::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec!["crate".to_string()];
 
@@ -1019,6 +1055,9 @@ pub struct Model {
             schema_path: quote!(crate::models::nonexistent::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
 
         let result =
@@ -1048,6 +1087,9 @@ pub struct Model {
             schema_path: quote!(super::user::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
         let source_module_path = vec![
             "crate".to_string(),
@@ -1106,6 +1148,9 @@ pub struct Model {
             schema_path: quote!(super::memo::Schema),
             is_optional: false,
             inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
         };
 
         // Model with DateTimeWithTimeZone field

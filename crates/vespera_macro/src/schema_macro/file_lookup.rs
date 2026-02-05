@@ -341,6 +341,77 @@ pub fn find_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
     None
 }
 
+/// Find the FK column name from the target entity for a HasMany relation with via_rel.
+///
+/// When a HasMany relation has `via_rel = "TargetUser"`, this function:
+/// 1. Looks up the target entity file (e.g., notification.rs from schema path)
+/// 2. Finds the field with matching `relation_enum = "TargetUser"`
+/// 3. Extracts and returns the `from` attribute value (e.g., "target_user_id")
+///
+/// Returns None if the target file can't be found or parsed, or if no matching relation exists.
+pub fn find_fk_column_from_target_entity(
+    target_schema_path: &str,
+    via_rel: &str,
+) -> Option<String> {
+    use crate::schema_macro::seaorm::{extract_belongs_to_from_field, extract_relation_enum};
+
+    // Get CARGO_MANIFEST_DIR to locate src folder
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+    let src_dir = Path::new(&manifest_dir).join("src");
+
+    // Parse the schema path to get file path
+    // e.g., "crate :: models :: notification :: Schema" -> src/models/notification.rs
+    let segments: Vec<&str> = target_schema_path
+        .split("::")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && *s != "Schema" && *s != "Entity")
+        .collect();
+
+    let module_segments: Vec<&str> = segments
+        .iter()
+        .filter(|s| **s != "crate" && **s != "self" && **s != "super")
+        .copied()
+        .collect();
+
+    if module_segments.is_empty() {
+        return None;
+    }
+
+    // Try different file path patterns
+    let file_paths = vec![
+        src_dir.join(format!("{}.rs", module_segments.join("/"))),
+        src_dir.join(format!("{}/mod.rs", module_segments.join("/"))),
+    ];
+
+    for file_path in file_paths {
+        if !file_path.exists() {
+            continue;
+        }
+
+        let file_ast = try_read_and_parse_file(&file_path)?;
+
+        // Look for Model struct in the file
+        for item in &file_ast.items {
+            if let syn::Item::Struct(struct_item) = item
+                && struct_item.ident == "Model"
+            {
+                // Search through fields for the one with matching relation_enum
+                if let syn::Fields::Named(fields_named) = &struct_item.fields {
+                    for field in &fields_named.named {
+                        let field_relation_enum = extract_relation_enum(&field.attrs);
+                        if field_relation_enum.as_deref() == Some(via_rel) {
+                            // Found the matching field, extract FK column from `from` attribute
+                            return extract_belongs_to_from_field(&field.attrs);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Find the Model definition from a Schema path.
 /// Converts "crate::models::user::Schema" -> finds Model in src/models/user.rs
 pub fn find_model_from_schema_path(schema_path_str: &str) -> Option<StructMetadata> {

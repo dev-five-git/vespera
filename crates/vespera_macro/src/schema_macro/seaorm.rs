@@ -23,6 +23,14 @@ pub struct RelationFieldInfo {
     /// If Some, this relation has circular refs and uses an inline type
     /// Contains: (inline_type_name, circular_fields_to_exclude)
     pub inline_type_info: Option<(syn::Ident, Vec<String>)>,
+    /// The `relation_enum` attribute value (e.g., "TargetUser", "CreatedByUser")
+    /// When present, indicates multiple relations to the same Entity type exist
+    pub relation_enum: Option<String>,
+    /// The FK column name from `from` attribute (e.g., "user_id", "target_user_id")
+    pub fk_column: Option<String>,
+    /// The `via_rel` attribute value for HasMany relations (e.g., "TargetUser")
+    /// This specifies which Relation variant on the TARGET entity to use
+    pub via_rel: Option<String>,
 }
 
 /// Convert SeaORM datetime types to chrono equivalents.
@@ -130,6 +138,64 @@ pub fn extract_belongs_to_from_field(attrs: &[syn::Attribute]) -> Option<String>
             Ok(())
         });
         from_field
+    })
+}
+
+/// Extract the "relation_enum" value from a sea_orm attribute.
+/// e.g., `#[sea_orm(belongs_to, relation_enum = "TargetUser", from = "target_user_id")]` -> Some("TargetUser")
+///
+/// When relation_enum is present, it indicates that multiple relations to the same
+/// Entity type exist, and we need to use the specific Relation enum variant for queries.
+pub fn extract_relation_enum(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs.iter().find_map(|attr| {
+        if !attr.path().is_ident("sea_orm") {
+            return None;
+        }
+
+        let mut relation_enum_value = None;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("relation_enum") {
+                relation_enum_value = meta
+                    .value()
+                    .ok()
+                    .and_then(|v| v.parse::<syn::LitStr>().ok())
+                    .map(|lit| lit.value());
+            } else if meta.input.peek(syn::Token![=]) {
+                // Consume value for other key=value pairs
+                drop(meta.value().and_then(|v| v.parse::<syn::LitStr>()));
+            }
+            Ok(())
+        });
+        relation_enum_value
+    })
+}
+
+/// Extract the "via_rel" value from a sea_orm attribute.
+/// e.g., `#[sea_orm(has_many, relation_enum = "TargetUser", via_rel = "TargetUser")]` -> Some("TargetUser")
+///
+/// For HasMany relations with relation_enum, via_rel specifies which Relation variant
+/// on the TARGET entity corresponds to this relation. This allows us to find the FK column.
+pub fn extract_via_rel(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs.iter().find_map(|attr| {
+        if !attr.path().is_ident("sea_orm") {
+            return None;
+        }
+
+        let mut via_rel_value = None;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("via_rel") {
+                via_rel_value = meta
+                    .value()
+                    .ok()
+                    .and_then(|v| v.parse::<syn::LitStr>().ok())
+                    .map(|lit| lit.value());
+            } else if meta.input.peek(syn::Token![=]) {
+                // Consume value for other key=value pairs
+                drop(meta.value().and_then(|v| v.parse::<syn::LitStr>()));
+            }
+            Ok(())
+        });
+        via_rel_value
     })
 }
 
@@ -252,6 +318,7 @@ pub fn convert_relation_type_to_schema_with_info(
             // If FK is Option<T> -> relation is optional: Option<Box<Schema>>
             // If FK is required -> relation is required: Box<Schema>
             let fk_field = extract_belongs_to_from_field(field_attrs);
+            let relation_enum = extract_relation_enum(field_attrs);
             let is_optional = fk_field
                 .as_ref()
                 .map(|f| is_field_optional_in_struct(parsed_struct, f))
@@ -268,10 +335,15 @@ pub fn convert_relation_type_to_schema_with_info(
                 schema_path: schema_path.clone(),
                 is_optional,
                 inline_type_info: None, // Will be populated later if circular
+                relation_enum,
+                fk_column: fk_field,
+                via_rel: None, // Not used for HasOne
             };
             Some((converted, info))
         }
         "HasMany" => {
+            let relation_enum = extract_relation_enum(field_attrs);
+            let via_rel = extract_via_rel(field_attrs);
             let converted = quote! { Vec<#schema_path> };
             let info = RelationFieldInfo {
                 field_name,
@@ -279,6 +351,9 @@ pub fn convert_relation_type_to_schema_with_info(
                 schema_path: schema_path.clone(),
                 is_optional: false,
                 inline_type_info: None, // Will be populated later if circular
+                relation_enum,
+                fk_column: None, // HasMany doesn't have FK on this side
+                via_rel,         // Used to find FK on target entity
             };
             Some((converted, info))
         }
@@ -287,6 +362,7 @@ pub fn convert_relation_type_to_schema_with_info(
             // If FK is Option<T> -> relation is optional: Option<Box<Schema>>
             // If FK is required -> relation is required: Box<Schema>
             let fk_field = extract_belongs_to_from_field(field_attrs);
+            let relation_enum = extract_relation_enum(field_attrs);
             let is_optional = fk_field
                 .as_ref()
                 .map(|f| is_field_optional_in_struct(parsed_struct, f))
@@ -303,6 +379,9 @@ pub fn convert_relation_type_to_schema_with_info(
                 schema_path: schema_path.clone(),
                 is_optional,
                 inline_type_info: None, // Will be populated later if circular
+                relation_enum,
+                fk_column: fk_field,
+                via_rel: None, // Not used for BelongsTo
             };
             Some((converted, info))
         }
@@ -414,6 +493,37 @@ mod tests {
     #[test]
     fn test_extract_belongs_to_from_field_empty_attrs() {
         let result = extract_belongs_to_from_field(&[]);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_relation_enum_with_value() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+            #[sea_orm(belongs_to, relation_enum = "TargetUser", from = "target_user_id", to = "id")]
+        )];
+        let result = extract_relation_enum(&attrs);
+        assert_eq!(result, Some("TargetUser".to_string()));
+    }
+
+    #[test]
+    fn test_extract_relation_enum_without_relation_enum() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+            #[sea_orm(belongs_to, from = "user_id", to = "id")]
+        )];
+        let result = extract_relation_enum(&attrs);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_relation_enum_no_sea_orm_attr() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[serde(skip)])];
+        let result = extract_relation_enum(&attrs);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_relation_enum_empty_attrs() {
+        let result = extract_relation_enum(&[]);
         assert_eq!(result, None);
     }
 
