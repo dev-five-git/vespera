@@ -158,12 +158,15 @@ pub struct CreateUserRequest {
 | `Path<T>` | Path parameters |
 | `Query<T>` | Query parameters |
 | `Json<T>` | Request body (application/json) |
-| `Form<T>` | Request body (form-urlencoded) |
-| `TypedMultipart<T>` | Request body (multipart/form-data) |
+| `Form<T>` | Request body (application/x-www-form-urlencoded) |
+| `TypedMultipart<T>` | Request body (multipart/form-data) — typed with schema |
+| `Multipart` | Request body (multipart/form-data) — untyped, generic object |
 | `TypedHeader<T>` | Header parameters |
 | `State<T>` | Ignored (internal) |
 
 ### Multipart Form Data
+
+#### Typed Multipart (Recommended)
 
 Upload files using `TypedMultipart` from [`axum_typed_multipart`](https://crates.io/crates/axum_typed_multipart):
 
@@ -187,6 +190,26 @@ pub async fn create_upload(
 Vespera automatically generates `multipart/form-data` content type in OpenAPI, and maps `FieldData<NamedTempFile>` to `{ "type": "string", "format": "binary" }`.
 
 > **Note:** `axum` must be a direct dependency of your project (not just via vespera) because `TryFromMultipart` internally references `axum::extract::multipart::Multipart`.
+
+#### Raw Multipart (Untyped)
+
+For dynamic multipart handling where the fields aren't known at compile time, use axum's built-in `Multipart` extractor:
+
+```rust
+use axum::extract::Multipart;
+
+#[vespera::route(post, tags = ["uploads"])]
+pub async fn upload(mut multipart: Multipart) -> Json<UploadResponse> {
+    while let Some(field) = multipart.next_field().await.unwrap() {
+        let name = field.name().unwrap_or("unknown").to_string();
+        let data = field.bytes().await.unwrap();
+        // Process each field dynamically...
+    }
+    Json(UploadResponse { success: true })
+}
+```
+
+This generates a `multipart/form-data` request body with a generic `{ "type": "object" }` schema in OpenAPI, since the fields are not statically known.
 
 ### Error Handling
 

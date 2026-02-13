@@ -53,7 +53,8 @@ pub struct User { id: u32, name: String }
 | `Query<T>` | query parameters | Struct fields become params |
 | `Json<T>` | requestBody | application/json |
 | `Form<T>` | requestBody | application/x-www-form-urlencoded |
-| `TypedMultipart<T>` | requestBody | multipart/form-data (file uploads) |
+| `TypedMultipart<T>` | requestBody | multipart/form-data — typed with schema |
+| `Multipart` | requestBody | multipart/form-data — untyped, generic object |
 | `State<T>` | **ignored** | Internal, not API |
 | `Extension<T>` | **ignored** | Internal, not API |
 | `TypedHeader<T>` | header parameter | |
