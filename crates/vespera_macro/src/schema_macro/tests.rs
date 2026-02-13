@@ -348,7 +348,7 @@ fn test_generate_schema_type_code_preserves_struct_doc() {
     assert!(tokens_str.contains("User struct documentation") || tokens_str.contains("doc"));
 }
 
-// Coverage tests for lines 187-206: Serde attribute filtering from source struct
+// Tests for serde attribute filtering from source struct
 
 #[test]
 fn test_generate_schema_type_code_inherits_source_rename_all() {
@@ -391,7 +391,7 @@ fn test_generate_schema_type_code_override_rename_all() {
     assert!(output.contains("camelCase"));
 }
 
-// Coverage tests for lines 313-358: Field rename processing
+// Tests for field rename processing
 
 #[test]
 fn test_generate_schema_type_code_with_rename() {
@@ -437,7 +437,7 @@ fn test_generate_schema_type_code_rename_preserves_serde_rename() {
     assert!(output.contains("userName") || output.contains("rename"));
 }
 
-// Coverage tests for lines 389-400: Schema derive and name attribute generation
+// Tests for schema derive and name attribute generation
 
 #[test]
 fn test_generate_schema_type_code_with_ignore_schema() {
@@ -498,7 +498,7 @@ fn test_generate_schema_type_code_with_clone_false() {
     assert!(!output.contains("Clone ,"));
 }
 
-// Coverage test for SeaORM model detection (lines 212-213)
+// Test for SeaORM model detection
 
 #[test]
 fn test_generate_schema_type_code_seaorm_model_detection() {
@@ -605,7 +605,7 @@ fn test_generate_schema_code_excludes_serde_skip_fields() {
     assert!(output.contains("name"));
 }
 
-// Coverage tests for lines 81-83: Qualified path storage fallback
+// Tests for qualified path storage fallback
 // Note: This tests the case where is_qualified_path returns true
 // and we find the struct in schema_storage rather than via file lookup
 
@@ -631,7 +631,7 @@ fn test_generate_schema_type_code_qualified_path_storage_lookup() {
     assert!(output.contains("UserSchema"));
 }
 
-// Coverage test for lines 85-91: Qualified path not found error
+// Test for qualified path not found error
 
 #[test]
 fn test_generate_schema_type_code_qualified_path_not_found() {
@@ -648,7 +648,7 @@ fn test_generate_schema_type_code_qualified_path_not_found() {
     assert!(err.contains("not found"));
 }
 
-// Coverage tests for lines 252, 254-255: HasMany excluded by default
+// Tests for HasMany excluded by default
 
 #[test]
 fn test_generate_schema_type_code_has_many_excluded_by_default() {
@@ -676,7 +676,7 @@ fn test_generate_schema_type_code_has_many_excluded_by_default() {
     assert!(output.contains("name"));
 }
 
-// Coverage test for line 302: Relation conversion failure skip
+// Test for relation conversion failure skip
 
 #[test]
 fn test_generate_schema_type_code_relation_conversion_failure() {
@@ -759,7 +759,7 @@ fn test_generate_schema_type_code_has_one_relation() {
     assert!(output.contains("profile"));
 }
 
-// Coverage test for line 313: Relation fields push into relation_fields
+// Test for relation fields push into relation_fields
 
 #[test]
 fn test_generate_schema_type_code_seaorm_model_with_relation_generates_from_model() {
@@ -788,8 +788,8 @@ fn test_generate_schema_type_code_seaorm_model_with_relation_generates_from_mode
     // The From impl is only generated when there are no relation fields
 }
 
-// Coverage test for line 438: from_model generation with relations
-// Note: This line requires is_source_seaorm_model && has_relation_fields
+// Test for from_model generation with relations
+// Note: This requires is_source_seaorm_model && has_relation_fields
 // The from_model generation happens but needs file lookup for full path
 
 #[test]
@@ -821,7 +821,6 @@ fn test_generate_schema_type_code_from_model_generation() {
 #[test]
 #[serial]
 fn test_generate_schema_type_code_qualified_path_file_lookup_success() {
-    // Coverage for lines 76, 78-79, 81
     // Tests: qualified path found via file lookup, module_path used when source is empty
     use tempfile::TempDir;
 
@@ -845,7 +844,7 @@ pub struct Model {
     // SAFETY: This is a test that runs single-threaded
     unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
 
-    // Use qualified path - file lookup should succeed (lines 75-81)
+    // Use qualified path - file lookup should succeed
     let tokens = quote!(UserSchema from crate::models::user::Model);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
     let storage: Vec<StructMetadata> = vec![]; // Empty storage - force file lookup
@@ -874,7 +873,6 @@ pub struct Model {
 #[test]
 #[serial]
 fn test_generate_schema_type_code_simple_name_file_lookup_fallback() {
-    // Coverage for lines 100, 103-104
     // Tests: simple name (not in storage) found via file lookup with schema_name hint
     use tempfile::TempDir;
 
@@ -927,13 +925,12 @@ pub struct Model {
 }
 
 // ============================================================
-// Coverage tests for HasMany explicit pick with inline type (lines 258-270)
+// Tests for HasMany explicit pick with inline type
 // ============================================================
 
 #[test]
 #[serial]
 fn test_generate_schema_type_code_has_many_explicit_pick_inline_type() {
-    // Coverage for lines 258-260, 262-263, 265, 267-268
     // Tests: HasMany is explicitly picked, inline type is generated
     use tempfile::TempDir;
 
@@ -998,7 +995,6 @@ pub struct Model {
 #[test]
 #[serial]
 fn test_generate_schema_type_code_has_many_explicit_pick_file_not_found() {
-    // Coverage for line 270
     // Tests: HasMany is explicitly picked but target file not found - should skip field
     use tempfile::TempDir;
 
@@ -1051,13 +1047,12 @@ pub struct Model {
 }
 
 // ============================================================
-// Coverage tests for BelongsTo/HasOne circular reference inline types (lines 277-294)
+// Tests for BelongsTo/HasOne circular reference inline types
 // ============================================================
 
 #[test]
 #[serial]
 fn test_generate_schema_type_code_belongs_to_circular_inline_optional() {
-    // Coverage for lines 277-278, 281-282, 285, 288-289, 294
     // Tests: BelongsTo with circular reference, optional field (is_optional = true)
     use tempfile::TempDir;
 
@@ -1124,7 +1119,6 @@ pub struct Model {
 #[test]
 #[serial]
 fn test_generate_schema_type_code_has_one_circular_inline_required() {
-    // Coverage for lines 277-278, 281-282, 285, 291, 294
     // Tests: HasOne with circular reference, required field (is_optional = false)
     use tempfile::TempDir;
 
@@ -1193,7 +1187,6 @@ pub struct Model {
 #[test]
 #[serial]
 fn test_generate_schema_type_code_belongs_to_circular_inline_required_file() {
-    // Coverage for line 291 specifically
     // Tests: BelongsTo with circular reference AND required FK (is_optional = false)
     // This requires file-based lookup with:
     // 1. #[sea_orm(from = "required_fk")] where required_fk is NOT Option<T>
@@ -1271,7 +1264,6 @@ pub struct Model {
         output
     );
     // BelongsTo with required FK (user_id: i32) should generate Box<...> not Option<Box<...>>
-    // This hits line 291: quote! { Box<#inline_type_name> }
     assert!(
         output.contains("pub user : Box <"),
         "BelongsTo with required FK should generate Box<>, not Option<Box<>>. Output: {}",
@@ -1374,10 +1366,136 @@ fn test_extract_belongs_to_from_field_with_equals_value() {
     );
 }
 
+// ============================================================
+// Tests for multipart mode
+// ============================================================
+
+#[test]
+fn test_generate_schema_type_code_multipart_basic() {
+    // Tests: multipart mode generates TryFromMultipart derive, suppresses From impl
+    let storage = vec![create_test_struct_metadata(
+        "UploadRequest",
+        "pub struct UploadRequest { pub name: String, pub description: Option<String> }",
+    )];
+
+    let tokens = quote!(PatchUpload from UploadRequest, multipart);
+    let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+    let result = generate_schema_type_code(&input, &storage);
+
+    assert!(result.is_ok());
+    let (tokens, _metadata) = result.unwrap();
+    let output = tokens.to_string();
+    // Should derive TryFromMultipart
+    assert!(output.contains("TryFromMultipart"));
+    // Should NOT have From impl (multipart suppresses it)
+    assert!(!output.contains("impl From"));
+    // Should have the struct fields
+    assert!(output.contains("name"));
+    assert!(output.contains("description"));
+}
+
+#[test]
+fn test_generate_schema_type_code_multipart_with_rename() {
+    // Tests: multipart mode with field rename
+    let storage = vec![create_test_struct_metadata(
+        "UploadRequest",
+        "pub struct UploadRequest { pub name: String, pub file_path: String }",
+    )];
+
+    let tokens = quote!(RenamedUpload from UploadRequest, multipart, rename = [("file_path", "document_path")]);
+    let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+    let result = generate_schema_type_code(&input, &storage);
+
+    assert!(result.is_ok());
+    let (tokens, _metadata) = result.unwrap();
+    let output = tokens.to_string();
+    // Should derive TryFromMultipart
+    assert!(output.contains("TryFromMultipart"));
+    // Should have renamed field
+    assert!(output.contains("document_path"));
+    // Original name should NOT appear as field
+    assert!(!output.contains("file_path"));
+}
+
+#[test]
+fn test_generate_schema_type_code_multipart_with_form_data_attrs() {
+    // Tests: multipart mode preserves #[form_data] attributes from source
+    let storage = vec![create_test_struct_metadata(
+        "UploadRequest",
+        r#"pub struct UploadRequest {
+            pub name: String,
+            #[form_data(limit = "10MiB")]
+            pub file: String
+        }"#,
+    )];
+
+    let tokens = quote!(PatchUpload from UploadRequest, multipart);
+    let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+    let result = generate_schema_type_code(&input, &storage);
+
+    assert!(result.is_ok());
+    let (tokens, _metadata) = result.unwrap();
+    let output = tokens.to_string();
+    // Should preserve form_data attributes
+    assert!(output.contains("form_data"));
+    assert!(output.contains("limit"));
+}
+
+#[test]
+fn test_generate_schema_type_code_multipart_skips_relations() {
+    // Tests: multipart mode skips relation fields
+    let storage = vec![create_test_struct_metadata(
+        "Model",
+        r#"#[sea_orm(table_name = "memos")]
+        pub struct Model {
+            pub id: i32,
+            pub title: String,
+            pub user: BelongsTo<super::user::Entity>
+        }"#,
+    )];
+
+    let tokens = quote!(MemoUpload from Model, multipart);
+    let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+    let result = generate_schema_type_code(&input, &storage);
+
+    assert!(result.is_ok());
+    let (tokens, _metadata) = result.unwrap();
+    let output = tokens.to_string();
+    // Relation field should be skipped in multipart mode
+    assert!(!output.contains("user"));
+    // Regular fields should be present
+    assert!(output.contains("id"));
+    assert!(output.contains("title"));
+    // Should derive TryFromMultipart
+    assert!(output.contains("TryFromMultipart"));
+}
+
+#[test]
+fn test_generate_schema_type_code_multipart_partial() {
+    // Coverage for multipart + partial combination
+    let storage = vec![create_test_struct_metadata(
+        "UploadRequest",
+        "pub struct UploadRequest { pub name: String, pub tags: String }",
+    )];
+
+    let tokens = quote!(PatchUpload from UploadRequest, multipart, partial);
+    let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+    let result = generate_schema_type_code(&input, &storage);
+
+    assert!(result.is_ok());
+    let (tokens, _metadata) = result.unwrap();
+    let output = tokens.to_string();
+    // Should derive TryFromMultipart
+    assert!(output.contains("TryFromMultipart"));
+    // Fields should be wrapped in Option (partial)
+    assert!(output.contains("Option"));
+    // Should NOT have From impl
+    assert!(!output.contains("impl From"));
+}
+
 #[test]
 #[serial]
 fn test_generate_schema_type_code_qualified_path_with_nonempty_module_path() {
-    // Coverage for line 78 (the else branch where source_module_path is NOT empty)
     // Tests: qualified path with explicit module segments that are not empty
     use tempfile::TempDir;
 

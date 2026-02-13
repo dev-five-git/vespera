@@ -617,6 +617,64 @@ mod tests {
     }
 
     // =========================================================================
+    // Tests for FieldData/NamedTempFile type conversion
+    // =========================================================================
+
+    #[test]
+    fn test_convert_seaorm_type_field_data_with_generic() {
+        // FieldData<NamedTempFile> → vespera::axum_typed_multipart::FieldData<vespera::tempfile::NamedTempFile>
+        let ty: syn::Type = syn::parse_str("FieldData<NamedTempFile>").unwrap();
+        let tokens = convert_seaorm_type_to_chrono(&ty, &[]);
+        let output = tokens.to_string();
+        assert!(
+            output.contains("vespera :: axum_typed_multipart :: FieldData"),
+            "Should resolve FieldData via vespera re-export: {output}"
+        );
+        assert!(
+            output.contains("vespera :: tempfile :: NamedTempFile"),
+            "Should resolve inner NamedTempFile via vespera re-export: {output}"
+        );
+    }
+
+    #[test]
+    fn test_convert_seaorm_type_field_data_without_generic() {
+        // FieldData (no generics) → vespera::axum_typed_multipart::FieldData
+        let ty: syn::Type = syn::parse_str("FieldData").unwrap();
+        let tokens = convert_seaorm_type_to_chrono(&ty, &[]);
+        let output = tokens.to_string();
+        assert!(
+            output.contains("vespera :: axum_typed_multipart :: FieldData"),
+            "Should resolve bare FieldData: {output}"
+        );
+        // Should NOT contain nested generic
+        assert!(
+            !output.contains("NamedTempFile"),
+            "Bare FieldData should not have NamedTempFile: {output}"
+        );
+    }
+
+    #[test]
+    fn test_convert_seaorm_type_field_data_with_non_type_generic() {
+        // FieldData with a non-Type generic arg (e.g., lifetime) should use fallback quote
+        let ty: syn::Type = syn::parse_str("FieldData<'a>").unwrap();
+        let tokens = convert_seaorm_type_to_chrono(&ty, &[]);
+        let output = tokens.to_string();
+        assert!(
+            output.contains("vespera :: axum_typed_multipart :: FieldData"),
+            "Should still resolve FieldData: {output}"
+        );
+    }
+
+    #[test]
+    fn test_convert_seaorm_type_named_temp_file() {
+        // NamedTempFile → vespera::tempfile::NamedTempFile
+        let ty: syn::Type = syn::parse_str("NamedTempFile").unwrap();
+        let tokens = convert_seaorm_type_to_chrono(&ty, &[]);
+        let output = tokens.to_string();
+        assert_eq!(output.trim(), "vespera :: tempfile :: NamedTempFile");
+    }
+
+    // =========================================================================
     // Tests for convert_relation_type_to_schema_with_info
     // =========================================================================
 
@@ -928,12 +986,12 @@ mod tests {
     }
 
     // =========================================================================
-    // Tests for extract_via_rel (coverage for lines 172-186)
+    // Tests for extract_via_rel
     // =========================================================================
 
     #[test]
     fn test_extract_via_rel_with_value() {
-        // Tests line 178-179: via_rel = "..." found
+        // Tests: via_rel = "..." found
         let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
             #[sea_orm(has_many, via_rel = "TargetUser")]
         )];
@@ -943,7 +1001,7 @@ mod tests {
 
     #[test]
     fn test_extract_via_rel_with_relation_enum() {
-        // Tests line 178-179: via_rel alongside other attributes
+        // Tests: via_rel alongside other attributes
         let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
             #[sea_orm(has_many, relation_enum = "TargetUserNotifications", via_rel = "TargetUser")]
         )];
@@ -963,7 +1021,7 @@ mod tests {
 
     #[test]
     fn test_extract_via_rel_non_sea_orm_attr() {
-        // Tests line 172-173: Non-sea_orm attribute returns None
+        // Tests: Non-sea_orm attribute returns None
         let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[serde(skip)])];
         let result = extract_via_rel(&attrs);
         assert_eq!(result, None);
@@ -978,7 +1036,7 @@ mod tests {
 
     #[test]
     fn test_extract_via_rel_with_other_key_value_pairs() {
-        // Tests line 180-182: Other key=value pairs are consumed without error
+        // Tests: Other key=value pairs are consumed without error
         let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
             #[sea_orm(belongs_to = "super::user::Entity", from = "user_id", to = "id", via_rel = "Author")]
         )];

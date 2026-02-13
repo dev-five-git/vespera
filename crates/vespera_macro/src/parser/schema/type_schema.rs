@@ -232,15 +232,15 @@ pub(crate) fn parse_type_to_schema_ref_with_schemas(
                     format: Some("duration".to_string()),
                     ..Schema::string()
                 })),
-                    // File upload types (axum_typed_multipart / tempfile)
-                    // FieldData<NamedTempFile> → string with binary format
-                    "FieldData" | "NamedTempFile" => SchemaRef::Inline(Box::new(Schema {
-                        format: Some("binary".to_string()),
-                        ..Schema::string()
-                    })),
-                    // Standard library types that should not be referenced
-                    // Note: HashMap and BTreeMap are handled above in generic types
-                    "Vec" | "Option" | "Result" | "Json" | "Path" | "Query" | "Header" => {
+                // File upload types (axum_typed_multipart / tempfile)
+                // FieldData<NamedTempFile> → string with binary format
+                "FieldData" | "NamedTempFile" => SchemaRef::Inline(Box::new(Schema {
+                    format: Some("binary".to_string()),
+                    ..Schema::string()
+                })),
+                // Standard library types that should not be referenced
+                // Note: HashMap and BTreeMap are handled above in generic types
+                "Vec" | "Option" | "Result" | "Json" | "Path" | "Query" | "Header" => {
                     // These are not schema types, return object schema
                     SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)))
                 }
@@ -755,7 +755,7 @@ mod tests {
         }
     }
 
-    // Tests for date/time types from chrono crate (lines 205-215)
+    // Tests for date/time types from chrono crate
     #[rstest]
     #[case("DateTime", "date-time")]
     #[case("NaiveDateTime", "date-time")]
@@ -790,7 +790,7 @@ mod tests {
         }
     }
 
-    // Tests for date/time types from time crate (lines 218-228)
+    // Tests for date/time types from time crate
     #[rstest]
     #[case("OffsetDateTime", "date-time")]
     #[case("PrimitiveDateTime", "date-time")]
@@ -822,7 +822,7 @@ mod tests {
         }
     }
 
-    // Test for Duration type (line 231-233)
+    // Test for Duration type
     #[test]
     fn test_parse_type_to_schema_ref_duration() {
         let ty: Type = syn::parse_str("Duration").unwrap();

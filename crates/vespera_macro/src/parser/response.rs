@@ -464,7 +464,7 @@ mod tests {
     #[test]
     fn test_extract_result_types_ref_to_non_path() {
         // Test line 43: &(Tuple) - Reference to non-Path type
-        // This hits the else branch at line 42-43
+        // Tests: else branch
         let ty: syn::Type = syn::parse_str("&(i32, String)").unwrap();
         let result = extract_result_types(&ty);
         // The Reference's elem is a Tuple, not a Path, so line 39 condition fails
@@ -487,7 +487,7 @@ mod tests {
         };
         let ty = syn::Type::Path(type_path);
 
-        // This MUST hit line 48 because path.segments.is_empty() is true
+        // Tests: path.segments.is_empty() is true
         let result = extract_result_types(&ty);
         assert!(
             result.is_none(),
@@ -518,7 +518,7 @@ mod tests {
             elem: Box::new(inner_ty),
         });
 
-        // This goes through line 38-41 (reference to path), then hits line 48
+        // Tests: reference to path then empty segments
         let result = extract_result_types(&ty);
         assert!(
             result.is_none(),
@@ -535,7 +535,7 @@ mod tests {
         // Note: This doesn't actually work because is_keyword_type_by_type_path
         // checks for Result type, but ref to Result is different
         // The important thing is the code doesn't panic
-        // This exercises lines 38-41 even if result is None
+        // Tests: exercises reference path even if result is None
     }
 
     #[test]
@@ -606,7 +606,7 @@ mod tests {
         // Should have 200 and 400 responses
         assert!(responses.contains_key("200"));
         let ok_response = responses.get("200").unwrap();
-        // Headers should be None (line 95)
+        // Headers should be None
         assert!(ok_response.headers.is_none());
     }
 }

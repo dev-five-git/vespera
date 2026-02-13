@@ -897,7 +897,7 @@ mod tests {
         assert!(!output.contains("email : r . email"));
     }
 
-    // Coverage tests for lines 121-123, 156: FK field lookup and required relation handling
+    // Tests for FK field lookup and required relation handling
 
     #[test]
     fn test_is_circular_relation_required_belongs_to_with_from_attr_required_fk() {
@@ -954,7 +954,7 @@ mod tests {
         assert!(!result);
     }
 
-    // Coverage test for line 156: generate_default_for_relation_field with required FK
+    // Tests for generate_default_for_relation_field with required FK
 
     #[test]
     fn test_generate_default_for_relation_field_belongs_to_with_from_attr_required() {

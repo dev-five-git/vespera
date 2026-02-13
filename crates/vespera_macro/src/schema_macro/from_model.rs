@@ -975,7 +975,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_generate_from_model_needs_parent_stub_with_required_circular() {
-        // Coverage for lines 96, 98, 106, 108-109, 111-114, 117, 120, 124, 307
+        // Tests for from_model generation
         // Tests: HasMany relation where target model has REQUIRED circular back-ref
         // This triggers needs_parent_stub = true and generates parent stub fields
         use tempfile::TempDir;
@@ -1071,7 +1071,7 @@ pub struct Model {
         let output = tokens.to_string();
         assert!(output.contains("impl UserSchema"));
         assert!(output.contains("from_model"));
-        // Should have parent stub with __parent_stub__ (line 307)
+        // Should have parent stub with __parent_stub__
         assert!(
             output.contains("__parent_stub__"),
             "Should have parent stub: {}",
@@ -1082,7 +1082,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_generate_from_model_circular_has_one_optional() {
-        // Coverage for lines 200-202
+        // Tests for field name resolution
         // Tests: HasOne with circular reference, optional
         use tempfile::TempDir;
 
@@ -1168,7 +1168,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_generate_from_model_circular_has_one_required() {
-        // Coverage for line 206
+        // Tests for relation conversion failure
         // Tests: HasOne with circular reference, required
         use tempfile::TempDir;
 
@@ -1258,7 +1258,7 @@ pub struct Model {
 
     #[test]
     fn test_generate_from_model_unknown_relation_with_inline_type() {
-        // Coverage for line 192
+        // Tests for unknown relation type handling
         // Tests: Unknown relation type WITH inline_type_info -> Default::default()
         let new_type_name = syn::Ident::new("TestSchema", proc_macro2::Span::call_site());
         let source_type: Type = syn::parse_str("Model").unwrap();
@@ -1315,7 +1315,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_generate_from_model_non_circular_has_one_with_fk_optional() {
-        // Coverage for lines 221-222
+        // Tests for field rename handling
         // Tests: HasOne with FK relations in target, no circular, optional
         use tempfile::TempDir;
 
@@ -1402,7 +1402,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_generate_from_model_non_circular_has_one_with_fk_required() {
-        // Coverage for line 229
+        // Tests for parent stub generation
         // Tests: HasOne with FK relations in target, no circular, required
         use tempfile::TempDir;
 
@@ -1499,7 +1499,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_generate_from_model_has_many_with_circular() {
-        // Coverage for lines 261-262
+        // Tests for quote generation
         // Tests: HasMany with circular reference
         use tempfile::TempDir;
 
@@ -1595,7 +1595,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_generate_from_model_has_many_with_fk_no_circular() {
-        // Coverage for lines 272-276, 278
+        // Tests for multi-variant case handling
         // Tests: HasMany with FK relations in target, no circular
         use tempfile::TempDir;
 
@@ -1692,7 +1692,6 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_generate_from_model_inline_type_required() {
-        // Coverage for lines in inline type with required relation
         // Tests: inline_type_info with required BelongsTo
         use tempfile::TempDir;
 
@@ -1786,7 +1785,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_generate_from_model_parent_stub_all_relation_types() {
-        // Coverage for lines 114, 117, 120
+        // Tests for relation type variants
         // Tests: Parent stub generation with:
         use tempfile::TempDir;
 
@@ -1842,28 +1841,28 @@ pub struct Model {
                 false,
                 false,
             ),
-            // HasMany (line 113) - this one triggers needs_parent_stub
+            // HasMany - this one triggers needs_parent_stub
             (
                 syn::Ident::new("memos", proc_macro2::Span::call_site()),
                 syn::Ident::new("memos", proc_macro2::Span::call_site()),
                 false,
                 true,
             ),
-            // Optional single relation (line 114)
+            // Optional single relation
             (
                 syn::Ident::new("profile", proc_macro2::Span::call_site()),
                 syn::Ident::new("profile", proc_macro2::Span::call_site()),
                 false,
                 true,
             ),
-            // Required single relation (line 117)
+            // Required single relation
             (
                 syn::Ident::new("settings", proc_macro2::Span::call_site()),
                 syn::Ident::new("settings", proc_macro2::Span::call_site()),
                 false,
                 true,
             ),
-            // Relation field NOT in relation_fields (line 120)
+            // Relation field NOT in relation_fields
             (
                 syn::Ident::new("orphan_rel", proc_macro2::Span::call_site()),
                 syn::Ident::new("orphan_rel", proc_macro2::Span::call_site()),
@@ -1872,7 +1871,7 @@ pub struct Model {
             ),
         ];
 
-        // Relation fields - note: orphan_rel is NOT included here (hits line 120)
+        // Relation fields - note: orphan_rel is NOT included here
         let relation_fields = vec![
             // HasMany without inline_type_info (triggers needs_parent_stub)
             create_test_relation_info(
@@ -1881,21 +1880,21 @@ pub struct Model {
                 quote! { crate::models::memo::Schema },
                 false,
             ),
-            // Optional HasOne (hits line 114)
+            // Optional HasOne
             create_test_relation_info(
                 "profile",
                 "HasOne",
                 quote! { crate::models::profile::Schema },
                 true, // optional
             ),
-            // Required BelongsTo (hits line 117)
+            // Required BelongsTo
             create_test_relation_info(
                 "settings",
                 "BelongsTo",
                 quote! { crate::models::settings::Schema },
                 false, // required
             ),
-            // Note: orphan_rel is NOT in relation_fields (hits line 120)
+            // Note: orphan_rel is NOT in relation_fields
         ];
 
         let source_module_path = vec![
@@ -1924,7 +1923,7 @@ pub struct Model {
 
         let output = tokens.to_string();
         assert!(output.contains("impl UserSchema"));
-        // Should have parent stub (line 307)
+        // Should have parent stub
         assert!(
             output.contains("__parent_stub__"),
             "Should have parent stub: {}",
@@ -1953,7 +1952,7 @@ pub struct Model {
     }
 
     // ============================================================
-    // Coverage tests for relation_enum + fk_column branches (lines 70-106)
+    // Tests for relation_enum + fk_column branches
     // ============================================================
 
     fn create_test_relation_info_full(
@@ -1979,7 +1978,7 @@ pub struct Model {
 
     #[test]
     fn test_generate_from_model_has_one_with_relation_enum_optional_with_fk() {
-        // Coverage for lines 70, 72, 74-76
+        // Tests for field name comparison
         // Tests: HasOne with relation_enum + optional + fk_column present
         let new_type_name = syn::Ident::new("MemoSchema", proc_macro2::Span::call_site());
         let source_type: Type = syn::parse_str("Model").unwrap();
@@ -2046,7 +2045,7 @@ pub struct Model {
 
     #[test]
     fn test_generate_from_model_has_one_with_relation_enum_optional_no_fk() {
-        // Coverage for line 84
+        // Tests for None branch
         // Tests: HasOne with relation_enum + optional + NO fk_column (fallback)
         let new_type_name = syn::Ident::new("MemoSchema", proc_macro2::Span::call_site());
         let source_type: Type = syn::parse_str("Model").unwrap();
@@ -2103,7 +2102,7 @@ pub struct Model {
 
     #[test]
     fn test_generate_from_model_belongs_to_with_relation_enum_required_with_fk() {
-        // Coverage for lines 93-95
+        // Tests for required relation field
         // Tests: BelongsTo with relation_enum + required + fk_column present
         let new_type_name = syn::Ident::new("CommentSchema", proc_macro2::Span::call_site());
         let source_type: Type = syn::parse_str("Model").unwrap();
@@ -2160,7 +2159,7 @@ pub struct Model {
 
     #[test]
     fn test_generate_from_model_belongs_to_with_relation_enum_required_no_fk() {
-        // Coverage for line 100
+        // Tests for skip condition
         // Tests: BelongsTo with relation_enum + required + NO fk_column (fallback)
         let new_type_name = syn::Ident::new("CommentSchema", proc_macro2::Span::call_site());
         let source_type: Type = syn::parse_str("Model").unwrap();
@@ -2216,13 +2215,13 @@ pub struct Model {
     }
 
     // ============================================================
-    // Coverage tests for HasMany with via_rel/relation_enum (lines 118-182)
+    // Tests for HasMany with via_rel/relation_enum
     // ============================================================
 
     #[test]
     #[serial]
     fn test_generate_from_model_has_many_with_via_rel_fk_found() {
-        // Coverage for lines 120-121, 123-124, 128-130, 132
+        // Tests for HasMany with via_rel + FK column found
         // Tests: HasMany with via_rel + FK column found in target entity
         use tempfile::TempDir;
 
@@ -2325,7 +2324,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_generate_from_model_has_many_with_via_rel_fk_not_found() {
-        // Coverage for line 144
+        // Tests for HasMany via_rel not found
         // Tests: HasMany with via_rel but FK column NOT found in target entity
         use tempfile::TempDir;
 
@@ -2410,7 +2409,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_generate_from_model_has_many_with_relation_enum_fk_found() {
-        // Coverage for lines 151-154, 156-158, 160
+        // Tests for via_rel field matching
         // Tests: HasMany with relation_enum (no via_rel) + FK column found
         use tempfile::TempDir;
 
@@ -2508,7 +2507,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_generate_from_model_has_many_with_relation_enum_fk_not_found() {
-        // Coverage for line 172
+        // Tests for HasMany via_rel generation
         // Tests: HasMany with relation_enum (no via_rel) + FK column NOT found
         use tempfile::TempDir;
 

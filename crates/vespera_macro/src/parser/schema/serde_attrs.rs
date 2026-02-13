@@ -1492,7 +1492,7 @@ mod tests {
             assert!(skip_if_result);
         }
 
-        /// Test extract_rename_all fallback parsing (lines 44-47)
+        /// Test extract_rename_all fallback parsing
         #[test]
         fn test_extract_rename_all_fallback_manual_parsing() {
             let tokens = quote!(rename_all = "kebab-case");
@@ -1638,7 +1638,7 @@ mod tests {
         }
 
         /// Test extract_field_rename - ensure rename_all is not matched as rename
-        /// This tests the word boundary logic at lines 168-181
+        /// Test the word boundary logic
         #[test]
         fn test_extract_field_rename_fallback_avoids_rename_all() {
             let tokens: TokenStream = "some::rename_all = \"camelCase\"".parse().unwrap();
@@ -1718,8 +1718,7 @@ mod tests {
         /// Test extract_field_rename with form_data but no field_name key
         #[test]
         fn test_extract_field_rename_form_data_no_field_name() {
-            let struct_src =
-                r#"struct Foo { #[form_data(limit = "10MiB")] field: i32 }"#;
+            let struct_src = r#"struct Foo { #[form_data(limit = "10MiB")] field: i32 }"#;
             let item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
             if let syn::Fields::Named(fields) = &item.fields {
                 let field = fields.named.first().unwrap();
@@ -1731,10 +1730,9 @@ mod tests {
         /// Test extract_rename_all falls back to #[try_from_multipart(rename_all = "...")]
         #[test]
         fn test_extract_rename_all_try_from_multipart_fallback() {
-            let item: syn::ItemStruct = syn::parse_str(
-                r#"#[try_from_multipart(rename_all = "camelCase")] struct Foo;"#,
-            )
-            .unwrap();
+            let item: syn::ItemStruct =
+                syn::parse_str(r#"#[try_from_multipart(rename_all = "camelCase")] struct Foo;"#)
+                    .unwrap();
             let result = extract_rename_all(&item.attrs);
             assert_eq!(result.as_deref(), Some("camelCase"));
         }
@@ -1742,10 +1740,7 @@ mod tests {
         /// Test serde rename_all takes priority over try_from_multipart rename_all
         #[test]
         fn test_extract_rename_all_serde_over_try_from_multipart() {
-            let item: syn::ItemStruct = syn::parse_str(
-                r#"#[serde(rename_all = "snake_case")] #[try_from_multipart(rename_all = "camelCase")] struct Foo;"#,
-            )
-            .unwrap();
+            let item: syn::ItemStruct = syn::parse_str(r#"#[serde(rename_all = "snake_case")] #[try_from_multipart(rename_all = "camelCase")] struct Foo;"#).unwrap();
             let result = extract_rename_all(&item.attrs);
             assert_eq!(result.as_deref(), Some("snake_case"));
         }
@@ -1753,10 +1748,8 @@ mod tests {
         /// Test extract_rename_all with try_from_multipart but no rename_all key
         #[test]
         fn test_extract_rename_all_try_from_multipart_no_rename_all() {
-            let item: syn::ItemStruct = syn::parse_str(
-                r#"#[try_from_multipart(strict)] struct Foo;"#,
-            )
-            .unwrap();
+            let item: syn::ItemStruct =
+                syn::parse_str(r#"#[try_from_multipart(strict)] struct Foo;"#).unwrap();
             let result = extract_rename_all(&item.attrs);
             assert_eq!(result, None);
         }
@@ -2047,7 +2040,7 @@ mod tests {
             }
         }
 
-        /// Test extract_tag with non-list serde attribute (line 524)
+        /// Test extract_tag with non-list serde attribute
         /// When require_list() fails, extract_tag should continue to next attribute
         #[test]
         fn test_extract_tag_non_list_attr_continues() {
@@ -2064,7 +2057,7 @@ mod tests {
             assert_eq!(result.as_deref(), Some("type"));
         }
 
-        /// Test extract_tag with only non-list serde attribute returns None (line 524)
+        /// Test extract_tag with only non-list serde attribute returns None
         #[test]
         fn test_extract_tag_only_non_list_attr_returns_none() {
             let path_attr = create_path_only_serde_attr();
@@ -2072,7 +2065,7 @@ mod tests {
             assert_eq!(result, None);
         }
 
-        /// Test extract_content with non-list serde attribute (line 574)
+        /// Test extract_content with non-list serde attribute
         /// When require_list() fails, extract_content should continue to next attribute
         #[test]
         fn test_extract_content_non_list_attr_continues() {
@@ -2089,7 +2082,7 @@ mod tests {
             assert_eq!(result.as_deref(), Some("data"));
         }
 
-        /// Test extract_content with only non-list serde attribute returns None (line 574)
+        /// Test extract_content with only non-list serde attribute returns None
         #[test]
         fn test_extract_content_only_non_list_attr_returns_none() {
             let path_attr = create_path_only_serde_attr();

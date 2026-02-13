@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn test_single_path_param_with_single_type() {
-        // Test line 55: Path<T> with single type (not tuple) and exactly ONE path param
+        // Test: Path<T> with single type
         // This exercises the branch: path_params.len() == 1 with non-tuple type
         let op = build("fn get(Path(id): Path<i32>) -> String", "/users/{id}", None);
 
@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn test_non_path_extractor_with_query() {
-        // Test lines 85, 89: non-Path extractor handling
+        // Test: non-Path extractor handling
         // When input is Query<T>, it should NOT be treated as Path
         let op = build(
             "fn search(Query(params): Query<QueryParams>) -> String",
@@ -523,7 +523,7 @@ mod tests {
             None,
         );
 
-        // Query params should be extended to parameters (line 89)
+        // Test: Query params should be extended to parameters
         // But QueryParams is not in known_schemas/struct_definitions so it won't appear
         // The key is that it doesn't treat Query as a Path extractor (line 85 returns false)
         assert!(op.request_body.is_none()); // Query is not a body
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn test_non_path_extractor_with_state() {
-        // Test lines 85, 89: State<T> should be ignored (not Path)
+        // Test: State<T> should be ignored
         let op = build(
             "fn handler(State(state): State<AppState>) -> String",
             "/handler",
@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn test_multiple_path_params_with_single_type() {
-        // Test line 57-60: multiple path params but single type - uses type for all
+        // Test: multiple path params but single type
         let op = build(
             "fn get(Path(id): Path<String>) -> String",
             "/shops/{shop_id}/items/{item_id}",
@@ -634,7 +634,7 @@ mod tests {
 
     #[test]
     fn test_non_path_extractor_generates_params_and_extends() {
-        // Test lines 85, 89: non-Path extractor that DOES generate params
+        // Test: non-Path extractor that generates params
         // Query<T> where T is a known struct generates query parameters
         let sig: syn::Signature = syn::parse_str("fn search(Query(params): Query<SearchParams>, TypedHeader(auth): TypedHeader<Authorization>) -> String").unwrap();
 

@@ -3,10 +3,9 @@
 //! Defines input structures for `schema!` and `schema_type!` macros.
 
 use syn::{
-    bracketed, parenthesized,
+    Ident, LitStr, Token, Type, bracketed, parenthesized,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
-    Ident, LitStr, Token, Type,
 };
 
 /// Input for the schema! macro

@@ -113,16 +113,15 @@ pub fn parse_request_body(
                 }
 
                 // Raw Multipart extractor (untyped) → multipart/form-data with generic object schema
-                if ident_str == "Multipart"
-                    && matches!(segment.arguments, syn::PathArguments::None)
+                if ident_str == "Multipart" && matches!(segment.arguments, syn::PathArguments::None)
                 {
                     let mut content = BTreeMap::new();
                     content.insert(
                         "multipart/form-data".to_string(),
                         MediaType {
-                            schema: Some(SchemaRef::Inline(Box::new(
-                                Schema::new(SchemaType::Object),
-                            ))),
+                            schema: Some(SchemaRef::Inline(Box::new(Schema::new(
+                                SchemaType::Object,
+                            )))),
                             example: None,
                             examples: None,
                         },
@@ -188,6 +187,11 @@ mod tests {
     #[case::str("fn test(just_str: &str) {}", true, "str")]
     #[case::i32("fn test(just_i32: i32) {}", false, "i32")]
     #[case::vec_string("fn test(just_vec_string: Vec<String>) {}", false, "vec_string")]
+    #[case::typed_multipart(
+        "fn test(TypedMultipart(req): TypedMultipart<UploadRequest>) {}",
+        true,
+        "typed_multipart"
+    )]
     #[case::multipart_raw("fn test(multipart: Multipart) {}", true, "multipart_raw")]
     #[case::self_ref("fn test(&self) {}", false, "self_ref")]
     fn test_parse_request_body_cases(

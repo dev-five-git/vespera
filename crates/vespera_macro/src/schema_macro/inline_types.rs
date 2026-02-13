@@ -717,7 +717,7 @@ mod tests {
 
     #[test]
     fn test_generate_inline_relation_type_from_def_skips_relation_types() {
-        // Test that relation types (HasOne, HasMany, BelongsTo) are skipped (line 87)
+        // Test that relation types (HasOne, HasMany, BelongsTo) are skipped
         let parent_type_name = syn::Ident::new("MemoSchema", proc_macro2::Span::call_site());
         let rel_info = RelationFieldInfo {
             field_name: syn::Ident::new("user", proc_macro2::Span::call_site()),
@@ -771,7 +771,7 @@ mod tests {
 
     #[test]
     fn test_generate_inline_relation_type_from_def_skips_serde_skip() {
-        // Test that fields with serde(skip) are skipped (line 92)
+        // Test that fields with serde(skip) are skipped
         let parent_type_name = syn::Ident::new("MemoSchema", proc_macro2::Span::call_site());
         let rel_info = RelationFieldInfo {
             field_name: syn::Ident::new("user", proc_macro2::Span::call_site()),
@@ -824,7 +824,7 @@ mod tests {
 
     #[test]
     fn test_generate_inline_relation_type_no_relations_from_def_with_schema_name_override() {
-        // Test schema_name_override Some branch (line 133)
+        // Test schema_name_override Some branch
         let parent_type_name = syn::Ident::new("Schema", proc_macro2::Span::call_site());
         let rel_info = RelationFieldInfo {
             field_name: syn::Ident::new("memos", proc_macro2::Span::call_site()),
@@ -857,7 +857,7 @@ mod tests {
         assert_eq!(inline_type.type_name.to_string(), "UserSchema_Memos");
     }
 
-    // Tests for public functions with file lookup (lines 43, 45, 114, 116-118, 120)
+    // Tests for public functions with file lookup
     // These require setting up a temp directory with model files
 
     #[test]
@@ -886,7 +886,7 @@ pub struct Model {
         // SAFETY: This is a test that runs single-threaded
         unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
 
-        // Test generate_inline_relation_type (lines 43, 45)
+        // Test generate_inline_relation_type
         let parent_type_name = syn::Ident::new("MemoSchema", proc_macro2::Span::call_site());
         let rel_info = RelationFieldInfo {
             field_name: syn::Ident::new("user", proc_macro2::Span::call_site()),
@@ -960,7 +960,7 @@ pub struct Model {
         // SAFETY: This is a test that runs single-threaded
         unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
 
-        // Test generate_inline_relation_type_no_relations (lines 114, 116-118, 120)
+        // Test generate_inline_relation_type_no_relations
         let parent_type_name = syn::Ident::new("UserSchema", proc_macro2::Span::call_site());
         let rel_info = RelationFieldInfo {
             field_name: syn::Ident::new("memos", proc_macro2::Span::call_site()),

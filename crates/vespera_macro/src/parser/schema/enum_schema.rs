@@ -1582,7 +1582,7 @@ mod tests {
             });
         }
 
-        // Edge case: Empty struct variant (lines 275, 280 - empty properties/required)
+        // Edge case: Empty struct variant (empty properties/required)
         #[test]
         fn test_externally_tagged_empty_struct_variant() {
             let enum_item: syn::ItemEnum = syn::parse_str(
@@ -1621,7 +1621,7 @@ mod tests {
             });
         }
 
-        // Edge case: Internally tagged enum with tuple variant (line 468 - continue/skip)
+        // Edge case: Internally tagged enum with tuple variant
         #[test]
         fn test_internally_tagged_skips_tuple_variant() {
             let enum_item: syn::ItemEnum = syn::parse_str(
@@ -1654,7 +1654,7 @@ mod tests {
             });
         }
 
-        // Edge case: Untagged enum with tuple variant referencing a known schema (line 338)
+        // Edge case: Untagged enum with tuple variant referencing a known schema
         #[test]
         fn test_untagged_tuple_variant_with_known_schema_ref() {
             let enum_item: syn::ItemEnum = syn::parse_str(
@@ -1704,7 +1704,7 @@ mod tests {
             }
         }
 
-        // Edge case: Untagged enum with multi-field tuple variant (lines 592, 600-611)
+        // Edge case: Untagged enum with multi-field tuple variant
         #[test]
         fn test_untagged_multi_field_tuple_variant() {
             let enum_item: syn::ItemEnum = syn::parse_str(

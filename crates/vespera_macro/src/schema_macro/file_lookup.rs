@@ -663,7 +663,7 @@ pub struct Target { pub id: i32 }
     #[test]
     #[serial]
     fn test_find_struct_by_name_unreadable_file() {
-        // Coverage for line 122: Err(_) => continue
+        // Tests for error continuation
         // Create broken symlink that exists but can't be read
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path();
@@ -1065,7 +1065,7 @@ pub const NOT_STRUCT: i32 = 1;
     #[serial]
     fn test_find_struct_disambiguation_fallback_contains() {
         // Tests: No exact match, but fallback "contains" finds exactly one match
-        // This covers lines 169-174 (the fallback contains path)
+        // Tests for fallback contains path
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path();
 
@@ -1102,14 +1102,14 @@ pub const NOT_STRUCT: i32 = 1;
     }
 
     // ============================================================
-    // Coverage tests for find_fk_column_from_target_entity (lines 287-333)
+    // Tests for find_fk_column_from_target_entity
     // ============================================================
 
     #[test]
     #[serial]
     fn test_find_fk_column_from_target_entity_success() {
         // Tests: Full success path - find FK column from target entity
-        // Covers lines 287, 291-292, 296, 298, 305, 307-309, 312, 315-317, 320-323, 325
+        // Full success path
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
         let models_dir = src_dir.join("models");
@@ -1151,7 +1151,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_find_fk_column_from_target_entity_mod_rs() {
-        // Tests: Find FK column from mod.rs file (line 305 second path)
+        // Tests: Find FK column from mod.rs file
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
         let models_dir = src_dir.join("models").join("notification");
@@ -1191,7 +1191,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_find_fk_column_from_target_entity_empty_module_segments() {
-        // Tests lines 300-301: Empty module segments return None
+        // Tests: Empty module segments return None
         let temp_dir = TempDir::new().unwrap();
 
         let original = std::env::var("CARGO_MANIFEST_DIR").ok();
@@ -1214,7 +1214,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_find_fk_column_from_target_entity_file_not_found() {
-        // Tests lines 307-309: File doesn't exist -> continue, then return None (line 333)
+        // Tests: File does not exist -> continue, then return None
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
         std::fs::create_dir_all(&src_dir).unwrap();
@@ -1240,7 +1240,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_find_fk_column_from_target_entity_unparseable_file() {
-        // Tests line 312: File can't be parsed -> returns None
+        // Tests: File cannot be parsed -> returns None
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
         let models_dir = src_dir.join("models");
@@ -1269,7 +1269,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_find_fk_column_from_target_entity_no_model_struct() {
-        // Tests lines 315-317: File exists but has no Model struct
+        // Tests: File exists but has no Model struct
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
         let models_dir = src_dir.join("models");
@@ -1307,7 +1307,7 @@ pub enum Status { Active, Inactive }
     #[test]
     #[serial]
     fn test_find_fk_column_from_target_entity_no_matching_relation_enum() {
-        // Tests lines 320-323: Model exists but no field matches the via_rel
+        // Tests: Model exists but no field matches the via_rel
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
         let models_dir = src_dir.join("models");
@@ -1348,7 +1348,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_find_fk_column_from_target_entity_tuple_struct() {
-        // Tests line 320: Model is a tuple struct (not named fields) -> skip
+        // Tests: Model is a tuple struct (not named fields) -> skip
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
         let models_dir = src_dir.join("models");
@@ -1378,7 +1378,7 @@ pub struct Model {
     #[test]
     #[serial]
     fn test_find_fk_column_from_target_entity_field_no_from_attr() {
-        // Tests line 325: Field matches relation_enum but has no `from` attribute
+        // Tests: Field matches relation_enum but has no `from` attribute
         let temp_dir = TempDir::new().unwrap();
         let src_dir = temp_dir.path().join("src");
         let models_dir = src_dir.join("models");

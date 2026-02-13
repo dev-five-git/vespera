@@ -474,7 +474,11 @@ pub fn generate_schema_type_code(
 
     // Build derive list
     // In multipart mode, force clone = false (FieldData<NamedTempFile> doesn't implement Clone)
-    let derive_clone = if input.multipart { false } else { input.derive_clone };
+    let derive_clone = if input.multipart {
+        false
+    } else {
+        input.derive_clone
+    };
     let clone_derive = if derive_clone {
         quote! { Clone, }
     } else {

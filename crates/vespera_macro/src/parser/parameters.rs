@@ -580,6 +580,24 @@ mod tests {
         vec![vec![ParameterLocation::Header]],
         "header_custom"
     )]
+    #[case(
+        "fn test(input: Form<User>) {}",
+        vec![],
+        vec![vec![]],
+        "form_body"
+    )]
+    #[case(
+        "fn test(upload: TypedMultipart<UploadRequest>) {}",
+        vec![],
+        vec![vec![]],
+        "typed_multipart_body"
+    )]
+    #[case(
+        "fn test(multipart: Multipart) {}",
+        vec![],
+        vec![vec![]],
+        "raw_multipart_body"
+    )]
     fn test_parse_function_parameter_cases(
         #[case] func_src: &str,
         #[case] path_params: Vec<String>,
@@ -901,7 +919,7 @@ mod tests {
         };
         let ty = Type::Path(type_path);
 
-        // This MUST hit line 209 because path.segments.is_empty() is true
+        // Tests: path.segments.is_empty() is true
         assert!(!is_known_type(&ty, &known_schemas, &struct_definitions));
     }
 
@@ -941,7 +959,7 @@ mod tests {
         };
         let ty = Type::Path(type_path);
 
-        // This MUST hit line 245 because path.segments.is_empty() is true
+        // Tests: path.segments.is_empty() is true
         let result = parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions);
         assert!(
             result.is_none(),
