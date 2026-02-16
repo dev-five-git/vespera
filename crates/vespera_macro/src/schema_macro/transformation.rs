@@ -331,6 +331,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn test_filter_out_serde_rename() {
         let attr1: syn::Attribute = syn::parse_quote!(#[serde(rename = "userId")]);
         let attr2: syn::Attribute = syn::parse_quote!(#[serde(default)]);

@@ -270,7 +270,7 @@ mod tests {
         schema: Option<SchemaType>,
     }
 
-    fn assert_body(op: &Operation, expected: &Option<ExpectedBody>) {
+    fn assert_body(op: &Operation, expected: Option<&ExpectedBody>) {
         match expected {
             None => assert!(op.request_body.is_none()),
             Some(exp) => {
@@ -488,7 +488,7 @@ mod tests {
     ) {
         let op = build(sig_src, path, extra_status);
         assert_params(&op, &expected_params);
-        assert_body(&op, &expected_body);
+        assert_body(&op, expected_body.as_ref());
         assert_responses(&op, &expected_resps);
     }
 
@@ -564,7 +564,7 @@ mod tests {
             SchemaRef::Inline(schema) => {
                 assert_eq!(schema.schema_type, Some(SchemaType::String));
             }
-            _ => panic!("expected inline schema"),
+            SchemaRef::Ref(_) => panic!("expected inline schema"),
         }
     }
 

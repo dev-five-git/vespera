@@ -21,8 +21,8 @@ use vespera_core::schema::{Discriminator, Schema, SchemaRef, SchemaType};
 
 use super::{
     serde_attrs::{
-        SerdeEnumRepr, extract_doc_comment, extract_enum_repr, extract_field_rename,
-        extract_rename_all, rename_field, strip_raw_prefix,
+        extract_doc_comment, extract_enum_repr, extract_field_rename, extract_rename_all,
+        rename_field, strip_raw_prefix, SerdeEnumRepr,
     },
     type_schema::parse_type_to_schema_ref,
 };
@@ -775,13 +775,11 @@ mod tests {
                             let inner_props = inner_obj.properties.as_ref().unwrap();
                             assert!(inner_props.contains_key("id"));
                             assert!(inner_props.contains_key("note"));
-                            assert!(
-                                inner_obj
-                                    .required
-                                    .as_ref()
-                                    .unwrap()
-                                    .contains(&"id".to_string())
-                            );
+                            assert!(inner_obj
+                                .required
+                                .as_ref()
+                                .unwrap()
+                                .contains(&"id".to_string()));
                         } else {
                             panic!("Expected inline object schema");
                         }
@@ -822,9 +820,8 @@ mod tests {
         let one_of = schema.one_of.expect("one_of missing for mixed enum");
         assert_eq!(one_of.len(), expected_one_of_len);
 
-        let unit_schema = match &one_of[0] {
-            SchemaRef::Inline(s) => s,
-            _ => panic!("Expected inline schema for unit variant"),
+        let SchemaRef::Inline(unit_schema) = &one_of[0] else {
+            panic!("Expected inline schema for unit variant")
         };
         assert_eq!(unit_schema.schema_type, Some(expected_unit_type));
         let unit_enum = unit_schema.r#enum.as_ref().expect("enum values missing");
@@ -845,9 +842,8 @@ mod tests {
 
         let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         let one_of = schema.one_of.expect("one_of missing");
-        let variant_obj = match &one_of[0] {
-            SchemaRef::Inline(s) => s,
-            _ => panic!("Expected inline schema"),
+        let SchemaRef::Inline(variant_obj) = &one_of[0] else {
+            panic!("Expected inline schema")
         };
         let props = variant_obj
             .properties
@@ -870,17 +866,15 @@ mod tests {
 
         let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         let one_of = schema.one_of.expect("one_of missing");
-        let variant_obj = match &one_of[0] {
-            SchemaRef::Inline(s) => s,
-            _ => panic!("Expected inline schema"),
+        let SchemaRef::Inline(variant_obj) = &one_of[0] else {
+            panic!("Expected inline schema")
         };
         let props = variant_obj
             .properties
             .as_ref()
             .expect("variant props missing");
-        let inner = match props.get("detail").expect("variant key missing") {
-            SchemaRef::Inline(s) => s,
-            _ => panic!("Expected inline inner schema"),
+        let SchemaRef::Inline(inner) = props.get("detail").expect("variant key missing") else {
+            panic!("Expected inline inner schema")
         };
         let inner_props = inner.properties.as_ref().expect("inner props missing");
         assert!(inner_props.contains_key("user_id"));
@@ -902,9 +896,8 @@ mod tests {
 
         let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         let one_of = schema.one_of.expect("one_of missing");
-        let variant_obj = match &one_of[0] {
-            SchemaRef::Inline(s) => s,
-            _ => panic!("Expected inline schema"),
+        let SchemaRef::Inline(variant_obj) = &one_of[0] else {
+            panic!("Expected inline schema")
         };
         let props = variant_obj
             .properties
@@ -929,21 +922,19 @@ mod tests {
 
         let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         let one_of = schema.one_of.expect("one_of missing");
-        let variant_obj = match &one_of[0] {
-            SchemaRef::Inline(s) => s,
-            _ => panic!("Expected inline schema"),
+        let SchemaRef::Inline(variant_obj) = &one_of[0] else {
+            panic!("Expected inline schema")
         };
         let props = variant_obj
             .properties
             .as_ref()
             .expect("variant props missing");
-        let inner = match props
+        let SchemaRef::Inline(inner) = props
             .get("detail")
             .or_else(|| props.get("Detail"))
             .expect("variant key missing")
-        {
-            SchemaRef::Inline(s) => s,
-            _ => panic!("Expected inline inner schema"),
+        else {
+            panic!("Expected inline inner schema")
         };
         let inner_props = inner.properties.as_ref().expect("inner props missing");
         assert!(inner_props.contains_key("ID")); // field-level rename wins
@@ -988,9 +979,8 @@ mod tests {
         let one_of = schema.one_of.expect("one_of missing");
 
         // Check UserCreated variant key is camelCase
-        let variant_obj = match &one_of[0] {
-            SchemaRef::Inline(s) => s,
-            _ => panic!("Expected inline schema"),
+        let SchemaRef::Inline(variant_obj) = &one_of[0] else {
+            panic!("Expected inline schema")
         };
         let props = variant_obj
             .properties
@@ -1001,9 +991,8 @@ mod tests {
         assert!(!props.contains_key("user_created"));
 
         // Check UserDeleted variant key is camelCase
-        let variant_obj2 = match &one_of[1] {
-            SchemaRef::Inline(s) => s,
-            _ => panic!("Expected inline schema"),
+        let SchemaRef::Inline(variant_obj2) = &one_of[1] else {
+            panic!("Expected inline schema")
         };
         let props2 = variant_obj2
             .properties
@@ -1153,17 +1142,15 @@ mod tests {
         let one_of = schema.one_of.expect("one_of missing");
 
         // Get the Data variant schema
-        let variant_obj = match &one_of[0] {
-            SchemaRef::Inline(s) => s,
-            _ => panic!("Expected inline schema"),
+        let SchemaRef::Inline(variant_obj) = &one_of[0] else {
+            panic!("Expected inline schema")
         };
         let props = variant_obj
             .properties
             .as_ref()
             .expect("variant props missing");
-        let inner = match props.get("Data").expect("variant key missing") {
-            SchemaRef::Inline(s) => s,
-            _ => panic!("Expected inline inner schema"),
+        let SchemaRef::Inline(inner) = props.get("Data").expect("variant key missing") else {
+            panic!("Expected inline inner schema")
         };
         let inner_props = inner.properties.as_ref().expect("inner props missing");
 
@@ -1179,12 +1166,10 @@ mod tests {
                 // Should have allOf with the original $ref
                 let all_of = schema.all_of.as_ref().expect("allOf missing");
                 assert_eq!(all_of.len(), 1);
-                match &all_of[0] {
-                    SchemaRef::Ref(reference) => {
-                        assert_eq!(reference.ref_path, "#/components/schemas/User");
-                    }
-                    _ => panic!("Expected $ref in allOf"),
-                }
+                let SchemaRef::Ref(reference) = &all_of[0] else {
+                    panic!("Expected $ref in allOf")
+                };
+                assert_eq!(reference.ref_path, "#/components/schemas/User");
             }
             SchemaRef::Ref(_) => panic!("Expected inline schema with allOf, not direct $ref"),
         }
@@ -1589,9 +1574,9 @@ mod tests {
                     .properties
                     .as_ref()
                     .expect("variant props missing");
-                let inner = match props.get("Empty").expect("Empty key missing") {
-                    SchemaRef::Inline(s) => s,
-                    _ => panic!("Expected inline schema"),
+                let SchemaRef::Inline(inner) = props.get("Empty").expect("Empty key missing")
+                else {
+                    panic!("Expected inline schema")
                 };
                 // Empty struct should have properties: None and required: None
                 assert!(inner.properties.is_none());

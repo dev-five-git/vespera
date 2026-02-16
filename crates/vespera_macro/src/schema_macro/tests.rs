@@ -1297,9 +1297,8 @@ pub struct Model {
     let parsed_struct: syn::ItemStruct = syn::parse_str(struct_def).unwrap();
 
     // Get the user field
-    let fields_named = match &parsed_struct.fields {
-        syn::Fields::Named(f) => f,
-        _ => panic!("Expected named fields"),
+    let syn::Fields::Named(fields_named) = &parsed_struct.fields else {
+        panic!("Expected named fields")
     };
 
     let user_field = fields_named

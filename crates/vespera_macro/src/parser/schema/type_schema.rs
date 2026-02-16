@@ -417,7 +417,7 @@ mod tests {
                 assert_eq!(schema.nullable, Some(true));
                 assert_eq!(schema.schema_type, None);
             }
-            _ => panic!("Expected inline schema for Option<User>"),
+            SchemaRef::Ref(_) => panic!("Expected inline schema for Option<User>"),
         }
     }
 
@@ -599,7 +599,7 @@ mod tests {
             SchemaRef::Inline(schema) => {
                 assert_eq!(schema.schema_type, Some(SchemaType::String));
             }
-            _ => panic!("Expected inline schema for Box<String>"),
+            SchemaRef::Ref(_) => panic!("Expected inline schema for Box<String>"),
         }
     }
 
@@ -614,7 +614,7 @@ mod tests {
             SchemaRef::Ref(reference) => {
                 assert_eq!(reference.ref_path, "#/components/schemas/User");
             }
-            _ => panic!("Expected ref for Box<User>"),
+            SchemaRef::Inline(_) => panic!("Expected ref for Box<User>"),
         }
     }
 
@@ -633,7 +633,7 @@ mod tests {
                 );
                 assert_eq!(schema.nullable, Some(true));
             }
-            _ => panic!("Expected inline schema for HasOne"),
+            SchemaRef::Ref(_) => panic!("Expected inline schema for HasOne"),
         }
     }
 
@@ -648,7 +648,7 @@ mod tests {
                 assert_eq!(schema.schema_type, Some(SchemaType::Object));
                 assert!(schema.ref_path.is_none());
             }
-            _ => panic!("Expected inline schema for HasOne fallback"),
+            SchemaRef::Ref(_) => panic!("Expected inline schema for HasOne fallback"),
         }
     }
 
@@ -662,7 +662,7 @@ mod tests {
                 // Fallback: generic object since not "Entity"
                 assert_eq!(schema.schema_type, Some(SchemaType::Object));
             }
-            _ => panic!("Expected inline schema"),
+            SchemaRef::Ref(_) => panic!("Expected inline schema"),
         }
     }
 
@@ -683,7 +683,7 @@ mod tests {
                     panic!("Expected items to be a $ref");
                 }
             }
-            _ => panic!("Expected inline schema for HasMany"),
+            SchemaRef::Ref(_) => panic!("Expected inline schema for HasMany"),
         }
     }
 
@@ -702,7 +702,7 @@ mod tests {
                     panic!("Expected inline items for HasMany fallback");
                 }
             }
-            _ => panic!("Expected inline schema for HasMany fallback"),
+            SchemaRef::Ref(_) => panic!("Expected inline schema for HasMany fallback"),
         }
     }
 
@@ -714,11 +714,11 @@ mod tests {
         known.insert("UserSchema".to_string());
         let ty: Type = syn::parse_str("crate::models::user::Schema").unwrap();
         let schema_ref = parse_type_to_schema_ref(&ty, &known, &HashMap::new());
-        match schema_ref {
+         match schema_ref {
             SchemaRef::Ref(reference) => {
                 assert_eq!(reference.ref_path, "#/components/schemas/UserSchema");
             }
-            _ => panic!("Expected $ref for module::Schema"),
+            SchemaRef::Inline(_) => panic!("Expected $ref for module::Schema"),
         }
     }
 
@@ -733,7 +733,7 @@ mod tests {
             SchemaRef::Ref(reference) => {
                 assert_eq!(reference.ref_path, "#/components/schemas/userSchema");
             }
-            _ => panic!("Expected $ref for module::Schema with lowercase"),
+            SchemaRef::Inline(_) => panic!("Expected $ref for module::Schema with lowercase"),
         }
     }
 
@@ -748,7 +748,7 @@ mod tests {
                 // Unknown custom type defaults to object
                 assert_eq!(schema.schema_type, Some(SchemaType::Object));
             }
-            _ => panic!("Expected inline for unknown Schema type"),
+            SchemaRef::Ref(_) => panic!("Expected inline for unknown Schema type"),
         }
     }
 
@@ -767,7 +767,7 @@ mod tests {
             SchemaRef::Ref(reference) => {
                 assert_eq!(reference.ref_path, "#/components/schemas/Schema");
             }
-            _ => panic!("Expected $ref for Schema type"),
+            SchemaRef::Inline(_) => panic!("Expected $ref for Schema type"),
         }
     }
 

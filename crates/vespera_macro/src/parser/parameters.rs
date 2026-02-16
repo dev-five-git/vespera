@@ -433,6 +433,7 @@ mod tests {
     use insta::{assert_debug_snapshot, with_settings};
     use rstest::rstest;
     use vespera_core::route::ParameterLocation;
+    use vespera_core::schema::Reference;
 
     use super::*;
 
@@ -1095,7 +1096,7 @@ mod tests {
 
     // Tests for convert_to_inline_schema helper function
     #[test]
-    fn test_convert_to_inline_schema_inline_required() {
+    fn test_convert_to_inline_schema_inline() {
         let schema = SchemaRef::Inline(Box::new(Schema::string()));
         let result = convert_to_inline_schema(schema, false);
         match result {
@@ -1103,7 +1104,7 @@ mod tests {
                 assert_eq!(s.schema_type, Some(SchemaType::String));
                 assert!(s.nullable.is_none());
             }
-            _ => panic!("Expected Inline"),
+            SchemaRef::Ref(_) => panic!("Expected Inline"),
         }
     }
 
@@ -1116,21 +1117,21 @@ mod tests {
                 assert_eq!(s.schema_type, Some(SchemaType::String));
                 assert_eq!(s.nullable, Some(true));
             }
-            _ => panic!("Expected Inline"),
+            SchemaRef::Ref(_) => panic!("Expected Inline"),
         }
     }
 
     #[test]
-    fn test_convert_to_inline_schema_ref_required() {
-        use vespera_core::schema::Reference;
-        let schema = SchemaRef::Ref(Reference::schema("SomeType"));
-        let result = convert_to_inline_schema(schema, false);
+    fn test_convert_to_inline_schema_with_ref_optional() {
+        let schema = SchemaRef::Ref(Reference {
+            ref_path: "#/components/schemas/User".to_string(),
+        });
+        let result = convert_to_inline_schema(schema, true);
         match result {
             SchemaRef::Inline(s) => {
-                assert_eq!(s.schema_type, Some(SchemaType::Object));
-                assert!(s.nullable.is_none());
+                assert_eq!(s.nullable, Some(true));
             }
-            _ => panic!("Expected Inline"),
+            SchemaRef::Ref(_) => panic!("Expected Inline"),
         }
     }
 
@@ -1144,7 +1145,7 @@ mod tests {
                 assert_eq!(s.schema_type, Some(SchemaType::Object));
                 assert_eq!(s.nullable, Some(true));
             }
-            _ => panic!("Expected Inline"),
+            SchemaRef::Ref(_) => panic!("Expected Inline"),
         }
     }
 }

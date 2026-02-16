@@ -729,6 +729,8 @@ pub fn extract_untagged(attrs: &[syn::Attribute]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::option_option)]
+
     use rstest::rstest;
 
     use super::*;
@@ -974,7 +976,12 @@ mod tests {
         r#"#[serde(skip_serializing_if = "Option::is_none", default = "my_default")] field: i32"#,
         Some(Some("my_default"))
     )]
-    fn test_extract_default(#[case] field_src: &str, #[case] expected: Option<Option<&str>>) {
+    fn test_extract_default(
+        #[case] field_src: &str,
+        #[case]
+        #[allow(clippy::option_option)]
+        expected: Option<Option<&str>>,
+    ) {
         let struct_src = format!("struct Foo {{ {field_src} }}");
         let item: syn::ItemStruct = syn::parse_str(&struct_src).unwrap();
         if let syn::Fields::Named(fields) = &item.fields {
