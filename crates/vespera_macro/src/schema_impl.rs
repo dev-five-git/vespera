@@ -1,23 +1,23 @@
 //! Schema derive macro implementation.
 //!
 //! This module implements the `#[derive(Schema)]` derive macro that registers
-//! types for OpenAPI schema generation.
+//! types for `OpenAPI` schema generation.
 //!
 //! # Overview
 //!
-//! The `#[derive(Schema)]` macro registers a struct or enum for inclusion in the OpenAPI spec.
+//! The `#[derive(Schema)]` macro registers a struct or enum for inclusion in the `OpenAPI` spec.
 //! It stores metadata about the type which is later used by the `vespera!` macro to generate
-//! the OpenAPI components/schemas section.
+//! the `OpenAPI` components/schemas section.
 //!
 //! # Global Schema Storage
 //!
 //! This module uses a global [`SCHEMA_STORAGE`] mutex to collect all schema types across
 //! a crate at compile time. This is necessary because proc-macros are invoked independently,
-//! so we need a shared location to gather all types before generating the final OpenAPI spec.
+//! so we need a shared location to gather all types before generating the final `OpenAPI` spec.
 //!
 //! # Custom Schema Names
 //!
-//! By default, the OpenAPI schema name matches the struct name. You can customize it:
+//! By default, the `OpenAPI` schema name matches the struct name. You can customize it:
 //!
 //! ```ignore
 //! #[derive(Schema)]
@@ -32,20 +32,18 @@
 
 use std::sync::{LazyLock, Mutex};
 
-use quote::quote;
-
 use crate::metadata::StructMetadata;
 
 #[cfg(not(tarpaulin_include))]
-pub(crate) fn init_schema_storage() -> Mutex<Vec<StructMetadata>> {
+pub const fn init_schema_storage() -> Mutex<Vec<StructMetadata>> {
     Mutex::new(Vec::new())
 }
 
-pub(crate) static SCHEMA_STORAGE: LazyLock<Mutex<Vec<StructMetadata>>> =
+pub static SCHEMA_STORAGE: LazyLock<Mutex<Vec<StructMetadata>>> =
     LazyLock::new(init_schema_storage);
 
 /// Extract custom schema name from #[schema(name = "...")] attribute
-pub(crate) fn extract_schema_name_attr(attrs: &[syn::Attribute]) -> Option<String> {
+pub fn extract_schema_name_attr(attrs: &[syn::Attribute]) -> Option<String> {
     for attr in attrs {
         if attr.path().is_ident("schema") {
             let mut custom_name = None;
@@ -66,22 +64,17 @@ pub(crate) fn extract_schema_name_attr(attrs: &[syn::Attribute]) -> Option<Strin
 }
 
 /// Process derive input and return metadata + expanded code
-pub(crate) fn process_derive_schema(
+pub fn process_derive_schema(
     input: &syn::DeriveInput,
 ) -> (StructMetadata, proc_macro2::TokenStream) {
     let name = &input.ident;
-    let generics = &input.generics;
 
     // Check for custom schema name from #[schema(name = "...")] attribute
     let schema_name = extract_schema_name_attr(&input.attrs).unwrap_or_else(|| name.to_string());
 
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
     let metadata = StructMetadata::new(schema_name, quote::quote!(#input).to_string());
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-    let expanded = quote! {
-        impl #impl_generics vespera::schema::SchemaBuilder for #name #ty_generics #where_clause {}
-    };
-    (metadata, expanded)
+    (metadata, proc_macro2::TokenStream::new())
 }
 
 #[cfg(test)]
@@ -96,12 +89,9 @@ mod tests {
                 age: u32,
             }
         };
-        let (metadata, expanded) = process_derive_schema(&input);
+        let (metadata, _expanded) = process_derive_schema(&input);
         assert_eq!(metadata.name, "User");
         assert!(metadata.definition.contains("struct User"));
-        let code = expanded.to_string();
-        assert!(code.contains("SchemaBuilder"));
-        assert!(code.contains("User"));
     }
 
     #[test]
@@ -112,11 +102,9 @@ mod tests {
                 Inactive,
             }
         };
-        let (metadata, expanded) = process_derive_schema(&input);
+        let (metadata, _expanded) = process_derive_schema(&input);
         assert_eq!(metadata.name, "Status");
         assert!(metadata.definition.contains("enum Status"));
-        let code = expanded.to_string();
-        assert!(code.contains("SchemaBuilder"));
     }
 
     #[test]
@@ -126,12 +114,8 @@ mod tests {
                 value: T,
             }
         };
-        let (metadata, expanded) = process_derive_schema(&input);
+        let (metadata, _expanded) = process_derive_schema(&input);
         assert_eq!(metadata.name, "Container");
-        let code = expanded.to_string();
-        assert!(code.contains("SchemaBuilder"));
-        // Should have generic impl
-        assert!(code.contains("impl"));
     }
 
     #[test]
@@ -180,11 +164,9 @@ mod tests {
                 name: String,
             }
         };
-        let (metadata, tokens) = process_derive_schema(&input);
+        let (metadata, _tokens) = process_derive_schema(&input);
         assert_eq!(metadata.name, "User");
         assert!(metadata.definition.contains("User"));
-        let tokens_str = tokens.to_string();
-        assert!(tokens_str.contains("SchemaBuilder"));
     }
 
     #[test]
@@ -206,9 +188,7 @@ mod tests {
                 value: T,
             }
         };
-        let (metadata, tokens) = process_derive_schema(&input);
+        let (metadata, _tokens) = process_derive_schema(&input);
         assert_eq!(metadata.name, "Container");
-        let tokens_str = tokens.to_string();
-        assert!(tokens_str.contains("< T >") || tokens_str.contains("<T>"));
     }
 }
