@@ -19,139 +19,18 @@ use crate::{
 };
 
 /// Generate `OpenAPI` document from collected metadata
-#[allow(clippy::too_many_lines)]
 pub fn generate_openapi_doc_with_metadata(
     title: Option<String>,
     version: Option<String>,
     servers: Option<Vec<Server>>,
     metadata: &CollectedMetadata,
 ) -> OpenApi {
-    let mut paths: BTreeMap<String, PathItem> = BTreeMap::new();
-    let mut schemas: BTreeMap<String, vespera_core::schema::Schema> = BTreeMap::new();
-    let mut known_schema_names: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut struct_definitions: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut all_tags: BTreeSet<String> = BTreeSet::new();
+    let (known_schema_names, struct_definitions) = build_schema_lookups(metadata);
+    let schemas =
+        parse_component_schemas(metadata, &known_schema_names, &struct_definitions);
+    let (paths, all_tags) =
+        build_path_items(metadata, &known_schema_names, &struct_definitions);
 
-    // First, register all schema names and store struct definitions
-    // Note: We register ALL structs (including include_in_openapi: false) so that
-    // schema_type! generated types can reference them. The filtering happens below.
-    for struct_meta in &metadata.structs {
-        let schema_name = struct_meta.name.clone();
-        known_schema_names.insert(schema_name.clone(), schema_name);
-        struct_definitions.insert(struct_meta.name.clone(), struct_meta.definition.clone());
-    }
-
-    // Then, parse struct and enum schemas that should appear in OpenAPI
-    // Only include structs where include_in_openapi is true
-    // (i.e., from #[derive(Schema)], not from cross-file lookup)
-    for struct_meta in metadata.structs.iter().filter(|s| s.include_in_openapi) {
-        // Parse the stored definition - this should always succeed since
-        // the definition was captured from successfully compiled code
-        let Ok(parsed) = syn::parse_str::<syn::Item>(&struct_meta.definition) else {
-            continue;
-        };
-        let mut schema = match &parsed {
-            syn::Item::Struct(struct_item) => {
-                parse_struct_to_schema(struct_item, &known_schema_names, &struct_definitions)
-            }
-            syn::Item::Enum(enum_item) => {
-                parse_enum_to_schema(enum_item, &known_schema_names, &struct_definitions)
-            }
-            // Metadata definitions should only contain structs or enums - skip anything else
-            _ => continue,
-        };
-
-        // Process default values for struct fields
-        if let syn::Item::Struct(struct_item) = &parsed {
-            // Find the file where this struct is defined
-            // Try to find a route file that contains this struct
-            // Find the route file that contains this struct definition
-            let struct_file = metadata
-                .routes
-                .iter()
-                .find_map(|route| {
-                    std::fs::read_to_string(&route.file_path)
-                        .ok()
-                        .filter(|content| content.contains(&format!("struct {}", struct_meta.name)))
-                        .map(|_| route.file_path.clone())
-                })
-                .or_else(|| metadata.routes.first().map(|r| r.file_path.clone()));
-
-            if let Some(file_path) = struct_file
-                && let Some(file_ast) =
-                    read_and_parse_file_warn(std::path::Path::new(&file_path), "OpenAPI generation")
-            {
-                // Process default functions for struct fields
-                process_default_functions(struct_item, &file_ast, &mut schema);
-            }
-        }
-
-        let schema_name = struct_meta.name.clone();
-        schemas.insert(schema_name.clone(), schema);
-    }
-
-    // Process routes from metadata
-    for route_meta in &metadata.routes {
-        // Try to parse the file to get the actual function
-        let Some(file_ast) = read_and_parse_file_warn(
-            std::path::Path::new(&route_meta.file_path),
-            "OpenAPI generation",
-        ) else {
-            continue;
-        };
-
-        for item in file_ast.items {
-            if let syn::Item::Fn(fn_item) = item
-                && fn_item.sig.ident == route_meta.function_name
-            {
-                let method = HttpMethod::try_from(route_meta.method.as_str())
-                    .expect("route method must be a valid HTTP method");
-
-                // Collect tags for global tags list
-                if let Some(tags) = &route_meta.tags {
-                    for tag in tags {
-                        all_tags.insert(tag.clone());
-                    }
-                }
-
-                // Build operation from function signature
-                let mut operation = build_operation_from_function(
-                    &fn_item.sig,
-                    &route_meta.path,
-                    &known_schema_names,
-                    &struct_definitions,
-                    route_meta.error_status.as_deref(),
-                    route_meta.tags.as_deref(),
-                );
-                operation.description.clone_from(&route_meta.description);
-
-                // Get or create PathItem
-                let path_item = paths
-                    .entry(route_meta.path.clone())
-                    .or_insert_with(|| PathItem {
-                        get: None,
-                        post: None,
-                        put: None,
-                        patch: None,
-                        delete: None,
-                        head: None,
-                        options: None,
-                        trace: None,
-                        parameters: None,
-                        summary: None,
-                        description: None,
-                    });
-
-                // Set operation for the method
-                path_item.set_operation(method, operation);
-                break;
-            }
-        }
-    }
-
-    // Build OpenAPI document
     OpenApi {
         openapi: OpenApiVersion::V3_1_0,
         info: Info {
@@ -201,6 +80,151 @@ pub fn generate_openapi_doc_with_metadata(
         },
         external_docs: None,
     }
+}
+
+/// Build schema name and definition lookup maps from metadata.
+///
+/// Registers ALL structs (including `include_in_openapi: false`) so that
+/// `schema_type!` generated types can reference them.
+fn build_schema_lookups(
+    metadata: &CollectedMetadata,
+) -> (
+    std::collections::HashMap<String, String>,
+    std::collections::HashMap<String, String>,
+) {
+    let mut known_schema_names = std::collections::HashMap::new();
+    let mut struct_definitions = std::collections::HashMap::new();
+
+    for struct_meta in &metadata.structs {
+        let schema_name = struct_meta.name.clone();
+        known_schema_names.insert(schema_name.clone(), schema_name);
+        struct_definitions.insert(struct_meta.name.clone(), struct_meta.definition.clone());
+    }
+
+    (known_schema_names, struct_definitions)
+}
+
+/// Parse struct and enum definitions into `OpenAPI` component schemas.
+///
+/// Only includes structs where `include_in_openapi` is true
+/// (i.e., from `#[derive(Schema)]`, not from cross-file lookup).
+/// Also processes `#[serde(default)]` attributes to extract default values.
+fn parse_component_schemas(
+    metadata: &CollectedMetadata,
+    known_schema_names: &std::collections::HashMap<String, String>,
+    struct_definitions: &std::collections::HashMap<String, String>,
+) -> BTreeMap<String, vespera_core::schema::Schema> {
+    let mut schemas = BTreeMap::new();
+
+    for struct_meta in metadata.structs.iter().filter(|s| s.include_in_openapi) {
+        let Ok(parsed) = syn::parse_str::<syn::Item>(&struct_meta.definition) else {
+            continue;
+        };
+        let mut schema = match &parsed {
+            syn::Item::Struct(struct_item) => {
+                parse_struct_to_schema(struct_item, known_schema_names, struct_definitions)
+            }
+            syn::Item::Enum(enum_item) => {
+                parse_enum_to_schema(enum_item, known_schema_names, struct_definitions)
+            }
+            _ => continue,
+        };
+
+        // Process default values for struct fields by finding the source file
+        if let syn::Item::Struct(struct_item) = &parsed {
+            let struct_file = metadata
+                .routes
+                .iter()
+                .find_map(|route| {
+                    std::fs::read_to_string(&route.file_path)
+                        .ok()
+                        .filter(|content| {
+                            content.contains(&format!("struct {}", struct_meta.name))
+                        })
+                        .map(|_| route.file_path.clone())
+                })
+                .or_else(|| metadata.routes.first().map(|r| r.file_path.clone()));
+
+            if let Some(file_path) = struct_file
+                && let Some(file_ast) =
+                    read_and_parse_file_warn(std::path::Path::new(&file_path), "OpenAPI generation")
+            {
+                process_default_functions(struct_item, &file_ast, &mut schema);
+            }
+        }
+
+        schemas.insert(struct_meta.name.clone(), schema);
+    }
+
+    schemas
+}
+
+/// Build path items and collect tags from route metadata.
+///
+/// Parses each route's source file to extract the handler function signature,
+/// then builds an `OpenAPI` operation from it.
+fn build_path_items(
+    metadata: &CollectedMetadata,
+    known_schema_names: &std::collections::HashMap<String, String>,
+    struct_definitions: &std::collections::HashMap<String, String>,
+) -> (BTreeMap<String, PathItem>, BTreeSet<String>) {
+    let mut paths = BTreeMap::new();
+    let mut all_tags = BTreeSet::new();
+
+    for route_meta in &metadata.routes {
+        let Some(file_ast) = read_and_parse_file_warn(
+            std::path::Path::new(&route_meta.file_path),
+            "OpenAPI generation",
+        ) else {
+            continue;
+        };
+
+        for item in file_ast.items {
+            if let syn::Item::Fn(fn_item) = item
+                && fn_item.sig.ident == route_meta.function_name
+            {
+                let method = HttpMethod::try_from(route_meta.method.as_str())
+                    .expect("route method must be a valid HTTP method");
+
+                if let Some(tags) = &route_meta.tags {
+                    for tag in tags {
+                        all_tags.insert(tag.clone());
+                    }
+                }
+
+                let mut operation = build_operation_from_function(
+                    &fn_item.sig,
+                    &route_meta.path,
+                    known_schema_names,
+                    struct_definitions,
+                    route_meta.error_status.as_deref(),
+                    route_meta.tags.as_deref(),
+                );
+                operation.description.clone_from(&route_meta.description);
+
+                let path_item = paths
+                    .entry(route_meta.path.clone())
+                    .or_insert_with(|| PathItem {
+                        get: None,
+                        post: None,
+                        put: None,
+                        patch: None,
+                        delete: None,
+                        head: None,
+                        options: None,
+                        trace: None,
+                        parameters: None,
+                        summary: None,
+                        description: None,
+                    });
+
+                path_item.set_operation(method, operation);
+                break;
+            }
+        }
+    }
+
+    (paths, all_tags)
 }
 
 /// Process default functions for struct fields
