@@ -132,6 +132,9 @@ pub fn build_operation_from_function(
         }
     }
 
+    // Build HashSet once for O(1) path-param membership tests in parse_function_parameter
+    let path_param_set: HashSet<String> = path_params.iter().cloned().collect();
+
     // Parse function parameters (skip Path extractor as we already handled it)
     for input in &sig.inputs {
         // Check if it's a request body (Json<T>)
@@ -150,8 +153,13 @@ pub fn build_operation_from_function(
             };
 
             if !is_path_extractor
-                && let Some(params) =
-                    parse_function_parameter(input, &path_params, known_schemas, struct_definitions)
+                && let Some(params) = parse_function_parameter(
+                    input,
+                    &path_params,
+                    &path_param_set,
+                    known_schemas,
+                    struct_definitions,
+                )
             {
                 parameters.extend(params);
             }

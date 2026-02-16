@@ -38,10 +38,14 @@ fn convert_to_inline_schema(field_schema: SchemaRef, is_optional: bool) -> Schem
 /// Analyze function parameter and convert to `OpenAPI` Parameter(s)
 /// Returns None if parameter should be ignored (e.g., Query<`HashMap`<...>>)
 /// Returns Some(Vec<Parameter>) with one or more parameters
+///
+/// `path_params` provides ordered access for tuple-index matching in Path<T> handling.
+/// `path_param_set` provides O(1) membership test for bare-name path parameter detection.
 #[allow(clippy::too_many_lines)]
 pub fn parse_function_parameter(
     arg: &FnArg,
     path_params: &[String],
+    path_param_set: &HashSet<String>,
     known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Option<Vec<Parameter>> {
@@ -257,7 +261,7 @@ pub fn parse_function_parameter(
             }
 
             // Check if it's a path parameter (by name match) - for non-extractor cases
-            if path_params.contains(&param_name) {
+            if path_param_set.contains(&param_name) {
                 return Some(vec![Parameter {
                     name: param_name,
                     r#in: ParameterLocation::Path,
@@ -589,11 +593,17 @@ mod tests {
     ) {
         let func: syn::ItemFn = syn::parse_str(func_src).unwrap();
         let (known_schemas, struct_definitions) = setup_test_data(func_src);
+        let path_param_set: HashSet<String> = path_params.iter().cloned().collect();
         let mut parameters = Vec::new();
 
         for (idx, arg) in func.sig.inputs.iter().enumerate() {
-            let result =
-                parse_function_parameter(arg, &path_params, &known_schemas, &struct_definitions);
+            let result = parse_function_parameter(
+                arg,
+                &path_params,
+                &path_param_set,
+                &known_schemas,
+                &struct_definitions,
+            );
             let expected = expected_locations
                 .get(idx)
                 .unwrap_or_else(|| expected_locations.last().unwrap());
@@ -666,9 +676,16 @@ mod tests {
         let mut known_schemas = known_schemas;
         known_schemas.insert("CustomHeader".to_string());
 
+        let path_param_set: HashSet<String> = path_params.iter().cloned().collect();
+
         for (idx, arg) in func.sig.inputs.iter().enumerate() {
-            let result =
-                parse_function_parameter(arg, &path_params, &known_schemas, &struct_definitions);
+            let result = parse_function_parameter(
+                arg,
+                &path_params,
+                &path_param_set,
+                &known_schemas,
+                &struct_definitions,
+            );
             assert!(
                 result.is_none(),
                 "Expected None at arg index {}, func: {}, got: {:?}",
@@ -843,10 +860,16 @@ mod tests {
 
         let func: syn::ItemFn = syn::parse_str("fn test(id: Query<CustomId>) {}").unwrap();
         let path_params: Vec<String> = vec![];
+        let path_param_set: HashSet<String> = HashSet::new();
 
         for arg in func.sig.inputs.iter() {
-            let result =
-                parse_function_parameter(arg, &path_params, &known_schemas, &struct_definitions);
+            let result = parse_function_parameter(
+                arg,
+                &path_params,
+                &path_param_set,
+                &known_schemas,
+                &struct_definitions,
+            );
             // Line 128 returns Some(vec![Parameter...]) for single Query parameter
             assert!(result.is_some(), "Expected single Query parameter");
             let params = result.unwrap();
@@ -864,10 +887,16 @@ mod tests {
 
         let func: syn::ItemFn = syn::parse_str("fn test(user_id: i32) {}").unwrap();
         let path_params = vec!["user_id".to_string()];
+        let path_param_set: HashSet<String> = path_params.iter().cloned().collect();
 
         for arg in func.sig.inputs.iter() {
-            let result =
-                parse_function_parameter(arg, &path_params, &known_schemas, &struct_definitions);
+            let result = parse_function_parameter(
+                arg,
+                &path_params,
+                &path_param_set,
+                &known_schemas,
+                &struct_definitions,
+            );
             // Line 159: path_params.contains(&param_name) returns true, so it creates a Path parameter
             assert!(result.is_some(), "Expected path parameter by name match");
             let params = result.unwrap();
