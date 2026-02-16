@@ -357,10 +357,12 @@ fn parse_query_struct_to_parameters(
                 for field in &fields_named.named {
                     let rust_field_name = field
                         .ident
-                        .as_ref().map_or_else(|| "unknown".to_string(), std::string::ToString::to_string);
+                        .as_ref()
+                        .map_or_else(|| "unknown".to_string(), std::string::ToString::to_string);
 
                     // Check for field-level rename attribute first (takes precedence)
-                    let field_name = extract_field_rename(&field.attrs).unwrap_or_else(|| rename_field(&rust_field_name, rename_all.as_deref()));
+                    let field_name = extract_field_rename(&field.attrs)
+                        .unwrap_or_else(|| rename_field(&rust_field_name, rename_all.as_deref()));
 
                     let field_type = &field.ty;
 
@@ -442,12 +444,12 @@ mod tests {
             known_schemas.insert("QueryParams".to_string());
             struct_definitions.insert(
                 "QueryParams".to_string(),
-                r#"
+                r"
                 pub struct QueryParams {
                     pub page: i32,
                     pub limit: Option<i32>,
                 }
-                "#
+                "
                 .to_string(),
             );
         }
@@ -456,12 +458,12 @@ mod tests {
             known_schemas.insert("User".to_string());
             struct_definitions.insert(
                 "User".to_string(),
-                r#"
+                r"
                 pub struct User {
                     pub id: i32,
                     pub name: String,
                 }
-                "#
+                "
                 .to_string(),
             );
         }
@@ -611,9 +613,7 @@ mod tests {
             if expected.is_empty() {
                 assert!(
                     result.is_none(),
-                    "Expected None at arg index {}, func: {}",
-                    idx,
-                    func_src
+                    "Expected None at arg index {idx}, func: {func_src}"
                 );
                 continue;
             }
@@ -688,10 +688,7 @@ mod tests {
             );
             assert!(
                 result.is_none(),
-                "Expected None at arg index {}, func: {}, got: {:?}",
-                idx,
-                func_src,
-                result
+                "Expected None at arg index {idx}, func: {func_src}, got: {result:?}"
             );
         }
     }
@@ -705,7 +702,7 @@ mod tests {
     fn test_is_primitive_like_fn(#[case] type_str: &str, #[case] expected: bool) {
         let ty: Type = syn::parse_str(type_str).unwrap();
         let result = is_primitive_type(&ty) || utils_is_primitive_like(&ty);
-        assert_eq!(result, expected, "type_str={}", type_str);
+        assert_eq!(result, expected, "type_str={type_str}");
     }
 
     #[rstest]
@@ -715,7 +712,7 @@ mod tests {
     #[case("Vec<i32>", false)]
     fn test_is_map_type(#[case] type_str: &str, #[case] expected: bool) {
         let ty: Type = syn::parse_str(type_str).unwrap();
-        assert_eq!(utils_is_map_type(&ty), expected, "type_str={}", type_str);
+        assert_eq!(utils_is_map_type(&ty), expected, "type_str={type_str}");
     }
 
     #[rstest]
@@ -744,17 +741,16 @@ mod tests {
     #[case("Option<String>", HashSet::new(), HashMap::new(), true)] // Option<T> with known inner type
     #[case("UnknownType", HashSet::new(), HashMap::new(), false)] // unknown type
     fn test_is_known_type(
-         #[case] type_str: &str,
-         #[case] known_schemas: HashSet<String>,
-         #[case] struct_definitions: HashMap<String, String>,
-         #[case] expected: bool,
-     ) {
-         let ty: Type = syn::parse_str(type_str).unwrap();
-         assert_eq!(
-             is_known_type(&ty, &known_schemas, &struct_definitions),
+        #[case] type_str: &str,
+        #[case] known_schemas: HashSet<String>,
+        #[case] struct_definitions: HashMap<String, String>,
+        #[case] expected: bool,
+    ) {
+        let ty: Type = syn::parse_str(type_str).unwrap();
+        assert_eq!(
+            is_known_type(&ty, &known_schemas, &struct_definitions),
             expected,
-            "Type: {}",
-            type_str
+            "Type: {type_str}"
         );
     }
 
@@ -793,20 +789,20 @@ mod tests {
         // Test with struct that has nested struct (ref to inline conversion)
         struct_definitions.insert(
             "NestedQuery".to_string(),
-            r#"
+            r"
             pub struct NestedQuery {
                 pub user: User,
             }
-            "#
+            "
             .to_string(),
         );
         struct_definitions.insert(
             "User".to_string(),
-            r#"
+            r"
             pub struct User {
                 pub id: i32,
             }
-            "#
+            "
             .to_string(),
         );
         known_schemas.insert("User".to_string());
@@ -828,12 +824,12 @@ mod tests {
         // Test with struct that has Option<T> fields
         struct_definitions.insert(
             "OptionalQuery".to_string(),
-            r#"
+            r"
             pub struct OptionalQuery {
                 pub required: i32,
                 pub optional: Option<String>,
             }
-            "#
+            "
             .to_string(),
         );
 
@@ -862,7 +858,7 @@ mod tests {
         let path_params: Vec<String> = vec![];
         let path_param_set: HashSet<String> = HashSet::new();
 
-        for arg in func.sig.inputs.iter() {
+        for arg in &func.sig.inputs {
             let result = parse_function_parameter(
                 arg,
                 &path_params,
@@ -889,7 +885,7 @@ mod tests {
         let path_params = vec!["user_id".to_string()];
         let path_param_set: HashSet<String> = path_params.iter().cloned().collect();
 
-        for arg in func.sig.inputs.iter() {
+        for arg in &func.sig.inputs {
             let result = parse_function_parameter(
                 arg,
                 &path_params,
@@ -932,9 +928,9 @@ mod tests {
     #[test]
     fn test_is_known_type_non_vec_option_generic() {
         // Test line 230: non-Vec/Option generic type (like Result<T, E> or Box<T>)
-         // The match at line 224-229 only handles Vec and Option
-         let known_schemas = HashSet::new();
-         let struct_definitions = HashMap::new();
+        // The match at line 224-229 only handles Vec and Option
+        let known_schemas = HashSet::new();
+        let struct_definitions = HashMap::new();
 
         // Box<i32> has angle brackets but is not Vec or Option
         let ty: Type = syn::parse_str("Box<i32>").unwrap();
@@ -979,22 +975,22 @@ mod tests {
         // This requires a field that:
         // 1. Is Option<T> where T is a known schema
         // 2. T is NOT in struct_definitions (so ref stays as Ref)
-         // 3. field_schema is still Ref after the conversion attempt
-         //
-         // Note: parse_type_to_schema_ref_with_schemas for Option<RefType> may create
-         // an inline schema wrapping the inner ref, not a direct Ref.
-         // Line 313 is a defensive case that may be hard to hit in practice.
-         let mut struct_definitions = HashMap::new();
-         let known_schemas = HashSet::new();
+        // 3. field_schema is still Ref after the conversion attempt
+        //
+        // Note: parse_type_to_schema_ref_with_schemas for Option<RefType> may create
+        // an inline schema wrapping the inner ref, not a direct Ref.
+        // Line 313 is a defensive case that may be hard to hit in practice.
+        let mut struct_definitions = HashMap::new();
+        let known_schemas = HashSet::new();
 
         // Use a simple struct with Option<i32> to verify the optional handling works
         struct_definitions.insert(
             "QueryWithOptional".to_string(),
-            r#"
+            r"
             pub struct QueryWithOptional {
                 pub count: Option<i32>,
             }
-            "#
+            "
             .to_string(),
         );
 
@@ -1020,23 +1016,23 @@ mod tests {
         // 1. field_schema is SchemaRef::Ref
         // 2. is_optional is false
         // 3. The ref conversion at lines 294-304 fails (no struct_def)
-         let mut struct_definitions = HashMap::new();
-         let mut known_schemas = HashSet::new();
+        let mut struct_definitions = HashMap::new();
+        let mut known_schemas = HashSet::new();
 
-         // Struct with required RefType field
-         struct_definitions.insert(
-             "QueryWithRef".to_string(),
-             r#"
+        // Struct with required RefType field
+        struct_definitions.insert(
+            "QueryWithRef".to_string(),
+            r"
              pub struct QueryWithRef {
                  pub item: RefType,
              }
-             "#
-             .to_string(),
-         );
+             "
+            .to_string(),
+        );
 
-         // RefType is a known schema (will generate SchemaRef::Ref)
-         // BUT we don't have its struct definition, so the conversion at 296-303 fails
-         known_schemas.insert("RefType".to_string());
+        // RefType is a known schema (will generate SchemaRef::Ref)
+        // BUT we don't have its struct definition, so the conversion at 296-303 fails
+        known_schemas.insert("RefType".to_string());
 
         let ty: Type = syn::parse_str("QueryWithRef").unwrap();
         let result = parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions);
@@ -1055,30 +1051,30 @@ mod tests {
 
     #[test]
     fn test_schema_ref_converted_to_inline_with_struct_def() {
-         // Test lines 294-304: Ref IS converted when struct_def exists
-         let mut struct_definitions = HashMap::new();
-         let mut known_schemas = HashSet::new();
+        // Test lines 294-304: Ref IS converted when struct_def exists
+        let mut struct_definitions = HashMap::new();
+        let mut known_schemas = HashSet::new();
 
-         // Main struct with a field of type NestedType
-         struct_definitions.insert(
-             "QueryWithNested".to_string(),
-             r#"
+        // Main struct with a field of type NestedType
+        struct_definitions.insert(
+            "QueryWithNested".to_string(),
+            r"
              pub struct QueryWithNested {
                  pub nested: NestedType,
              }
-             "#
-             .to_string(),
-         );
+             "
+            .to_string(),
+        );
 
-         // NestedType is both in known_schemas AND has a struct definition
-         known_schemas.insert("NestedType".to_string());
+        // NestedType is both in known_schemas AND has a struct definition
+        known_schemas.insert("NestedType".to_string());
         struct_definitions.insert(
             "NestedType".to_string(),
-            r#"
+            r"
             pub struct NestedType {
                 pub value: i32,
             }
-            "#
+            "
             .to_string(),
         );
 

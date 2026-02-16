@@ -9,7 +9,7 @@ use quote::quote;
 use super::{
     circular::detect_circular_fields,
     file_lookup::find_model_from_schema_path,
-    seaorm::{convert_type_with_chrono, RelationFieldInfo},
+    seaorm::{RelationFieldInfo, convert_type_with_chrono},
     type_utils::{
         extract_module_path_from_schema_path, is_seaorm_relation_type, snake_to_pascal_case,
     },
@@ -485,11 +485,11 @@ mod tests {
         ];
 
         // UserSchema has a circular reference back to memo via HasMany
-        let model_def = r#"pub struct Model {
+        let model_def = r"pub struct Model {
             pub id: i32,
             pub name: String,
             pub memos: HasMany<memo::Entity>
-        }"#;
+        }";
 
         let result = generate_inline_relation_type_from_def(
             &parent_type_name,
@@ -502,11 +502,11 @@ mod tests {
         assert!(result.is_none());
 
         // Test with BelongsTo instead (which IS considered circular)
-        let model_def_with_belongs_to = r#"pub struct Model {
+        let model_def_with_belongs_to = r"pub struct Model {
             pub id: i32,
             pub name: String,
             pub memo: BelongsTo<memo::Entity>
-        }"#;
+        }";
 
         let result = generate_inline_relation_type_from_def(
             &parent_type_name,
@@ -551,10 +551,10 @@ mod tests {
         ];
 
         // No circular reference
-        let model_def = r#"pub struct Model {
+        let model_def = r"pub struct Model {
             pub id: i32,
             pub name: String
-        }"#;
+        }";
 
         let result = generate_inline_relation_type_from_def(
             &parent_type_name,
@@ -585,10 +585,10 @@ mod tests {
             "memo".to_string(),
         ];
 
-        let model_def = r#"pub struct Model {
+        let model_def = r"pub struct Model {
             pub id: i32,
             pub memo: BelongsTo<memo::Entity>
-        }"#;
+        }";
 
         // With schema_name_override
         let result = generate_inline_relation_type_from_def(
@@ -617,12 +617,12 @@ mod tests {
         };
 
         // Model with relations that should be stripped
-        let model_def = r#"pub struct Model {
+        let model_def = r"pub struct Model {
             pub id: i32,
             pub title: String,
             pub user: BelongsTo<user::Entity>,
             pub comments: HasMany<comment::Entity>
-        }"#;
+        }";
 
         let result = generate_inline_relation_type_no_relations_from_def(
             &parent_type_name,
@@ -663,12 +663,12 @@ mod tests {
         };
 
         // Model with serde(skip) field
-        let model_def = r#"pub struct Model {
+        let model_def = r"pub struct Model {
             pub id: i32,
             #[serde(skip)]
             pub internal: String,
             pub name: String
-        }"#;
+        }";
 
         let result = generate_inline_relation_type_no_relations_from_def(
             &parent_type_name,
@@ -736,13 +736,13 @@ mod tests {
         ];
 
         // Model with circular field AND other relation types that should be skipped
-        let model_def = r#"pub struct Model {
+        let model_def = r"pub struct Model {
             pub id: i32,
             pub name: String,
             pub memo: BelongsTo<memo::Entity>,
             pub posts: HasMany<post::Entity>,
             pub profile: HasOne<profile::Entity>
-        }"#;
+        }";
 
         let result = generate_inline_relation_type_from_def(
             &parent_type_name,
@@ -790,13 +790,13 @@ mod tests {
         ];
 
         // Model with circular field AND serde(skip) field
-        let model_def = r#"pub struct Model {
+        let model_def = r"pub struct Model {
             pub id: i32,
             #[serde(skip)]
             pub internal_cache: String,
             pub name: String,
             pub memo: BelongsTo<memo::Entity>
-        }"#;
+        }";
 
         let result = generate_inline_relation_type_from_def(
             &parent_type_name,
@@ -837,10 +837,10 @@ mod tests {
             via_rel: None,
         };
 
-        let model_def = r#"pub struct Model {
+        let model_def = r"pub struct Model {
             pub id: i32,
             pub title: String
-        }"#;
+        }";
 
         // With schema_name_override
         let result = generate_inline_relation_type_no_relations_from_def(
@@ -872,13 +872,13 @@ mod tests {
         std::fs::create_dir_all(&models_dir).unwrap();
 
         // Create a user.rs file with Model struct that has circular reference
-        let user_model = r#"
+        let user_model = r"
 pub struct Model {
     pub id: i32,
     pub name: String,
     pub memo: BelongsTo<memo::Entity>,
 }
-"#;
+";
         std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
 
         // Save original CARGO_MANIFEST_DIR and set to temp dir
@@ -945,14 +945,14 @@ pub struct Model {
         std::fs::create_dir_all(&models_dir).unwrap();
 
         // Create a memo.rs file with Model struct that has relations
-        let memo_model = r#"
+        let memo_model = r"
 pub struct Model {
     pub id: i32,
     pub title: String,
     pub user: BelongsTo<user::Entity>,
     pub comments: HasMany<comment::Entity>,
 }
-"#;
+";
         std::fs::write(models_dir.join("memo.rs"), memo_model).unwrap();
 
         // Save original CARGO_MANIFEST_DIR and set to temp dir
@@ -1122,12 +1122,12 @@ pub struct Model {
         ];
 
         // Model with DateTimeWithTimeZone field AND circular reference
-        let model_def = r#"pub struct Model {
+        let model_def = r"pub struct Model {
             pub id: i32,
             pub name: String,
             pub created_at: DateTimeWithTimeZone,
             pub memo: BelongsTo<memo::Entity>
-        }"#;
+        }";
 
         let result = generate_inline_relation_type_from_def(
             &parent_type_name,
@@ -1152,13 +1152,11 @@ pub struct Model {
         // Should be converted to vespera::chrono::DateTime<FixedOffset>
         assert!(
             ty_str.contains("vespera :: chrono :: DateTime"),
-            "DateTimeWithTimeZone should be converted to vespera::chrono::DateTime, got: {}",
-            ty_str
+            "DateTimeWithTimeZone should be converted to vespera::chrono::DateTime, got: {ty_str}"
         );
         assert!(
             ty_str.contains("FixedOffset"),
-            "Should contain FixedOffset, got: {}",
-            ty_str
+            "Should contain FixedOffset, got: {ty_str}"
         );
     }
 
@@ -1178,13 +1176,13 @@ pub struct Model {
         };
 
         // Model with DateTimeWithTimeZone field
-        let model_def = r#"pub struct Model {
+        let model_def = r"pub struct Model {
             pub id: i32,
             pub title: String,
             pub created_at: DateTimeWithTimeZone,
             pub updated_at: Option<DateTimeWithTimeZone>,
             pub user: BelongsTo<user::Entity>
-        }"#;
+        }";
 
         let result = generate_inline_relation_type_no_relations_from_def(
             &parent_type_name,
@@ -1207,8 +1205,7 @@ pub struct Model {
         let ty_str = created_at_field.ty.to_string();
         assert!(
             ty_str.contains("vespera :: chrono :: DateTime"),
-            "DateTimeWithTimeZone should be converted, got: {}",
-            ty_str
+            "DateTimeWithTimeZone should be converted, got: {ty_str}"
         );
 
         // Also check Option<DateTimeWithTimeZone>
@@ -1221,13 +1218,11 @@ pub struct Model {
         let updated_ty_str = updated_at_field.ty.to_string();
         assert!(
             updated_ty_str.contains("Option"),
-            "Should be Option type, got: {}",
-            updated_ty_str
+            "Should be Option type, got: {updated_ty_str}"
         );
         assert!(
             updated_ty_str.contains("vespera :: chrono :: DateTime"),
-            "Option<DateTimeWithTimeZone> should be converted, got: {}",
-            updated_ty_str
+            "Option<DateTimeWithTimeZone> should be converted, got: {updated_ty_str}"
         );
     }
 }

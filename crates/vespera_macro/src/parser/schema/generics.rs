@@ -196,7 +196,10 @@ mod tests {
         #[case] expected: &str,
     ) {
         let ty: Type = syn::parse_str(input).unwrap();
-        let generic_params: Vec<String> = params.iter().map(|s| s.to_string()).collect();
+        let generic_params: Vec<String> = params
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         let concrete_types: Vec<Type> = concrete
             .iter()
             .map(|s| syn::parse_str(s).unwrap())
@@ -206,7 +209,7 @@ mod tests {
         let result = substitute_type(&ty, &generic_params, &concrete_refs);
         let result_str = quote::quote!(#result).to_string();
 
-        assert_eq!(result_str, expected, "Input: {}", input);
+        assert_eq!(result_str, expected, "Input: {input}");
     }
 
     #[test]

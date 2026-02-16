@@ -566,7 +566,7 @@ mod tests {
     #[test]
     fn test_http_method_clone() {
         let method = HttpMethod::Get;
-        let cloned = method.clone();
+        let cloned = method;
         assert_eq!(method, cloned);
     }
 

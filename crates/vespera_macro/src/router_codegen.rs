@@ -36,10 +36,9 @@
 use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    bracketed,
+    LitStr, bracketed,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
-    LitStr,
 };
 use vespera_core::{openapi::Server, route::HttpMethod};
 
@@ -613,13 +612,11 @@ mod tests {
         // quote! generates "vespera :: axum :: Router :: new ()" format
         assert!(
             code.contains("Router") && code.contains("new"),
-            "Code should contain Router::new(), got: {}",
-            code
+            "Code should contain Router::new(), got: {code}"
         );
         assert!(
             !code.contains("route"),
-            "Code should not contain route, got: {}",
-            code
+            "Code should not contain route, got: {code}"
         );
 
         drop(temp_dir);
@@ -770,24 +767,19 @@ pub fn get_users() -> String {
         // Check router initialization (quote! generates "vespera :: axum :: Router :: new ()")
         assert!(
             code.contains("Router") && code.contains("new"),
-            "Code should contain Router::new(), got: {}",
-            code
+            "Code should contain Router::new(), got: {code}"
         );
 
         // Check route method
         assert!(
             code.contains(expected_method),
-            "Code should contain method: {}, got: {}",
-            expected_method,
-            code
+            "Code should contain method: {expected_method}, got: {code}"
         );
 
         // Check route path
         assert!(
             code.contains(expected_path),
-            "Code should contain path: {}, got: {}",
-            expected_path,
-            code
+            "Code should contain path: {expected_path}, got: {code}"
         );
 
         // Check function path (quote! adds spaces, so we check for parts)
@@ -796,9 +788,7 @@ pub fn get_users() -> String {
             if !part.is_empty() {
                 assert!(
                     code.contains(part),
-                    "Code should contain function part: {}, got: {}",
-                    part,
-                    code
+                    "Code should contain function part: {part}, got: {code}"
                 );
             }
         }
@@ -871,8 +861,7 @@ pub fn update_user() -> String {
         let route_count = code.matches(". route (").count();
         assert_eq!(
             route_count, 3,
-            "Should have 3 route calls, got: {}, code: {}",
-            route_count, code
+            "Should have 3 route calls, got: {route_count}, code: {code}"
         );
 
         drop(temp_dir);
@@ -923,8 +912,7 @@ pub fn create_users() -> String {
         let route_count = code.matches(". route (").count();
         assert_eq!(
             route_count, 2,
-            "Should have 2 routes, got: {}, code: {}",
-            route_count, code
+            "Should have 2 routes, got: {route_count}, code: {code}"
         );
 
         drop(temp_dir);
@@ -1404,13 +1392,11 @@ pub fn get_users() -> String {
         // Should use VesperaRouter instead of plain Router
         assert!(
             code.contains("VesperaRouter"),
-            "Should use VesperaRouter for merge, got: {}",
-            code
+            "Should use VesperaRouter for merge, got: {code}"
         );
         assert!(
             code.contains("third :: ThirdApp") || code.contains("third::ThirdApp"),
-            "Should reference merged app, got: {}",
-            code
+            "Should reference merged app, got: {code}"
         );
     }
 
@@ -1426,19 +1412,16 @@ pub fn get_users() -> String {
         // Should have merge code for docs
         assert!(
             code.contains("OnceLock"),
-            "Should use OnceLock for merged docs, got: {}",
-            code
+            "Should use OnceLock for merged docs, got: {code}"
         );
         assert!(
             code.contains("MERGED_SPEC"),
-            "Should have MERGED_SPEC, got: {}",
-            code
+            "Should have MERGED_SPEC, got: {code}"
         );
         // quote! generates "merged . merge" with spaces
         assert!(
             code.contains("merged . merge") || code.contains("merged.merge"),
-            "Should call merge on spec, got: {}",
-            code
+            "Should call merge on spec, got: {code}"
         );
     }
 
@@ -1474,8 +1457,7 @@ pub fn get_users() -> String {
         let merged_spec_count = code.matches("MERGED_SPEC").count();
         assert!(
             merged_spec_count >= 2,
-            "Should have at least 2 MERGED_SPEC for docs and redoc, got: {}",
-            merged_spec_count
+            "Should have at least 2 MERGED_SPEC for docs and redoc, got: {merged_spec_count}"
         );
         // Both docs_url and redoc_url should be present
         assert!(
@@ -1498,8 +1480,7 @@ pub fn get_users() -> String {
         // Should reference both apps
         assert!(
             code.contains("first") && code.contains("second"),
-            "Should reference both merge apps, got: {}",
-            code
+            "Should reference both merge apps, got: {code}"
         );
     }
 

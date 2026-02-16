@@ -455,12 +455,12 @@ mod tests {
     #[test]
     fn test_is_seaorm_model_with_qualified_attr() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             #[sea_orm::model]
             struct Model {
                 id: i32,
             }
-        "#,
+        ",
         )
         .unwrap();
         assert!(is_seaorm_model(&struct_item));
@@ -469,12 +469,12 @@ mod tests {
     #[test]
     fn test_is_seaorm_model_regular_struct() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             #[derive(Debug)]
             struct User {
                 id: i32,
             }
-        "#,
+        ",
         )
         .unwrap();
         assert!(!is_seaorm_model(&struct_item));
@@ -628,10 +628,12 @@ mod tests {
         let ty = empty_type_path();
         let result = extract_type_name(&ty);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("type path has no segments"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("type path has no segments")
+        );
     }
 
     #[test]
@@ -711,7 +713,10 @@ mod tests {
     ) {
         let tokens: proc_macro2::TokenStream = path_str.parse().unwrap();
         let result = extract_module_path_from_schema_path(&tokens);
-        let expected: Vec<String> = expected.into_iter().map(|s| s.to_string()).collect();
+        let expected: Vec<String> = expected
+            .into_iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         assert_eq!(result, expected);
     }
 

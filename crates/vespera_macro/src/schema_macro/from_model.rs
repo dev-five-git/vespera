@@ -1003,12 +1003,12 @@ pub struct Model {
         std::fs::write(models_dir.join("memo.rs"), memo_model).unwrap();
 
         // Create user.rs
-        let user_model = r#"
+        let user_model = r"
 pub struct Model {
     pub id: i32,
     pub name: String,
 }
-"#;
+";
         std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
 
         // Save and set CARGO_MANIFEST_DIR
@@ -1078,8 +1078,7 @@ pub struct Model {
         // Should have parent stub with __parent_stub__
         assert!(
             output.contains("__parent_stub__"),
-            "Should have parent stub: {}",
-            output
+            "Should have parent stub: {output}"
         );
     }
 
@@ -1096,13 +1095,13 @@ pub struct Model {
         std::fs::create_dir_all(&models_dir).unwrap();
 
         // Create profile.rs with circular back-ref to user
-        let profile_model = r#"
+        let profile_model = r"
 pub struct Model {
     pub id: i32,
     pub bio: String,
     pub user: BelongsTo<super::user::Entity>,
 }
-"#;
+";
         std::fs::write(models_dir.join("profile.rs"), profile_model).unwrap();
 
         // Save and set CARGO_MANIFEST_DIR
@@ -1164,8 +1163,7 @@ pub struct Model {
         // Circular optional should have .map(|r| Box::new(...))
         assert!(
             output.contains(". map (| r |"),
-            "Should have map for optional: {}",
-            output
+            "Should have map for optional: {output}"
         );
     }
 
@@ -1182,13 +1180,13 @@ pub struct Model {
         std::fs::create_dir_all(&models_dir).unwrap();
 
         // Create profile.rs with circular back-ref to user
-        let profile_model = r#"
+        let profile_model = r"
 pub struct Model {
     pub id: i32,
     pub bio: String,
     pub user: BelongsTo<super::user::Entity>,
 }
-"#;
+";
         std::fs::write(models_dir.join("profile.rs"), profile_model).unwrap();
 
         // Save and set CARGO_MANIFEST_DIR
@@ -1250,13 +1248,11 @@ pub struct Model {
         // Required circular should have Box::new with error handling
         assert!(
             output.contains("Box :: new"),
-            "Should have Box::new for required: {}",
-            output
+            "Should have Box::new for required: {output}"
         );
         assert!(
             output.contains("ok_or_else"),
-            "Should have ok_or_else: {}",
-            output
+            "Should have ok_or_else: {output}"
         );
     }
 
@@ -1311,8 +1307,7 @@ pub struct Model {
         // Unknown relation with inline type should use Default::default()
         assert!(
             output.contains("Default :: default ()"),
-            "Should have Default::default(): {}",
-            output
+            "Should have Default::default(): {output}"
         );
     }
 
@@ -1329,14 +1324,14 @@ pub struct Model {
         std::fs::create_dir_all(&models_dir).unwrap();
 
         // Create address.rs with FK relations but NO circular back-ref to user
-        let address_model = r#"
+        let address_model = r"
 pub struct Model {
     pub id: i32,
     pub street: String,
     pub city_id: i32,
     pub city: BelongsTo<super::city::Entity>,
 }
-"#;
+";
         std::fs::write(models_dir.join("address.rs"), address_model).unwrap();
 
         // Save and set CARGO_MANIFEST_DIR
@@ -1398,8 +1393,7 @@ pub struct Model {
         // Non-circular with FK, optional should have match statement with async from_model
         assert!(
             output.contains("from_model (r , db) . await"),
-            "Should have async from_model: {}",
-            output
+            "Should have async from_model: {output}"
         );
     }
 
@@ -1416,14 +1410,14 @@ pub struct Model {
         std::fs::create_dir_all(&models_dir).unwrap();
 
         // Create address.rs with FK relations but NO circular back-ref to user
-        let address_model = r#"
+        let address_model = r"
 pub struct Model {
     pub id: i32,
     pub street: String,
     pub city_id: i32,
     pub city: BelongsTo<super::city::Entity>,
 }
-"#;
+";
         std::fs::write(models_dir.join("address.rs"), address_model).unwrap();
 
         // Save and set CARGO_MANIFEST_DIR
@@ -1485,18 +1479,15 @@ pub struct Model {
         // Required with FK should have Box::new with from_model call
         assert!(
             output.contains("Box :: new"),
-            "Should have Box::new: {}",
-            output
+            "Should have Box::new: {output}"
         );
         assert!(
             output.contains("from_model"),
-            "Should have from_model: {}",
-            output
+            "Should have from_model: {output}"
         );
         assert!(
             output.contains("ok_or_else"),
-            "Should have ok_or_else: {}",
-            output
+            "Should have ok_or_else: {output}"
         );
     }
 
@@ -1513,13 +1504,13 @@ pub struct Model {
         std::fs::create_dir_all(&models_dir).unwrap();
 
         // Create memo.rs with circular back-ref to user
-        let memo_model = r#"
+        let memo_model = r"
 pub struct Model {
     pub id: i32,
     pub title: String,
     pub user: BelongsTo<super::user::Entity>,
 }
-"#;
+";
         std::fs::write(models_dir.join("memo.rs"), memo_model).unwrap();
 
         // Save and set CARGO_MANIFEST_DIR
@@ -1581,19 +1572,10 @@ pub struct Model {
         // HasMany with circular should have into_iter().map().collect()
         assert!(
             output.contains("into_iter ()"),
-            "Should have into_iter: {}",
-            output
+            "Should have into_iter: {output}"
         );
-        assert!(
-            output.contains(". map (| r |"),
-            "Should have map: {}",
-            output
-        );
-        assert!(
-            output.contains("collect"),
-            "Should have collect: {}",
-            output
-        );
+        assert!(output.contains(". map (| r |"), "Should have map: {output}");
+        assert!(output.contains("collect"), "Should have collect: {output}");
     }
 
     #[test]
@@ -1609,14 +1591,14 @@ pub struct Model {
         std::fs::create_dir_all(&models_dir).unwrap();
 
         // Create tag.rs with FK relations but NO circular back-ref to user
-        let tag_model = r#"
+        let tag_model = r"
 pub struct Model {
     pub id: i32,
     pub name: String,
     pub category_id: i32,
     pub category: BelongsTo<super::category::Entity>,
 }
-"#;
+";
         std::fs::write(models_dir.join("tag.rs"), tag_model).unwrap();
 
         // Save and set CARGO_MANIFEST_DIR
@@ -1678,19 +1660,10 @@ pub struct Model {
         // HasMany with FK but no circular should use inline_struct_construction
         assert!(
             output.contains("into_iter ()"),
-            "Should have into_iter: {}",
-            output
+            "Should have into_iter: {output}"
         );
-        assert!(
-            output.contains(". map (| r |"),
-            "Should have map: {}",
-            output
-        );
-        assert!(
-            output.contains("collect"),
-            "Should have collect: {}",
-            output
-        );
+        assert!(output.contains(". map (| r |"), "Should have map: {output}");
+        assert!(output.contains("collect"), "Should have collect: {output}");
     }
 
     #[test]
@@ -1704,12 +1677,12 @@ pub struct Model {
         let models_dir = src_dir.join("models");
         std::fs::create_dir_all(&models_dir).unwrap();
 
-        let user_model = r#"
+        let user_model = r"
 pub struct Model {
     pub id: i32,
     pub name: String,
 }
-"#;
+";
         std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
 
         // Save and set CARGO_MANIFEST_DIR
@@ -1776,13 +1749,11 @@ pub struct Model {
         // Required inline type should have Box::new with ok_or_else
         assert!(
             output.contains("Box :: new"),
-            "Should have Box::new: {}",
-            output
+            "Should have Box::new: {output}"
         );
         assert!(
             output.contains("ok_or_else"),
-            "Should have ok_or_else: {}",
-            output
+            "Should have ok_or_else: {output}"
         );
     }
 
@@ -1812,21 +1783,21 @@ pub struct Model {
         std::fs::write(models_dir.join("memo.rs"), memo_model).unwrap();
 
         // Create profile.rs (for optional single relation)
-        let profile_model = r#"
+        let profile_model = r"
 pub struct Model {
     pub id: i32,
     pub bio: String,
 }
-"#;
+";
         std::fs::write(models_dir.join("profile.rs"), profile_model).unwrap();
 
         // Create settings.rs (for required single relation)
-        let settings_model = r#"
+        let settings_model = r"
 pub struct Model {
     pub id: i32,
     pub theme: String,
 }
-"#;
+";
         std::fs::write(models_dir.join("settings.rs"), settings_model).unwrap();
 
         // Save and set CARGO_MANIFEST_DIR
@@ -1930,28 +1901,24 @@ pub struct Model {
         // Should have parent stub
         assert!(
             output.contains("__parent_stub__"),
-            "Should have parent stub: {}",
-            output
+            "Should have parent stub: {output}"
         );
         // Parent stub should have various default values
         // Line 113: memos: vec![]
         assert!(
             output.contains("memos : vec ! []"),
-            "Should have memos: vec![]: {}",
-            output
+            "Should have memos: vec![]: {output}"
         );
         // Line 114 & 117: profile/settings: None (both optional and required single relations)
         // (Both produce None in parent stub)
         assert!(
             output.contains("profile : None") || output.contains("settings : None"),
-            "Should have None for single relations: {}",
-            output
+            "Should have None for single relations: {output}"
         );
         // Line 120: orphan_rel: Default::default()
         assert!(
             output.contains("Default :: default ()"),
-            "Should have Default::default() for orphan: {}",
-            output
+            "Should have Default::default() for orphan: {output}"
         );
     }
 
@@ -2032,18 +1999,15 @@ pub struct Model {
         // Should have match statement checking FK field
         assert!(
             output.contains("match & model . target_user_id"),
-            "Should match on FK field: {}",
-            output
+            "Should match on FK field: {output}"
         );
         assert!(
             output.contains("Some (fk_value)"),
-            "Should have Some(fk_value) arm: {}",
-            output
+            "Should have Some(fk_value) arm: {output}"
         );
         assert!(
             output.contains("find_by_id"),
-            "Should use find_by_id: {}",
-            output
+            "Should use find_by_id: {output}"
         );
     }
 
@@ -2099,8 +2063,7 @@ pub struct Model {
         // Fallback: use Entity::find_related(Relation::Variant)
         assert!(
             output.contains("Entity :: find_related (Relation :: Author)"),
-            "Should use find_related with Relation enum: {}",
-            output
+            "Should use find_related with Relation enum: {output}"
         );
     }
 
@@ -2156,8 +2119,7 @@ pub struct Model {
         // Should directly query by FK value
         assert!(
             output.contains("find_by_id (model . post_id . clone ())"),
-            "Should use find_by_id with FK: {}",
-            output
+            "Should use find_by_id with FK: {output}"
         );
     }
 
@@ -2213,8 +2175,7 @@ pub struct Model {
         // Fallback: use Entity::find_related(Relation::Variant)
         assert!(
             output.contains("Entity :: find_related (Relation :: Author)"),
-            "Should use find_related with Relation enum: {}",
-            output
+            "Should use find_related with Relation enum: {output}"
         );
     }
 
@@ -2305,23 +2266,19 @@ pub struct Model {
         // Should generate FK-based query
         assert!(
             output.contains("TargetUserId"),
-            "Should have FK column identifier: {}",
-            output
+            "Should have FK column identifier: {output}"
         );
         assert!(
             output.contains("into_column ()"),
-            "Should have into_column: {}",
-            output
+            "Should have into_column: {output}"
         );
         assert!(
             output.contains("eq (model . id . clone ())"),
-            "Should compare with model.id: {}",
-            output
+            "Should compare with model.id: {output}"
         );
         assert!(
             output.contains(". all (db)"),
-            "Should use .all(db): {}",
-            output
+            "Should use .all(db): {output}"
         );
     }
 
@@ -2338,12 +2295,12 @@ pub struct Model {
         std::fs::create_dir_all(&models_dir).unwrap();
 
         // Create notification.rs WITHOUT matching relation_enum
-        let notification_model = r#"
+        let notification_model = r"
 pub struct Model {
     pub id: i32,
     pub message: String,
 }
-"#;
+";
         std::fs::write(models_dir.join("notification.rs"), notification_model).unwrap();
 
         let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
@@ -2405,8 +2362,7 @@ pub struct Model {
         // Should fall back to empty vec (WARNING comment won't appear in TokenStream)
         assert!(
             output.contains("vec ! []"),
-            "Should fall back to empty vec: {}",
-            output
+            "Should fall back to empty vec: {output}"
         );
     }
 
@@ -2493,18 +2449,15 @@ pub struct Model {
         // Should generate FK-based query using relation_enum as via_rel
         assert!(
             output.contains("AuthorId"),
-            "Should have FK column identifier: {}",
-            output
+            "Should have FK column identifier: {output}"
         );
         assert!(
             output.contains("into_column ()"),
-            "Should have into_column: {}",
-            output
+            "Should have into_column: {output}"
         );
         assert!(
             output.contains(". all (db)"),
-            "Should use .all(db): {}",
-            output
+            "Should use .all(db): {output}"
         );
     }
 
@@ -2521,12 +2474,12 @@ pub struct Model {
         std::fs::create_dir_all(&models_dir).unwrap();
 
         // Create post.rs WITHOUT matching relation_enum
-        let post_model = r#"
+        let post_model = r"
 pub struct Model {
     pub id: i32,
     pub title: String,
 }
-"#;
+";
         std::fs::write(models_dir.join("post.rs"), post_model).unwrap();
 
         let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
@@ -2588,8 +2541,7 @@ pub struct Model {
         // Should fall back to empty vec (WARNING comment won't appear in TokenStream)
         assert!(
             output.contains("vec ! []"),
-            "Should fall back to empty vec: {}",
-            output
+            "Should fall back to empty vec: {output}"
         );
     }
 }

@@ -36,8 +36,12 @@ pub fn generate_openapi_doc_with_metadata(
         &file_cache,
         &struct_file_index,
     );
-    let (paths, all_tags) =
-        build_path_items(metadata, &known_schema_names, &struct_definitions, &file_cache);
+    let (paths, all_tags) = build_path_items(
+        metadata,
+        &known_schema_names,
+        &struct_definitions,
+        &file_cache,
+    );
 
     OpenApi {
         openapi: OpenApiVersion::V3_1_0,
@@ -290,11 +294,14 @@ fn process_default_functions(
                 Some(Some(func_name)) => func_name, // default = "function_name"
                 Some(None) => {
                     // Simple default (no function) - we can set type-specific defaults
-                    let rust_field_name = field
-                        .ident
-                        .as_ref().map_or_else(|| "unknown".to_string(), |i| strip_raw_prefix(&i.to_string()).to_string());
+                    let rust_field_name = field.ident.as_ref().map_or_else(
+                        || "unknown".to_string(),
+                        |i| strip_raw_prefix(&i.to_string()).to_string(),
+                    );
 
-                    let field_name = extract_field_rename(&field.attrs).unwrap_or_else(|| rename_field(&rust_field_name, struct_rename_all.as_deref()));
+                    let field_name = extract_field_rename(&field.attrs).unwrap_or_else(|| {
+                        rename_field(&rust_field_name, struct_rename_all.as_deref())
+                    });
 
                     // Set type-specific default for simple default
                     if let Some(prop_schema_ref) = properties.get_mut(&field_name)
@@ -315,11 +322,14 @@ fn process_default_functions(
                 // Extract default value from function body
                 if let Some(default_value) = extract_default_value_from_function(func_item) {
                     // Get the field name (with rename applied)
-                    let rust_field_name = field
-                        .ident
-                        .as_ref().map_or_else(|| "unknown".to_string(), |i| strip_raw_prefix(&i.to_string()).to_string());
+                    let rust_field_name = field.ident.as_ref().map_or_else(
+                        || "unknown".to_string(),
+                        |i| strip_raw_prefix(&i.to_string()).to_string(),
+                    );
 
-                    let field_name = extract_field_rename(&field.attrs).unwrap_or_else(|| rename_field(&rust_field_name, struct_rename_all.as_deref()));
+                    let field_name = extract_field_rename(&field.attrs).unwrap_or_else(|| {
+                        rename_field(&rust_field_name, struct_rename_all.as_deref())
+                    });
 
                     // Set default value in schema
                     if let Some(prop_schema_ref) = properties.get_mut(&field_name)
@@ -565,11 +575,11 @@ pub fn get_users() -> String {
     fn test_generate_openapi_with_enum_and_route() {
         // Test enum used in route to ensure enum parsing is called in route context
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let route_content = r#"
+        let route_content = r"
 pub fn get_status() -> Status {
     Status::Active
 }
-"#;
+";
         let route_file = create_temp_file(&temp_dir, "status_route.rs", route_content);
 
         let mut metadata = CollectedMetadata::new();
@@ -745,7 +755,7 @@ pub fn create_user() -> String {
             path: "/users".to_string(),
             function_name: "get_users".to_string(),
             module_path: "test::users".to_string(),
-            file_path: "".to_string(), // Will be set to temp file with invalid syntax
+            file_path: String::new(), // Will be set to temp file with invalid syntax
             signature: "fn get_users() -> String".to_string(),
             error_status: None,
             tags: None,
@@ -964,8 +974,7 @@ pub fn get_users() -> String {
             assert_eq!(
                 value,
                 Some(serde_json::Value::Number(0.into())),
-                "Failed for type {}",
-                type_name
+                "Failed for type {type_name}"
             );
         }
     }
@@ -975,7 +984,7 @@ pub fn get_users() -> String {
         for type_name in &["f32", "f64"] {
             let ty: syn::Type = syn::parse_str(type_name).unwrap();
             let value = utils_get_type_default(&ty);
-            assert!(value.is_some(), "Failed for type {}", type_name);
+            assert!(value.is_some(), "Failed for type {type_name}");
         }
     }
 
@@ -1003,11 +1012,11 @@ pub fn get_users() -> String {
 
     #[test]
     fn test_find_function_in_file() {
-        let file_content = r#"
+        let file_content = r"
 fn foo() {}
 fn bar() -> i32 { 42 }
 fn baz(x: i32) -> i32 { x }
-"#;
+";
         let file_ast: syn::File = syn::parse_str(file_content).unwrap();
 
         assert!(find_function_in_file(&file_ast, "foo").is_some());
@@ -1020,11 +1029,11 @@ fn baz(x: i32) -> i32 { x }
     fn test_extract_default_value_from_function() {
         // Test direct expression return
         let func: syn::ItemFn = syn::parse_str(
-            r#"
+            r"
             fn default_value() -> i32 {
                 42
             }
-        "#,
+        ",
         )
         .unwrap();
         let value = extract_default_value_from_function(&func);
@@ -1050,11 +1059,11 @@ fn baz(x: i32) -> i32 { x }
     fn test_extract_default_value_from_function_empty() {
         // Test function with no extractable value
         let func: syn::ItemFn = syn::parse_str(
-            r#"
+            r"
             fn default_value() {
                 let x = 1;
             }
-        "#,
+        ",
         )
         .unwrap();
         let value = extract_default_value_from_function(&func);
@@ -1113,7 +1122,7 @@ pub fn get_user() -> User {
     fn test_generate_openapi_with_simple_default() {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
-        let route_content = r#"
+        let route_content = r"
 struct Config {
     #[serde(default)]
     enabled: bool,
@@ -1124,14 +1133,14 @@ struct Config {
 pub fn get_config() -> Config {
     Config { enabled: true, count: 0 }
 }
-"#;
+";
         let route_file = create_temp_file(&temp_dir, "config.rs", route_content);
 
         let mut metadata = CollectedMetadata::new();
         metadata.structs.push(StructMetadata {
             name: "Config".to_string(),
             definition:
-                r#"struct Config { #[serde(default)] enabled: bool, #[serde(default)] count: i32 }"#
+                r"struct Config { #[serde(default)] enabled: bool, #[serde(default)] count: i32 }"
                     .to_string(),
             ..Default::default()
         });
@@ -1162,11 +1171,11 @@ pub fn get_config() -> Config {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
         // Create TWO route files - struct is in second file, route references it from first
-        let route1_content = r#"
+        let route1_content = r"
 pub fn get_users() -> Vec<User> {
     vec![]
 }
-"#;
+";
         let route1_file = create_temp_file(&temp_dir, "users.rs", route1_content);
 
         let route2_content = r#"
@@ -1281,7 +1290,7 @@ pub fn get_user() -> User {
     #[test]
     fn test_extract_value_from_expr_method_call_with_non_literal_receiver() {
         // Test lines 275-276: recursive extraction fails for non-literal
-        let expr: syn::Expr = syn::parse_str(r#"some_var.to_string()"#).unwrap();
+        let expr: syn::Expr = syn::parse_str(r"some_var.to_string()").unwrap();
         let value = extract_value_from_expr(&expr);
         // Cannot extract value from a variable
         assert!(value.is_none());
@@ -1291,7 +1300,7 @@ pub fn get_user() -> User {
     fn test_extract_value_from_expr_method_call_chained_to_string() {
         // Test lines 275-276: another case where recursive extraction is attempted
         // Chained method calls: 42.to_string() has int literal as receiver
-        let expr: syn::Expr = syn::parse_str(r#"42.to_string()"#).unwrap();
+        let expr: syn::Expr = syn::parse_str(r"42.to_string()").unwrap();
         let value = extract_value_from_expr(&expr);
         // Line 275 recursive call extracts 42 as Number, then line 276 returns it
         assert_eq!(value, Some(serde_json::Value::Number(42.into())));

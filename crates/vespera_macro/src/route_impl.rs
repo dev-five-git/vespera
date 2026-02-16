@@ -218,7 +218,7 @@ mod tests {
                 }
             );
             let result = process_route_attribute(attr, item);
-            assert!(result.is_ok(), "Method {} should be valid", method);
+            assert!(result.is_ok(), "Method {method} should be valid");
         }
     }
 }

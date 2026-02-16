@@ -162,7 +162,7 @@ mod tests {
     use super::*;
 
     fn create_field_names(names: &[&str]) -> HashSet<String> {
-        names.iter().map(|s| s.to_string()).collect()
+        names.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[test]

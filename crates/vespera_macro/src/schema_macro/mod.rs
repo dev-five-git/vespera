@@ -65,9 +65,7 @@ pub fn generate_schema_code(
     let parsed_struct: syn::ItemStruct = syn::parse_str(&struct_def.definition).map_err(|e| {
         syn::Error::new_spanned(
             &input.ty,
-            format!(
-                "failed to parse struct definition for `{type_name}`: {e}"
-            ),
+            format!("failed to parse struct definition for `{type_name}`: {e}"),
         )
     })?;
 
@@ -157,9 +155,7 @@ pub fn generate_schema_type_code(
     let parsed_struct: syn::ItemStruct = syn::parse_str(&struct_def.definition).map_err(|e| {
         syn::Error::new_spanned(
             &input.source_type,
-            format!(
-                "failed to parse struct definition for `{source_type_name}`: {e}"
-            ),
+            format!("failed to parse struct definition for `{source_type_name}`: {e}"),
         )
     })?;
 
@@ -229,9 +225,10 @@ pub fn generate_schema_type_code(
 
     if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
         for field in &fields_named.named {
-            let rust_field_name = field
-                .ident
-                .as_ref().map_or_else(|| "unknown".to_string(), |i| strip_raw_prefix(&i.to_string()).to_string());
+            let rust_field_name = field.ident.as_ref().map_or_else(
+                || "unknown".to_string(),
+                |i| strip_raw_prefix(&i.to_string()).to_string(),
+            );
 
             // Apply omit/pick filters
             if should_skip_field(&rust_field_name, &omit_set, &pick_set) {
@@ -596,10 +593,7 @@ pub fn generate_schema_type_code(
                 #(#field_tokens),*
             }
         };
-        StructMetadata::new(
-            custom_name.clone(),
-            struct_def.to_string(),
-        )
+        StructMetadata::new(custom_name.clone(), struct_def.to_string())
     });
 
     Ok((generated_tokens, metadata))

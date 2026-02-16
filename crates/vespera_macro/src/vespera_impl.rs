@@ -594,8 +594,12 @@ mod tests {
         let folder_path = temp_dir.path().to_string_lossy().to_string();
 
         // This exercises collect_metadata and other paths
-        let result =
-            process_export_app(&name, &folder_path, &HashMap::new(), &temp_dir.path().to_string_lossy());
+        let result = process_export_app(
+            &name,
+            &folder_path,
+            &HashMap::new(),
+            &temp_dir.path().to_string_lossy(),
+        );
         // We only care about exercising the code path
         let _ = result;
     }
@@ -774,8 +778,12 @@ mod tests {
         let name: syn::Ident = syn::parse_quote!(TestApp);
         let folder_path = temp_dir.path().to_string_lossy().to_string();
 
-        let result =
-            process_export_app(&name, &folder_path, &HashMap::new(), &temp_dir.path().to_string_lossy());
+        let result = process_export_app(
+            &name,
+            &folder_path,
+            &HashMap::new(),
+            &temp_dir.path().to_string_lossy(),
+        );
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -798,8 +806,12 @@ mod tests {
         let name: syn::Ident = syn::parse_quote!(TestApp);
         let folder_path = temp_dir.path().to_string_lossy().to_string();
 
-        let result =
-            process_export_app(&name, &folder_path, &HashMap::new(), &temp_dir.path().to_string_lossy());
+        let result = process_export_app(
+            &name,
+            &folder_path,
+            &HashMap::new(),
+            &temp_dir.path().to_string_lossy(),
+        );
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -824,8 +836,12 @@ mod tests {
         let name: syn::Ident = syn::parse_quote!(TestApp);
         let folder_path = temp_dir.path().to_string_lossy().to_string();
 
-        let result =
-            process_export_app(&name, &folder_path, &HashMap::new(), &temp_dir.path().to_string_lossy());
+        let result = process_export_app(
+            &name,
+            &folder_path,
+            &HashMap::new(),
+            &temp_dir.path().to_string_lossy(),
+        );
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();

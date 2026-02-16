@@ -335,7 +335,7 @@ fn test_generate_schema_type_code_preserves_struct_doc() {
     };
     let struct_def = StructMetadata {
         name: "User".to_string(),
-        definition: r#"
+        definition: r"
                 /// User struct documentation
                 pub struct User {
                     /// The user ID
@@ -343,7 +343,7 @@ fn test_generate_schema_type_code_preserves_struct_doc() {
                     /// The user name
                     pub name: String,
                 }
-            "#
+            "
         .to_string(),
         include_in_openapi: true,
     };
@@ -593,12 +593,12 @@ fn test_generate_schema_type_code_partial_no_double_option() {
 fn test_generate_schema_code_excludes_serde_skip_fields() {
     let storage = to_storage(vec![create_test_struct_metadata(
         "User",
-        r#"pub struct User {
+        r"pub struct User {
                 pub id: i32,
                 #[serde(skip)]
                 pub internal_state: String,
                 pub name: String
-            }"#,
+            }",
     )]);
 
     let tokens = quote!(User);
@@ -837,13 +837,13 @@ fn test_generate_schema_type_code_qualified_path_file_lookup_success() {
     std::fs::create_dir_all(&models_dir).unwrap();
 
     // Create user.rs with Model struct
-    let user_model = r#"
+    let user_model = r"
 pub struct Model {
     pub id: i32,
     pub name: String,
     pub email: String,
 }
-"#;
+";
     std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
 
     // Save original CARGO_MANIFEST_DIR
@@ -889,12 +889,12 @@ fn test_generate_schema_type_code_simple_name_file_lookup_fallback() {
     std::fs::create_dir_all(&models_dir).unwrap();
 
     // Create user.rs with Model struct
-    let user_model = r#"
+    let user_model = r"
 pub struct Model {
     pub id: i32,
     pub username: String,
 }
-"#;
+";
     std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
 
     // Save original CARGO_MANIFEST_DIR
@@ -947,13 +947,13 @@ fn test_generate_schema_type_code_has_many_explicit_pick_inline_type() {
     std::fs::create_dir_all(&models_dir).unwrap();
 
     // Create memo.rs with Model struct (the target of HasMany)
-    let memo_model = r#"
+    let memo_model = r"
 pub struct Model {
     pub id: i32,
     pub title: String,
     pub content: String,
 }
-"#;
+";
     std::fs::write(models_dir.join("memo.rs"), memo_model).unwrap();
 
     // Create user.rs with Model struct that has HasMany relation
@@ -1262,19 +1262,16 @@ pub struct Model {
     // Should have inline type definition for circular relation
     assert!(
         output.contains("MemoSchema"),
-        "Should contain MemoSchema: {}",
-        output
+        "Should contain MemoSchema: {output}"
     );
     assert!(
         output.contains("user"),
-        "Should contain user field: {}",
-        output
+        "Should contain user field: {output}"
     );
     // BelongsTo with required FK (user_id: i32) should generate Box<...> not Option<Box<...>>
     assert!(
         output.contains("pub user : Box <"),
-        "BelongsTo with required FK should generate Box<>, not Option<Box<>>. Output: {}",
-        output
+        "BelongsTo with required FK should generate Box<>, not Option<Box<>>. Output: {output}"
     );
 }
 
@@ -1308,7 +1305,7 @@ pub struct Model {
     let user_field = fields_named
         .named
         .iter()
-        .find(|f| f.ident.as_ref().map(|i| i == "user").unwrap_or(false))
+        .find(|f| f.ident.as_ref().is_some_and(|i| i == "user"))
         .expect("user field not found");
 
     // Debug: Check if extract_belongs_to_from_field works
@@ -1512,12 +1509,12 @@ fn test_generate_schema_type_code_qualified_path_with_nonempty_module_path() {
     std::fs::create_dir_all(&models_dir).unwrap();
 
     // Create user.rs
-    let user_model = r#"
+    let user_model = r"
 pub struct Model {
     pub id: i32,
     pub name: String,
 }
-"#;
+";
     std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
 
     // Save original CARGO_MANIFEST_DIR

@@ -200,28 +200,32 @@ mod tests {
     #[test]
     fn test_parse_struct_to_schema_required_optional() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             struct User {
                 id: i32,
                 name: Option<String>,
             }
-        "#,
+        ",
         )
         .unwrap();
         let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         let props = schema.properties.as_ref().unwrap();
         assert!(props.contains_key("id"));
         assert!(props.contains_key("name"));
-        assert!(schema
-            .required
-            .as_ref()
-            .unwrap()
-            .contains(&"id".to_string()));
-        assert!(!schema
-            .required
-            .as_ref()
-            .unwrap()
-            .contains(&"name".to_string()));
+        assert!(
+            schema
+                .required
+                .as_ref()
+                .unwrap()
+                .contains(&"id".to_string())
+        );
+        assert!(
+            !schema
+                .required
+                .as_ref()
+                .unwrap()
+                .contains(&"name".to_string())
+        );
     }
 
     #[test]
@@ -261,14 +265,14 @@ mod tests {
     #[test]
     fn test_parse_struct_to_schema_with_skip_field() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             struct User {
                 id: i32,
                 #[serde(skip)]
                 internal_data: String,
                 name: String,
             }
-        "#,
+        ",
         )
         .unwrap();
         let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
@@ -310,7 +314,7 @@ mod tests {
     // Tests for struct with doc comments
     #[test]
     fn test_parse_struct_to_schema_with_description() {
-        let struct_src = r#"
+        let struct_src = r"
             /// User struct description
             struct User {
                 /// User ID
@@ -318,7 +322,7 @@ mod tests {
                 /// User name
                 name: String,
             }
-        "#;
+        ";
         let struct_item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
         let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         assert_eq!(
@@ -337,12 +341,12 @@ mod tests {
 
     #[test]
     fn test_parse_struct_to_schema_field_with_ref_and_description() {
-        let struct_src = r#"
+        let struct_src = r"
             struct Container {
                 /// The user reference
                 user: User,
             }
-        "#;
+        ";
         let struct_item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
         let mut struct_defs = HashMap::new();
         struct_defs.insert("User".to_string(), "struct User { id: i32 }".to_string());
@@ -363,13 +367,13 @@ mod tests {
     #[test]
     fn test_parse_struct_to_schema_with_flatten() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             struct UserListRequest {
                 filter: String,
                 #[serde(flatten)]
                 pagination: Pagination,
             }
-        "#,
+        ",
         )
         .unwrap();
 
@@ -414,7 +418,7 @@ mod tests {
     #[test]
     fn test_parse_struct_to_schema_with_multiple_flatten() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             struct Combined {
                 name: String,
                 #[serde(flatten)]
@@ -422,7 +426,7 @@ mod tests {
                 #[serde(flatten)]
                 metadata: Metadata,
             }
-        "#,
+        ",
         )
         .unwrap();
 
@@ -448,12 +452,12 @@ mod tests {
     fn test_parse_struct_to_schema_no_flatten() {
         // Existing struct without flatten should NOT use allOf
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             struct Simple {
                 name: String,
                 age: i32,
             }
-        "#,
+        ",
         )
         .unwrap();
 

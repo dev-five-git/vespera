@@ -3,7 +3,10 @@
 //! This module handles the conversion of Rust types (as parsed by syn)
 //! into OpenAPI-compatible JSON Schema references and inline schemas.
 
-use std::{cell::Cell, collections::{HashMap, HashSet}};
+use std::{
+    cell::Cell,
+    collections::{HashMap, HashSet},
+};
 
 use syn::Type;
 use vespera_core::schema::{Reference, Schema, SchemaRef, SchemaType};
@@ -199,9 +202,8 @@ fn parse_type_impl(
                                 SchemaRef::Ref(ref_ref) => {
                                     serde_json::json!({ "$ref": ref_ref.ref_path })
                                 }
-                                SchemaRef::Inline(schema) => {
-                                    serde_json::to_value(&*schema).unwrap_or_else(|_| serde_json::json!({}))
-                                }
+                                SchemaRef::Inline(schema) => serde_json::to_value(&*schema)
+                                    .unwrap_or_else(|_| serde_json::json!({})),
                             };
                             return SchemaRef::Inline(Box::new(Schema {
                                 schema_type: Some(SchemaType::Object),
@@ -271,25 +273,25 @@ fn parse_type_impl(
                         let parent_name = parent_segment.ident.to_string();
 
                         // Try PascalCase version: "user" -> "UserSchema"
-                         // Rust identifiers are guaranteed non-empty
-                         let pascal_name = format!("{}Schema", capitalize_first(&parent_name));
+                        // Rust identifiers are guaranteed non-empty
+                        let pascal_name = format!("{}Schema", capitalize_first(&parent_name));
 
-                         if known_schemas.contains(&pascal_name) {
-                             pascal_name
-                         } else {
-                             // Try lowercase version: "userSchema"
-                             let lower_name = format!("{parent_name}Schema");
-                             if known_schemas.contains(&lower_name) {
-                                 lower_name
-                             } else {
-                                 type_name
-                             }
-                         }
-                     } else {
-                         type_name
-                     };
+                        if known_schemas.contains(&pascal_name) {
+                            pascal_name
+                        } else {
+                            // Try lowercase version: "userSchema"
+                            let lower_name = format!("{parent_name}Schema");
+                            if known_schemas.contains(&lower_name) {
+                                lower_name
+                            } else {
+                                type_name
+                            }
+                        }
+                    } else {
+                        type_name
+                    };
 
-                     if known_schemas.contains(&resolved_name) {
+                    if known_schemas.contains(&resolved_name) {
                         // Check if this is a generic type with type parameters
                         if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                             // This is a concrete generic type like GenericStruct<String>
@@ -394,7 +396,7 @@ mod tests {
                 assert_eq!(schema.nullable, Some(true));
             }
         } else {
-            panic!("Expected inline schema for {}", ty_src);
+            panic!("Expected inline schema for {ty_src}");
         }
     }
 
@@ -507,16 +509,16 @@ mod tests {
         #[case] expect_additional_props: bool,
         #[case] expected_type: Option<SchemaType>,
         #[case] expected_ref: Option<&str>,
-     ) {
-         let mut known_schemas = HashSet::new();
-         known_schemas.insert("Value".to_string());
+    ) {
+        let mut known_schemas = HashSet::new();
+        known_schemas.insert("Value".to_string());
 
-         let ty: Type = syn::parse_str(ty_src).unwrap();
-         let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &HashMap::new());
+        let ty: Type = syn::parse_str(ty_src).unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &HashMap::new());
         match expected_ref {
             Some(expected) => {
                 let SchemaRef::Inline(schema) = schema_ref else {
-                    panic!("Expected inline schema for {}", ty_src);
+                    panic!("Expected inline schema for {ty_src}");
                 };
                 let additional = schema
                     .additional_properties
@@ -756,9 +758,9 @@ mod tests {
         // Use a path like `::Schema` which has empty segments before Schema
         let ty: Type = syn::parse_str("Schema").unwrap();
 
-         // Register schemas to trigger the module::Schema lookup path
-         let mut known = HashSet::new();
-         known.insert("Schema".to_string());
+        // Register schemas to trigger the module::Schema lookup path
+        let mut known = HashSet::new();
+        known.insert("Schema".to_string());
 
         let schema_ref = parse_type_to_schema_ref(&ty, &known, &HashMap::new());
         match schema_ref {
@@ -789,18 +791,15 @@ mod tests {
             assert_eq!(
                 schema.schema_type,
                 Some(SchemaType::String),
-                "Type {} should be string schema",
-                ty_name
+                "Type {ty_name} should be string schema"
             );
             assert_eq!(
                 schema.format,
                 Some(expected_format.to_string()),
-                "Type {} should have format {}",
-                ty_name,
-                expected_format
+                "Type {ty_name} should have format {expected_format}"
             );
         } else {
-            panic!("Expected inline schema for {}", ty_name);
+            panic!("Expected inline schema for {ty_name}");
         }
     }
 
@@ -821,18 +820,15 @@ mod tests {
             assert_eq!(
                 schema.schema_type,
                 Some(SchemaType::String),
-                "Type {} should be string schema",
-                ty_name
+                "Type {ty_name} should be string schema"
             );
             assert_eq!(
                 schema.format,
                 Some(expected_format.to_string()),
-                "Type {} should have format {}",
-                ty_name,
-                expected_format
+                "Type {ty_name} should have format {expected_format}"
             );
         } else {
-            panic!("Expected inline schema for {}", ty_name);
+            panic!("Expected inline schema for {ty_name}");
         }
     }
 
@@ -868,18 +864,15 @@ mod tests {
                 assert_eq!(
                     schema.schema_type,
                     Some(SchemaType::String),
-                    "Type {} should be string schema",
-                    ty_str
+                    "Type {ty_str} should be string schema"
                 );
                 assert_eq!(
                     schema.format,
                     Some(expected_format.to_string()),
-                    "Type {} should have format {}",
-                    ty_str,
-                    expected_format
+                    "Type {ty_str} should have format {expected_format}"
                 );
             } else {
-                panic!("Expected inline schema for {}", ty_str);
+                panic!("Expected inline schema for {ty_str}");
             }
         }
     }
@@ -899,9 +892,9 @@ mod tests {
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::String));
             assert_eq!(schema.format, Some(expected_format.to_string()));
-            assert_eq!(schema.nullable, Some(true), "{} should be nullable", ty_str);
+            assert_eq!(schema.nullable, Some(true), "{ty_str} should be nullable");
         } else {
-            panic!("Expected inline schema for {}", ty_str);
+            panic!("Expected inline schema for {ty_str}");
         }
     }
 

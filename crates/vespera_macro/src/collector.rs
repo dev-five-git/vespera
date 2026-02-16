@@ -274,12 +274,12 @@ pub fn get_users() -> String {
         create_temp_file(
             &temp_dir,
             "user.rs",
-            r#"
+            r"
 pub struct User {
     pub id: i32,
     pub name: String,
 }
-"#,
+",
         );
 
         let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
@@ -382,7 +382,7 @@ pub fn get_posts() -> String {
         create_temp_file(
             &temp_dir,
             "user.rs",
-            r#"
+            r"
 use vespera::Schema;
 
 #[derive(Schema)]
@@ -390,13 +390,13 @@ pub struct User {
     pub id: i32,
     pub name: String,
 }
-"#,
+",
         );
 
         create_temp_file(
             &temp_dir,
             "post.rs",
-            r#"
+            r"
 use vespera::Schema;
 
 #[derive(Schema)]
@@ -404,7 +404,7 @@ pub struct Post {
     pub id: i32,
     pub title: String,
 }
-"#,
+",
         );
 
         let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
@@ -786,12 +786,12 @@ pub fn get_users() -> String {
         create_temp_file(
             &temp_dir,
             "user.rs",
-            r#"
+            r"
 pub struct User {
     pub id: i32,
     pub name: String,
 }
-"#,
+",
         );
 
         let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
@@ -811,13 +811,13 @@ pub struct User {
         create_temp_file(
             &temp_dir,
             "user.rs",
-            r#"
+            r"
 #[derive(Debug, Clone)]
 pub struct User {
     pub id: i32,
     pub name: String,
 }
-"#,
+",
         );
 
         let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();

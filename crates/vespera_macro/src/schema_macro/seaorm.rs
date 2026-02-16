@@ -154,7 +154,10 @@ pub fn extract_belongs_to_from_field(attrs: &[syn::Attribute]) -> Option<String>
             } else if meta.input.peek(syn::Token![=]) {
                 // Consume value for key=value pairs (e.g., belongs_to = "...", to = "...")
                 // Required to allow parsing to continue to next item
-                drop(meta.value().and_then(syn::parse::ParseBuffer::parse::<syn::LitStr>));
+                drop(
+                    meta.value()
+                        .and_then(syn::parse::ParseBuffer::parse::<syn::LitStr>),
+                );
             }
             Ok(())
         });
@@ -183,7 +186,10 @@ pub fn extract_relation_enum(attrs: &[syn::Attribute]) -> Option<String> {
                     .map(|lit| lit.value());
             } else if meta.input.peek(syn::Token![=]) {
                 // Consume value for other key=value pairs
-                drop(meta.value().and_then(syn::parse::ParseBuffer::parse::<syn::LitStr>));
+                drop(
+                    meta.value()
+                        .and_then(syn::parse::ParseBuffer::parse::<syn::LitStr>),
+                );
             }
             Ok(())
         });
@@ -212,7 +218,10 @@ pub fn extract_via_rel(attrs: &[syn::Attribute]) -> Option<String> {
                     .map(|lit| lit.value());
             } else if meta.input.peek(syn::Token![=]) {
                 // Consume value for other key=value pairs
-                drop(meta.value().and_then(syn::parse::ParseBuffer::parse::<syn::LitStr>));
+                drop(
+                    meta.value()
+                        .and_then(syn::parse::ParseBuffer::parse::<syn::LitStr>),
+                );
             }
             Ok(())
         });
@@ -546,12 +555,12 @@ mod tests {
     #[test]
     fn test_is_field_optional_in_struct_optional() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             struct Model {
                 id: i32,
                 user_id: Option<i32>,
             }
-        "#,
+        ",
         )
         .unwrap();
         assert!(is_field_optional_in_struct(&struct_item, "user_id"));
@@ -560,12 +569,12 @@ mod tests {
     #[test]
     fn test_is_field_optional_in_struct_required() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             struct Model {
                 id: i32,
                 user_id: i32,
             }
-        "#,
+        ",
         )
         .unwrap();
         assert!(!is_field_optional_in_struct(&struct_item, "user_id"));
@@ -574,11 +583,11 @@ mod tests {
     #[test]
     fn test_is_field_optional_in_struct_field_not_found() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             struct Model {
                 id: i32,
             }
-        "#,
+        ",
         )
         .unwrap();
         assert!(!is_field_optional_in_struct(&struct_item, "nonexistent"));

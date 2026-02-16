@@ -328,46 +328,46 @@ mod tests {
     #[case(
         "Memo",
         &["crate", "models", "memo"],
-        r#"pub struct UserSchema {
+        r"pub struct UserSchema {
             pub id: i32,
             pub memos: HasMany<memo::Entity>,
-        }"#,
+        }",
         vec![]  // HasMany is not considered circular
     )]
     #[case(
         "User",
         &["crate", "models", "user"],
-        r#"pub struct MemoSchema {
+        r"pub struct MemoSchema {
             pub id: i32,
             pub user: BelongsTo<user::Entity>,
-        }"#,
+        }",
         vec!["user".to_string()]
     )]
     #[case(
         "User",
         &["crate", "models", "user"],
-        r#"pub struct MemoSchema {
+        r"pub struct MemoSchema {
             pub id: i32,
             pub user: HasOne<user::Entity>,
-        }"#,
+        }",
         vec!["user".to_string()]
     )]
     #[case(
         "User",
         &["crate", "models", "user"],
-        r#"pub struct MemoSchema {
+        r"pub struct MemoSchema {
             pub id: i32,
             pub user: Box<user::Schema>,
-        }"#,
+        }",
         vec!["user".to_string()]
     )]
     #[case(
         "Memo",
         &["crate", "models", "memo"],
-        r#"pub struct UserSchema {
+        r"pub struct UserSchema {
             pub id: i32,
             pub name: String,
-        }"#,
+        }",
         vec![]  // No circular fields
     )]
     fn test_detect_circular_fields(
@@ -376,7 +376,10 @@ mod tests {
         #[case] related_schema_def: &str,
         #[case] expected: Vec<String>,
     ) {
-        let module_path: Vec<String> = source_module_path.iter().map(|s| s.to_string()).collect();
+        let module_path: Vec<String> = source_module_path
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         let result = detect_circular_fields(source_schema_name, &module_path, related_schema_def);
         assert_eq!(result, expected);
     }
@@ -403,31 +406,31 @@ mod tests {
 
     #[rstest]
     #[case(
-        r#"pub struct Model {
+        r"pub struct Model {
             pub id: i32,
             pub user: BelongsTo<user::Entity>,
-        }"#,
+        }",
         true
     )]
     #[case(
-        r#"pub struct Model {
+        r"pub struct Model {
             pub id: i32,
             pub user: HasOne<user::Entity>,
-        }"#,
+        }",
         true
     )]
     #[case(
-        r#"pub struct Model {
+        r"pub struct Model {
             pub id: i32,
             pub name: String,
-        }"#,
+        }",
         false
     )]
     #[case(
-        r#"pub struct Model {
+        r"pub struct Model {
             pub id: i32,
             pub items: HasMany<item::Entity>,
-        }"#,
+        }",
         false  // HasMany alone doesn't count as FK relation
     )]
     fn test_has_fk_relations(#[case] model_def: &str, #[case] expected: bool) {
@@ -459,10 +462,10 @@ mod tests {
 
     #[test]
     fn test_is_circular_relation_required_field_not_found() {
-        let model_def = r#"pub struct Model {
+        let model_def = r"pub struct Model {
             pub id: i32,
             pub name: String,
-        }"#;
+        }";
         assert!(!is_circular_relation_required(model_def, "nonexistent"));
     }
 
@@ -523,10 +526,10 @@ mod tests {
         let schema_path = quote! { user::Schema };
         let tokens = generate_inline_struct_construction(
             &schema_path,
-            r#"pub struct UserSchema {
+            r"pub struct UserSchema {
                 pub id: i32,
                 pub name: String,
-            }"#,
+            }",
             &[],
             "r",
         );
@@ -541,10 +544,10 @@ mod tests {
         let schema_path = quote! { user::Schema };
         let tokens = generate_inline_struct_construction(
             &schema_path,
-            r#"pub struct UserSchema {
+            r"pub struct UserSchema {
                 pub id: i32,
                 pub memos: HasMany<memo::Entity>,
-            }"#,
+            }",
             &["memos".to_string()],
             "r",
         );
@@ -559,11 +562,11 @@ mod tests {
         let schema_path = quote! { user::Schema };
         let tokens = generate_inline_struct_construction(
             &schema_path,
-            r#"pub struct UserSchema {
+            r"pub struct UserSchema {
                 pub id: i32,
                 #[serde(skip)]
                 pub internal: String,
-            }"#,
+            }",
             &[],
             "r",
         );
@@ -604,11 +607,11 @@ mod tests {
         let tokens = generate_inline_type_construction(
             &inline_type_name,
             &["id".to_string(), "name".to_string()],
-            r#"pub struct Model {
+            r"pub struct Model {
                 pub id: i32,
                 pub name: String,
                 pub email: String,
-            }"#,
+            }",
             "r",
         );
         let output = tokens.to_string();
@@ -624,10 +627,10 @@ mod tests {
         let tokens = generate_inline_type_construction(
             &inline_type_name,
             &["id".to_string(), "memos".to_string()],
-            r#"pub struct Model {
+            r"pub struct Model {
                 pub id: i32,
                 pub memos: HasMany<memo::Entity>,
-            }"#,
+            }",
             "r",
         );
         let output = tokens.to_string();
@@ -670,10 +673,10 @@ mod tests {
     #[test]
     fn test_is_circular_relation_required_non_relation_field() {
         // Field exists but is not a relation type
-        let model_def = r#"pub struct Model {
+        let model_def = r"pub struct Model {
             pub id: i32,
             pub name: String,
-        }"#;
+        }";
         let result = is_circular_relation_required(model_def, "name");
         assert!(!result);
     }
@@ -681,9 +684,9 @@ mod tests {
     #[test]
     fn test_is_circular_relation_required_field_without_ident() {
         // Struct with fields that have no ident (tuple-like, but in braces - edge case)
-        let model_def = r#"pub struct Model {
+        let model_def = r"pub struct Model {
             pub id: i32,
-        }"#;
+        }";
         // Looking for a field that doesn't match
         let result = is_circular_relation_required(model_def, "nonexistent_field");
         assert!(!result);
@@ -747,10 +750,10 @@ mod tests {
                 "models".to_string(),
                 "memo".to_string(),
             ],
-            r#"pub struct UserSchema {
+            r"pub struct UserSchema {
                 pub id: i32,
                 pub memo: Option<Box<memo::Schema>>,
-            }"#,
+            }",
         );
         assert_eq!(result, vec!["memo".to_string()]);
     }
@@ -765,10 +768,10 @@ mod tests {
                 "models".to_string(),
                 "memo".to_string(),
             ],
-            r#"pub struct UserSchema {
+            r"pub struct UserSchema {
                 pub id: i32,
                 pub memo: Box<MemoSchema>,
-            }"#,
+            }",
         );
         assert_eq!(result, vec!["memo".to_string()]);
     }
@@ -779,9 +782,9 @@ mod tests {
         let result = detect_circular_fields(
             "Test",
             &["crate".to_string(), "test".to_string()],
-            r#"pub struct Schema {
+            r"pub struct Schema {
                 pub id: i32,
-            }"#,
+            }",
         );
         assert!(result.is_empty());
     }
@@ -793,11 +796,11 @@ mod tests {
         let schema_path = quote! { memo::Schema };
         let tokens = generate_inline_struct_construction(
             &schema_path,
-            r#"pub struct MemoSchema {
+            r"pub struct MemoSchema {
                 pub id: i32,
                 pub user_id: i32,
                 pub user: BelongsTo<user::Entity>,
-            }"#,
+            }",
             &[],
             "r",
         );
@@ -814,10 +817,10 @@ mod tests {
         let schema_path = quote! { user::Schema };
         let tokens = generate_inline_struct_construction(
             &schema_path,
-            r#"pub struct UserSchema {
+            r"pub struct UserSchema {
                 pub id: i32,
                 pub profile: HasOne<profile::Entity>,
-            }"#,
+            }",
             &[],
             "r",
         );
@@ -836,11 +839,11 @@ mod tests {
         let tokens = generate_inline_type_construction(
             &inline_type_name,
             &["id".to_string(), "internal".to_string()],
-            r#"pub struct Model {
+            r"pub struct Model {
                 pub id: i32,
                 #[serde(skip)]
                 pub internal: String,
-            }"#,
+            }",
             "r",
         );
         let output = tokens.to_string();
@@ -855,10 +858,10 @@ mod tests {
         let tokens = generate_inline_type_construction(
             &inline_type_name,
             &[], // No fields included
-            r#"pub struct Model {
+            r"pub struct Model {
                 pub id: i32,
                 pub name: String,
-            }"#,
+            }",
             "r",
         );
         let output = tokens.to_string();
@@ -874,11 +877,11 @@ mod tests {
         let tokens = generate_inline_type_construction(
             &inline_type_name,
             &["id".to_string()], // Only id is included
-            r#"pub struct Model {
+            r"pub struct Model {
                 pub id: i32,
                 pub name: String,
                 pub email: String,
-            }"#,
+            }",
             "r",
         );
         let output = tokens.to_string();

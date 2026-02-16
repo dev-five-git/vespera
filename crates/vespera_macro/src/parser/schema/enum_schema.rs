@@ -21,8 +21,8 @@ use vespera_core::schema::{Discriminator, Schema, SchemaRef, SchemaType};
 
 use super::{
     serde_attrs::{
-        extract_doc_comment, extract_enum_repr, extract_field_rename, extract_rename_all,
-        rename_field, strip_raw_prefix, SerdeEnumRepr,
+        SerdeEnumRepr, extract_doc_comment, extract_enum_repr, extract_field_rename,
+        extract_rename_all, rename_field, strip_raw_prefix,
     },
     type_schema::parse_type_to_schema_ref,
 };
@@ -660,12 +660,12 @@ mod tests {
         "status"
     )]
     #[case(
-        r#"
+        r"
         enum Simple {
             First,
             Second,
         }
-        "#,
+        ",
         SchemaType::String,
         vec!["First", "Second"],
         "simple"
@@ -706,33 +706,33 @@ mod tests {
 
     #[rstest]
     #[case(
-        r#"
+        r"
         enum Event {
             Data(String),
         }
-        "#,
+        ",
         1,
         Some(SchemaType::String),
         0, // single-field tuple variant stored as object with inline schema
         "tuple_single"
     )]
     #[case(
-        r#"
+        r"
         enum Pair {
             Values(i32, String),
         }
-        "#,
+        ",
         1,
         Some(SchemaType::Array),
         2, // tuple array prefix_items length
         "tuple_multi"
     )]
     #[case(
-        r#"
+        r"
         enum Msg {
             Detail { id: i32, note: Option<String> },
         }
-        "#,
+        ",
         1,
         Some(SchemaType::Object),
         0, // not an array; ignore prefix_items length
@@ -775,11 +775,13 @@ mod tests {
                             let inner_props = inner_obj.properties.as_ref().unwrap();
                             assert!(inner_props.contains_key("id"));
                             assert!(inner_props.contains_key("note"));
-                            assert!(inner_obj
-                                .required
-                                .as_ref()
-                                .unwrap()
-                                .contains(&"id".to_string()));
+                            assert!(
+                                inner_obj
+                                    .required
+                                    .as_ref()
+                                    .unwrap()
+                                    .contains(&"id".to_string())
+                            );
                         } else {
                             panic!("Expected inline object schema");
                         }
@@ -798,12 +800,12 @@ mod tests {
 
     #[rstest]
     #[case(
-        r#"
+        r"
         enum Mixed {
             Ready,
             Data(String),
         }
-        "#,
+        ",
         2,
         SchemaType::String,
         "Ready"
@@ -1034,9 +1036,9 @@ mod tests {
     #[test]
     fn test_parse_enum_to_schema_empty_enum() {
         let enum_item: syn::ItemEnum = syn::parse_str(
-            r#"
+            r"
             enum Empty {}
-        "#,
+        ",
         )
         .unwrap();
         let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
@@ -1048,11 +1050,11 @@ mod tests {
     #[test]
     fn test_parse_enum_to_schema_struct_variant_no_fields() {
         let enum_item: syn::ItemEnum = syn::parse_str(
-            r#"
+            r"
             enum Event {
                 Empty {},
             }
-        "#,
+        ",
         )
         .unwrap();
         let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
@@ -1063,7 +1065,7 @@ mod tests {
     // Tests for enum with doc comments on variants
     #[test]
     fn test_parse_enum_to_schema_with_variant_descriptions() {
-        let enum_src = r#"
+        let enum_src = r"
             /// Enum description
             enum Status {
                 /// Active variant
@@ -1071,7 +1073,7 @@ mod tests {
                 /// Inactive variant
                 Inactive,
             }
-        "#;
+        ";
         let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
         let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         assert_eq!(schema.description, Some("Enum description".to_string()));
@@ -1079,7 +1081,7 @@ mod tests {
 
     #[test]
     fn test_parse_enum_to_schema_data_variant_with_description() {
-        let enum_src = r#"
+        let enum_src = r"
             /// Data enum
             enum Event {
                 /// Text event description
@@ -1087,7 +1089,7 @@ mod tests {
                 /// Number event description
                 Number(i32),
             }
-        "#;
+        ";
         let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
         let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         assert_eq!(schema.description, Some("Data enum".to_string()));
@@ -1105,7 +1107,7 @@ mod tests {
 
     #[test]
     fn test_parse_enum_to_schema_struct_variant_with_field_docs() {
-        let enum_src = r#"
+        let enum_src = r"
             enum Event {
                 /// Record variant
                 Record {
@@ -1115,7 +1117,7 @@ mod tests {
                     name: String,
                 },
             }
-        "#;
+        ";
         let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
         let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         assert!(schema.one_of.is_some());
@@ -1132,14 +1134,14 @@ mod tests {
     fn test_parse_enum_to_schema_variant_field_with_doc_comment_and_ref() {
         // Test that doc comment on field with SchemaRef::Ref wraps in allOf
         let enum_item: syn::ItemEnum = syn::parse_str(
-            r#"
+            r"
             enum Message {
                 Data {
                     /// The user associated with this message
                     user: User,
                 },
             }
-        "#,
+        ",
         )
         .unwrap();
 
@@ -1413,13 +1415,13 @@ mod tests {
         #[test]
         fn test_untagged_enum_basic() {
             let enum_item: syn::ItemEnum = syn::parse_str(
-                r#"
+                r"
                 #[serde(untagged)]
                 enum StringOrInt {
                     String(String),
                     Int(i32),
                 }
-                "#,
+                ",
             )
             .unwrap();
 
@@ -1449,13 +1451,13 @@ mod tests {
         #[test]
         fn test_untagged_enum_struct_variants() {
             let enum_item: syn::ItemEnum = syn::parse_str(
-                r#"
+                r"
                 #[serde(untagged)]
                 enum Data {
                     User { name: String, age: i32 },
                     Product { title: String, price: f64 },
                 }
-                "#,
+                ",
             )
             .unwrap();
 
@@ -1478,13 +1480,13 @@ mod tests {
         #[test]
         fn test_untagged_enum_unit_variant() {
             let enum_item: syn::ItemEnum = syn::parse_str(
-                r#"
+                r"
                 #[serde(untagged)]
                 enum MaybeValue {
                     Nothing,
                     Something(i32),
                 }
-                "#,
+                ",
             )
             .unwrap();
 
@@ -1543,7 +1545,7 @@ mod tests {
         #[test]
         fn test_untagged_snapshot() {
             let enum_item: syn::ItemEnum = syn::parse_str(
-                r#"
+                r"
                 #[serde(untagged)]
                 enum Value {
                     Null,
@@ -1552,7 +1554,7 @@ mod tests {
                     Text(String),
                     Object { key: String, value: String },
                 }
-                "#,
+                ",
             )
             .unwrap();
 
@@ -1566,13 +1568,13 @@ mod tests {
         #[test]
         fn test_externally_tagged_empty_struct_variant() {
             let enum_item: syn::ItemEnum = syn::parse_str(
-                r#"
+                r"
                 enum Event {
                     /// Empty struct variant
                     Empty {},
                     Data { value: i32 },
                 }
-                "#,
+                ",
             )
             .unwrap();
 
@@ -1638,13 +1640,13 @@ mod tests {
         #[test]
         fn test_untagged_tuple_variant_with_known_schema_ref() {
             let enum_item: syn::ItemEnum = syn::parse_str(
-                r#"
+                r"
                 #[serde(untagged)]
                 enum Payload {
                     User(UserData),
                     Simple(String),
                 }
-                "#,
+                ",
             )
             .unwrap();
 
@@ -1688,14 +1690,14 @@ mod tests {
         #[test]
         fn test_untagged_multi_field_tuple_variant() {
             let enum_item: syn::ItemEnum = syn::parse_str(
-                r#"
+                r"
                 #[serde(untagged)]
                 enum Message {
                     Text(String),
                     Pair(i32, String),
                     Triple(i32, String, bool),
                 }
-                "#,
+                ",
             )
             .unwrap();
 

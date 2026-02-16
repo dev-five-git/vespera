@@ -232,12 +232,12 @@ mod tests {
     #[test]
     fn test_generate_filtered_schema_with_default_field() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             pub struct WithDefault {
                 #[serde(default)]
                 pub field: String,
             }
-        "#,
+        ",
         )
         .unwrap();
         let omit_set = HashSet::new();

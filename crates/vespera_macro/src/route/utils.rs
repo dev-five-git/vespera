@@ -70,7 +70,8 @@ pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
                     if let Ok(route_args) = meta_list.parse_args::<RouteArgs>() {
                         let method = route_args
                             .method
-                            .as_ref().map_or_else(|| "get".to_string(), syn::Ident::to_string);
+                            .as_ref()
+                            .map_or_else(|| "get".to_string(), syn::Ident::to_string);
                         let path = route_args.path.as_ref().map(syn::LitStr::value);
 
                         // Parse error_status array if present
@@ -167,7 +168,7 @@ mod tests {
 
     fn parse_meta_from_attr(attr_str: &str) -> syn::Meta {
         // Parse attribute from string like "#[route()]" or "#[vespera::route(get)]"
-        let full_code = format!("{} fn test() {{}}", attr_str);
+        let full_code = format!("{attr_str} fn test() {{}}");
         let file: syn::File = syn::parse_str(&full_code).expect("Failed to parse with attribute");
 
         // Extract the first attribute from the function
@@ -177,7 +178,7 @@ mod tests {
             return attr.meta.clone();
         }
 
-        panic!("Failed to extract meta from attribute: {}", attr_str);
+        panic!("Failed to extract meta from attribute: {attr_str}");
     }
 
     #[rstest]
@@ -212,8 +213,7 @@ mod tests {
         let result = check_route_by_meta(&meta);
         assert_eq!(
             result, expected,
-            "Failed for attribute: {}, expected: {}",
-            attr_str, expected
+            "Failed for attribute: {attr_str}, expected: {expected}"
         );
     }
 
@@ -291,32 +291,23 @@ mod tests {
             Some((exp_method, exp_path, exp_error_status)) => {
                 assert!(
                     result.is_some(),
-                    "Expected Some but got None for code: {}",
-                    code
+                    "Expected Some but got None for code: {code}"
                 );
                 let route_info = result.unwrap();
                 assert_eq!(
                     route_info.method, exp_method,
-                    "Method mismatch for code: {}",
-                    code
+                    "Method mismatch for code: {code}"
                 );
-                assert_eq!(
-                    route_info.path, exp_path,
-                    "Path mismatch for code: {}",
-                    code
-                );
+                assert_eq!(route_info.path, exp_path, "Path mismatch for code: {code}");
                 assert_eq!(
                     route_info.error_status, exp_error_status,
-                    "Error status mismatch for code: {}",
-                    code
+                    "Error status mismatch for code: {code}"
                 );
             }
             None => {
                 assert!(
                     result.is_none(),
-                    "Expected None but got Some({:?}) for code: {}",
-                    result,
-                    code
+                    "Expected None but got Some({result:?}) for code: {code}"
                 );
             }
         }
@@ -325,10 +316,10 @@ mod tests {
     // Tests for extract_doc_comment function
     #[test]
     fn test_extract_doc_comment_single_line() {
-        let code = r#"
+        let code = r"
             /// This is a doc comment
             fn test() {}
-        "#;
+        ";
         let file: syn::File = syn::parse_str(code).unwrap();
         if let Some(syn::Item::Fn(fn_item)) = file.items.first() {
             let doc = extract_doc_comment(&fn_item.attrs);
@@ -338,12 +329,12 @@ mod tests {
 
     #[test]
     fn test_extract_doc_comment_multi_line() {
-        let code = r#"
+        let code = r"
             /// First line
             /// Second line
             /// Third line
             fn test() {}
-        "#;
+        ";
         let file: syn::File = syn::parse_str(code).unwrap();
         if let Some(syn::Item::Fn(fn_item)) = file.items.first() {
             let doc = extract_doc_comment(&fn_item.attrs);
@@ -363,12 +354,12 @@ mod tests {
 
     #[test]
     fn test_extract_doc_comment_with_other_attrs() {
-        let code = r#"
+        let code = r"
             #[inline]
             /// Doc comment
             #[test]
             fn test() {}
-        "#;
+        ";
         let file: syn::File = syn::parse_str(code).unwrap();
         if let Some(syn::Item::Fn(fn_item)) = file.items.first() {
             let doc = extract_doc_comment(&fn_item.attrs);
@@ -378,10 +369,10 @@ mod tests {
 
     #[test]
     fn test_extract_doc_comment_no_leading_space() {
-        let code = r#"
+        let code = r"
             ///No leading space
             fn test() {}
-        "#;
+        ";
         let file: syn::File = syn::parse_str(code).unwrap();
         if let Some(syn::Item::Fn(fn_item)) = file.items.first() {
             let doc = extract_doc_comment(&fn_item.attrs);
@@ -415,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_extract_route_info_with_empty_tags() {
-        let code = r#"#[route(get, tags = [])] fn test() {}"#;
+        let code = r"#[route(get, tags = [])] fn test() {}";
         let attrs = parse_attrs_from_code(code);
         let result = extract_route_info(&attrs);
         assert!(result.is_some());

@@ -20,7 +20,7 @@ pub mod openapi {
 pub use vespera_core::openapi::OpenApi;
 
 // Re-export macros from vespera_macro
-pub use vespera_macro::{export_app, route, schema, schema_type, vespera, Schema};
+pub use vespera_macro::{Schema, export_app, route, schema, schema_type, vespera};
 
 // Re-export serde_json for merge feature (runtime spec merging)
 pub use serde_json;

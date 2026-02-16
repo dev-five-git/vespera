@@ -266,7 +266,7 @@ mod tests {
         if return_type_str.is_empty() {
             syn::ReturnType::Default
         } else {
-            let full_signature = format!("fn test() {}", return_type_str);
+            let full_signature = format!("fn test() {return_type_str}");
             syn::parse_str::<syn::Signature>(&full_signature)
                 .expect("Failed to parse return type")
                 .output
@@ -387,11 +387,11 @@ mod tests {
         #[case] err_expectation: Option<ExpectedResponse>,
         #[case] ok_headers_expected: Option<bool>,
     ) {
-         let known_schemas = HashSet::new();
-         let struct_definitions = HashMap::new();
-         let return_type = parse_return_type_str(return_type_str);
+        let known_schemas = HashSet::new();
+        let struct_definitions = HashMap::new();
+        let return_type = parse_return_type_str(return_type_str);
 
-         let responses = parse_return_type(&return_type, &known_schemas, &struct_definitions);
+        let responses = parse_return_type(&return_type, &known_schemas, &struct_definitions);
 
         // Validate success response
         let ok_response = responses.get("200").expect("200 response should exist");

@@ -41,7 +41,9 @@ pub fn strip_raw_prefix(ident: &str) -> &str {
 /// E.g., `user` -> `User`, `USER` -> `USER`, `` -> ``
 pub fn capitalize_first(s: &str) -> String {
     let mut chars = s.chars();
-    chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 /// Extract a Schema name from a `SeaORM` Entity type path.
@@ -833,8 +835,8 @@ mod tests {
     )]
     #[case(r#"#[serde(rename_all = "kebab-case", skip_serializing_if = "Option::is_none")] struct Foo;"#, Some("kebab-case"))]
     // No rename_all
-    #[case(r#"#[serde(default)] struct Foo;"#, None)]
-    #[case(r#"#[derive(Debug)] struct Foo;"#, None)]
+    #[case(r"#[serde(default)] struct Foo;", None)]
+    #[case(r"#[derive(Debug)] struct Foo;", None)]
     fn test_extract_rename_all(#[case] item_src: &str, #[case] expected: Option<&str>) {
         let item: syn::ItemStruct = syn::parse_str(item_src).unwrap();
         let result = extract_rename_all(&item.attrs);
@@ -859,9 +861,9 @@ mod tests {
     #[case(r#"#[serde(rename = "custom_name")] field: i32"#, Some("custom_name"))]
     #[case(r#"#[serde(rename = "userId")] field: i32"#, Some("userId"))]
     #[case(r#"#[serde(rename = "ID")] field: i32"#, Some("ID"))]
-    #[case(r#"#[serde(default)] field: i32"#, None)]
-    #[case(r#"#[serde(skip)] field: i32"#, None)]
-    #[case(r#"field: i32"#, None)]
+    #[case(r"#[serde(default)] field: i32", None)]
+    #[case(r"#[serde(skip)] field: i32", None)]
+    #[case(r"field: i32", None)]
     // rename_all should NOT be extracted as rename
     #[case(r#"#[serde(rename_all = "camelCase")] field: i32"#, None)]
     // Multiple attributes
@@ -872,57 +874,57 @@ mod tests {
     )]
     fn test_extract_field_rename(#[case] field_src: &str, #[case] expected: Option<&str>) {
         // Parse field from struct context
-        let struct_src = format!("struct Foo {{ {} }}", field_src);
+        let struct_src = format!("struct Foo {{ {field_src} }}");
         let item: syn::ItemStruct = syn::parse_str(&struct_src).unwrap();
         if let syn::Fields::Named(fields) = &item.fields {
             let field = fields.named.first().unwrap();
             let result = extract_field_rename(&field.attrs);
-            assert_eq!(result.as_deref(), expected, "Failed for: {}", field_src);
+            assert_eq!(result.as_deref(), expected, "Failed for: {field_src}");
         }
     }
 
     // Tests for extract_skip function
     #[rstest]
-    #[case(r#"#[serde(skip)] field: i32"#, true)]
-    #[case(r#"#[serde(default)] field: i32"#, false)]
+    #[case(r"#[serde(skip)] field: i32", true)]
+    #[case(r"#[serde(default)] field: i32", false)]
     #[case(r#"#[serde(rename = "x")] field: i32"#, false)]
-    #[case(r#"field: i32"#, false)]
+    #[case(r"field: i32", false)]
     // skip_serializing_if should NOT be treated as skip
     #[case(
         r#"#[serde(skip_serializing_if = "Option::is_none")] field: i32"#,
         false
     )]
     // skip_deserializing should NOT be treated as skip
-    #[case(r#"#[serde(skip_deserializing)] field: i32"#, false)]
+    #[case(r"#[serde(skip_deserializing)] field: i32", false)]
     // Combined attributes
-    #[case(r#"#[serde(skip, default)] field: i32"#, true)]
-    #[case(r#"#[serde(default, skip)] field: i32"#, true)]
+    #[case(r"#[serde(skip, default)] field: i32", true)]
+    #[case(r"#[serde(default, skip)] field: i32", true)]
     fn test_extract_skip(#[case] field_src: &str, #[case] expected: bool) {
-        let struct_src = format!("struct Foo {{ {} }}", field_src);
+        let struct_src = format!("struct Foo {{ {field_src} }}");
         let item: syn::ItemStruct = syn::parse_str(&struct_src).unwrap();
         if let syn::Fields::Named(fields) = &item.fields {
             let field = fields.named.first().unwrap();
             let result = extract_skip(&field.attrs);
-            assert_eq!(result, expected, "Failed for: {}", field_src);
+            assert_eq!(result, expected, "Failed for: {field_src}");
         }
     }
 
     // Tests for extract_flatten function
     #[rstest]
-    #[case(r#"#[serde(flatten)] field: i32"#, true)]
-    #[case(r#"#[serde(default)] field: i32"#, false)]
+    #[case(r"#[serde(flatten)] field: i32", true)]
+    #[case(r"#[serde(default)] field: i32", false)]
     #[case(r#"#[serde(rename = "x")] field: i32"#, false)]
-    #[case(r#"field: i32"#, false)]
+    #[case(r"field: i32", false)]
     // Combined attributes
-    #[case(r#"#[serde(flatten, default)] field: i32"#, true)]
-    #[case(r#"#[serde(default, flatten)] field: i32"#, true)]
+    #[case(r"#[serde(flatten, default)] field: i32", true)]
+    #[case(r"#[serde(default, flatten)] field: i32", true)]
     fn test_extract_flatten(#[case] field_src: &str, #[case] expected: bool) {
-        let struct_src = format!("struct Foo {{ {} }}", field_src);
+        let struct_src = format!("struct Foo {{ {field_src} }}");
         let item: syn::ItemStruct = syn::parse_str(&struct_src).unwrap();
         if let syn::Fields::Named(fields) = &item.fields {
             let field = fields.named.first().unwrap();
             let result = extract_flatten(&field.attrs);
-            assert_eq!(result, expected, "Failed for: {}", field_src);
+            assert_eq!(result, expected, "Failed for: {field_src}");
         }
     }
 
@@ -933,23 +935,23 @@ mod tests {
         true
     )]
     #[case(r#"#[serde(skip_serializing_if = "is_zero")] field: i32"#, true)]
-    #[case(r#"#[serde(default)] field: i32"#, false)]
-    #[case(r#"#[serde(skip)] field: i32"#, false)]
-    #[case(r#"field: i32"#, false)]
+    #[case(r"#[serde(default)] field: i32", false)]
+    #[case(r"#[serde(skip)] field: i32", false)]
+    #[case(r"field: i32", false)]
     fn test_extract_skip_serializing_if(#[case] field_src: &str, #[case] expected: bool) {
-        let struct_src = format!("struct Foo {{ {} }}", field_src);
+        let struct_src = format!("struct Foo {{ {field_src} }}");
         let item: syn::ItemStruct = syn::parse_str(&struct_src).unwrap();
         if let syn::Fields::Named(fields) = &item.fields {
             let field = fields.named.first().unwrap();
             let result = extract_skip_serializing_if(&field.attrs);
-            assert_eq!(result, expected, "Failed for: {}", field_src);
+            assert_eq!(result, expected, "Failed for: {field_src}");
         }
     }
 
     // Tests for extract_default function
     #[rstest]
     // Simple default (no function)
-    #[case(r#"#[serde(default)] field: i32"#, Some(None))]
+    #[case(r"#[serde(default)] field: i32", Some(None))]
     // Default with function name
     #[case(
         r#"#[serde(default = "default_value")] field: i32"#,
@@ -960,9 +962,9 @@ mod tests {
         Some(Some("Default::default"))
     )]
     // No default
-    #[case(r#"#[serde(skip)] field: i32"#, None)]
+    #[case(r"#[serde(skip)] field: i32", None)]
     #[case(r#"#[serde(rename = "x")] field: i32"#, None)]
-    #[case(r#"field: i32"#, None)]
+    #[case(r"field: i32", None)]
     // Combined attributes
     #[case(
         r#"#[serde(default, skip_serializing_if = "Option::is_none")] field: i32"#,
@@ -973,13 +975,13 @@ mod tests {
         Some(Some("my_default"))
     )]
     fn test_extract_default(#[case] field_src: &str, #[case] expected: Option<Option<&str>>) {
-        let struct_src = format!("struct Foo {{ {} }}", field_src);
+        let struct_src = format!("struct Foo {{ {field_src} }}");
         let item: syn::ItemStruct = syn::parse_str(&struct_src).unwrap();
         if let syn::Fields::Named(fields) = &item.fields {
             let field = fields.named.first().unwrap();
             let result = extract_default(&field.attrs);
-            let expected_owned = expected.map(|o| o.map(|s| s.to_string()));
-            assert_eq!(result, expected_owned, "Failed for: {}", field_src);
+            let expected_owned = expected.map(|o| o.map(std::string::ToString::to_string));
+            assert_eq!(result, expected_owned, "Failed for: {field_src}");
         }
     }
 
@@ -1132,14 +1134,14 @@ mod tests {
 
         /// Helper to create attributes by parsing a struct with the given serde attributes
         fn get_struct_attrs(serde_content: &str) -> Vec<syn::Attribute> {
-            let src = format!(r#"#[serde({})] struct Foo;"#, serde_content);
+            let src = format!(r"#[serde({serde_content})] struct Foo;");
             let item: syn::ItemStruct = syn::parse_str(&src).unwrap();
             item.attrs
         }
 
         /// Helper to create field attributes by parsing a struct with the field
         fn get_field_attrs(serde_content: &str) -> Vec<syn::Attribute> {
-            let src = format!(r#"struct Foo {{ #[serde({})] field: i32 }}"#, serde_content);
+            let src = format!(r"struct Foo {{ #[serde({serde_content})] field: i32 }}");
             let item: syn::ItemStruct = syn::parse_str(&src).unwrap();
             if let syn::Fields::Named(fields) = &item.fields {
                 fields.named.first().unwrap().attrs.clone()
@@ -1193,7 +1195,7 @@ mod tests {
         #[test]
         fn test_extract_default_standalone_fallback_path() {
             // Simple default without function
-            let attrs = get_field_attrs(r#"default"#);
+            let attrs = get_field_attrs(r"default");
             let result = extract_default(&attrs);
             assert_eq!(result, Some(None));
         }
@@ -1217,14 +1219,14 @@ mod tests {
         /// Test empty serde attribute
         #[test]
         fn test_extract_functions_with_empty_serde() {
-            let item: syn::ItemStruct = syn::parse_str(r#"#[serde()] struct Foo;"#).unwrap();
+            let item: syn::ItemStruct = syn::parse_str(r"#[serde()] struct Foo;").unwrap();
             assert_eq!(extract_rename_all(&item.attrs), None);
         }
 
         /// Test non-serde attribute is ignored
         #[test]
         fn test_extract_functions_ignore_non_serde() {
-            let item: syn::ItemStruct = syn::parse_str(r#"#[derive(Debug)] struct Foo;"#).unwrap();
+            let item: syn::ItemStruct = syn::parse_str(r"#[derive(Debug)] struct Foo;").unwrap();
             assert_eq!(extract_rename_all(&item.attrs), None);
             assert_eq!(extract_field_rename(&item.attrs), None);
         }
@@ -1233,7 +1235,7 @@ mod tests {
         #[test]
         fn test_extract_rename_all_non_list_serde() {
             // #[serde] without parentheses - this should just be ignored
-            let item: syn::ItemStruct = syn::parse_str(r#"#[serde] struct Foo;"#).unwrap();
+            let item: syn::ItemStruct = syn::parse_str(r"#[serde] struct Foo;").unwrap();
             let result = extract_rename_all(&item.attrs);
             assert_eq!(result, None);
         }
@@ -1292,7 +1294,7 @@ mod tests {
         /// Test extract_skip - basic functionality
         #[test]
         fn test_extract_skip_basic() {
-            let attrs = get_field_attrs(r#"skip"#);
+            let attrs = get_field_attrs(r"skip");
             let result = extract_skip(&attrs);
             assert!(result);
         }
@@ -1308,7 +1310,7 @@ mod tests {
         /// Test extract_skip does not trigger for skip_deserializing
         #[test]
         fn test_extract_skip_not_skip_deserializing() {
-            let attrs = get_field_attrs(r#"skip_deserializing"#);
+            let attrs = get_field_attrs(r"skip_deserializing");
             let result = extract_skip(&attrs);
             assert!(!result);
         }
@@ -1316,7 +1318,7 @@ mod tests {
         /// Test extract_skip with combined attrs
         #[test]
         fn test_extract_skip_with_other_attrs() {
-            let attrs = get_field_attrs(r#"skip, default"#);
+            let attrs = get_field_attrs(r"skip, default");
             let result = extract_skip(&attrs);
             assert!(result);
         }
@@ -1348,7 +1350,7 @@ mod tests {
         #[case("SCREAMING_SNAKE_CASE")]
         #[case("SCREAMING-KEBAB-CASE")]
         fn test_extract_rename_all_all_formats(#[case] format: &str) {
-            let attrs = get_struct_attrs(&format!(r#"rename_all = "{}""#, format));
+            let attrs = get_struct_attrs(&format!(r#"rename_all = "{format}""#));
             let result = extract_rename_all(&attrs);
             assert_eq!(result.as_deref(), Some(format));
         }
@@ -1572,8 +1574,7 @@ mod tests {
                 let token_str = list.tokens.to_string();
                 assert!(
                     token_str.contains("rename_all"),
-                    "Token string should contain rename_all: {}",
-                    token_str
+                    "Token string should contain rename_all: {token_str}"
                 );
             }
 
@@ -1745,7 +1746,7 @@ mod tests {
         #[test]
         fn test_extract_rename_all_try_from_multipart_no_rename_all() {
             let item: syn::ItemStruct =
-                syn::parse_str(r#"#[try_from_multipart(strict)] struct Foo;"#).unwrap();
+                syn::parse_str(r"#[try_from_multipart(strict)] struct Foo;").unwrap();
             let result = extract_rename_all(&item.attrs);
             assert_eq!(result, None);
         }
@@ -1756,7 +1757,7 @@ mod tests {
         use super::*;
 
         fn get_enum_attrs(serde_content: &str) -> Vec<syn::Attribute> {
-            let src = format!(r#"#[serde({})] enum Foo {{ A, B }}"#, serde_content);
+            let src = format!(r"#[serde({serde_content})] enum Foo {{ A, B }}");
             let item: syn::ItemEnum = syn::parse_str(&src).unwrap();
             item.attrs
         }
@@ -1768,12 +1769,12 @@ mod tests {
         #[case(r#"tag = "variant""#, Some("variant"))]
         #[case(r#"tag = "type", content = "data""#, Some("type"))]
         #[case(r#"rename_all = "camelCase""#, None)]
-        #[case(r#"untagged"#, None)]
-        #[case(r#"default"#, None)]
+        #[case(r"untagged", None)]
+        #[case(r"default", None)]
         fn test_extract_tag(#[case] serde_content: &str, #[case] expected: Option<&str>) {
             let attrs = get_enum_attrs(serde_content);
             let result = extract_tag(&attrs);
-            assert_eq!(result.as_deref(), expected, "Failed for: {}", serde_content);
+            assert_eq!(result.as_deref(), expected, "Failed for: {serde_content}");
         }
 
         // extract_content tests
@@ -1782,26 +1783,26 @@ mod tests {
         #[case(r#"content = "payload""#, Some("payload"))]
         #[case(r#"tag = "type", content = "data""#, Some("data"))]
         #[case(r#"tag = "type""#, None)]
-        #[case(r#"untagged"#, None)]
+        #[case(r"untagged", None)]
         #[case(r#"rename_all = "camelCase""#, None)]
         fn test_extract_content(#[case] serde_content: &str, #[case] expected: Option<&str>) {
             let attrs = get_enum_attrs(serde_content);
             let result = extract_content(&attrs);
-            assert_eq!(result.as_deref(), expected, "Failed for: {}", serde_content);
+            assert_eq!(result.as_deref(), expected, "Failed for: {serde_content}");
         }
 
         // extract_untagged tests
         #[rstest]
-        #[case(r#"untagged"#, true)]
+        #[case(r"untagged", true)]
         #[case(r#"untagged, rename_all = "camelCase""#, true)]
         #[case(r#"rename_all = "camelCase", untagged"#, true)]
         #[case(r#"tag = "type""#, false)]
         #[case(r#"rename_all = "camelCase""#, false)]
-        #[case(r#"default"#, false)]
+        #[case(r"default", false)]
         fn test_extract_untagged(#[case] serde_content: &str, #[case] expected: bool) {
             let attrs = get_enum_attrs(serde_content);
             let result = extract_untagged(&attrs);
-            assert_eq!(result, expected, "Failed for: {}", serde_content);
+            assert_eq!(result, expected, "Failed for: {serde_content}");
         }
 
         // extract_enum_repr comprehensive tests
@@ -1865,7 +1866,7 @@ mod tests {
 
         #[test]
         fn test_extract_enum_repr_untagged() {
-            let attrs = get_enum_attrs(r#"untagged"#);
+            let attrs = get_enum_attrs(r"untagged");
             let repr = extract_enum_repr(&attrs);
             assert_eq!(repr, SerdeEnumRepr::Untagged);
         }

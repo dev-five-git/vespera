@@ -3,10 +3,9 @@
 //! Defines input structures for `schema!` and `schema_type!` macros.
 
 use syn::{
-    bracketed, parenthesized,
+    Ident, LitStr, Token, Type, bracketed, parenthesized,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
-    Ident, LitStr, Token, Type,
 };
 
 /// Input for the schema! macro
@@ -626,7 +625,7 @@ mod tests {
         let result: syn::Result<SchemaTypeInput> = syn::parse2(tokens);
         assert!(result.is_err());
         match result {
-            Err(e) => assert!(e.to_string().contains("expected `from`"), "Error: {}", e),
+            Err(e) => assert!(e.to_string().contains("expected `from`"), "Error: {e}"),
             Ok(_) => panic!("Expected error"),
         }
     }
@@ -640,8 +639,7 @@ mod tests {
             Err(e) => assert!(
                 e.to_string()
                     .contains("expected `from` keyword, found `fron`"),
-                "Error: {}",
-                e
+                "Error: {e}"
             ),
             Ok(_) => panic!("Expected error"),
         }
@@ -656,8 +654,7 @@ mod tests {
         match result {
             Err(e) => assert!(
                 e.to_string().contains("cannot use both `omit` and `pick`"),
-                "Error: {}",
-                e
+                "Error: {e}"
             ),
             Ok(_) => panic!("Expected error"),
         }
@@ -672,8 +669,7 @@ mod tests {
         match result {
             Err(e) => assert!(
                 e.to_string().contains("cannot use both `omit` and `pick`"),
-                "Error: {}",
-                e
+                "Error: {e}"
             ),
             Ok(_) => panic!("Expected error"),
         }

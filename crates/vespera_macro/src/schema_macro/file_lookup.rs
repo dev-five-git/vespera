@@ -627,14 +627,14 @@ mod tests {
         std::fs::create_dir_all(&models_dir).unwrap();
 
         // Create a file with multiple items, only one matching
-        let content = r#"
+        let content = r"
 pub enum SomeEnum { A, B }
 pub fn some_function() {}
 pub const SOME_CONST: i32 = 42;
 pub trait SomeTrait {}
 pub struct NotTarget { pub x: i32 }
 pub struct Target { pub id: i32 }
-"#;
+";
         std::fs::write(models_dir.join("mixed.rs"), content).unwrap();
 
         let original = std::env::var("CARGO_MANIFEST_DIR").ok();
@@ -962,12 +962,12 @@ pub struct Target { pub id: i32 }
         let models_dir = src_dir.join("models");
         std::fs::create_dir_all(&models_dir).unwrap();
 
-        let content = r#"
+        let content = r"
 pub enum NotStruct { A, B }
 pub fn not_struct() {}
 pub struct Target { pub id: i32 }
 pub const NOT_STRUCT: i32 = 1;
-"#;
+";
         std::fs::write(models_dir.join("item.rs"), content).unwrap();
 
         let original = std::env::var("CARGO_MANIFEST_DIR").ok();
@@ -1276,12 +1276,12 @@ pub struct Model {
         std::fs::create_dir_all(&models_dir).unwrap();
 
         // Create file without Model struct
-        let content = r#"
+        let content = r"
 pub struct SomethingElse {
     pub id: i32,
 }
 pub enum Status { Active, Inactive }
-"#;
+";
         std::fs::write(models_dir.join("nomodel.rs"), content).unwrap();
 
         let original = std::env::var("CARGO_MANIFEST_DIR").ok();
