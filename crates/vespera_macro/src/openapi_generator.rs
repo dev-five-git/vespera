@@ -1,6 +1,7 @@
 //! `OpenAPI` document generator
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::Path;
 
 use vespera_core::{
     openapi::{Info, OpenApi, OpenApiVersion, Server, Tag},
@@ -26,10 +27,17 @@ pub fn generate_openapi_doc_with_metadata(
     metadata: &CollectedMetadata,
 ) -> OpenApi {
     let (known_schema_names, struct_definitions) = build_schema_lookups(metadata);
-    let schemas =
-        parse_component_schemas(metadata, &known_schema_names, &struct_definitions);
+    let file_cache = build_file_cache(metadata);
+    let struct_file_index = build_struct_file_index(&file_cache);
+    let schemas = parse_component_schemas(
+        metadata,
+        &known_schema_names,
+        &struct_definitions,
+        &file_cache,
+        &struct_file_index,
+    );
     let (paths, all_tags) =
-        build_path_items(metadata, &known_schema_names, &struct_definitions);
+        build_path_items(metadata, &known_schema_names, &struct_definitions, &file_cache);
 
     OpenApi {
         openapi: OpenApiVersion::V3_1_0,
@@ -88,12 +96,9 @@ pub fn generate_openapi_doc_with_metadata(
 /// `schema_type!` generated types can reference them.
 fn build_schema_lookups(
     metadata: &CollectedMetadata,
-) -> (
-    std::collections::HashMap<String, String>,
-    std::collections::HashMap<String, String>,
-) {
-    let mut known_schema_names = std::collections::HashMap::new();
-    let mut struct_definitions = std::collections::HashMap::new();
+) -> (HashMap<String, String>, HashMap<String, String>) {
+    let mut known_schema_names = HashMap::new();
+    let mut struct_definitions = HashMap::new();
 
     for struct_meta in &metadata.structs {
         let schema_name = struct_meta.name.clone();
@@ -104,15 +109,55 @@ fn build_schema_lookups(
     (known_schema_names, struct_definitions)
 }
 
+/// Build file AST cache — parse each unique route file exactly once.
+///
+/// Deduplicates file paths first, then parses each file a single time.
+/// This eliminates redundant file I/O when multiple routes share a source file.
+fn build_file_cache(metadata: &CollectedMetadata) -> HashMap<String, syn::File> {
+    let unique_paths: BTreeSet<&str> = metadata
+        .routes
+        .iter()
+        .map(|r| r.file_path.as_str())
+        .collect();
+    let mut cache = HashMap::with_capacity(unique_paths.len());
+    for path in unique_paths {
+        if let Some(ast) = read_and_parse_file_warn(Path::new(path), "OpenAPI generation") {
+            cache.insert(path.to_string(), ast);
+        }
+    }
+    cache
+}
+
+/// Build struct name → file path index from cached file ASTs.
+///
+/// Enables O(1) lookup of which file contains a given struct definition,
+/// replacing the previous O(routes × file_read) linear scan.
+fn build_struct_file_index(file_cache: &HashMap<String, syn::File>) -> HashMap<String, &str> {
+    let mut index = HashMap::new();
+    for (path, ast) in file_cache {
+        for item in &ast.items {
+            if let syn::Item::Struct(s) = item {
+                index.insert(s.ident.to_string(), path.as_str());
+            }
+        }
+    }
+    index
+}
+
 /// Parse struct and enum definitions into `OpenAPI` component schemas.
 ///
 /// Only includes structs where `include_in_openapi` is true
 /// (i.e., from `#[derive(Schema)]`, not from cross-file lookup).
 /// Also processes `#[serde(default)]` attributes to extract default values.
+///
+/// Uses pre-built `file_cache` and `struct_file_index` for O(1) file lookups
+/// instead of scanning all route files per struct.
 fn parse_component_schemas(
     metadata: &CollectedMetadata,
-    known_schema_names: &std::collections::HashMap<String, String>,
-    struct_definitions: &std::collections::HashMap<String, String>,
+    known_schema_names: &HashMap<String, String>,
+    struct_definitions: &HashMap<String, String>,
+    file_cache: &HashMap<String, syn::File>,
+    struct_file_index: &HashMap<String, &str>,
 ) -> BTreeMap<String, vespera_core::schema::Schema> {
     let mut schemas = BTreeMap::new();
 
@@ -130,26 +175,20 @@ fn parse_component_schemas(
             _ => continue,
         };
 
-        // Process default values for struct fields by finding the source file
+        // Process default values using cached file ASTs (O(1) lookup)
         if let syn::Item::Struct(struct_item) = &parsed {
-            let struct_file = metadata
-                .routes
-                .iter()
-                .find_map(|route| {
-                    std::fs::read_to_string(&route.file_path)
-                        .ok()
-                        .filter(|content| {
-                            content.contains(&format!("struct {}", struct_meta.name))
-                        })
-                        .map(|_| route.file_path.clone())
-                })
-                .or_else(|| metadata.routes.first().map(|r| r.file_path.clone()));
+            let file_ast = struct_file_index
+                .get(&struct_meta.name)
+                .and_then(|path| file_cache.get(*path))
+                .or_else(|| {
+                    metadata
+                        .routes
+                        .first()
+                        .and_then(|r| file_cache.get(&r.file_path))
+                });
 
-            if let Some(file_path) = struct_file
-                && let Some(file_ast) =
-                    read_and_parse_file_warn(std::path::Path::new(&file_path), "OpenAPI generation")
-            {
-                process_default_functions(struct_item, &file_ast, &mut schema);
+            if let Some(ast) = file_ast {
+                process_default_functions(struct_item, ast, &mut schema);
             }
         }
 
@@ -161,25 +200,23 @@ fn parse_component_schemas(
 
 /// Build path items and collect tags from route metadata.
 ///
-/// Parses each route's source file to extract the handler function signature,
-/// then builds an `OpenAPI` operation from it.
+/// Uses pre-built `file_cache` to avoid re-reading and re-parsing source files.
+/// Each unique file is parsed exactly once in `build_file_cache`.
 fn build_path_items(
     metadata: &CollectedMetadata,
-    known_schema_names: &std::collections::HashMap<String, String>,
-    struct_definitions: &std::collections::HashMap<String, String>,
+    known_schema_names: &HashMap<String, String>,
+    struct_definitions: &HashMap<String, String>,
+    file_cache: &HashMap<String, syn::File>,
 ) -> (BTreeMap<String, PathItem>, BTreeSet<String>) {
     let mut paths = BTreeMap::new();
     let mut all_tags = BTreeSet::new();
 
     for route_meta in &metadata.routes {
-        let Some(file_ast) = read_and_parse_file_warn(
-            std::path::Path::new(&route_meta.file_path),
-            "OpenAPI generation",
-        ) else {
+        let Some(file_ast) = file_cache.get(&route_meta.file_path) else {
             continue;
         };
 
-        for item in file_ast.items {
+        for item in &file_ast.items {
             if let syn::Item::Fn(fn_item) = item
                 && fn_item.sig.ident == route_meta.function_name
             {
