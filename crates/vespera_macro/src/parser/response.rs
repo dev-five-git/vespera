@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use syn::{ReturnType, Type};
 use vespera_core::route::{Header, MediaType, Response};
@@ -105,7 +105,7 @@ fn extract_ok_payload_and_headers(ok_ty: &Type) -> (Type, Option<HashMap<String,
 #[allow(clippy::too_many_lines)]
 pub fn parse_return_type(
     return_type: &ReturnType,
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> BTreeMap<String, Response> {
     let mut responses = BTreeMap::new();
@@ -387,11 +387,11 @@ mod tests {
         #[case] err_expectation: Option<ExpectedResponse>,
         #[case] ok_headers_expected: Option<bool>,
     ) {
-        let known_schemas = HashMap::new();
-        let struct_definitions = HashMap::new();
-        let return_type = parse_return_type_str(return_type_str);
+         let known_schemas = HashSet::new();
+         let struct_definitions = HashMap::new();
+         let return_type = parse_return_type_str(return_type_str);
 
-        let responses = parse_return_type(&return_type, &known_schemas, &struct_definitions);
+         let responses = parse_return_type(&return_type, &known_schemas, &struct_definitions);
 
         // Validate success response
         let ok_response = responses.get("200").expect("200 response should exist");
@@ -567,7 +567,7 @@ mod tests {
     #[test]
     fn test_parse_return_type_tuple() {
         // Test parse_return_type with tuple type (exercises line 43 via extract_result_types)
-        let known_schemas = HashMap::new();
+        let known_schemas = HashSet::new();
         let struct_definitions = HashMap::new();
         let return_type = parse_return_type_str("-> (i32, String)");
 
@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn test_parse_return_type_result_with_ok_tuple_no_headermap() {
         // Test line 95 via full parse_return_type: Result<(StatusCode, Json<T>), E>
-        let known_schemas = HashMap::new();
+        let known_schemas = HashSet::new();
         let struct_definitions = HashMap::new();
         let return_type = parse_return_type_str("-> Result<(StatusCode, Json<String>), String>");
 

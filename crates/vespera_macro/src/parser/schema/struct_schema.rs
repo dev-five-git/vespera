@@ -3,7 +3,7 @@
 //! This module handles the conversion of Rust structs (as parsed by syn)
 //! into OpenAPI-compatible JSON Schema definitions.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use syn::{Fields, Type};
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
@@ -32,7 +32,7 @@ use super::{
 #[allow(clippy::too_many_lines)]
 pub fn parse_struct_to_schema(
     struct_item: &syn::ItemStruct,
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Schema {
     let mut properties = BTreeMap::new();
@@ -208,7 +208,7 @@ mod tests {
         "#,
         )
         .unwrap();
-        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         let props = schema.properties.as_ref().unwrap();
         assert!(props.contains_key("id"));
         assert!(props.contains_key("name"));
@@ -238,7 +238,7 @@ mod tests {
         )
         .unwrap();
 
-        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         let props = schema.properties.as_ref().expect("props missing");
         assert!(props.contains_key("id")); // field-level rename wins
         assert!(props.contains_key("displayName")); // rename_all applied
@@ -252,7 +252,7 @@ mod tests {
     #[case("struct Empty;")]
     fn test_parse_struct_to_schema_tuple_and_unit_structs(#[case] struct_src: &str) {
         let struct_item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
-        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         assert!(schema.properties.is_none());
         assert!(schema.required.is_none());
     }
@@ -271,7 +271,7 @@ mod tests {
         "#,
         )
         .unwrap();
-        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         let props = schema.properties.as_ref().unwrap();
         assert!(props.contains_key("id"));
         assert!(props.contains_key("name"));
@@ -293,7 +293,7 @@ mod tests {
         "#,
         )
         .unwrap();
-        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         let props = schema.properties.as_ref().unwrap();
         assert!(props.contains_key("required_field"));
         assert!(props.contains_key("optional_with_default"));
@@ -320,7 +320,7 @@ mod tests {
             }
         "#;
         let struct_item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
-        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         assert_eq!(
             schema.description,
             Some("User struct description".to_string())
@@ -344,9 +344,11 @@ mod tests {
             }
         "#;
         let struct_item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
-        let mut known = HashMap::new();
-        known.insert("User".to_string(), "struct User { id: i32 }".to_string());
-        let schema = parse_struct_to_schema(&struct_item, &known, &HashMap::new());
+        let mut struct_defs = HashMap::new();
+        struct_defs.insert("User".to_string(), "struct User { id: i32 }".to_string());
+        let mut known = HashSet::new();
+        known.insert("User".to_string());
+        let schema = parse_struct_to_schema(&struct_item, &known, &struct_defs);
         let props = schema.properties.unwrap();
         // Field with $ref and description should use allOf
         if let SchemaRef::Inline(user_schema) = props.get("user").unwrap() {
@@ -371,13 +373,15 @@ mod tests {
         )
         .unwrap();
 
-        let mut known = HashMap::new();
-        known.insert(
+        let mut struct_defs = HashMap::new();
+        struct_defs.insert(
             "Pagination".to_string(),
             "struct Pagination { page: i32 }".to_string(),
         );
+        let mut known = HashSet::new();
+        known.insert("Pagination".to_string());
 
-        let schema = parse_struct_to_schema(&struct_item, &known, &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &known, &struct_defs);
 
         // Should have allOf
         assert!(
@@ -422,11 +426,14 @@ mod tests {
         )
         .unwrap();
 
-        let mut known = HashMap::new();
-        known.insert("Pagination".to_string(), "struct Pagination {}".to_string());
-        known.insert("Metadata".to_string(), "struct Metadata {}".to_string());
+        let mut struct_defs = HashMap::new();
+        struct_defs.insert("Pagination".to_string(), "struct Pagination {}".to_string());
+        struct_defs.insert("Metadata".to_string(), "struct Metadata {}".to_string());
+        let mut known = HashSet::new();
+        known.insert("Pagination".to_string());
+        known.insert("Metadata".to_string());
 
-        let schema = parse_struct_to_schema(&struct_item, &known, &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &known, &struct_defs);
 
         assert!(schema.all_of.is_some());
         let all_of = schema.all_of.as_ref().unwrap();
@@ -450,7 +457,7 @@ mod tests {
         )
         .unwrap();
 
-        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         assert!(
             schema.all_of.is_none(),
             "Simple struct should not have allOf"

@@ -28,11 +28,11 @@ pub fn generate_filtered_schema(
     let rename_all = extract_rename_all(&struct_item.attrs);
 
     // Build known_schemas and struct_definitions for type resolution
-    let known_schemas: std::collections::HashMap<String, String> = schema_storage
+    let known_schemas: HashSet<String> = schema_storage.iter().map(|s| s.name.clone()).collect();
+    let struct_definitions: std::collections::HashMap<String, String> = schema_storage
         .iter()
         .map(|s| (s.name.clone(), s.definition.clone()))
         .collect();
-    let struct_definitions = known_schemas.clone();
 
     let mut property_tokens = Vec::new();
     let mut required_fields = Vec::new();

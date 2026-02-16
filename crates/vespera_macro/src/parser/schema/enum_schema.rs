@@ -14,7 +14,7 @@
 //!
 //! Each representation maps to a different `OpenAPI` schema pattern using `oneOf` and optionally `discriminator`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use syn::Type;
 use vespera_core::schema::{Discriminator, Schema, SchemaRef, SchemaType};
@@ -41,7 +41,7 @@ use super::{
 /// * `struct_definitions` - Map of struct names to their source code (for generics)
 pub fn parse_enum_to_schema(
     enum_item: &syn::ItemEnum,
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Schema {
     // Extract enum-level doc comment for schema description
@@ -143,7 +143,7 @@ fn build_struct_variant_properties(
     fields_named: &syn::FieldsNamed,
     enum_rename_all: Option<&str>,
     variant_attrs: &[syn::Attribute],
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> (BTreeMap<String, SchemaRef>, Vec<String>) {
     let mut variant_properties = BTreeMap::new();
@@ -215,7 +215,7 @@ fn build_struct_variant_properties(
 fn build_variant_data_schema(
     variant: &syn::Variant,
     enum_rename_all: Option<&str>,
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Option<SchemaRef> {
     match &variant.fields {
@@ -280,7 +280,7 @@ fn parse_externally_tagged_enum(
     enum_item: &syn::ItemEnum,
     description: Option<String>,
     rename_all: Option<&str>,
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Schema {
     let mut one_of_schemas = Vec::new();
@@ -393,7 +393,7 @@ fn parse_internally_tagged_enum(
     description: Option<String>,
     rename_all: Option<&str>,
     tag: &str,
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Schema {
     let mut one_of_schemas = Vec::new();
@@ -482,7 +482,7 @@ fn parse_adjacently_tagged_enum(
     rename_all: Option<&str>,
     tag: &str,
     content: &str,
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Schema {
     let mut one_of_schemas = Vec::new();
@@ -543,7 +543,7 @@ fn parse_untagged_enum(
     enum_item: &syn::ItemEnum,
     description: Option<String>,
     rename_all: Option<&str>,
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Schema {
     let mut one_of_schemas = Vec::new();
@@ -689,7 +689,7 @@ mod tests {
         #[case] suffix: &str,
     ) {
         let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
-        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         assert_eq!(schema.schema_type, Some(expected_type));
         let got = schema
             .clone()
@@ -746,7 +746,7 @@ mod tests {
         #[case] suffix: &str,
     ) {
         let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
-        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         let one_of = schema.clone().one_of.expect("one_of missing");
         assert_eq!(one_of.len(), expected_one_of_len);
 
@@ -816,7 +816,7 @@ mod tests {
     ) {
         let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
 
-        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         let one_of = schema.one_of.expect("one_of missing for mixed enum");
         assert_eq!(one_of.len(), expected_one_of_len);
 
@@ -841,7 +841,7 @@ mod tests {
         )
         .unwrap();
 
-        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         let one_of = schema.one_of.expect("one_of missing");
         let variant_obj = match &one_of[0] {
             SchemaRef::Inline(s) => s,
@@ -866,7 +866,7 @@ mod tests {
         )
         .unwrap();
 
-        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         let one_of = schema.one_of.expect("one_of missing");
         let variant_obj = match &one_of[0] {
             SchemaRef::Inline(s) => s,
@@ -898,7 +898,7 @@ mod tests {
         )
         .unwrap();
 
-        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         let one_of = schema.one_of.expect("one_of missing");
         let variant_obj = match &one_of[0] {
             SchemaRef::Inline(s) => s,
@@ -925,7 +925,7 @@ mod tests {
         )
         .unwrap();
 
-        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         let one_of = schema.one_of.expect("one_of missing");
         let variant_obj = match &one_of[0] {
             SchemaRef::Inline(s) => s,
@@ -962,7 +962,7 @@ mod tests {
         )
         .unwrap();
 
-        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         let enum_values = schema.r#enum.expect("enum values missing");
         assert_eq!(enum_values[0].as_str().unwrap(), "active-user");
         assert_eq!(enum_values[1].as_str().unwrap(), "inactive-user");
@@ -982,7 +982,7 @@ mod tests {
         )
         .unwrap();
 
-        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         let one_of = schema.one_of.expect("one_of missing");
 
         // Check UserCreated variant key is camelCase
@@ -1024,7 +1024,7 @@ mod tests {
         )
         .unwrap();
 
-        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         let enum_values = schema.r#enum.expect("enum values missing");
         assert_eq!(enum_values[0].as_str().unwrap(), "HIGH_PRIORITY");
         assert_eq!(enum_values[1].as_str().unwrap(), "LOW_PRIORITY");
@@ -1039,7 +1039,7 @@ mod tests {
         "#,
         )
         .unwrap();
-        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         // Empty enum should have no enum values
         assert!(schema.r#enum.is_none() || schema.r#enum.as_ref().unwrap().is_empty());
     }
@@ -1055,7 +1055,7 @@ mod tests {
         "#,
         )
         .unwrap();
-        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         let one_of = schema.one_of.expect("one_of missing");
         assert_eq!(one_of.len(), 1);
     }
@@ -1073,7 +1073,7 @@ mod tests {
             }
         "#;
         let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
-        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         assert_eq!(schema.description, Some("Enum description".to_string()));
     }
 
@@ -1089,7 +1089,7 @@ mod tests {
             }
         "#;
         let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
-        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         assert_eq!(schema.description, Some("Data enum".to_string()));
         assert!(schema.one_of.is_some());
         let one_of = schema.one_of.unwrap();
@@ -1117,7 +1117,7 @@ mod tests {
             }
         "#;
         let enum_item: syn::ItemEnum = syn::parse_str(enum_src).unwrap();
-        let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
         assert!(schema.one_of.is_some());
         let one_of = schema.one_of.unwrap();
         if let SchemaRef::Inline(variant_schema) = &one_of[0] {
@@ -1144,8 +1144,8 @@ mod tests {
         .unwrap();
 
         // Register User as a known schema to get SchemaRef::Ref
-        let mut known_schemas = HashMap::new();
-        known_schemas.insert("User".to_string(), "User".to_string());
+        let mut known_schemas = HashSet::new();
+        known_schemas.insert("User".to_string());
 
         let schema = parse_enum_to_schema(&enum_item, &known_schemas, &HashMap::new());
         let one_of = schema.one_of.expect("one_of missing");
@@ -1206,7 +1206,7 @@ mod tests {
             )
             .unwrap();
 
-            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+            let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
 
             // Should have discriminator
             let discriminator = schema
@@ -1243,7 +1243,7 @@ mod tests {
             )
             .unwrap();
 
-            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+            let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
 
             // Should have discriminator with custom tag name
             let discriminator = schema
@@ -1279,7 +1279,7 @@ mod tests {
             )
             .unwrap();
 
-            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+            let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
 
             let one_of = schema.one_of.expect("one_of missing");
             if let SchemaRef::Inline(active) = &one_of[0] {
@@ -1305,7 +1305,7 @@ mod tests {
             )
             .unwrap();
 
-            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+            let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
 
             // Should have discriminator
             let discriminator = schema
@@ -1344,7 +1344,7 @@ mod tests {
             )
             .unwrap();
 
-            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+            let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
 
             let one_of = schema.one_of.expect("one_of missing");
             assert_eq!(one_of.len(), 2);
@@ -1381,7 +1381,7 @@ mod tests {
             )
             .unwrap();
 
-            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+            let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
 
             let one_of = schema.one_of.expect("one_of missing");
             assert_eq!(one_of.len(), 2);
@@ -1423,7 +1423,7 @@ mod tests {
             )
             .unwrap();
 
-            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+            let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
 
             // Should NOT have discriminator
             assert!(schema.discriminator.is_none());
@@ -1459,7 +1459,7 @@ mod tests {
             )
             .unwrap();
 
-            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+            let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
 
             assert!(schema.discriminator.is_none());
 
@@ -1488,7 +1488,7 @@ mod tests {
             )
             .unwrap();
 
-            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+            let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
 
             let one_of = schema.one_of.expect("one_of missing");
             assert_eq!(one_of.len(), 2);
@@ -1514,7 +1514,7 @@ mod tests {
             )
             .unwrap();
 
-            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+            let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
             with_settings!({ snapshot_suffix => "internally_tagged" }, {
                 assert_debug_snapshot!(schema);
             });
@@ -1534,7 +1534,7 @@ mod tests {
             )
             .unwrap();
 
-            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+            let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
             with_settings!({ snapshot_suffix => "adjacently_tagged" }, {
                 assert_debug_snapshot!(schema);
             });
@@ -1556,7 +1556,7 @@ mod tests {
             )
             .unwrap();
 
-            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+            let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
             with_settings!({ snapshot_suffix => "untagged" }, {
                 assert_debug_snapshot!(schema);
             });
@@ -1576,7 +1576,7 @@ mod tests {
             )
             .unwrap();
 
-            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+            let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
 
             let one_of = schema.clone().one_of.expect("one_of missing");
             assert_eq!(one_of.len(), 2);
@@ -1616,7 +1616,7 @@ mod tests {
             )
             .unwrap();
 
-            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+            let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
 
             // Tuple variant `Number(i32)` should be skipped, only 2 variants should remain
             let one_of = schema.clone().one_of.expect("one_of missing");
@@ -1649,8 +1649,8 @@ mod tests {
             .unwrap();
 
             // Provide UserData as a known schema so it returns SchemaRef::Ref
-            let mut known_schemas = HashMap::new();
-            known_schemas.insert("UserData".to_string(), "UserData".to_string());
+            let mut known_schemas = HashSet::new();
+            known_schemas.insert("UserData".to_string());
 
             let schema = parse_enum_to_schema(&enum_item, &known_schemas, &HashMap::new());
 
@@ -1699,7 +1699,7 @@ mod tests {
             )
             .unwrap();
 
-            let schema = parse_enum_to_schema(&enum_item, &HashMap::new(), &HashMap::new());
+            let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
 
             assert!(schema.discriminator.is_none());
 

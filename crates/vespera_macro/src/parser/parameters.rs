@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use syn::{FnArg, Pat, PatType, Type};
 use vespera_core::{
@@ -42,7 +42,7 @@ fn convert_to_inline_schema(field_schema: SchemaRef, is_optional: bool) -> Schem
 pub fn parse_function_parameter(
     arg: &FnArg,
     path_params: &[String],
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Option<Vec<Parameter>> {
     match arg {
@@ -280,7 +280,7 @@ pub fn parse_function_parameter(
 
 fn is_known_type(
     ty: &Type,
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> bool {
     // Check if it's a primitive type
@@ -301,7 +301,7 @@ fn is_known_type(
         // Get type name (handle both simple and qualified paths)
 
         // Check if it's in struct_definitions or known_schemas
-        if struct_definitions.contains_key(&ident_str) || known_schemas.contains_key(&ident_str) {
+        if struct_definitions.contains_key(&ident_str) || known_schemas.contains(&ident_str) {
             return true;
         }
 
@@ -325,7 +325,7 @@ fn is_known_type(
 /// Returns None if the type is not a struct or cannot be parsed
 fn parse_query_struct_to_parameters(
     ty: &Type,
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Option<Vec<Parameter>> {
     // Check if it's a known struct
@@ -422,7 +422,7 @@ fn parse_query_struct_to_parameters(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use insta::{assert_debug_snapshot, with_settings};
     use rstest::rstest;
@@ -430,11 +430,12 @@ mod tests {
 
     use super::*;
 
-    fn setup_test_data(func_src: &str) -> (HashMap<String, String>, HashMap<String, String>) {
+    fn setup_test_data(func_src: &str) -> (HashSet<String>, HashMap<String, String>) {
         let mut struct_definitions = HashMap::new();
-        let known_schemas: HashMap<String, String> = HashMap::new();
+        let mut known_schemas: HashSet<String> = HashSet::new();
 
         if func_src.contains("QueryParams") {
+            known_schemas.insert("QueryParams".to_string());
             struct_definitions.insert(
                 "QueryParams".to_string(),
                 r#"
@@ -448,6 +449,7 @@ mod tests {
         }
 
         if func_src.contains("User") {
+            known_schemas.insert("User".to_string());
             struct_definitions.insert(
                 "User".to_string(),
                 r#"
@@ -662,10 +664,7 @@ mod tests {
             "pub struct User { pub id: i32 }".to_string(),
         );
         let mut known_schemas = known_schemas;
-        known_schemas.insert(
-            "CustomHeader".to_string(),
-            "#/components/schemas/CustomHeader".to_string(),
-        );
+        known_schemas.insert("CustomHeader".to_string());
 
         for (idx, arg) in func.sig.inputs.iter().enumerate() {
             let result =
@@ -703,10 +702,10 @@ mod tests {
     }
 
     #[rstest]
-    #[case("i32", HashMap::new(), HashMap::new(), true)] // primitive type
+    #[case("i32", HashSet::new(), HashMap::new(), true)] // primitive type
     #[case(
         "User",
-        HashMap::new(),
+        HashSet::new(),
         {
             let mut map = HashMap::new();
             map.insert("User".to_string(), "pub struct User { id: i32 }".to_string());
@@ -717,25 +716,25 @@ mod tests {
     #[case(
         "Product",
         {
-            let mut map = HashMap::new();
-            map.insert("Product".to_string(), "Product".to_string());
-            map
+            let mut set = HashSet::new();
+            set.insert("Product".to_string());
+            set
         },
         HashMap::new(),
         true
     )] // known schema
-    #[case("Vec<i32>", HashMap::new(), HashMap::new(), true)] // Vec<T> with known inner type
-    #[case("Option<String>", HashMap::new(), HashMap::new(), true)] // Option<T> with known inner type
-    #[case("UnknownType", HashMap::new(), HashMap::new(), false)] // unknown type
+    #[case("Vec<i32>", HashSet::new(), HashMap::new(), true)] // Vec<T> with known inner type
+    #[case("Option<String>", HashSet::new(), HashMap::new(), true)] // Option<T> with known inner type
+    #[case("UnknownType", HashSet::new(), HashMap::new(), false)] // unknown type
     fn test_is_known_type(
-        #[case] type_str: &str,
-        #[case] known_schemas: HashMap<String, String>,
-        #[case] struct_definitions: HashMap<String, String>,
-        #[case] expected: bool,
-    ) {
-        let ty: Type = syn::parse_str(type_str).unwrap();
-        assert_eq!(
-            is_known_type(&ty, &known_schemas, &struct_definitions),
+         #[case] type_str: &str,
+         #[case] known_schemas: HashSet<String>,
+         #[case] struct_definitions: HashMap<String, String>,
+         #[case] expected: bool,
+     ) {
+         let ty: Type = syn::parse_str(type_str).unwrap();
+         assert_eq!(
+             is_known_type(&ty, &known_schemas, &struct_definitions),
             expected,
             "Type: {}",
             type_str
@@ -745,7 +744,7 @@ mod tests {
     #[test]
     fn test_parse_query_struct_to_parameters() {
         let mut struct_definitions = HashMap::new();
-        let mut known_schemas = HashMap::new();
+        let mut known_schemas = HashSet::new();
 
         // Test with struct that has fields
         struct_definitions.insert(
@@ -793,7 +792,7 @@ mod tests {
             "#
             .to_string(),
         );
-        known_schemas.insert("User".to_string(), "#/components/schemas/User".to_string());
+        known_schemas.insert("User".to_string());
 
         let ty: Type = syn::parse_str("NestedQuery").unwrap();
         let result = parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions);
@@ -836,14 +835,11 @@ mod tests {
     fn test_query_single_non_struct_known_type() {
         // Test line 128: Return single Query<T> parameter where T is a known non-primitive type
         // This should return a single parameter when Query<T> wraps a known type that's not primitive-like
-        let mut known_schemas = HashMap::new();
+        let mut known_schemas = HashSet::new();
         let struct_definitions = HashMap::new();
 
         // Add a known type that's not a struct
-        known_schemas.insert(
-            "CustomId".to_string(),
-            "#/components/schemas/CustomId".to_string(),
-        );
+        known_schemas.insert("CustomId".to_string());
 
         let func: syn::ItemFn = syn::parse_str("fn test(id: Query<CustomId>) {}").unwrap();
         let path_params: Vec<String> = vec![];
@@ -863,7 +859,7 @@ mod tests {
     fn test_path_param_by_name_match() {
         // Test line 159: path param matched by name (non-extractor case)
         // When a parameter name matches a path param name directly without Path<T> extractor
-        let known_schemas = HashMap::new();
+        let known_schemas = HashSet::new();
         let struct_definitions = HashMap::new();
 
         let func: syn::ItemFn = syn::parse_str("fn test(user_id: i32) {}").unwrap();
@@ -887,7 +883,7 @@ mod tests {
         // Create a Type::Path programmatically with empty segments
         use syn::punctuated::Punctuated;
 
-        let known_schemas = HashMap::new();
+        let known_schemas = HashSet::new();
         let struct_definitions = HashMap::new();
 
         // Create Type::Path with empty segments
@@ -907,9 +903,9 @@ mod tests {
     #[test]
     fn test_is_known_type_non_vec_option_generic() {
         // Test line 230: non-Vec/Option generic type (like Result<T, E> or Box<T>)
-        // The match at line 224-229 only handles Vec and Option
-        let known_schemas = HashMap::new();
-        let struct_definitions = HashMap::new();
+         // The match at line 224-229 only handles Vec and Option
+         let known_schemas = HashSet::new();
+         let struct_definitions = HashMap::new();
 
         // Box<i32> has angle brackets but is not Vec or Option
         let ty: Type = syn::parse_str("Box<i32>").unwrap();
@@ -927,7 +923,7 @@ mod tests {
         // Create a Type::Path programmatically with empty segments
         use syn::punctuated::Punctuated;
 
-        let known_schemas = HashMap::new();
+        let known_schemas = HashSet::new();
         let struct_definitions = HashMap::new();
 
         // Create Type::Path with empty segments
@@ -954,13 +950,13 @@ mod tests {
         // This requires a field that:
         // 1. Is Option<T> where T is a known schema
         // 2. T is NOT in struct_definitions (so ref stays as Ref)
-        // 3. field_schema is still Ref after the conversion attempt
-        //
-        // Note: parse_type_to_schema_ref_with_schemas for Option<RefType> may create
-        // an inline schema wrapping the inner ref, not a direct Ref.
-        // Line 313 is a defensive case that may be hard to hit in practice.
-        let mut struct_definitions = HashMap::new();
-        let known_schemas = HashMap::new();
+         // 3. field_schema is still Ref after the conversion attempt
+         //
+         // Note: parse_type_to_schema_ref_with_schemas for Option<RefType> may create
+         // an inline schema wrapping the inner ref, not a direct Ref.
+         // Line 313 is a defensive case that may be hard to hit in practice.
+         let mut struct_definitions = HashMap::new();
+         let known_schemas = HashSet::new();
 
         // Use a simple struct with Option<i32> to verify the optional handling works
         struct_definitions.insert(
@@ -995,26 +991,23 @@ mod tests {
         // 1. field_schema is SchemaRef::Ref
         // 2. is_optional is false
         // 3. The ref conversion at lines 294-304 fails (no struct_def)
-        let mut struct_definitions = HashMap::new();
-        let mut known_schemas = HashMap::new();
+         let mut struct_definitions = HashMap::new();
+         let mut known_schemas = HashSet::new();
 
-        // Struct with required RefType field
-        struct_definitions.insert(
-            "QueryWithRef".to_string(),
-            r#"
-            pub struct QueryWithRef {
-                pub item: RefType,
-            }
-            "#
-            .to_string(),
-        );
+         // Struct with required RefType field
+         struct_definitions.insert(
+             "QueryWithRef".to_string(),
+             r#"
+             pub struct QueryWithRef {
+                 pub item: RefType,
+             }
+             "#
+             .to_string(),
+         );
 
-        // RefType is a known schema (will generate SchemaRef::Ref)
-        // BUT we don't have its struct definition, so the conversion at 296-303 fails
-        known_schemas.insert(
-            "RefType".to_string(),
-            "#/components/schemas/RefType".to_string(),
-        );
+         // RefType is a known schema (will generate SchemaRef::Ref)
+         // BUT we don't have its struct definition, so the conversion at 296-303 fails
+         known_schemas.insert("RefType".to_string());
 
         let ty: Type = syn::parse_str("QueryWithRef").unwrap();
         let result = parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions);
@@ -1033,26 +1026,23 @@ mod tests {
 
     #[test]
     fn test_schema_ref_converted_to_inline_with_struct_def() {
-        // Test lines 294-304: Ref IS converted when struct_def exists
-        let mut struct_definitions = HashMap::new();
-        let mut known_schemas = HashMap::new();
+         // Test lines 294-304: Ref IS converted when struct_def exists
+         let mut struct_definitions = HashMap::new();
+         let mut known_schemas = HashSet::new();
 
-        // Main struct with a field of type NestedType
-        struct_definitions.insert(
-            "QueryWithNested".to_string(),
-            r#"
-            pub struct QueryWithNested {
-                pub nested: NestedType,
-            }
-            "#
-            .to_string(),
-        );
+         // Main struct with a field of type NestedType
+         struct_definitions.insert(
+             "QueryWithNested".to_string(),
+             r#"
+             pub struct QueryWithNested {
+                 pub nested: NestedType,
+             }
+             "#
+             .to_string(),
+         );
 
-        // NestedType is both in known_schemas AND has a struct definition
-        known_schemas.insert(
-            "NestedType".to_string(),
-            "#/components/schemas/NestedType".to_string(),
-        );
+         // NestedType is both in known_schemas AND has a struct definition
+         known_schemas.insert("NestedType".to_string());
         struct_definitions.insert(
             "NestedType".to_string(),
             r#"

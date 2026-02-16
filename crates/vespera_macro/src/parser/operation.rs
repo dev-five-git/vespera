@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use syn::{FnArg, PatType, Type};
 use vespera_core::route::{MediaType, Operation, Parameter, ParameterLocation, Response};
@@ -14,7 +14,7 @@ use super::{
 pub fn build_operation_from_function(
     sig: &syn::Signature,
     path: &str,
-    known_schemas: &std::collections::HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &std::collections::HashMap<String, String>,
     error_status: Option<&[u16]>,
     tags: Option<&[String]>,
@@ -237,7 +237,7 @@ mod tests {
         build_operation_from_function(
             &sig,
             path,
-            &HashMap::new(),
+            &HashSet::new(),
             &HashMap::new(),
             error_status,
             None,
@@ -326,7 +326,7 @@ mod tests {
 
     fn build_with_tags(sig_src: &str, path: &str, tags: Option<&[String]>) -> Operation {
         let sig: syn::Signature = syn::parse_str(sig_src).expect("signature parse failed");
-        build_operation_from_function(&sig, path, &HashMap::new(), &HashMap::new(), None, tags)
+        build_operation_from_function(&sig, path, &HashSet::new(), &HashMap::new(), None, tags)
     }
 
     #[test]
@@ -648,7 +648,7 @@ mod tests {
         let op = build_operation_from_function(
             &sig,
             "/search",
-            &HashMap::new(),
+            &HashSet::new(),
             &struct_definitions,
             None,
             None,

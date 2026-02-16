@@ -1,6 +1,6 @@
 //! `OpenAPI` document generator
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use vespera_core::{
@@ -96,13 +96,13 @@ pub fn generate_openapi_doc_with_metadata(
 /// `schema_type!` generated types can reference them.
 fn build_schema_lookups(
     metadata: &CollectedMetadata,
-) -> (HashMap<String, String>, HashMap<String, String>) {
-    let mut known_schema_names = HashMap::new();
+) -> (HashSet<String>, HashMap<String, String>) {
+    let mut known_schema_names = HashSet::new();
     let mut struct_definitions = HashMap::new();
 
     for struct_meta in &metadata.structs {
         let schema_name = struct_meta.name.clone();
-        known_schema_names.insert(schema_name.clone(), schema_name);
+        known_schema_names.insert(schema_name);
         struct_definitions.insert(struct_meta.name.clone(), struct_meta.definition.clone());
     }
 
@@ -154,7 +154,7 @@ fn build_struct_file_index(file_cache: &HashMap<String, syn::File>) -> HashMap<S
 /// instead of scanning all route files per struct.
 fn parse_component_schemas(
     metadata: &CollectedMetadata,
-    known_schema_names: &HashMap<String, String>,
+    known_schema_names: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
     file_cache: &HashMap<String, syn::File>,
     struct_file_index: &HashMap<String, &str>,
@@ -204,7 +204,7 @@ fn parse_component_schemas(
 /// Each unique file is parsed exactly once in `build_file_cache`.
 fn build_path_items(
     metadata: &CollectedMetadata,
-    known_schema_names: &HashMap<String, String>,
+    known_schema_names: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
     file_cache: &HashMap<String, syn::File>,
 ) -> (BTreeMap<String, PathItem>, BTreeSet<String>) {
