@@ -1,3 +1,6 @@
+// Route handlers must be `pub async fn` per Vespera convention
+#![allow(clippy::unused_async)]
+
 use serde::Deserialize;
 use vespera::{Schema, axum::extract::Query};
 

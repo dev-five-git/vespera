@@ -1,6 +1,6 @@
 //! Schema macro implementation
 //!
-//! Provides macros for generating OpenAPI schemas from struct types:
+//! Provides macros for generating `OpenAPI` schemas from struct types:
 //! - `schema!` - Generate Schema value with optional field filtering
 //! - `schema_type!` - Generate new struct type derived from existing type
 
@@ -59,15 +59,14 @@ pub fn generate_schema_code(
     let type_name = extract_type_name(&input.ty)?;
 
     // Find struct definition in storage
-    let struct_def = schema_storage.iter().find(|s| s.name == type_name).ok_or_else(|| syn::Error::new_spanned(&input.ty, format!("type `{}` not found. Make sure it has #[derive(Schema)] before this macro invocation", type_name)))?;
+    let struct_def = schema_storage.iter().find(|s| s.name == type_name).ok_or_else(|| syn::Error::new_spanned(&input.ty, format!("type `{type_name}` not found. Make sure it has #[derive(Schema)] before this macro invocation")))?;
 
     // Parse the struct definition
     let parsed_struct: syn::ItemStruct = syn::parse_str(&struct_def.definition).map_err(|e| {
         syn::Error::new_spanned(
             &input.ty,
             format!(
-                "failed to parse struct definition for `{}`: {}",
-                type_name, e
+                "failed to parse struct definition for `{type_name}`: {e}"
             ),
         )
     })?;
@@ -80,15 +79,16 @@ pub fn generate_schema_code(
 
     // Generate schema with filtering
     let schema_tokens =
-        generate_filtered_schema(&parsed_struct, &omit_set, &pick_set, schema_storage)?;
+        generate_filtered_schema(&parsed_struct, &omit_set, &pick_set, schema_storage);
 
     Ok(schema_tokens)
 }
 
 /// Generate a new struct type from an existing type with field filtering
 ///
-/// Returns (TokenStream, Option<StructMetadata>) where the metadata is returned
-/// when a custom `name` is provided (for direct registration in SCHEMA_STORAGE).
+/// Returns (`TokenStream`, Option<StructMetadata>) where the metadata is returned
+/// when a custom `name` is provided (for direct registration in `SCHEMA_STORAGE`).
+#[allow(clippy::too_many_lines)]
 pub fn generate_schema_type_code(
     input: &SchemaTypeInput,
     schema_storage: &[StructMetadata],
@@ -122,10 +122,9 @@ pub fn generate_schema_type_code(
             return Err(syn::Error::new_spanned(
                 &input.source_type,
                 format!(
-                    "type `{}` not found. Either:\n\
+                    "type `{source_type_name}` not found. Either:\n\
                      1. Use #[derive(Schema)] in the same file\n\
-                     2. Use full module path like `crate::models::memo::Model` to reference a struct from another file",
-                    source_type_name
+                     2. Use full module path like `crate::models::memo::Model` to reference a struct from another file"
                 ),
             ));
         }
@@ -145,11 +144,10 @@ pub fn generate_schema_type_code(
             return Err(syn::Error::new_spanned(
                 &input.source_type,
                 format!(
-                    "type `{}` not found. Either:\n\
+                    "type `{source_type_name}` not found. Either:\n\
                      1. Use #[derive(Schema)] in the same file\n\
                      2. Use full module path like `crate::models::memo::Model` to reference a struct from another file\n\
-                     3. If using `name = \"XxxSchema\"`, ensure the file name matches (e.g., xxx.rs)",
-                    source_type_name
+                     3. If using `name = \"XxxSchema\"`, ensure the file name matches (e.g., xxx.rs)"
                 ),
             ));
         }
@@ -160,8 +158,7 @@ pub fn generate_schema_type_code(
         syn::Error::new_spanned(
             &input.source_type,
             format!(
-                "failed to parse struct definition for `{}`: {}",
-                source_type_name, e
+                "failed to parse struct definition for `{source_type_name}`: {e}"
             ),
         )
     })?;
@@ -234,9 +231,7 @@ pub fn generate_schema_type_code(
         for field in &fields_named.named {
             let rust_field_name = field
                 .ident
-                .as_ref()
-                .map(|i| strip_raw_prefix(&i.to_string()).to_string())
-                .unwrap_or_else(|| "unknown".to_string());
+                .as_ref().map_or_else(|| "unknown".to_string(), |i| strip_raw_prefix(&i.to_string()).to_string());
 
             // Apply omit/pick filters
             if should_skip_field(&rust_field_name, &omit_set, &pick_set) {
@@ -592,7 +587,7 @@ pub fn generate_schema_type_code(
 
     // If custom name is provided, create metadata for direct registration
     // This ensures the schema appears in OpenAPI even when `ignore` is set
-    let metadata = if let Some(ref custom_name) = input.schema_name {
+    let metadata = input.schema_name.as_ref().map(|custom_name| {
         // Build struct definition string for metadata (without derives/attrs for parsing)
         let struct_def = quote! {
             #[serde(rename_all = #effective_rename_all)]
@@ -601,13 +596,11 @@ pub fn generate_schema_type_code(
                 #(#field_tokens),*
             }
         };
-        Some(StructMetadata::new(
+        StructMetadata::new(
             custom_name.clone(),
             struct_def.to_string(),
-        ))
-    } else {
-        None
-    };
+        )
+    });
 
     Ok((generated_tokens, metadata))
 }

@@ -1,4 +1,4 @@
-//! Type to JSON Schema conversion for OpenAPI generation.
+//! Type to JSON Schema conversion for `OpenAPI` generation.
 //!
 //! This module handles the conversion of Rust types (as parsed by syn)
 //! into OpenAPI-compatible JSON Schema references and inline schemas.
@@ -15,7 +15,7 @@ use super::{
 };
 
 /// Check if a type is a primitive Rust type that maps directly to a JSON Schema type.
-pub(crate) fn is_primitive_type(ty: &Type) -> bool {
+pub fn is_primitive_type(ty: &Type) -> bool {
     match ty {
         Type::Path(type_path) => {
             let path = &type_path.path;
@@ -44,7 +44,7 @@ pub(crate) fn is_primitive_type(ty: &Type) -> bool {
     }
 }
 
-/// Converts a Rust type to an OpenAPI SchemaRef.
+/// Converts a Rust type to an `OpenAPI` `SchemaRef`.
 ///
 /// This is the main entry point for type-to-schema conversion.
 pub fn parse_type_to_schema_ref(
@@ -60,12 +60,13 @@ pub fn parse_type_to_schema_ref(
 /// Handles:
 /// - Primitive types (i32, String, bool, etc.)
 /// - Generic wrappers (Vec, Option, Box)
-/// - SeaORM relations (HasOne, HasMany)
-/// - Map types (HashMap, BTreeMap)
-/// - Date/time types (DateTime, NaiveDate, etc.)
+/// - `SeaORM` relations (`HasOne`, `HasMany`)
+/// - Map types (`HashMap`, `BTreeMap`)
+/// - Date/time types (`DateTime`, `NaiveDate`, etc.)
 /// - Known schema references
 /// - Generic type instantiation
-pub(crate) fn parse_type_to_schema_ref_with_schemas(
+#[allow(clippy::too_many_lines)]
+pub fn parse_type_to_schema_ref_with_schemas(
     ty: &Type,
     known_schemas: &HashMap<String, String>,
     struct_definitions: &HashMap<String, String>,
@@ -103,22 +104,21 @@ pub(crate) fn parse_type_to_schema_ref_with_schemas(
                             );
                             if ident_str == "Vec" {
                                 return SchemaRef::Inline(Box::new(Schema::array(inner_schema)));
-                            } else {
-                                // Option<T> -> nullable schema
-                                match inner_schema {
-                                    SchemaRef::Inline(mut schema) => {
-                                        schema.nullable = Some(true);
-                                        return SchemaRef::Inline(schema);
-                                    }
-                                    SchemaRef::Ref(reference) => {
-                                        // Wrap reference in an inline schema to attach nullable flag
-                                        return SchemaRef::Inline(Box::new(Schema {
-                                            ref_path: Some(reference.ref_path),
-                                            schema_type: None,
-                                            nullable: Some(true),
-                                            ..Schema::new(SchemaType::Object)
-                                        }));
-                                    }
+                            }
+                            // Option<T> -> nullable schema
+                            match inner_schema {
+                                SchemaRef::Inline(mut schema) => {
+                                    schema.nullable = Some(true);
+                                    return SchemaRef::Inline(schema);
+                                }
+                                SchemaRef::Ref(reference) => {
+                                    // Wrap reference in an inline schema to attach nullable flag
+                                    return SchemaRef::Inline(Box::new(Schema {
+                                        ref_path: Some(reference.ref_path),
+                                        schema_type: None,
+                                        nullable: Some(true),
+                                        ..Schema::new(SchemaType::Object)
+                                    }));
                                 }
                             }
                         }
@@ -130,7 +130,7 @@ pub(crate) fn parse_type_to_schema_ref_with_schemas(
                             && let Some(schema_name) = extract_schema_name_from_entity(inner_ty)
                         {
                             return SchemaRef::Inline(Box::new(Schema {
-                                ref_path: Some(format!("#/components/schemas/{}", schema_name)),
+                                ref_path: Some(format!("#/components/schemas/{schema_name}")),
                                 schema_type: None,
                                 nullable: Some(true),
                                 ..Schema::new(SchemaType::Object)
@@ -145,8 +145,7 @@ pub(crate) fn parse_type_to_schema_ref_with_schemas(
                             && let Some(schema_name) = extract_schema_name_from_entity(inner_ty)
                         {
                             let inner_ref = SchemaRef::Ref(Reference::new(format!(
-                                "#/components/schemas/{}",
-                                schema_name
+                                "#/components/schemas/{schema_name}"
                             )));
                             return SchemaRef::Inline(Box::new(Schema::array(inner_ref)));
                         }
@@ -175,7 +174,7 @@ pub(crate) fn parse_type_to_schema_ref_with_schemas(
                                     serde_json::json!({ "$ref": ref_ref.ref_path })
                                 }
                                 SchemaRef::Inline(schema) => {
-                                    serde_json::to_value(&*schema).unwrap_or(serde_json::json!({}))
+                                    serde_json::to_value(&*schema).unwrap_or_else(|_| serde_json::json!({}))
                                 }
                             };
                             return SchemaRef::Inline(Box::new(Schema {
@@ -197,33 +196,22 @@ pub(crate) fn parse_type_to_schema_ref_with_schemas(
                 "f32" | "f64" => SchemaRef::Inline(Box::new(Schema::number())),
                 "bool" => SchemaRef::Inline(Box::new(Schema::boolean())),
                 "String" | "str" => SchemaRef::Inline(Box::new(Schema::string())),
-                // Date-time types from chrono crate
+                // Date-time types from chrono and time crates
                 "DateTime"
                 | "NaiveDateTime"
                 | "DateTimeWithTimeZone"
                 | "DateTimeUtc"
-                | "DateTimeLocal" => SchemaRef::Inline(Box::new(Schema {
+                | "DateTimeLocal"
+                | "OffsetDateTime"
+                | "PrimitiveDateTime" => SchemaRef::Inline(Box::new(Schema {
                     format: Some("date-time".to_string()),
                     ..Schema::string()
                 })),
-                "NaiveDate" => SchemaRef::Inline(Box::new(Schema {
+                "NaiveDate" | "Date" => SchemaRef::Inline(Box::new(Schema {
                     format: Some("date".to_string()),
                     ..Schema::string()
                 })),
-                "NaiveTime" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("time".to_string()),
-                    ..Schema::string()
-                })),
-                // Date-time types from time crate
-                "OffsetDateTime" | "PrimitiveDateTime" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("date-time".to_string()),
-                    ..Schema::string()
-                })),
-                "Date" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("date".to_string()),
-                    ..Schema::string()
-                })),
-                "Time" => SchemaRef::Inline(Box::new(Schema {
+                "NaiveTime" | "Time" => SchemaRef::Inline(Box::new(Schema {
                     format: Some("time".to_string()),
                     ..Schema::string()
                 })),
@@ -264,15 +252,15 @@ pub(crate) fn parse_type_to_schema_ref_with_schemas(
                             pascal_name
                         } else {
                             // Try lowercase version: "userSchema"
-                            let lower_name = format!("{}Schema", parent_name);
+                            let lower_name = format!("{parent_name}Schema");
                             if known_schemas.contains_key(&lower_name) {
                                 lower_name
                             } else {
-                                type_name.clone()
+                                type_name
                             }
                         }
                     } else {
-                        type_name.clone()
+                        type_name
                     };
 
                     if known_schemas.contains_key(&resolved_name) {

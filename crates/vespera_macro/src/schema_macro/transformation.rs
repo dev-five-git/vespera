@@ -1,16 +1,16 @@
-//! Field transformation logic for schema_type! macro.
+//! Field transformation logic for `schema_type`! macro.
 //!
 //! This module contains functions for building filter sets, rename maps,
 //! and extracting/filtering attributes from source structs.
 //!
 //! # Overview
 //!
-//! The schema_type! macro applies transformations to the source struct to create a new schema type.
+//! The `schema_type`! macro applies transformations to the source struct to create a new schema type.
 //! This module provides utilities to:
 //! - Build sets of fields to include (pick) or exclude (omit)
 //! - Construct rename maps for field renaming
 //! - Track which fields should be made optional (partial)
-//! - Apply serde rename strategies (camelCase, snake_case, etc.)
+//! - Apply serde rename strategies (camelCase, `snake_case`, etc.)
 //! - Filter and transform field lists based on configuration
 //!
 //! # Key Functions
@@ -48,9 +48,10 @@ pub fn build_pick_set(pick: Option<Vec<String>>) -> HashSet<String> {
 
 /// Builds the partial set based on partial mode.
 ///
-/// Returns (partial_all, partial_set) where:
+/// Returns (`partial_all`, `partial_set`) where:
 /// - `partial_all` is true if all fields should be made optional
-/// - `partial_set` contains specific fields to make optional (empty if partial_all)
+/// - `partial_set` contains specific fields to make optional (empty if `partial_all`)
+#[allow(clippy::ref_option)]
 pub fn build_partial_config(partial: &Option<PartialMode>) -> (bool, HashSet<String>) {
     let partial_all = matches!(partial, Some(PartialMode::All));
     let partial_set: HashSet<String> = match partial {
@@ -65,10 +66,10 @@ pub fn build_rename_map(rename: Option<Vec<(String, String)>>) -> HashMap<String
     rename.unwrap_or_default().into_iter().collect()
 }
 
-/// Extracts serde attributes from a struct, excluding rename_all.
+/// Extracts serde attributes from a struct, excluding `rename_all`.
 ///
 /// This is used to inherit serde attributes from the source struct
-/// while handling rename_all separately.
+/// while handling `rename_all` separately.
 pub fn extract_serde_attrs_without_rename_all(attrs: &[syn::Attribute]) -> Vec<&syn::Attribute> {
     attrs
         .iter()
@@ -97,21 +98,20 @@ pub fn extract_doc_attrs(attrs: &[syn::Attribute]) -> Vec<&syn::Attribute> {
         .collect()
 }
 
-/// Determines the effective rename_all strategy.
+/// Determines the effective `rename_all` strategy.
 ///
 /// Priority:
-/// 1. If input.rename_all is specified, use it
-/// 2. Else if source has rename_all, use it
+/// 1. If `input.rename_all` is specified, use it
+/// 2. Else if source has `rename_all`, use it
 /// 3. Else default to "camelCase"
 pub fn determine_rename_all(
     input_rename_all: Option<&String>,
     source_attrs: &[syn::Attribute],
 ) -> String {
-    if let Some(ra) = input_rename_all {
-        ra.clone()
-    } else {
-        extract_rename_all(source_attrs).unwrap_or_else(|| "camelCase".to_string())
-    }
+    input_rename_all.map_or_else(
+        || extract_rename_all(source_attrs).unwrap_or_else(|| "camelCase".to_string()),
+        std::clone::Clone::clone,
+    )
 }
 
 /// Extracts serde attributes from a field.
@@ -124,7 +124,7 @@ pub fn extract_field_serde_attrs(attrs: &[syn::Attribute]) -> Vec<&syn::Attribut
 
 /// Extracts `#[form_data(...)]` attributes from a field.
 ///
-/// Used in multipart mode to preserve form_data attributes from the source struct
+/// Used in multipart mode to preserve `form_data` attributes from the source struct
 /// on generated fields (e.g., `#[form_data(limit = "10MiB")]`).
 pub fn extract_form_data_attrs(attrs: &[syn::Attribute]) -> Vec<&syn::Attribute> {
     attrs

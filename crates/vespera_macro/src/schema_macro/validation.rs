@@ -1,11 +1,11 @@
-//! Field validation logic for schema_type! macro.
+//! Field validation logic for `schema_type`! macro.
 //!
 //! This module contains functions to validate that fields specified in
 //! pick, omit, rename, and partial parameters exist in the source struct.
 //!
 //! # Overview
 //!
-//! The schema_type! macro accepts user-specified field filters (pick, omit, rename, partial).
+//! The `schema_type`! macro accepts user-specified field filters (pick, omit, rename, partial).
 //! This module validates that all specified fields actually exist in the source struct,
 //! providing clear error messages when fields don't exist.
 //!

@@ -2,9 +2,9 @@
 //!
 //! This crate contains all the proc-macros for Vespera:
 //! - `#[vespera::route(...)]` - Mark a function as a route handler
-//! - `#[derive(Schema)]` - Register a type for OpenAPI schema generation
-//! - `schema!(...)` - Get OpenAPI schema at compile time
-//! - `vespera!(...)` - Generate Axum router with OpenAPI
+//! - `#[derive(Schema)]` - Register a type for `OpenAPI` schema generation
+//! - `schema!(...)` - Get `OpenAPI` schema at compile time
+//! - `vespera!(...)` - Generate Axum router with `OpenAPI`
 //! - `export_app!(...)` - Export router for merging
 //!
 //! # Architecture
@@ -77,8 +77,9 @@ pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Derive macro for Schema
 ///
-/// Supports `#[schema(name = "CustomName")]` attribute to set custom OpenAPI schema name.
+/// Supports `#[schema(name = "CustomName")]` attribute to set custom `OpenAPI` schema name.
 #[cfg(not(tarpaulin_include))]
+#[allow(clippy::missing_panics_doc)]
 #[proc_macro_derive(Schema, attributes(schema, serde))]
 pub fn derive_schema(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
@@ -87,7 +88,7 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Generate an OpenAPI Schema from a type with optional field filtering.
+/// Generate an `OpenAPI` Schema from a type with optional field filtering.
 ///
 /// This macro creates a `vespera::schema::Schema` struct at compile time
 /// from a type that has `#[derive(Schema)]`.
@@ -133,6 +134,7 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
 /// let list_schema = schema!(User, pick = ["id", "name"]);
 /// ```
 #[cfg(not(tarpaulin_include))]
+#[allow(clippy::missing_panics_doc)]
 #[proc_macro]
 pub fn schema(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as schema_macro::SchemaInput);
@@ -201,27 +203,30 @@ pub fn schema(input: TokenStream) -> TokenStream {
 /// }
 /// ```
 #[cfg(not(tarpaulin_include))]
+#[allow(clippy::missing_panics_doc)]
 #[proc_macro]
 pub fn schema_type(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as schema_macro::SchemaTypeInput);
 
-    // Get stored schemas
-    let mut storage = SCHEMA_STORAGE.lock().unwrap();
-
-    match schema_macro::generate_schema_type_code(&input, &storage) {
-        Ok((tokens, generated_metadata)) => {
-            // If custom name is provided, register the schema directly
-            // This ensures it appears in OpenAPI even when `ignore` is set
-            if let Some(metadata) = generated_metadata {
-                storage.push(metadata);
-            }
-            TokenStream::from(tokens)
+    // Get stored schemas and generate code
+    let (tokens, generated_metadata) = {
+        let storage = SCHEMA_STORAGE.lock().unwrap();
+        match schema_macro::generate_schema_type_code(&input, &storage) {
+            Ok(result) => result,
+            Err(e) => return e.to_compile_error().into(),
         }
-        Err(e) => e.to_compile_error().into(),
+    };
+
+    // If custom name is provided, register the schema directly
+    // This ensures it appears in OpenAPI even when `ignore` is set
+    if let Some(metadata) = generated_metadata {
+        SCHEMA_STORAGE.lock().unwrap().push(metadata);
     }
+    TokenStream::from(tokens)
 }
 
 #[cfg(not(tarpaulin_include))]
+#[allow(clippy::missing_panics_doc)]
 #[proc_macro]
 pub fn vespera(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as AutoRouterInput);
@@ -237,7 +242,7 @@ pub fn vespera(input: TokenStream) -> TokenStream {
 /// Export a vespera app as a reusable component.
 ///
 /// Generates a struct with:
-/// - `OPENAPI_SPEC: &'static str` - The OpenAPI JSON spec
+/// - `OPENAPI_SPEC: &'static str` - The `OpenAPI` JSON spec
 /// - `router() -> Router` - Function returning the Axum router
 ///
 /// # Example
@@ -257,6 +262,7 @@ pub fn vespera(input: TokenStream) -> TokenStream {
 /// ```
 ///
 #[cfg(not(tarpaulin_include))]
+#[allow(clippy::missing_panics_doc)]
 #[proc_macro]
 pub fn export_app(input: TokenStream) -> TokenStream {
     let ExportAppInput { name, dir } = syn::parse_macro_input!(input as ExportAppInput);

@@ -1,4 +1,4 @@
-//! Enum to JSON Schema conversion for OpenAPI generation.
+//! Enum to JSON Schema conversion for `OpenAPI` generation.
 //!
 //! This module handles the conversion of Rust enums (as parsed by syn)
 //! into OpenAPI-compatible JSON Schema definitions.
@@ -12,7 +12,7 @@
 //! 3. **Adjacently Tagged** (`#[serde(tag = "type", content = "data")]`): `{"type": "VariantName", "data": {...}}`
 //! 4. **Untagged** (`#[serde(untagged)]`): `{...fields...}` (no tag)
 //!
-//! Each representation maps to a different OpenAPI schema pattern using `oneOf` and optionally `discriminator`.
+//! Each representation maps to a different `OpenAPI` schema pattern using `oneOf` and optionally `discriminator`.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -21,13 +21,13 @@ use vespera_core::schema::{Discriminator, Schema, SchemaRef, SchemaType};
 
 use super::{
     serde_attrs::{
-        SerdeEnumRepr, extract_doc_comment, extract_enum_repr, extract_field_rename,
-        extract_rename_all, rename_field, strip_raw_prefix,
+        extract_doc_comment, extract_enum_repr, extract_field_rename, extract_rename_all,
+        rename_field, strip_raw_prefix, SerdeEnumRepr,
     },
     type_schema::parse_type_to_schema_ref,
 };
 
-/// Parses a Rust enum into an OpenAPI Schema.
+/// Parses a Rust enum into an `OpenAPI` Schema.
 ///
 /// Supports all four serde enum representations:
 /// - Externally tagged (default): `{"VariantName": {...}}`
@@ -113,12 +113,8 @@ fn parse_unit_enum_to_schema(
         let variant_name = strip_raw_prefix(&variant.ident.to_string()).to_string();
 
         // Check for variant-level rename attribute first (takes precedence)
-        let enum_value = if let Some(renamed) = extract_field_rename(&variant.attrs) {
-            renamed
-        } else {
-            // Apply rename_all transformation if present
-            rename_field(&variant_name, rename_all)
-        };
+        let enum_value = extract_field_rename(&variant.attrs)
+            .unwrap_or_else(|| rename_field(&variant_name, rename_all));
 
         enum_values.push(serde_json::Value::String(enum_value));
     }
@@ -139,11 +135,7 @@ fn parse_unit_enum_to_schema(
 fn get_variant_key(variant: &syn::Variant, rename_all: Option<&str>) -> String {
     let variant_name = strip_raw_prefix(&variant.ident.to_string()).to_string();
 
-    if let Some(renamed) = extract_field_rename(&variant.attrs) {
-        renamed
-    } else {
-        rename_field(&variant_name, rename_all)
-    }
+    extract_field_rename(&variant.attrs).unwrap_or_else(|| rename_field(&variant_name, rename_all))
 }
 
 /// Build properties for a struct variant's fields
@@ -159,22 +151,18 @@ fn build_struct_variant_properties(
     let variant_rename_all = extract_rename_all(variant_attrs);
 
     for field in &fields_named.named {
-        let rust_field_name = field
-            .ident
-            .as_ref()
-            .map(|i| strip_raw_prefix(&i.to_string()).to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+        let rust_field_name = field.ident.as_ref().map_or_else(
+            || "unknown".to_string(),
+            |i| strip_raw_prefix(&i.to_string()).to_string(),
+        );
 
         // Check for field-level rename attribute first (takes precedence)
-        let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
-            renamed
-        } else {
-            // Apply rename_all transformation if present
+        let field_name = extract_field_rename(&field.attrs).unwrap_or_else(|| {
             rename_field(
                 &rust_field_name,
                 variant_rename_all.as_deref().or(enum_rename_all),
             )
-        };
+        });
 
         let field_type = &field.ty;
         let mut schema_ref =
@@ -212,8 +200,7 @@ fn build_struct_variant_properties(
                     .path
                     .segments
                     .first()
-                    .map(|s| s.ident == "Option")
-                    .unwrap_or(false)
+                    .is_some_and(|s| s.ident == "Option")
         );
 
         if !is_optional {
@@ -399,7 +386,7 @@ fn parse_externally_tagged_enum(
 }
 
 /// Parse internally tagged enum: `{"tag": "VariantName", ...fields...}`
-/// Uses OpenAPI discriminator for the tag field.
+/// Uses `OpenAPI` discriminator for the tag field.
 /// Note: serde only allows struct and unit variants for internally tagged enums.
 fn parse_internally_tagged_enum(
     enum_item: &syn::ItemEnum,
@@ -410,7 +397,6 @@ fn parse_internally_tagged_enum(
     struct_definitions: &HashMap<String, String>,
 ) -> Schema {
     let mut one_of_schemas = Vec::new();
-    let mut discriminator_mapping = BTreeMap::new();
 
     for variant in &enum_item.variants {
         let variant_key = get_variant_key(variant, rename_all);
@@ -469,10 +455,6 @@ fn parse_internally_tagged_enum(
             }
         };
 
-        // Add to discriminator mapping (variant_key -> inline schema reference)
-        // For inline schemas, we use #variant_key as a pseudo-reference
-        discriminator_mapping.insert(variant_key.clone(), format!("#variant_{}", variant_key));
-
         one_of_schemas.push(SchemaRef::Inline(Box::new(variant_schema)));
     }
 
@@ -493,7 +475,7 @@ fn parse_internally_tagged_enum(
 }
 
 /// Parse adjacently tagged enum: `{"tag": "VariantName", "content": {...}}`
-/// Uses OpenAPI discriminator for the tag field.
+/// Uses `OpenAPI` discriminator for the tag field.
 fn parse_adjacently_tagged_enum(
     enum_item: &syn::ItemEnum,
     description: Option<String>,
@@ -793,13 +775,11 @@ mod tests {
                             let inner_props = inner_obj.properties.as_ref().unwrap();
                             assert!(inner_props.contains_key("id"));
                             assert!(inner_props.contains_key("note"));
-                            assert!(
-                                inner_obj
-                                    .required
-                                    .as_ref()
-                                    .unwrap()
-                                    .contains(&"id".to_string())
-                            );
+                            assert!(inner_obj
+                                .required
+                                .as_ref()
+                                .unwrap()
+                                .contains(&"id".to_string()));
                         } else {
                             panic!("Expected inline object schema");
                         }

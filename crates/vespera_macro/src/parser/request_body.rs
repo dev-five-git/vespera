@@ -12,14 +12,14 @@ fn is_string_like(ty: &Type) -> bool {
             .path
             .segments
             .last()
-            .map(|seg| seg.ident == "String" || seg.ident == "str")
-            .unwrap_or(false),
+            .is_some_and(|seg| seg.ident == "String" || seg.ident == "str"),
         Type::Reference(type_ref) => is_string_like(&type_ref.elem),
         _ => false,
     }
 }
 
-/// Analyze function signature and extract RequestBody
+/// Analyze function signature and extract `RequestBody`
+#[allow(clippy::too_many_lines)]
 pub fn parse_request_body(
     arg: &FnArg,
     known_schemas: &std::collections::HashMap<String, String>,

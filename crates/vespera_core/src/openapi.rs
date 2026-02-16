@@ -1,11 +1,11 @@
-//! OpenAPI document structure definitions
+//! `OpenAPI` document structure definitions
 
 use crate::route::PathItem;
 use crate::schema::{Components, ExternalDocumentation};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
-/// OpenAPI document version
+/// `OpenAPI` document version
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum OpenApiVersion {
     #[serde(rename = "3.0.0")]
@@ -114,11 +114,11 @@ pub struct Tag {
     pub external_docs: Option<ExternalDocumentation>,
 }
 
-/// OpenAPI document (root structure)
+/// `OpenAPI` document (root structure)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenApi {
-    /// OpenAPI version
+    /// `OpenAPI` version
     pub openapi: OpenApiVersion,
     /// API information
     pub info: Info,
@@ -142,10 +142,10 @@ pub struct OpenApi {
 }
 
 impl OpenApi {
-    /// Merge another OpenAPI document into this one.
+    /// Merge another `OpenAPI` document into this one.
     /// Paths, schemas, and tags from `other` are added to `self`.
     /// If there are conflicts, `self` takes precedence.
-    pub fn merge(&mut self, other: OpenApi) {
+    pub fn merge(&mut self, other: Self) {
         // Merge paths (self takes precedence on conflict)
         for (path, item) in other.paths {
             self.paths.entry(path).or_insert(item);
@@ -194,8 +194,13 @@ impl OpenApi {
     }
 
     /// Merge from a JSON string. Returns error if parsing fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `serde_json::Error` when `json_str` is not valid JSON or does not
+    /// deserialize into an `OpenApi` document.
     pub fn merge_from_str(&mut self, json_str: &str) -> Result<(), serde_json::Error> {
-        let other: OpenApi = serde_json::from_str(json_str)?;
+        let other: Self = serde_json::from_str(json_str)?;
         self.merge(other);
         Ok(())
     }

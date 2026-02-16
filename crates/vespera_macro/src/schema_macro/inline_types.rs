@@ -9,7 +9,7 @@ use quote::quote;
 use super::{
     circular::detect_circular_fields,
     file_lookup::find_model_from_schema_path,
-    seaorm::{RelationFieldInfo, convert_type_with_chrono},
+    seaorm::{convert_type_with_chrono, RelationFieldInfo},
     type_utils::{
         extract_module_path_from_schema_path, is_seaorm_relation_type, snake_to_pascal_case,
     },
@@ -18,11 +18,11 @@ use crate::parser::{extract_rename_all, extract_skip};
 
 /// Information about an inline relation type to generate
 pub struct InlineRelationType {
-    /// Name of the inline type (e.g., MemoResponseRel_User)
+    /// Name of the inline type (e.g., `MemoResponseRel_User`)
     pub type_name: syn::Ident,
     /// Fields to include (excluding circular references)
     pub fields: Vec<InlineField>,
-    /// The effective rename_all strategy
+    /// The effective `rename_all` strategy
     pub rename_all: String,
 }
 
@@ -38,7 +38,7 @@ pub struct InlineField {
 /// When `MemoSchema.user` would reference `UserSchema` which has `memos: Vec<MemoSchema>`,
 /// we instead generate an inline type `MemoSchema_User` that excludes the `memos` field.
 ///
-/// The `schema_name_override` parameter allows using a custom schema name (e.g., "MemoSchema")
+/// The `schema_name_override` parameter allows using a custom schema name (e.g., "`MemoSchema`")
 /// instead of the Rust struct name (e.g., "Schema") for the inline type name.
 pub fn generate_inline_relation_type(
     parent_type_name: &syn::Ident,
@@ -95,13 +95,13 @@ pub fn generate_inline_relation_type_from_def(
 
     // Generate inline type name: {SchemaName}_{Field}
     // Use custom schema name if provided, otherwise use the Rust struct name
-    let parent_name = match schema_name_override {
-        Some(name) => name.to_string(),
-        None => parent_type_name.to_string(),
-    };
+    let parent_name = schema_name_override.map_or_else(
+        || parent_type_name.to_string(),
+        std::string::ToString::to_string,
+    );
     let field_name_pascal = snake_to_pascal_case(&rel_info.field_name.to_string());
     let inline_type_name = syn::Ident::new(
-        &format!("{}_{}", parent_name, field_name_pascal),
+        &format!("{parent_name}_{field_name_pascal}"),
         proc_macro2::Span::call_site(),
     );
 
@@ -154,14 +154,14 @@ pub fn generate_inline_relation_type_from_def(
     })
 }
 
-/// Generate inline relation type for HasMany with ALL relations stripped.
+/// Generate inline relation type for `HasMany` with ALL relations stripped.
 ///
-/// When a HasMany relation is explicitly picked, the nested items should have
+/// When a `HasMany` relation is explicitly picked, the nested items should have
 /// NO relation fields at all (not even FK relations). This prevents infinite
 /// nesting and keeps the schema simple.
 ///
-/// Example: If UserSchema picks "memos", each memo in the list will have
-/// id, user_id, title, content, etc. but NO user or comments relations.
+/// Example: If `UserSchema` picks "memos", each memo in the list will have
+/// id, `user_id`, title, content, etc. but NO user or comments relations.
 pub fn generate_inline_relation_type_no_relations(
     parent_type_name: &syn::Ident,
     rel_info: &RelationFieldInfo,
@@ -208,13 +208,13 @@ pub fn generate_inline_relation_type_no_relations_from_def(
         extract_rename_all(&parsed_model.attrs).unwrap_or_else(|| "camelCase".to_string());
 
     // Generate inline type name: {SchemaName}_{Field}
-    let parent_name = match schema_name_override {
-        Some(name) => name.to_string(),
-        None => parent_type_name.to_string(),
-    };
+    let parent_name = schema_name_override.map_or_else(
+        || parent_type_name.to_string(),
+        std::string::ToString::to_string,
+    );
     let field_name_pascal = snake_to_pascal_case(&rel_info.field_name.to_string());
     let inline_type_name = syn::Ident::new(
-        &format!("{}_{}", parent_name, field_name_pascal),
+        &format!("{parent_name}_{field_name_pascal}"),
         proc_macro2::Span::call_site(),
     );
 
@@ -261,7 +261,7 @@ pub fn generate_inline_relation_type_no_relations_from_def(
     })
 }
 
-/// Generate the struct definition TokenStream for an inline relation type
+/// Generate the struct definition `TokenStream` for an inline relation type
 pub fn generate_inline_type_definition(inline_type: &InlineRelationType) -> TokenStream {
     let type_name = &inline_type.type_name;
     let rename_all = &inline_type.rename_all;

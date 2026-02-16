@@ -1,7 +1,7 @@
-//! Serde attribute extraction utilities for OpenAPI schema generation.
+//! Serde attribute extraction utilities for `OpenAPI` schema generation.
 //!
 //! This module provides functions to extract serde attributes from Rust types
-//! to properly generate OpenAPI schemas that respect serialization rules.
+//! to properly generate `OpenAPI` schemas that respect serialization rules.
 
 /// Extract doc comments from attributes.
 /// Returns concatenated doc comment string or None if no doc comments.
@@ -39,23 +39,20 @@ pub fn strip_raw_prefix(ident: &str) -> &str {
 /// Capitalizes the first character of a string.
 /// Returns empty string if input is empty.
 /// E.g., `user` -> `User`, `USER` -> `USER`, `` -> ``
-pub(crate) fn capitalize_first(s: &str) -> String {
+pub fn capitalize_first(s: &str) -> String {
     let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-    }
+    chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
 }
 
-/// Extract a Schema name from a SeaORM Entity type path.
+/// Extract a Schema name from a `SeaORM` Entity type path.
 ///
 /// Converts paths like:
 /// - `super::user::Entity` -> "User"
 /// - `crate::models::memo::Entity` -> "Memo"
 ///
 /// The schema name is derived from the module containing Entity,
-/// converted to PascalCase (first letter uppercase).
-pub(crate) fn extract_schema_name_from_entity(ty: &syn::Type) -> Option<String> {
+/// converted to `PascalCase` (first letter uppercase).
+pub fn extract_schema_name_from_entity(ty: &syn::Type) -> Option<String> {
     match ty {
         syn::Type::Path(type_path) => {
             let segments: Vec<_> = type_path.path.segments.iter().collect();
@@ -108,9 +105,8 @@ pub fn extract_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
             }
 
             // Fallback: manual token parsing for complex attribute combinations
-            let tokens = match attr.meta.require_list() {
-                Ok(t) => t,
-                Err(_) => continue,
+            let Ok(tokens) = attr.meta.require_list() else {
+                continue;
             };
             let token_str = tokens.tokens.to_string();
 
@@ -319,8 +315,8 @@ pub fn extract_flatten(attrs: &[syn::Attribute]) -> bool {
     false
 }
 
-/// Extract skip_serializing_if attribute from field attributes
-/// Returns true if #[serde(skip_serializing_if = "...")] is present
+/// Extract `skip_serializing_if` attribute from field attributes
+/// Returns true if #[`serde(skip_serializing_if` = "...")] is present
 pub fn extract_skip_serializing_if(attrs: &[syn::Attribute]) -> bool {
     for attr in attrs {
         if attr.path().is_ident("serde")
@@ -350,8 +346,9 @@ pub fn extract_skip_serializing_if(attrs: &[syn::Attribute]) -> bool {
 /// Extract default attribute from field attributes
 /// Returns:
 /// - Some(None) if #[serde(default)] is present (no function)
-/// - Some(Some(function_name)) if #[serde(default = "function_name")] is present
+/// - `Some(Some(function_name))` if #[serde(default = "`function_name`")] is present
 /// - None if no default attribute is present
+#[allow(clippy::option_option)]
 pub fn extract_default(attrs: &[syn::Attribute]) -> Option<Option<String>> {
     for attr in attrs {
         if attr.path().is_ident("serde")
@@ -417,6 +414,7 @@ pub fn extract_default(attrs: &[syn::Attribute]) -> Option<Option<String>> {
     None
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
     // "lowercase", "UPPERCASE", "PascalCase", "camelCase", "snake_case", "SCREAMING_SNAKE_CASE", "kebab-case", "SCREAMING-KEBAB-CASE"
     match rename_all {
@@ -568,10 +566,10 @@ pub enum SerdeEnumRepr {
 /// Extract serde enum representation from attributes.
 ///
 /// Detects the enum tagging strategy from serde attributes:
-/// - `#[serde(tag = "type")]` → InternallyTagged
-/// - `#[serde(tag = "type", content = "data")]` → AdjacentlyTagged
+/// - `#[serde(tag = "type")]` → `InternallyTagged`
+/// - `#[serde(tag = "type", content = "data")]` → `AdjacentlyTagged`
 /// - `#[serde(untagged)]` → Untagged
-/// - No relevant attributes → ExternallyTagged (default)
+/// - No relevant attributes → `ExternallyTagged` (default)
 pub fn extract_enum_repr(attrs: &[syn::Attribute]) -> SerdeEnumRepr {
     let tag = extract_tag(attrs);
     let content = extract_content(attrs);
@@ -616,9 +614,8 @@ pub fn extract_tag(attrs: &[syn::Attribute]) -> Option<String> {
             }
 
             // Fallback: manual token parsing
-            let tokens = match attr.meta.require_list() {
-                Ok(t) => t,
-                Err(_) => continue,
+            let Ok(tokens) = attr.meta.require_list() else {
+                continue;
             };
             let token_str = tokens.tokens.to_string();
 
@@ -669,9 +666,8 @@ pub fn extract_content(attrs: &[syn::Attribute]) -> Option<String> {
             }
 
             // Fallback: manual token parsing
-            let tokens = match attr.meta.require_list() {
-                Ok(t) => t,
-                Err(_) => continue,
+            let Ok(tokens) = attr.meta.require_list() else {
+                continue;
             };
             let token_str = tokens.tokens.to_string();
 

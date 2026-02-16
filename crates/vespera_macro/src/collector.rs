@@ -12,13 +12,14 @@ use crate::{
 };
 
 /// Collect routes and structs from a folder
+#[allow(clippy::option_if_let_else)]
 pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> MacroResult<CollectedMetadata> {
     let mut metadata = CollectedMetadata::new();
 
     let files = collect_files(folder_path).map_err(|e| err_call_site(format!("vespera! macro: failed to scan route folder '{}': {}. Verify the folder exists and is readable.", folder_path.display(), e)))?;
 
     for file in files {
-        if !file.extension().map(|e| e == "rs").unwrap_or(false) {
+        if file.extension().is_none_or(|e| e != "rs") {
             continue;
         }
 

@@ -3,9 +3,10 @@
 //! Defines input structures for `schema!` and `schema_type!` macros.
 
 use syn::{
-    Ident, LitStr, Token, Type, bracketed, parenthesized,
+    bracketed, parenthesized,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
+    Ident, LitStr, Token, Type,
 };
 
 /// Input for the schema! macro
@@ -24,6 +25,7 @@ pub struct SchemaInput {
 }
 
 impl Parse for SchemaInput {
+    #[allow(clippy::too_many_lines)]
     fn parse(input: ParseStream) -> syn::Result<Self> {
         // Parse the type
         let ty: Type = input.parse()?;
@@ -47,25 +49,22 @@ impl Parse for SchemaInput {
                     input.parse::<Token![=]>()?;
                     let content;
                     let _ = bracketed!(content in input);
-                    let fields: Punctuated<LitStr, Token![,]> =
-                        content.parse_terminated(|input| input.parse::<LitStr>(), Token![,])?;
+                    let fields: Punctuated<LitStr, Token![,]> = content
+                        .parse_terminated(syn::parse::ParseBuffer::parse::<LitStr>, Token![,])?;
                     omit = Some(fields.into_iter().map(|s| s.value()).collect());
                 }
                 "pick" => {
                     input.parse::<Token![=]>()?;
                     let content;
                     let _ = bracketed!(content in input);
-                    let fields: Punctuated<LitStr, Token![,]> =
-                        content.parse_terminated(|input| input.parse::<LitStr>(), Token![,])?;
+                    let fields: Punctuated<LitStr, Token![,]> = content
+                        .parse_terminated(syn::parse::ParseBuffer::parse::<LitStr>, Token![,])?;
                     pick = Some(fields.into_iter().map(|s| s.value()).collect());
                 }
                 _ => {
                     return Err(syn::Error::new(
                         ident.span(),
-                        format!(
-                            "unknown parameter: `{}`. Expected `omit` or `pick`",
-                            ident_str
-                        ),
+                        format!("unknown parameter: `{ident_str}`. Expected `omit` or `pick`"),
                     ));
                 }
             }
@@ -79,19 +78,19 @@ impl Parse for SchemaInput {
             ));
         }
 
-        Ok(SchemaInput { ty, omit, pick })
+        Ok(Self { ty, omit, pick })
     }
 }
 
-/// Input for the schema_type! macro
+/// Input for the `schema_type`! macro
 ///
 /// Syntax: `schema_type!(NewTypeName from SourceType, pick = ["field1", "field2"])`
 /// Or:     `schema_type!(NewTypeName from SourceType, omit = ["field1", "field2"])`
 /// Or:     `schema_type!(NewTypeName from SourceType, rename = [("old", "new")])`
 /// Or:     `schema_type!(NewTypeName from SourceType, add = [("field": Type)])`
 /// Or:     `schema_type!(NewTypeName from SourceType, ignore)` - skip Schema derive
-/// Or:     `schema_type!(NewTypeName from SourceType, name = "CustomName")` - custom OpenAPI name
-/// Or:     `schema_type!(NewTypeName from SourceType, rename_all = "camelCase")` - serde rename_all
+/// Or:     `schema_type!(NewTypeName from SourceType, name = "CustomName")` - custom `OpenAPI` name
+/// Or:     `schema_type!(NewTypeName from SourceType, rename_all = "camelCase")` - serde `rename_all`
 pub struct SchemaTypeInput {
     /// The new type name to generate
     pub new_type: Ident,
@@ -101,9 +100,9 @@ pub struct SchemaTypeInput {
     pub omit: Option<Vec<String>>,
     /// Fields to pick (include only these fields)
     pub pick: Option<Vec<String>>,
-    /// Field renames: (source_field_name, new_field_name)
+    /// Field renames: (`source_field_name`, `new_field_name`)
     pub rename: Option<Vec<(String, String)>>,
-    /// New fields to add: (field_name, field_type)
+    /// New fields to add: (`field_name`, `field_type`)
     pub add: Option<Vec<(String, Type)>>,
     /// Whether to derive Clone (default: true)
     pub derive_clone: bool,
@@ -116,18 +115,18 @@ pub struct SchemaTypeInput {
     /// Whether to skip deriving the Schema trait (default: false)
     /// Use `ignore` keyword to set this to true.
     pub ignore_schema: bool,
-    /// Custom OpenAPI schema name (overrides Rust struct name)
+    /// Custom `OpenAPI` schema name (overrides Rust struct name)
     /// Use `name = "CustomName"` to set this.
     pub schema_name: Option<String>,
-    /// Serde rename_all strategy (e.g., "camelCase", "snake_case", "PascalCase")
-    /// If not specified, defaults to "camelCase" when source has no rename_all
+    /// Serde `rename_all` strategy (e.g., "camelCase", "`snake_case`", "`PascalCase`")
+    /// If not specified, defaults to "camelCase" when source has no `rename_all`
     pub rename_all: Option<String>,
-    /// Whether to generate a multipart/form-data struct (derives TryFromMultipart instead of serde)
+    /// Whether to generate a multipart/form-data struct (derives `TryFromMultipart` instead of serde)
     /// Use `multipart` bare keyword to set this to true.
     pub multipart: bool,
 }
 
-/// Mode for the `partial` keyword in schema_type!
+/// Mode for the `partial` keyword in `schema_type`!
 #[derive(Clone, Debug)]
 pub enum PartialMode {
     /// All fields become Option<T>
@@ -136,7 +135,7 @@ pub enum PartialMode {
     Fields(Vec<String>),
 }
 
-/// Helper struct to parse an add field: ("field_name": Type)
+/// Helper struct to parse an add field: ("`field_name"`: Type)
 struct AddField {
     name: String,
     ty: Type,
@@ -149,14 +148,14 @@ impl Parse for AddField {
         let name: LitStr = content.parse()?;
         content.parse::<Token![:]>()?;
         let ty: Type = content.parse()?;
-        Ok(AddField {
+        Ok(Self {
             name: name.value(),
             ty,
         })
     }
 }
 
-/// Helper struct to parse a rename pair: ("old_name", "new_name")
+/// Helper struct to parse a rename pair: ("`old_name`", "`new_name`")
 struct RenamePair {
     from: String,
     to: String,
@@ -169,7 +168,7 @@ impl Parse for RenamePair {
         let from: LitStr = content.parse()?;
         content.parse::<Token![,]>()?;
         let to: LitStr = content.parse()?;
-        Ok(RenamePair {
+        Ok(Self {
             from: from.value(),
             to: to.value(),
         })
@@ -177,6 +176,7 @@ impl Parse for RenamePair {
 }
 
 impl Parse for SchemaTypeInput {
+    #[allow(clippy::too_many_lines)]
     fn parse(input: ParseStream) -> syn::Result<Self> {
         // Parse new type name
         let new_type: Ident = input.parse()?;
@@ -187,8 +187,7 @@ impl Parse for SchemaTypeInput {
             return Err(syn::Error::new(
                 from_ident.span(),
                 format!(
-                    "schema_type! macro: expected `from` keyword, found `{}`. Use format: `schema_type!(NewType from SourceType, ...)`.",
-                    from_ident
+                    "schema_type! macro: expected `from` keyword, found `{from_ident}`. Use format: `schema_type!(NewType from SourceType, ...)`."
                 ),
             ));
         }
@@ -223,16 +222,16 @@ impl Parse for SchemaTypeInput {
                     input.parse::<Token![=]>()?;
                     let content;
                     let _ = bracketed!(content in input);
-                    let fields: Punctuated<LitStr, Token![,]> =
-                        content.parse_terminated(|input| input.parse::<LitStr>(), Token![,])?;
+                    let fields: Punctuated<LitStr, Token![,]> = content
+                        .parse_terminated(syn::parse::ParseBuffer::parse::<LitStr>, Token![,])?;
                     omit = Some(fields.into_iter().map(|s| s.value()).collect());
                 }
                 "pick" => {
                     input.parse::<Token![=]>()?;
                     let content;
                     let _ = bracketed!(content in input);
-                    let fields: Punctuated<LitStr, Token![,]> =
-                        content.parse_terminated(|input| input.parse::<LitStr>(), Token![,])?;
+                    let fields: Punctuated<LitStr, Token![,]> = content
+                        .parse_terminated(syn::parse::ParseBuffer::parse::<LitStr>, Token![,])?;
                     pick = Some(fields.into_iter().map(|s| s.value()).collect());
                 }
                 "rename" => {
@@ -262,8 +261,10 @@ impl Parse for SchemaTypeInput {
                         input.parse::<Token![=]>()?;
                         let content;
                         let _ = bracketed!(content in input);
-                        let fields: Punctuated<LitStr, Token![,]> =
-                            content.parse_terminated(|input| input.parse::<LitStr>(), Token![,])?;
+                        let fields: Punctuated<LitStr, Token![,]> = content.parse_terminated(
+                            syn::parse::ParseBuffer::parse::<LitStr>,
+                            Token![,],
+                        )?;
                         partial = Some(PartialMode::Fields(
                             fields.into_iter().map(|s| s.value()).collect(),
                         ));
@@ -297,8 +298,7 @@ impl Parse for SchemaTypeInput {
                     return Err(syn::Error::new(
                         ident.span(),
                         format!(
-                            "unknown parameter: `{}`. Expected `omit`, `pick`, `rename`, `add`, `clone`, `partial`, `ignore`, `name`, `rename_all`, or `multipart`",
-                            ident_str
+                            "unknown parameter: `{ident_str}`. Expected `omit`, `pick`, `rename`, `add`, `clone`, `partial`, `ignore`, `name`, `rename_all`, or `multipart`"
                         ),
                     ));
                 }
@@ -313,7 +313,7 @@ impl Parse for SchemaTypeInput {
             ));
         }
 
-        Ok(SchemaTypeInput {
+        Ok(Self {
             new_type,
             source_type,
             omit,

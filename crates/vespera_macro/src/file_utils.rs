@@ -10,6 +10,7 @@ pub fn try_read_and_parse_file(path: &Path) -> Option<syn::File> {
 }
 
 /// Read and parse a Rust source file, printing warnings on error.
+#[allow(clippy::similar_names)]
 pub fn read_and_parse_file_warn(path: &Path, context: &str) -> Option<syn::File> {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
@@ -52,16 +53,12 @@ pub fn collect_files(folder_path: &Path) -> io::Result<Vec<PathBuf>> {
 }
 
 pub fn file_to_segments(file: &Path, base_path: &Path) -> Vec<String> {
-    let file_stem = if let Ok(file_stem) = file.strip_prefix(base_path) {
-        file_stem.display().to_string()
-    } else {
-        file.display().to_string()
-    };
-    let file_stem = file_stem.replace(".rs", "").replace("\\", "/");
+    let file_stem = file.strip_prefix(base_path).map_or_else(|_| file.display().to_string(), |file_stem| file_stem.display().to_string());
+    let file_stem = file_stem.replace(".rs", "").replace('\\', "/");
     let mut segments: Vec<String> = file_stem
-        .split("/")
+        .split('/')
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
     if let Some(last) = segments.last()
         && last == "mod"

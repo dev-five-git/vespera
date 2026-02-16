@@ -2,7 +2,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use vespera_core::route::HttpMethod;
 
-/// Convert HttpMethod to axum routing TokenStream
+/// Convert `HttpMethod` to axum routing `TokenStream`
 pub fn http_method_to_token_stream(method: HttpMethod) -> TokenStream {
     match method {
         HttpMethod::Get => quote! { vespera::axum::routing::get },

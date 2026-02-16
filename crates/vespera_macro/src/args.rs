@@ -57,7 +57,7 @@ impl syn::parse::Parse for RouteArgs {
             }
         }
 
-        Ok(RouteArgs {
+        Ok(Self {
             method,
             path,
             error_status,

@@ -1,7 +1,7 @@
 //! Circular reference detection and handling
 //!
 //! Provides functions to detect and handle circular references between
-//! SeaORM models when generating schema types.
+//! `SeaORM` models when generating schema types.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -17,7 +17,7 @@ use crate::parser::extract_skip;
 /// When generating `MemoSchema.user`, we need to check if `UserSchema` has any fields
 /// that reference back to `MemoSchema` via BelongsTo/HasOne (FK-based relations).
 ///
-/// HasMany relations are NOT considered circular because they are excluded by default
+/// `HasMany` relations are NOT considered circular because they are excluded by default
 /// from generated schemas.
 ///
 /// Returns a list of field names that would create circular references.
@@ -32,7 +32,9 @@ pub fn detect_circular_fields(
     };
 
     // Get the source module name (e.g., "memo" from ["crate", "models", "memo"])
-    let source_module = source_module_path.last().map(|s| s.as_str()).unwrap_or("");
+    let source_module = source_module_path
+        .last()
+        .map_or("", std::string::String::as_str);
 
     let syn::Fields::Named(fields_named) = &parsed.fields else {
         return Vec::new();
@@ -66,8 +68,8 @@ pub fn detect_circular_fields(
             let is_circular = (ty_str_normalized.contains("HasOne<")
                 || ty_str_normalized.contains("BelongsTo<")
                 || ty_str_normalized.contains("Box<"))
-                && (ty_str_normalized.contains(&format!("{}::Schema", source_module))
-                    || ty_str_normalized.contains(&format!("{}::Entity", source_module))
+                && (ty_str_normalized.contains(&format!("{source_module}::Schema"))
+                    || ty_str_normalized.contains(&format!("{source_module}::Entity"))
                     || ty_str_normalized
                         .contains(&format!("{}Schema", capitalize_first(source_module))));
 
@@ -76,7 +78,7 @@ pub fn detect_circular_fields(
         .collect()
 }
 
-/// Check if a Model has any BelongsTo or HasOne relations (FK-based relations).
+/// Check if a Model has any `BelongsTo` or `HasOne` relations (FK-based relations).
 ///
 /// This is used to determine if the target schema has `from_model()` method
 /// (async, with DB) or simple `From<Model>` impl (sync, no DB).
@@ -116,12 +118,11 @@ pub fn is_circular_relation_required(related_model_def: &str, circular_field_nam
     };
 
     // Find the circular field by name
-    let Some(field) = fields_named.named.iter().find(|f| {
-        f.ident
-            .as_ref()
-            .map(|i| i == circular_field_name)
-            .unwrap_or(false)
-    }) else {
+    let Some(field) = fields_named
+        .named
+        .iter()
+        .find(|f| f.ident.as_ref().is_some_and(|i| i == circular_field_name))
+    else {
         return false;
     };
 
@@ -140,12 +141,11 @@ pub fn is_circular_relation_required(related_model_def: &str, circular_field_nam
     fields_named
         .named
         .iter()
-        .find(|f| f.ident.as_ref().map(|i| i.to_string()) == Some(fk.clone()))
-        .map(|f| !is_option_type(&f.ty))
-        .unwrap_or(false)
+        .find(|f| f.ident.as_ref().map(std::string::ToString::to_string) == Some(fk.clone()))
+        .is_some_and(|f| !is_option_type(&f.ty))
 }
 
-/// Generate a default value for a SeaORM relation field in inline construction.
+/// Generate a default value for a `SeaORM` relation field in inline construction.
 ///
 /// - `HasMany<T>` -> `vec![]`
 /// - `HasOne<T>`/`BelongsTo<T>` with optional FK -> `None`
@@ -165,15 +165,12 @@ pub fn generate_default_for_relation_field(
     } else if ty_str.contains("HasOne<") || ty_str.contains("BelongsTo<") {
         // Check FK field optionality
         let fk_field = extract_belongs_to_from_field(field_attrs);
-        let is_optional = fk_field
-            .as_ref()
-            .map(|fk| {
-                all_fields.named.iter().any(|f| {
-                    f.ident.as_ref().map(|i| i.to_string()) == Some(fk.clone())
-                        && is_option_type(&f.ty)
-                })
+        let is_optional = fk_field.as_ref().is_none_or(|fk| {
+            all_fields.named.iter().any(|f| {
+                f.ident.as_ref().map(std::string::ToString::to_string) == Some(fk.clone())
+                    && is_option_type(&f.ty)
             })
-            .unwrap_or(true);
+        });
 
         if is_optional {
             // Option<Box<Schema>> -> None
@@ -215,11 +212,8 @@ pub fn generate_inline_struct_construction(
     let var_ident = syn::Ident::new(var_name, proc_macro2::Span::call_site());
 
     // Get the named fields for FK checking
-    let fields_named = match &parsed.fields {
-        syn::Fields::Named(f) => f,
-        _ => {
-            return quote! { <#schema_path as From<_>>::from(#var_ident) };
-        }
+    let syn::Fields::Named(fields_named) = &parsed.fields else {
+        return quote! { <#schema_path as From<_>>::from(#var_ident) };
     };
 
     let field_assignments: Vec<TokenStream> = fields_named
@@ -257,7 +251,7 @@ pub fn generate_inline_struct_construction(
     }
 }
 
-/// Generate inline type construction for from_model.
+/// Generate inline type construction for `from_model`.
 ///
 /// When we have an inline type (e.g., `MemoResponseRel_User`), this function generates
 /// the construction code that only includes the fields present in the inline type.
@@ -285,11 +279,8 @@ pub fn generate_inline_type_construction(
     let var_ident = syn::Ident::new(var_name, proc_macro2::Span::call_site());
 
     // Get the named fields
-    let fields_named = match &parsed.fields {
-        syn::Fields::Named(f) => f,
-        _ => {
-            return quote! { Default::default() };
-        }
+    let syn::Fields::Named(fields_named) = &parsed.fields else {
+        return quote! { Default::default() };
     };
 
     let field_assignments: Vec<TokenStream> = fields_named

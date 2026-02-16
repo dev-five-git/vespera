@@ -1,6 +1,6 @@
-//! from_model implementation generation
+//! `from_model` implementation generation
 //!
-//! Generates async `from_model` implementations for SeaORM models with relations.
+//! Generates async `from_model` implementations for `SeaORM` models with relations.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -19,13 +19,14 @@ use crate::metadata::StructMetadata;
 
 /// Build Entity path from Schema path.
 /// e.g., `crate::models::user::Schema` -> `crate::models::user::Entity`
+#[allow(clippy::too_many_lines, clippy::option_if_let_else)]
 pub fn build_entity_path_from_schema_path(
     schema_path: &TokenStream,
     _source_module_path: &[String],
 ) -> TokenStream {
     // Parse the schema path to extract segments
     let path_str = schema_path.to_string();
-    let segments: Vec<&str> = path_str.split("::").map(|s| s.trim()).collect();
+    let segments: Vec<&str> = path_str.split("::").map(str::trim).collect();
 
     // Replace "Schema" with "Entity" in the last segment
     let entity_segments: Vec<String> = segments
@@ -48,7 +49,7 @@ pub fn build_entity_path_from_schema_path(
     quote! { #(#path_idents)::* }
 }
 
-/// Generate `from_model` impl for SeaORM Model WITH relations (async version).
+/// Generate `from_model` impl for `SeaORM` Model WITH relations (async version).
 ///
 /// When circular references are detected, generates inline struct construction
 /// that excludes circular fields (sets them to default values).
@@ -72,6 +73,7 @@ pub fn build_entity_path_from_schema_path(
 ///     }
 /// }
 /// ```
+#[allow(clippy::too_many_lines, clippy::option_if_let_else)]
 pub fn generate_from_model_with_relations(
     new_type_name: &syn::Ident,
     source_type: &Type,
@@ -152,7 +154,7 @@ pub fn generate_from_model_with_relations(
                             // e.g., crate::models::notification::Entity -> crate::models::notification::Column::TargetUserId
                             let entity_path_str = entity_path.to_string().replace(' ', "");
                             let column_path_str = entity_path_str.replace(":: Entity", ":: Column");
-                            let column_path_idents: Vec<syn::Ident> = column_path_str.split("::").map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| syn::Ident::new(s, proc_macro2::Span::call_site())).collect();
+                            let column_path_idents: Vec<syn::Ident> = column_path_str.split("::").map(str::trim).filter(|s| !s.is_empty()).map(|s| syn::Ident::new(s, proc_macro2::Span::call_site())).collect();
 
                             quote! {
                                 let #field_name = #(#column_path_idents)::*::#fk_col_ident
@@ -180,7 +182,7 @@ pub fn generate_from_model_with_relations(
 
                             let entity_path_str = entity_path.to_string().replace(' ', "");
                             let column_path_str = entity_path_str.replace(":: Entity", ":: Column");
-                            let column_path_idents: Vec<syn::Ident> = column_path_str.split("::").map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| syn::Ident::new(s, proc_macro2::Span::call_site())).collect();
+                            let column_path_idents: Vec<syn::Ident> = column_path_str.split("::").map(str::trim).filter(|s| !s.is_empty()).map(|s| syn::Ident::new(s, proc_macro2::Span::call_site())).collect();
 
                             quote! {
                                 let #field_name = #(#column_path_idents)::*::#fk_col_ident
@@ -295,7 +297,7 @@ pub fn generate_from_model_with_relations(
                     let related_model_from_file = find_struct_from_schema_path(&model_path_str);
 
                     // Get the definition string
-                    let related_def_str = related_model_from_file.as_ref().map(|s| s.definition.as_str()).unwrap_or("");
+                    let related_def_str = related_model_from_file.as_ref().map_or("", |s| s.definition.as_str());
 
                     // Check for circular references
                     // The source module path tells us what module we're in (e.g., ["crate", "models", "memo"])

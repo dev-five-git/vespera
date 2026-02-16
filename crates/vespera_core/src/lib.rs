@@ -1,6 +1,6 @@
-//! Vespera Core - OpenAPI structure definitions
+//! Vespera Core - `OpenAPI` structure definitions
 //!
-//! Provides structures conforming to the OpenAPI 3.1 specification.
+//! Provides structures conforming to the `OpenAPI` 3.1 specification.
 
 pub mod openapi;
 pub mod route;

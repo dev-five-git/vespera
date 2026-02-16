@@ -7,11 +7,11 @@ pub enum KeywordType {
 }
 
 impl KeywordType {
-    pub fn as_str(&self) -> &str {
+    pub const fn as_str(&self) -> &str {
         match self {
-            KeywordType::HeaderMap => "HeaderMap",
-            KeywordType::StatusCode => "StatusCode",
-            KeywordType::Result => "Result",
+            Self::HeaderMap => "HeaderMap",
+            Self::StatusCode => "StatusCode",
+            Self::Result => "Result",
         }
     }
 }

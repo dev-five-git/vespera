@@ -1,4 +1,4 @@
-//! Generic type resolution and substitution for OpenAPI schema generation.
+//! Generic type resolution and substitution for `OpenAPI` schema generation.
 //!
 //! This module handles the substitution of generic type parameters with concrete types
 //! when generating schemas for generic structs like `Wrapper<T>`.
@@ -31,7 +31,7 @@ pub fn substitute_type(ty: &Type, generic_params: &[String], concrete_types: &[&
                 let segment = &path.segments[0];
                 let ident_str = segment.ident.to_string();
 
-                if let syn::PathArguments::None = &segment.arguments {
+                if matches!(&segment.arguments, syn::PathArguments::None) {
                     // Direct generic parameter substitution
                     if let Some(index) = generic_params.iter().position(|p| p == &ident_str)
                         && let Some(concrete_ty) = concrete_types.get(index)

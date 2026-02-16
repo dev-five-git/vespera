@@ -10,7 +10,7 @@ use crate::{file_utils::try_read_and_parse_file, metadata::StructMetadata};
 
 /// Try to find a struct definition from a module path by reading source files.
 ///
-/// This allows schema_type! to work with structs defined in other files, like:
+/// This allows `schema_type`! to work with structs defined in other files, like:
 /// ```ignore
 /// // In src/routes/memos.rs
 /// schema_type!(CreateMemoRequest from models::memo::Model, pick = ["title", "content"]);
@@ -43,9 +43,8 @@ pub fn find_struct_from_path(
     let src_dir = Path::new(&manifest_dir).join("src");
 
     // Extract path segments from the type
-    let type_path = match ty {
-        Type::Path(tp) => tp,
-        _ => return None,
+    let Type::Path(type_path) = ty else {
+        return None;
     };
 
     let segments: Vec<String> = type_path
@@ -68,7 +67,7 @@ pub fn find_struct_from_path(
     let module_segments: Vec<&str> = segments[..segments.len() - 1]
         .iter()
         .filter(|s| *s != "crate" && *s != "self" && *s != "super")
-        .map(|s| s.as_str())
+        .map(std::string::String::as_str)
         .collect();
 
     // If no module path (simple name like `Model`), scan all files with schema_name hint
@@ -99,13 +98,13 @@ pub fn find_struct_from_path(
                 syn::Item::Struct(struct_item) if struct_item.ident == struct_name => {
                     return Some((
                         StructMetadata::new_model(
-                            struct_name.clone(),
+                            struct_name,
                             quote::quote!(#struct_item).to_string(),
                         ),
                         type_module_path,
                     ));
                 }
-                _ => continue,
+                _ => {}
             }
         }
     }
@@ -120,15 +119,16 @@ pub fn find_struct_from_path(
 ///
 /// Resolution strategy:
 /// 1. If exactly one struct with the name exists -> use it
-/// 2. If multiple exist and schema_name_hint is provided (e.g., "UserSchema"):
-///    -> Prefer file whose name contains the hint prefix (e.g., "user.rs" for "UserSchema")
+/// 2. If multiple exist and `schema_name_hint` is provided (e.g., "UserSchema"):
+///    -> Prefer file whose name contains the hint prefix (e.g., "user.rs" for "`UserSchema`")
 /// 3. Otherwise -> return None (ambiguous)
 ///
-/// The `schema_name_hint` is the custom schema name (e.g., "UserSchema", "MemoSchema")
+/// The `schema_name_hint` is the custom schema name (e.g., "`UserSchema`", "`MemoSchema`")
 /// which often contains a hint about the module name.
 ///
 /// Returns `(StructMetadata, Vec<String>)` where the Vec is the inferred module path
 /// from the file location (e.g., `["crate", "models", "user"]`).
+#[allow(clippy::too_many_lines)]
 pub fn find_struct_by_name_in_all_files(
     src_dir: &Path,
     struct_name: &str,
@@ -232,9 +232,8 @@ pub fn find_struct_by_name_in_all_files(
 
 /// Recursively collect all `.rs` files in a directory.
 pub fn collect_rs_files_recursive(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
     };
 
     for entry in entries.flatten() {
@@ -254,9 +253,8 @@ pub fn collect_rs_files_recursive(dir: &Path, files: &mut Vec<std::path::PathBuf
 /// - `src/models/user/mod.rs` -> `["crate", "models", "user"]`
 /// - `src/lib.rs` -> `["crate"]`
 pub fn file_path_to_module_path(file_path: &Path, src_dir: &Path) -> Vec<String> {
-    let relative = match file_path.strip_prefix(src_dir) {
-        Ok(r) => r,
-        Err(_) => return vec!["crate".to_string()],
+    let Ok(relative) = file_path.strip_prefix(src_dir) else {
+        return vec!["crate".to_string()];
     };
 
     let mut segments = vec!["crate".to_string()];
@@ -281,9 +279,9 @@ pub fn file_path_to_module_path(file_path: &Path, src_dir: &Path) -> Vec<String>
     segments
 }
 
-/// Find struct definition from a schema path string (e.g., "crate::models::user::Schema").
+/// Find struct definition from a schema path string (e.g., "`crate::models::user::Schema`").
 ///
-/// Similar to `find_struct_from_path` but takes a string path instead of syn::Type.
+/// Similar to `find_struct_from_path` but takes a string path instead of `syn::Type`.
 pub fn find_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
     // Get CARGO_MANIFEST_DIR to locate src folder
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
@@ -329,11 +327,11 @@ pub fn find_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
             match item {
                 syn::Item::Struct(struct_item) if struct_item.ident == struct_name => {
                     return Some(StructMetadata::new_model(
-                        struct_name.clone(),
+                        struct_name,
                         quote::quote!(#struct_item).to_string(),
                     ));
                 }
-                _ => continue,
+                _ => {}
             }
         }
     }
@@ -341,14 +339,15 @@ pub fn find_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
     None
 }
 
-/// Find the FK column name from the target entity for a HasMany relation with via_rel.
+/// Find the FK column name from the target entity for a `HasMany` relation with `via_rel`.
 ///
-/// When a HasMany relation has `via_rel = "TargetUser"`, this function:
+/// When a `HasMany` relation has `via_rel = "TargetUser"`, this function:
 /// 1. Looks up the target entity file (e.g., notification.rs from schema path)
 /// 2. Finds the field with matching `relation_enum = "TargetUser"`
-/// 3. Extracts and returns the `from` attribute value (e.g., "target_user_id")
+/// 3. Extracts and returns the `from` attribute value (e.g., "`target_user_id`")
 ///
 /// Returns None if the target file can't be found or parsed, or if no matching relation exists.
+#[allow(clippy::too_many_lines)]
 pub fn find_fk_column_from_target_entity(
     target_schema_path: &str,
     via_rel: &str,
@@ -363,7 +362,7 @@ pub fn find_fk_column_from_target_entity(
     // e.g., "crate :: models :: notification :: Schema" -> src/models/notification.rs
     let segments: Vec<&str> = target_schema_path
         .split("::")
-        .map(|s| s.trim())
+        .map(str::trim)
         .filter(|s| !s.is_empty() && *s != "Schema" && *s != "Entity")
         .collect();
 
@@ -413,7 +412,8 @@ pub fn find_fk_column_from_target_entity(
 }
 
 /// Find the Model definition from a Schema path.
-/// Converts "crate::models::user::Schema" -> finds Model in src/models/user.rs
+/// Converts "`crate::models::user::Schema`" -> finds Model in src/models/user.rs
+#[allow(clippy::too_many_lines)]
 pub fn find_model_from_schema_path(schema_path_str: &str) -> Option<StructMetadata> {
     // Get CARGO_MANIFEST_DIR to locate src folder
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
@@ -423,7 +423,7 @@ pub fn find_model_from_schema_path(schema_path_str: &str) -> Option<StructMetada
     // e.g., "crate :: models :: user :: Schema" -> ["crate", "models", "user"]
     let segments: Vec<&str> = schema_path_str
         .split("::")
-        .map(|s| s.trim())
+        .map(str::trim)
         .filter(|s| !s.is_empty() && *s != "Schema")
         .collect();
 

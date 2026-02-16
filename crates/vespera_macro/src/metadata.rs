@@ -17,13 +17,13 @@ pub struct RouteMetadata {
     pub file_path: String,
     /// Function signature (as string for serialization)
     pub signature: String,
-    /// Additional error status codes from error_status attribute
+    /// Additional error status codes from `error_status` attribute
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_status: Option<Vec<u16>>,
-    /// Tags for OpenAPI grouping
+    /// Tags for `OpenAPI` grouping
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
-    /// Description for OpenAPI (from route attribute or doc comment)
+    /// Description for `OpenAPI` (from route attribute or doc comment)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
@@ -35,14 +35,14 @@ pub struct StructMetadata {
     pub name: String,
     /// Struct definition (as string for serialization)
     pub definition: String,
-    /// Whether to include in OpenAPI spec (components/schemas)
+    /// Whether to include in `OpenAPI` spec (components/schemas)
     /// - true: from #[derive(Schema)] - appears in openapi.json (DEFAULT)
-    /// - false: from cross-file lookup - only for schema_type! source, NOT in openapi.json
+    /// - false: from cross-file lookup - only for `schema_type`! source, NOT in openapi.json
     #[serde(default = "default_include_in_openapi")]
     pub include_in_openapi: bool,
 }
 
-fn default_include_in_openapi() -> bool {
+const fn default_include_in_openapi() -> bool {
     true
 }
 
@@ -57,8 +57,8 @@ impl Default for StructMetadata {
 }
 
 impl StructMetadata {
-    /// Create a new StructMetadata with include_in_openapi defaulting to true
-    pub fn new(name: String, definition: String) -> Self {
+    /// Create a new `StructMetadata` with `include_in_openapi` defaulting to true
+    pub const fn new(name: String, definition: String) -> Self {
         Self {
             name,
             definition,
@@ -66,8 +66,8 @@ impl StructMetadata {
         }
     }
 
-    /// Create a new StructMetadata for model types (not included in OpenAPI)
-    pub fn new_model(name: String, definition: String) -> Self {
+    /// Create a new `StructMetadata` for model types (not included in `OpenAPI`)
+    pub const fn new_model(name: String, definition: String) -> Self {
         Self {
             name,
             definition,
@@ -86,7 +86,7 @@ pub struct CollectedMetadata {
 }
 
 impl CollectedMetadata {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             routes: Vec::new(),
             structs: Vec::new(),

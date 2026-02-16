@@ -10,6 +10,7 @@ use super::{
 };
 
 /// Build Operation from function signature
+#[allow(clippy::too_many_lines)]
 pub fn build_operation_from_function(
     sig: &syn::Signature,
     path: &str,
@@ -201,7 +202,7 @@ pub fn build_operation_from_function(
 
     Operation {
         operation_id: Some(sig.ident.to_string()),
-        tags: tags.map(|t| t.to_vec()),
+        tags: tags.map(<[std::string::String]>::to_vec),
         summary: None,
         description: None,
         parameters: if parameters.is_empty() {

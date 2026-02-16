@@ -1,6 +1,6 @@
-//! SeaORM and Chrono type conversions
+//! `SeaORM` and Chrono type conversions
 //!
-//! Handles conversion of SeaORM relation types and datetime types to their
+//! Handles conversion of `SeaORM` relation types and datetime types to their
 //! schema equivalents.
 
 use proc_macro2::TokenStream;
@@ -9,31 +9,31 @@ use syn::Type;
 
 use super::type_utils::{is_option_type, resolve_type_to_absolute_path};
 
-/// Relation field info for generating from_model code
+/// Relation field info for generating `from_model` code
 #[derive(Clone)]
 pub struct RelationFieldInfo {
     /// Field name in the generated struct
     pub field_name: syn::Ident,
-    /// Relation type: "HasOne", "HasMany", or "BelongsTo"
+    /// Relation type: "`HasOne`", "`HasMany`", or "`BelongsTo`"
     pub relation_type: String,
-    /// Target Schema path (e.g., crate::models::user::Schema)
+    /// Target Schema path (e.g., `crate::models::user::Schema`)
     pub schema_path: TokenStream,
     /// Whether the relation is optional
     pub is_optional: bool,
     /// If Some, this relation has circular refs and uses an inline type
-    /// Contains: (inline_type_name, circular_fields_to_exclude)
+    /// Contains: (`inline_type_name`, `circular_fields_to_exclude`)
     pub inline_type_info: Option<(syn::Ident, Vec<String>)>,
-    /// The `relation_enum` attribute value (e.g., "TargetUser", "CreatedByUser")
+    /// The `relation_enum` attribute value (e.g., "`TargetUser`", "`CreatedByUser`")
     /// When present, indicates multiple relations to the same Entity type exist
     pub relation_enum: Option<String>,
-    /// The FK column name from `from` attribute (e.g., "user_id", "target_user_id")
+    /// The FK column name from `from` attribute (e.g., "`user_id`", "`target_user_id`")
     pub fk_column: Option<String>,
-    /// The `via_rel` attribute value for HasMany relations (e.g., "TargetUser")
+    /// The `via_rel` attribute value for `HasMany` relations (e.g., "`TargetUser`")
     /// This specifies which Relation variant on the TARGET entity to use
     pub via_rel: Option<String>,
 }
 
-/// Convert SeaORM datetime types to chrono equivalents.
+/// Convert `SeaORM` datetime types to chrono equivalents.
 ///
 /// This allows generated schemas to use standard chrono types instead of
 /// requiring `use sea_orm::entity::prelude::DateTimeWithTimeZone`.
@@ -42,20 +42,18 @@ pub struct RelationFieldInfo {
 /// - `DateTimeWithTimeZone` -> `chrono::DateTime<chrono::FixedOffset>`
 /// - `DateTimeUtc` -> `chrono::DateTime<chrono::Utc>`
 /// - `DateTimeLocal` -> `chrono::DateTime<chrono::Local>`
-/// - `DateTime` (SeaORM) -> `chrono::NaiveDateTime`
-/// - `Date` (SeaORM) -> `chrono::NaiveDate`
-/// - `Time` (SeaORM) -> `chrono::NaiveTime`
+/// - `DateTime` (`SeaORM`) -> `chrono::NaiveDateTime`
+/// - `Date` (`SeaORM`) -> `chrono::NaiveDate`
+/// - `Time` (`SeaORM`) -> `chrono::NaiveTime`
 ///
-/// Returns the original type as TokenStream if not a SeaORM datetime type.
+/// Returns the original type as `TokenStream` if not a `SeaORM` datetime type.
 pub fn convert_seaorm_type_to_chrono(ty: &Type, source_module_path: &[String]) -> TokenStream {
-    let type_path = match ty {
-        Type::Path(tp) => tp,
-        _ => return quote! { #ty },
+    let Type::Path(type_path) = ty else {
+        return quote! { #ty };
     };
 
-    let segment = match type_path.path.segments.last() {
-        Some(s) => s,
-        None => return quote! { #ty },
+    let Some(segment) = type_path.path.segments.last() else {
+        return quote! { #ty };
     };
 
     let ident_str = segment.ident.to_string();
@@ -101,7 +99,7 @@ pub fn convert_seaorm_type_to_chrono(ty: &Type, source_module_path: &[String]) -
 /// If the type is just `SeaOrmType`, converts to `ChronoType`.
 ///
 /// Also resolves local types (like `MemoStatus`) to absolute paths
-/// (like `crate::models::memo::MemoStatus`) using source_module_path.
+/// (like `crate::models::memo::MemoStatus`) using `source_module_path`.
 pub fn convert_type_with_chrono(ty: &Type, source_module_path: &[String]) -> TokenStream {
     // Check if it's Option<T>
     if let Type::Path(type_path) = ty
@@ -135,8 +133,8 @@ pub fn convert_type_with_chrono(ty: &Type, source_module_path: &[String]) -> Tok
     convert_seaorm_type_to_chrono(ty, source_module_path)
 }
 
-/// Extract the "from" field name from a sea_orm belongs_to attribute.
-/// e.g., `#[sea_orm(belongs_to, from = "user_id", to = "id")]` -> Some("user_id")
+/// Extract the "from" field name from a `sea_orm` `belongs_to` attribute.
+/// e.g., `#[sea_orm(belongs_to, from = "user_id", to = "id")]` -> `Some("user_id`")
 /// Also handles: `#[sea_orm(belongs_to = "Entity", from = "user_id", to = "id")]`
 pub fn extract_belongs_to_from_field(attrs: &[syn::Attribute]) -> Option<String> {
     attrs.iter().find_map(|attr| {
@@ -156,7 +154,7 @@ pub fn extract_belongs_to_from_field(attrs: &[syn::Attribute]) -> Option<String>
             } else if meta.input.peek(syn::Token![=]) {
                 // Consume value for key=value pairs (e.g., belongs_to = "...", to = "...")
                 // Required to allow parsing to continue to next item
-                drop(meta.value().and_then(|v| v.parse::<syn::LitStr>()));
+                drop(meta.value().and_then(syn::parse::ParseBuffer::parse::<syn::LitStr>));
             }
             Ok(())
         });
@@ -164,10 +162,10 @@ pub fn extract_belongs_to_from_field(attrs: &[syn::Attribute]) -> Option<String>
     })
 }
 
-/// Extract the "relation_enum" value from a sea_orm attribute.
+/// Extract the "`relation_enum`" value from a `sea_orm` attribute.
 /// e.g., `#[sea_orm(belongs_to, relation_enum = "TargetUser", from = "target_user_id")]` -> Some("TargetUser")
 ///
-/// When relation_enum is present, it indicates that multiple relations to the same
+/// When `relation_enum` is present, it indicates that multiple relations to the same
 /// Entity type exist, and we need to use the specific Relation enum variant for queries.
 pub fn extract_relation_enum(attrs: &[syn::Attribute]) -> Option<String> {
     attrs.iter().find_map(|attr| {
@@ -185,7 +183,7 @@ pub fn extract_relation_enum(attrs: &[syn::Attribute]) -> Option<String> {
                     .map(|lit| lit.value());
             } else if meta.input.peek(syn::Token![=]) {
                 // Consume value for other key=value pairs
-                drop(meta.value().and_then(|v| v.parse::<syn::LitStr>()));
+                drop(meta.value().and_then(syn::parse::ParseBuffer::parse::<syn::LitStr>));
             }
             Ok(())
         });
@@ -193,10 +191,10 @@ pub fn extract_relation_enum(attrs: &[syn::Attribute]) -> Option<String> {
     })
 }
 
-/// Extract the "via_rel" value from a sea_orm attribute.
+/// Extract the "`via_rel`" value from a `sea_orm` attribute.
 /// e.g., `#[sea_orm(has_many, relation_enum = "TargetUser", via_rel = "TargetUser")]` -> Some("TargetUser")
 ///
-/// For HasMany relations with relation_enum, via_rel specifies which Relation variant
+/// For `HasMany` relations with `relation_enum`, `via_rel` specifies which Relation variant
 /// on the TARGET entity corresponds to this relation. This allows us to find the FK column.
 pub fn extract_via_rel(attrs: &[syn::Attribute]) -> Option<String> {
     attrs.iter().find_map(|attr| {
@@ -214,7 +212,7 @@ pub fn extract_via_rel(attrs: &[syn::Attribute]) -> Option<String> {
                     .map(|lit| lit.value());
             } else if meta.input.peek(syn::Token![=]) {
                 // Consume value for other key=value pairs
-                drop(meta.value().and_then(|v| v.parse::<syn::LitStr>()));
+                drop(meta.value().and_then(syn::parse::ParseBuffer::parse::<syn::LitStr>));
             }
             Ok(())
         });
@@ -236,7 +234,7 @@ pub fn is_field_optional_in_struct(struct_item: &syn::ItemStruct, field_name: &s
     false
 }
 
-/// Convert a SeaORM relation type to a Schema type AND return relation info.
+/// Convert a `SeaORM` relation type to a Schema type AND return relation info.
 ///
 /// - `#[sea_orm(has_one)]` -> Always `Option<Box<Schema>>`
 /// - `#[sea_orm(has_many)]` -> Always `Vec<Schema>`
@@ -248,7 +246,8 @@ pub fn is_field_optional_in_struct(struct_item: &syn::ItemStruct, field_name: &s
 /// e.g., if source is `crate::models::memo::Model`, module path is `crate::models::memo`
 ///
 /// Returns None if the type is not a relation type or conversion fails.
-/// Returns (TokenStream, RelationFieldInfo) on success for use in from_model generation.
+/// Returns (`TokenStream`, `RelationFieldInfo`) on success for use in `from_model` generation.
+#[allow(clippy::too_many_lines)]
 pub fn convert_relation_type_to_schema_with_info(
     ty: &Type,
     field_attrs: &[syn::Attribute],
@@ -256,30 +255,26 @@ pub fn convert_relation_type_to_schema_with_info(
     source_module_path: &[String],
     field_name: syn::Ident,
 ) -> Option<(TokenStream, RelationFieldInfo)> {
-    let type_path = match ty {
-        Type::Path(tp) => tp,
-        _ => return None,
+    let Type::Path(type_path) = ty else {
+        return None;
     };
 
     let segment = type_path.path.segments.last()?;
     let ident_str = segment.ident.to_string();
 
     // Check if this is a relation type with generic argument
-    let args = match &segment.arguments {
-        syn::PathArguments::AngleBracketed(args) => args,
-        _ => return None,
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
     };
 
     // Get the inner Entity type
-    let inner_ty = match args.args.first()? {
-        syn::GenericArgument::Type(ty) => ty,
-        _ => return None,
+    let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() else {
+        return None;
     };
 
     // Extract the path and convert to absolute Schema path
-    let inner_path = match inner_ty {
-        Type::Path(tp) => tp,
-        _ => return None,
+    let Type::Path(inner_path) = inner_ty else {
+        return None;
     };
 
     // Collect segments as strings
@@ -344,8 +339,7 @@ pub fn convert_relation_type_to_schema_with_info(
             let relation_enum = extract_relation_enum(field_attrs);
             let is_optional = fk_field
                 .as_ref()
-                .map(|f| is_field_optional_in_struct(parsed_struct, f))
-                .unwrap_or(true); // Default to optional if we can't determine
+                .is_none_or(|f| is_field_optional_in_struct(parsed_struct, f)); // Default to optional if we can't determine
 
             let converted = if is_optional {
                 quote! { Option<Box<#schema_path>> }
@@ -355,7 +349,7 @@ pub fn convert_relation_type_to_schema_with_info(
             let info = RelationFieldInfo {
                 field_name,
                 relation_type: "HasOne".to_string(),
-                schema_path: schema_path.clone(),
+                schema_path,
                 is_optional,
                 inline_type_info: None, // Will be populated later if circular
                 relation_enum,
@@ -371,7 +365,7 @@ pub fn convert_relation_type_to_schema_with_info(
             let info = RelationFieldInfo {
                 field_name,
                 relation_type: "HasMany".to_string(),
-                schema_path: schema_path.clone(),
+                schema_path,
                 is_optional: false,
                 inline_type_info: None, // Will be populated later if circular
                 relation_enum,
@@ -388,8 +382,7 @@ pub fn convert_relation_type_to_schema_with_info(
             let relation_enum = extract_relation_enum(field_attrs);
             let is_optional = fk_field
                 .as_ref()
-                .map(|f| is_field_optional_in_struct(parsed_struct, f))
-                .unwrap_or(true); // Default to optional if we can't determine
+                .is_none_or(|f| is_field_optional_in_struct(parsed_struct, f)); // Default to optional if we can't determine
 
             let converted = if is_optional {
                 quote! { Option<Box<#schema_path>> }
@@ -399,7 +392,7 @@ pub fn convert_relation_type_to_schema_with_info(
             let info = RelationFieldInfo {
                 field_name,
                 relation_type: "BelongsTo".to_string(),
-                schema_path: schema_path.clone(),
+                schema_path,
                 is_optional,
                 inline_type_info: None, // Will be populated later if circular
                 relation_enum,

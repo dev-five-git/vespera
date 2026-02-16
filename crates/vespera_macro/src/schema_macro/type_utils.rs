@@ -22,7 +22,7 @@ pub fn extract_type_name(ty: &Type) -> Result<String, syn::Error> {
     }
 }
 
-/// Check if a type is a qualified path (has multiple segments like crate::models::User)
+/// Check if a type is a qualified path (has multiple segments like `crate::models::User`)
 pub fn is_qualified_path(ty: &Type) -> bool {
     match ty {
         Type::Path(type_path) => type_path.path.segments.len() > 1,
@@ -37,28 +37,23 @@ pub fn is_option_type(ty: &Type) -> bool {
             .path
             .segments
             .first()
-            .map(|s| s.ident == "Option")
-            .unwrap_or(false),
+            .is_some_and(|s| s.ident == "Option"),
         _ => false,
     }
 }
 
-/// Check if a type is a SeaORM relation type (HasOne, HasMany, BelongsTo)
+/// Check if a type is a `SeaORM` relation type (`HasOne`, `HasMany`, `BelongsTo`)
 pub fn is_seaorm_relation_type(ty: &Type) -> bool {
     match ty {
-        Type::Path(type_path) => {
-            if let Some(segment) = type_path.path.segments.last() {
-                let ident = segment.ident.to_string();
-                matches!(ident.as_str(), "HasOne" | "HasMany" | "BelongsTo")
-            } else {
-                false
-            }
-        }
+        Type::Path(type_path) => type_path.path.segments.last().is_some_and(|segment| {
+            let ident = segment.ident.to_string();
+            matches!(ident.as_str(), "HasOne" | "HasMany" | "BelongsTo")
+        }),
         _ => false,
     }
 }
 
-/// Check if a struct is a SeaORM Model (has #[sea_orm::model] or #[sea_orm(table_name = ...)] attribute)
+/// Check if a struct is a `SeaORM` Model (has #[`sea_orm::model`] or #[`sea_orm(table_name` = ...)] attribute)
 pub fn is_seaorm_model(struct_item: &syn::ItemStruct) -> bool {
     for attr in &struct_item.attrs {
         // Check for #[sea_orm::model] or #[sea_orm(...)]
@@ -132,15 +127,14 @@ pub fn is_primitive_or_known_type(name: &str) -> bool {
 
 /// Resolve a simple type to an absolute path using the source module path.
 ///
-/// For example, if source_module_path is ["crate", "models", "memo"] and
+/// For example, if `source_module_path` is `["crate", "models", "memo"]` and
 /// the type is `MemoStatus`, it returns `crate::models::memo::MemoStatus`.
 ///
 /// If the type is already qualified (has `::`) or is a primitive/known type,
 /// returns the original type unchanged.
 pub fn resolve_type_to_absolute_path(ty: &Type, source_module_path: &[String]) -> TokenStream {
-    let type_path = match ty {
-        Type::Path(tp) => tp,
-        _ => return quote! { #ty },
+    let Type::Path(type_path) = ty else {
+        return quote! { #ty };
     };
 
     // If path has multiple segments (already qualified like `crate::foo::Bar`), return as-is
@@ -149,9 +143,8 @@ pub fn resolve_type_to_absolute_path(ty: &Type, source_module_path: &[String]) -
     }
 
     // Get the single segment
-    let segment = match type_path.path.segments.first() {
-        Some(s) => s,
-        None => return quote! { #ty },
+    let Some(segment) = type_path.path.segments.first() else {
+        return quote! { #ty };
     };
 
     let ident_str = segment.ident.to_string();
@@ -177,16 +170,16 @@ pub fn resolve_type_to_absolute_path(ty: &Type, source_module_path: &[String]) -
     quote! { #(#path_idents)::* :: #type_ident #args }
 }
 
-/// Extract module path from a schema path TokenStream.
+/// Extract module path from a schema path `TokenStream`.
 ///
-/// The schema_path is something like `crate::models::user::Schema`.
+/// The `schema_path` is something like `crate::models::user::Schema`.
 /// This returns `["crate", "models", "user"]` (excluding the final type name).
 pub fn extract_module_path_from_schema_path(schema_path: &proc_macro2::TokenStream) -> Vec<String> {
     let path_str = schema_path.to_string();
     // Parse segments: "crate :: models :: user :: Schema" -> ["crate", "models", "user", "Schema"]
     let segments: Vec<&str> = path_str
         .split("::")
-        .map(|s| s.trim())
+        .map(str::trim)
         .filter(|s| !s.is_empty())
         .collect();
 
@@ -194,7 +187,7 @@ pub fn extract_module_path_from_schema_path(schema_path: &proc_macro2::TokenStre
     if segments.len() > 1 {
         segments[..segments.len() - 1]
             .iter()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect()
     } else {
         vec![]
@@ -202,7 +195,7 @@ pub fn extract_module_path_from_schema_path(schema_path: &proc_macro2::TokenStre
 }
 
 /// Extract the module path from a type (excluding the type name itself).
-/// e.g., `crate::models::memo::Model` -> ["crate", "models", "memo"]
+/// e.g., `crate::models::memo::Model` -> `["crate", "models", "memo"]`
 pub fn extract_module_path(ty: &Type) -> Vec<String> {
     match ty {
         Type::Path(type_path) => {
@@ -226,27 +219,25 @@ pub fn extract_module_path(ty: &Type) -> Vec<String> {
 /// Capitalize the first letter of a string.
 pub fn capitalize_first(s: &str) -> String {
     let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-    }
+    chars.next().map_or_else(String::new, |c| {
+        c.to_uppercase().collect::<String>() + chars.as_str()
+    })
 }
 
-/// Convert snake_case to PascalCase.
-/// e.g., "target_user_id" -> "TargetUserId", "comments" -> "Comments"
+/// Convert `snake_case` to `PascalCase`.
+/// e.g., "`target_user_id`" -> "`TargetUserId`", "comments" -> "Comments"
 pub fn snake_to_pascal_case(s: &str) -> String {
     s.split('_')
         .map(|part| {
             let mut chars = part.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().chain(chars).collect(),
-            }
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars).collect()
+            })
         })
         .collect()
 }
 
-/// Check if a type is HashMap or BTreeMap
+/// Check if a type is `HashMap` or `BTreeMap`
 pub fn is_map_type(ty: &Type) -> bool {
     if let Type::Path(type_path) = ty {
         let path = &type_path.path;
@@ -277,7 +268,8 @@ pub fn get_type_default(ty: &Type) -> Option<serde_json::Value> {
                     Some(serde_json::Value::Number(serde_json::Number::from(0)))
                 }
                 "f32" | "f64" => Some(serde_json::Value::Number(
-                    serde_json::Number::from_f64(0.0).unwrap_or(serde_json::Number::from(0)),
+                    serde_json::Number::from_f64(0.0)
+                        .unwrap_or_else(|| serde_json::Number::from(0)),
                 )),
                 "bool" => Some(serde_json::Value::Bool(false)),
                 _ => None,
@@ -636,12 +628,10 @@ mod tests {
         let ty = empty_type_path();
         let result = extract_type_name(&ty);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("type path has no segments")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("type path has no segments"));
     }
 
     #[test]

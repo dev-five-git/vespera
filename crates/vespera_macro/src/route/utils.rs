@@ -70,9 +70,7 @@ pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
                     if let Ok(route_args) = meta_list.parse_args::<RouteArgs>() {
                         let method = route_args
                             .method
-                            .as_ref()
-                            .map(syn::Ident::to_string)
-                            .unwrap_or_else(|| "get".to_string());
+                            .as_ref().map_or_else(|| "get".to_string(), syn::Ident::to_string);
                         let path = route_args.path.as_ref().map(syn::LitStr::value);
 
                         // Parse error_status array if present
@@ -115,7 +113,7 @@ pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
                         });
 
                         // Parse description if present
-                        let description = route_args.description.as_ref().map(|s| s.value());
+                        let description = route_args.description.as_ref().map(syn::LitStr::value);
 
                         return Some(RouteInfo {
                             method,

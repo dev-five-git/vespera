@@ -14,7 +14,7 @@ use crate::schema_macro::type_utils::{
     is_map_type as utils_is_map_type, is_primitive_like as utils_is_primitive_like,
 };
 
-/// Convert SchemaRef to inline schema for query parameters
+/// Convert `SchemaRef` to inline schema for query parameters
 /// Query parameters should always use inline schemas, not refs
 /// Adds nullable flag if the field is optional
 fn convert_to_inline_schema(field_schema: SchemaRef, is_optional: bool) -> SchemaRef {
@@ -35,9 +35,10 @@ fn convert_to_inline_schema(field_schema: SchemaRef, is_optional: bool) -> Schem
     }
 }
 
-/// Analyze function parameter and convert to OpenAPI Parameter(s)
-/// Returns None if parameter should be ignored (e.g., Query<HashMap<...>>)
+/// Analyze function parameter and convert to `OpenAPI` Parameter(s)
+/// Returns None if parameter should be ignored (e.g., Query<`HashMap`<...>>)
 /// Returns Some(Vec<Parameter>) with one or more parameters
+#[allow(clippy::too_many_lines)]
 pub fn parse_function_parameter(
     arg: &FnArg,
     path_params: &[String],
@@ -83,7 +84,7 @@ pub fn parse_function_parameter(
                         if inner_ident_str == "TypedHeader" {
                             // TypedHeader always uses string schema regardless of inner type
                             return Some(vec![Parameter {
-                                name: param_name.replace("_", "-"),
+                                name: param_name.replace('_', "-"),
                                 r#in: ParameterLocation::Header,
                                 description: None,
                                 required: Some(false),
@@ -196,7 +197,7 @@ pub fn parse_function_parameter(
 
                                 // Otherwise, treat as single parameter
                                 return Some(vec![Parameter {
-                                    name: param_name.clone(),
+                                    name: param_name,
                                     r#in: ParameterLocation::Query,
                                     description: None,
                                     required: Some(true),
@@ -221,7 +222,7 @@ pub fn parse_function_parameter(
                                     return None;
                                 }
                                 return Some(vec![Parameter {
-                                    name: param_name.clone(),
+                                    name: param_name,
                                     r#in: ParameterLocation::Header,
                                     description: None,
                                     required: Some(true),
@@ -238,7 +239,7 @@ pub fn parse_function_parameter(
                             // TypedHeader<T> extractor (axum::TypedHeader)
                             // TypedHeader always uses string schema regardless of inner type
                             return Some(vec![Parameter {
-                                name: param_name.replace("_", "-"),
+                                name: param_name.replace('_', "-"),
                                 r#in: ParameterLocation::Header,
                                 description: None,
                                 required: Some(true),
@@ -246,20 +247,8 @@ pub fn parse_function_parameter(
                                 example: None,
                             }]);
                         }
-                        "Json" => {
-                            // Json<T> extractor - this will be handled as RequestBody
-                            return None;
-                        }
-                        "Form" => {
-                            // Form<T> extractor - handled as RequestBody
-                            return None;
-                        }
-                        "TypedMultipart" => {
-                            // TypedMultipart<T> extractor - handled as RequestBody
-                            return None;
-                        }
-                        "Multipart" => {
-                            // Raw Multipart extractor - handled as RequestBody
+                        "Json" | "Form" | "TypedMultipart" | "Multipart" => {
+                            // These extractors are handled as RequestBody
                             return None;
                         }
                         _ => {}
@@ -270,7 +259,7 @@ pub fn parse_function_parameter(
             // Check if it's a path parameter (by name match) - for non-extractor cases
             if path_params.contains(&param_name) {
                 return Some(vec![Parameter {
-                    name: param_name.clone(),
+                    name: param_name,
                     r#in: ParameterLocation::Path,
                     description: None,
                     required: Some(true),
@@ -364,17 +353,10 @@ fn parse_query_struct_to_parameters(
                 for field in &fields_named.named {
                     let rust_field_name = field
                         .ident
-                        .as_ref()
-                        .map(|i| i.to_string())
-                        .unwrap_or_else(|| "unknown".to_string());
+                        .as_ref().map_or_else(|| "unknown".to_string(), std::string::ToString::to_string);
 
                     // Check for field-level rename attribute first (takes precedence)
-                    let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
-                        renamed
-                    } else {
-                        // Apply rename_all transformation if present
-                        rename_field(&rust_field_name, rename_all.as_deref())
-                    };
+                    let field_name = extract_field_rename(&field.attrs).unwrap_or_else(|| rename_field(&rust_field_name, rename_all.as_deref()));
 
                     let field_type = &field.ty;
 
@@ -386,8 +368,7 @@ fn parse_query_struct_to_parameters(
                                 .path
                                 .segments
                                 .first()
-                                .map(|s| s.ident == "Option")
-                                .unwrap_or(false)
+                                .is_some_and(|s| s.ident == "Option")
                     );
 
                     // Parse field type to schema (inline, not ref)
