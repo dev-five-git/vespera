@@ -2,9 +2,9 @@
 //!
 //! This crate contains all the proc-macros for Vespera:
 //! - `#[vespera::route(...)]` - Mark a function as a route handler
-//! - `#[derive(Schema)]` - Register a type for OpenAPI schema generation
-//! - `schema!(...)` - Get OpenAPI schema at compile time
-//! - `vespera!(...)` - Generate Axum router with OpenAPI
+//! - `#[derive(Schema)]` - Register a type for `OpenAPI` schema generation
+//! - `schema!(...)` - Get `OpenAPI` schema at compile time
+//! - `vespera!(...)` - Generate Axum router with `OpenAPI`
 //! - `export_app!(...)` - Export router for merging
 //!
 //! # Architecture
@@ -77,17 +77,21 @@ pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Derive macro for Schema
 ///
-/// Supports `#[schema(name = "CustomName")]` attribute to set custom OpenAPI schema name.
+/// Supports `#[schema(name = "CustomName")]` attribute to set custom `OpenAPI` schema name.
 #[cfg(not(tarpaulin_include))]
 #[proc_macro_derive(Schema, attributes(schema, serde))]
 pub fn derive_schema(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     let (metadata, expanded) = schema_impl::process_derive_schema(&input);
-    SCHEMA_STORAGE.lock().unwrap().push(metadata);
+    let name = metadata.name.clone();
+    SCHEMA_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(name, metadata);
     TokenStream::from(expanded)
 }
 
-/// Generate an OpenAPI Schema from a type with optional field filtering.
+/// Generate an `OpenAPI` Schema from a type with optional field filtering.
 ///
 /// This macro creates a `vespera::schema::Schema` struct at compile time
 /// from a type that has `#[derive(Schema)]`.
@@ -138,7 +142,9 @@ pub fn schema(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as schema_macro::SchemaInput);
 
     // Get stored schemas
-    let storage = SCHEMA_STORAGE.lock().unwrap();
+    let storage = SCHEMA_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     match schema_macro::generate_schema_code(&input, &storage) {
         Ok(tokens) => TokenStream::from(tokens),
@@ -205,20 +211,27 @@ pub fn schema(input: TokenStream) -> TokenStream {
 pub fn schema_type(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as schema_macro::SchemaTypeInput);
 
-    // Get stored schemas
-    let mut storage = SCHEMA_STORAGE.lock().unwrap();
-
-    match schema_macro::generate_schema_type_code(&input, &storage) {
-        Ok((tokens, generated_metadata)) => {
-            // If custom name is provided, register the schema directly
-            // This ensures it appears in OpenAPI even when `ignore` is set
-            if let Some(metadata) = generated_metadata {
-                storage.push(metadata);
-            }
-            TokenStream::from(tokens)
+    // Get stored schemas and generate code
+    let (tokens, generated_metadata) = {
+        let storage = SCHEMA_STORAGE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match schema_macro::generate_schema_type_code(&input, &storage) {
+            Ok(result) => result,
+            Err(e) => return e.to_compile_error().into(),
         }
-        Err(e) => e.to_compile_error().into(),
+    };
+
+    // If custom name is provided, register the schema directly
+    // This ensures it appears in OpenAPI even when `ignore` is set
+    if let Some(metadata) = generated_metadata {
+        let name = metadata.name.clone();
+        SCHEMA_STORAGE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(name, metadata);
     }
+    TokenStream::from(tokens)
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -226,7 +239,9 @@ pub fn schema_type(input: TokenStream) -> TokenStream {
 pub fn vespera(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as AutoRouterInput);
     let processed = process_vespera_input(input);
-    let schema_storage = SCHEMA_STORAGE.lock().unwrap();
+    let schema_storage = SCHEMA_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     match process_vespera_macro(&processed, &schema_storage) {
         Ok(tokens) => tokens.into(),
@@ -237,7 +252,7 @@ pub fn vespera(input: TokenStream) -> TokenStream {
 /// Export a vespera app as a reusable component.
 ///
 /// Generates a struct with:
-/// - `OPENAPI_SPEC: &'static str` - The OpenAPI JSON spec
+/// - `OPENAPI_SPEC: &'static str` - The `OpenAPI` JSON spec
 /// - `router() -> Router` - Function returning the Axum router
 ///
 /// # Example
@@ -264,8 +279,17 @@ pub fn export_app(input: TokenStream) -> TokenStream {
         .map(|d| d.value())
         .or_else(|| std::env::var("VESPERA_DIR").ok())
         .unwrap_or_else(|| "routes".to_string());
-    let schema_storage = SCHEMA_STORAGE.lock().unwrap();
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+    let schema_storage = SCHEMA_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") else {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "export_app! macro: CARGO_MANIFEST_DIR is not set. This macro must be used within a cargo build.",
+        )
+        .to_compile_error()
+        .into();
+    };
 
     match process_export_app(&name, &folder_name, &schema_storage, &manifest_dir) {
         Ok(tokens) => tokens.into(),

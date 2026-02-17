@@ -12,13 +12,14 @@ use crate::{
 };
 
 /// Collect routes and structs from a folder
+#[allow(clippy::option_if_let_else)]
 pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> MacroResult<CollectedMetadata> {
     let mut metadata = CollectedMetadata::new();
 
     let files = collect_files(folder_path).map_err(|e| err_call_site(format!("vespera! macro: failed to scan route folder '{}': {}. Verify the folder exists and is readable.", folder_path.display(), e)))?;
 
     for file in files {
-        if !file.extension().map(|e| e == "rs").unwrap_or(false) {
+        if file.extension().is_none_or(|e| e != "rs") {
             continue;
         }
 
@@ -53,17 +54,19 @@ pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> MacroResult<Co
 
         let file_path = file.display().to_string();
 
+        // Pre-compute base path once per file (avoids repeated segments.join per route)
+        let base_path = format!("/{}", segments.join("/"));
+
         // Collect routes
         for item in &file_ast.items {
             if let Item::Fn(fn_item) = item
                 && let Some(route_info) = extract_route_info(&fn_item.attrs)
             {
                 let route_path = if let Some(custom_path) = &route_info.path {
-                    let base = format!("/{}", segments.join("/"));
-                    let trimmed_base = base.trim_end_matches('/');
-                    format!("{}/{}", trimmed_base, custom_path.trim_start_matches('/'))
+                    let trimmed_base = base_path.trim_end_matches('/');
+                    format!("{trimmed_base}/{}", custom_path.trim_start_matches('/'))
                 } else {
-                    format!("/{}", segments.join("/"))
+                    base_path.clone()
                 };
                 let route_path = route_path.replace('_', "-");
 
@@ -271,12 +274,12 @@ pub fn get_users() -> String {
         create_temp_file(
             &temp_dir,
             "user.rs",
-            r#"
+            r"
 pub struct User {
     pub id: i32,
     pub name: String,
 }
-"#,
+",
         );
 
         let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
@@ -379,7 +382,7 @@ pub fn get_posts() -> String {
         create_temp_file(
             &temp_dir,
             "user.rs",
-            r#"
+            r"
 use vespera::Schema;
 
 #[derive(Schema)]
@@ -387,13 +390,13 @@ pub struct User {
     pub id: i32,
     pub name: String,
 }
-"#,
+",
         );
 
         create_temp_file(
             &temp_dir,
             "post.rs",
-            r#"
+            r"
 use vespera::Schema;
 
 #[derive(Schema)]
@@ -401,7 +404,7 @@ pub struct Post {
     pub id: i32,
     pub title: String,
 }
-"#,
+",
         );
 
         let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
@@ -783,12 +786,12 @@ pub fn get_users() -> String {
         create_temp_file(
             &temp_dir,
             "user.rs",
-            r#"
+            r"
 pub struct User {
     pub id: i32,
     pub name: String,
 }
-"#,
+",
         );
 
         let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
@@ -808,13 +811,13 @@ pub struct User {
         create_temp_file(
             &temp_dir,
             "user.rs",
-            r#"
+            r"
 #[derive(Debug, Clone)]
 pub struct User {
     pub id: i32,
     pub name: String,
 }
-"#,
+",
         );
 
         let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();

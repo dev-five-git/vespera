@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use crate::SchemaRef;
 
 /// HTTP method
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum HttpMethod {
     Get,
@@ -19,18 +19,35 @@ pub enum HttpMethod {
     Trace,
 }
 
-impl From<&str> for HttpMethod {
-    fn from(value: &str) -> Self {
+impl std::fmt::Display for HttpMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Get => write!(f, "GET"),
+            Self::Post => write!(f, "POST"),
+            Self::Put => write!(f, "PUT"),
+            Self::Patch => write!(f, "PATCH"),
+            Self::Delete => write!(f, "DELETE"),
+            Self::Head => write!(f, "HEAD"),
+            Self::Options => write!(f, "OPTIONS"),
+            Self::Trace => write!(f, "TRACE"),
+        }
+    }
+}
+
+impl TryFrom<&str> for HttpMethod {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value.to_uppercase().as_str() {
-            "GET" => HttpMethod::Get,
-            "POST" => HttpMethod::Post,
-            "PUT" => HttpMethod::Put,
-            "PATCH" => HttpMethod::Patch,
-            "DELETE" => HttpMethod::Delete,
-            "HEAD" => HttpMethod::Head,
-            "OPTIONS" => HttpMethod::Options,
-            "TRACE" => HttpMethod::Trace,
-            _ => HttpMethod::Get, // default value
+            "GET" => Ok(Self::Get),
+            "POST" => Ok(Self::Post),
+            "PUT" => Ok(Self::Put),
+            "PATCH" => Ok(Self::Patch),
+            "DELETE" => Ok(Self::Delete),
+            "HEAD" => Ok(Self::Head),
+            "OPTIONS" => Ok(Self::Options),
+            "TRACE" => Ok(Self::Trace),
+            other => Err(format!("unknown HTTP method: {other}")),
         }
     }
 }
@@ -137,7 +154,7 @@ pub struct Header {
     pub schema: Option<SchemaRef>,
 }
 
-/// OpenAPI Operation definition
+/// `OpenAPI` Operation definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Operation {
@@ -221,7 +238,8 @@ impl PathItem {
     }
 
     /// Get an operation for a specific HTTP method
-    pub fn get_operation(&self, method: &HttpMethod) -> Option<&Operation> {
+    #[must_use]
+    pub const fn get_operation(&self, method: &HttpMethod) -> Option<&Operation> {
         match method {
             HttpMethod::Get => self.get.as_ref(),
             HttpMethod::Post => self.post.as_ref(),
@@ -277,15 +295,14 @@ mod tests {
     #[case("trace", HttpMethod::Trace)]
     #[case("Trace", HttpMethod::Trace)]
     fn test_http_method_from_str(#[case] input: &str, #[case] expected: HttpMethod) {
-        let result = HttpMethod::from(input);
+        let result = HttpMethod::try_from(input).unwrap();
         assert_eq!(result, expected);
     }
 
     #[test]
     fn test_http_method_from_invalid_str() {
-        // Invalid method should default to Get
-        let result = HttpMethod::from("INVALID");
-        assert_eq!(result, HttpMethod::Get);
+        let result = HttpMethod::try_from("INVALID");
+        assert!(result.is_err());
     }
 
     #[test]
@@ -523,6 +540,19 @@ mod tests {
         );
     }
 
+    #[rstest]
+    #[case(HttpMethod::Get, "GET")]
+    #[case(HttpMethod::Post, "POST")]
+    #[case(HttpMethod::Put, "PUT")]
+    #[case(HttpMethod::Patch, "PATCH")]
+    #[case(HttpMethod::Delete, "DELETE")]
+    #[case(HttpMethod::Head, "HEAD")]
+    #[case(HttpMethod::Options, "OPTIONS")]
+    #[case(HttpMethod::Trace, "TRACE")]
+    fn test_http_method_display(#[case] method: HttpMethod, #[case] expected: &str) {
+        assert_eq!(method.to_string(), expected);
+    }
+
     #[test]
     fn test_http_method_equality() {
         let method1 = HttpMethod::Get;
@@ -536,7 +566,7 @@ mod tests {
     #[test]
     fn test_http_method_clone() {
         let method = HttpMethod::Get;
-        let cloned = method.clone();
+        let cloned = method;
         assert_eq!(method, cloned);
     }
 

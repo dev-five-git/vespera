@@ -1,11 +1,10 @@
 [package]
 name = "vespera_macro"
-version = "0.1.33"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Procedural macros for Vespera - automatic route discovery and OpenAPI generation"
-license = "Apache-2.0"
-repository = "https://github.com/dev-five-git/vespera"
-readme = "../../README.md"
+license.workspace = true
+repository.workspace = true
 
 [lib]
 proc-macro = true
@@ -24,5 +23,5 @@ insta = "1.46"
 tempfile = "3"
 serial_test = "3"
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+[lints]
+workspace = true

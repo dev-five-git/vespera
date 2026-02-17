@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use syn::{FnArg, PatType, Type};
 use vespera_core::route::{MediaType, RequestBody};
@@ -12,17 +12,17 @@ fn is_string_like(ty: &Type) -> bool {
             .path
             .segments
             .last()
-            .map(|seg| seg.ident == "String" || seg.ident == "str")
-            .unwrap_or(false),
+            .is_some_and(|seg| seg.ident == "String" || seg.ident == "str"),
         Type::Reference(type_ref) => is_string_like(&type_ref.elem),
         _ => false,
     }
 }
 
-/// Analyze function signature and extract RequestBody
+/// Analyze function signature and extract `RequestBody`
+#[allow(clippy::too_many_lines)]
 pub fn parse_request_body(
     arg: &FnArg,
-    known_schemas: &std::collections::HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &std::collections::HashMap<String, String>,
 ) -> Option<RequestBody> {
     match arg {
@@ -201,7 +201,7 @@ mod tests {
     ) {
         let func: syn::ItemFn = syn::parse_str(func_src).unwrap();
         let arg = func.sig.inputs.first().unwrap();
-        let body = parse_request_body(arg, &HashMap::new(), &HashMap::new());
+        let body = parse_request_body(arg, &HashSet::new(), &HashMap::new());
         assert_eq!(body.is_some(), has_body);
         with_settings!({ snapshot_suffix => format!("req_body_{}", suffix) }, {
             assert_debug_snapshot!(body);

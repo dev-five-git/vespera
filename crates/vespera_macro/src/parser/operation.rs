@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use syn::{FnArg, PatType, Type};
 use vespera_core::route::{MediaType, Operation, Parameter, ParameterLocation, Response};
@@ -10,10 +10,11 @@ use super::{
 };
 
 /// Build Operation from function signature
+#[allow(clippy::too_many_lines)]
 pub fn build_operation_from_function(
     sig: &syn::Signature,
     path: &str,
-    known_schemas: &std::collections::HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &std::collections::HashMap<String, String>,
     error_status: Option<&[u16]>,
     tags: Option<&[String]>,
@@ -131,6 +132,9 @@ pub fn build_operation_from_function(
         }
     }
 
+    // Build HashSet once for O(1) path-param membership tests in parse_function_parameter
+    let path_param_set: HashSet<String> = path_params.iter().cloned().collect();
+
     // Parse function parameters (skip Path extractor as we already handled it)
     for input in &sig.inputs {
         // Check if it's a request body (Json<T>)
@@ -149,8 +153,13 @@ pub fn build_operation_from_function(
             };
 
             if !is_path_extractor
-                && let Some(params) =
-                    parse_function_parameter(input, &path_params, known_schemas, struct_definitions)
+                && let Some(params) = parse_function_parameter(
+                    input,
+                    &path_params,
+                    &path_param_set,
+                    known_schemas,
+                    struct_definitions,
+                )
             {
                 parameters.extend(params);
             }
@@ -201,7 +210,7 @@ pub fn build_operation_from_function(
 
     Operation {
         operation_id: Some(sig.ident.to_string()),
-        tags: tags.map(|t| t.to_vec()),
+        tags: tags.map(<[std::string::String]>::to_vec),
         summary: None,
         description: None,
         parameters: if parameters.is_empty() {
@@ -236,7 +245,7 @@ mod tests {
         build_operation_from_function(
             &sig,
             path,
-            &HashMap::new(),
+            &HashSet::new(),
             &HashMap::new(),
             error_status,
             None,
@@ -261,7 +270,7 @@ mod tests {
         schema: Option<SchemaType>,
     }
 
-    fn assert_body(op: &Operation, expected: &Option<ExpectedBody>) {
+    fn assert_body(op: &Operation, expected: Option<&ExpectedBody>) {
         match expected {
             None => assert!(op.request_body.is_none()),
             Some(exp) => {
@@ -325,7 +334,7 @@ mod tests {
 
     fn build_with_tags(sig_src: &str, path: &str, tags: Option<&[String]>) -> Operation {
         let sig: syn::Signature = syn::parse_str(sig_src).expect("signature parse failed");
-        build_operation_from_function(&sig, path, &HashMap::new(), &HashMap::new(), None, tags)
+        build_operation_from_function(&sig, path, &HashSet::new(), &HashMap::new(), None, tags)
     }
 
     #[test]
@@ -479,7 +488,7 @@ mod tests {
     ) {
         let op = build(sig_src, path, extra_status);
         assert_params(&op, &expected_params);
-        assert_body(&op, &expected_body);
+        assert_body(&op, expected_body.as_ref());
         assert_responses(&op, &expected_resps);
     }
 
@@ -555,7 +564,7 @@ mod tests {
             SchemaRef::Inline(schema) => {
                 assert_eq!(schema.schema_type, Some(SchemaType::String));
             }
-            _ => panic!("expected inline schema"),
+            SchemaRef::Ref(_) => panic!("expected inline schema"),
         }
     }
 
@@ -647,7 +656,7 @@ mod tests {
         let op = build_operation_from_function(
             &sig,
             "/search",
-            &HashMap::new(),
+            &HashSet::new(),
             &struct_definitions,
             None,
             None,

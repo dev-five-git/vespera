@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use syn::{FnArg, Pat, PatType, Type};
 use vespera_core::{
@@ -14,7 +14,7 @@ use crate::schema_macro::type_utils::{
     is_map_type as utils_is_map_type, is_primitive_like as utils_is_primitive_like,
 };
 
-/// Convert SchemaRef to inline schema for query parameters
+/// Convert `SchemaRef` to inline schema for query parameters
 /// Query parameters should always use inline schemas, not refs
 /// Adds nullable flag if the field is optional
 fn convert_to_inline_schema(field_schema: SchemaRef, is_optional: bool) -> SchemaRef {
@@ -35,13 +35,18 @@ fn convert_to_inline_schema(field_schema: SchemaRef, is_optional: bool) -> Schem
     }
 }
 
-/// Analyze function parameter and convert to OpenAPI Parameter(s)
-/// Returns None if parameter should be ignored (e.g., Query<HashMap<...>>)
+/// Analyze function parameter and convert to `OpenAPI` Parameter(s)
+/// Returns None if parameter should be ignored (e.g., Query<`HashMap`<...>>)
 /// Returns Some(Vec<Parameter>) with one or more parameters
+///
+/// `path_params` provides ordered access for tuple-index matching in Path<T> handling.
+/// `path_param_set` provides O(1) membership test for bare-name path parameter detection.
+#[allow(clippy::too_many_lines)]
 pub fn parse_function_parameter(
     arg: &FnArg,
     path_params: &[String],
-    known_schemas: &HashMap<String, String>,
+    path_param_set: &HashSet<String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Option<Vec<Parameter>> {
     match arg {
@@ -83,7 +88,7 @@ pub fn parse_function_parameter(
                         if inner_ident_str == "TypedHeader" {
                             // TypedHeader always uses string schema regardless of inner type
                             return Some(vec![Parameter {
-                                name: param_name.replace("_", "-"),
+                                name: param_name.replace('_', "-"),
                                 r#in: ParameterLocation::Header,
                                 description: None,
                                 required: Some(false),
@@ -196,7 +201,7 @@ pub fn parse_function_parameter(
 
                                 // Otherwise, treat as single parameter
                                 return Some(vec![Parameter {
-                                    name: param_name.clone(),
+                                    name: param_name,
                                     r#in: ParameterLocation::Query,
                                     description: None,
                                     required: Some(true),
@@ -221,7 +226,7 @@ pub fn parse_function_parameter(
                                     return None;
                                 }
                                 return Some(vec![Parameter {
-                                    name: param_name.clone(),
+                                    name: param_name,
                                     r#in: ParameterLocation::Header,
                                     description: None,
                                     required: Some(true),
@@ -238,7 +243,7 @@ pub fn parse_function_parameter(
                             // TypedHeader<T> extractor (axum::TypedHeader)
                             // TypedHeader always uses string schema regardless of inner type
                             return Some(vec![Parameter {
-                                name: param_name.replace("_", "-"),
+                                name: param_name.replace('_', "-"),
                                 r#in: ParameterLocation::Header,
                                 description: None,
                                 required: Some(true),
@@ -246,20 +251,8 @@ pub fn parse_function_parameter(
                                 example: None,
                             }]);
                         }
-                        "Json" => {
-                            // Json<T> extractor - this will be handled as RequestBody
-                            return None;
-                        }
-                        "Form" => {
-                            // Form<T> extractor - handled as RequestBody
-                            return None;
-                        }
-                        "TypedMultipart" => {
-                            // TypedMultipart<T> extractor - handled as RequestBody
-                            return None;
-                        }
-                        "Multipart" => {
-                            // Raw Multipart extractor - handled as RequestBody
+                        "Json" | "Form" | "TypedMultipart" | "Multipart" => {
+                            // These extractors are handled as RequestBody
                             return None;
                         }
                         _ => {}
@@ -268,9 +261,9 @@ pub fn parse_function_parameter(
             }
 
             // Check if it's a path parameter (by name match) - for non-extractor cases
-            if path_params.contains(&param_name) {
+            if path_param_set.contains(&param_name) {
                 return Some(vec![Parameter {
-                    name: param_name.clone(),
+                    name: param_name,
                     r#in: ParameterLocation::Path,
                     description: None,
                     required: Some(true),
@@ -291,7 +284,7 @@ pub fn parse_function_parameter(
 
 fn is_known_type(
     ty: &Type,
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> bool {
     // Check if it's a primitive type
@@ -312,7 +305,7 @@ fn is_known_type(
         // Get type name (handle both simple and qualified paths)
 
         // Check if it's in struct_definitions or known_schemas
-        if struct_definitions.contains_key(&ident_str) || known_schemas.contains_key(&ident_str) {
+        if struct_definitions.contains_key(&ident_str) || known_schemas.contains(&ident_str) {
             return true;
         }
 
@@ -336,7 +329,7 @@ fn is_known_type(
 /// Returns None if the type is not a struct or cannot be parsed
 fn parse_query_struct_to_parameters(
     ty: &Type,
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Option<Vec<Parameter>> {
     // Check if it's a known struct
@@ -365,16 +358,11 @@ fn parse_query_struct_to_parameters(
                     let rust_field_name = field
                         .ident
                         .as_ref()
-                        .map(|i| i.to_string())
-                        .unwrap_or_else(|| "unknown".to_string());
+                        .map_or_else(|| "unknown".to_string(), std::string::ToString::to_string);
 
                     // Check for field-level rename attribute first (takes precedence)
-                    let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
-                        renamed
-                    } else {
-                        // Apply rename_all transformation if present
-                        rename_field(&rust_field_name, rename_all.as_deref())
-                    };
+                    let field_name = extract_field_rename(&field.attrs)
+                        .unwrap_or_else(|| rename_field(&rust_field_name, rename_all.as_deref()));
 
                     let field_type = &field.ty;
 
@@ -386,8 +374,7 @@ fn parse_query_struct_to_parameters(
                                 .path
                                 .segments
                                 .first()
-                                .map(|s| s.ident == "Option")
-                                .unwrap_or(false)
+                                .is_some_and(|s| s.ident == "Option")
                     );
 
                     // Parse field type to schema (inline, not ref)
@@ -441,40 +428,43 @@ fn parse_query_struct_to_parameters(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use insta::{assert_debug_snapshot, with_settings};
     use rstest::rstest;
     use vespera_core::route::ParameterLocation;
+    use vespera_core::schema::Reference;
 
     use super::*;
 
-    fn setup_test_data(func_src: &str) -> (HashMap<String, String>, HashMap<String, String>) {
+    fn setup_test_data(func_src: &str) -> (HashSet<String>, HashMap<String, String>) {
         let mut struct_definitions = HashMap::new();
-        let known_schemas: HashMap<String, String> = HashMap::new();
+        let mut known_schemas: HashSet<String> = HashSet::new();
 
         if func_src.contains("QueryParams") {
+            known_schemas.insert("QueryParams".to_string());
             struct_definitions.insert(
                 "QueryParams".to_string(),
-                r#"
+                r"
                 pub struct QueryParams {
                     pub page: i32,
                     pub limit: Option<i32>,
                 }
-                "#
+                "
                 .to_string(),
             );
         }
 
         if func_src.contains("User") {
+            known_schemas.insert("User".to_string());
             struct_definitions.insert(
                 "User".to_string(),
-                r#"
+                r"
                 pub struct User {
                     pub id: i32,
                     pub name: String,
                 }
-                "#
+                "
                 .to_string(),
             );
         }
@@ -606,11 +596,17 @@ mod tests {
     ) {
         let func: syn::ItemFn = syn::parse_str(func_src).unwrap();
         let (known_schemas, struct_definitions) = setup_test_data(func_src);
+        let path_param_set: HashSet<String> = path_params.iter().cloned().collect();
         let mut parameters = Vec::new();
 
         for (idx, arg) in func.sig.inputs.iter().enumerate() {
-            let result =
-                parse_function_parameter(arg, &path_params, &known_schemas, &struct_definitions);
+            let result = parse_function_parameter(
+                arg,
+                &path_params,
+                &path_param_set,
+                &known_schemas,
+                &struct_definitions,
+            );
             let expected = expected_locations
                 .get(idx)
                 .unwrap_or_else(|| expected_locations.last().unwrap());
@@ -618,9 +614,7 @@ mod tests {
             if expected.is_empty() {
                 assert!(
                     result.is_none(),
-                    "Expected None at arg index {}, func: {}",
-                    idx,
-                    func_src
+                    "Expected None at arg index {idx}, func: {func_src}"
                 );
                 continue;
             }
@@ -681,20 +675,21 @@ mod tests {
             "pub struct User { pub id: i32 }".to_string(),
         );
         let mut known_schemas = known_schemas;
-        known_schemas.insert(
-            "CustomHeader".to_string(),
-            "#/components/schemas/CustomHeader".to_string(),
-        );
+        known_schemas.insert("CustomHeader".to_string());
+
+        let path_param_set: HashSet<String> = path_params.iter().cloned().collect();
 
         for (idx, arg) in func.sig.inputs.iter().enumerate() {
-            let result =
-                parse_function_parameter(arg, &path_params, &known_schemas, &struct_definitions);
+            let result = parse_function_parameter(
+                arg,
+                &path_params,
+                &path_param_set,
+                &known_schemas,
+                &struct_definitions,
+            );
             assert!(
                 result.is_none(),
-                "Expected None at arg index {}, func: {}, got: {:?}",
-                idx,
-                func_src,
-                result
+                "Expected None at arg index {idx}, func: {func_src}, got: {result:?}"
             );
         }
     }
@@ -708,7 +703,7 @@ mod tests {
     fn test_is_primitive_like_fn(#[case] type_str: &str, #[case] expected: bool) {
         let ty: Type = syn::parse_str(type_str).unwrap();
         let result = is_primitive_type(&ty) || utils_is_primitive_like(&ty);
-        assert_eq!(result, expected, "type_str={}", type_str);
+        assert_eq!(result, expected, "type_str={type_str}");
     }
 
     #[rstest]
@@ -718,14 +713,14 @@ mod tests {
     #[case("Vec<i32>", false)]
     fn test_is_map_type(#[case] type_str: &str, #[case] expected: bool) {
         let ty: Type = syn::parse_str(type_str).unwrap();
-        assert_eq!(utils_is_map_type(&ty), expected, "type_str={}", type_str);
+        assert_eq!(utils_is_map_type(&ty), expected, "type_str={type_str}");
     }
 
     #[rstest]
-    #[case("i32", HashMap::new(), HashMap::new(), true)] // primitive type
+    #[case("i32", HashSet::new(), HashMap::new(), true)] // primitive type
     #[case(
         "User",
-        HashMap::new(),
+        HashSet::new(),
         {
             let mut map = HashMap::new();
             map.insert("User".to_string(), "pub struct User { id: i32 }".to_string());
@@ -736,19 +731,19 @@ mod tests {
     #[case(
         "Product",
         {
-            let mut map = HashMap::new();
-            map.insert("Product".to_string(), "Product".to_string());
-            map
+            let mut set = HashSet::new();
+            set.insert("Product".to_string());
+            set
         },
         HashMap::new(),
         true
     )] // known schema
-    #[case("Vec<i32>", HashMap::new(), HashMap::new(), true)] // Vec<T> with known inner type
-    #[case("Option<String>", HashMap::new(), HashMap::new(), true)] // Option<T> with known inner type
-    #[case("UnknownType", HashMap::new(), HashMap::new(), false)] // unknown type
+    #[case("Vec<i32>", HashSet::new(), HashMap::new(), true)] // Vec<T> with known inner type
+    #[case("Option<String>", HashSet::new(), HashMap::new(), true)] // Option<T> with known inner type
+    #[case("UnknownType", HashSet::new(), HashMap::new(), false)] // unknown type
     fn test_is_known_type(
         #[case] type_str: &str,
-        #[case] known_schemas: HashMap<String, String>,
+        #[case] known_schemas: HashSet<String>,
         #[case] struct_definitions: HashMap<String, String>,
         #[case] expected: bool,
     ) {
@@ -756,15 +751,14 @@ mod tests {
         assert_eq!(
             is_known_type(&ty, &known_schemas, &struct_definitions),
             expected,
-            "Type: {}",
-            type_str
+            "Type: {type_str}"
         );
     }
 
     #[test]
     fn test_parse_query_struct_to_parameters() {
         let mut struct_definitions = HashMap::new();
-        let mut known_schemas = HashMap::new();
+        let mut known_schemas = HashSet::new();
 
         // Test with struct that has fields
         struct_definitions.insert(
@@ -796,23 +790,23 @@ mod tests {
         // Test with struct that has nested struct (ref to inline conversion)
         struct_definitions.insert(
             "NestedQuery".to_string(),
-            r#"
+            r"
             pub struct NestedQuery {
                 pub user: User,
             }
-            "#
+            "
             .to_string(),
         );
         struct_definitions.insert(
             "User".to_string(),
-            r#"
+            r"
             pub struct User {
                 pub id: i32,
             }
-            "#
+            "
             .to_string(),
         );
-        known_schemas.insert("User".to_string(), "#/components/schemas/User".to_string());
+        known_schemas.insert("User".to_string());
 
         let ty: Type = syn::parse_str("NestedQuery").unwrap();
         let result = parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions);
@@ -831,12 +825,12 @@ mod tests {
         // Test with struct that has Option<T> fields
         struct_definitions.insert(
             "OptionalQuery".to_string(),
-            r#"
+            r"
             pub struct OptionalQuery {
                 pub required: i32,
                 pub optional: Option<String>,
             }
-            "#
+            "
             .to_string(),
         );
 
@@ -855,21 +849,24 @@ mod tests {
     fn test_query_single_non_struct_known_type() {
         // Test line 128: Return single Query<T> parameter where T is a known non-primitive type
         // This should return a single parameter when Query<T> wraps a known type that's not primitive-like
-        let mut known_schemas = HashMap::new();
+        let mut known_schemas = HashSet::new();
         let struct_definitions = HashMap::new();
 
         // Add a known type that's not a struct
-        known_schemas.insert(
-            "CustomId".to_string(),
-            "#/components/schemas/CustomId".to_string(),
-        );
+        known_schemas.insert("CustomId".to_string());
 
         let func: syn::ItemFn = syn::parse_str("fn test(id: Query<CustomId>) {}").unwrap();
         let path_params: Vec<String> = vec![];
+        let path_param_set: HashSet<String> = HashSet::new();
 
-        for arg in func.sig.inputs.iter() {
-            let result =
-                parse_function_parameter(arg, &path_params, &known_schemas, &struct_definitions);
+        for arg in &func.sig.inputs {
+            let result = parse_function_parameter(
+                arg,
+                &path_params,
+                &path_param_set,
+                &known_schemas,
+                &struct_definitions,
+            );
             // Line 128 returns Some(vec![Parameter...]) for single Query parameter
             assert!(result.is_some(), "Expected single Query parameter");
             let params = result.unwrap();
@@ -882,15 +879,21 @@ mod tests {
     fn test_path_param_by_name_match() {
         // Test line 159: path param matched by name (non-extractor case)
         // When a parameter name matches a path param name directly without Path<T> extractor
-        let known_schemas = HashMap::new();
+        let known_schemas = HashSet::new();
         let struct_definitions = HashMap::new();
 
         let func: syn::ItemFn = syn::parse_str("fn test(user_id: i32) {}").unwrap();
         let path_params = vec!["user_id".to_string()];
+        let path_param_set: HashSet<String> = path_params.iter().cloned().collect();
 
-        for arg in func.sig.inputs.iter() {
-            let result =
-                parse_function_parameter(arg, &path_params, &known_schemas, &struct_definitions);
+        for arg in &func.sig.inputs {
+            let result = parse_function_parameter(
+                arg,
+                &path_params,
+                &path_param_set,
+                &known_schemas,
+                &struct_definitions,
+            );
             // Line 159: path_params.contains(&param_name) returns true, so it creates a Path parameter
             assert!(result.is_some(), "Expected path parameter by name match");
             let params = result.unwrap();
@@ -906,7 +909,7 @@ mod tests {
         // Create a Type::Path programmatically with empty segments
         use syn::punctuated::Punctuated;
 
-        let known_schemas = HashMap::new();
+        let known_schemas = HashSet::new();
         let struct_definitions = HashMap::new();
 
         // Create Type::Path with empty segments
@@ -927,7 +930,7 @@ mod tests {
     fn test_is_known_type_non_vec_option_generic() {
         // Test line 230: non-Vec/Option generic type (like Result<T, E> or Box<T>)
         // The match at line 224-229 only handles Vec and Option
-        let known_schemas = HashMap::new();
+        let known_schemas = HashSet::new();
         let struct_definitions = HashMap::new();
 
         // Box<i32> has angle brackets but is not Vec or Option
@@ -946,7 +949,7 @@ mod tests {
         // Create a Type::Path programmatically with empty segments
         use syn::punctuated::Punctuated;
 
-        let known_schemas = HashMap::new();
+        let known_schemas = HashSet::new();
         let struct_definitions = HashMap::new();
 
         // Create Type::Path with empty segments
@@ -979,16 +982,16 @@ mod tests {
         // an inline schema wrapping the inner ref, not a direct Ref.
         // Line 313 is a defensive case that may be hard to hit in practice.
         let mut struct_definitions = HashMap::new();
-        let known_schemas = HashMap::new();
+        let known_schemas = HashSet::new();
 
         // Use a simple struct with Option<i32> to verify the optional handling works
         struct_definitions.insert(
             "QueryWithOptional".to_string(),
-            r#"
+            r"
             pub struct QueryWithOptional {
                 pub count: Option<i32>,
             }
-            "#
+            "
             .to_string(),
         );
 
@@ -1015,25 +1018,22 @@ mod tests {
         // 2. is_optional is false
         // 3. The ref conversion at lines 294-304 fails (no struct_def)
         let mut struct_definitions = HashMap::new();
-        let mut known_schemas = HashMap::new();
+        let mut known_schemas = HashSet::new();
 
         // Struct with required RefType field
         struct_definitions.insert(
             "QueryWithRef".to_string(),
-            r#"
-            pub struct QueryWithRef {
-                pub item: RefType,
-            }
-            "#
+            r"
+             pub struct QueryWithRef {
+                 pub item: RefType,
+             }
+             "
             .to_string(),
         );
 
         // RefType is a known schema (will generate SchemaRef::Ref)
         // BUT we don't have its struct definition, so the conversion at 296-303 fails
-        known_schemas.insert(
-            "RefType".to_string(),
-            "#/components/schemas/RefType".to_string(),
-        );
+        known_schemas.insert("RefType".to_string());
 
         let ty: Type = syn::parse_str("QueryWithRef").unwrap();
         let result = parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions);
@@ -1054,31 +1054,28 @@ mod tests {
     fn test_schema_ref_converted_to_inline_with_struct_def() {
         // Test lines 294-304: Ref IS converted when struct_def exists
         let mut struct_definitions = HashMap::new();
-        let mut known_schemas = HashMap::new();
+        let mut known_schemas = HashSet::new();
 
         // Main struct with a field of type NestedType
         struct_definitions.insert(
             "QueryWithNested".to_string(),
-            r#"
-            pub struct QueryWithNested {
-                pub nested: NestedType,
-            }
-            "#
+            r"
+             pub struct QueryWithNested {
+                 pub nested: NestedType,
+             }
+             "
             .to_string(),
         );
 
         // NestedType is both in known_schemas AND has a struct definition
-        known_schemas.insert(
-            "NestedType".to_string(),
-            "#/components/schemas/NestedType".to_string(),
-        );
+        known_schemas.insert("NestedType".to_string());
         struct_definitions.insert(
             "NestedType".to_string(),
-            r#"
+            r"
             pub struct NestedType {
                 pub value: i32,
             }
-            "#
+            "
             .to_string(),
         );
 
@@ -1099,7 +1096,7 @@ mod tests {
 
     // Tests for convert_to_inline_schema helper function
     #[test]
-    fn test_convert_to_inline_schema_inline_required() {
+    fn test_convert_to_inline_schema_inline() {
         let schema = SchemaRef::Inline(Box::new(Schema::string()));
         let result = convert_to_inline_schema(schema, false);
         match result {
@@ -1107,7 +1104,7 @@ mod tests {
                 assert_eq!(s.schema_type, Some(SchemaType::String));
                 assert!(s.nullable.is_none());
             }
-            _ => panic!("Expected Inline"),
+            SchemaRef::Ref(_) => panic!("Expected Inline"),
         }
     }
 
@@ -1120,21 +1117,21 @@ mod tests {
                 assert_eq!(s.schema_type, Some(SchemaType::String));
                 assert_eq!(s.nullable, Some(true));
             }
-            _ => panic!("Expected Inline"),
+            SchemaRef::Ref(_) => panic!("Expected Inline"),
         }
     }
 
     #[test]
-    fn test_convert_to_inline_schema_ref_required() {
-        use vespera_core::schema::Reference;
-        let schema = SchemaRef::Ref(Reference::schema("SomeType"));
-        let result = convert_to_inline_schema(schema, false);
+    fn test_convert_to_inline_schema_with_ref_optional() {
+        let schema = SchemaRef::Ref(Reference {
+            ref_path: "#/components/schemas/User".to_string(),
+        });
+        let result = convert_to_inline_schema(schema, true);
         match result {
             SchemaRef::Inline(s) => {
-                assert_eq!(s.schema_type, Some(SchemaType::Object));
-                assert!(s.nullable.is_none());
+                assert_eq!(s.nullable, Some(true));
             }
-            _ => panic!("Expected Inline"),
+            SchemaRef::Ref(_) => panic!("Expected Inline"),
         }
     }
 
@@ -1148,7 +1145,7 @@ mod tests {
                 assert_eq!(s.schema_type, Some(SchemaType::Object));
                 assert_eq!(s.nullable, Some(true));
             }
-            _ => panic!("Expected Inline"),
+            SchemaRef::Ref(_) => panic!("Expected Inline"),
         }
     }
 }

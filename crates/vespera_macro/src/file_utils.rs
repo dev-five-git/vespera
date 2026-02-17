@@ -10,6 +10,7 @@ pub fn try_read_and_parse_file(path: &Path) -> Option<syn::File> {
 }
 
 /// Read and parse a Rust source file, printing warnings on error.
+#[allow(clippy::similar_names)]
 pub fn read_and_parse_file_warn(path: &Path, context: &str) -> Option<syn::File> {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
@@ -52,16 +53,15 @@ pub fn collect_files(folder_path: &Path) -> io::Result<Vec<PathBuf>> {
 }
 
 pub fn file_to_segments(file: &Path, base_path: &Path) -> Vec<String> {
-    let file_stem = if let Ok(file_stem) = file.strip_prefix(base_path) {
-        file_stem.display().to_string()
-    } else {
-        file.display().to_string()
-    };
-    let file_stem = file_stem.replace(".rs", "").replace("\\", "/");
+    let file_stem = file.strip_prefix(base_path).map_or_else(
+        |_| file.display().to_string(),
+        |file_stem| file_stem.display().to_string(),
+    );
+    let file_stem = file_stem.replace(".rs", "").replace('\\', "/");
     let mut segments: Vec<String> = file_stem
-        .split("/")
+        .split('/')
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
     if let Some(last) = segments.last()
         && last == "mod"
@@ -120,16 +120,18 @@ mod tests {
     ) {
         // Normalize paths by replacing backslashes with forward slashes
         // This ensures tests work cross-platform (Windows uses \, Unix uses /)
-        let normalized_file_path = file_path.replace("\\", "/");
-        let normalized_base_path = base_path.replace("\\", "/");
+        let normalized_file_path = file_path.replace('\\', "/");
+        let normalized_base_path = base_path.replace('\\', "/");
         let file = PathBuf::from(normalized_file_path);
         let base = PathBuf::from(normalized_base_path);
         let result = file_to_segments(&file, &base);
-        let expected_vec: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+        let expected_vec: Vec<String> = expected
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         assert_eq!(
             result, expected_vec,
-            "Failed for file: {}, base: {}",
-            file_path, base_path
+            "Failed for file: {file_path}, base: {base_path}"
         );
     }
 
@@ -159,7 +161,7 @@ mod tests {
                 p.strip_prefix(base)
                     .unwrap_or(p)
                     .to_string_lossy()
-                    .replace("\\", "/")
+                    .replace('\\', "/")
             })
             .collect();
         normalized.sort();
@@ -239,14 +241,15 @@ mod tests {
         let mut normalized_result = normalize_paths(&result, temp_dir.path());
         normalized_result.sort();
 
-        let mut expected_normalized: Vec<String> =
-            expected_files.iter().map(|s| s.to_string()).collect();
+        let mut expected_normalized: Vec<String> = expected_files
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         expected_normalized.sort();
 
         assert_eq!(
             normalized_result, expected_normalized,
-            "Failed for structure: {:?}",
-            structure
+            "Failed for structure: {structure:?}"
         );
 
         temp_dir.close().expect("Failed to close temp dir");
@@ -266,7 +269,7 @@ mod tests {
         // Create a very deep nested structure
         let mut path = temp_dir.path().to_path_buf();
         for i in 0..5 {
-            path = path.join(format!("level{}", i));
+            path = path.join(format!("level{i}"));
             fs::create_dir_all(&path).expect("Failed to create nested dir");
         }
 

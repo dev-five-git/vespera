@@ -1,6 +1,6 @@
-//! Vespera - OpenAPI generation for Rust web frameworks
+//! Vespera - `OpenAPI` generation for Rust web frameworks
 //!
-//! This crate provides macros and utilities for generating OpenAPI documentation
+//! This crate provides macros and utilities for generating `OpenAPI` documentation
 //! from your route definitions.
 
 // Re-export vespera_core types so users don't need to depend on vespera_core directly
@@ -66,7 +66,8 @@ impl<S> VesperaRouter<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    /// Create a new VesperaRouter with a base router and routers to merge
+    /// Create a new `VesperaRouter` with a base router and routers to merge
+    #[must_use]
     pub fn new(base: axum::Router<S>, merge_fns: Vec<fn() -> axum::Router<()>>) -> Self {
         Self { base, merge_fns }
     }
@@ -92,6 +93,7 @@ where
     }
 
     /// Add a layer to the router.
+    #[must_use]
     pub fn layer<L>(self, layer: L) -> Self
     where
         L: tower_layer::Layer<axum::routing::Route> + Clone + Send + Sync + 'static,

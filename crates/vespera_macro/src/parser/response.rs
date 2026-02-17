@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use syn::{ReturnType, Type};
 use vespera_core::route::{Header, MediaType, Response};
@@ -7,7 +7,7 @@ use super::schema::parse_type_to_schema_ref_with_schemas;
 use crate::parser::is_keyword_type::{KeywordType, is_keyword_type, is_keyword_type_by_type_path};
 
 /// Unwrap Json<T> to get T
-/// Handles both Json<T> and vespera::axum::Json<T> by checking the last segment
+/// Handles both Json<T> and `vespera::axum::Json`<T> by checking the last segment
 fn unwrap_json(ty: &Type) -> &Type {
     if let Type::Path(type_path) = ty {
         let path = &type_path.path;
@@ -26,7 +26,7 @@ fn unwrap_json(ty: &Type) -> &Type {
 }
 
 /// Extract Ok and Err types from Result<T, E> or Result<Json<T>, E>
-/// Handles both Result and std::result::Result, and unwraps references
+/// Handles both Result and `std::result::Result`, and unwraps references
 fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
     // First unwrap Json if present
     let unwrapped = unwrap_json(ty);
@@ -62,7 +62,7 @@ fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
     None
 }
 
-/// Check if error type is a tuple (StatusCode, E) or (StatusCode, Json<E>)
+/// Check if error type is a tuple (`StatusCode`, E) or (`StatusCode`, Json<E>)
 /// Returns the error type E and a default status code (400)
 fn extract_status_code_tuple(err_ty: &Type) -> Option<(u16, Type)> {
     if let Type::Tuple(tuple) = err_ty
@@ -79,7 +79,7 @@ fn extract_status_code_tuple(err_ty: &Type) -> Option<(u16, Type)> {
 
 /// Extract payload type from an Ok tuple and track if headers exist.
 /// The last element of the tuple is always treated as the response body.
-/// Any presence of HeaderMap in the tuple marks headers as present.
+/// Any presence of `HeaderMap` in the tuple marks headers as present.
 fn extract_ok_payload_and_headers(ok_ty: &Type) -> (Type, Option<HashMap<String, Header>>) {
     if let Type::Tuple(tuple) = ok_ty {
         let payload_ty = tuple.elems.last().map(|ty| unwrap_json(ty).clone());
@@ -102,9 +102,10 @@ fn extract_ok_payload_and_headers(ok_ty: &Type) -> (Type, Option<HashMap<String,
 }
 
 /// Analyze return type and convert to Responses map
+#[allow(clippy::too_many_lines)]
 pub fn parse_return_type(
     return_type: &ReturnType,
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> BTreeMap<String, Response> {
     let mut responses = BTreeMap::new();
@@ -265,7 +266,7 @@ mod tests {
         if return_type_str.is_empty() {
             syn::ReturnType::Default
         } else {
-            let full_signature = format!("fn test() {}", return_type_str);
+            let full_signature = format!("fn test() {return_type_str}");
             syn::parse_str::<syn::Signature>(&full_signature)
                 .expect("Failed to parse return type")
                 .output
@@ -386,7 +387,7 @@ mod tests {
         #[case] err_expectation: Option<ExpectedResponse>,
         #[case] ok_headers_expected: Option<bool>,
     ) {
-        let known_schemas = HashMap::new();
+        let known_schemas = HashSet::new();
         let struct_definitions = HashMap::new();
         let return_type = parse_return_type_str(return_type_str);
 
@@ -566,7 +567,7 @@ mod tests {
     #[test]
     fn test_parse_return_type_tuple() {
         // Test parse_return_type with tuple type (exercises line 43 via extract_result_types)
-        let known_schemas = HashMap::new();
+        let known_schemas = HashSet::new();
         let struct_definitions = HashMap::new();
         let return_type = parse_return_type_str("-> (i32, String)");
 
@@ -597,7 +598,7 @@ mod tests {
     #[test]
     fn test_parse_return_type_result_with_ok_tuple_no_headermap() {
         // Test line 95 via full parse_return_type: Result<(StatusCode, Json<T>), E>
-        let known_schemas = HashMap::new();
+        let known_schemas = HashSet::new();
         let struct_definitions = HashMap::new();
         let return_type = parse_return_type_str("-> Result<(StatusCode, Json<String>), String>");
 

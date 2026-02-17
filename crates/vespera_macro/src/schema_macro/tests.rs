@@ -2,6 +2,8 @@
 //!
 //! This file contains all unit tests for the schema generation functionality.
 
+use std::collections::HashMap;
+
 use serial_test::serial;
 
 use super::*;
@@ -10,12 +12,16 @@ fn create_test_struct_metadata(name: &str, definition: &str) -> StructMetadata {
     StructMetadata::new(name.to_string(), definition.to_string())
 }
 
+fn to_storage(items: Vec<StructMetadata>) -> HashMap<String, StructMetadata> {
+    items.into_iter().map(|s| (s.name.clone(), s)).collect()
+}
+
 #[test]
 fn test_generate_schema_code_simple_struct() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String }",
-    )];
+    )]);
 
     let tokens = quote!(User);
     let input: SchemaInput = syn::parse2(tokens).unwrap();
@@ -29,10 +35,10 @@ fn test_generate_schema_code_simple_struct() {
 
 #[test]
 fn test_generate_schema_code_with_omit() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String, pub password: String }",
-    )];
+    )]);
 
     let tokens = quote!(User, omit = ["password"]);
     let input: SchemaInput = syn::parse2(tokens).unwrap();
@@ -45,10 +51,10 @@ fn test_generate_schema_code_with_omit() {
 
 #[test]
 fn test_generate_schema_code_with_pick() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String, pub email: String }",
-    )];
+    )]);
 
     let tokens = quote!(User, pick = ["id", "name"]);
     let input: SchemaInput = syn::parse2(tokens).unwrap();
@@ -61,7 +67,7 @@ fn test_generate_schema_code_with_pick() {
 
 #[test]
 fn test_generate_schema_code_type_not_found() {
-    let storage: Vec<StructMetadata> = vec![];
+    let storage: HashMap<String, StructMetadata> = HashMap::new();
 
     let tokens = quote!(NonExistent);
     let input: SchemaInput = syn::parse2(tokens).unwrap();
@@ -74,10 +80,10 @@ fn test_generate_schema_code_type_not_found() {
 
 #[test]
 fn test_generate_schema_code_malformed_definition() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "BadStruct",
         "this is not valid rust code {{{",
-    )];
+    )]);
 
     let tokens = quote!(BadStruct);
     let input: SchemaInput = syn::parse2(tokens).unwrap();
@@ -90,10 +96,10 @@ fn test_generate_schema_code_malformed_definition() {
 
 #[test]
 fn test_generate_schema_type_code_pick_nonexistent_field() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String }",
-    )];
+    )]);
 
     let tokens = quote!(NewUser from User, pick = ["nonexistent"]);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -107,10 +113,10 @@ fn test_generate_schema_type_code_pick_nonexistent_field() {
 
 #[test]
 fn test_generate_schema_type_code_omit_nonexistent_field() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String }",
-    )];
+    )]);
 
     let tokens = quote!(NewUser from User, omit = ["nonexistent"]);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -124,10 +130,10 @@ fn test_generate_schema_type_code_omit_nonexistent_field() {
 
 #[test]
 fn test_generate_schema_type_code_rename_nonexistent_field() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String }",
-    )];
+    )]);
 
     let tokens = quote!(NewUser from User, rename = [("nonexistent", "new_name")]);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -141,7 +147,7 @@ fn test_generate_schema_type_code_rename_nonexistent_field() {
 
 #[test]
 fn test_generate_schema_type_code_type_not_found() {
-    let storage: Vec<StructMetadata> = vec![];
+    let storage: HashMap<String, StructMetadata> = HashMap::new();
 
     let tokens = quote!(NewUser from NonExistent);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -154,10 +160,10 @@ fn test_generate_schema_type_code_type_not_found() {
 
 #[test]
 fn test_generate_schema_type_code_success() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String }",
-    )];
+    )]);
 
     let tokens = quote!(CreateUser from User, pick = ["name"]);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -172,10 +178,10 @@ fn test_generate_schema_type_code_success() {
 
 #[test]
 fn test_generate_schema_type_code_with_omit() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String, pub password: String }",
-    )];
+    )]);
 
     let tokens = quote!(SafeUser from User, omit = ["password"]);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -190,10 +196,10 @@ fn test_generate_schema_type_code_with_omit() {
 
 #[test]
 fn test_generate_schema_type_code_with_add() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String }",
-    )];
+    )]);
 
     let tokens = quote!(UserWithExtra from User, add = [("extra": String)]);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -208,10 +214,10 @@ fn test_generate_schema_type_code_with_add() {
 
 #[test]
 fn test_generate_schema_type_code_generates_from_impl() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String }",
-    )];
+    )]);
 
     let tokens = quote!(UserResponse from User, pick = ["id", "name"]);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -226,10 +232,10 @@ fn test_generate_schema_type_code_generates_from_impl() {
 
 #[test]
 fn test_generate_schema_type_code_no_from_impl_with_add() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String }",
-    )];
+    )]);
 
     let tokens = quote!(UserWithExtra from User, add = [("extra": String)]);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -243,10 +249,10 @@ fn test_generate_schema_type_code_no_from_impl_with_add() {
 
 #[test]
 fn test_generate_schema_type_code_with_partial_all() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String, pub bio: Option<String> }",
-    )];
+    )]);
 
     let tokens = quote!(UpdateUser from User, partial);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -261,10 +267,10 @@ fn test_generate_schema_type_code_with_partial_all() {
 
 #[test]
 fn test_generate_schema_type_code_with_partial_fields() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String, pub email: String }",
-    )];
+    )]);
 
     let tokens = quote!(UpdateUser from User, partial = ["name"]);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -278,10 +284,10 @@ fn test_generate_schema_type_code_with_partial_fields() {
 
 #[test]
 fn test_generate_schema_type_code_partial_nonexistent_field() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String }",
-    )];
+    )]);
 
     let tokens = quote!(UpdateUser from User, partial = ["nonexistent"]);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -295,10 +301,10 @@ fn test_generate_schema_type_code_partial_nonexistent_field() {
 
 #[test]
 fn test_generate_schema_type_code_partial_from_impl_wraps_some() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String }",
-    )];
+    )]);
 
     let tokens = quote!(UpdateUser from User, partial);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -329,7 +335,7 @@ fn test_generate_schema_type_code_preserves_struct_doc() {
     };
     let struct_def = StructMetadata {
         name: "User".to_string(),
-        definition: r#"
+        definition: r"
                 /// User struct documentation
                 pub struct User {
                     /// The user ID
@@ -337,11 +343,12 @@ fn test_generate_schema_type_code_preserves_struct_doc() {
                     /// The user name
                     pub name: String,
                 }
-            "#
+            "
         .to_string(),
         include_in_openapi: true,
     };
-    let result = generate_schema_type_code(&input, &[struct_def]);
+    let storage = to_storage(vec![struct_def]);
+    let result = generate_schema_type_code(&input, &storage);
     assert!(result.is_ok());
     let (tokens, _) = result.unwrap();
     let tokens_str = tokens.to_string();
@@ -353,11 +360,11 @@ fn test_generate_schema_type_code_preserves_struct_doc() {
 #[test]
 fn test_generate_schema_type_code_inherits_source_rename_all() {
     // Source struct has serde(rename_all = "snake_case")
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         r#"#[serde(rename_all = "snake_case")]
             pub struct User { pub id: i32, pub user_name: String }"#,
-    )];
+    )]);
 
     let tokens = quote!(UserResponse from User);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -374,11 +381,11 @@ fn test_generate_schema_type_code_inherits_source_rename_all() {
 #[test]
 fn test_generate_schema_type_code_override_rename_all() {
     // Source has snake_case, but we override with camelCase
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         r#"#[serde(rename_all = "snake_case")]
             pub struct User { pub id: i32, pub user_name: String }"#,
-    )];
+    )]);
 
     let tokens = quote!(UserResponse from User, rename_all = "camelCase");
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -395,10 +402,10 @@ fn test_generate_schema_type_code_override_rename_all() {
 
 #[test]
 fn test_generate_schema_type_code_with_rename() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String }",
-    )];
+    )]);
 
     let tokens = quote!(UserDTO from User, rename = [("id", "user_id")]);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -415,14 +422,14 @@ fn test_generate_schema_type_code_with_rename() {
 #[test]
 fn test_generate_schema_type_code_rename_preserves_serde_rename() {
     // Source field already has serde(rename), which should be preserved as the JSON name
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         r#"pub struct User {
                 pub id: i32,
                 #[serde(rename = "userName")]
                 pub name: String
             }"#,
-    )];
+    )]);
 
     let tokens = quote!(UserDTO from User, rename = [("name", "user_name")]);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -441,10 +448,10 @@ fn test_generate_schema_type_code_rename_preserves_serde_rename() {
 
 #[test]
 fn test_generate_schema_type_code_with_ignore_schema() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String }",
-    )];
+    )]);
 
     let tokens = quote!(UserInternal from User, ignore);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -459,10 +466,10 @@ fn test_generate_schema_type_code_with_ignore_schema() {
 
 #[test]
 fn test_generate_schema_type_code_with_custom_name() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String }",
-    )];
+    )]);
 
     let tokens = quote!(UserResponse from User, name = "CustomUserSchema");
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -482,10 +489,10 @@ fn test_generate_schema_type_code_with_custom_name() {
 
 #[test]
 fn test_generate_schema_type_code_with_clone_false() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub name: String }",
-    )];
+    )]);
 
     let tokens = quote!(UserNonClone from User, clone = false);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -503,11 +510,11 @@ fn test_generate_schema_type_code_with_clone_false() {
 #[test]
 fn test_generate_schema_type_code_seaorm_model_detection() {
     // Source struct has sea_orm attribute - should be detected as SeaORM model
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "Model",
         r#"#[sea_orm(table_name = "users")]
             pub struct Model { pub id: i32, pub name: String }"#,
-    )];
+    )]);
 
     let tokens = quote!(UserSchema from Model);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -524,10 +531,10 @@ fn test_generate_schema_type_code_seaorm_model_detection() {
 #[test]
 fn test_generate_schema_type_code_tuple_struct() {
     // Tuple structs have no named fields
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "Point",
         "pub struct Point(pub i32, pub i32);",
-    )];
+    )]);
 
     let tokens = quote!(PointDTO from Point);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -544,10 +551,10 @@ fn test_generate_schema_type_code_tuple_struct() {
 #[test]
 fn test_generate_schema_type_code_raw_identifier_field() {
     // Field name is a Rust keyword with r# prefix
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "Config",
         "pub struct Config { pub id: i32, pub r#type: String }",
-    )];
+    )]);
 
     let tokens = quote!(ConfigDTO from Config);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -564,10 +571,10 @@ fn test_generate_schema_type_code_raw_identifier_field() {
 #[test]
 fn test_generate_schema_type_code_partial_no_double_option() {
     // bio is already Option<String>, partial should NOT wrap it again
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
         "pub struct User { pub id: i32, pub bio: Option<String> }",
-    )];
+    )]);
 
     let tokens = quote!(UpdateUser from User, partial);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -584,15 +591,15 @@ fn test_generate_schema_type_code_partial_no_double_option() {
 
 #[test]
 fn test_generate_schema_code_excludes_serde_skip_fields() {
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "User",
-        r#"pub struct User {
+        r"pub struct User {
                 pub id: i32,
                 #[serde(skip)]
                 pub internal_state: String,
                 pub name: String
-            }"#,
-    )];
+            }",
+    )]);
 
     let tokens = quote!(User);
     let input: SchemaInput = syn::parse2(tokens).unwrap();
@@ -613,10 +620,10 @@ fn test_generate_schema_code_excludes_serde_skip_fields() {
 fn test_generate_schema_type_code_qualified_path_storage_lookup() {
     // Use a qualified path like crate::models::user::Model
     // The storage contains Model, so it should fallback to storage lookup
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "Model",
         "pub struct Model { pub id: i32, pub name: String }",
-    )];
+    )]);
 
     // Note: This qualified path won't find files (no real filesystem),
     // so it falls back to storage lookup by the simple name "Model"
@@ -636,7 +643,7 @@ fn test_generate_schema_type_code_qualified_path_storage_lookup() {
 #[test]
 fn test_generate_schema_type_code_qualified_path_not_found() {
     // Empty storage - qualified path should fail
-    let storage: Vec<StructMetadata> = vec![];
+    let storage: HashMap<String, StructMetadata> = HashMap::new();
 
     let tokens = quote!(UserSchema from crate::models::user::NonExistent);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -653,7 +660,7 @@ fn test_generate_schema_type_code_qualified_path_not_found() {
 #[test]
 fn test_generate_schema_type_code_has_many_excluded_by_default() {
     // SeaORM model with HasMany relation - should be excluded by default
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "Model",
         r#"#[sea_orm(table_name = "users")]
             pub struct Model {
@@ -661,7 +668,7 @@ fn test_generate_schema_type_code_has_many_excluded_by_default() {
                 pub name: String,
                 pub memos: HasMany<super::memo::Entity>
             }"#,
-    )];
+    )]);
 
     let tokens = quote!(UserSchema from Model);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -682,7 +689,7 @@ fn test_generate_schema_type_code_has_many_excluded_by_default() {
 fn test_generate_schema_type_code_relation_conversion_failure() {
     // Model with relation type but missing generic args - conversion should fail
     // The field should be skipped
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "Model",
         r#"#[sea_orm(table_name = "users")]
             pub struct Model {
@@ -690,7 +697,7 @@ fn test_generate_schema_type_code_relation_conversion_failure() {
                 pub name: String,
                 pub broken: HasMany
             }"#,
-    )];
+    )]);
 
     let tokens = quote!(UserSchema from Model);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -711,7 +718,7 @@ fn test_generate_schema_type_code_relation_conversion_failure() {
 #[test]
 fn test_generate_schema_type_code_belongs_to_relation() {
     // SeaORM model with BelongsTo relation - should be included
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "Model",
         r#"#[sea_orm(table_name = "memos")]
             pub struct Model {
@@ -720,7 +727,7 @@ fn test_generate_schema_type_code_belongs_to_relation() {
                 #[sea_orm(belongs_to = "super::user::Entity", from = "user_id")]
                 pub user: BelongsTo<super::user::Entity>
             }"#,
-    )];
+    )]);
 
     let tokens = quote!(MemoSchema from Model);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -738,7 +745,7 @@ fn test_generate_schema_type_code_belongs_to_relation() {
 #[test]
 fn test_generate_schema_type_code_has_one_relation() {
     // SeaORM model with HasOne relation - should be included
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "Model",
         r#"#[sea_orm(table_name = "users")]
             pub struct Model {
@@ -746,7 +753,7 @@ fn test_generate_schema_type_code_has_one_relation() {
                 pub name: String,
                 pub profile: HasOne<super::profile::Entity>
             }"#,
-    )];
+    )]);
 
     let tokens = quote!(UserSchema from Model);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -765,7 +772,7 @@ fn test_generate_schema_type_code_has_one_relation() {
 fn test_generate_schema_type_code_seaorm_model_with_relation_generates_from_model() {
     // When a SeaORM model has FK relations (HasOne/BelongsTo),
     // it should generate from_model impl instead of From impl
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "Model",
         r#"#[sea_orm(table_name = "memos")]
             pub struct Model {
@@ -773,7 +780,7 @@ fn test_generate_schema_type_code_seaorm_model_with_relation_generates_from_mode
                 pub title: String,
                 pub user: BelongsTo<super::user::Entity>
             }"#,
-    )];
+    )]);
 
     let tokens = quote!(MemoSchema from Model);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -795,14 +802,14 @@ fn test_generate_schema_type_code_seaorm_model_with_relation_generates_from_mode
 #[test]
 fn test_generate_schema_type_code_from_model_generation() {
     // SeaORM model with relation should trigger from_model generation
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "Model",
         r#"#[sea_orm(table_name = "memos")]
             pub struct Model {
                 pub id: i32,
                 pub user: BelongsTo<super::user::Entity>
             }"#,
-    )];
+    )]);
 
     let tokens = quote!(MemoSchema from Model);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -830,13 +837,13 @@ fn test_generate_schema_type_code_qualified_path_file_lookup_success() {
     std::fs::create_dir_all(&models_dir).unwrap();
 
     // Create user.rs with Model struct
-    let user_model = r#"
+    let user_model = r"
 pub struct Model {
     pub id: i32,
     pub name: String,
     pub email: String,
 }
-"#;
+";
     std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
 
     // Save original CARGO_MANIFEST_DIR
@@ -847,7 +854,7 @@ pub struct Model {
     // Use qualified path - file lookup should succeed
     let tokens = quote!(UserSchema from crate::models::user::Model);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-    let storage: Vec<StructMetadata> = vec![]; // Empty storage - force file lookup
+    let storage: HashMap<String, StructMetadata> = HashMap::new(); // Empty storage - force file lookup
 
     let result = generate_schema_type_code(&input, &storage);
 
@@ -882,12 +889,12 @@ fn test_generate_schema_type_code_simple_name_file_lookup_fallback() {
     std::fs::create_dir_all(&models_dir).unwrap();
 
     // Create user.rs with Model struct
-    let user_model = r#"
+    let user_model = r"
 pub struct Model {
     pub id: i32,
     pub username: String,
 }
-"#;
+";
     std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
 
     // Save original CARGO_MANIFEST_DIR
@@ -899,7 +906,7 @@ pub struct Model {
     // name = "UserSchema" provides hint to look in user.rs
     let tokens = quote!(Schema from Model, name = "UserSchema");
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-    let storage: Vec<StructMetadata> = vec![]; // Empty storage - force file lookup
+    let storage: HashMap<String, StructMetadata> = HashMap::new(); // Empty storage - force file lookup
 
     let result = generate_schema_type_code(&input, &storage);
 
@@ -940,13 +947,13 @@ fn test_generate_schema_type_code_has_many_explicit_pick_inline_type() {
     std::fs::create_dir_all(&models_dir).unwrap();
 
     // Create memo.rs with Model struct (the target of HasMany)
-    let memo_model = r#"
+    let memo_model = r"
 pub struct Model {
     pub id: i32,
     pub title: String,
     pub content: String,
 }
-"#;
+";
     std::fs::write(models_dir.join("memo.rs"), memo_model).unwrap();
 
     // Create user.rs with Model struct that has HasMany relation
@@ -968,7 +975,7 @@ pub struct Model {
     // Explicitly pick HasMany field - should generate inline type
     let tokens = quote!(UserSchema from crate::models::user::Model, pick = ["id", "name", "memos"]);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-    let storage: Vec<StructMetadata> = vec![];
+    let storage: HashMap<String, StructMetadata> = HashMap::new();
 
     let result = generate_schema_type_code(&input, &storage);
 
@@ -1022,7 +1029,7 @@ pub struct Model {
     // Explicitly pick HasMany field - file not found, should skip
     let tokens = quote!(UserSchema from crate::models::user::Model, pick = ["id", "name", "items"]);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-    let storage: Vec<StructMetadata> = vec![];
+    let storage: HashMap<String, StructMetadata> = HashMap::new();
 
     let result = generate_schema_type_code(&input, &storage);
 
@@ -1092,7 +1099,7 @@ pub struct Model {
     // Generate schema from memo - has BelongsTo user which has circular ref back
     let tokens = quote!(MemoSchema from crate::models::memo::Model);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-    let storage: Vec<StructMetadata> = vec![];
+    let storage: HashMap<String, StructMetadata> = HashMap::new();
 
     let result = generate_schema_type_code(&input, &storage);
 
@@ -1160,7 +1167,7 @@ pub struct Model {
     // Generate schema from user - has HasOne profile which has circular ref back
     let tokens = quote!(UserSchema from crate::models::user::Model);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-    let storage: Vec<StructMetadata> = vec![];
+    let storage: HashMap<String, StructMetadata> = HashMap::new();
 
     let result = generate_schema_type_code(&input, &storage);
 
@@ -1235,7 +1242,7 @@ pub struct Model {
     // This should generate Box<...> instead of Option<Box<...>>
     let tokens = quote!(MemoSchema from crate::models::memo::Model);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-    let storage: Vec<StructMetadata> = vec![];
+    let storage: HashMap<String, StructMetadata> = HashMap::new();
 
     let result = generate_schema_type_code(&input, &storage);
 
@@ -1255,19 +1262,16 @@ pub struct Model {
     // Should have inline type definition for circular relation
     assert!(
         output.contains("MemoSchema"),
-        "Should contain MemoSchema: {}",
-        output
+        "Should contain MemoSchema: {output}"
     );
     assert!(
         output.contains("user"),
-        "Should contain user field: {}",
-        output
+        "Should contain user field: {output}"
     );
     // BelongsTo with required FK (user_id: i32) should generate Box<...> not Option<Box<...>>
     assert!(
         output.contains("pub user : Box <"),
-        "BelongsTo with required FK should generate Box<>, not Option<Box<>>. Output: {}",
-        output
+        "BelongsTo with required FK should generate Box<>, not Option<Box<>>. Output: {output}"
     );
 }
 
@@ -1293,15 +1297,14 @@ pub struct Model {
     let parsed_struct: syn::ItemStruct = syn::parse_str(struct_def).unwrap();
 
     // Get the user field
-    let fields_named = match &parsed_struct.fields {
-        syn::Fields::Named(f) => f,
-        _ => panic!("Expected named fields"),
+    let syn::Fields::Named(fields_named) = &parsed_struct.fields else {
+        panic!("Expected named fields")
     };
 
     let user_field = fields_named
         .named
         .iter()
-        .find(|f| f.ident.as_ref().map(|i| i == "user").unwrap_or(false))
+        .find(|f| f.ident.as_ref().is_some_and(|i| i == "user"))
         .expect("user field not found");
 
     // Debug: Check if extract_belongs_to_from_field works
@@ -1373,10 +1376,10 @@ fn test_extract_belongs_to_from_field_with_equals_value() {
 #[test]
 fn test_generate_schema_type_code_multipart_basic() {
     // Tests: multipart mode generates TryFromMultipart derive, suppresses From impl
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "UploadRequest",
         "pub struct UploadRequest { pub name: String, pub description: Option<String> }",
-    )];
+    )]);
 
     let tokens = quote!(PatchUpload from UploadRequest, multipart);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -1397,10 +1400,10 @@ fn test_generate_schema_type_code_multipart_basic() {
 #[test]
 fn test_generate_schema_type_code_multipart_with_rename() {
     // Tests: multipart mode with field rename
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "UploadRequest",
         "pub struct UploadRequest { pub name: String, pub file_path: String }",
-    )];
+    )]);
 
     let tokens = quote!(RenamedUpload from UploadRequest, multipart, rename = [("file_path", "document_path")]);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -1420,14 +1423,14 @@ fn test_generate_schema_type_code_multipart_with_rename() {
 #[test]
 fn test_generate_schema_type_code_multipart_with_form_data_attrs() {
     // Tests: multipart mode preserves #[form_data] attributes from source
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "UploadRequest",
         r#"pub struct UploadRequest {
             pub name: String,
             #[form_data(limit = "10MiB")]
             pub file: String
         }"#,
-    )];
+    )]);
 
     let tokens = quote!(PatchUpload from UploadRequest, multipart);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -1444,7 +1447,7 @@ fn test_generate_schema_type_code_multipart_with_form_data_attrs() {
 #[test]
 fn test_generate_schema_type_code_multipart_skips_relations() {
     // Tests: multipart mode skips relation fields
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "Model",
         r#"#[sea_orm(table_name = "memos")]
         pub struct Model {
@@ -1452,7 +1455,7 @@ fn test_generate_schema_type_code_multipart_skips_relations() {
             pub title: String,
             pub user: BelongsTo<super::user::Entity>
         }"#,
-    )];
+    )]);
 
     let tokens = quote!(MemoUpload from Model, multipart);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -1473,10 +1476,10 @@ fn test_generate_schema_type_code_multipart_skips_relations() {
 #[test]
 fn test_generate_schema_type_code_multipart_partial() {
     // Coverage for multipart + partial combination
-    let storage = vec![create_test_struct_metadata(
+    let storage = to_storage(vec![create_test_struct_metadata(
         "UploadRequest",
         "pub struct UploadRequest { pub name: String, pub tags: String }",
-    )];
+    )]);
 
     let tokens = quote!(PatchUpload from UploadRequest, multipart, partial);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -1505,12 +1508,12 @@ fn test_generate_schema_type_code_qualified_path_with_nonempty_module_path() {
     std::fs::create_dir_all(&models_dir).unwrap();
 
     // Create user.rs
-    let user_model = r#"
+    let user_model = r"
 pub struct Model {
     pub id: i32,
     pub name: String,
 }
-"#;
+";
     std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
 
     // Save original CARGO_MANIFEST_DIR
@@ -1523,7 +1526,7 @@ pub struct Model {
     // So the if source_module_path.is_empty() check should be false
     let tokens = quote!(UserSchema from crate::models::user::Model);
     let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-    let storage: Vec<StructMetadata> = vec![];
+    let storage: HashMap<String, StructMetadata> = HashMap::new();
 
     let result = generate_schema_type_code(&input, &storage);
 

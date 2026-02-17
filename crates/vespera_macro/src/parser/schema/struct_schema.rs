@@ -1,9 +1,9 @@
-//! Struct to JSON Schema conversion for OpenAPI generation.
+//! Struct to JSON Schema conversion for `OpenAPI` generation.
 //!
 //! This module handles the conversion of Rust structs (as parsed by syn)
 //! into OpenAPI-compatible JSON Schema definitions.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use syn::{Fields, Type};
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
@@ -17,21 +17,22 @@ use super::{
     type_schema::parse_type_to_schema_ref,
 };
 
-/// Parses a Rust struct into an OpenAPI Schema.
+/// Parses a Rust struct into an `OpenAPI` Schema.
 ///
 /// This function extracts:
 /// - Field names and types as properties
 /// - Required fields (non-Option types without defaults)
 /// - Doc comments as descriptions
-/// - Serde attributes (rename, rename_all, skip, default)
+/// - Serde attributes (rename, `rename_all`, skip, default)
 ///
 /// # Arguments
 /// * `struct_item` - The parsed struct from syn
 /// * `known_schemas` - Map of known schema names for reference resolution
 /// * `struct_definitions` - Map of struct names to their source code (for generics)
+#[allow(clippy::too_many_lines)]
 pub fn parse_struct_to_schema(
     struct_item: &syn::ItemStruct,
-    known_schemas: &HashMap<String, String>,
+    known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Schema {
     let mut properties = BTreeMap::new();
@@ -64,19 +65,14 @@ pub fn parse_struct_to_schema(
                     continue;
                 }
 
-                let rust_field_name = field
-                    .ident
-                    .as_ref()
-                    .map(|i| strip_raw_prefix(&i.to_string()).to_string())
-                    .unwrap_or_else(|| "unknown".to_string());
+                let rust_field_name = field.ident.as_ref().map_or_else(
+                    || "unknown".to_string(),
+                    |i| strip_raw_prefix(&i.to_string()).to_string(),
+                );
 
                 // Check for field-level rename attribute first (takes precedence)
-                let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
-                    renamed
-                } else {
-                    // Apply rename_all transformation if present
-                    rename_field(&rust_field_name, rename_all.as_deref())
-                };
+                let field_name = extract_field_rename(&field.attrs)
+                    .unwrap_or_else(|| rename_field(&rust_field_name, rename_all.as_deref()));
 
                 let field_type = &field.ty;
 
@@ -132,8 +128,7 @@ pub fn parse_struct_to_schema(
                                 .path
                                 .segments
                                 .first()
-                                .map(|s| s.ident == "Option")
-                                .unwrap_or(false)
+                                .is_some_and(|s| s.ident == "Option")
                     );
 
                     if !is_optional {
@@ -144,16 +139,30 @@ pub fn parse_struct_to_schema(
                 properties.insert(field_name, schema_ref);
             }
         }
-        Fields::Unnamed(_) => {
-            // Tuple structs are not supported for now
-        }
-        Fields::Unit => {
-            // Unit structs have no fields
+        Fields::Unnamed(_) | Fields::Unit => {
+            // Tuple structs and unit structs have no named fields
         }
     }
 
     // If there are flattened fields, use allOf composition
-    if !flattened_refs.is_empty() {
+    if flattened_refs.is_empty() {
+        // No flattened fields - return normal schema
+        Schema {
+            schema_type: Some(SchemaType::Object),
+            description: struct_description,
+            properties: if properties.is_empty() {
+                None
+            } else {
+                Some(properties)
+            },
+            required: if required.is_empty() {
+                None
+            } else {
+                Some(required)
+            },
+            ..Schema::object()
+        }
+    } else {
         // Create the inline schema for non-flattened properties
         let inline_schema = Schema {
             schema_type: Some(SchemaType::Object),
@@ -179,23 +188,6 @@ pub fn parse_struct_to_schema(
             all_of: Some(all_of),
             ..Default::default()
         }
-    } else {
-        // No flattened fields - return normal schema
-        Schema {
-            schema_type: Some(SchemaType::Object),
-            description: struct_description,
-            properties: if properties.is_empty() {
-                None
-            } else {
-                Some(properties)
-            },
-            required: if required.is_empty() {
-                None
-            } else {
-                Some(required)
-            },
-            ..Schema::object()
-        }
     }
 }
 
@@ -208,15 +200,15 @@ mod tests {
     #[test]
     fn test_parse_struct_to_schema_required_optional() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             struct User {
                 id: i32,
                 name: Option<String>,
             }
-        "#,
+        ",
         )
         .unwrap();
-        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         let props = schema.properties.as_ref().unwrap();
         assert!(props.contains_key("id"));
         assert!(props.contains_key("name"));
@@ -250,7 +242,7 @@ mod tests {
         )
         .unwrap();
 
-        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         let props = schema.properties.as_ref().expect("props missing");
         assert!(props.contains_key("id")); // field-level rename wins
         assert!(props.contains_key("displayName")); // rename_all applied
@@ -264,7 +256,7 @@ mod tests {
     #[case("struct Empty;")]
     fn test_parse_struct_to_schema_tuple_and_unit_structs(#[case] struct_src: &str) {
         let struct_item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
-        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         assert!(schema.properties.is_none());
         assert!(schema.required.is_none());
     }
@@ -273,17 +265,17 @@ mod tests {
     #[test]
     fn test_parse_struct_to_schema_with_skip_field() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             struct User {
                 id: i32,
                 #[serde(skip)]
                 internal_data: String,
                 name: String,
             }
-        "#,
+        ",
         )
         .unwrap();
-        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         let props = schema.properties.as_ref().unwrap();
         assert!(props.contains_key("id"));
         assert!(props.contains_key("name"));
@@ -305,7 +297,7 @@ mod tests {
         "#,
         )
         .unwrap();
-        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         let props = schema.properties.as_ref().unwrap();
         assert!(props.contains_key("required_field"));
         assert!(props.contains_key("optional_with_default"));
@@ -322,7 +314,7 @@ mod tests {
     // Tests for struct with doc comments
     #[test]
     fn test_parse_struct_to_schema_with_description() {
-        let struct_src = r#"
+        let struct_src = r"
             /// User struct description
             struct User {
                 /// User ID
@@ -330,9 +322,9 @@ mod tests {
                 /// User name
                 name: String,
             }
-        "#;
+        ";
         let struct_item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
-        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         assert_eq!(
             schema.description,
             Some("User struct description".to_string())
@@ -349,16 +341,18 @@ mod tests {
 
     #[test]
     fn test_parse_struct_to_schema_field_with_ref_and_description() {
-        let struct_src = r#"
+        let struct_src = r"
             struct Container {
                 /// The user reference
                 user: User,
             }
-        "#;
+        ";
         let struct_item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
-        let mut known = HashMap::new();
-        known.insert("User".to_string(), "struct User { id: i32 }".to_string());
-        let schema = parse_struct_to_schema(&struct_item, &known, &HashMap::new());
+        let mut struct_defs = HashMap::new();
+        struct_defs.insert("User".to_string(), "struct User { id: i32 }".to_string());
+        let mut known = HashSet::new();
+        known.insert("User".to_string());
+        let schema = parse_struct_to_schema(&struct_item, &known, &struct_defs);
         let props = schema.properties.unwrap();
         // Field with $ref and description should use allOf
         if let SchemaRef::Inline(user_schema) = props.get("user").unwrap() {
@@ -373,23 +367,25 @@ mod tests {
     #[test]
     fn test_parse_struct_to_schema_with_flatten() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             struct UserListRequest {
                 filter: String,
                 #[serde(flatten)]
                 pagination: Pagination,
             }
-        "#,
+        ",
         )
         .unwrap();
 
-        let mut known = HashMap::new();
-        known.insert(
+        let mut struct_defs = HashMap::new();
+        struct_defs.insert(
             "Pagination".to_string(),
             "struct Pagination { page: i32 }".to_string(),
         );
+        let mut known = HashSet::new();
+        known.insert("Pagination".to_string());
 
-        let schema = parse_struct_to_schema(&struct_item, &known, &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &known, &struct_defs);
 
         // Should have allOf
         assert!(
@@ -422,7 +418,7 @@ mod tests {
     #[test]
     fn test_parse_struct_to_schema_with_multiple_flatten() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             struct Combined {
                 name: String,
                 #[serde(flatten)]
@@ -430,15 +426,18 @@ mod tests {
                 #[serde(flatten)]
                 metadata: Metadata,
             }
-        "#,
+        ",
         )
         .unwrap();
 
-        let mut known = HashMap::new();
-        known.insert("Pagination".to_string(), "struct Pagination {}".to_string());
-        known.insert("Metadata".to_string(), "struct Metadata {}".to_string());
+        let mut struct_defs = HashMap::new();
+        struct_defs.insert("Pagination".to_string(), "struct Pagination {}".to_string());
+        struct_defs.insert("Metadata".to_string(), "struct Metadata {}".to_string());
+        let mut known = HashSet::new();
+        known.insert("Pagination".to_string());
+        known.insert("Metadata".to_string());
 
-        let schema = parse_struct_to_schema(&struct_item, &known, &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &known, &struct_defs);
 
         assert!(schema.all_of.is_some());
         let all_of = schema.all_of.as_ref().unwrap();
@@ -453,16 +452,16 @@ mod tests {
     fn test_parse_struct_to_schema_no_flatten() {
         // Existing struct without flatten should NOT use allOf
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             struct Simple {
                 name: String,
                 age: i32,
             }
-        "#,
+        ",
         )
         .unwrap();
 
-        let schema = parse_struct_to_schema(&struct_item, &HashMap::new(), &HashMap::new());
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
         assert!(
             schema.all_of.is_none(),
             "Simple struct should not have allOf"

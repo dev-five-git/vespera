@@ -1,4 +1,4 @@
-//! Unified error handling for vespera_macro.
+//! Unified error handling for `vespera_macro`.
 //!
 //! This module centralizes error handling for all proc-macro operations,
 //! ensuring consistent span-based error reporting at compile time.
@@ -12,7 +12,7 @@
 //!
 //! - [`err_call_site`] - Create an error at the macro call site
 //! - [`err_spanned`] - Create an error at a specific AST node location
-//! - [`IntoSynError`] - Convert other error types to syn::Error
+//! - [`IntoSynError`] - Convert other error types to `syn::Error`
 //!
 //! # Example
 //!

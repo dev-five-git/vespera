@@ -1,11 +1,10 @@
 [package]
 name = "vespera_core"
-version = "0.1.33"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Core types and utilities for Vespera"
-license = "Apache-2.0"
-repository = "https://github.com/dev-five-git/vespera"
-readme = "../../README.md"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -13,3 +12,6 @@ serde_json = "1.0"
 
 [dev-dependencies]
 rstest = "0.26"
+
+[lints]
+workspace = true

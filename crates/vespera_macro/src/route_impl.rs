@@ -16,7 +16,7 @@
 //! - Be public (`pub`)
 //! - Be async (`async fn`)
 //! - Accept standard Axum extractors (Path, Query, Json, etc.)
-//! - Return a response type (Json, String, StatusCode, etc.)
+//! - Return a response type (Json, String, `StatusCode`, etc.)
 //!
 //! # Key Functions
 //!
@@ -35,7 +35,7 @@
 use crate::args;
 
 /// Validate route function - must be pub and async
-pub(crate) fn validate_route_fn(item_fn: &syn::ItemFn) -> Result<(), syn::Error> {
+pub fn validate_route_fn(item_fn: &syn::ItemFn) -> Result<(), syn::Error> {
     if !matches!(item_fn.vis, syn::Visibility::Public(_)) {
         return Err(syn::Error::new_spanned(
             item_fn.sig.fn_token,
@@ -52,7 +52,7 @@ pub(crate) fn validate_route_fn(item_fn: &syn::ItemFn) -> Result<(), syn::Error>
 }
 
 /// Process route attribute - extracted for testability
-pub(crate) fn process_route_attribute(
+pub fn process_route_attribute(
     attr: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,
 ) -> syn::Result<proc_macro2::TokenStream> {
@@ -218,7 +218,7 @@ mod tests {
                 }
             );
             let result = process_route_attribute(attr, item);
-            assert!(result.is_ok(), "Method {} should be valid", method);
+            assert!(result.is_ok(), "Method {method} should be valid");
         }
     }
 }

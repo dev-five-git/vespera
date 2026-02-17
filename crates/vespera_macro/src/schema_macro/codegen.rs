@@ -1,6 +1,6 @@
 //! Code generation utilities for schema macros
 //!
-//! Provides functions to convert schema structures to TokenStream for code generation.
+//! Provides functions to convert schema structures to `TokenStream` for code generation.
 
 use std::collections::HashSet;
 
@@ -18,20 +18,21 @@ use crate::{
 };
 
 /// Generate Schema construction code with field filtering
+#[allow(clippy::option_if_let_else)]
 pub fn generate_filtered_schema(
     struct_item: &syn::ItemStruct,
     omit_set: &HashSet<String>,
     pick_set: &HashSet<String>,
-    schema_storage: &[StructMetadata],
-) -> Result<TokenStream, syn::Error> {
+    schema_storage: &std::collections::HashMap<String, StructMetadata>,
+) -> TokenStream {
     let rename_all = extract_rename_all(&struct_item.attrs);
 
     // Build known_schemas and struct_definitions for type resolution
-    let known_schemas: std::collections::HashMap<String, String> = schema_storage
-        .iter()
+    let known_schemas: HashSet<String> = schema_storage.keys().cloned().collect();
+    let struct_definitions: std::collections::HashMap<String, String> = schema_storage
+        .values()
         .map(|s| (s.name.clone(), s.definition.clone()))
         .collect();
-    let struct_definitions = known_schemas.clone();
 
     let mut property_tokens = Vec::new();
     let mut required_fields = Vec::new();
@@ -43,18 +44,14 @@ pub fn generate_filtered_schema(
                 continue;
             }
 
-            let rust_field_name = field
-                .ident
-                .as_ref()
-                .map(|i| strip_raw_prefix(&i.to_string()).to_string())
-                .unwrap_or_else(|| "unknown".to_string());
+            let rust_field_name = field.ident.as_ref().map_or_else(
+                || "unknown".to_string(),
+                |i| strip_raw_prefix(&i.to_string()).to_string(),
+            );
 
             // Apply rename
-            let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
-                renamed
-            } else {
-                rename_field(&rust_field_name, rename_all.as_deref())
-            };
+            let field_name = extract_field_rename(&field.attrs)
+                .unwrap_or_else(|| rename_field(&rust_field_name, rename_all.as_deref()));
 
             // Apply omit filter (check both rust name and json name)
             if !omit_set.is_empty()
@@ -96,11 +93,14 @@ pub fn generate_filtered_schema(
     let required_tokens = if required_fields.is_empty() {
         quote! { None }
     } else {
-        let required_strs: Vec<&str> = required_fields.iter().map(|s| s.as_str()).collect();
+        let required_strs: Vec<&str> = required_fields
+            .iter()
+            .map(std::string::String::as_str)
+            .collect();
         quote! { Some(vec![#(#required_strs.to_string()),*]) }
     };
 
-    Ok(quote! {
+    quote! {
         {
             let mut properties = std::collections::BTreeMap::new();
             #(#property_tokens)*
@@ -111,10 +111,10 @@ pub fn generate_filtered_schema(
                 ..vespera::schema::Schema::new(vespera::schema::SchemaType::Object)
             }
         }
-    })
+    }
 }
 
-/// Convert SchemaRef to TokenStream for code generation
+/// Convert `SchemaRef` to `TokenStream` for code generation
 pub fn schema_ref_to_tokens(schema_ref: &SchemaRef) -> TokenStream {
     match schema_ref {
         SchemaRef::Ref(reference) => {
@@ -132,7 +132,8 @@ pub fn schema_ref_to_tokens(schema_ref: &SchemaRef) -> TokenStream {
     }
 }
 
-/// Convert Schema to TokenStream for code generation
+/// Convert Schema to `TokenStream` for code generation
+#[allow(clippy::option_if_let_else)]
 pub fn schema_to_tokens(schema: &Schema) -> TokenStream {
     let schema_type_tokens = match &schema.schema_type {
         Some(SchemaType::String) => quote! { Some(vespera::schema::SchemaType::String) },
@@ -145,9 +146,10 @@ pub fn schema_to_tokens(schema: &Schema) -> TokenStream {
         None => quote! { None },
     };
 
-    let format_tokens = match &schema.format {
-        Some(f) => quote! { Some(#f.to_string()) },
-        None => quote! { None },
+    let format_tokens = if let Some(f) = &schema.format {
+        quote! { Some(#f.to_string()) }
+    } else {
+        quote! { None }
     };
 
     let nullable_tokens = match schema.nullable {
@@ -156,45 +158,43 @@ pub fn schema_to_tokens(schema: &Schema) -> TokenStream {
         None => quote! { None },
     };
 
-    let ref_path_tokens = match &schema.ref_path {
-        Some(rp) => quote! { Some(#rp.to_string()) },
-        None => quote! { None },
+    let ref_path_tokens = if let Some(rp) = &schema.ref_path {
+        quote! { Some(#rp.to_string()) }
+    } else {
+        quote! { None }
     };
 
-    let items_tokens = match &schema.items {
-        Some(items) => {
-            let inner = schema_ref_to_tokens(items);
-            quote! { Some(Box::new(#inner)) }
-        }
-        None => quote! { None },
+    let items_tokens = if let Some(items) = &schema.items {
+        let inner = schema_ref_to_tokens(items);
+        quote! { Some(Box::new(#inner)) }
+    } else {
+        quote! { None }
     };
 
-    let properties_tokens = match &schema.properties {
-        Some(props) => {
-            let entries: Vec<_> = props
-                .iter()
-                .map(|(k, v)| {
-                    let v_tokens = schema_ref_to_tokens(v);
-                    quote! { (#k.to_string(), #v_tokens) }
-                })
-                .collect();
-            quote! {
-                Some({
-                    let mut map = std::collections::BTreeMap::new();
-                    #(map.insert(#entries.0, #entries.1);)*
-                    map
-                })
-            }
+    let properties_tokens = if let Some(props) = &schema.properties {
+        let entries: Vec<_> = props
+            .iter()
+            .map(|(k, v)| {
+                let v_tokens = schema_ref_to_tokens(v);
+                quote! { (#k.to_string(), #v_tokens) }
+            })
+            .collect();
+        quote! {
+            Some({
+                let mut map = std::collections::BTreeMap::new();
+                #(map.insert(#entries.0, #entries.1);)*
+                map
+            })
         }
-        None => quote! { None },
+    } else {
+        quote! { None }
     };
 
-    let required_tokens = match &schema.required {
-        Some(req) => {
-            let req_strs: Vec<_> = req.iter().map(|s| s.as_str()).collect();
-            quote! { Some(vec![#(#req_strs.to_string()),*]) }
-        }
-        None => quote! { None },
+    let required_tokens = if let Some(req) = &schema.required {
+        let req_strs: Vec<_> = req.iter().map(std::string::String::as_str).collect();
+        quote! { Some(vec![#(#req_strs.to_string()),*]) }
+    } else {
+        quote! { None }
     };
 
     quote! {
@@ -213,7 +213,7 @@ pub fn schema_to_tokens(schema: &Schema) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     use vespera_core::schema::{Reference, Schema, SchemaRef, SchemaType};
 
@@ -224,28 +224,26 @@ mod tests {
         let struct_item: syn::ItemStruct = syn::parse_str("pub struct Empty {}").unwrap();
         let omit_set = HashSet::new();
         let pick_set = HashSet::new();
-        let result = generate_filtered_schema(&struct_item, &omit_set, &pick_set, &[]);
-        assert!(result.is_ok());
-        let output = result.unwrap().to_string();
+        let output = generate_filtered_schema(&struct_item, &omit_set, &pick_set, &HashMap::new())
+            .to_string();
         assert!(output.contains("properties"));
     }
 
     #[test]
     fn test_generate_filtered_schema_with_default_field() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             pub struct WithDefault {
                 #[serde(default)]
                 pub field: String,
             }
-        "#,
+        ",
         )
         .unwrap();
         let omit_set = HashSet::new();
         let pick_set = HashSet::new();
-        let result = generate_filtered_schema(&struct_item, &omit_set, &pick_set, &[]);
-        assert!(result.is_ok());
-        let output = result.unwrap().to_string();
+        let output = generate_filtered_schema(&struct_item, &omit_set, &pick_set, &HashMap::new())
+            .to_string();
         assert!(output.contains("None"));
     }
 
@@ -262,8 +260,7 @@ mod tests {
         .unwrap();
         let omit_set = HashSet::new();
         let pick_set = HashSet::new();
-        let result = generate_filtered_schema(&struct_item, &omit_set, &pick_set, &[]);
-        assert!(result.is_ok());
+        let _output = generate_filtered_schema(&struct_item, &omit_set, &pick_set, &HashMap::new());
     }
 
     #[test]
@@ -272,8 +269,7 @@ mod tests {
             syn::parse_str("pub struct Tuple(i32, String);").unwrap();
         let omit_set = HashSet::new();
         let pick_set = HashSet::new();
-        let result = generate_filtered_schema(&struct_item, &omit_set, &pick_set, &[]);
-        assert!(result.is_ok());
+        let _output = generate_filtered_schema(&struct_item, &omit_set, &pick_set, &HashMap::new());
     }
 
     #[test]

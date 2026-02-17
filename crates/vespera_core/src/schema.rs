@@ -23,13 +23,15 @@ pub struct Reference {
 
 impl Reference {
     /// Create a new reference
-    pub fn new(ref_path: String) -> Self {
+    #[must_use]
+    pub const fn new(ref_path: String) -> Self {
         Self { ref_path }
     }
 
     /// Create a component schema reference
+    #[must_use]
     pub fn schema(name: &str) -> Self {
-        Reference::new(format!("#/components/schemas/{}", name))
+        Self::new(format!("#/components/schemas/{name}"))
     }
 }
 
@@ -136,7 +138,7 @@ pub struct Schema {
     /// Array item schema
     #[serde(skip_serializing_if = "Option::is_none")]
     pub items: Option<Box<SchemaRef>>,
-    /// Prefix items for tuple arrays (OpenAPI 3.1 / JSON Schema 2020-12)
+    /// Prefix items for tuple arrays (`OpenAPI` 3.1 / JSON Schema 2020-12)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prefix_items: Option<Vec<SchemaRef>>,
     /// Minimum number of items
@@ -156,7 +158,7 @@ pub struct Schema {
     /// List of required properties
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<Vec<String>>,
-    /// Whether additional properties are allowed (can be boolean or SchemaRef)
+    /// Whether additional properties are allowed (can be boolean or `SchemaRef`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub additional_properties: Option<serde_json::Value>,
     /// Minimum number of properties
@@ -204,7 +206,7 @@ pub struct Schema {
     /// Definitions ($defs) - reusable schema definitions
     #[serde(rename = "$defs")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub defs: Option<BTreeMap<String, Schema>>,
+    pub defs: Option<BTreeMap<String, Self>>,
     /// Dynamic anchor ($dynamicAnchor) - defines a dynamic anchor
     #[serde(rename = "$dynamicAnchor")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -217,7 +219,8 @@ pub struct Schema {
 
 impl Schema {
     /// Create a new schema
-    pub fn new(schema_type: SchemaType) -> Self {
+    #[must_use]
+    pub const fn new(schema_type: SchemaType) -> Self {
         Self {
             ref_path: None,
             schema_type: Some(schema_type),
@@ -262,26 +265,31 @@ impl Schema {
     }
 
     /// Create a string schema
-    pub fn string() -> Self {
+    #[must_use]
+    pub const fn string() -> Self {
         Self::new(SchemaType::String)
     }
 
     /// Create an integer schema
-    pub fn integer() -> Self {
+    #[must_use]
+    pub const fn integer() -> Self {
         Self::new(SchemaType::Integer)
     }
 
     /// Create a number schema
-    pub fn number() -> Self {
+    #[must_use]
+    pub const fn number() -> Self {
         Self::new(SchemaType::Number)
     }
 
     /// Create a boolean schema
-    pub fn boolean() -> Self {
+    #[must_use]
+    pub const fn boolean() -> Self {
         Self::new(SchemaType::Boolean)
     }
 
     /// Create an array schema
+    #[must_use]
     pub fn array(items: SchemaRef) -> Self {
         Self {
             items: Some(Box::new(items)),
@@ -290,6 +298,7 @@ impl Schema {
     }
 
     /// Create an object schema
+    #[must_use]
     pub fn object() -> Self {
         Self {
             properties: Some(BTreeMap::new()),
@@ -310,7 +319,7 @@ pub struct ExternalDocumentation {
     pub url: String,
 }
 
-/// Discriminator object for polymorphism support (OpenAPI 3.0/3.1)
+/// Discriminator object for polymorphism support (`OpenAPI` 3.0/3.1)
 ///
 /// Used with `oneOf`, `anyOf`, `allOf` to aid in serialization, deserialization,
 /// and validation when request bodies or response payloads may be one of several types.
@@ -324,7 +333,7 @@ pub struct Discriminator {
     pub mapping: Option<BTreeMap<String, String>>,
 }
 
-/// OpenAPI Components (reusable components)
+/// `OpenAPI` Components (reusable components)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Components {
@@ -383,12 +392,6 @@ pub struct SecurityScheme {
     /// Bearer format (for HTTP Bearer)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bearer_format: Option<String>,
-}
-
-/// Builder trait for types that can be converted to OpenAPI Schema
-pub trait SchemaBuilder: Sized {
-    // This trait is used as a marker for derive macro
-    // The actual schema conversion will be implemented separately
 }
 
 #[cfg(test)]

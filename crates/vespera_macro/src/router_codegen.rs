@@ -7,52 +7,53 @@
 //!
 //! # Overview
 //!
-//! The vespera macros accept configuration parameters (directory, OpenAPI files, etc.)
+//! The vespera macros accept configuration parameters (directory, `OpenAPI` files, etc.)
 //! which are parsed and processed into a normalized form. This module then generates
-//! the TokenStream that creates the Axum router with all discovered routes.
+//! the `TokenStream` that creates the Axum router with all discovered routes.
 //!
 //! # Key Components
 //!
 //! - [`AutoRouterInput`] - Parsed `vespera!()` macro arguments
 //! - [`ExportAppInput`] - Parsed `export_app!()` macro arguments
 //! - [`process_vespera_input`] - Validate and process vespera! arguments
-//! - [`generate_router_code`] - Generate the router TokenStream
+//! - [`generate_router_code`] - Generate the router `TokenStream`
 //!
 //! # Macro Parameters
 //!
 //! **vespera!()** accepts:
 //! - `dir` - Route discovery folder (default: "routes")
-//! - `openapi` - Output file path(s) for OpenAPI spec
-//! - `title` - API title (OpenAPI info.title)
-//! - `version` - API version (OpenAPI info.version)
+//! - `openapi` - Output file path(s) for `OpenAPI` spec
+//! - `title` - API title (`OpenAPI` info.title)
+//! - `version` - API version (`OpenAPI` info.version)
 //! - `docs_url` - Swagger UI endpoint
-//! - `redoc_url` - ReDoc endpoint
+//! - `redoc_url` - `ReDoc` endpoint
 //! - `servers` - Array of server configurations
 //! - `merge` - Child vespera apps to merge
 //!
-//! **export_app!()** accepts:
+//! **`export_app`!()** accepts:
 //! - `dir` - Route discovery folder (default: "routes")
 
 use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    LitStr, bracketed,
+    bracketed,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
+    LitStr,
 };
 use vespera_core::{openapi::Server, route::HttpMethod};
 
 use crate::{metadata::CollectedMetadata, method::http_method_to_token_stream};
 
-/// Server configuration for OpenAPI
+/// Server configuration for `OpenAPI`
 #[derive(Clone)]
-pub(crate) struct ServerConfig {
+pub struct ServerConfig {
     pub url: String,
     pub description: Option<String>,
 }
 
 /// Input for the `vespera!` macro
-pub(crate) struct AutoRouterInput {
+pub struct AutoRouterInput {
     pub dir: Option<LitStr>,
     pub openapi: Option<Vec<LitStr>>,
     pub title: Option<LitStr>,
@@ -60,11 +61,12 @@ pub(crate) struct AutoRouterInput {
     pub docs_url: Option<LitStr>,
     pub redoc_url: Option<LitStr>,
     pub servers: Option<Vec<ServerConfig>>,
-    /// Apps to merge (e.g., [third::ThirdApp, another::AnotherApp])
+    /// Apps to merge (e.g., [`third::ThirdApp`, `another::AnotherApp`])
     pub merge: Option<Vec<syn::Path>>,
 }
 
 impl Parse for AutoRouterInput {
+    #[allow(clippy::too_many_lines)]
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut dir = None;
         let mut openapi = None;
@@ -116,8 +118,7 @@ impl Parse for AutoRouterInput {
                         return Err(syn::Error::new(
                             ident.span(),
                             format!(
-                                "unknown field: `{}`. Expected `dir`, `openapi`, `title`, `version`, `docs_url`, `redoc_url`, `servers`, or `merge`",
-                                ident_str
+                                "unknown field: `{ident_str}`. Expected `dir`, `openapi`, `title`, `version`, `docs_url`, `redoc_url`, `servers`, or `merge`"
                             ),
                         ));
                     }
@@ -136,7 +137,7 @@ impl Parse for AutoRouterInput {
             }
         }
 
-        Ok(AutoRouterInput {
+        Ok(Self {
             dir: dir.or_else(|| {
                 std::env::var("VESPERA_DIR")
                     .map(|f| LitStr::new(&f, Span::call_site()))
@@ -189,7 +190,7 @@ impl Parse for AutoRouterInput {
     }
 }
 
-/// Parse merge values: merge = [path::to::App, another::App]
+/// Parse merge values: merge = [`path::to::App`, `another::App`]
 fn parse_merge_values(input: ParseStream) -> syn::Result<Vec<syn::Path>> {
     input.parse::<syn::Token![=]>()?;
 
@@ -207,7 +208,7 @@ fn parse_openapi_values(input: ParseStream) -> syn::Result<Vec<LitStr>> {
         let content;
         let _ = bracketed!(content in input);
         let entries: Punctuated<LitStr, syn::Token![,]> =
-            content.parse_terminated(|input| input.parse::<LitStr>(), syn::Token![,])?;
+            content.parse_terminated(syn::parse::ParseBuffer::parse::<LitStr>, syn::Token![,])?;
         Ok(entries.into_iter().collect())
     } else {
         let single: LitStr = input.parse()?;
@@ -222,8 +223,7 @@ fn validate_server_url(url: &LitStr) -> syn::Result<String> {
         return Err(syn::Error::new(
             url.span(),
             format!(
-                "invalid server URL: `{}`. URL must start with `http://` or `https://`",
-                url_value
+                "invalid server URL: `{url_value}`. URL must start with `http://` or `https://`"
             ),
         ));
     }
@@ -327,10 +327,7 @@ fn parse_server_struct(input: ParseStream) -> syn::Result<ServerConfig> {
             _ => {
                 return Err(syn::Error::new(
                     ident.span(),
-                    format!(
-                        "unknown field: `{}`. Expected `url` or `description`",
-                        ident_str
-                    ),
+                    format!("unknown field: `{ident_str}`. Expected `url` or `description`"),
                 ));
             }
         }
@@ -348,7 +345,7 @@ fn parse_server_struct(input: ParseStream) -> syn::Result<ServerConfig> {
 }
 
 /// Processed vespera input with extracted values
-pub(crate) struct ProcessedVesperaInput {
+pub struct ProcessedVesperaInput {
     pub folder_name: String,
     pub openapi_file_names: Vec<String>,
     pub title: Option<String>,
@@ -356,17 +353,16 @@ pub(crate) struct ProcessedVesperaInput {
     pub docs_url: Option<String>,
     pub redoc_url: Option<String>,
     pub servers: Option<Vec<Server>>,
-    /// Apps to merge (syn::Path for code generation)
+    /// Apps to merge (`syn::Path` for code generation)
     pub merge: Vec<syn::Path>,
 }
 
-/// Process AutoRouterInput into extracted values
-pub(crate) fn process_vespera_input(input: AutoRouterInput) -> ProcessedVesperaInput {
+/// Process `AutoRouterInput` into extracted values
+pub fn process_vespera_input(input: AutoRouterInput) -> ProcessedVesperaInput {
     ProcessedVesperaInput {
         folder_name: input
             .dir
-            .map(|f| f.value())
-            .unwrap_or_else(|| "routes".to_string()),
+            .map_or_else(|| "routes".to_string(), |f| f.value()),
         openapi_file_names: input
             .openapi
             .unwrap_or_default()
@@ -390,8 +386,8 @@ pub(crate) fn process_vespera_input(input: AutoRouterInput) -> ProcessedVesperaI
     }
 }
 
-/// Input for export_app! macro
-pub(crate) struct ExportAppInput {
+/// Input for `export_app`! macro
+pub struct ExportAppInput {
     /// App name (struct name to generate)
     pub name: syn::Ident,
     /// Route directory
@@ -423,18 +419,19 @@ impl Parse for ExportAppInput {
                 _ => {
                     return Err(syn::Error::new(
                         ident.span(),
-                        format!("unknown field: `{}`. Expected `dir`", ident_str),
+                        format!("unknown field: `{ident_str}`. Expected `dir`"),
                     ));
                 }
             }
         }
 
-        Ok(ExportAppInput { name, dir })
+        Ok(Self { name, dir })
     }
 }
 
 /// Generate Axum router code from collected metadata
-pub(crate) fn generate_router_code(
+#[allow(clippy::too_many_lines)]
+pub fn generate_router_code(
     metadata: &CollectedMetadata,
     docs_info: Option<(String, String)>,
     redoc_info: Option<(String, String)>,
@@ -443,7 +440,13 @@ pub(crate) fn generate_router_code(
     let mut router_nests = Vec::new();
 
     for route in &metadata.routes {
-        let http_method = HttpMethod::from(route.method.as_str());
+        let Ok(http_method) = HttpMethod::try_from(route.method.as_str()) else {
+            eprintln!(
+                "vespera: skipping route '{}' — unknown HTTP method '{}'",
+                route.path, route.method
+            );
+            continue;
+        };
         let method_path = http_method_to_token_stream(http_method);
         let path = &route.path;
         let module_path = &route.module_path;
@@ -455,21 +458,16 @@ pub(crate) fn generate_router_code(
             ident: syn::Ident::new("crate", Span::call_site()),
             arguments: syn::PathArguments::None,
         });
-        p.extend(
-            module_path
-                .split("::")
-                .filter_map(|s| {
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(syn::PathSegment {
-                            ident: syn::Ident::new(s, Span::call_site()),
-                            arguments: syn::PathArguments::None,
-                        })
-                    }
+        p.extend(module_path.split("::").filter_map(|s| {
+            if s.is_empty() {
+                None
+            } else {
+                Some(syn::PathSegment {
+                    ident: syn::Ident::new(s, Span::call_site()),
+                    arguments: syn::PathArguments::None,
                 })
-                .collect::<Vec<syn::PathSegment>>(),
-        );
+            }
+        }));
         let func_name = syn::Ident::new(function_name, Span::call_site());
         router_nests.push(quote!(
             .route(#path, #method_path(#p::#func_name))
@@ -513,8 +511,7 @@ pub(crate) fn generate_router_code(
             ));
         } else {
             let html = format!(
-                r#"<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Swagger UI</title><link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css" /></head><body style="margin: 0; padding: 0;"><div id="swagger-ui"></div><script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script><script src="https://unpkg.com/swagger-ui-dist/swagger-ui-standalone-preset.js"></script><script>const openapiSpec = {spec_json};window.onload = () => {{ SwaggerUIBundle({{ spec: openapiSpec, dom_id: "\#swagger-ui", presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset], layout: "StandaloneLayout" }}); }};</script></body></html>"#,
-                spec_json = spec
+                r#"<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Swagger UI</title><link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css" /></head><body style="margin: 0; padding: 0;"><div id="swagger-ui"></div><script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script><script src="https://unpkg.com/swagger-ui-dist/swagger-ui-standalone-preset.js"></script><script>const openapiSpec = {spec};window.onload = () => {{ SwaggerUIBundle({{ spec: openapiSpec, dom_id: "\#swagger-ui", presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset], layout: "StandaloneLayout" }}); }};</script></body></html>"#
             );
 
             router_nests.push(quote!(
@@ -557,8 +554,7 @@ pub(crate) fn generate_router_code(
             ));
         } else {
             let html = format!(
-                r#"<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>ReDoc</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body {{ margin: 0; padding: 0; }}</style><link rel="stylesheet" href="https://unpkg.com/redoc/bundles/redoc.standalone.css" /></head><body><div id="redoc-container"></div><script src="https://unpkg.com/redoc/bundles/redoc.standalone.js"></script><script>const openapiSpec = {spec_json};Redoc.init(openapiSpec, {{}}, document.getElementById("redoc-container"));</script></body></html>"#,
-                spec_json = spec
+                r#"<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>ReDoc</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body {{ margin: 0; padding: 0; }}</style><link rel="stylesheet" href="https://unpkg.com/redoc/bundles/redoc.standalone.css" /></head><body><div id="redoc-container"></div><script src="https://unpkg.com/redoc/bundles/redoc.standalone.js"></script><script>const openapiSpec = {spec};Redoc.init(openapiSpec, {{}}, document.getElementById("redoc-container"));</script></body></html>"#
             );
 
             router_nests.push(quote!(
@@ -622,13 +618,11 @@ mod tests {
         // quote! generates "vespera :: axum :: Router :: new ()" format
         assert!(
             code.contains("Router") && code.contains("new"),
-            "Code should contain Router::new(), got: {}",
-            code
+            "Code should contain Router::new(), got: {code}"
         );
         assert!(
             !code.contains("route"),
-            "Code should not contain route, got: {}",
-            code
+            "Code should not contain route, got: {code}"
         );
 
         drop(temp_dir);
@@ -779,24 +773,19 @@ pub fn get_users() -> String {
         // Check router initialization (quote! generates "vespera :: axum :: Router :: new ()")
         assert!(
             code.contains("Router") && code.contains("new"),
-            "Code should contain Router::new(), got: {}",
-            code
+            "Code should contain Router::new(), got: {code}"
         );
 
         // Check route method
         assert!(
             code.contains(expected_method),
-            "Code should contain method: {}, got: {}",
-            expected_method,
-            code
+            "Code should contain method: {expected_method}, got: {code}"
         );
 
         // Check route path
         assert!(
             code.contains(expected_path),
-            "Code should contain path: {}, got: {}",
-            expected_path,
-            code
+            "Code should contain path: {expected_path}, got: {code}"
         );
 
         // Check function path (quote! adds spaces, so we check for parts)
@@ -805,9 +794,7 @@ pub fn get_users() -> String {
             if !part.is_empty() {
                 assert!(
                     code.contains(part),
-                    "Code should contain function part: {}, got: {}",
-                    part,
-                    code
+                    "Code should contain function part: {part}, got: {code}"
                 );
             }
         }
@@ -880,8 +867,7 @@ pub fn update_user() -> String {
         let route_count = code.matches(". route (").count();
         assert_eq!(
             route_count, 3,
-            "Should have 3 route calls, got: {}, code: {}",
-            route_count, code
+            "Should have 3 route calls, got: {route_count}, code: {code}"
         );
 
         drop(temp_dir);
@@ -932,8 +918,7 @@ pub fn create_users() -> String {
         let route_count = code.matches(". route (").count();
         assert_eq!(
             route_count, 2,
-            "Should have 2 routes, got: {}, code: {}",
-            route_count, code
+            "Should have 2 routes, got: {route_count}, code: {code}"
         );
 
         drop(temp_dir);
@@ -1413,13 +1398,11 @@ pub fn get_users() -> String {
         // Should use VesperaRouter instead of plain Router
         assert!(
             code.contains("VesperaRouter"),
-            "Should use VesperaRouter for merge, got: {}",
-            code
+            "Should use VesperaRouter for merge, got: {code}"
         );
         assert!(
             code.contains("third :: ThirdApp") || code.contains("third::ThirdApp"),
-            "Should reference merged app, got: {}",
-            code
+            "Should reference merged app, got: {code}"
         );
     }
 
@@ -1435,19 +1418,16 @@ pub fn get_users() -> String {
         // Should have merge code for docs
         assert!(
             code.contains("OnceLock"),
-            "Should use OnceLock for merged docs, got: {}",
-            code
+            "Should use OnceLock for merged docs, got: {code}"
         );
         assert!(
             code.contains("MERGED_SPEC"),
-            "Should have MERGED_SPEC, got: {}",
-            code
+            "Should have MERGED_SPEC, got: {code}"
         );
         // quote! generates "merged . merge" with spaces
         assert!(
             code.contains("merged . merge") || code.contains("merged.merge"),
-            "Should call merge on spec, got: {}",
-            code
+            "Should call merge on spec, got: {code}"
         );
     }
 
@@ -1483,8 +1463,7 @@ pub fn get_users() -> String {
         let merged_spec_count = code.matches("MERGED_SPEC").count();
         assert!(
             merged_spec_count >= 2,
-            "Should have at least 2 MERGED_SPEC for docs and redoc, got: {}",
-            merged_spec_count
+            "Should have at least 2 MERGED_SPEC for docs and redoc, got: {merged_spec_count}"
         );
         // Both docs_url and redoc_url should be present
         assert!(
@@ -1507,8 +1486,7 @@ pub fn get_users() -> String {
         // Should reference both apps
         assert!(
             code.contains("first") && code.contains("second"),
-            "Should reference both merge apps, got: {}",
-            code
+            "Should reference both merge apps, got: {code}"
         );
     }
 

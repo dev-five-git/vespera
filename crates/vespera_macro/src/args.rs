@@ -57,7 +57,7 @@ impl syn::parse::Parse for RouteArgs {
             }
         }
 
-        Ok(RouteArgs {
+        Ok(Self {
             method,
             path,
             error_status,
@@ -136,15 +136,12 @@ mod tests {
                 if let Some(exp_method) = expected_method {
                     assert!(
                         route_args.method.is_some(),
-                        "Expected method {} but got None for input: {}",
-                        exp_method,
-                        input
+                        "Expected method {exp_method} but got None for input: {input}"
                     );
                     assert_eq!(
                         route_args.method.as_ref().unwrap().to_string(),
                         exp_method,
-                        "Method mismatch for input: {}",
-                        input
+                        "Method mismatch for input: {input}"
                     );
                 } else {
                     assert!(
@@ -159,15 +156,12 @@ mod tests {
                 if let Some(exp_path) = expected_path {
                     assert!(
                         route_args.path.is_some(),
-                        "Expected path {} but got None for input: {}",
-                        exp_path,
-                        input
+                        "Expected path {exp_path} but got None for input: {input}"
                     );
                     assert_eq!(
                         route_args.path.as_ref().unwrap().value(),
                         exp_path,
-                        "Path mismatch for input: {}",
-                        input
+                        "Path mismatch for input: {input}"
                     );
                 } else {
                     assert!(
@@ -182,9 +176,7 @@ mod tests {
                 if let Some(exp_status) = expected_error_status {
                     assert!(
                         route_args.error_status.is_some(),
-                        "Expected error_status {:?} but got None for input: {}",
-                        exp_status,
-                        input
+                        "Expected error_status {exp_status:?} but got None for input: {input}"
                     );
                     let array = route_args.error_status.as_ref().unwrap();
                     let mut status_codes = Vec::new();
@@ -200,8 +192,7 @@ mod tests {
                     }
                     assert_eq!(
                         status_codes, exp_status,
-                        "Error status mismatch for input: {}",
-                        input
+                        "Error status mismatch for input: {input}"
                     );
                 } else {
                     assert!(
@@ -216,13 +207,10 @@ mod tests {
                 // Expected error, test passes
             }
             (true, Err(e)) => {
-                panic!(
-                    "Expected successful parse but got error: {} for input: {}",
-                    e, input
-                );
+                panic!("Expected successful parse but got error: {e} for input: {input}");
             }
             (false, Ok(_)) => {
-                panic!("Expected parse error but got success for input: {}", input);
+                panic!("Expected parse error but got success for input: {input}");
             }
         }
     }
@@ -258,8 +246,7 @@ mod tests {
                 } else {
                     assert!(
                         route_args.tags.is_some(),
-                        "Expected tags but got None for input: {}",
-                        input
+                        "Expected tags but got None for input: {input}"
                     );
                     let tags_array = route_args.tags.as_ref().unwrap();
                     let mut parsed_tags = Vec::new();
@@ -274,8 +261,7 @@ mod tests {
                     }
                     assert_eq!(
                         parsed_tags, expected_tags,
-                        "Tags mismatch for input: {}",
-                        input
+                        "Tags mismatch for input: {input}"
                     );
                 }
             }
@@ -283,13 +269,10 @@ mod tests {
                 // Expected error, test passes
             }
             (true, Err(e)) => {
-                panic!(
-                    "Expected successful parse but got error: {} for input: {}",
-                    e, input
-                );
+                panic!("Expected successful parse but got error: {e} for input: {input}");
             }
             (false, Ok(_)) => {
-                panic!("Expected parse error but got success for input: {}", input);
+                panic!("Expected parse error but got success for input: {input}");
             }
         }
     }

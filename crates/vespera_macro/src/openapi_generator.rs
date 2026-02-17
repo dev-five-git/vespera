@@ -1,6 +1,7 @@
-//! OpenAPI document generator
+//! `OpenAPI` document generator
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::Path;
 
 use vespera_core::{
     openapi::{Info, OpenApi, OpenApiVersion, Server, Tag},
@@ -18,138 +19,30 @@ use crate::{
     schema_macro::type_utils::get_type_default as utils_get_type_default,
 };
 
-/// Generate OpenAPI document from collected metadata
+/// Generate `OpenAPI` document from collected metadata
 pub fn generate_openapi_doc_with_metadata(
     title: Option<String>,
     version: Option<String>,
     servers: Option<Vec<Server>>,
     metadata: &CollectedMetadata,
 ) -> OpenApi {
-    let mut paths: BTreeMap<String, PathItem> = BTreeMap::new();
-    let mut schemas: BTreeMap<String, vespera_core::schema::Schema> = BTreeMap::new();
-    let mut known_schema_names: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut struct_definitions: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut all_tags: BTreeSet<String> = BTreeSet::new();
+    let (known_schema_names, struct_definitions) = build_schema_lookups(metadata);
+    let file_cache = build_file_cache(metadata);
+    let struct_file_index = build_struct_file_index(&file_cache);
+    let schemas = parse_component_schemas(
+        metadata,
+        &known_schema_names,
+        &struct_definitions,
+        &file_cache,
+        &struct_file_index,
+    );
+    let (paths, all_tags) = build_path_items(
+        metadata,
+        &known_schema_names,
+        &struct_definitions,
+        &file_cache,
+    );
 
-    // First, register all schema names and store struct definitions
-    // Note: We register ALL structs (including include_in_openapi: false) so that
-    // schema_type! generated types can reference them. The filtering happens below.
-    for struct_meta in &metadata.structs {
-        let schema_name = struct_meta.name.clone();
-        known_schema_names.insert(schema_name.clone(), schema_name);
-        struct_definitions.insert(struct_meta.name.clone(), struct_meta.definition.clone());
-    }
-
-    // Then, parse struct and enum schemas that should appear in OpenAPI
-    // Only include structs where include_in_openapi is true
-    // (i.e., from #[derive(Schema)], not from cross-file lookup)
-    for struct_meta in metadata.structs.iter().filter(|s| s.include_in_openapi) {
-        // Parse the stored definition - this should always succeed since
-        // the definition was captured from successfully compiled code
-        let Ok(parsed) = syn::parse_str::<syn::Item>(&struct_meta.definition) else {
-            continue;
-        };
-        let mut schema = match &parsed {
-            syn::Item::Struct(struct_item) => {
-                parse_struct_to_schema(struct_item, &known_schema_names, &struct_definitions)
-            }
-            syn::Item::Enum(enum_item) => {
-                parse_enum_to_schema(enum_item, &known_schema_names, &struct_definitions)
-            }
-            // Metadata definitions should only contain structs or enums - skip anything else
-            _ => continue,
-        };
-
-        // Process default values for struct fields
-        if let syn::Item::Struct(struct_item) = &parsed {
-            // Find the file where this struct is defined
-            // Try to find a route file that contains this struct
-            // Find the route file that contains this struct definition
-            let struct_file = metadata
-                .routes
-                .iter()
-                .find_map(|route| {
-                    std::fs::read_to_string(&route.file_path)
-                        .ok()
-                        .filter(|content| content.contains(&format!("struct {}", struct_meta.name)))
-                        .map(|_| route.file_path.clone())
-                })
-                .or_else(|| metadata.routes.first().map(|r| r.file_path.clone()));
-
-            if let Some(file_path) = struct_file
-                && let Some(file_ast) =
-                    read_and_parse_file_warn(std::path::Path::new(&file_path), "OpenAPI generation")
-            {
-                // Process default functions for struct fields
-                process_default_functions(struct_item, &file_ast, &mut schema);
-            }
-        }
-
-        let schema_name = struct_meta.name.clone();
-        schemas.insert(schema_name.clone(), schema);
-    }
-
-    // Process routes from metadata
-    for route_meta in &metadata.routes {
-        // Try to parse the file to get the actual function
-        let Some(file_ast) = read_and_parse_file_warn(
-            std::path::Path::new(&route_meta.file_path),
-            "OpenAPI generation",
-        ) else {
-            continue;
-        };
-
-        for item in file_ast.items {
-            if let syn::Item::Fn(fn_item) = item
-                && fn_item.sig.ident == route_meta.function_name
-            {
-                let method = HttpMethod::from(route_meta.method.as_str());
-
-                // Collect tags for global tags list
-                if let Some(tags) = &route_meta.tags {
-                    for tag in tags {
-                        all_tags.insert(tag.clone());
-                    }
-                }
-
-                // Build operation from function signature
-                let mut operation = build_operation_from_function(
-                    &fn_item.sig,
-                    &route_meta.path,
-                    &known_schema_names,
-                    &struct_definitions,
-                    route_meta.error_status.as_deref(),
-                    route_meta.tags.as_deref(),
-                );
-                operation.description = route_meta.description.clone();
-
-                // Get or create PathItem
-                let path_item = paths
-                    .entry(route_meta.path.clone())
-                    .or_insert_with(|| PathItem {
-                        get: None,
-                        post: None,
-                        put: None,
-                        patch: None,
-                        delete: None,
-                        head: None,
-                        options: None,
-                        trace: None,
-                        parameters: None,
-                        summary: None,
-                        description: None,
-                    });
-
-                // Set operation for the method
-                path_item.set_operation(method, operation);
-                break;
-            }
-        }
-    }
-
-    // Build OpenAPI document
     OpenApi {
         openapi: OpenApiVersion::V3_1_0,
         info: Info {
@@ -201,8 +94,187 @@ pub fn generate_openapi_doc_with_metadata(
     }
 }
 
+/// Build schema name and definition lookup maps from metadata.
+///
+/// Registers ALL structs (including `include_in_openapi: false`) so that
+/// `schema_type!` generated types can reference them.
+fn build_schema_lookups(
+    metadata: &CollectedMetadata,
+) -> (HashSet<String>, HashMap<String, String>) {
+    let mut known_schema_names = HashSet::new();
+    let mut struct_definitions = HashMap::new();
+
+    for struct_meta in &metadata.structs {
+        let schema_name = struct_meta.name.clone();
+        known_schema_names.insert(schema_name);
+        struct_definitions.insert(struct_meta.name.clone(), struct_meta.definition.clone());
+    }
+
+    (known_schema_names, struct_definitions)
+}
+
+/// Build file AST cache — parse each unique route file exactly once.
+///
+/// Deduplicates file paths first, then parses each file a single time.
+/// This eliminates redundant file I/O when multiple routes share a source file.
+fn build_file_cache(metadata: &CollectedMetadata) -> HashMap<String, syn::File> {
+    let unique_paths: BTreeSet<&str> = metadata
+        .routes
+        .iter()
+        .map(|r| r.file_path.as_str())
+        .collect();
+    let mut cache = HashMap::with_capacity(unique_paths.len());
+    for path in unique_paths {
+        if let Some(ast) = read_and_parse_file_warn(Path::new(path), "OpenAPI generation") {
+            cache.insert(path.to_string(), ast);
+        }
+    }
+    cache
+}
+
+/// Build struct name → file path index from cached file ASTs.
+///
+/// Enables O(1) lookup of which file contains a given struct definition,
+/// replacing the previous O(routes × file_read) linear scan.
+fn build_struct_file_index(file_cache: &HashMap<String, syn::File>) -> HashMap<String, &str> {
+    let mut index = HashMap::new();
+    for (path, ast) in file_cache {
+        for item in &ast.items {
+            if let syn::Item::Struct(s) = item {
+                index.insert(s.ident.to_string(), path.as_str());
+            }
+        }
+    }
+    index
+}
+
+/// Parse struct and enum definitions into `OpenAPI` component schemas.
+///
+/// Only includes structs where `include_in_openapi` is true
+/// (i.e., from `#[derive(Schema)]`, not from cross-file lookup).
+/// Also processes `#[serde(default)]` attributes to extract default values.
+///
+/// Uses pre-built `file_cache` and `struct_file_index` for O(1) file lookups
+/// instead of scanning all route files per struct.
+fn parse_component_schemas(
+    metadata: &CollectedMetadata,
+    known_schema_names: &HashSet<String>,
+    struct_definitions: &HashMap<String, String>,
+    file_cache: &HashMap<String, syn::File>,
+    struct_file_index: &HashMap<String, &str>,
+) -> BTreeMap<String, vespera_core::schema::Schema> {
+    let mut schemas = BTreeMap::new();
+
+    for struct_meta in metadata.structs.iter().filter(|s| s.include_in_openapi) {
+        let Ok(parsed) = syn::parse_str::<syn::Item>(&struct_meta.definition) else {
+            continue;
+        };
+        let mut schema = match &parsed {
+            syn::Item::Struct(struct_item) => {
+                parse_struct_to_schema(struct_item, known_schema_names, struct_definitions)
+            }
+            syn::Item::Enum(enum_item) => {
+                parse_enum_to_schema(enum_item, known_schema_names, struct_definitions)
+            }
+            _ => continue,
+        };
+
+        // Process default values using cached file ASTs (O(1) lookup)
+        if let syn::Item::Struct(struct_item) = &parsed {
+            let file_ast = struct_file_index
+                .get(&struct_meta.name)
+                .and_then(|path| file_cache.get(*path))
+                .or_else(|| {
+                    metadata
+                        .routes
+                        .first()
+                        .and_then(|r| file_cache.get(&r.file_path))
+                });
+
+            if let Some(ast) = file_ast {
+                process_default_functions(struct_item, ast, &mut schema);
+            }
+        }
+
+        schemas.insert(struct_meta.name.clone(), schema);
+    }
+
+    schemas
+}
+
+/// Build path items and collect tags from route metadata.
+///
+/// Uses pre-built `file_cache` to avoid re-reading and re-parsing source files.
+/// Each unique file is parsed exactly once in `build_file_cache`.
+fn build_path_items(
+    metadata: &CollectedMetadata,
+    known_schema_names: &HashSet<String>,
+    struct_definitions: &HashMap<String, String>,
+    file_cache: &HashMap<String, syn::File>,
+) -> (BTreeMap<String, PathItem>, BTreeSet<String>) {
+    let mut paths = BTreeMap::new();
+    let mut all_tags = BTreeSet::new();
+
+    for route_meta in &metadata.routes {
+        let Some(file_ast) = file_cache.get(&route_meta.file_path) else {
+            continue;
+        };
+
+        for item in &file_ast.items {
+            if let syn::Item::Fn(fn_item) = item
+                && fn_item.sig.ident == route_meta.function_name
+            {
+                let Ok(method) = HttpMethod::try_from(route_meta.method.as_str()) else {
+                    eprintln!(
+                        "vespera: skipping route '{}' — unknown HTTP method '{}'",
+                        route_meta.path, route_meta.method
+                    );
+                    continue;
+                };
+
+                if let Some(tags) = &route_meta.tags {
+                    for tag in tags {
+                        all_tags.insert(tag.clone());
+                    }
+                }
+
+                let mut operation = build_operation_from_function(
+                    &fn_item.sig,
+                    &route_meta.path,
+                    known_schema_names,
+                    struct_definitions,
+                    route_meta.error_status.as_deref(),
+                    route_meta.tags.as_deref(),
+                );
+                operation.description.clone_from(&route_meta.description);
+
+                let path_item = paths
+                    .entry(route_meta.path.clone())
+                    .or_insert_with(|| PathItem {
+                        get: None,
+                        post: None,
+                        put: None,
+                        patch: None,
+                        delete: None,
+                        head: None,
+                        options: None,
+                        trace: None,
+                        parameters: None,
+                        summary: None,
+                        description: None,
+                    });
+
+                path_item.set_operation(method, operation);
+                break;
+            }
+        }
+    }
+
+    (paths, all_tags)
+}
+
 /// Process default functions for struct fields
-/// This function extracts default values from functions specified in #[serde(default = "function_name")]
+/// This function extracts default values from functions specified in #[serde(default = "`function_name`")]
 fn process_default_functions(
     struct_item: &syn::ItemStruct,
     file_ast: &syn::File,
@@ -215,9 +287,8 @@ fn process_default_functions(
     let struct_rename_all = extract_rename_all(&struct_item.attrs);
 
     // Get properties from schema
-    let properties = match &mut schema.properties {
-        Some(props) => props,
-        None => return, // No properties to process
+    let Some(properties) = &mut schema.properties else {
+        return;
     };
 
     // Process each field in the struct
@@ -228,17 +299,14 @@ fn process_default_functions(
                 Some(Some(func_name)) => func_name, // default = "function_name"
                 Some(None) => {
                     // Simple default (no function) - we can set type-specific defaults
-                    let rust_field_name = field
-                        .ident
-                        .as_ref()
-                        .map(|i| strip_raw_prefix(&i.to_string()).to_string())
-                        .unwrap_or_else(|| "unknown".to_string());
+                    let rust_field_name = field.ident.as_ref().map_or_else(
+                        || "unknown".to_string(),
+                        |i| strip_raw_prefix(&i.to_string()).to_string(),
+                    );
 
-                    let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
-                        renamed
-                    } else {
+                    let field_name = extract_field_rename(&field.attrs).unwrap_or_else(|| {
                         rename_field(&rust_field_name, struct_rename_all.as_deref())
-                    };
+                    });
 
                     // Set type-specific default for simple default
                     if let Some(prop_schema_ref) = properties.get_mut(&field_name)
@@ -259,17 +327,14 @@ fn process_default_functions(
                 // Extract default value from function body
                 if let Some(default_value) = extract_default_value_from_function(func_item) {
                     // Get the field name (with rename applied)
-                    let rust_field_name = field
-                        .ident
-                        .as_ref()
-                        .map(|i| strip_raw_prefix(&i.to_string()).to_string())
-                        .unwrap_or_else(|| "unknown".to_string());
+                    let rust_field_name = field.ident.as_ref().map_or_else(
+                        || "unknown".to_string(),
+                        |i| strip_raw_prefix(&i.to_string()).to_string(),
+                    );
 
-                    let field_name = if let Some(renamed) = extract_field_rename(&field.attrs) {
-                        renamed
-                    } else {
+                    let field_name = extract_field_rename(&field.attrs).unwrap_or_else(|| {
                         rename_field(&rust_field_name, struct_rename_all.as_deref())
-                    };
+                    });
 
                     // Set default value in schema
                     if let Some(prop_schema_ref) = properties.get_mut(&field_name)
@@ -300,7 +365,7 @@ fn find_function_in_file<'a>(
 
 /// Extract default value from function body
 /// This tries to extract literal values from common patterns like:
-/// - "value".to_string() -> "value"
+/// - "`value".to_string()` -> "value"
 /// - 42 -> 42
 /// - true -> true
 /// - vec![] -> []
@@ -515,11 +580,11 @@ pub fn get_users() -> String {
     fn test_generate_openapi_with_enum_and_route() {
         // Test enum used in route to ensure enum parsing is called in route context
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let route_content = r#"
+        let route_content = r"
 pub fn get_status() -> Status {
     Status::Active
 }
-"#;
+";
         let route_file = create_temp_file(&temp_dir, "status_route.rs", route_content);
 
         let mut metadata = CollectedMetadata::new();
@@ -695,7 +760,7 @@ pub fn create_user() -> String {
             path: "/users".to_string(),
             function_name: "get_users".to_string(),
             module_path: "test::users".to_string(),
-            file_path: "".to_string(), // Will be set to temp file with invalid syntax
+            file_path: String::new(), // Will be set to temp file with invalid syntax
             signature: "fn get_users() -> String".to_string(),
             error_status: None,
             tags: None,
@@ -914,8 +979,7 @@ pub fn get_users() -> String {
             assert_eq!(
                 value,
                 Some(serde_json::Value::Number(0.into())),
-                "Failed for type {}",
-                type_name
+                "Failed for type {type_name}"
             );
         }
     }
@@ -925,7 +989,7 @@ pub fn get_users() -> String {
         for type_name in &["f32", "f64"] {
             let ty: syn::Type = syn::parse_str(type_name).unwrap();
             let value = utils_get_type_default(&ty);
-            assert!(value.is_some(), "Failed for type {}", type_name);
+            assert!(value.is_some(), "Failed for type {type_name}");
         }
     }
 
@@ -953,11 +1017,11 @@ pub fn get_users() -> String {
 
     #[test]
     fn test_find_function_in_file() {
-        let file_content = r#"
+        let file_content = r"
 fn foo() {}
 fn bar() -> i32 { 42 }
 fn baz(x: i32) -> i32 { x }
-"#;
+";
         let file_ast: syn::File = syn::parse_str(file_content).unwrap();
 
         assert!(find_function_in_file(&file_ast, "foo").is_some());
@@ -970,11 +1034,11 @@ fn baz(x: i32) -> i32 { x }
     fn test_extract_default_value_from_function() {
         // Test direct expression return
         let func: syn::ItemFn = syn::parse_str(
-            r#"
+            r"
             fn default_value() -> i32 {
                 42
             }
-        "#,
+        ",
         )
         .unwrap();
         let value = extract_default_value_from_function(&func);
@@ -1000,11 +1064,11 @@ fn baz(x: i32) -> i32 { x }
     fn test_extract_default_value_from_function_empty() {
         // Test function with no extractable value
         let func: syn::ItemFn = syn::parse_str(
-            r#"
+            r"
             fn default_value() {
                 let x = 1;
             }
-        "#,
+        ",
         )
         .unwrap();
         let value = extract_default_value_from_function(&func);
@@ -1063,7 +1127,7 @@ pub fn get_user() -> User {
     fn test_generate_openapi_with_simple_default() {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
-        let route_content = r#"
+        let route_content = r"
 struct Config {
     #[serde(default)]
     enabled: bool,
@@ -1074,14 +1138,14 @@ struct Config {
 pub fn get_config() -> Config {
     Config { enabled: true, count: 0 }
 }
-"#;
+";
         let route_file = create_temp_file(&temp_dir, "config.rs", route_content);
 
         let mut metadata = CollectedMetadata::new();
         metadata.structs.push(StructMetadata {
             name: "Config".to_string(),
             definition:
-                r#"struct Config { #[serde(default)] enabled: bool, #[serde(default)] count: i32 }"#
+                r"struct Config { #[serde(default)] enabled: bool, #[serde(default)] count: i32 }"
                     .to_string(),
             ..Default::default()
         });
@@ -1112,11 +1176,11 @@ pub fn get_config() -> Config {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
         // Create TWO route files - struct is in second file, route references it from first
-        let route1_content = r#"
+        let route1_content = r"
 pub fn get_users() -> Vec<User> {
     vec![]
 }
-"#;
+";
         let route1_file = create_temp_file(&temp_dir, "users.rs", route1_content);
 
         let route2_content = r#"
@@ -1231,7 +1295,7 @@ pub fn get_user() -> User {
     #[test]
     fn test_extract_value_from_expr_method_call_with_non_literal_receiver() {
         // Test lines 275-276: recursive extraction fails for non-literal
-        let expr: syn::Expr = syn::parse_str(r#"some_var.to_string()"#).unwrap();
+        let expr: syn::Expr = syn::parse_str(r"some_var.to_string()").unwrap();
         let value = extract_value_from_expr(&expr);
         // Cannot extract value from a variable
         assert!(value.is_none());
@@ -1241,7 +1305,7 @@ pub fn get_user() -> User {
     fn test_extract_value_from_expr_method_call_chained_to_string() {
         // Test lines 275-276: another case where recursive extraction is attempted
         // Chained method calls: 42.to_string() has int literal as receiver
-        let expr: syn::Expr = syn::parse_str(r#"42.to_string()"#).unwrap();
+        let expr: syn::Expr = syn::parse_str(r"42.to_string()").unwrap();
         let value = extract_value_from_expr(&expr);
         // Line 275 recursive call extracts 42 as Number, then line 276 returns it
         assert_eq!(value, Some(serde_json::Value::Number(42.into())));

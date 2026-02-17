@@ -1,31 +1,31 @@
-//! Core implementation of vespera! and export_app! macros.
+//! Core implementation of vespera! and `export_app`! macros.
 //!
 //! This module orchestrates the entire macro execution flow:
 //! - Route discovery via filesystem scanning
-//! - OpenAPI spec generation
-//! - File I/O for writing OpenAPI JSON
+//! - `OpenAPI` spec generation
+//! - File I/O for writing `OpenAPI` JSON
 //! - Router code generation
 //!
 //! # Overview
 //!
 //! This is the main orchestrator for the two primary macros:
-//! - `vespera!()` - Generates a complete Axum router with OpenAPI spec
+//! - `vespera!()` - Generates a complete Axum router with `OpenAPI` spec
 //! - `export_app!()` - Exports a router for merging into parent apps
 //!
 //! The execution flow is:
 //! 1. Parse macro arguments via [`router_codegen`]
 //! 2. Discover routes via [`collector::collect_metadata`]
-//! 3. Generate OpenAPI spec via [`openapi_generator`]
-//! 4. Write OpenAPI JSON files (if configured)
+//! 3. Generate `OpenAPI` spec via [`openapi_generator`]
+//! 4. Write `OpenAPI` JSON files (if configured)
 //! 5. Generate router code via [`router_codegen::generate_router_code`]
 //!
 //! # Key Functions
 //!
 //! - [`process_vespera_macro`] - Main vespera! macro implementation
-//! - [`process_export_app`] - Main export_app! macro implementation
-//! - [`generate_and_write_openapi`] - OpenAPI generation and file I/O
+//! - [`process_export_app`] - Main `export_app`! macro implementation
+//! - [`generate_and_write_openapi`] - `OpenAPI` generation and file I/O
 
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use proc_macro2::Span;
 use quote::quote;
@@ -39,10 +39,10 @@ use crate::{
 };
 
 /// Docs info tuple type alias for cleaner signatures
-pub(crate) type DocsInfo = (Option<(String, String)>, Option<(String, String)>);
+pub type DocsInfo = (Option<(String, String)>, Option<(String, String)>);
 
-/// Generate OpenAPI JSON and write to files, returning docs info
-pub(crate) fn generate_and_write_openapi(
+/// Generate `OpenAPI` JSON and write to files, returning docs info
+pub fn generate_and_write_openapi(
     input: &ProcessedVesperaInput,
     metadata: &CollectedMetadata,
 ) -> MacroResult<DocsInfo> {
@@ -70,7 +70,7 @@ pub(crate) fn generate_and_write_openapi(
             // Extract the struct name (last segment, e.g., "ThirdApp" from "third::ThirdApp")
             if let Some(last_segment) = merge_path.segments.last() {
                 let struct_name = last_segment.ident.to_string();
-                let spec_file = vespera_dir.join(format!("{}.openapi.json", struct_name));
+                let spec_file = vespera_dir.join(format!("{struct_name}.openapi.json"));
 
                 if let Ok(spec_content) = std::fs::read_to_string(&spec_file)
                     && let Ok(child_spec) =
@@ -82,14 +82,14 @@ pub(crate) fn generate_and_write_openapi(
         }
     }
 
-    let json_str = serde_json::to_string_pretty(&openapi_doc).map_err(|e| err_call_site(format!("OpenAPI generation: failed to serialize document to JSON. Error: {}. Check that all schema types are serializable.", e)))?;
+    let json_str = serde_json::to_string_pretty(&openapi_doc).map_err(|e| err_call_site(format!("OpenAPI generation: failed to serialize document to JSON. Error: {e}. Check that all schema types are serializable.")))?;
 
     for openapi_file_name in &input.openapi_file_names {
         let file_path = Path::new(openapi_file_name);
         if let Some(parent) = file_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| err_call_site(format!("OpenAPI output: failed to create directory '{}'. Error: {}. Ensure the path is valid and writable.", parent.display(), e)))?;
         }
-        std::fs::write(file_path, &json_str).map_err(|e| err_call_site(format!("OpenAPI output: failed to write file '{}'. Error: {}. Ensure the file path is writable.", openapi_file_name, e)))?;
+        std::fs::write(file_path, &json_str).map_err(|e| err_call_site(format!("OpenAPI output: failed to write file '{openapi_file_name}'. Error: {e}. Ensure the file path is writable.")))?;
     }
 
     let docs_info = input
@@ -102,20 +102,23 @@ pub(crate) fn generate_and_write_openapi(
 }
 
 /// Find the folder path for route scanning
-pub(crate) fn find_folder_path(folder_name: &str) -> std::path::PathBuf {
-    let root = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR must be set by cargo during compilation");
-    let path = format!("{}/src/{}", root, folder_name);
+pub fn find_folder_path(folder_name: &str) -> MacroResult<std::path::PathBuf> {
+    let root = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| {
+        err_call_site(
+            "CARGO_MANIFEST_DIR is not set. vespera macros must be used within a cargo build.",
+        )
+    })?;
+    let path = format!("{root}/src/{folder_name}");
     let path = Path::new(&path);
     if path.exists() && path.is_dir() {
-        return path.to_path_buf();
+        return Ok(path.to_path_buf());
     }
 
-    Path::new(folder_name).to_path_buf()
+    Ok(Path::new(folder_name).to_path_buf())
 }
 
 /// Find the workspace root's target directory
-pub(crate) fn find_target_dir(manifest_path: &Path) -> std::path::PathBuf {
+pub fn find_target_dir(manifest_path: &Path) -> std::path::PathBuf {
     // Look for workspace root by finding a Cargo.toml with [workspace] section
     let mut current = Some(manifest_path);
     let mut last_with_lock = None;
@@ -148,11 +151,11 @@ pub(crate) fn find_target_dir(manifest_path: &Path) -> std::path::PathBuf {
 }
 
 /// Process vespera macro - extracted for testability
-pub(crate) fn process_vespera_macro(
+pub fn process_vespera_macro(
     processed: &ProcessedVesperaInput,
-    schema_storage: &[StructMetadata],
+    schema_storage: &HashMap<String, StructMetadata>,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    let folder_path = find_folder_path(&processed.folder_name);
+    let folder_path = find_folder_path(&processed.folder_name)?;
     if !folder_path.exists() {
         return Err(syn::Error::new(
             Span::call_site(),
@@ -164,7 +167,7 @@ pub(crate) fn process_vespera_macro(
     }
 
     let mut metadata = collect_metadata(&folder_path, &processed.folder_name).map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", processed.folder_name, e)))?;
-    metadata.structs.extend(schema_storage.iter().cloned());
+    metadata.structs.extend(schema_storage.values().cloned());
 
     let (docs_info, redoc_info) = generate_and_write_openapi(processed, &metadata)?;
 
@@ -176,30 +179,29 @@ pub(crate) fn process_vespera_macro(
     ))
 }
 
-/// Process export_app macro - extracted for testability
-pub(crate) fn process_export_app(
+/// Process `export_app` macro - extracted for testability
+pub fn process_export_app(
     name: &syn::Ident,
     folder_name: &str,
-    schema_storage: &[StructMetadata],
+    schema_storage: &HashMap<String, StructMetadata>,
     manifest_dir: &str,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    let folder_path = find_folder_path(folder_name);
+    let folder_path = find_folder_path(folder_name)?;
     if !folder_path.exists() {
         return Err(syn::Error::new(
             Span::call_site(),
             format!(
-                "export_app! macro: route folder '{}' not found. Create src/{} or specify a different folder with `dir = \"your_folder\"`.",
-                folder_name, folder_name
+                "export_app! macro: route folder '{folder_name}' not found. Create src/{folder_name} or specify a different folder with `dir = \"your_folder\"`."
             ),
         ));
     }
 
-    let mut metadata = collect_metadata(&folder_path, folder_name).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", folder_name, e)))?;
-    metadata.structs.extend(schema_storage.iter().cloned());
+    let mut metadata = collect_metadata(&folder_path, folder_name).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to scan route folder '{folder_name}'. Error: {e}. Check that all .rs files have valid Rust syntax.")))?;
+    metadata.structs.extend(schema_storage.values().cloned());
 
     // Generate OpenAPI spec JSON string
     let openapi_doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
-    let spec_json = serde_json::to_string(&openapi_doc).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to serialize OpenAPI spec to JSON. Error: {}. Check that all schema types are serializable.", e)))?;
+    let spec_json = serde_json::to_string(&openapi_doc).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to serialize OpenAPI spec to JSON. Error: {e}. Check that all schema types are serializable.")))?;
 
     // Write spec to temp file for compile-time merging by parent apps
     let name_str = name.to_string();
@@ -207,7 +209,7 @@ pub(crate) fn process_export_app(
     let target_dir = find_target_dir(manifest_path);
     let vespera_dir = target_dir.join("vespera");
     std::fs::create_dir_all(&vespera_dir).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to create build cache directory '{}'. Error: {}. Ensure the target directory is writable.", vespera_dir.display(), e)))?;
-    let spec_file = vespera_dir.join(format!("{}.openapi.json", name_str));
+    let spec_file = vespera_dir.join(format!("{name_str}.openapi.json"));
     std::fs::write(&spec_file, &spec_json).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to write OpenAPI spec file '{}'. Error: {}. Ensure the file path is writable.", spec_file.display(), e)))?;
 
     // Generate router code (without docs routes, no merge)
@@ -391,7 +393,7 @@ mod tests {
     #[test]
     fn test_find_folder_path_nonexistent_returns_path() {
         // When the constructed path doesn't exist, it falls back to using folder_name directly
-        let result = find_folder_path("nonexistent_folder_xyz");
+        let result = find_folder_path("nonexistent_folder_xyz").unwrap();
         // It should return a PathBuf (either from src/nonexistent... or just the folder name)
         assert!(result.to_string_lossy().contains("nonexistent_folder_xyz"));
     }
@@ -505,7 +507,7 @@ mod tests {
             servers: None,
             merge: vec![],
         };
-        let result = process_vespera_macro(&processed, &[]);
+        let result = process_vespera_macro(&processed, &HashMap::new());
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("route folder") && err.contains("not found"));
@@ -530,7 +532,7 @@ mod tests {
         };
 
         // This exercises the collect_metadata path (which handles parse errors gracefully)
-        let result = process_vespera_macro(&processed, &[]);
+        let result = process_vespera_macro(&processed, &HashMap::new());
         // Result may succeed or fail depending on how collect_metadata handles invalid files
         let _ = result;
     }
@@ -542,10 +544,13 @@ mod tests {
         // Create an empty file (valid but no routes)
         create_temp_file(&temp_dir, "empty.rs", "// empty file\n");
 
-        let schema_storage = vec![StructMetadata::new(
+        let schema_storage = HashMap::from([(
             "TestSchema".to_string(),
-            "struct TestSchema { id: i32 }".to_string(),
-        )];
+            StructMetadata::new(
+                "TestSchema".to_string(),
+                "struct TestSchema { id: i32 }".to_string(),
+            ),
+        )]);
 
         let processed = ProcessedVesperaInput {
             folder_name: temp_dir.path().to_string_lossy().to_string(),
@@ -573,7 +578,7 @@ mod tests {
         let result = process_export_app(
             &name,
             "nonexistent_folder_xyz",
-            &[],
+            &HashMap::new(),
             &temp_dir.path().to_string_lossy(),
         );
         assert!(result.is_err());
@@ -592,8 +597,12 @@ mod tests {
         let folder_path = temp_dir.path().to_string_lossy().to_string();
 
         // This exercises collect_metadata and other paths
-        let result =
-            process_export_app(&name, &folder_path, &[], &temp_dir.path().to_string_lossy());
+        let result = process_export_app(
+            &name,
+            &folder_path,
+            &HashMap::new(),
+            &temp_dir.path().to_string_lossy(),
+        );
         // We only care about exercising the code path
         let _ = result;
     }
@@ -605,10 +614,13 @@ mod tests {
         // Create an empty but valid Rust file
         create_temp_file(&temp_dir, "mod.rs", "// module file\n");
 
-        let schema_storage = vec![StructMetadata::new(
+        let schema_storage = HashMap::from([(
             "AppSchema".to_string(),
-            "struct AppSchema { name: String }".to_string(),
-        )];
+            StructMetadata::new(
+                "AppSchema".to_string(),
+                "struct AppSchema { name: String }".to_string(),
+            ),
+        )]);
 
         let name: syn::Ident = syn::parse_quote!(MyExportedApp);
         let folder_path = temp_dir.path().to_string_lossy().to_string();
@@ -694,7 +706,7 @@ mod tests {
         let absolute_path = temp_dir.path().to_string_lossy().to_string();
 
         // When given an absolute path that exists, it should return it
-        let result = find_folder_path(&absolute_path);
+        let result = find_folder_path(&absolute_path).unwrap();
         // The function tries src/{folder_name} first, then falls back to the folder_name directly
         assert!(
             result.to_string_lossy().contains(&absolute_path)
@@ -715,7 +727,7 @@ mod tests {
         // SAFETY: We're in a single-threaded test context
         unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
 
-        let result = find_folder_path("routes");
+        let result = find_folder_path("routes").unwrap();
 
         // Restore CARGO_MANIFEST_DIR
         if let Some(old_value) = old_manifest_dir {
@@ -769,8 +781,12 @@ mod tests {
         let name: syn::Ident = syn::parse_quote!(TestApp);
         let folder_path = temp_dir.path().to_string_lossy().to_string();
 
-        let result =
-            process_export_app(&name, &folder_path, &[], &temp_dir.path().to_string_lossy());
+        let result = process_export_app(
+            &name,
+            &folder_path,
+            &HashMap::new(),
+            &temp_dir.path().to_string_lossy(),
+        );
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -793,8 +809,12 @@ mod tests {
         let name: syn::Ident = syn::parse_quote!(TestApp);
         let folder_path = temp_dir.path().to_string_lossy().to_string();
 
-        let result =
-            process_export_app(&name, &folder_path, &[], &temp_dir.path().to_string_lossy());
+        let result = process_export_app(
+            &name,
+            &folder_path,
+            &HashMap::new(),
+            &temp_dir.path().to_string_lossy(),
+        );
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -819,8 +839,12 @@ mod tests {
         let name: syn::Ident = syn::parse_quote!(TestApp);
         let folder_path = temp_dir.path().to_string_lossy().to_string();
 
-        let result =
-            process_export_app(&name, &folder_path, &[], &temp_dir.path().to_string_lossy());
+        let result = process_export_app(
+            &name,
+            &folder_path,
+            &HashMap::new(),
+            &temp_dir.path().to_string_lossy(),
+        );
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();

@@ -78,8 +78,7 @@ mod tests {
         for method in HTTP_METHODS {
             assert!(
                 is_http_method(method),
-                "Method {} should be recognized",
-                method
+                "Method {method} should be recognized"
             );
         }
     }
