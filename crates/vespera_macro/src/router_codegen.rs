@@ -36,10 +36,9 @@
 use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    bracketed,
+    LitStr, bracketed,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
-    LitStr,
 };
 use vespera_core::{openapi::Server, route::HttpMethod};
 
@@ -1260,6 +1259,87 @@ pub fn get_users() -> String {
         let tokens = quote::quote!(servers = "invalid-url");
         let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_generate_router_code_unknown_http_method() {
+        // Test lines 337-340: route with unknown HTTP method is skipped in router codegen
+        let mut metadata = CollectedMetadata {
+            routes: Vec::new(),
+            structs: Vec::new(),
+        };
+        metadata.routes.push(crate::metadata::RouteMetadata {
+            method: "INVALID".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "routes::users".to_string(),
+            file_path: "dummy.rs".to_string(),
+            signature: "fn get_users() -> String".to_string(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+
+        let result = generate_router_code(&metadata, None, None, &[]);
+        let code = result.to_string();
+
+        // Router should be generated but without any route calls
+        assert!(
+            code.contains("Router") && code.contains("new"),
+            "Code should contain Router::new(), got: {code}"
+        );
+        assert!(
+            !code.contains(". route ("),
+            "Route with unknown HTTP method should be skipped, got: {code}"
+        );
+    }
+
+    #[test]
+    fn test_generate_router_code_unknown_method_skipped_valid_kept() {
+        // Test that unknown methods are skipped while valid routes are still generated
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let folder_name = "routes";
+
+        create_temp_file(
+            &temp_dir,
+            "users.rs",
+            r#"
+#[route(get)]
+pub fn get_users() -> String {
+    "users".to_string()
+}
+"#,
+        );
+
+        let mut metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        // Inject an additional route with invalid method
+        metadata.routes.push(crate::metadata::RouteMetadata {
+            method: "CONNECT".to_string(),
+            path: "/invalid".to_string(),
+            function_name: "connect_handler".to_string(),
+            module_path: "routes::invalid".to_string(),
+            file_path: "dummy.rs".to_string(),
+            signature: "fn connect_handler() -> String".to_string(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+
+        let result = generate_router_code(&metadata, None, None, &[]);
+        let code = result.to_string();
+
+        // Valid route should be present
+        assert!(
+            code.contains("get_users"),
+            "Valid route should be present, got: {code}"
+        );
+        // Invalid route should be skipped
+        assert!(
+            !code.contains("connect_handler"),
+            "Invalid method route should be skipped, got: {code}"
+        );
+
+        drop(temp_dir);
     }
 
     #[test]

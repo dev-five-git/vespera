@@ -190,7 +190,6 @@ mod tests {
         assert_eq!(metadata.name, "Container");
     }
 
-
     #[test]
     fn test_extract_schema_name_attr_non_name_meta_key() {
         // #[schema(other = "foo")] — has schema attr but no "name" key

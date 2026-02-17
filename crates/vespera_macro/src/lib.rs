@@ -283,12 +283,7 @@ pub fn export_app(input: TokenStream) -> TokenStream {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") else {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "export_app! macro: CARGO_MANIFEST_DIR is not set. This macro must be used within a cargo build.",
-        )
-        .to_compile_error()
-        .into();
+        return syn::Error::new(proc_macro2::Span::call_site(), "export_app! macro: CARGO_MANIFEST_DIR is not set. This macro must be used within a cargo build.").to_compile_error().into();
     };
 
     match process_export_app(&name, &folder_name, &schema_storage, &manifest_dir) {

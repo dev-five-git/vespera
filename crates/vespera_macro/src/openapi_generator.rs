@@ -1347,6 +1347,98 @@ pub fn get_user() -> User {
     }
 
     #[test]
+    fn test_build_path_items_unknown_http_method() {
+        // Test lines 131-134: route with unknown HTTP method is skipped
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        let route_content = r#"
+pub fn get_users() -> String {
+    "users".to_string()
+}
+"#;
+        let route_file = create_temp_file(&temp_dir, "users.rs", route_content);
+
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "INVALID".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "test::users".to_string(),
+            file_path: route_file.to_string_lossy().to_string(),
+            signature: "fn get_users() -> String".to_string(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+
+        // Route with unknown HTTP method should be skipped entirely
+        assert!(
+            doc.paths.is_empty(),
+            "Route with unknown HTTP method should be skipped"
+        );
+    }
+
+    #[test]
+    fn test_build_path_items_unknown_method_skipped_valid_kept() {
+        // Test that unknown methods are skipped while valid routes are kept
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        let route_content = r#"
+pub fn get_users() -> String {
+    "users".to_string()
+}
+
+pub fn create_users() -> String {
+    "created".to_string()
+}
+"#;
+        let route_file = create_temp_file(&temp_dir, "users.rs", route_content);
+        let file_path = route_file.to_string_lossy().to_string();
+
+        let mut metadata = CollectedMetadata::new();
+        // Invalid method route
+        metadata.routes.push(RouteMetadata {
+            method: "CONNECT".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "test::users".to_string(),
+            file_path: file_path.clone(),
+            signature: "fn get_users() -> String".to_string(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+        // Valid method route
+        metadata.routes.push(RouteMetadata {
+            method: "POST".to_string(),
+            path: "/users".to_string(),
+            function_name: "create_users".to_string(),
+            module_path: "test::users".to_string(),
+            file_path,
+            signature: "fn create_users() -> String".to_string(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+
+        // Only the valid POST route should appear
+        assert_eq!(doc.paths.len(), 1);
+        let path_item = doc.paths.get("/users").unwrap();
+        assert!(
+            path_item.post.is_some(),
+            "Valid POST route should be present"
+        );
+        assert!(
+            path_item.get.is_none(),
+            "Invalid method route should be skipped"
+        );
+    }
+
+    #[test]
     fn test_generate_openapi_with_unparseable_definition() {
         // Test line 42: syn::parse_str fails with invalid Rust syntax
         // This triggers the `continue` branch when parsing fails
