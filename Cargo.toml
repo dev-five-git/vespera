@@ -10,8 +10,8 @@ repository = "https://github.com/dev-five-git/vespera"
 readme = "README.md"
 
 [workspace.dependencies]
-vespera_core = { path = "crates/vespera_core", version = "0.1.34" }
-vespera_macro = { path = "crates/vespera_macro", version = "0.1.34" }
+vespera_core = { path = "crates/vespera_core", version = "0.1.33" }
+vespera_macro = { path = "crates/vespera_macro", version = "0.1.33" }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
