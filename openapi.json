@@ -13,7 +13,7 @@
     "/": {
       "get": {
         "operationId": "root_endpoint",
-        "description": "Health check endpoint",
+        "description": "/ Health check endpoint",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -414,7 +414,7 @@
         "tags": [
           "flatten"
         ],
-        "description": "List users with pagination (demonstrates flatten for request/response)\n\nThe request accepts flattened pagination parameters (page, per_page)\nand returns a response with flattened metadata (total, has_more).",
+        "description": "/ List users with pagination (demonstrates flatten for request/response)\n/\n/ The request accepts flattened pagination parameters (page, per_page)\n/ and returns a response with flattened metadata (total, has_more).",
         "requestBody": {
           "required": true,
           "content": {
@@ -445,7 +445,7 @@
         "tags": [
           "flatten"
         ],
-        "description": "Advanced search endpoint with multiple flatten fields",
+        "description": "/ Advanced search endpoint with multiple flatten fields",
         "requestBody": {
           "required": true,
           "content": {
@@ -513,7 +513,7 @@
         "tags": [
           "form"
         ],
-        "description": "Subscribe to newsletter via form submission",
+        "description": "/ Subscribe to newsletter via form submission",
         "requestBody": {
           "required": true,
           "content": {
@@ -544,7 +544,7 @@
         "tags": [
           "form"
         ],
-        "description": "Submit a contact form",
+        "description": "/ Submit a contact form",
         "requestBody": {
           "required": true,
           "content": {
@@ -575,7 +575,7 @@
         "tags": [
           "form"
         ],
-        "description": "Upload a file via raw multipart form data",
+        "description": "/ Upload a file via raw multipart form data",
         "requestBody": {
           "required": true,
           "content": {
@@ -807,7 +807,7 @@
         "tags": [
           "hello"
         ],
-        "description": "Hello!!",
+        "description": "/ Hello!!",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -869,7 +869,7 @@
     "/memos": {
       "post": {
         "operationId": "create_memo",
-        "description": "Create a new memo",
+        "description": "/ Create a new memo",
         "requestBody": {
           "required": true,
           "content": {
@@ -895,7 +895,7 @@
       },
       "put": {
         "operationId": "update_memo",
-        "description": "Update a memo",
+        "description": "/ Update a memo",
         "requestBody": {
           "required": true,
           "content": {
@@ -923,7 +923,7 @@
     "/memos/format": {
       "get": {
         "operationId": "get_memo_format",
-        "description": "Get memo response format",
+        "description": "/ Get memo response format",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -941,7 +941,7 @@
     "/memos/{id}": {
       "get": {
         "operationId": "get_memo",
-        "description": "Get memo by id",
+        "description": "/ Get memo by id",
         "parameters": [
           {
             "name": "id",
@@ -1277,7 +1277,7 @@
     "/third": {
       "get": {
         "operationId": "third_root_endpoint",
-        "description": "Third app root endpoint",
+        "description": "/ Third app root endpoint",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1298,7 +1298,7 @@
         "tags": [
           "third"
         ],
-        "description": "Third app hello endpoint",
+        "description": "/ Third app hello endpoint",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1366,7 +1366,7 @@
         "tags": [
           "typed-form"
         ],
-        "description": "List all file uploads",
+        "description": "/ List all file uploads",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1388,7 +1388,7 @@
         "tags": [
           "typed-form"
         ],
-        "description": "Create a new file upload with multipart form data",
+        "description": "/ Create a new file upload with multipart form data",
         "requestBody": {
           "required": true,
           "content": {
@@ -1429,7 +1429,7 @@
         "tags": [
           "typed-form"
         ],
-        "description": "Update a file upload with multipart form data",
+        "description": "/ Update a file upload with multipart form data",
         "parameters": [
           {
             "name": "id",
@@ -1478,7 +1478,7 @@
         "tags": [
           "typed-form"
         ],
-        "description": "Patch a file upload (partial update via schema_type! multipart)",
+        "description": "/ Patch a file upload (partial update via schema_type! multipart)",
         "parameters": [
           {
             "name": "id",
@@ -1586,7 +1586,7 @@
     "/users": {
       "get": {
         "operationId": "get_users",
-        "description": "Get all users (returns public response without internal_score)",
+        "description": "/ Get all users (returns public response without internal_score)",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1605,7 +1605,7 @@
       },
       "post": {
         "operationId": "create_user",
-        "description": "Create a new user\nRequest body uses CreateUserRequest (generated from User with only name, email)",
+        "description": "/ Create a new user\n/ Request body uses CreateUserRequest (generated from User with only name, email)",
         "requestBody": {
           "required": true,
           "content": {
@@ -1633,7 +1633,7 @@
     "/users/dto/{id}": {
       "get": {
         "operationId": "get_user_dto",
-        "description": "Get user DTO (demonstrates field rename feature)\nThe Rust struct uses user_id/display_name, but JSON uses id/name",
+        "description": "/ Get user DTO (demonstrates field rename feature)\n/ The Rust struct uses user_id/display_name, but JSON uses id/name",
         "parameters": [
           {
             "name": "id",
@@ -1678,7 +1678,7 @@
     "/users/summary": {
       "get": {
         "operationId": "get_users_summary",
-        "description": "Get user summaries (minimal fields for list views)",
+        "description": "/ Get user summaries (minimal fields for list views)",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1699,7 +1699,7 @@
     "/users/with-meta": {
       "post": {
         "operationId": "create_user_with_meta",
-        "description": "Create a new user with metadata (demonstrates `add` feature)\nRequest body uses CreateUserWithMeta (picks name/email, adds request_id/created_at)",
+        "description": "/ Create a new user with metadata (demonstrates `add` feature)\n/ Request body uses CreateUserWithMeta (picks name/email, adds request_id/created_at)",
         "requestBody": {
           "required": true,
           "content": {
@@ -1727,7 +1727,7 @@
     "/users/{id}": {
       "get": {
         "operationId": "get_user",
-        "description": "Get user by ID (full internal view)",
+        "description": "/ Get user by ID (full internal view)",
         "parameters": [
           {
             "name": "id",
@@ -3476,29 +3476,29 @@
       },
       "UserSchema": {
         "type": "object",
-        "description": "User model",
+        "description": "/ User model",
         "properties": {
           "createdAt": {
             "type": "string",
             "format": "date-time",
-            "description": "Created at"
+            "description": "/ Created at"
           },
           "email": {
             "type": "string",
-            "description": "User email"
+            "description": "/ User email"
           },
           "id": {
             "type": "integer",
-            "description": "User ID"
+            "description": "/ User ID"
           },
           "name": {
             "type": "string",
-            "description": "User name"
+            "description": "/ User name"
           },
           "updatedAt": {
             "type": "string",
             "format": "date-time",
-            "description": "Updated at"
+            "description": "/ Updated at"
           }
         },
         "required": [
