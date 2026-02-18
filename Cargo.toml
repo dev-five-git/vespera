@@ -3,15 +3,15 @@ resolver = "2"
 members = ["crates/*", "examples/*"]
 
 [workspace.package]
-version = "0.1.37"
+version = "0.1.38"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/dev-five-git/vespera"
 readme = "README.md"
 
 [workspace.dependencies]
-vespera_core = { path = "crates/vespera_core", version = "0.1.37" }
-vespera_macro = { path = "crates/vespera_macro", version = "0.1.37" }
+vespera_core = { path = "crates/vespera_core", version = "0.1.38" }
+vespera_macro = { path = "crates/vespera_macro", version = "0.1.38" }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
