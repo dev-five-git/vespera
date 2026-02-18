@@ -218,7 +218,7 @@ fn parse_type_impl(
 
             // Handle primitive types
             match ident_str.as_str() {
-                "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => {
+                "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "StatusCode" => {
                     SchemaRef::Inline(Box::new(Schema::integer()))
                 }
                 "f32" | "f64" => SchemaRef::Inline(Box::new(Schema::number())),
@@ -365,6 +365,10 @@ fn parse_type_impl(
         Type::Reference(type_ref) => {
             // Handle &T, &mut T, etc. — goes through depth guard via public entry point
             parse_type_to_schema_ref(&type_ref.elem, known_schemas, struct_definitions)
+        }
+        // () unit type → null (e.g. Json<()> serializes to JSON null)
+        Type::Tuple(tuple) if tuple.elems.is_empty() => {
+            SchemaRef::Inline(Box::new(Schema::new(SchemaType::Null)))
         }
         _ => SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))),
     }
@@ -1068,6 +1072,31 @@ mod tests {
             assert_eq!(schema.format, Some("binary".to_string()));
         } else {
             panic!("Expected inline schema for NamedTempFile");
+        }
+    }
+
+    // ========== Coverage: StatusCode → integer ==========
+
+    #[test]
+    fn test_parse_type_status_code_integer() {
+        let ty: Type = syn::parse_str("StatusCode").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        if let SchemaRef::Inline(schema) = schema_ref {
+            assert_eq!(schema.schema_type, Some(SchemaType::Integer));
+        } else {
+            panic!("Expected inline schema for StatusCode");
+        }
+    }
+
+    #[test]
+    fn test_parse_type_qualified_status_code_integer() {
+        // axum::http::StatusCode should also map to integer (last segment matching)
+        let ty: Type = syn::parse_str("axum::http::StatusCode").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        if let SchemaRef::Inline(schema) = schema_ref {
+            assert_eq!(schema.schema_type, Some(SchemaType::Integer));
+        } else {
+            panic!("Expected inline schema for axum::http::StatusCode");
         }
     }
 

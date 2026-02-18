@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use vespera::{
     Schema,
     axum::{Json, http::StatusCode, http::header::HeaderMap, response::IntoResponse},
+    axum_extra::extract::cookie::CookieJar,
 };
 
 #[derive(Serialize, Deserialize, Schema)]
@@ -75,4 +76,23 @@ pub async fn header_map_endpoint2() -> Result<(StatusCode, HeaderMap, &'static s
     let headers = HeaderMap::new();
     println!("headers: {:?}", headers);
     Ok((StatusCode::INTERNAL_SERVER_ERROR, headers, "ok"))
+}
+
+/// Delete endpoint that returns just a StatusCode
+#[vespera::route(delete, path = "/status-code/{id}", tags = ["error"])]
+pub async fn status_code_endpoint(
+    vespera::axum::extract::Path(id): vespera::axum::extract::Path<i64>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if id == 0 {
+        return Err((StatusCode::NOT_FOUND, "Not found".to_string()));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Logout endpoint that uses CookieJar to clear cookies
+#[vespera::route(post, path = "/cookie-jar-logout", tags = ["error"])]
+pub async fn cookie_jar_endpoint(
+    jar: CookieJar,
+) -> Result<(CookieJar, Json<()>), (StatusCode, String)> {
+    Ok((jar, Json(())))
 }

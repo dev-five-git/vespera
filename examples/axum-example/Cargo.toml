@@ -11,7 +11,7 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tower-http = { version = "0.6", features = ["cors"] }
-sea-orm = { version = "^2.0.0-rc.30", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
+sea-orm = { version = "^2.0.0-rc.32", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
 axum_typed_multipart = "0.16"
 tempfile = "3"
 
