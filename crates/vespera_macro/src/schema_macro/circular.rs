@@ -34,9 +34,8 @@ pub struct CircularAnalysis {
 /// Analyze a struct definition for circular references, FK relations, and FK optionality
 /// in a single parse + single field walk.
 ///
-/// This consolidates the logic of [`detect_circular_fields()`], [`has_fk_relations()`],
-/// and [`is_circular_relation_required()`] to avoid redundant parsing of the same
-/// definition string.
+/// Parses the definition string once and extracts all circular reference
+/// information in a single field walk.
 pub fn analyze_circular_refs(source_module_path: &[String], definition: &str) -> CircularAnalysis {
     let Ok(parsed) = syn::parse_str::<syn::ItemStruct>(definition) else {
         return CircularAnalysis {
@@ -107,53 +106,6 @@ pub fn analyze_circular_refs(source_module_path: &[String], definition: &str) ->
         has_fk_relations: has_fk,
         circular_field_required,
     }
-}
-
-/// Detect circular reference fields in a related schema.
-///
-/// When generating `MemoSchema.user`, we need to check if `UserSchema` has any fields
-/// that reference back to `MemoSchema` via BelongsTo/HasOne (FK-based relations).
-///
-/// `HasMany` relations are NOT considered circular because they are excluded by default
-/// from generated schemas.
-///
-/// Returns a list of field names that would create circular references.
-///
-/// Thin wrapper around [`analyze_circular_refs()`] for backward compatibility.
-pub fn detect_circular_fields(
-    _source_schema_name: &str,
-    source_module_path: &[String],
-    related_schema_def: &str,
-) -> Vec<String> {
-    analyze_circular_refs(source_module_path, related_schema_def).circular_fields
-}
-
-/// Check if a Model has any `BelongsTo` or `HasOne` relations (FK-based relations).
-///
-/// This is used to determine if the target schema has `from_model()` method
-/// (async, with DB) or simple `From<Model>` impl (sync, no DB).
-///
-/// - Schemas with FK relations -> have `from_model()`, need async call
-/// - Schemas without FK relations -> have `From<Model>`, can use sync conversion
-///
-/// Thin wrapper around [`analyze_circular_refs()`] for backward compatibility.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn has_fk_relations(model_def: &str) -> bool {
-    analyze_circular_refs(&[], model_def).has_fk_relations
-}
-
-/// Check if a circular relation field in the related schema is required (Box<T>) or optional (Option<Box<T>>).
-///
-/// Returns true if the circular relation is required and needs a parent stub.
-///
-/// Thin wrapper around [`analyze_circular_refs()`] for backward compatibility.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn is_circular_relation_required(related_model_def: &str, circular_field_name: &str) -> bool {
-    analyze_circular_refs(&[], related_model_def)
-        .circular_field_required
-        .get(circular_field_name)
-        .copied()
-        .unwrap_or(false)
 }
 
 /// Generate a default value for a `SeaORM` relation field in inline construction.
@@ -337,7 +289,6 @@ mod tests {
 
     #[rstest]
     #[case(
-        "Memo",
         &["crate", "models", "memo"],
         r"pub struct UserSchema {
             pub id: i32,
@@ -346,7 +297,6 @@ mod tests {
         vec![]  // HasMany is not considered circular
     )]
     #[case(
-        "User",
         &["crate", "models", "user"],
         r"pub struct MemoSchema {
             pub id: i32,
@@ -355,7 +305,6 @@ mod tests {
         vec!["user".to_string()]
     )]
     #[case(
-        "User",
         &["crate", "models", "user"],
         r"pub struct MemoSchema {
             pub id: i32,
@@ -364,7 +313,6 @@ mod tests {
         vec!["user".to_string()]
     )]
     #[case(
-        "User",
         &["crate", "models", "user"],
         r"pub struct MemoSchema {
             pub id: i32,
@@ -373,7 +321,6 @@ mod tests {
         vec!["user".to_string()]
     )]
     #[case(
-        "Memo",
         &["crate", "models", "memo"],
         r"pub struct UserSchema {
             pub id: i32,
@@ -382,7 +329,6 @@ mod tests {
         vec![]  // No circular fields
     )]
     fn test_detect_circular_fields(
-        #[case] source_schema_name: &str,
         #[case] source_module_path: &[&str],
         #[case] related_schema_def: &str,
         #[case] expected: Vec<String>,
@@ -391,27 +337,28 @@ mod tests {
             .iter()
             .map(std::string::ToString::to_string)
             .collect();
-        let result = detect_circular_fields(source_schema_name, &module_path, related_schema_def);
+        let result = analyze_circular_refs(&module_path, related_schema_def).circular_fields;
         assert_eq!(result, expected);
     }
 
     #[test]
     fn test_detect_circular_fields_invalid_struct() {
-        let result = detect_circular_fields("Test", &["crate".to_string()], "not valid rust");
+        let result =
+            analyze_circular_refs(&["crate".to_string()], "not valid rust").circular_fields;
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_detect_circular_fields_unnamed_fields() {
-        let result = detect_circular_fields(
-            "Test",
+        let result = analyze_circular_refs(
             &[
                 "crate".to_string(),
                 "models".to_string(),
                 "test".to_string(),
             ],
             "pub struct TupleStruct(i32, String);",
-        );
+        )
+        .circular_fields;
         assert!(result.is_empty());
     }
 
@@ -445,30 +392,42 @@ mod tests {
         false  // HasMany alone doesn't count as FK relation
     )]
     fn test_has_fk_relations(#[case] model_def: &str, #[case] expected: bool) {
-        assert_eq!(has_fk_relations(model_def), expected);
+        assert_eq!(
+            analyze_circular_refs(&[], model_def).has_fk_relations,
+            expected
+        );
     }
 
     #[test]
     fn test_has_fk_relations_invalid_struct() {
-        assert!(!has_fk_relations("not valid rust"));
+        assert!(!analyze_circular_refs(&[], "not valid rust").has_fk_relations);
     }
 
     #[test]
     fn test_has_fk_relations_unnamed_fields() {
-        assert!(!has_fk_relations("pub struct TupleStruct(i32, String);"));
+        assert!(
+            !analyze_circular_refs(&[], "pub struct TupleStruct(i32, String);").has_fk_relations
+        );
     }
 
     #[test]
     fn test_is_circular_relation_required_invalid_struct() {
-        assert!(!is_circular_relation_required("not valid rust", "user"));
+        assert!(!analyze_circular_refs(&[], "not valid rust")
+            .circular_field_required
+            .get("user")
+            .copied()
+            .unwrap_or(false));
     }
 
     #[test]
     fn test_is_circular_relation_required_unnamed_fields() {
-        assert!(!is_circular_relation_required(
-            "pub struct TupleStruct(i32, String);",
-            "user"
-        ));
+        assert!(
+            !analyze_circular_refs(&[], "pub struct TupleStruct(i32, String);")
+                .circular_field_required
+                .get("user")
+                .copied()
+                .unwrap_or(false)
+        );
     }
 
     #[test]
@@ -477,7 +436,11 @@ mod tests {
             pub id: i32,
             pub name: String,
         }";
-        assert!(!is_circular_relation_required(model_def, "nonexistent"));
+        assert!(!analyze_circular_refs(&[], model_def)
+            .circular_field_required
+            .get("nonexistent")
+            .copied()
+            .unwrap_or(false));
     }
 
     #[test]
@@ -649,10 +612,10 @@ mod tests {
         assert!(!output.contains("memos : r . memos"));
     }
 
-    // Additional coverage tests for is_circular_relation_required
+    // Additional coverage tests for circular_field_required via analyze_circular_refs
 
     #[test]
-    fn test_is_circular_relation_required_has_one_with_required_fk() {
+    fn test_circular_field_required_has_one_with_required_fk() {
         // Model has HasOne relation with a required (non-Option) FK field
         let model_def = r#"pub struct Model {
             pub id: i32,
@@ -661,14 +624,18 @@ mod tests {
             pub user: HasOne<user::Entity>,
         }"#;
         // The FK field 'user_id' is i32 (required), so circular relation IS required
-        let result = is_circular_relation_required(model_def, "user");
+        let result = analyze_circular_refs(&[], model_def)
+            .circular_field_required
+            .get("user")
+            .copied()
+            .unwrap_or(false);
         // Without proper BelongsTo attribute parsing, this returns false
         // because extract_belongs_to_from_field won't find the FK
         assert!(!result);
     }
 
     #[test]
-    fn test_is_circular_relation_required_belongs_to_with_optional_fk() {
+    fn test_circular_field_required_belongs_to_with_optional_fk() {
         // Model has BelongsTo relation with optional FK field
         let model_def = r#"pub struct Model {
             pub id: i32,
@@ -677,29 +644,41 @@ mod tests {
             pub user: BelongsTo<user::Entity>,
         }"#;
         // FK field is Option<i32>, so circular relation is NOT required
-        let result = is_circular_relation_required(model_def, "user");
+        let result = analyze_circular_refs(&[], model_def)
+            .circular_field_required
+            .get("user")
+            .copied()
+            .unwrap_or(false);
         assert!(!result);
     }
 
     #[test]
-    fn test_is_circular_relation_required_non_relation_field() {
+    fn test_circular_field_required_non_relation_field() {
         // Field exists but is not a relation type
         let model_def = r"pub struct Model {
             pub id: i32,
             pub name: String,
         }";
-        let result = is_circular_relation_required(model_def, "name");
+        let result = analyze_circular_refs(&[], model_def)
+            .circular_field_required
+            .get("name")
+            .copied()
+            .unwrap_or(false);
         assert!(!result);
     }
 
     #[test]
-    fn test_is_circular_relation_required_field_without_ident() {
+    fn test_circular_field_required_field_without_ident() {
         // Struct with fields that have no ident (tuple-like, but in braces - edge case)
         let model_def = r"pub struct Model {
             pub id: i32,
         }";
         // Looking for a field that doesn't match
-        let result = is_circular_relation_required(model_def, "nonexistent_field");
+        let result = analyze_circular_refs(&[], model_def)
+            .circular_field_required
+            .get("nonexistent_field")
+            .copied()
+            .unwrap_or(false);
         assert!(!result);
     }
 
@@ -742,20 +721,20 @@ mod tests {
         assert!(output.contains("user : None"));
     }
 
-    // Additional coverage tests for detect_circular_fields
+    // Additional coverage tests for circular_fields via analyze_circular_refs
 
     #[test]
-    fn test_detect_circular_fields_empty_module_path() {
+    fn test_circular_fields_empty_module_path() {
         // Edge case: empty module path
-        let result = detect_circular_fields("Test", &[], "pub struct Schema { pub id: i32 }");
+        let result =
+            analyze_circular_refs(&[], "pub struct Schema { pub id: i32 }").circular_fields;
         assert!(result.is_empty());
     }
 
     #[test]
-    fn test_detect_circular_fields_option_box_pattern() {
+    fn test_circular_fields_option_box_pattern() {
         // Test Option<Box<Schema>> pattern detection
-        let result = detect_circular_fields(
-            "Memo",
+        let result = analyze_circular_refs(
             &[
                 "crate".to_string(),
                 "models".to_string(),
@@ -765,15 +744,15 @@ mod tests {
                 pub id: i32,
                 pub memo: Option<Box<memo::Schema>>,
             }",
-        );
+        )
+        .circular_fields;
         assert_eq!(result, vec!["memo".to_string()]);
     }
 
     #[test]
-    fn test_detect_circular_fields_schema_suffix_pattern() {
+    fn test_circular_fields_schema_suffix_pattern() {
         // Test MemoSchema suffix pattern detection
-        let result = detect_circular_fields(
-            "Memo",
+        let result = analyze_circular_refs(
             &[
                 "crate".to_string(),
                 "models".to_string(),
@@ -783,20 +762,21 @@ mod tests {
                 pub id: i32,
                 pub memo: Box<MemoSchema>,
             }",
-        );
+        )
+        .circular_fields;
         assert_eq!(result, vec!["memo".to_string()]);
     }
 
     #[test]
-    fn test_detect_circular_fields_field_without_ident() {
+    fn test_circular_fields_field_without_ident() {
         // Fields without identifiers (parsing edge case)
-        let result = detect_circular_fields(
-            "Test",
+        let result = analyze_circular_refs(
             &["crate".to_string(), "test".to_string()],
             r"pub struct Schema {
                 pub id: i32,
             }",
-        );
+        )
+        .circular_fields;
         assert!(result.is_empty());
     }
 
@@ -905,7 +885,7 @@ mod tests {
     // Tests for FK field lookup and required relation handling
 
     #[test]
-    fn test_is_circular_relation_required_belongs_to_with_from_attr_required_fk() {
+    fn test_circular_field_required_belongs_to_with_from_attr_required_fk() {
         // Model has BelongsTo with sea_orm(from = "user_id") attribute and required FK
         let model_def = r#"pub struct Model {
             pub id: i32,
@@ -914,12 +894,16 @@ mod tests {
             pub user: BelongsTo<user::Entity>,
         }"#;
         // FK field 'user_id' is i32 (required), so should return true
-        let result = is_circular_relation_required(model_def, "user");
+        let result = analyze_circular_refs(&[], model_def)
+            .circular_field_required
+            .get("user")
+            .copied()
+            .unwrap_or(false);
         assert!(result);
     }
 
     #[test]
-    fn test_is_circular_relation_required_belongs_to_with_from_attr_optional_fk() {
+    fn test_circular_field_required_belongs_to_with_from_attr_optional_fk() {
         // Model has BelongsTo with sea_orm(from = "user_id") attribute and optional FK
         let model_def = r#"pub struct Model {
             pub id: i32,
@@ -928,12 +912,16 @@ mod tests {
             pub user: BelongsTo<user::Entity>,
         }"#;
         // FK field 'user_id' is Option<i32>, so should return false
-        let result = is_circular_relation_required(model_def, "user");
+        let result = analyze_circular_refs(&[], model_def)
+            .circular_field_required
+            .get("user")
+            .copied()
+            .unwrap_or(false);
         assert!(!result);
     }
 
     #[test]
-    fn test_is_circular_relation_required_has_one_with_from_attr_required_fk() {
+    fn test_circular_field_required_has_one_with_from_attr_required_fk() {
         // Model has HasOne with sea_orm(from = "profile_id") attribute and required FK
         let model_def = r#"pub struct Model {
             pub id: i32,
@@ -942,12 +930,16 @@ mod tests {
             pub profile: HasOne<profile::Entity>,
         }"#;
         // FK field 'profile_id' is i64 (required), so should return true
-        let result = is_circular_relation_required(model_def, "profile");
+        let result = analyze_circular_refs(&[], model_def)
+            .circular_field_required
+            .get("profile")
+            .copied()
+            .unwrap_or(false);
         assert!(result);
     }
 
     #[test]
-    fn test_is_circular_relation_required_from_attr_fk_field_not_found() {
+    fn test_circular_field_required_from_attr_fk_field_not_found() {
         // Model has from attribute but FK field doesn't exist
         let model_def = r#"pub struct Model {
             pub id: i32,
@@ -955,7 +947,11 @@ mod tests {
             pub user: BelongsTo<user::Entity>,
         }"#;
         // FK field doesn't exist, so should return false
-        let result = is_circular_relation_required(model_def, "user");
+        let result = analyze_circular_refs(&[], model_def)
+            .circular_field_required
+            .get("user")
+            .copied()
+            .unwrap_or(false);
         assert!(!result);
     }
 

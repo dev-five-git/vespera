@@ -7,9 +7,9 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::{
-    circular::detect_circular_fields,
+    circular::analyze_circular_refs,
     file_lookup::find_model_from_schema_path,
-    seaorm::{RelationFieldInfo, convert_type_with_chrono},
+    seaorm::{convert_type_with_chrono, RelationFieldInfo},
     type_utils::{
         extract_module_path_from_schema_path, is_seaorm_relation_type, snake_to_pascal_case,
     },
@@ -82,7 +82,7 @@ pub fn generate_inline_relation_type_from_def(
     };
 
     // Detect circular fields
-    let circular_fields = detect_circular_fields("", source_module_path, model_def);
+    let circular_fields = analyze_circular_refs(source_module_path, model_def).circular_fields;
 
     // If no circular fields, no need for inline type
     if circular_fields.is_empty() {
