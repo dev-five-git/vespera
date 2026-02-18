@@ -197,6 +197,18 @@ pub fn schema_to_tokens(schema: &Schema) -> TokenStream {
         quote! { None }
     };
 
+    let minimum_tokens = if let Some(min) = schema.minimum {
+        quote! { Some(#min) }
+    } else {
+        quote! { None }
+    };
+
+    let maximum_tokens = if let Some(max) = schema.maximum {
+        quote! { Some(#max) }
+    } else {
+        quote! { None }
+    };
+
     quote! {
         vespera::schema::Schema {
             ref_path: #ref_path_tokens,
@@ -206,6 +218,8 @@ pub fn schema_to_tokens(schema: &Schema) -> TokenStream {
             items: #items_tokens,
             properties: #properties_tokens,
             required: #required_tokens,
+            minimum: #minimum_tokens,
+            maximum: #maximum_tokens,
             ..vespera::schema::Schema::new(vespera::schema::SchemaType::Object)
         }
     }
@@ -431,5 +445,31 @@ mod tests {
         assert!(output.contains("required"));
         assert!(output.contains("id"));
         assert!(output.contains("name"));
+    }
+
+    #[test]
+    fn test_schema_to_tokens_with_minimum() {
+        let mut schema = Schema::new(SchemaType::Integer);
+        schema.minimum = Some(0.0);
+        let tokens = schema_to_tokens(&schema);
+        let output = tokens.to_string();
+        assert!(
+            output.contains("minimum"),
+            "should contain minimum: {output}"
+        );
+        assert!(output.contains("Some"), "should contain Some: {output}");
+    }
+
+    #[test]
+    fn test_schema_to_tokens_with_maximum() {
+        let mut schema = Schema::new(SchemaType::Integer);
+        schema.maximum = Some(255.0);
+        let tokens = schema_to_tokens(&schema);
+        let output = tokens.to_string();
+        assert!(
+            output.contains("maximum"),
+            "should contain maximum: {output}"
+        );
+        assert!(output.contains("Some"), "should contain Some: {output}");
     }
 }

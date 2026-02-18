@@ -229,6 +229,55 @@ pub fn extract_via_rel(attrs: &[syn::Attribute]) -> Option<String> {
     })
 }
 
+/// Extract `default_value` from a `sea_orm` attribute.
+/// e.g., `#[sea_orm(default_value = 0.7)]` -> `Some("0.7")`
+/// e.g., `#[sea_orm(default_value = "active")]` -> `Some("active")`
+pub fn extract_sea_orm_default_value(attrs: &[syn::Attribute]) -> Option<String> {
+    for attr in attrs {
+        if !attr.path().is_ident("sea_orm") {
+            continue;
+        }
+
+        // Use raw token string parsing to handle all literal types
+        // (parse_nested_meta can't easily parse non-string literals after `=`)
+        let syn::Meta::List(meta_list) = &attr.meta else {
+            continue;
+        };
+        let tokens = meta_list.tokens.to_string();
+
+        if let Some(start) = tokens.find("default_value") {
+            let remaining = &tokens[start + "default_value".len()..];
+            let remaining = remaining.trim_start();
+            if let Some(after_eq) = remaining.strip_prefix('=') {
+                let value_str = after_eq.trim_start();
+                // Extract value until comma or end of tokens
+                let end = value_str.find(',').unwrap_or(value_str.len());
+                let raw_value = value_str[..end].trim();
+
+                if raw_value.is_empty() {
+                    continue;
+                }
+
+                // If quoted string, strip quotes and return inner value
+                if raw_value.starts_with('"') && raw_value.ends_with('"') && raw_value.len() >= 2 {
+                    return Some(raw_value[1..raw_value.len() - 1].to_string());
+                }
+                // Numeric, bool, or other literal — return as-is
+                return Some(raw_value.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Check if a `sea_orm(default_value)` is a SQL function (e.g., `"NOW()"`, `"CURRENT_TIMESTAMP()"`, `"UUID()"`)
+/// that cannot be converted to a Rust default value.
+///
+/// Detection: any value containing parentheses is treated as a SQL function call.
+pub fn is_sql_function_default(value: &str) -> bool {
+    value.contains('(')
+}
+
 /// Check if a field in the struct is optional (Option<T>).
 pub fn is_field_optional_in_struct(struct_item: &syn::ItemStruct, field_name: &str) -> bool {
     if let syn::Fields::Named(fields_named) = &struct_item.fields {
@@ -1055,5 +1104,114 @@ mod tests {
         ];
         let result = extract_via_rel(&attrs);
         assert_eq!(result, Some("Comments".to_string()));
+    }
+
+    #[test]
+    fn test_extract_sea_orm_default_value_float() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+            #[sea_orm(default_value = 0.7)]
+        )];
+        let result = extract_sea_orm_default_value(&attrs);
+        assert_eq!(result, Some("0.7".to_string()));
+    }
+
+    #[test]
+    fn test_extract_sea_orm_default_value_int() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+            #[sea_orm(default_value = 42)]
+        )];
+        let result = extract_sea_orm_default_value(&attrs);
+        assert_eq!(result, Some("42".to_string()));
+    }
+
+    #[test]
+    fn test_extract_sea_orm_default_value_string() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+            #[sea_orm(default_value = "active")]
+        )];
+        let result = extract_sea_orm_default_value(&attrs);
+        assert_eq!(result, Some("active".to_string()));
+    }
+
+    #[test]
+    fn test_extract_sea_orm_default_value_bool() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+            #[sea_orm(default_value = true)]
+        )];
+        let result = extract_sea_orm_default_value(&attrs);
+        assert_eq!(result, Some("true".to_string()));
+    }
+
+    #[test]
+    fn test_extract_sea_orm_default_value_with_other_attrs() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+            #[sea_orm(column_type = "Decimal(Some((10, 2)))", default_value = 0.7)]
+        )];
+        let result = extract_sea_orm_default_value(&attrs);
+        assert_eq!(result, Some("0.7".to_string()));
+    }
+
+    #[test]
+    fn test_extract_sea_orm_default_value_none() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(
+            #[sea_orm(column_type = "Text")]
+        )];
+        let result = extract_sea_orm_default_value(&attrs);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_sea_orm_default_value_non_sea_orm_attr() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[serde(default)])];
+        let result = extract_sea_orm_default_value(&attrs);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_sea_orm_default_value_empty_attrs() {
+        let result = extract_sea_orm_default_value(&[]);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_sea_orm_default_value_non_list_meta() {
+        // #[sea_orm] as a path attribute (non-Meta::List) — line 222 branch
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[sea_orm])];
+        let result = extract_sea_orm_default_value(&attrs);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_sea_orm_default_value_empty_value_after_equals() {
+        // default_value = , (empty value) — line 236 branch
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[sea_orm(default_value = )])];
+        let result = extract_sea_orm_default_value(&attrs);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_sea_orm_default_value_no_default_value_key() {
+        let attrs: Vec<syn::Attribute> =
+            vec![syn::parse_quote!(#[sea_orm(primary_key, auto_increment)])];
+        let result = extract_sea_orm_default_value(&attrs);
+        assert_eq!(result, None);
+    }
+
+    // =========================================================================
+    // Tests for is_sql_function_default
+    // =========================================================================
+
+    #[rstest]
+    #[case("NOW()", true)]
+    #[case("CURRENT_TIMESTAMP()", true)]
+    #[case("UUID()", true)]
+    #[case("gen_random_uuid()", true)]
+    #[case("0.7", false)]
+    #[case("42", false)]
+    #[case("true", false)]
+    #[case("draft", false)]
+    #[case("active", false)]
+    fn test_is_sql_function_default(#[case] value: &str, #[case] expected: bool) {
+        assert_eq!(is_sql_function_default(value), expected);
     }
 }

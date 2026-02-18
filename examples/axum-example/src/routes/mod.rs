@@ -9,6 +9,7 @@ use vespera::{
 
 use crate::TestStruct;
 
+pub mod config;
 pub mod enums;
 pub mod error;
 pub mod flatten;
@@ -21,6 +22,7 @@ pub mod path;
 pub mod typed_form;
 pub mod typed_header;
 pub mod users;
+pub mod uuid_items;
 
 /// Health check endpoint
 #[vespera::route(get)]

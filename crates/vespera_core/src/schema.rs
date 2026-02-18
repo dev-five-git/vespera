@@ -48,31 +48,25 @@ pub enum SchemaType {
     Null,
 }
 
-/// Number format
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum NumberFormat {
-    Float,
-    Double,
-    Int32,
-    Int64,
-}
-
-/// String format
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum StringFormat {
-    Date,
-    DateTime,
-    Password,
-    Byte,
-    Binary,
-    Email,
-    Uuid,
-    Uri,
-    Hostname,
-    IpV4,
-    IpV6,
+/// Serialize `Option<f64>` as integer when the value has no fractional part.
+///
+/// Ensures OpenAPI JSON uses `0` instead of `0.0` for integer constraints like
+/// `minimum`/`maximum`, matching the convention that integer type bounds are integers.
+#[allow(clippy::ref_option)] // serde serialize_with mandates &Option<T> signature
+fn serialize_number_constraint<S>(value: &Option<f64>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value {
+        Some(v) if v.fract() == 0.0 => {
+            // Practical OpenAPI constraints are well within i64 range
+            #[allow(clippy::cast_possible_truncation)]
+            let int_val = *v as i64;
+            serializer.serialize_some(&int_val)
+        }
+        Some(v) => serializer.serialize_some(v),
+        None => serializer.serialize_none(),
+    }
 }
 
 /// JSON Schema definition
@@ -108,10 +102,16 @@ pub struct Schema {
 
     // Number constraints
     /// Minimum value
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_number_constraint"
+    )]
     pub minimum: Option<f64>,
     /// Maximum value
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_number_constraint"
+    )]
     pub maximum: Option<f64>,
     /// Exclusive minimum
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -120,7 +120,10 @@ pub struct Schema {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exclusive_maximum: Option<bool>,
     /// Multiple of
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_number_constraint"
+    )]
     pub multiple_of: Option<f64>,
 
     // String constraints
@@ -432,5 +435,88 @@ mod tests {
         assert!(props.is_empty());
         let required = schema.required.expect("required should be initialized");
         assert!(required.is_empty());
+    }
+
+    #[test]
+    fn serialize_number_constraint_none_serializes_null() {
+        // Direct call bypasses skip_serializing_if to cover the None branch
+        let result =
+            super::serialize_number_constraint(&None, serde_json::value::Serializer).unwrap();
+        assert_eq!(result, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn serialize_minimum_whole_number_as_integer() {
+        let schema = Schema {
+            minimum: Some(0.0),
+            ..Schema::integer()
+        };
+        let json = serde_json::to_string(&schema).unwrap();
+        // Must be "minimum":0 (integer), NOT "minimum":0.0
+        assert!(
+            json.contains("\"minimum\":0"),
+            "expected integer 0, got: {json}"
+        );
+        assert!(
+            !json.contains("\"minimum\":0.0"),
+            "must not contain 0.0: {json}"
+        );
+    }
+
+    #[test]
+    fn serialize_minimum_fractional_as_float() {
+        let schema = Schema {
+            minimum: Some(1.5),
+            ..Schema::number()
+        };
+        let json = serde_json::to_string(&schema).unwrap();
+        assert!(
+            json.contains("\"minimum\":1.5"),
+            "expected 1.5, got: {json}"
+        );
+    }
+
+    #[test]
+    fn serialize_minimum_none_omitted() {
+        let schema = Schema::integer();
+        let json = serde_json::to_string(&schema).unwrap();
+        assert!(
+            !json.contains("minimum"),
+            "None minimum should be omitted: {json}"
+        );
+    }
+
+    #[test]
+    fn serialize_maximum_whole_number_as_integer() {
+        let schema = Schema {
+            maximum: Some(100.0),
+            ..Schema::integer()
+        };
+        let json = serde_json::to_string(&schema).unwrap();
+        assert!(
+            json.contains("\"maximum\":100"),
+            "expected integer 100, got: {json}"
+        );
+        assert!(
+            !json.contains("\"maximum\":100.0"),
+            "must not contain 100.0: {json}"
+        );
+    }
+
+    #[test]
+    fn serialize_multiple_of_whole_number_as_integer() {
+        let schema = Schema {
+            multiple_of: Some(2.0),
+            ..Schema::integer()
+        };
+        let json = serde_json::to_string(&schema).unwrap();
+        assert!(
+            json.contains("\"multipleOf\":2"),
+            "expected integer 2, got: {json}"
+        );
+        assert!(
+            !json.contains("\"multipleOf\":2.0"),
+            "must not contain 2.0: {json}"
+        );
     }
 }

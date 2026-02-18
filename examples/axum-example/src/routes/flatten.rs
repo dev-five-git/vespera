@@ -8,6 +8,7 @@ use vespera::{Schema, axum::Json};
 
 /// Common pagination parameters that can be reused across requests
 #[derive(Debug, Clone, Serialize, Deserialize, Schema)]
+#[serde(rename_all = "camelCase")]
 pub struct Pagination {
     /// Page number (1-indexed)
     #[serde(default = "default_page")]
@@ -26,6 +27,7 @@ fn default_per_page() -> i32 {
 
 /// Common metadata for responses
 #[derive(Debug, Clone, Serialize, Deserialize, Schema)]
+#[serde(rename_all = "camelCase")]
 pub struct ResponseMeta {
     /// Total number of items
     pub total: i64,
@@ -37,6 +39,7 @@ pub struct ResponseMeta {
 ///
 /// The pagination fields (page, per_page) are merged into this struct's JSON representation.
 #[derive(Debug, Clone, Serialize, Deserialize, Schema)]
+#[serde(rename_all = "camelCase")]
 pub struct UserListRequest {
     /// Filter users by name (optional)
     pub filter: Option<String>,
@@ -54,6 +57,7 @@ fn default_sort() -> String {
 
 /// Simple user representation
 #[derive(Debug, Clone, Serialize, Deserialize, Schema)]
+#[serde(rename_all = "camelCase")]
 pub struct UserItem {
     pub id: i32,
     pub name: String,
@@ -64,6 +68,7 @@ pub struct UserItem {
 ///
 /// The response meta fields (total, has_more) are merged into this struct's JSON representation.
 #[derive(Debug, Clone, Serialize, Deserialize, Schema)]
+#[serde(rename_all = "camelCase")]
 pub struct UserListResponse {
     /// List of users
     pub data: Vec<UserItem>,
@@ -102,6 +107,7 @@ pub async fn list_users(Json(req): Json<UserListRequest>) -> Json<UserListRespon
 
 /// Request combining multiple flattened structs
 #[derive(Debug, Clone, Serialize, Deserialize, Schema)]
+#[serde(rename_all = "camelCase")]
 pub struct AdvancedSearchRequest {
     /// Search query string
     pub query: String,
@@ -112,6 +118,7 @@ pub struct AdvancedSearchRequest {
 
 /// Response combining multiple flattened structs
 #[derive(Debug, Clone, Serialize, Deserialize, Schema)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchResponse {
     /// Search results
     pub results: Vec<String>,

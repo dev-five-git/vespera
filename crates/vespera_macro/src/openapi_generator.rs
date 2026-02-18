@@ -19,20 +19,26 @@ use crate::{
     schema_macro::type_utils::get_type_default as utils_get_type_default,
 };
 
-/// Generate `OpenAPI` document from collected metadata
+/// Generate `OpenAPI` document from collected metadata.
+///
+/// When `file_cache` is provided (from collector), skips file I/O entirely.
+/// When `None`, falls back to reading files from disk (used in tests).
 pub fn generate_openapi_doc_with_metadata(
     title: Option<String>,
     version: Option<String>,
     servers: Option<Vec<Server>>,
     metadata: &CollectedMetadata,
+    file_cache: Option<HashMap<String, syn::File>>,
 ) -> OpenApi {
     let (known_schema_names, struct_definitions) = build_schema_lookups(metadata);
-    let file_cache = build_file_cache(metadata);
+    let file_cache = file_cache.unwrap_or_else(|| build_file_cache(metadata));
     let struct_file_index = build_struct_file_index(&file_cache);
+    let parsed_definitions = build_parsed_definitions(metadata);
     let schemas = parse_component_schemas(
         metadata,
         &known_schema_names,
         &struct_definitions,
+        &parsed_definitions,
         &file_cache,
         &struct_file_index,
     );
@@ -48,11 +54,7 @@ pub fn generate_openapi_doc_with_metadata(
         info: Info {
             title: title.unwrap_or_else(|| "API".to_string()),
             version: version.unwrap_or_else(|| "1.0.0".to_string()),
-            description: None,
-            terms_of_service: None,
-            contact: None,
-            license: None,
-            summary: None,
+            ..Default::default()
         },
         servers: servers.or_else(|| {
             Some(vec![Server {
@@ -148,6 +150,20 @@ fn build_struct_file_index(file_cache: &HashMap<String, syn::File>) -> HashMap<S
     index
 }
 
+/// Pre-parse all struct/enum definitions into `syn::Item` for reuse.
+///
+/// Avoids calling `syn::parse_str` per-struct inside `parse_component_schemas()`
+/// and other consumers that need the parsed AST.
+fn build_parsed_definitions(metadata: &CollectedMetadata) -> HashMap<String, syn::Item> {
+    let mut parsed = HashMap::with_capacity(metadata.structs.len());
+    for struct_meta in &metadata.structs {
+        if let Ok(item) = syn::parse_str::<syn::Item>(&struct_meta.definition) {
+            parsed.insert(struct_meta.name.clone(), item);
+        }
+    }
+    parsed
+}
+
 /// Parse struct and enum definitions into `OpenAPI` component schemas.
 ///
 /// Only includes structs where `include_in_openapi` is true
@@ -160,16 +176,17 @@ fn parse_component_schemas(
     metadata: &CollectedMetadata,
     known_schema_names: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
+    parsed_definitions: &HashMap<String, syn::Item>,
     file_cache: &HashMap<String, syn::File>,
     struct_file_index: &HashMap<String, &str>,
 ) -> BTreeMap<String, vespera_core::schema::Schema> {
     let mut schemas = BTreeMap::new();
 
     for struct_meta in metadata.structs.iter().filter(|s| s.include_in_openapi) {
-        let Ok(parsed) = syn::parse_str::<syn::Item>(&struct_meta.definition) else {
+        let Some(parsed) = parsed_definitions.get(&struct_meta.name) else {
             continue;
         };
-        let mut schema = match &parsed {
+        let mut schema = match parsed {
             syn::Item::Struct(struct_item) => {
                 parse_struct_to_schema(struct_item, known_schema_names, struct_definitions)
             }
@@ -180,7 +197,7 @@ fn parse_component_schemas(
         };
 
         // Process default values using cached file ASTs (O(1) lookup)
-        if let syn::Item::Struct(struct_item) = &parsed {
+        if let syn::Item::Struct(struct_item) = parsed {
             let file_ast = struct_file_index
                 .get(&struct_meta.name)
                 .and_then(|path| file_cache.get(*path))
@@ -250,19 +267,7 @@ fn build_path_items(
 
                 let path_item = paths
                     .entry(route_meta.path.clone())
-                    .or_insert_with(|| PathItem {
-                        get: None,
-                        post: None,
-                        put: None,
-                        patch: None,
-                        delete: None,
-                        head: None,
-                        options: None,
-                        trace: None,
-                        parameters: None,
-                        summary: None,
-                        description: None,
-                    });
+                    .or_insert_with(PathItem::default);
 
                 path_item.set_operation(method, operation);
                 break;
@@ -273,15 +278,35 @@ fn build_path_items(
     (paths, all_tags)
 }
 
+/// Set the default value on an inline property schema, if not already set.
+///
+/// Looks up `field_name` in the properties map. If found as an inline schema
+/// and the schema has no existing default, sets `value` as the default.
+fn set_property_default(
+    properties: &mut BTreeMap<String, vespera_core::schema::SchemaRef>,
+    field_name: &str,
+    value: serde_json::Value,
+) {
+    use vespera_core::schema::SchemaRef;
+
+    if let Some(SchemaRef::Inline(prop_schema)) = properties.get_mut(field_name)
+        && prop_schema.default.is_none()
+    {
+        prop_schema.default = Some(value);
+    }
+}
+
 /// Process default functions for struct fields
-/// This function extracts default values from functions specified in #[serde(default = "`function_name`")]
+/// This function extracts default values from:
+/// 1. `#[schema(default = "value")]` attributes (generated by `schema_type!` from `sea_orm(default_value)`)
+/// 2. `#[serde(default = "function_name")]` by finding the function in the file AST
+/// 3. `#[serde(default)]` by using type-specific defaults
 fn process_default_functions(
     struct_item: &syn::ItemStruct,
     file_ast: &syn::File,
     schema: &mut vespera_core::schema::Schema,
 ) {
     use syn::Fields;
-    use vespera_core::schema::SchemaRef;
 
     // Extract rename_all from struct level
     let struct_rename_all = extract_rename_all(&struct_item.attrs);
@@ -294,58 +319,85 @@ fn process_default_functions(
     // Process each field in the struct
     if let Fields::Named(fields_named) = &struct_item.fields {
         for field in &fields_named.named {
-            // Extract default function name
+            let rust_field_name = field.ident.as_ref().map_or_else(
+                || "unknown".to_string(),
+                |i| strip_raw_prefix(&i.to_string()).to_string(),
+            );
+            let field_name = extract_field_rename(&field.attrs)
+                .unwrap_or_else(|| rename_field(&rust_field_name, struct_rename_all.as_deref()));
+
+            // Priority 1: #[schema(default = "value")] from schema_type! macro
+            if let Some(default_str) = extract_schema_default_attr(&field.attrs) {
+                let value = parse_default_string_to_json_value(&default_str);
+                set_property_default(properties, &field_name, value);
+                continue;
+            }
+
+            // Priority 2: #[serde(default)] / #[serde(default = "fn")]
             let default_info = match extract_default(&field.attrs) {
                 Some(Some(func_name)) => func_name, // default = "function_name"
                 Some(None) => {
                     // Simple default (no function) - we can set type-specific defaults
-                    let rust_field_name = field.ident.as_ref().map_or_else(
-                        || "unknown".to_string(),
-                        |i| strip_raw_prefix(&i.to_string()).to_string(),
-                    );
-
-                    let field_name = extract_field_rename(&field.attrs).unwrap_or_else(|| {
-                        rename_field(&rust_field_name, struct_rename_all.as_deref())
-                    });
-
-                    // Set type-specific default for simple default
-                    if let Some(prop_schema_ref) = properties.get_mut(&field_name)
-                        && let SchemaRef::Inline(prop_schema) = prop_schema_ref
-                        && prop_schema.default.is_none()
-                        && let Some(default_value) = utils_get_type_default(&field.ty)
-                    {
-                        prop_schema.default = Some(default_value);
+                    if let Some(default_value) = utils_get_type_default(&field.ty) {
+                        set_property_default(properties, &field_name, default_value);
                     }
                     continue;
                 }
                 None => continue, // No default attribute
             };
 
-            // Find the function in the file AST
-            let func = find_function_in_file(file_ast, &default_info);
-            if let Some(func_item) = func {
-                // Extract default value from function body
-                if let Some(default_value) = extract_default_value_from_function(func_item) {
-                    // Get the field name (with rename applied)
-                    let rust_field_name = field.ident.as_ref().map_or_else(
-                        || "unknown".to_string(),
-                        |i| strip_raw_prefix(&i.to_string()).to_string(),
-                    );
-
-                    let field_name = extract_field_rename(&field.attrs).unwrap_or_else(|| {
-                        rename_field(&rust_field_name, struct_rename_all.as_deref())
-                    });
-
-                    // Set default value in schema
-                    if let Some(prop_schema_ref) = properties.get_mut(&field_name)
-                        && let SchemaRef::Inline(prop_schema) = prop_schema_ref
-                    {
-                        prop_schema.default = Some(default_value);
-                    }
-                }
+            // Find the function in the file AST and extract default value
+            if let Some(func_item) = find_function_in_file(file_ast, &default_info)
+                && let Some(default_value) = extract_default_value_from_function(func_item)
+            {
+                set_property_default(properties, &field_name, default_value);
             }
         }
     }
+}
+
+/// Extract `default` value from `#[schema(default = "...")]` field attribute.
+///
+/// This attribute is generated by `schema_type!` when converting `sea_orm(default_value)`.
+/// It carries the raw default value string for OpenAPI schema generation.
+fn extract_schema_default_attr(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("schema"))
+        .find_map(|attr| {
+            let mut default_value = None;
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("default") {
+                    let value = meta.value()?;
+                    let lit: syn::LitStr = value.parse()?;
+                    default_value = Some(lit.value());
+                }
+                Ok(())
+            });
+            default_value
+        })
+}
+
+/// Parse a default value string into the appropriate `serde_json::Value`.
+///
+/// Tries to infer the JSON type: integer → number → bool → string (fallback).
+fn parse_default_string_to_json_value(value: &str) -> serde_json::Value {
+    // Try integer first
+    if let Ok(n) = value.parse::<i64>() {
+        return serde_json::Value::Number(n.into());
+    }
+    // Try float
+    if let Ok(f) = value.parse::<f64>()
+        && let Some(n) = serde_json::Number::from_f64(f)
+    {
+        return serde_json::Value::Number(n);
+    }
+    // Try bool
+    if let Ok(b) = value.parse::<bool>() {
+        return serde_json::Value::Bool(b);
+    }
+    // Fallback to string
+    serde_json::Value::String(value.to_string())
 }
 
 /// Find a function by name in the file AST
@@ -353,14 +405,10 @@ fn find_function_in_file<'a>(
     file_ast: &'a syn::File,
     function_name: &str,
 ) -> Option<&'a syn::ItemFn> {
-    for item in &file_ast.items {
-        if let syn::Item::Fn(fn_item) = item
-            && fn_item.sig.ident == function_name
-        {
-            return Some(fn_item);
-        }
-    }
-    None
+    file_ast.items.iter().find_map(|item| match item {
+        syn::Item::Fn(fn_item) if fn_item.sig.ident == function_name => Some(fn_item),
+        _ => None,
+    })
 }
 
 /// Extract default value from function body
@@ -460,7 +508,7 @@ mod tests {
     fn test_generate_openapi_empty_metadata() {
         let metadata = CollectedMetadata::new();
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
 
         assert_eq!(doc.openapi, OpenApiVersion::V3_1_0);
         assert_eq!(doc.info.title, "API");
@@ -487,7 +535,7 @@ mod tests {
     ) {
         let metadata = CollectedMetadata::new();
 
-        let doc = generate_openapi_doc_with_metadata(title, version, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(title, version, None, &metadata, None);
 
         assert_eq!(doc.info.title, expected_title);
         assert_eq!(doc.info.version, expected_version);
@@ -518,7 +566,7 @@ pub fn get_users() -> String {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
 
         assert!(doc.paths.contains_key("/users"));
         let path_item = doc.paths.get("/users").unwrap();
@@ -536,7 +584,7 @@ pub fn get_users() -> String {
             ..Default::default()
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
 
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
         let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
@@ -552,7 +600,7 @@ pub fn get_users() -> String {
             ..Default::default()
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
 
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
         let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
@@ -569,7 +617,7 @@ pub fn get_users() -> String {
             ..Default::default()
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
 
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
         let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
@@ -605,7 +653,7 @@ pub fn get_status() -> Status {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
 
         // Check enum schema
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
@@ -632,7 +680,7 @@ pub fn get_status() -> Status {
         });
 
         // This should gracefully handle the invalid item (skip it) instead of panicking
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
         // The invalid struct definition should be skipped, resulting in no schemas
         assert!(doc.components.is_none() || doc.components.as_ref().unwrap().schemas.is_none());
     }
@@ -672,6 +720,7 @@ pub fn get_user() -> User {
             Some("1.0.0".to_string()),
             None,
             &metadata,
+            None,
         );
 
         // Check struct schema
@@ -727,7 +776,7 @@ pub fn create_user() -> String {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
 
         assert_eq!(doc.paths.len(), 1); // Same path, different methods
         let path_item = doc.paths.get("/users").unwrap();
@@ -796,7 +845,7 @@ pub fn create_user() -> String {
         }
 
         // Should not panic, just skip invalid files
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
 
         // Check struct
         if expect_struct {
@@ -841,7 +890,7 @@ pub fn get_users() -> String {
             description: Some("Get all users".to_string()),
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
 
         // Check route has description
         let path_item = doc.paths.get("/users").unwrap();
@@ -871,7 +920,7 @@ pub fn get_users() -> String {
             },
         ];
 
-        let doc = generate_openapi_doc_with_metadata(None, None, Some(servers), &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, Some(servers), &metadata, None);
 
         assert!(doc.servers.is_some());
         let doc_servers = doc.servers.unwrap();
@@ -1115,7 +1164,7 @@ pub fn get_user() -> User {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
 
         // Struct should be present
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
@@ -1161,7 +1210,7 @@ pub fn get_config() -> Config {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
 
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
         let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
@@ -1232,7 +1281,7 @@ pub fn get_user() -> User {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
 
         // Struct should be found via fallback and processed
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
@@ -1371,7 +1420,7 @@ pub fn get_users() -> String {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
 
         // Route with unknown HTTP method should be skipped entirely
         assert!(
@@ -1423,7 +1472,7 @@ pub fn create_users() -> String {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
 
         // Only the valid POST route should appear
         assert_eq!(doc.paths.len(), 1);
@@ -1451,8 +1500,167 @@ pub fn create_users() -> String {
         });
 
         // Should gracefully skip unparseable definitions
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
         // The unparseable definition should be skipped
         assert!(doc.components.is_none() || doc.components.as_ref().unwrap().schemas.is_none());
+    }
+
+    // ======== Tests for set_property_default helper ========
+
+    #[test]
+    fn test_set_property_default_on_inline_schema() {
+        use vespera_core::schema::{Schema, SchemaRef};
+
+        let mut properties = BTreeMap::new();
+        let mut schema = Schema::object();
+        schema.default = None;
+        properties.insert("name".to_string(), SchemaRef::Inline(Box::new(schema)));
+
+        set_property_default(
+            &mut properties,
+            "name",
+            serde_json::Value::String("Alice".to_string()),
+        );
+
+        if let Some(SchemaRef::Inline(prop)) = properties.get("name") {
+            assert_eq!(
+                prop.default,
+                Some(serde_json::Value::String("Alice".to_string()))
+            );
+        } else {
+            panic!("Expected Inline schema");
+        }
+    }
+
+    #[test]
+    fn test_set_property_default_does_not_overwrite_existing() {
+        use vespera_core::schema::{Schema, SchemaRef};
+
+        let mut properties = BTreeMap::new();
+        let mut schema = Schema::object();
+        schema.default = Some(serde_json::Value::String("existing".to_string()));
+        properties.insert("name".to_string(), SchemaRef::Inline(Box::new(schema)));
+
+        set_property_default(
+            &mut properties,
+            "name",
+            serde_json::Value::String("new".to_string()),
+        );
+
+        if let Some(SchemaRef::Inline(prop)) = properties.get("name") {
+            assert_eq!(
+                prop.default,
+                Some(serde_json::Value::String("existing".to_string())),
+                "Should NOT overwrite existing default"
+            );
+        } else {
+            panic!("Expected Inline schema");
+        }
+    }
+
+    #[test]
+    fn test_set_property_default_skips_ref_schema() {
+        use vespera_core::schema::{Reference, SchemaRef};
+
+        let mut properties = BTreeMap::new();
+        properties.insert(
+            "user".to_string(),
+            SchemaRef::Ref(Reference::schema("User")),
+        );
+
+        // Should silently no-op (Ref variants have no default field)
+        set_property_default(
+            &mut properties,
+            "user",
+            serde_json::Value::String("ignored".to_string()),
+        );
+
+        assert!(
+            matches!(properties.get("user"), Some(SchemaRef::Ref(_))),
+            "Should remain a Ref variant"
+        );
+    }
+
+    #[test]
+    fn test_set_property_default_skips_missing_property() {
+        let mut properties = BTreeMap::new();
+
+        // Should silently no-op (property doesn't exist)
+        set_property_default(
+            &mut properties,
+            "nonexistent",
+            serde_json::Value::Number(42.into()),
+        );
+
+        assert!(properties.is_empty(), "Should not insert new properties");
+    }
+
+    #[test]
+    fn test_extract_schema_default_attr_with_value() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[schema(default = "42")])];
+        let result = extract_schema_default_attr(&attrs);
+        assert_eq!(result, Some("42".to_string()));
+    }
+
+    #[test]
+    fn test_extract_schema_default_attr_no_default() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[schema(rename = "foo")])];
+        let result = extract_schema_default_attr(&attrs);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_schema_default_attr_non_schema() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[serde(default)])];
+        let result = extract_schema_default_attr(&attrs);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_default_string_to_json_value_integer() {
+        let result = parse_default_string_to_json_value("42");
+        assert_eq!(result, serde_json::Value::Number(42.into()));
+    }
+
+    #[test]
+    fn test_parse_default_string_to_json_value_float() {
+        let result = parse_default_string_to_json_value("2.72");
+        assert_eq!(result, serde_json::json!(2.72));
+    }
+
+    #[test]
+    fn test_parse_default_string_to_json_value_bool() {
+        let result = parse_default_string_to_json_value("true");
+        assert_eq!(result, serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn test_parse_default_string_to_json_value_string_fallback() {
+        let result = parse_default_string_to_json_value("hello world");
+        assert_eq!(result, serde_json::Value::String("hello world".to_string()));
+    }
+
+    #[test]
+    fn test_process_default_functions_with_schema_default_attr() {
+        use vespera_core::schema::{Schema, SchemaRef};
+
+        let file_ast: syn::File = syn::parse_str("").unwrap();
+        let struct_item: syn::ItemStruct =
+            syn::parse_str(r#"pub struct Test { #[schema(default = "100")] pub count: i32 }"#)
+                .unwrap();
+        let mut schema = Schema::object();
+        let props = schema.properties.get_or_insert_with(BTreeMap::new);
+        props.insert(
+            "count".to_string(),
+            SchemaRef::Inline(Box::new(Schema::integer())),
+        );
+        process_default_functions(&struct_item, &file_ast, &mut schema);
+        if let Some(SchemaRef::Inline(prop_schema)) =
+            schema.properties.as_ref().unwrap().get("count")
+        {
+            assert_eq!(prop_schema.default, Some(serde_json::json!(100)));
+        } else {
+            panic!("Expected inline schema with default");
+        }
     }
 }

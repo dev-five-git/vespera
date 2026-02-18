@@ -82,6 +82,56 @@
         }
       }
     },
+    "/config": {
+      "get": {
+        "operationId": "get_config",
+        "tags": [
+          "config"
+        ],
+        "description": "Get current config",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Config"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "update_config",
+        "tags": [
+          "config"
+        ],
+        "description": "Update config",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateConfigRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Config"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/enums": {
       "get": {
         "operationId": "enum_endpoint",
@@ -452,7 +502,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "format": "int64"
             }
           }
         ],
@@ -817,13 +868,16 @@
                       }
                     },
                     "page": {
-                      "type": "integer"
+                      "type": "integer",
+                      "format": "int32"
                     },
                     "size": {
-                      "type": "integer"
+                      "type": "integer",
+                      "format": "int32"
                     },
                     "totalPage": {
-                      "type": "integer"
+                      "type": "integer",
+                      "format": "int32"
                     }
                   },
                   "required": [
@@ -904,7 +958,8 @@
             "in": "query",
             "required": true,
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "format": "uint32"
             }
           },
           {
@@ -913,6 +968,7 @@
             "required": false,
             "schema": {
               "type": "integer",
+              "format": "uint32",
               "nullable": true
             }
           }
@@ -1013,7 +1069,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "format": "int32"
             }
           }
         ],
@@ -1040,7 +1097,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "format": "int32"
             }
           }
         ],
@@ -1286,7 +1344,8 @@
             "in": "query",
             "required": true,
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "format": "uint32"
             }
           }
         ],
@@ -1351,7 +1410,8 @@
             "in": "query",
             "required": true,
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "format": "uint32"
             }
           }
         ],
@@ -1428,7 +1488,8 @@
             "in": "query",
             "required": true,
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "format": "uint32"
             }
           },
           {
@@ -1437,6 +1498,7 @@
             "required": false,
             "schema": {
               "type": "integer",
+              "format": "uint32",
               "nullable": true
             }
           }
@@ -1531,7 +1593,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "format": "int64"
             }
           }
         ],
@@ -1580,7 +1643,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "format": "int64"
             }
           }
         ],
@@ -1735,7 +1799,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "format": "uint32"
             }
           }
         ],
@@ -1829,7 +1894,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "format": "uint32"
             }
           }
         ],
@@ -1840,6 +1906,59 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/uuid-items": {
+      "get": {
+        "operationId": "list_uuid_items",
+        "tags": [
+          "uuid_items"
+        ],
+        "description": "List all UUID items",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UuidItem"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "create_uuid_item",
+        "tags": [
+          "uuid_items"
+        ],
+        "description": "Create a new UUID item",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateUuidItemRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UuidItem"
                 }
               }
             }
@@ -1891,7 +2010,8 @@
                 "type": "object",
                 "properties": {
                   "code": {
-                    "type": "integer"
+                    "type": "integer",
+                    "format": "int32"
                   },
                   "message": {
                     "type": "string"
@@ -1958,7 +2078,8 @@
         "type": "object",
         "properties": {
           "age": {
-            "type": "integer"
+            "type": "integer",
+            "format": "uint32"
           },
           "array": {
             "type": "array",
@@ -2049,7 +2170,8 @@
         "type": "object",
         "properties": {
           "age": {
-            "type": "integer"
+            "type": "integer",
+            "format": "uint32"
           },
           "array": {
             "type": "array",
@@ -2136,6 +2258,75 @@
           "nestedStructMapArray"
         ]
       },
+      "Config": {
+        "type": "object",
+        "properties": {
+          "delimiter": {
+            "type": "string",
+            "format": "char",
+            "nullable": true
+          },
+          "discountRate": {
+            "type": "number",
+            "format": "decimal",
+            "nullable": true
+          },
+          "maxItems": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxPrice": {
+            "type": "number",
+            "format": "decimal"
+          },
+          "minPrice": {
+            "type": "number",
+            "format": "decimal"
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "retryCount": {
+            "type": "integer",
+            "format": "uint8"
+          },
+          "separator": {
+            "type": "string",
+            "format": "char"
+          },
+          "taxRate": {
+            "type": "number",
+            "format": "decimal"
+          }
+        },
+        "required": [
+          "taxRate",
+          "minPrice",
+          "maxPrice",
+          "maxItems",
+          "retryCount",
+          "priority",
+          "separator"
+        ]
+      },
+      "ConfigSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "temperature": {
+            "type": "number",
+            "format": "decimal",
+            "default": 0.7
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
       "ContactFormRequest": {
         "type": "object",
         "properties": {
@@ -2192,7 +2383,8 @@
             "type": "string"
           },
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int64"
           },
           "repliedAt": {
             "type": "string",
@@ -2206,7 +2398,8 @@
             "nullable": true
           },
           "userId": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int64"
           }
         },
         "required": [
@@ -2297,6 +2490,22 @@
           "requestId"
         ]
       },
+      "CreateUuidItemRequest": {
+        "type": "object",
+        "properties": {
+          "external_ref": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
       "Enum": {
         "type": "string",
         "enum": [
@@ -2326,7 +2535,8 @@
                 "type": "object",
                 "properties": {
                   "age": {
-                    "type": "integer"
+                    "type": "integer",
+                    "format": "int32"
                   },
                   "name": {
                     "type": "string"
@@ -2346,7 +2556,8 @@
             "type": "object",
             "properties": {
               "C": {
-                "type": "integer"
+                "type": "integer",
+                "format": "int32"
               }
             },
             "required": [
@@ -2388,7 +2599,8 @@
                     "type": "string"
                   },
                   {
-                    "type": "integer"
+                    "type": "integer",
+                    "format": "int32"
                   }
                 ],
                 "minItems": 2,
@@ -2527,7 +2739,8 @@
         "type": "object",
         "properties": {
           "code": {
-            "type": "integer"
+            "type": "integer",
+            "format": "uint32"
           },
           "error": {
             "type": "string"
@@ -2542,7 +2755,8 @@
         "type": "object",
         "properties": {
           "code": {
-            "type": "integer"
+            "type": "integer",
+            "format": "uint32"
           },
           "error": {
             "type": "string"
@@ -2564,7 +2778,8 @@
                 "type": "object",
                 "properties": {
                   "id": {
-                    "type": "integer"
+                    "type": "integer",
+                    "format": "int32"
                   },
                   "name": {
                     "type": "string"
@@ -2588,7 +2803,8 @@
                 "type": "object",
                 "properties": {
                   "id": {
-                    "type": "integer"
+                    "type": "integer",
+                    "format": "int32"
                   }
                 },
                 "required": [
@@ -2605,7 +2821,8 @@
             "description": "Item was deleted",
             "properties": {
               "Deleted": {
-                "type": "integer"
+                "type": "integer",
+                "format": "int32"
               }
             },
             "required": [
@@ -2625,7 +2842,8 @@
             "nullable": true
           },
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int64"
           },
           "isActive": {
             "type": "boolean"
@@ -2705,7 +2923,8 @@
             "description": "A request message",
             "properties": {
               "id": {
-                "type": "integer"
+                "type": "integer",
+                "format": "int32"
               },
               "method": {
                 "type": "string"
@@ -2728,7 +2947,8 @@
             "description": "A response message",
             "properties": {
               "id": {
-                "type": "integer"
+                "type": "integer",
+                "format": "int32"
               },
               "result": {
                 "type": "string",
@@ -2770,13 +2990,15 @@
         "type": "object",
         "properties": {
           "age": {
-            "type": "integer"
+            "type": "integer",
+            "format": "uint32"
           },
           "name": {
             "type": "string"
           },
           "optional_age": {
             "type": "integer",
+            "format": "uint32",
             "nullable": true
           }
         },
@@ -2796,13 +3018,15 @@
             "format": "date-time"
           },
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           },
           "memo": {
             "$ref": "#/components/schemas/MemoSchema"
           },
           "memoId": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           },
           "updatedAt": {
             "type": "string",
@@ -2812,7 +3036,8 @@
             "$ref": "#/components/schemas/UserSchema"
           },
           "userId": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           }
         },
         "required": [
@@ -2820,8 +3045,6 @@
           "userId",
           "memoId",
           "content",
-          "createdAt",
-          "updatedAt",
           "user",
           "memo"
         ]
@@ -2837,7 +3060,8 @@
             "format": "date-time"
           },
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           },
           "status": {
             "$ref": "#/components/schemas/MemoStatus"
@@ -2846,7 +3070,8 @@
             "type": "string"
           },
           "userId": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           }
         },
         "required": [
@@ -2854,8 +3079,7 @@
           "userId",
           "title",
           "content",
-          "status",
-          "createdAt"
+          "status"
         ]
       },
       "MemoResponseComments": {
@@ -2883,17 +3107,20 @@
             "format": "date-time"
           },
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           },
           "memoId": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           },
           "updatedAt": {
             "type": "string",
             "format": "date-time"
           },
           "userId": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           }
         },
         "required": [
@@ -2916,7 +3143,8 @@
             "format": "date-time"
           },
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           },
           "status": {
             "$ref": "#/components/schemas/MemoStatus"
@@ -2928,7 +3156,8 @@
             "$ref": "#/components/schemas/UserSchema"
           },
           "userId": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           }
         },
         "required": [
@@ -2937,7 +3166,6 @@
           "title",
           "content",
           "status",
-          "createdAt",
           "user"
         ]
       },
@@ -2952,7 +3180,8 @@
             "format": "date-time"
           },
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           },
           "status": {
             "$ref": "#/components/schemas/MemoStatus"
@@ -2968,7 +3197,8 @@
             "$ref": "#/components/schemas/UserSchema"
           },
           "userId": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           }
         },
         "required": [
@@ -2977,8 +3207,6 @@
           "title",
           "content",
           "status",
-          "createdAt",
-          "updatedAt",
           "user"
         ]
       },
@@ -2990,16 +3218,17 @@
             "format": "date-time"
           },
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           },
           "user_id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           }
         },
         "required": [
           "id",
-          "user_id",
-          "created_at"
+          "user_id"
         ]
       },
       "MemoStatus": {
@@ -3020,13 +3249,16 @@
             }
           },
           "page": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           },
           "size": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           },
           "totalPage": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           }
         },
         "required": [
@@ -3042,11 +3274,13 @@
         "properties": {
           "page": {
             "type": "integer",
+            "format": "int32",
             "description": "Page number (1-indexed)",
             "default": 1
           },
-          "per_page": {
+          "perPage": {
             "type": "integer",
+            "format": "int32",
             "description": "Items per page",
             "default": 20
           }
@@ -3078,18 +3312,19 @@
         "type": "object",
         "description": "Common metadata for responses",
         "properties": {
-          "has_more": {
+          "hasMore": {
             "type": "boolean",
             "description": "Whether there are more pages"
           },
           "total": {
             "type": "integer",
+            "format": "int64",
             "description": "Total number of items"
           }
         },
         "required": [
           "total",
-          "has_more"
+          "hasMore"
         ]
       },
       "SearchResponse": {
@@ -3153,7 +3388,8 @@
             "nullable": true
           },
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           },
           "job": {
             "type": "string",
@@ -3240,6 +3476,7 @@
           },
           "num": {
             "type": "integer",
+            "format": "int32",
             "default": 0
           }
         },
@@ -3253,7 +3490,8 @@
         "type": "object",
         "properties": {
           "age": {
-            "type": "integer"
+            "type": "integer",
+            "format": "uint32"
           },
           "name": {
             "type": "string"
@@ -3269,6 +3507,7 @@
         "properties": {
           "age": {
             "type": "integer",
+            "format": "uint32",
             "nullable": true
           },
           "name": {
@@ -3281,7 +3520,8 @@
         "type": "object",
         "properties": {
           "age": {
-            "type": "integer"
+            "type": "integer",
+            "format": "uint32"
           },
           "name": {
             "type": "string"
@@ -3314,7 +3554,8 @@
             "type": "string"
           },
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int64"
           },
           "isSubscribed": {
             "type": "boolean"
@@ -3352,7 +3593,8 @@
         "type": "object",
         "properties": {
           "age": {
-            "type": "integer"
+            "type": "integer",
+            "format": "uint32"
           },
           "name": {
             "type": "string"
@@ -3367,13 +3609,15 @@
         "type": "object",
         "properties": {
           "age": {
-            "type": "integer"
+            "type": "integer",
+            "format": "uint32"
           },
           "name": {
             "type": "string"
           },
           "optional_age": {
             "type": "integer",
+            "format": "uint32",
             "nullable": true
           }
         },
@@ -3391,6 +3635,7 @@
           },
           {
             "type": "integer",
+            "format": "int64",
             "description": "A numeric value"
           },
           {
@@ -3414,6 +3659,56 @@
             ]
           }
         ]
+      },
+      "UpdateConfigRequest": {
+        "type": "object",
+        "properties": {
+          "delimiter": {
+            "type": "string",
+            "format": "char",
+            "nullable": true
+          },
+          "discountRate": {
+            "type": "number",
+            "format": "decimal",
+            "nullable": true
+          },
+          "maxItems": {
+            "type": "integer",
+            "minimum": 0,
+            "nullable": true
+          },
+          "maxPrice": {
+            "type": "number",
+            "format": "decimal",
+            "nullable": true
+          },
+          "minPrice": {
+            "type": "number",
+            "format": "decimal",
+            "nullable": true
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "retryCount": {
+            "type": "integer",
+            "format": "uint8",
+            "nullable": true
+          },
+          "separator": {
+            "type": "string",
+            "format": "char",
+            "nullable": true
+          },
+          "taxRate": {
+            "type": "number",
+            "format": "decimal",
+            "nullable": true
+          }
+        }
       },
       "UpdateFileUploadRequest": {
         "type": "object",
@@ -3449,7 +3744,8 @@
             "type": "string"
           },
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           },
           "title": {
             "type": "string"
@@ -3469,10 +3765,12 @@
             "type": "string"
           },
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "uint32"
           },
           "internal_score": {
             "type": "integer",
+            "format": "int32",
             "description": "Internal field - should be omitted in public APIs",
             "nullable": true
           },
@@ -3491,7 +3789,8 @@
         "description": "Full user model with all fields",
         "properties": {
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "uint32"
           },
           "name": {
             "type": "string"
@@ -3510,7 +3809,8 @@
             "type": "string"
           },
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "int32"
           },
           "name": {
             "type": "string"
@@ -3575,7 +3875,8 @@
             "type": "string"
           },
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "uint32"
           },
           "name": {
             "type": "string"
@@ -3602,6 +3903,7 @@
           },
           "id": {
             "type": "integer",
+            "format": "int32",
             "description": "User ID"
           },
           "name": {
@@ -3617,9 +3919,7 @@
         "required": [
           "id",
           "email",
-          "name",
-          "createdAt",
-          "updatedAt"
+          "name"
         ]
       },
       "UserSummary": {
@@ -3627,7 +3927,8 @@
         "description": "Full user model with all fields",
         "properties": {
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "format": "uint32"
           },
           "name": {
             "type": "string"
@@ -3637,10 +3938,63 @@
           "id",
           "name"
         ]
+      },
+      "UuidItem": {
+        "type": "object",
+        "properties": {
+          "external_ref": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "UuidItemSchema": {
+        "type": "object",
+        "description": "UUID item model for testing UUID format in OpenAPI",
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Created at"
+          },
+          "externalRef": {
+            "type": "string",
+            "format": "uuid",
+            "description": "External reference UUID",
+            "nullable": true
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Item ID"
+          },
+          "name": {
+            "type": "string",
+            "description": "Item name"
+          }
+        },
+        "required": [
+          "name"
+        ]
       }
     }
   },
   "tags": [
+    {
+      "name": "config"
+    },
     {
       "name": "error"
     },
@@ -3658,6 +4012,9 @@
     },
     {
       "name": "typed-form"
+    },
+    {
+      "name": "uuid_items"
     },
     {
       "name": "third"

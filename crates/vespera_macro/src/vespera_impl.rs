@@ -45,6 +45,7 @@ pub type DocsInfo = (Option<(String, String)>, Option<(String, String)>);
 pub fn generate_and_write_openapi(
     input: &ProcessedVesperaInput,
     metadata: &CollectedMetadata,
+    file_asts: HashMap<String, syn::File>,
 ) -> MacroResult<DocsInfo> {
     if input.openapi_file_names.is_empty() && input.docs_url.is_none() && input.redoc_url.is_none()
     {
@@ -56,6 +57,7 @@ pub fn generate_and_write_openapi(
         input.version.clone(),
         input.servers.clone(),
         metadata,
+        Some(file_asts),
     );
 
     // Merge specs from child apps at compile time
@@ -166,10 +168,10 @@ pub fn process_vespera_macro(
         ));
     }
 
-    let mut metadata = collect_metadata(&folder_path, &processed.folder_name).map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", processed.folder_name, e)))?;
+    let (mut metadata, file_asts) = collect_metadata(&folder_path, &processed.folder_name).map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", processed.folder_name, e)))?;
     metadata.structs.extend(schema_storage.values().cloned());
 
-    let (docs_info, redoc_info) = generate_and_write_openapi(processed, &metadata)?;
+    let (docs_info, redoc_info) = generate_and_write_openapi(processed, &metadata, file_asts)?;
 
     Ok(generate_router_code(
         &metadata,
@@ -196,11 +198,12 @@ pub fn process_export_app(
         ));
     }
 
-    let mut metadata = collect_metadata(&folder_path, folder_name).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to scan route folder '{folder_name}'. Error: {e}. Check that all .rs files have valid Rust syntax.")))?;
+    let (mut metadata, file_asts) = collect_metadata(&folder_path, folder_name).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to scan route folder '{folder_name}'. Error: {e}. Check that all .rs files have valid Rust syntax.")))?;
     metadata.structs.extend(schema_storage.values().cloned());
 
     // Generate OpenAPI spec JSON string
-    let openapi_doc = generate_openapi_doc_with_metadata(None, None, None, &metadata);
+    let openapi_doc =
+        generate_openapi_doc_with_metadata(None, None, None, &metadata, Some(file_asts));
     let spec_json = serde_json::to_string(&openapi_doc).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to serialize OpenAPI spec to JSON. Error: {e}. Check that all schema types are serializable.")))?;
 
     // Write spec to temp file for compile-time merging by parent apps
@@ -264,7 +267,7 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata);
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
         assert!(result.is_ok());
         let (docs_info, redoc_info) = result.unwrap();
         assert!(docs_info.is_none());
@@ -284,7 +287,7 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata);
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
         assert!(result.is_ok());
         let (docs_info, redoc_info) = result.unwrap();
         assert!(docs_info.is_some());
@@ -308,7 +311,7 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata);
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
         assert!(result.is_ok());
         let (docs_info, redoc_info) = result.unwrap();
         assert!(docs_info.is_none());
@@ -330,7 +333,7 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata);
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
         assert!(result.is_ok());
         let (docs_info, redoc_info) = result.unwrap();
         assert!(docs_info.is_some());
@@ -353,7 +356,7 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata);
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
         assert!(result.is_ok());
 
         // Verify file was written
@@ -380,7 +383,7 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata);
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
         assert!(result.is_ok());
 
         // Verify nested directories and file were created
@@ -652,7 +655,7 @@ mod tests {
         };
         let metadata = CollectedMetadata::new();
         // This should still work - merge logic is skipped when CARGO_MANIFEST_DIR lookup fails
-        let result = generate_and_write_openapi(&processed, &metadata);
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
         assert!(result.is_ok());
     }
 
@@ -687,7 +690,7 @@ mod tests {
         };
         let metadata = CollectedMetadata::new();
 
-        let result = generate_and_write_openapi(&processed, &metadata);
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
 
         // Restore CARGO_MANIFEST_DIR
         if let Some(old_value) = old_manifest_dir {
@@ -764,7 +767,7 @@ mod tests {
         };
         let metadata = CollectedMetadata::new();
 
-        let result = generate_and_write_openapi(&processed, &metadata);
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("failed to write file"));

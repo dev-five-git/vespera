@@ -606,7 +606,7 @@ mod tests {
         let folder_name = "routes";
 
         let result = generate_router_code(
-            &collect_metadata(temp_dir.path(), folder_name).unwrap(),
+            &collect_metadata(temp_dir.path(), folder_name).unwrap().0,
             None,
             None,
             &[],
@@ -762,7 +762,7 @@ pub fn get_users() -> String {
         }
 
         let result = generate_router_code(
-            &collect_metadata(temp_dir.path(), folder_name).unwrap(),
+            &collect_metadata(temp_dir.path(), folder_name).unwrap().0,
             None,
             None,
             &[],
@@ -841,7 +841,7 @@ pub fn update_user() -> String {
         );
 
         let result = generate_router_code(
-            &collect_metadata(temp_dir.path(), folder_name).unwrap(),
+            &collect_metadata(temp_dir.path(), folder_name).unwrap().0,
             None,
             None,
             &[],
@@ -895,7 +895,7 @@ pub fn create_users() -> String {
         );
 
         let result = generate_router_code(
-            &collect_metadata(temp_dir.path(), folder_name).unwrap(),
+            &collect_metadata(temp_dir.path(), folder_name).unwrap().0,
             None,
             None,
             &[],
@@ -941,7 +941,7 @@ pub fn index() -> String {
         );
 
         let result = generate_router_code(
-            &collect_metadata(temp_dir.path(), folder_name).unwrap(),
+            &collect_metadata(temp_dir.path(), folder_name).unwrap().0,
             None,
             None,
             &[],
@@ -978,7 +978,7 @@ pub fn get_users() -> String {
         );
 
         let result = generate_router_code(
-            &collect_metadata(temp_dir.path(), folder_name).unwrap(),
+            &collect_metadata(temp_dir.path(), folder_name).unwrap().0,
             None,
             None,
             &[],
@@ -1311,7 +1311,7 @@ pub fn get_users() -> String {
 "#,
         );
 
-        let mut metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (mut metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
         // Inject an additional route with invalid method
         metadata.routes.push(crate::metadata::RouteMetadata {
             method: "CONNECT".to_string(),

@@ -29,6 +29,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use seaorm::{
     RelationFieldInfo, convert_relation_type_to_schema_with_info, convert_type_with_chrono,
+    extract_sea_orm_default_value, is_sql_function_default,
 };
 use transformation::{
     build_omit_set, build_partial_config, build_pick_set, build_rename_map, determine_rename_all,
@@ -47,7 +48,7 @@ use validation::{
 
 use crate::{
     metadata::StructMetadata,
-    parser::{extract_field_rename, strip_raw_prefix},
+    parser::{extract_default, extract_field_rename, strip_raw_prefix},
 };
 
 /// Generate schema code from a struct with optional field filtering
@@ -222,6 +223,8 @@ pub fn generate_schema_type_code(
     let mut relation_fields: Vec<RelationFieldInfo> = Vec::new();
     // Track inline types that need to be generated for circular relations
     let mut inline_type_definitions: Vec<TokenStream> = Vec::new();
+    // Track default value functions generated from sea_orm(default_value)
+    let mut default_functions: Vec<TokenStream> = Vec::new();
 
     if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
         for field in &fields_named.named {
@@ -405,6 +408,18 @@ pub fn generate_schema_type_code(
                 // that may have ORM-specific attributes we don't want in the generated struct
                 let serde_field_attrs = extract_field_serde_attrs(&field.attrs);
 
+                // Generate serde default + schema(default) from sea_orm(default_value)
+                // Only for non-partial, non-Option fields with literal (non-SQL-function) defaults
+                let (serde_default_attr, schema_default_attr) = generate_sea_orm_default_attrs(
+                    &field.attrs,
+                    new_type_name,
+                    &rust_field_name,
+                    original_ty,
+                    &field_ty,
+                    should_wrap_option || is_option_type(original_ty),
+                    &mut default_functions,
+                );
+
                 // Check if field should be renamed
                 if let Some(new_name) = rename_map.get(&rust_field_name) {
                     // Create new identifier for the field
@@ -421,6 +436,8 @@ pub fn generate_schema_type_code(
                     field_tokens.push(quote! {
                         #(#doc_attrs)*
                         #(#filtered_attrs)*
+                        #serde_default_attr
+                        #schema_default_attr
                         #[serde(rename = #json_name)]
                         #vis #new_field_ident: #field_ty
                     });
@@ -439,6 +456,8 @@ pub fn generate_schema_type_code(
                     field_tokens.push(quote! {
                         #(#doc_attrs)*
                         #(#serde_field_attrs)*
+                        #serde_default_attr
+                        #schema_default_attr
                         #vis #field_ident: #field_ty
                     });
 
@@ -568,6 +587,9 @@ pub fn generate_schema_type_code(
             // Inline types for circular relation references
             #(#inline_type_definitions)*
 
+            // Default value functions for sea_orm(default_value) fields
+            #(#default_functions)*
+
             #(#struct_doc_attrs)*
             #[derive(serde::Serialize, serde::Deserialize, #clone_derive #schema_derive)]
             #schema_name_attr
@@ -597,6 +619,171 @@ pub fn generate_schema_type_code(
     });
 
     Ok((generated_tokens, metadata))
+}
+
+/// Generate `#[serde(default = "...")]` and `#[schema(default = "...")]` attributes
+/// from `#[sea_orm(default_value = ...)]` on source fields.
+///
+/// Returns `(serde_default_attr, schema_default_attr)` as `TokenStream`s.
+/// - `serde_default_attr`: `#[serde(default = "default_structname_field")]` for deserialization
+/// - `schema_default_attr`: `#[schema(default = "value")]` for OpenAPI default value
+///
+/// Also generates a companion default function and appends it to `default_functions`.
+///
+/// Skips serde default generation when:
+/// - The field type doesn't implement `FromStr` (enums, custom types)
+/// - The field already has `#[serde(default)]`
+/// - The field is wrapped in `Option` (partial mode or already optional)
+///
+/// Always generates `#[schema(default)]` for OpenAPI when a literal default exists.
+fn generate_sea_orm_default_attrs(
+    original_attrs: &[syn::Attribute],
+    struct_name: &syn::Ident,
+    field_name: &str,
+    original_ty: &syn::Type,
+    field_ty: &dyn quote::ToTokens,
+    is_optional_or_partial: bool,
+    default_functions: &mut Vec<TokenStream>,
+) -> (TokenStream, TokenStream) {
+    // Don't generate defaults for optional/partial fields
+    if is_optional_or_partial {
+        return (quote! {}, quote! {});
+    }
+
+    // Check for sea_orm(default_value)
+    let Some(default_value) = extract_sea_orm_default_value(original_attrs) else {
+        return (quote! {}, quote! {});
+    };
+
+    // SQL functions like NOW(), CURRENT_TIMESTAMP(), gen_random_uuid()
+    // can't be expressed as concrete JSON defaults, but we can make the field
+    // not-required by generating serde(default) with a dummy default value.
+    if is_sql_function_default(&default_value) {
+        let has_existing_serde_default = extract_default(original_attrs).is_some();
+        if !has_existing_serde_default
+            && let Some(default_body) = sql_function_default_body(original_ty)
+        {
+            let fn_name = format!("default_{struct_name}_{field_name}");
+            let fn_ident = syn::Ident::new(&fn_name, proc_macro2::Span::call_site());
+            default_functions.push(quote! {
+                #[allow(non_snake_case)]
+                fn #fn_ident() -> #field_ty {
+                    #default_body
+                }
+            });
+            let serde_default_attr = quote! { #[serde(default = #fn_name)] };
+            return (serde_default_attr, quote! {});
+        }
+        return (quote! {}, quote! {});
+    }
+
+    // Generate #[schema(default = "value")] for OpenAPI (always, regardless of type support)
+    let schema_default_attr = quote! { #[schema(default = #default_value)] };
+
+    // Check if field already has serde(default)
+    let has_existing_serde_default = extract_default(original_attrs).is_some();
+    if has_existing_serde_default {
+        return (quote! {}, schema_default_attr);
+    }
+
+    // Only generate serde default function for types known to implement FromStr
+    if !is_parseable_type(original_ty) {
+        return (quote! {}, schema_default_attr);
+    }
+
+    // Generate default function with struct-specific name to avoid collisions:
+    // fn default_{StructName}_{field_name}() -> Type { "value".parse().unwrap() }
+    let fn_name = format!("default_{struct_name}_{field_name}");
+    let fn_ident = syn::Ident::new(&fn_name, proc_macro2::Span::call_site());
+
+    default_functions.push(quote! {
+        #[allow(non_snake_case)]
+        fn #fn_ident() -> #field_ty {
+            #default_value.parse().unwrap()
+        }
+    });
+
+    let serde_default_attr = quote! { #[serde(default = #fn_name)] };
+
+    (serde_default_attr, schema_default_attr)
+}
+
+/// Generate a dummy default expression for types with SQL function defaults
+/// (e.g., `gen_random_uuid()`, `NOW()`).
+///
+/// Returns `Some(TokenStream)` with the default expression for supported types,
+/// `None` for types where a dummy default cannot be generated.
+///
+/// These defaults exist solely to satisfy `serde(default)` so the field becomes
+/// not-required in OpenAPI. The actual value is irrelevant since the database
+/// provides the real default.
+fn sql_function_default_body(original_ty: &syn::Type) -> Option<TokenStream> {
+    let syn::Type::Path(type_path) = original_ty else {
+        return None;
+    };
+    let segment = type_path.path.segments.last()?;
+    let type_name = segment.ident.to_string();
+
+    match type_name.as_str() {
+        // Types implementing Default (returns zero/empty values)
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
+        | "usize" | "f32" | "f64" | "bool" | "String" | "Decimal" | "Uuid" => {
+            Some(quote! { Default::default() })
+        }
+        // SeaORM datetime types → chrono epoch
+        "DateTimeWithTimeZone" => Some(quote! {
+            vespera::chrono::DateTime::<vespera::chrono::Utc>::UNIX_EPOCH.fixed_offset()
+        }),
+        "DateTimeUtc" => Some(quote! {
+            vespera::chrono::DateTime::<vespera::chrono::Utc>::UNIX_EPOCH
+        }),
+        "DateTimeLocal" => Some(quote! {
+            vespera::chrono::DateTime::<vespera::chrono::Utc>::UNIX_EPOCH
+                .with_timezone(&vespera::chrono::Local)
+        }),
+        "DateTime" | "NaiveDateTime" => Some(quote! {
+            vespera::chrono::NaiveDateTime::UNIX_EPOCH
+        }),
+        "NaiveDate" | "Date" => Some(quote! {
+            vespera::chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()
+        }),
+        "NaiveTime" | "Time" => Some(quote! {
+            vespera::chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap()
+        }),
+        _ => None,
+    }
+}
+
+/// Check if a type is known to implement `FromStr` and can use `.parse().unwrap()`.
+///
+/// Returns true for primitive types, String, and Decimal.
+/// Returns false for enums and unknown custom types.
+fn is_parseable_type(ty: &syn::Type) -> bool {
+    let syn::Type::Path(type_path) = ty else {
+        return false;
+    };
+    let Some(segment) = type_path.path.segments.last() else {
+        return false;
+    };
+    matches!(
+        segment.ident.to_string().as_str(),
+        "i8" | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+            | "bool"
+            | "String"
+            | "Decimal"
+    )
 }
 
 #[cfg(test)]

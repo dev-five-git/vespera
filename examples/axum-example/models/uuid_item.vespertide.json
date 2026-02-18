@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/dev-five-git/vespertide/refs/heads/main/schemas/model.schema.json",
+  "name": "uuid_item",
+  "description": "UUID item model for testing UUID format in OpenAPI",
+  "columns": [
+    { "name": "id", "type": "uuid", "nullable": false, "primary_key": true, "default": "gen_random_uuid()", "comment": "Item ID" },
+    { "name": "name", "type": "text", "nullable": false, "comment": "Item name" },
+    { "name": "external_ref", "type": "uuid", "nullable": true, "comment": "External reference UUID" },
+    { "name": "created_at", "type": "timestamptz", "nullable": false, "default": "NOW()", "comment": "Created at" }
+  ]
+}

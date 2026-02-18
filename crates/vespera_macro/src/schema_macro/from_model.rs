@@ -10,8 +10,8 @@ use syn::Type;
 
 use super::{
     circular::{
-        detect_circular_fields, generate_inline_struct_construction,
-        generate_inline_type_construction, has_fk_relations, is_circular_relation_required,
+        analyze_circular_refs, generate_inline_struct_construction,
+        generate_inline_type_construction,
     },
     file_lookup::{find_fk_column_from_target_entity, find_struct_from_schema_path},
     seaorm::RelationFieldInfo,
@@ -231,15 +231,15 @@ pub fn generate_from_model_with_relations(
         let related_model = find_struct_from_schema_path(&model_path_str);
 
         if let Some(ref model) = related_model {
-            let circular_fields = detect_circular_fields(
-                new_type_name.to_string().as_str(),
-                source_module_path,
-                &model.definition,
-            );
+            let analysis = analyze_circular_refs(source_module_path, &model.definition);
             // Check if any circular field is a required relation
-            circular_fields
-                .iter()
-                .any(|cf| is_circular_relation_required(&model.definition, cf))
+            analysis.circular_fields.iter().any(|cf| {
+                analysis
+                    .circular_field_required
+                    .get(cf)
+                    .copied()
+                    .unwrap_or(false)
+            })
         } else {
             false
         }
@@ -301,11 +301,9 @@ pub fn generate_from_model_with_relations(
                     // Get the definition string
                     let related_def_str = related_model_from_file.as_ref().map_or("", |s| s.definition.as_str());
 
-                    // Check for circular references
-                    // The source module path tells us what module we're in (e.g., ["crate", "models", "memo"])
-                    // We need to check if the related model has any relation fields pointing back to our module
-                    let circular_fields = detect_circular_fields(new_type_name.to_string().as_str(), source_module_path, related_def_str);
-
+                    // Analyze circular references, FK relations, and FK optionality in ONE pass
+                    let analysis = analyze_circular_refs(source_module_path, related_def_str);
+                    let circular_fields = &analysis.circular_fields;
                     let has_circular = !circular_fields.is_empty();
 
                     // Check if we have inline type info - if so, use the inline type
@@ -344,7 +342,7 @@ pub fn generate_from_model_with_relations(
                             "HasOne" | "BelongsTo" => {
                                 if has_circular {
                                     // Use inline construction to break circular ref
-                                    let inline_construct = generate_inline_struct_construction(schema_path, related_def_str, &circular_fields, "r");
+                                    let inline_construct = generate_inline_struct_construction(schema_path, related_def_str, circular_fields, "r");
                                     if rel.is_optional {
                                         quote! {
                                             #new_ident: #source_ident.map(|r| Box::new(#inline_construct))
@@ -360,8 +358,8 @@ pub fn generate_from_model_with_relations(
                                         }
                                     }
                                 } else {
-                                    // No circular ref - check if target schema has FK relations
-                                    let target_has_fk = has_fk_relations(related_def_str);
+                                    // No circular ref - use has_fk_relations from the analysis
+                                    let target_has_fk = analysis.has_fk_relations;
 
                                     if target_has_fk {
                                         // Target schema has FK relations -> use async from_model()
@@ -405,13 +403,13 @@ pub fn generate_from_model_with_relations(
                                 // when explicitly picked. Use inline construction (no relations).
                                 if has_circular {
                                     // Use inline construction to break circular ref
-                                    let inline_construct = generate_inline_struct_construction(schema_path, related_def_str, &circular_fields, "r");
+                                    let inline_construct = generate_inline_struct_construction(schema_path, related_def_str, circular_fields, "r");
                                     quote! {
                                         #new_ident: #source_ident.into_iter().map(|r| #inline_construct).collect()
                                     }
                                 } else {
-                                    // No circular ref - check if target schema has FK relations
-                                    let target_has_fk = has_fk_relations(related_def_str);
+                                    // No circular ref - use has_fk_relations from the analysis
+                                    let target_has_fk = analysis.has_fk_relations;
 
                                     if target_has_fk {
                                         // Target has FK relations but HasMany doesn't load nested data anyway,

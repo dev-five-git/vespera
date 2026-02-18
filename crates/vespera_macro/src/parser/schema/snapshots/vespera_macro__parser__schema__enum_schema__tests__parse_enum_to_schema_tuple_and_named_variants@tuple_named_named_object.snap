@@ -94,7 +94,9 @@ Schema {
                                                     schema_type: Some(
                                                         Integer,
                                                     ),
-                                                    format: None,
+                                                    format: Some(
+                                                        "int32",
+                                                    ),
                                                     title: None,
                                                     description: None,
                                                     default: None,

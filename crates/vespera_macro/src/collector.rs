@@ -1,5 +1,6 @@
 //! Collector for routes and structs
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use syn::Item;
@@ -11,10 +12,17 @@ use crate::{
     route::{extract_doc_comment, extract_route_info},
 };
 
-/// Collect routes and structs from a folder
+/// Collect routes and structs from a folder.
+///
+/// Returns the metadata AND the parsed file ASTs, so downstream consumers
+/// (e.g., `openapi_generator`) can reuse them without re-reading files from disk.
 #[allow(clippy::option_if_let_else)]
-pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> MacroResult<CollectedMetadata> {
+pub fn collect_metadata(
+    folder_path: &Path,
+    folder_name: &str,
+) -> MacroResult<(CollectedMetadata, HashMap<String, syn::File>)> {
     let mut metadata = CollectedMetadata::new();
+    let mut file_asts = HashMap::new();
 
     let files = collect_files(folder_path).map_err(|e| err_call_site(format!("vespera! macro: failed to scan route folder '{}': {}. Verify the folder exists and is readable.", folder_path.display(), e)))?;
 
@@ -32,6 +40,10 @@ pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> MacroResult<Co
         })?;
 
         let file_ast = syn::parse_file(&content).map_err(|e| err_call_site(format!("vespera! macro: syntax error in '{}': {}. Fix the Rust syntax errors in this file.", file.display(), e)))?;
+
+        // Store file AST for downstream reuse (keyed by display path to match RouteMetadata.file_path)
+        let file_path_key = file.display().to_string();
+        file_asts.insert(file_path_key, file_ast.clone());
 
         // Get module path
         let segments = file
@@ -91,7 +103,7 @@ pub fn collect_metadata(folder_path: &Path, folder_name: &str) -> MacroResult<Co
         }
     }
 
-    Ok(metadata)
+    Ok((metadata, file_asts))
 }
 
 #[cfg(test)]
@@ -117,7 +129,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let folder_name = "routes";
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         assert!(metadata.routes.is_empty());
         assert!(metadata.structs.is_empty());
@@ -236,7 +248,7 @@ pub fn get_users() -> String {
             create_temp_file(&temp_dir, filename, content);
         }
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         let route = &metadata.routes[0];
         assert_eq!(route.method, expected_method);
@@ -259,7 +271,7 @@ pub fn get_users() -> String {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let folder_name = "routes";
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         assert_eq!(metadata.routes.len(), 0);
 
@@ -282,7 +294,7 @@ pub struct User {
 ",
         );
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         assert_eq!(metadata.routes.len(), 0);
         assert_eq!(metadata.structs.len(), 0);
@@ -314,7 +326,7 @@ pub fn get_user() -> User {
 "#,
         );
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         assert_eq!(metadata.routes.len(), 1);
 
@@ -356,7 +368,7 @@ pub fn get_posts() -> String {
 "#,
         );
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         assert_eq!(metadata.routes.len(), 3);
         assert_eq!(metadata.structs.len(), 0);
@@ -407,7 +419,7 @@ pub struct Post {
 ",
         );
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         assert_eq!(metadata.routes.len(), 0);
 
@@ -430,7 +442,7 @@ pub fn index() -> String {
 "#,
         );
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         assert_eq!(metadata.routes.len(), 1);
         let route = &metadata.routes[0];
@@ -457,7 +469,7 @@ pub fn get_users() -> String {
 "#,
         );
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         assert_eq!(metadata.routes.len(), 1);
         let route = &metadata.routes[0];
@@ -486,7 +498,7 @@ pub fn get_users() -> String {
 
         create_temp_file(&temp_dir, "readme.md", "# Readme");
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         // Only .rs file should be processed
         assert_eq!(metadata.routes.len(), 1);
@@ -513,7 +525,7 @@ pub fn get_users() -> String {
 
         create_temp_file(&temp_dir, "invalid.rs", "invalid rust syntax {");
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name);
+        let metadata = collect_metadata(temp_dir.path(), folder_name).map(|(m, _)| m);
 
         // Only valid file should be processed
         assert!(metadata.is_err());
@@ -537,7 +549,7 @@ pub fn get_users() -> String {
 "#,
         );
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         assert_eq!(metadata.routes.len(), 1);
         let route = &metadata.routes[0];
@@ -584,7 +596,7 @@ pub fn options_handler() -> String { "options".to_string() }
 "#,
         );
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         assert_eq!(metadata.routes.len(), 7);
 
@@ -766,7 +778,7 @@ pub fn get_users() -> String {
         );
 
         // Collect metadata from the subdirectory
-        let metadata = collect_metadata(&sub_dir, folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(&sub_dir, folder_name).unwrap();
 
         // Should collect the route (strip_prefix succeeds in normal cases)
         assert_eq!(metadata.routes.len(), 1);
@@ -794,7 +806,7 @@ pub struct User {
 ",
         );
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         // Struct without Schema derive should not be collected
         assert_eq!(metadata.structs.len(), 0);
@@ -820,7 +832,7 @@ pub struct User {
 ",
         );
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
 
         // Struct with only Debug/Clone derive (no Schema) should not be collected
         assert_eq!(metadata.structs.len(), 0);

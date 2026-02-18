@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/dev-five-git/vespertide/refs/heads/main/schemas/model.schema.json",
+  "columns": [
+    {
+      "name": "id",
+      "type": "big_int",
+      "nullable": false,
+      "primary_key": { "auto_increment": true }
+    },
+    {
+      "name": "temperature",
+      "type": { "kind": "numeric", "precision": 3, "scale": 2 },
+      "nullable": false,
+      "default": 0.7
+    }
+  ],
+  "name": "config"
+}

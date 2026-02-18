@@ -130,7 +130,9 @@ Schema {
                     schema_type: Some(
                         Number,
                     ),
-                    format: None,
+                    format: Some(
+                        "double",
+                    ),
                     title: None,
                     description: None,
                     default: None,

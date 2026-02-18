@@ -37,15 +37,20 @@ pub fn is_primitive_type(ty: &Type) -> bool {
                     "i8" | "i16"
                         | "i32"
                         | "i64"
+                        | "i128"
+                        | "isize"
                         | "u8"
                         | "u16"
                         | "u32"
                         | "u64"
+                        | "u128"
+                        | "usize"
                         | "f32"
                         | "f64"
                         | "bool"
                         | "String"
                         | "str"
+                        | "Decimal"
                 )
             } else {
                 false
@@ -217,12 +222,73 @@ fn parse_type_impl(
             }
 
             // Handle primitive types
+            // For standard OpenAPI format types (i32, i64, f32, f64), use `format`
+            // per the OAS 3.1 Data Type Format spec. For non-standard types, fall
+            // back to `minimum`/`maximum` constraints.
             match ident_str.as_str() {
-                "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "StatusCode" => {
-                    SchemaRef::Inline(Box::new(Schema::integer()))
-                }
-                "f32" | "f64" => SchemaRef::Inline(Box::new(Schema::number())),
+                // Signed integers: use OpenAPI format registry
+                // https://spec.openapis.org/registry/format/index.html
+                "i8" => SchemaRef::Inline(Box::new(Schema {
+                    format: Some("int8".to_string()),
+                    ..Schema::integer()
+                })),
+                "i16" => SchemaRef::Inline(Box::new(Schema {
+                    format: Some("int16".to_string()),
+                    ..Schema::integer()
+                })),
+                "i32" => SchemaRef::Inline(Box::new(Schema {
+                    format: Some("int32".to_string()),
+                    ..Schema::integer()
+                })),
+                "i64" => SchemaRef::Inline(Box::new(Schema {
+                    format: Some("int64".to_string()),
+                    ..Schema::integer()
+                })),
+                // Unsigned integers: use OpenAPI format registry
+                "u8" => SchemaRef::Inline(Box::new(Schema {
+                    format: Some("uint8".to_string()),
+                    ..Schema::integer()
+                })),
+                "u16" => SchemaRef::Inline(Box::new(Schema {
+                    format: Some("uint16".to_string()),
+                    ..Schema::integer()
+                })),
+                "u32" => SchemaRef::Inline(Box::new(Schema {
+                    format: Some("uint32".to_string()),
+                    ..Schema::integer()
+                })),
+                "u64" => SchemaRef::Inline(Box::new(Schema {
+                    format: Some("uint64".to_string()),
+                    ..Schema::integer()
+                })),
+                // i128, isize, StatusCode: no standard format in the registry
+                "i128" | "isize" | "StatusCode" => SchemaRef::Inline(Box::new(Schema::integer())),
+                // u128, usize: unsigned with no standard format — use minimum: 0
+                "u128" | "usize" => SchemaRef::Inline(Box::new(Schema {
+                    minimum: Some(0.0),
+                    ..Schema::integer()
+                })),
+                "f32" => SchemaRef::Inline(Box::new(Schema {
+                    format: Some("float".to_string()),
+                    ..Schema::number()
+                })),
+                "f64" => SchemaRef::Inline(Box::new(Schema {
+                    format: Some("double".to_string()),
+                    ..Schema::number()
+                })),
+                "Decimal" => SchemaRef::Inline(Box::new(Schema {
+                    format: Some("decimal".to_string()),
+                    ..Schema::number()
+                })),
                 "bool" => SchemaRef::Inline(Box::new(Schema::boolean())),
+                "char" => SchemaRef::Inline(Box::new(Schema {
+                    format: Some("char".to_string()),
+                    ..Schema::string()
+                })),
+                "Uuid" => SchemaRef::Inline(Box::new(Schema {
+                    format: Some("uuid".to_string()),
+                    ..Schema::string()
+                })),
                 "String" | "str" => SchemaRef::Inline(Box::new(Schema::string())),
                 // Date-time types from chrono and time crates
                 "DateTime"

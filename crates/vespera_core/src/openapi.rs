@@ -48,7 +48,7 @@ pub struct License {
 }
 
 /// API information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Info {
     /// API title
@@ -192,18 +192,6 @@ impl OpenApi {
             }
         }
     }
-
-    /// Merge from a JSON string. Returns error if parsing fails.
-    ///
-    /// # Errors
-    ///
-    /// Returns a `serde_json::Error` when `json_str` is not valid JSON or does not
-    /// deserialize into an `OpenApi` document.
-    pub fn merge_from_str(&mut self, json_str: &str) -> Result<(), serde_json::Error> {
-        let other: Self = serde_json::from_str(json_str)?;
-        self.merge(other);
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -245,16 +233,7 @@ mod tests {
                 responses: BTreeMap::new(),
                 security: None,
             }),
-            post: None,
-            put: None,
-            delete: None,
-            patch: None,
-            options: None,
-            head: None,
-            trace: None,
-            parameters: None,
-            summary: None,
-            description: None,
+            ..Default::default()
         }
     }
 
@@ -467,35 +446,6 @@ mod tests {
 
         assert!(base.tags.is_some());
         assert_eq!(base.tags.as_ref().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn test_merge_from_str() {
-        let mut base = create_base_openapi();
-        base.paths
-            .insert("/users".to_string(), create_path_item("Get users"));
-
-        let other_json = r#"{
-            "openapi": "3.1.0",
-            "info": { "title": "Other API", "version": "2.0.0" },
-            "paths": {
-                "/posts": { "get": { "summary": "Get posts", "responses": {} } }
-            }
-        }"#;
-
-        let result = base.merge_from_str(other_json);
-        assert!(result.is_ok());
-        assert!(base.paths.contains_key("/users"));
-        assert!(base.paths.contains_key("/posts"));
-    }
-
-    #[test]
-    fn test_merge_from_str_invalid_json() {
-        let mut base = create_base_openapi();
-        let invalid_json = "{ invalid json }";
-
-        let result = base.merge_from_str(invalid_json);
-        assert!(result.is_err());
     }
 
     #[test]
