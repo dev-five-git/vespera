@@ -77,12 +77,28 @@ fn extract_status_code_tuple(err_ty: &Type) -> Option<(u16, Type)> {
     }
 }
 
+/// Check if a type is a non-body response type (metadata only).
+/// These types contribute to the HTTP response (status, headers, cookies)
+/// but do not form the response body.
+fn is_non_body_type(ty: &Type) -> bool {
+    is_keyword_type(ty, &KeywordType::StatusCode)
+        || is_keyword_type(ty, &KeywordType::HeaderMap)
+        || is_keyword_type(ty, &KeywordType::CookieJar)
+}
+
 /// Extract payload type from an Ok tuple and track if headers exist.
-/// The last element of the tuple is always treated as the response body.
+/// Non-body types (`StatusCode`, `HeaderMap`, `CookieJar`) are filtered out.
+/// The last remaining element is treated as the response body.
 /// Any presence of `HeaderMap` in the tuple marks headers as present.
 fn extract_ok_payload_and_headers(ok_ty: &Type) -> (Type, Option<HashMap<String, Header>>) {
     if let Type::Tuple(tuple) = ok_ty {
-        let payload_ty = tuple.elems.last().map(|ty| unwrap_json(ty).clone());
+        // Find the body type: last element that is NOT a non-body type
+        let payload_ty = tuple
+            .elems
+            .iter()
+            .rev()
+            .find(|ty| !is_non_body_type(ty))
+            .map(|ty| unwrap_json(ty).clone());
 
         if let Some(payload_ty) = payload_ty {
             let headers = if tuple
@@ -127,27 +143,34 @@ pub fn parse_return_type(
             if let Some((ok_ty, err_ty)) = extract_result_types(ty) {
                 // Handle success response (200)
                 let (ok_payload_ty, ok_headers) = extract_ok_payload_and_headers(&ok_ty);
-                let ok_schema = parse_type_to_schema_ref_with_schemas(
-                    &ok_payload_ty,
-                    known_schemas,
-                    struct_definitions,
-                );
-                let mut ok_content = BTreeMap::new();
-                ok_content.insert(
-                    "application/json".to_string(),
-                    MediaType {
-                        schema: Some(ok_schema),
-                        example: None,
-                        examples: None,
-                    },
-                );
+
+                // StatusCode alone means no response body — just the HTTP status code
+                let ok_content = if is_keyword_type(&ok_payload_ty, &KeywordType::StatusCode) {
+                    None
+                } else {
+                    let ok_schema = parse_type_to_schema_ref_with_schemas(
+                        &ok_payload_ty,
+                        known_schemas,
+                        struct_definitions,
+                    );
+                    let mut content = BTreeMap::new();
+                    content.insert(
+                        "application/json".to_string(),
+                        MediaType {
+                            schema: Some(ok_schema),
+                            example: None,
+                            examples: None,
+                        },
+                    );
+                    Some(content)
+                };
 
                 responses.insert(
                     "200".to_string(),
                     Response {
                         description: "Successful response".to_string(),
                         headers: ok_headers,
-                        content: Some(ok_content),
+                        content: ok_content,
                     },
                 );
 
@@ -210,27 +233,34 @@ pub fn parse_return_type(
                 // Not a Result type - regular response
                 // Unwrap Json<T> if present
                 let unwrapped_ty = unwrap_json(ty);
-                let schema = parse_type_to_schema_ref_with_schemas(
-                    unwrapped_ty,
-                    known_schemas,
-                    struct_definitions,
-                );
-                let mut content = BTreeMap::new();
-                content.insert(
-                    "application/json".to_string(),
-                    MediaType {
-                        schema: Some(schema),
-                        example: None,
-                        examples: None,
-                    },
-                );
+
+                // StatusCode alone means no response body
+                let content = if is_keyword_type(unwrapped_ty, &KeywordType::StatusCode) {
+                    None
+                } else {
+                    let schema = parse_type_to_schema_ref_with_schemas(
+                        unwrapped_ty,
+                        known_schemas,
+                        struct_definitions,
+                    );
+                    let mut c = BTreeMap::new();
+                    c.insert(
+                        "application/json".to_string(),
+                        MediaType {
+                            schema: Some(schema),
+                            example: None,
+                            examples: None,
+                        },
+                    );
+                    Some(c)
+                };
 
                 responses.insert(
                     "200".to_string(),
                     Response {
                         description: "Successful response".to_string(),
                         headers: None,
-                        content: Some(content),
+                        content,
                     },
                 );
             }
@@ -379,6 +409,27 @@ mod tests {
         "-> Result<String, (axum::http::StatusCode, Json<i32>)>",
         Some(ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None }),
         Some(ExpectedResponse { status: "400", schema: ExpectedSchema { schema_type: SchemaType::Integer, nullable: false, items_schema_type: None } }),
+        None
+    )]
+    // StatusCode as the sole Ok response type → no content (empty body)
+    #[case(
+        "-> Result<StatusCode, (StatusCode, String)>",
+        None,
+        Some(ExpectedResponse { status: "400", schema: ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None } }),
+        None
+    )]
+    // CookieJar in Ok tuple → body is Json<String>, CookieJar filtered out
+    #[case(
+        "-> Result<(CookieJar, Json<String>), (StatusCode, String)>",
+        Some(ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None }),
+        Some(ExpectedResponse { status: "400", schema: ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None } }),
+        None
+    )]
+    // CookieJar + StatusCode in Ok tuple → body is last non-metadata element
+    #[case(
+        "-> Result<(StatusCode, CookieJar, Json<i32>), String>",
+        Some(ExpectedSchema { schema_type: SchemaType::Integer, nullable: false, items_schema_type: None }),
+        Some(ExpectedResponse { status: "400", schema: ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None } }),
         None
     )]
     fn test_parse_return_type(
@@ -609,5 +660,59 @@ mod tests {
         let ok_response = responses.get("200").unwrap();
         // Headers should be None
         assert!(ok_response.headers.is_none());
+    }
+
+    // ======== CookieJar tuple extraction tests ========
+
+    #[test]
+    fn test_extract_ok_payload_and_headers_cookie_jar_tuple() {
+        // (CookieJar, Json<String>) → payload should be String, CookieJar filtered
+        let ty: syn::Type = syn::parse_str("(CookieJar, Json<String>)").unwrap();
+        let (payload, headers) = extract_ok_payload_and_headers(&ty);
+
+        if let syn::Type::Path(type_path) = &payload {
+            assert_eq!(
+                type_path.path.segments.last().unwrap().ident.to_string(),
+                "String"
+            );
+        } else {
+            panic!("Expected Path type for payload");
+        }
+        assert!(headers.is_none());
+    }
+
+    #[test]
+    fn test_extract_ok_payload_and_headers_cookie_jar_with_status_code() {
+        // (StatusCode, CookieJar, Json<i32>) → payload should be i32
+        let ty: syn::Type = syn::parse_str("(StatusCode, CookieJar, Json<i32>)").unwrap();
+        let (payload, headers) = extract_ok_payload_and_headers(&ty);
+
+        if let syn::Type::Path(type_path) = &payload {
+            assert_eq!(
+                type_path.path.segments.last().unwrap().ident.to_string(),
+                "i32"
+            );
+        } else {
+            panic!("Expected Path type for payload");
+        }
+        assert!(headers.is_none());
+    }
+
+    #[test]
+    fn test_is_non_body_type() {
+        let status: syn::Type = syn::parse_str("StatusCode").unwrap();
+        assert!(is_non_body_type(&status));
+
+        let header_map: syn::Type = syn::parse_str("HeaderMap").unwrap();
+        assert!(is_non_body_type(&header_map));
+
+        let cookie_jar: syn::Type = syn::parse_str("CookieJar").unwrap();
+        assert!(is_non_body_type(&cookie_jar));
+
+        let string: syn::Type = syn::parse_str("String").unwrap();
+        assert!(!is_non_body_type(&string));
+
+        let json: syn::Type = syn::parse_str("Json<String>").unwrap();
+        assert!(!is_non_body_type(&json));
     }
 }

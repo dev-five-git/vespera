@@ -255,6 +255,37 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         }
       }
     },
+    "/error/cookie-jar-logout": {
+      "post": {
+        "operationId": "cookie_jar_endpoint",
+        "tags": [
+          "error"
+        ],
+        "description": "Logout endpoint that uses CookieJar to clear cookies",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/error/error-with-status": {
       "get": {
         "operationId": "error_endpoint_with_status_code",
@@ -405,6 +436,40 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/error/status-code/{id}": {
+      "delete": {
+        "operationId": "status_code_endpoint",
+        "tags": [
+          "error"
+        ],
+        "description": "Delete endpoint that returns just a StatusCode",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -3532,6 +3597,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
     }
   },
   "tags": [
+    {
+      "name": "error"
+    },
     {
       "name": "flatten"
     },

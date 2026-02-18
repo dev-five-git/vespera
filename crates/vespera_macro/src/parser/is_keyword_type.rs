@@ -3,6 +3,7 @@ use syn::{Type, TypePath};
 pub enum KeywordType {
     HeaderMap,
     StatusCode,
+    CookieJar,
     Result,
 }
 
@@ -11,6 +12,7 @@ impl KeywordType {
         match self {
             Self::HeaderMap => "HeaderMap",
             Self::StatusCode => "StatusCode",
+            Self::CookieJar => "CookieJar",
             Self::Result => "Result",
         }
     }
@@ -42,9 +44,11 @@ mod tests {
     #[rstest]
     #[case("HeaderMap", KeywordType::HeaderMap, true)]
     #[case("StatusCode", KeywordType::StatusCode, true)]
+    #[case("CookieJar", KeywordType::CookieJar, true)]
     #[case("String", KeywordType::HeaderMap, false)]
     #[case("axum::http::HeaderMap", KeywordType::HeaderMap, true)]
     #[case("axum::http::StatusCode", KeywordType::StatusCode, true)]
+    #[case("axum_extra::extract::cookie::CookieJar", KeywordType::CookieJar, true)]
     #[case("Result", KeywordType::Result, true)]
     #[case("Result<String, String>", KeywordType::Result, true)]
     #[case("!", KeywordType::Result, false)]
