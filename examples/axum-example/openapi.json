@@ -2208,6 +2208,11 @@
       "Config": {
         "type": "object",
         "properties": {
+          "delimiter": {
+            "type": "string",
+            "format": "char",
+            "nullable": true
+          },
           "discountRate": {
             "type": "number",
             "format": "decimal",
@@ -2233,6 +2238,10 @@
             "type": "integer",
             "format": "uint8"
           },
+          "separator": {
+            "type": "string",
+            "format": "char"
+          },
           "taxRate": {
             "type": "number",
             "format": "decimal"
@@ -2244,7 +2253,8 @@
           "maxPrice",
           "maxItems",
           "retryCount",
-          "priority"
+          "priority",
+          "separator"
         ]
       },
       "ConfigSchema": {
@@ -3591,6 +3601,11 @@
       "UpdateConfigRequest": {
         "type": "object",
         "properties": {
+          "delimiter": {
+            "type": "string",
+            "format": "char",
+            "nullable": true
+          },
           "discountRate": {
             "type": "number",
             "format": "decimal",
@@ -3619,6 +3634,11 @@
           "retryCount": {
             "type": "integer",
             "format": "uint8",
+            "nullable": true
+          },
+          "separator": {
+            "type": "string",
+            "format": "char",
             "nullable": true
           },
           "taxRate": {

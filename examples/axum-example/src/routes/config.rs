@@ -13,6 +13,8 @@ pub struct Config {
     pub max_items: usize,
     pub retry_count: u8,
     pub priority: i32,
+    pub separator: char,
+    pub delimiter: Option<char>,
 }
 
 #[derive(Deserialize, Schema)]
@@ -25,6 +27,8 @@ pub struct UpdateConfigRequest {
     pub max_items: Option<usize>,
     pub retry_count: Option<u8>,
     pub priority: Option<i32>,
+    pub separator: Option<char>,
+    pub delimiter: Option<char>,
 }
 
 /// Get current config
@@ -38,6 +42,8 @@ pub async fn get_config() -> Json<Config> {
         max_items: 100,
         retry_count: 3,
         priority: 0,
+        separator: ',',
+        delimiter: Some('|'),
     })
 }
 
@@ -56,6 +62,8 @@ pub async fn update_config(Json(req): Json<UpdateConfigRequest>) -> Json<Config>
         max_items: 100,
         retry_count: 3,
         priority: 0,
+        separator: ',',
+        delimiter: Some('|'),
     };
 
     Json(Config {
@@ -66,5 +74,7 @@ pub async fn update_config(Json(req): Json<UpdateConfigRequest>) -> Json<Config>
         max_items: req.max_items.unwrap_or(current.max_items),
         retry_count: req.retry_count.unwrap_or(current.retry_count),
         priority: req.priority.unwrap_or(current.priority),
+        separator: req.separator.unwrap_or(current.separator),
+        delimiter: req.delimiter.or(current.delimiter),
     })
 }

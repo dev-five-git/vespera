@@ -2212,6 +2212,11 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
       "Config": {
         "type": "object",
         "properties": {
+          "delimiter": {
+            "type": "string",
+            "format": "char",
+            "nullable": true
+          },
           "discountRate": {
             "type": "number",
             "format": "decimal",
@@ -2237,6 +2242,10 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "type": "integer",
             "format": "uint8"
           },
+          "separator": {
+            "type": "string",
+            "format": "char"
+          },
           "taxRate": {
             "type": "number",
             "format": "decimal"
@@ -2248,7 +2257,8 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "maxPrice",
           "maxItems",
           "retryCount",
-          "priority"
+          "priority",
+          "separator"
         ]
       },
       "ConfigSchema": {
@@ -3595,6 +3605,11 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
       "UpdateConfigRequest": {
         "type": "object",
         "properties": {
+          "delimiter": {
+            "type": "string",
+            "format": "char",
+            "nullable": true
+          },
           "discountRate": {
             "type": "number",
             "format": "decimal",
@@ -3623,6 +3638,11 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "retryCount": {
             "type": "integer",
             "format": "uint8",
+            "nullable": true
+          },
+          "separator": {
+            "type": "string",
+            "format": "char",
             "nullable": true
           },
           "taxRate": {
