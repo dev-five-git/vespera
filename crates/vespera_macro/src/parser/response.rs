@@ -432,6 +432,36 @@ mod tests {
         Some(ExpectedResponse { status: "400", schema: ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None } }),
         None
     )]
+    // Non-Result: StatusCode alone → no content (covers line 155)
+    #[case("-> StatusCode", None, None, None)]
+    // Non-Result: Json<T> wrapper → unwraps to T
+    #[case(
+        "-> Json<String>",
+        Some(ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None }),
+        None,
+        None
+    )]
+    // Non-Result: Json<i32> wrapper → unwraps to integer
+    #[case(
+        "-> Json<i32>",
+        Some(ExpectedSchema { schema_type: SchemaType::Integer, nullable: false, items_schema_type: None }),
+        None,
+        None
+    )]
+    // Non-Result: f64 → number type
+    #[case(
+        "-> f64",
+        Some(ExpectedSchema { schema_type: SchemaType::Number, nullable: false, items_schema_type: None }),
+        None,
+        None
+    )]
+    // Non-Result: qualified axum::Json<String> → unwraps to String
+    #[case(
+        "-> axum::Json<String>",
+        Some(ExpectedSchema { schema_type: SchemaType::String, nullable: false, items_schema_type: None }),
+        None,
+        None
+    )]
     fn test_parse_return_type(
         #[case] return_type_str: &str,
         #[case] ok_expectation: Option<ExpectedSchema>,
@@ -696,6 +726,64 @@ mod tests {
             panic!("Expected Path type for payload");
         }
         assert!(headers.is_none());
+    }
+
+    #[test]
+    fn test_extract_ok_payload_and_headers_all_non_body_types() {
+        // (StatusCode, CookieJar) → no body element found, returns original tuple
+        let ty: syn::Type = syn::parse_str("(StatusCode, CookieJar)").unwrap();
+        let (payload, headers) = extract_ok_payload_and_headers(&ty);
+        // No body element found → falls through to return original type
+        assert!(matches!(payload, syn::Type::Tuple(_)));
+        assert!(headers.is_none());
+    }
+
+    #[test]
+    fn test_unwrap_json_qualified_path() {
+        // vespera::axum::Json<String> → should unwrap to String via last-segment matching
+        let ty: syn::Type = syn::parse_str("vespera::axum::Json<String>").unwrap();
+        let unwrapped = unwrap_json(&ty);
+        if let syn::Type::Path(type_path) = unwrapped {
+            assert_eq!(
+                type_path.path.segments.last().unwrap().ident.to_string(),
+                "String"
+            );
+        } else {
+            panic!("Expected Path type");
+        }
+    }
+
+    #[test]
+    fn test_unwrap_json_non_generic_path() {
+        // Type with segments but no angle brackets → returns original
+        let ty: syn::Type = syn::parse_str("std::string::String").unwrap();
+        let unwrapped = unwrap_json(&ty);
+        if let syn::Type::Path(type_path) = unwrapped {
+            assert_eq!(
+                type_path.path.segments.last().unwrap().ident.to_string(),
+                "String"
+            );
+        } else {
+            panic!("Expected Path type");
+        }
+    }
+
+    #[test]
+    fn test_parse_return_type_non_result_status_code() {
+        // Direct StatusCode return (not in Result) → 200 with no content
+        let known_schemas = HashSet::new();
+        let struct_definitions = HashMap::new();
+        let return_type = parse_return_type_str("-> StatusCode");
+
+        let responses = parse_return_type(&return_type, &known_schemas, &struct_definitions);
+
+        assert_eq!(responses.len(), 1);
+        let ok_response = responses.get("200").unwrap();
+        assert!(
+            ok_response.content.is_none(),
+            "StatusCode return should have no content"
+        );
+        assert!(ok_response.headers.is_none());
     }
 
     #[test]
