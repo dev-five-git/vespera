@@ -281,6 +281,10 @@ fn parse_type_impl(
                     ..Schema::number()
                 })),
                 "bool" => SchemaRef::Inline(Box::new(Schema::boolean())),
+                "char" => SchemaRef::Inline(Box::new(Schema {
+                    format: Some("char".to_string()),
+                    ..Schema::string()
+                })),
                 "String" | "str" => SchemaRef::Inline(Box::new(Schema::string())),
                 // Date-time types from chrono and time crates
                 "DateTime"
