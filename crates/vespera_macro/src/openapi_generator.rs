@@ -103,12 +103,11 @@ pub fn generate_openapi_doc_with_metadata(
 fn build_schema_lookups(
     metadata: &CollectedMetadata,
 ) -> (HashSet<String>, HashMap<String, String>) {
-    let mut known_schema_names = HashSet::new();
-    let mut struct_definitions = HashMap::new();
+    let mut known_schema_names = HashSet::with_capacity(metadata.structs.len());
+    let mut struct_definitions = HashMap::with_capacity(metadata.structs.len());
 
     for struct_meta in &metadata.structs {
-        let schema_name = struct_meta.name.clone();
-        known_schema_names.insert(schema_name);
+        known_schema_names.insert(struct_meta.name.clone());
         struct_definitions.insert(struct_meta.name.clone(), struct_meta.definition.clone());
     }
 
@@ -139,7 +138,7 @@ fn build_file_cache(metadata: &CollectedMetadata) -> HashMap<String, syn::File> 
 /// Enables O(1) lookup of which file contains a given struct definition,
 /// replacing the previous O(routes × file_read) linear scan.
 fn build_struct_file_index(file_cache: &HashMap<String, syn::File>) -> HashMap<String, &str> {
-    let mut index = HashMap::new();
+    let mut index = HashMap::with_capacity(file_cache.len() * 4);
     for (path, ast) in file_cache {
         for item in &ast.items {
             if let syn::Item::Struct(s) = item {
