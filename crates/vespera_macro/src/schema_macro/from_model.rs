@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Type;
+use super::type_utils::normalize_token_str;
 
 use super::{
     circular::{generate_inline_struct_construction, generate_inline_type_construction},
@@ -142,12 +143,12 @@ pub fn generate_from_model_with_relations(
                     // Try via_rel first, fall back to relation_enum as FK source
                     let fk_rel_source = rel.via_rel.as_ref().or(rel.relation_enum.as_ref());
                     if let Some(via_rel_value) = fk_rel_source {
-                        let schema_path_str = rel.schema_path.to_string().replace(' ', "");
+                        let schema_path_str = normalize_token_str(&rel.schema_path);
                         if let Some(fk_col_name) = get_fk_column(&schema_path_str, via_rel_value) {
                             let fk_col_pascal = snake_to_pascal_case(&fk_col_name);
                             let fk_col_ident = syn::Ident::new(&fk_col_pascal, proc_macro2::Span::call_site());
 
-                            let entity_path_str = entity_path.to_string().replace(' ', "");
+                            let entity_path_str = normalize_token_str(&entity_path);
                             let column_path_str = entity_path_str.replace(":: Entity", ":: Column");
                             let column_path_idents: Vec<syn::Ident> = column_path_str.split("::").map(str::trim).filter(|s| !s.is_empty()).map(|s| syn::Ident::new(s, proc_macro2::Span::call_site())).collect();
 
@@ -190,7 +191,7 @@ pub fn generate_from_model_with_relations(
         if rel.inline_type_info.is_some() {
             return false;
         }
-        let schema_path_str = rel.schema_path.to_string().replace(' ', "");
+        let schema_path_str = normalize_token_str(&rel.schema_path);
         let model_path_str = schema_path_str.replace("::Schema", "::Model");
         let related_model = get_struct_from_schema_path(&model_path_str);
 
@@ -254,7 +255,7 @@ pub fn generate_from_model_with_relations(
                     // The schema_path is like "crate::models::user::Schema", but the actual
                     // struct is "Model" in the same module. We need to look up the Model
                     // to see if it has relations pointing back to us.
-                    let schema_path_str = schema_path.to_string().replace(' ', "");
+                    let schema_path_str = normalize_token_str(schema_path);
 
                     // Convert schema path to model path: Schema -> Model
                     let model_path_str = schema_path_str.replace("::Schema", "::Model");

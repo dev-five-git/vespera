@@ -7,6 +7,20 @@ use std::path::Path;
 use syn::Type;
 
 use crate::metadata::StructMetadata;
+use std::path::PathBuf;
+
+/// Build candidate file paths from module segments.
+///
+/// Given a source directory and module segments (e.g., `["models", "memo"]`),
+/// returns both `{src_dir}/models/memo.rs` and `{src_dir}/models/memo/mod.rs`.
+#[inline]
+fn candidate_file_paths(src_dir: &Path, module_segments: &[&str]) -> [PathBuf; 2] {
+    let joined = module_segments.join("/");
+    [
+        src_dir.join(format!("{joined}.rs")),
+        src_dir.join(format!("{joined}/mod.rs")),
+    ]
+}
 
 /// Try to find a struct definition from a module path by reading source files.
 ///
@@ -80,10 +94,7 @@ pub fn find_struct_from_path(
     let type_module_path: Vec<String> = segments[..segments.len() - 1].to_vec();
 
     // Try different file path patterns
-    let file_paths = vec![
-        src_dir.join(format!("{}.rs", module_segments.join("/"))),
-        src_dir.join(format!("{}/mod.rs", module_segments.join("/"))),
-    ];
+    let file_paths = candidate_file_paths(&src_dir, &module_segments);
 
     for file_path in file_paths {
         if !file_path.exists() {
@@ -408,10 +419,7 @@ pub fn find_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
     }
 
     // Try different file path patterns
-    let file_paths = vec![
-        src_dir.join(format!("{}.rs", module_segments.join("/"))),
-        src_dir.join(format!("{}/mod.rs", module_segments.join("/"))),
-    ];
+    let file_paths = candidate_file_paths(&src_dir, &module_segments);
 
     for file_path in file_paths {
         if !file_path.exists() {
@@ -475,10 +483,7 @@ pub fn find_fk_column_from_target_entity(
     }
 
     // Try different file path patterns
-    let file_paths = vec![
-        src_dir.join(format!("{}.rs", module_segments.join("/"))),
-        src_dir.join(format!("{}/mod.rs", module_segments.join("/"))),
-    ];
+    let file_paths = candidate_file_paths(&src_dir, &module_segments);
 
     for file_path in file_paths {
         if !file_path.exists() {
@@ -541,10 +546,7 @@ pub fn find_model_from_schema_path(schema_path_str: &str) -> Option<StructMetada
     }
 
     // Try different file path patterns
-    let file_paths = vec![
-        src_dir.join(format!("{}.rs", module_segments.join("/"))),
-        src_dir.join(format!("{}/mod.rs", module_segments.join("/"))),
-    ];
+    let file_paths = candidate_file_paths(&src_dir, &module_segments);
 
     for file_path in file_paths {
         if !file_path.exists() {

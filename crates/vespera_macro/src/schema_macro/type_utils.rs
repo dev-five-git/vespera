@@ -7,6 +7,20 @@ use quote::quote;
 use serde_json;
 use syn::Type;
 
+/// Normalize a `TokenStream` or `Type` to a compact string by removing spaces.
+///
+/// This replaces the common `.to_string().replace(' ', "")` pattern used throughout
+/// the codebase to produce deterministic path strings for comparison and cache keys.
+#[inline]
+pub fn normalize_token_str(displayable: &impl std::fmt::Display) -> String {
+    let s = displayable.to_string();
+    if s.contains(' ') {
+        s.replace(' ', "")
+    } else {
+        s
+    }
+}
+
 /// Extract type name from a Type
 pub fn extract_type_name(ty: &Type) -> Result<String, syn::Error> {
     match ty {

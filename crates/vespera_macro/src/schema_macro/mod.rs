@@ -75,10 +75,10 @@ pub fn generate_schema_code(
         })?;
 
     // Build omit set
-    let omit_set: HashSet<String> = input.omit.clone().unwrap_or_default().into_iter().collect();
+    let omit_set: HashSet<String> = input.omit.iter().flatten().cloned().collect();
 
     // Build pick set
-    let pick_set: HashSet<String> = input.pick.clone().unwrap_or_default().into_iter().collect();
+    let pick_set: HashSet<String> = input.pick.iter().flatten().cloned().collect();
 
     // Generate schema with filtering
     let schema_tokens =
@@ -200,10 +200,10 @@ pub fn generate_schema_type_code(
     )?;
 
     // Build filter sets and rename map
-    let omit_set = build_omit_set(input.omit.clone());
-    let pick_set = build_pick_set(input.pick.clone());
+    let omit_set = build_omit_set(input.omit.as_ref());
+    let pick_set = build_pick_set(input.pick.as_ref());
     let (partial_all, partial_set) = build_partial_config(&input.partial);
-    let rename_map = build_rename_map(input.rename.clone());
+    let rename_map = build_rename_map(input.rename.as_ref());
 
     // Extract serde attributes from source struct, excluding rename_all (we'll handle it separately)
     let serde_attrs_without_rename_all =

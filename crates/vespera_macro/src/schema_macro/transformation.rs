@@ -36,14 +36,14 @@ use std::collections::{HashMap, HashSet};
 use super::input::PartialMode;
 use crate::parser::extract_rename_all;
 
-/// Builds the omit set from input.
-pub fn build_omit_set(omit: Option<Vec<String>>) -> HashSet<String> {
-    omit.unwrap_or_default().into_iter().collect()
+/// Builds the omit set from input without cloning the source Vec.
+pub fn build_omit_set(omit: Option<&Vec<String>>) -> HashSet<String> {
+    omit.into_iter().flatten().cloned().collect()
 }
 
-/// Builds the pick set from input.
-pub fn build_pick_set(pick: Option<Vec<String>>) -> HashSet<String> {
-    pick.unwrap_or_default().into_iter().collect()
+/// Builds the pick set from input without cloning the source Vec.
+pub fn build_pick_set(pick: Option<&Vec<String>>) -> HashSet<String> {
+    pick.into_iter().flatten().cloned().collect()
 }
 
 /// Builds the partial set based on partial mode.
@@ -61,9 +61,9 @@ pub fn build_partial_config(partial: &Option<PartialMode>) -> (bool, HashSet<Str
     (partial_all, partial_set)
 }
 
-/// Builds the rename map from input.
-pub fn build_rename_map(rename: Option<Vec<(String, String)>>) -> HashMap<String, String> {
-    rename.unwrap_or_default().into_iter().collect()
+/// Builds the rename map from input without cloning the source Vec.
+pub fn build_rename_map(rename: Option<&Vec<(String, String)>>) -> HashMap<String, String> {
+    rename.into_iter().flatten().cloned().collect()
 }
 
 /// Extracts serde attributes from a struct, excluding `rename_all`.
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn test_build_omit_set() {
         let omit = Some(vec!["password".to_string(), "secret".to_string()]);
-        let set = build_omit_set(omit);
+        let set = build_omit_set(omit.as_ref());
 
         assert!(set.contains("password"));
         assert!(set.contains("secret"));
@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn test_build_pick_set() {
         let pick = Some(vec!["id".to_string(), "name".to_string()]);
-        let set = build_pick_set(pick);
+        let set = build_pick_set(pick.as_ref());
 
         assert!(set.contains("id"));
         assert!(set.contains("name"));
@@ -249,7 +249,7 @@ mod tests {
             ("id".to_string(), "user_id".to_string()),
             ("name".to_string(), "full_name".to_string()),
         ]);
-        let map = build_rename_map(rename);
+        let map = build_rename_map(rename.as_ref());
 
         assert_eq!(map.get("id"), Some(&"user_id".to_string()));
         assert_eq!(map.get("name"), Some(&"full_name".to_string()));

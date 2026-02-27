@@ -367,7 +367,8 @@ pub fn convert_relation_type_to_schema_with_info(
     let absolute_segments: Vec<String> = if !segments.is_empty() && segments[0] == "super" {
         let super_count = segments.iter().take_while(|s| *s == "super").count();
         let parent_path_len = source_module_path.len().saturating_sub(super_count);
-        let mut abs = source_module_path[..parent_path_len].to_vec();
+        let mut abs = Vec::with_capacity(parent_path_len + segments.len() - super_count);
+        abs.extend_from_slice(&source_module_path[..parent_path_len]);
         for seg in segments.iter().skip(super_count) {
             if seg == "Entity" {
                 abs.push("Schema".to_string());
@@ -389,7 +390,8 @@ pub fn convert_relation_type_to_schema_with_info(
             .collect()
     } else {
         let parent_path_len = source_module_path.len().saturating_sub(1);
-        let mut abs = source_module_path[..parent_path_len].to_vec();
+        let mut abs = Vec::with_capacity(parent_path_len + segments.len());
+        abs.extend_from_slice(&source_module_path[..parent_path_len]);
         for seg in &segments {
             if seg == "Entity" {
                 abs.push("Schema".to_string());

@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use proc_macro2::TokenStream;
 use quote::quote;
+use super::type_utils::normalize_token_str;
 
 use super::{
     seaorm::extract_belongs_to_from_field,
@@ -66,7 +67,7 @@ pub fn analyze_circular_refs(source_module_path: &[String], definition: &str) ->
         // FieldsNamed guarantees all fields have identifiers
         let field_ident = field.ident.as_ref().expect("named field has ident");
         let field_name = field_ident.to_string();
-        let ty_str = quote!(#field.ty).to_string().replace(' ', "");
+        let ty_str = normalize_token_str(&quote!(#field.ty));
 
         // --- has_fk_relations logic ---
         if ty_str.contains("HasOne<") || ty_str.contains("BelongsTo<") {
@@ -119,7 +120,7 @@ pub fn generate_default_for_relation_field(
     field_attrs: &[syn::Attribute],
     all_fields: &syn::FieldsNamed,
 ) -> TokenStream {
-    let ty_str = quote!(#ty).to_string().replace(' ', "");
+    let ty_str = normalize_token_str(&quote!(#ty));
 
     // Check the SeaORM relation type
     if ty_str.contains("HasMany<") {

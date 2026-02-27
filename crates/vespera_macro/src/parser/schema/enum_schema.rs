@@ -398,6 +398,8 @@ fn parse_internally_tagged_enum(
 ) -> Schema {
     let mut one_of_schemas = Vec::new();
 
+    let tag_string = tag.to_string();
+
     for variant in &enum_item.variants {
         let variant_key = get_variant_key(variant, rename_all);
         let variant_description = extract_doc_comment(&variant.attrs);
@@ -407,7 +409,7 @@ fn parse_internally_tagged_enum(
                 // Unit variant: {"tag": "VariantName"}
                 let mut properties = BTreeMap::new();
                 properties.insert(
-                    tag.to_string(),
+                    tag_string.clone(),
                     SchemaRef::Inline(Box::new(Schema {
                         r#enum: Some(vec![serde_json::Value::String(variant_key.clone())]),
                         ..Schema::string()
@@ -417,7 +419,7 @@ fn parse_internally_tagged_enum(
                 Schema {
                     description: variant_description,
                     properties: Some(properties),
-                    required: Some(vec![tag.to_string()]),
+                    required: Some(vec![tag_string.clone()]),
                     ..Schema::object()
                 }
             }
@@ -433,13 +435,13 @@ fn parse_internally_tagged_enum(
 
                 // Add the tag field
                 properties.insert(
-                    tag.to_string(),
+                    tag_string.clone(),
                     SchemaRef::Inline(Box::new(Schema {
                         r#enum: Some(vec![serde_json::Value::String(variant_key.clone())]),
                         ..Schema::string()
                     })),
                 );
-                required.insert(0, tag.to_string());
+                required.insert(0, tag_string.clone());
 
                 Schema {
                     description: variant_description,
@@ -467,7 +469,7 @@ fn parse_internally_tagged_enum(
             Some(one_of_schemas)
         },
         discriminator: Some(Discriminator {
-            property_name: tag.to_string(),
+            property_name: tag_string,
             mapping: None, // Mapping not needed for inline schemas
         }),
         ..Default::default()
@@ -487,16 +489,19 @@ fn parse_adjacently_tagged_enum(
 ) -> Schema {
     let mut one_of_schemas = Vec::new();
 
+    let tag_string = tag.to_string();
+    let content_string = content.to_string();
+
     for variant in &enum_item.variants {
         let variant_key = get_variant_key(variant, rename_all);
         let variant_description = extract_doc_comment(&variant.attrs);
 
         let mut properties = BTreeMap::new();
-        let mut required = vec![tag.to_string()];
+        let mut required = vec![tag_string.clone()];
 
         // Add the tag field
         properties.insert(
-            tag.to_string(),
+            tag_string.clone(),
             SchemaRef::Inline(Box::new(Schema {
                 r#enum: Some(vec![serde_json::Value::String(variant_key.clone())]),
                 ..Schema::string()
@@ -507,8 +512,8 @@ fn parse_adjacently_tagged_enum(
         if let Some(data_schema) =
             build_variant_data_schema(variant, rename_all, known_schemas, struct_definitions)
         {
-            properties.insert(content.to_string(), data_schema);
-            required.push(content.to_string());
+            properties.insert(content_string.clone(), data_schema);
+            required.push(content_string.clone());
         }
 
         let variant_schema = Schema {
@@ -530,7 +535,7 @@ fn parse_adjacently_tagged_enum(
             Some(one_of_schemas)
         },
         discriminator: Some(Discriminator {
-            property_name: tag.to_string(),
+            property_name: tag_string,
             mapping: None,
         }),
         ..Default::default()
