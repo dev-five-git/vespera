@@ -41,15 +41,7 @@ pub fn strip_raw_prefix_owned(ident: String) -> String {
     }
 }
 
-/// Capitalizes the first character of a string.
-/// Returns empty string if input is empty.
-/// E.g., `user` -> `User`, `USER` -> `USER`, `` -> ``
-pub fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
-}
+pub use crate::schema_macro::type_utils::capitalize_first;
 
 /// Extract a Schema name from a `SeaORM` Entity type path.
 ///
@@ -1124,17 +1116,6 @@ mod tests {
         assert_eq!(strip_raw_prefix_owned("r#match".to_string()), "match");
         assert_eq!(strip_raw_prefix_owned("normal".to_string()), "normal");
         assert_eq!(strip_raw_prefix_owned("r#".to_string()), "");
-    }
-
-    #[rstest]
-    #[case("", "")]
-    #[case("a", "A")]
-    #[case("user", "User")]
-    #[case("User", "User")]
-    #[case("USER", "USER")]
-    #[case("user_name", "User_name")]
-    fn test_capitalize_first(#[case] input: &str, #[case] expected: &str) {
-        assert_eq!(capitalize_first(input), expected);
     }
 
     // Tests using programmatically created attributes

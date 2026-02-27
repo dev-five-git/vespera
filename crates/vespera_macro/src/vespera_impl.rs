@@ -84,18 +84,21 @@ pub fn generate_and_write_openapi(
         }
     }
 
-    let json_str = serde_json::to_string_pretty(&openapi_doc).map_err(|e| err_call_site(format!("OpenAPI generation: failed to serialize document to JSON. Error: {e}. Check that all schema types are serializable.")))?;
-
-    for openapi_file_name in &input.openapi_file_names {
-        let file_path = Path::new(openapi_file_name);
-        if let Some(parent) = file_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| err_call_site(format!("OpenAPI output: failed to create directory '{}'. Error: {}. Ensure the path is valid and writable.", parent.display(), e)))?;
+    // Pretty-print for user-visible files
+    if !input.openapi_file_names.is_empty() {
+        let json_pretty = serde_json::to_string_pretty(&openapi_doc).map_err(|e| err_call_site(format!("OpenAPI generation: failed to serialize document to JSON. Error: {e}. Check that all schema types are serializable.")))?;
+        for openapi_file_name in &input.openapi_file_names {
+            let file_path = Path::new(openapi_file_name);
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| err_call_site(format!("OpenAPI output: failed to create directory '{}'. Error: {}. Ensure the path is valid and writable.", parent.display(), e)))?;
+            }
+            std::fs::write(file_path, &json_pretty).map_err(|e| err_call_site(format!("OpenAPI output: failed to write file '{openapi_file_name}'. Error: {e}. Ensure the file path is writable.")))?;
         }
-        std::fs::write(file_path, &json_str).map_err(|e| err_call_site(format!("OpenAPI output: failed to write file '{openapi_file_name}'. Error: {e}. Ensure the file path is writable.")))?;
     }
 
+    // Compact JSON for embedding (smaller binary, faster downstream compilation)
     let spec_json = if input.docs_url.is_some() || input.redoc_url.is_some() {
-        Some(json_str)
+        Some(serde_json::to_string(&openapi_doc).map_err(|e| err_call_site(format!("OpenAPI generation: failed to serialize document to JSON. Error: {e}. Check that all schema types are serializable.")))?)
     } else {
         None
     };

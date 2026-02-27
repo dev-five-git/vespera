@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashSet};
 
 use syn::{FnArg, PatType, Type};
@@ -23,6 +24,7 @@ pub fn build_operation_from_function(
     let mut parameters = Vec::new();
     let mut request_body = None;
     let mut path_extractor_type: Option<Type> = None;
+    let string_type: OnceCell<Type> = OnceCell::new();
 
     // First pass: find Path<T> extractor and extract its type
     for input in &sig.inputs {
@@ -72,7 +74,7 @@ pub fn build_operation_from_function(
                             description: None,
                             required: Some(true),
                             schema: Some(parse_type_to_schema_ref_with_schemas(
-                                &syn::parse_str::<Type>("String").unwrap(),
+                                string_type.get_or_init(|| syn::parse_str::<Type>("String").unwrap()),
                                 known_schemas,
                                 struct_definitions,
                             )),
@@ -122,7 +124,7 @@ pub fn build_operation_from_function(
                     description: None,
                     required: Some(true),
                     schema: Some(parse_type_to_schema_ref_with_schemas(
-                        &syn::parse_str::<Type>("String").unwrap(),
+                        string_type.get_or_init(|| syn::parse_str::<Type>("String").unwrap()),
                         known_schemas,
                         struct_definitions,
                     )),
