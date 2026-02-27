@@ -148,19 +148,21 @@ pub fn find_struct_by_name_in_all_files(
     // Use cached struct-candidate index: files already filtered by text search
     let mut rs_files = super::file_cache::get_struct_candidates(src_dir, struct_name);
 
+    // Pre-compute hint prefix once (used in fast path and fallback disambiguation)
+    let prefix_normalized = schema_name_hint.map(derive_hint_prefix);
+
     // FAST PATH: If schema_name_hint is provided, try matching files first.
     // This avoids parsing ALL files for the common same-file pattern:
     //   schema_type!(Schema from Model, name = "UserSchema")  in user.rs
-    if let Some(hint) = schema_name_hint {
-        let prefix_normalized = derive_hint_prefix(hint);
+    if let Some(prefix_normalized) = &prefix_normalized {
 
         // Partition files: candidate files (filename matches hint prefix) vs rest
         let (candidates, rest): (Vec<_>, Vec<_>) = rs_files.into_iter().partition(|path| {
             path.file_stem()
                 .and_then(|s| s.to_str())
                 .is_some_and(|name| {
-                    let norm = name.to_lowercase().replace('_', "");
-                    norm == prefix_normalized || norm.contains(&prefix_normalized)
+                    let norm = normalize_name(name);
+                    norm == *prefix_normalized || norm.contains(prefix_normalized.as_str())
                 })
         });
 
@@ -200,7 +202,7 @@ pub fn find_struct_by_name_in_all_files(
                     path.file_stem()
                         .and_then(|s| s.to_str())
                         .is_some_and(|name| {
-                            name.to_lowercase().replace('_', "") == prefix_normalized
+                            normalize_name(name) == *prefix_normalized
                         })
                 })
                 .collect();
@@ -219,9 +221,8 @@ pub fn find_struct_by_name_in_all_files(
                         path.file_stem()
                             .and_then(|s| s.to_str())
                             .is_some_and(|name| {
-                                name.to_lowercase()
-                                    .replace('_', "")
-                                    .contains(&prefix_normalized)
+                                normalize_name(name)
+                                    .contains(prefix_normalized.as_str())
                             })
                     })
                     .collect();
@@ -274,8 +275,7 @@ pub fn find_struct_by_name_in_all_files(
         _ => {
             // Multiple matches without hint (or hint didn't match candidates above).
             // Re-use hint disambiguation logic for full-scan results.
-            if let Some(hint) = schema_name_hint {
-                let prefix_normalized = derive_hint_prefix(hint);
+            if let Some(prefix_normalized) = &prefix_normalized {
 
                 let exact_match: Vec<_> = found_structs
                     .iter()
@@ -283,7 +283,7 @@ pub fn find_struct_by_name_in_all_files(
                         path.file_stem()
                             .and_then(|s| s.to_str())
                             .is_some_and(|name| {
-                                name.to_lowercase().replace('_', "") == prefix_normalized
+                                normalize_name(name) == *prefix_normalized
                             })
                     })
                     .collect();
@@ -300,9 +300,8 @@ pub fn find_struct_by_name_in_all_files(
                         path.file_stem()
                             .and_then(|s| s.to_str())
                             .is_some_and(|name| {
-                                name.to_lowercase()
-                                    .replace('_', "")
-                                    .contains(&prefix_normalized)
+                                normalize_name(name)
+                                    .contains(prefix_normalized.as_str())
                             })
                     })
                     .collect();
@@ -336,7 +335,17 @@ fn derive_hint_prefix(hint: &str) -> String {
         .or_else(|| hint_lower.strip_suffix("response"))
         .or_else(|| hint_lower.strip_suffix("request"))
         .unwrap_or(&hint_lower);
-    prefix.replace('_', "")
+    normalize_name(prefix)
+}
+
+/// Normalize a name by lowercasing and removing underscores in a single pass.
+/// Replaces the two-allocation `s.to_lowercase().replace('_', "")` pattern.
+#[inline]
+fn normalize_name(s: &str) -> String {
+    s.chars()
+        .filter(|&c| c != '_')
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }
 
 /// Recursively collect all `.rs` files in a directory.

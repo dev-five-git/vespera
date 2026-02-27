@@ -150,7 +150,7 @@ pub fn generate_from_model_with_relations(
 
                             let entity_path_str = normalize_token_str(&entity_path);
                             let column_path_str = entity_path_str.replace(":: Entity", ":: Column");
-                            let column_path_idents: Vec<syn::Ident> = column_path_str.split("::").map(str::trim).filter(|s| !s.is_empty()).map(|s| syn::Ident::new(s, proc_macro2::Span::call_site())).collect();
+                            let column_path_idents: Vec<syn::Ident> = column_path_str.split("::").filter_map(|s| { let trimmed = s.trim(); if trimmed.is_empty() { None } else { Some(syn::Ident::new(trimmed, proc_macro2::Span::call_site())) } }).collect();
 
                             quote! {
                                 let #field_name = #(#column_path_idents)::*::#fk_col_ident

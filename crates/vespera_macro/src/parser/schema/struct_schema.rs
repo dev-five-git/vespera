@@ -35,7 +35,7 @@ pub fn parse_struct_to_schema(
     struct_definitions: &HashMap<String, String>,
 ) -> Schema {
     let mut properties = BTreeMap::new();
-    let mut required = Vec::new();
+    let mut required = Vec::with_capacity(8);
     let mut flattened_refs: Vec<SchemaRef> = Vec::new();
 
     // Extract struct-level doc comment for schema description

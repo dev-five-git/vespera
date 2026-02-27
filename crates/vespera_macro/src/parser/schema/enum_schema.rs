@@ -107,7 +107,7 @@ fn parse_unit_enum_to_schema(
     description: Option<String>,
     rename_all: Option<&str>,
 ) -> Schema {
-    let mut enum_values = Vec::new();
+    let mut enum_values = Vec::with_capacity(enum_item.variants.len());
 
     for variant in &enum_item.variants {
         let variant_name = strip_raw_prefix_owned(variant.ident.to_string());
@@ -147,7 +147,7 @@ fn build_struct_variant_properties(
     struct_definitions: &HashMap<String, String>,
 ) -> (BTreeMap<String, SchemaRef>, Vec<String>) {
     let mut variant_properties = BTreeMap::new();
-    let mut variant_required = Vec::new();
+    let mut variant_required = Vec::with_capacity(fields_named.named.len());
     let variant_rename_all = extract_rename_all(variant_attrs);
 
     for field in &fields_named.named {
@@ -231,7 +231,7 @@ fn build_variant_data_schema(
                 ))
             } else {
                 // Multiple fields tuple variant - array with prefixItems
-                let mut tuple_item_schemas = Vec::new();
+                let mut tuple_item_schemas = Vec::with_capacity(fields_unnamed.unnamed.len());
                 for field in &fields_unnamed.unnamed {
                     let field_schema =
                         parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions);
@@ -283,7 +283,7 @@ fn parse_externally_tagged_enum(
     known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Schema {
-    let mut one_of_schemas = Vec::new();
+    let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
 
     for variant in &enum_item.variants {
         let variant_key = get_variant_key(variant, rename_all);
@@ -305,7 +305,7 @@ fn parse_externally_tagged_enum(
                     parse_type_to_schema_ref(inner_type, known_schemas, struct_definitions)
                 } else {
                     // Multiple fields - array with prefixItems
-                    let mut tuple_item_schemas = Vec::new();
+                    let mut tuple_item_schemas = Vec::with_capacity(fields_unnamed.unnamed.len());
                     for field in &fields_unnamed.unnamed {
                         let field_schema =
                             parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions);
@@ -396,7 +396,7 @@ fn parse_internally_tagged_enum(
     known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Schema {
-    let mut one_of_schemas = Vec::new();
+    let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
 
     let tag_string = tag.to_string();
 
@@ -487,7 +487,7 @@ fn parse_adjacently_tagged_enum(
     known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Schema {
-    let mut one_of_schemas = Vec::new();
+    let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
 
     let tag_string = tag.to_string();
     let content_string = content.to_string();
@@ -551,7 +551,7 @@ fn parse_untagged_enum(
     known_schemas: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
 ) -> Schema {
-    let mut one_of_schemas = Vec::new();
+    let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
 
     for variant in &enum_item.variants {
         let variant_description = extract_doc_comment(&variant.attrs);
@@ -584,7 +584,7 @@ fn parse_untagged_enum(
                     schema
                 } else {
                     // Multiple fields - array with prefixItems
-                    let mut tuple_item_schemas = Vec::new();
+                    let mut tuple_item_schemas = Vec::with_capacity(fields_unnamed.unnamed.len());
                     for field in &fields_unnamed.unnamed {
                         let field_schema =
                             parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions);

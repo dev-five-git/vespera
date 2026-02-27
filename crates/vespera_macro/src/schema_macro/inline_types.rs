@@ -104,7 +104,7 @@ pub fn generate_inline_relation_type_from_def(
     );
 
     // Collect fields, excluding circular ones and relation types
-    let mut fields = Vec::new();
+    let mut fields = Vec::with_capacity(8);
     if let syn::Fields::Named(fields_named) = &parsed_model.fields {
         for field in &fields_named.named {
             let field_ident = field.ident.as_ref()?;
@@ -217,7 +217,7 @@ pub fn generate_inline_relation_type_no_relations_from_def(
     );
 
     // Collect fields, excluding ALL relation types
-    let mut fields = Vec::new();
+    let mut fields = Vec::with_capacity(8);
     if let syn::Fields::Named(fields_named) = &parsed_model.fields {
         for field in &fields_named.named {
             let field_ident = field.ident.as_ref()?;

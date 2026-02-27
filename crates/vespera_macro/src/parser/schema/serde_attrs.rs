@@ -447,10 +447,10 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
                         result.push(ch);
                     } else {
                         // Still in first word, lowercase it
-                        result.push(ch.to_lowercase().next().unwrap_or(ch));
+                        result.push(ch.to_ascii_lowercase());
                     }
                 } else if capitalize_next {
-                    result.push(ch.to_uppercase().next().unwrap_or(ch));
+                    result.push(ch.to_ascii_uppercase());
                     capitalize_next = false;
                 } else {
                     result.push(ch);
@@ -465,7 +465,7 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
                 if ch.is_uppercase() && i > 0 {
                     result.push('_');
                 }
-                result.push(ch.to_lowercase().next().unwrap_or(ch));
+                result.push(ch.to_ascii_lowercase());
             }
             result
         }
@@ -477,7 +477,7 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
                     if i > 0 && !result.ends_with('-') {
                         result.push('-');
                     }
-                    result.push(ch.to_lowercase().next().unwrap_or(ch));
+                    result.push(ch.to_ascii_lowercase());
                 } else if ch == '_' {
                     result.push('-');
                 } else {
@@ -494,7 +494,7 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
                 if ch == '_' {
                     capitalize_next = true;
                 } else if capitalize_next {
-                    result.push(ch.to_uppercase().next().unwrap_or(ch));
+                    result.push(ch.to_ascii_uppercase());
                     capitalize_next = false;
                 } else {
                     result.push(ch);
@@ -524,7 +524,7 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
                     snake_case.push('_');
                 }
                 if ch != '_' && ch != '-' {
-                    snake_case.push(ch.to_lowercase().next().unwrap_or(ch));
+                    snake_case.push(ch.to_ascii_lowercase());
                 } else if ch == '_' {
                     snake_case.push('_');
                 }
@@ -546,7 +546,7 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
                 if ch == '_' {
                     kebab_case.push('-');
                 } else if ch != '-' {
-                    kebab_case.push(ch.to_lowercase().next().unwrap_or(ch));
+                    kebab_case.push(ch.to_ascii_lowercase());
                 } else {
                     kebab_case.push('-');
                 }
