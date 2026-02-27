@@ -19,6 +19,7 @@ use crate::parser::extract_skip;
 /// Produced by [`analyze_circular_refs()`] which parses a definition string once
 /// and extracts all three pieces of information that would otherwise require
 /// three separate parse calls.
+#[derive(Clone)]
 pub struct CircularAnalysis {
     /// Field names that would create circular references.
     pub circular_fields: Vec<String>,

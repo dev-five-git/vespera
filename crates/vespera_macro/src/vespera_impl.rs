@@ -180,17 +180,38 @@ pub fn process_vespera_macro(
     let (docs_url, redoc_url, spec_json) =
         generate_and_write_openapi(processed, &metadata, file_asts)?;
 
-    let spec_tokens = spec_json.map(|json| {
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-        let manifest_path = Path::new(&manifest_dir);
-        let target_dir = find_target_dir(manifest_path);
-        let vespera_dir = target_dir.join("vespera");
-        std::fs::create_dir_all(&vespera_dir).ok();
-        let spec_file = vespera_dir.join("vespera_spec.json");
-        std::fs::write(&spec_file, &json).ok();
-        let path_str = spec_file.display().to_string().replace('\\', "/");
-        quote::quote! { include_str!(#path_str) }
-    });
+    let spec_tokens = match spec_json {
+        Some(json) => {
+            let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+            let manifest_path = Path::new(&manifest_dir);
+            let target_dir = find_target_dir(manifest_path);
+            let vespera_dir = target_dir.join("vespera");
+            std::fs::create_dir_all(&vespera_dir).map_err(|e| {
+                syn::Error::new(
+                    Span::call_site(),
+                    format!(
+                        "vespera! macro: failed to create directory '{}': {}",
+                        vespera_dir.display(),
+                        e
+                    ),
+                )
+            })?;
+            let spec_file = vespera_dir.join("vespera_spec.json");
+            std::fs::write(&spec_file, &json).map_err(|e| {
+                syn::Error::new(
+                    Span::call_site(),
+                    format!(
+                        "vespera! macro: failed to write spec file '{}': {}",
+                        spec_file.display(),
+                        e
+                    ),
+                )
+            })?;
+            let path_str = spec_file.display().to_string().replace('\\', "/");
+            Some(quote::quote! { include_str!(#path_str) })
+        }
+        None => None,
+    };
 
     let result = Ok(generate_router_code(
         &metadata,

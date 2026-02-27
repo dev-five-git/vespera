@@ -9,11 +9,8 @@ use quote::quote;
 use syn::Type;
 
 use super::{
-    circular::{
-        analyze_circular_refs, generate_inline_struct_construction,
-        generate_inline_type_construction,
-    },
-    file_lookup::{find_fk_column_from_target_entity, find_struct_from_schema_path},
+    circular::{generate_inline_struct_construction, generate_inline_type_construction},
+    file_cache::{get_circular_analysis, get_fk_column, get_struct_from_schema_path},
     seaorm::RelationFieldInfo,
     type_utils::snake_to_pascal_case,
 };
@@ -147,7 +144,7 @@ pub fn generate_from_model_with_relations(
                     if let Some(ref via_rel_value) = rel.via_rel {
                         // Look up the FK column from the target entity
                         let schema_path_str = rel.schema_path.to_string().replace(' ', "");
-                        if let Some(fk_col_name) = find_fk_column_from_target_entity(&schema_path_str, via_rel_value) {
+                        if let Some(fk_col_name) = get_fk_column(&schema_path_str, via_rel_value) {
                             // Convert snake_case FK column to PascalCase for Column enum
                             let fk_col_pascal = snake_to_pascal_case(&fk_col_name);
                             let fk_col_ident = syn::Ident::new(&fk_col_pascal, proc_macro2::Span::call_site());
@@ -178,7 +175,7 @@ pub fn generate_from_model_with_relations(
                     } else if let Some(via_rel_value) = &rel.relation_enum {
                         // Has relation_enum but no via_rel - try using relation_enum as via_rel
                         let schema_path_str = rel.schema_path.to_string().replace(' ', "");
-                        if let Some(fk_col_name) = find_fk_column_from_target_entity(&schema_path_str, via_rel_value) {
+                        if let Some(fk_col_name) = get_fk_column(&schema_path_str, via_rel_value) {
                             let fk_col_pascal = snake_to_pascal_case(&fk_col_name);
                             let fk_col_ident = syn::Ident::new(&fk_col_pascal, proc_macro2::Span::call_site());
 
@@ -228,10 +225,10 @@ pub fn generate_from_model_with_relations(
         }
         let schema_path_str = rel.schema_path.to_string().replace(' ', "");
         let model_path_str = schema_path_str.replace("::Schema", "::Model");
-        let related_model = find_struct_from_schema_path(&model_path_str);
+        let related_model = get_struct_from_schema_path(&model_path_str);
 
         if let Some(ref model) = related_model {
-            let analysis = analyze_circular_refs(source_module_path, &model.definition);
+            let analysis = get_circular_analysis(source_module_path, &model.definition);
             // Check if any circular field is a required relation
             analysis.circular_fields.iter().any(|cf| {
                 analysis
@@ -296,13 +293,13 @@ pub fn generate_from_model_with_relations(
                     let model_path_str = schema_path_str.replace("::Schema", "::Model");
 
                     // Try to find the related Model definition from file
-                    let related_model_from_file = find_struct_from_schema_path(&model_path_str);
+                    let related_model_from_file = get_struct_from_schema_path(&model_path_str);
 
                     // Get the definition string
                     let related_def_str = related_model_from_file.as_ref().map_or("", |s| s.definition.as_str());
 
                     // Analyze circular references, FK relations, and FK optionality in ONE pass
-                    let analysis = analyze_circular_refs(source_module_path, related_def_str);
+                    let analysis = get_circular_analysis(source_module_path, related_def_str);
                     let circular_fields = &analysis.circular_fields;
                     let has_circular = !circular_fields.is_empty();
 

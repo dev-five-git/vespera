@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use super::file_lookup::collect_rs_files_recursive;
+use super::circular::CircularAnalysis;
+use crate::metadata::StructMetadata;
 
 /// Internal cache state.
 struct FileCache {
@@ -45,6 +47,20 @@ struct FileCache {
     struct_parses: usize,
     /// Number of full-file AST parses via syn::parse_file.
     ast_parses: usize,
+
+    // --- Phase 4 caches ---
+    /// Cached circular reference analysis results: (module_path, definition) → analysis.
+    circular_analysis: HashMap<(String, String), CircularAnalysis>,
+    /// Cached struct lookups by schema path: path_str → Option<StructMetadata>.
+    /// `None` values are cached (negative cache) to avoid repeated failed lookups.
+    struct_lookup: HashMap<String, Option<StructMetadata>>,
+    /// Cached FK column lookups: (schema_path, via_rel) → Option<column_name>.
+    fk_column_lookup: HashMap<(String, String), Option<String>>,
+
+    // --- Phase 4 profiling counters ---
+    circular_cache_hits: usize,
+    struct_lookup_cache_hits: usize,
+    fk_column_cache_hits: usize,
 }
 
 thread_local! {
@@ -56,6 +72,12 @@ thread_local! {
         content_cache_hits: 0,
         struct_parses: 0,
         ast_parses: 0,
+        circular_analysis: HashMap::new(),
+        struct_lookup: HashMap::new(),
+        fk_column_lookup: HashMap::new(),
+        circular_cache_hits: 0,
+        struct_lookup_cache_hits: 0,
+        fk_column_cache_hits: 0,
     });
 }
 
@@ -176,6 +198,80 @@ pub fn parse_struct_cached(definition: &str) -> Result<syn::ItemStruct, syn::Err
     })
 }
 
+/// Get or compute circular reference analysis, with caching.
+///
+/// The cache key is `(source_module_path_joined, definition)` since the same
+/// model definition analyzed from the same module context always produces
+/// the same result.
+pub fn get_circular_analysis(source_module_path: &[String], definition: &str) -> CircularAnalysis {
+    let key = (source_module_path.join("::"), definition.to_string());
+
+    // 1. Check cache — borrow dropped at end of closure
+    let cached = FILE_CACHE.with(|cache| cache.borrow().circular_analysis.get(&key).cloned());
+    if let Some(result) = cached {
+        FILE_CACHE.with(|cache| cache.borrow_mut().circular_cache_hits += 1);
+        return result;
+    }
+
+    // 2. Compute — this re-enters FILE_CACHE via parse_struct_cached (safe: our borrow is dropped)
+    let result = super::circular::analyze_circular_refs(source_module_path, definition);
+
+    // 3. Store — new borrow
+    FILE_CACHE.with(|cache| {
+        cache.borrow_mut().circular_analysis.insert(key, result.clone());
+    });
+
+    result
+}
+
+/// Get or compute struct lookup by schema path, with caching.
+///
+/// Wraps `find_struct_from_schema_path` with a `HashMap<String, Option<StructMetadata>>`
+/// cache. `None` values are cached too (negative cache) to avoid repeated failed lookups.
+pub fn get_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
+    // 1. Check cache — borrow dropped at end of closure
+    let cached = FILE_CACHE.with(|cache| cache.borrow().struct_lookup.get(path_str).cloned());
+    if let Some(result) = cached {
+        FILE_CACHE.with(|cache| cache.borrow_mut().struct_lookup_cache_hits += 1);
+        return result;
+    }
+
+    // 2. Compute — this re-enters FILE_CACHE via get_parsed_ast (safe: our borrow is dropped)
+    let result = super::file_lookup::find_struct_from_schema_path(path_str);
+
+    // 3. Store — new borrow
+    FILE_CACHE.with(|cache| {
+        cache.borrow_mut().struct_lookup.insert(path_str.to_string(), result.clone());
+    });
+
+    result
+}
+
+/// Get or compute FK column lookup, with caching.
+///
+/// Wraps `find_fk_column_from_target_entity` with a `HashMap<(String, String), Option<String>>`
+/// cache. Negative results (`None`) are cached to avoid repeated file lookups.
+pub fn get_fk_column(schema_path: &str, via_rel: &str) -> Option<String> {
+    let key = (schema_path.to_string(), via_rel.to_string());
+
+    // 1. Check cache — borrow dropped at end of closure
+    let cached = FILE_CACHE.with(|cache| cache.borrow().fk_column_lookup.get(&key).cloned());
+    if let Some(result) = cached {
+        FILE_CACHE.with(|cache| cache.borrow_mut().fk_column_cache_hits += 1);
+        return result;
+    }
+
+    // 2. Compute — this re-enters FILE_CACHE via get_parsed_ast (safe: our borrow is dropped)
+    let result = super::file_lookup::find_fk_column_from_target_entity(schema_path, via_rel);
+
+    // 3. Store — new borrow
+    FILE_CACHE.with(|cache| {
+        cache.borrow_mut().fk_column_lookup.insert(key, result.clone());
+    });
+
+    result
+}
+
 /// Print profiling summary to stderr if `VESPERA_PROFILE` env var is set.
 ///
 /// Call this at the end of macro execution to output cache statistics.
@@ -199,6 +295,21 @@ pub fn print_profile_summary() {
             cache.file_lists.len(),
             cache.file_contents.len(),
             cache.struct_candidates.len()
+        );
+        eprintln!(
+            "  circular analysis: {} cache hits, {} entries",
+            cache.circular_cache_hits,
+            cache.circular_analysis.len()
+        );
+        eprintln!(
+            "  struct lookup: {} cache hits, {} entries",
+            cache.struct_lookup_cache_hits,
+            cache.struct_lookup.len()
+        );
+        eprintln!(
+            "  FK column lookup: {} cache hits, {} entries",
+            cache.fk_column_cache_hits,
+            cache.fk_column_lookup.len()
         );
     });
 }
