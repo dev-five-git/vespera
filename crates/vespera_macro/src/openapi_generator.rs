@@ -14,7 +14,7 @@ use crate::{
     metadata::CollectedMetadata,
     parser::{
         build_operation_from_function, extract_default, extract_field_rename, extract_rename_all,
-        parse_enum_to_schema, parse_struct_to_schema, rename_field, strip_raw_prefix,
+        parse_enum_to_schema, parse_struct_to_schema, rename_field, strip_raw_prefix_owned,
     },
     schema_macro::type_utils::get_type_default as utils_get_type_default,
 };
@@ -103,13 +103,12 @@ pub fn generate_openapi_doc_with_metadata(
 fn build_schema_lookups(
     metadata: &CollectedMetadata,
 ) -> (HashSet<String>, HashMap<String, String>) {
-    let mut known_schema_names = HashSet::new();
-    let mut struct_definitions = HashMap::new();
+    let mut known_schema_names = HashSet::with_capacity(metadata.structs.len());
+    let mut struct_definitions = HashMap::with_capacity(metadata.structs.len());
 
     for struct_meta in &metadata.structs {
-        let schema_name = struct_meta.name.clone();
-        known_schema_names.insert(schema_name);
         struct_definitions.insert(struct_meta.name.clone(), struct_meta.definition.clone());
+        known_schema_names.insert(struct_meta.name.clone());
     }
 
     (known_schema_names, struct_definitions)
@@ -139,7 +138,7 @@ fn build_file_cache(metadata: &CollectedMetadata) -> HashMap<String, syn::File> 
 /// Enables O(1) lookup of which file contains a given struct definition,
 /// replacing the previous O(routes × file_read) linear scan.
 fn build_struct_file_index(file_cache: &HashMap<String, syn::File>) -> HashMap<String, &str> {
-    let mut index = HashMap::new();
+    let mut index = HashMap::with_capacity(file_cache.len() * 4);
     for (path, ast) in file_cache {
         for item in &ast.items {
             if let syn::Item::Struct(s) = item {
@@ -232,47 +231,63 @@ fn build_path_items(
     let mut paths = BTreeMap::new();
     let mut all_tags = BTreeSet::new();
 
+    // Pre-build function name index for O(1) lookup instead of O(items) per route
+    let fn_index: HashMap<&str, HashMap<String, &syn::ItemFn>> = file_cache
+        .iter()
+        .map(|(path, ast)| {
+            let fns: HashMap<String, &syn::ItemFn> = ast
+                .items
+                .iter()
+                .filter_map(|item| {
+                    if let syn::Item::Fn(fn_item) = item {
+                        Some((fn_item.sig.ident.to_string(), fn_item))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            (path.as_str(), fns)
+        })
+        .collect();
+
     for route_meta in &metadata.routes {
-        let Some(file_ast) = file_cache.get(&route_meta.file_path) else {
+        let Some(fns) = fn_index.get(route_meta.file_path.as_str()) else {
             continue;
         };
 
-        for item in &file_ast.items {
-            if let syn::Item::Fn(fn_item) = item
-                && fn_item.sig.ident == route_meta.function_name
-            {
-                let Ok(method) = HttpMethod::try_from(route_meta.method.as_str()) else {
-                    eprintln!(
-                        "vespera: skipping route '{}' — unknown HTTP method '{}'",
-                        route_meta.path, route_meta.method
-                    );
-                    continue;
-                };
+        let Some(fn_item) = fns.get(&route_meta.function_name) else {
+            continue;
+        };
 
-                if let Some(tags) = &route_meta.tags {
-                    for tag in tags {
-                        all_tags.insert(tag.clone());
-                    }
-                }
+        let Ok(method) = HttpMethod::try_from(route_meta.method.as_str()) else {
+            eprintln!(
+                "vespera: skipping route '{}' — unknown HTTP method '{}'",
+                route_meta.path, route_meta.method
+            );
+            continue;
+        };
 
-                let mut operation = build_operation_from_function(
-                    &fn_item.sig,
-                    &route_meta.path,
-                    known_schema_names,
-                    struct_definitions,
-                    route_meta.error_status.as_deref(),
-                    route_meta.tags.as_deref(),
-                );
-                operation.description.clone_from(&route_meta.description);
-
-                let path_item = paths
-                    .entry(route_meta.path.clone())
-                    .or_insert_with(PathItem::default);
-
-                path_item.set_operation(method, operation);
-                break;
+        if let Some(tags) = &route_meta.tags {
+            for tag in tags {
+                all_tags.insert(tag.clone());
             }
         }
+
+        let mut operation = build_operation_from_function(
+            &fn_item.sig,
+            &route_meta.path,
+            known_schema_names,
+            struct_definitions,
+            route_meta.error_status.as_deref(),
+            route_meta.tags.as_deref(),
+        );
+        operation.description.clone_from(&route_meta.description);
+
+        let path_item = paths
+            .entry(route_meta.path.clone())
+            .or_insert_with(PathItem::default);
+
+        path_item.set_operation(method, operation);
     }
 
     (paths, all_tags)
@@ -321,7 +336,7 @@ fn process_default_functions(
         for field in &fields_named.named {
             let rust_field_name = field.ident.as_ref().map_or_else(
                 || "unknown".to_string(),
-                |i| strip_raw_prefix(&i.to_string()).to_string(),
+                |i| strip_raw_prefix_owned(i.to_string()),
             );
             let field_name = extract_field_rename(&field.attrs)
                 .unwrap_or_else(|| rename_field(&rust_field_name, struct_rename_all.as_deref()));
@@ -1662,5 +1677,31 @@ pub fn create_users() -> String {
         } else {
             panic!("Expected inline schema with default");
         }
+    }
+
+    #[test]
+    fn test_generate_openapi_route_function_not_in_ast() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let route_content = "pub fn get_items() -> String { \"items\".to_string() }\n";
+        let route_file = create_temp_file(&temp_dir, "users.rs", route_content);
+
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "GET".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "test::users".to_string(),
+            file_path: route_file.to_string_lossy().to_string(),
+            signature: "fn get_users() -> String".to_string(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        assert!(
+            doc.paths.is_empty(),
+            "Route with non-matching function should be skipped"
+        );
     }
 }

@@ -39,7 +39,7 @@ mod type_schema;
 pub use enum_schema::parse_enum_to_schema;
 pub use serde_attrs::{
     extract_default, extract_field_rename, extract_rename_all, extract_skip,
-    extract_skip_serializing_if, rename_field, strip_raw_prefix,
+    extract_skip_serializing_if, rename_field, strip_raw_prefix_owned,
 };
 pub use struct_schema::parse_struct_to_schema;
 pub use type_schema::parse_type_to_schema_ref;

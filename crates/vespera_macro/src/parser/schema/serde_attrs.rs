@@ -30,21 +30,18 @@ pub fn extract_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
     }
 }
 
-/// Strips the `r#` prefix from raw identifiers.
-/// E.g., `r#type` becomes `type`.
-pub fn strip_raw_prefix(ident: &str) -> &str {
-    ident.strip_prefix("r#").unwrap_or(ident)
+/// Strips the `r#` prefix from raw identifiers, returning an owned `String`.
+/// For the 99% case (no `r#` prefix), returns the input directly with zero extra allocation.
+#[allow(clippy::option_if_let_else)] // clippy suggestion doesn't compile: borrow-move conflict
+pub fn strip_raw_prefix_owned(ident: String) -> String {
+    if let Some(stripped) = ident.strip_prefix("r#") {
+        stripped.to_string()
+    } else {
+        ident
+    }
 }
 
-/// Capitalizes the first character of a string.
-/// Returns empty string if input is empty.
-/// E.g., `user` -> `User`, `USER` -> `USER`, `` -> ``
-pub fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
-}
+pub use crate::schema_macro::type_utils::capitalize_first;
 
 /// Extract a Schema name from a `SeaORM` Entity type path.
 ///
@@ -441,10 +438,10 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
                         result.push(ch);
                     } else {
                         // Still in first word, lowercase it
-                        result.push(ch.to_lowercase().next().unwrap_or(ch));
+                        result.push(ch.to_ascii_lowercase());
                     }
                 } else if capitalize_next {
-                    result.push(ch.to_uppercase().next().unwrap_or(ch));
+                    result.push(ch.to_ascii_uppercase());
                     capitalize_next = false;
                 } else {
                     result.push(ch);
@@ -459,7 +456,7 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
                 if ch.is_uppercase() && i > 0 {
                     result.push('_');
                 }
-                result.push(ch.to_lowercase().next().unwrap_or(ch));
+                result.push(ch.to_ascii_lowercase());
             }
             result
         }
@@ -471,7 +468,7 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
                     if i > 0 && !result.ends_with('-') {
                         result.push('-');
                     }
-                    result.push(ch.to_lowercase().next().unwrap_or(ch));
+                    result.push(ch.to_ascii_lowercase());
                 } else if ch == '_' {
                     result.push('-');
                 } else {
@@ -488,7 +485,7 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
                 if ch == '_' {
                     capitalize_next = true;
                 } else if capitalize_next {
-                    result.push(ch.to_uppercase().next().unwrap_or(ch));
+                    result.push(ch.to_ascii_uppercase());
                     capitalize_next = false;
                 } else {
                     result.push(ch);
@@ -518,7 +515,7 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
                     snake_case.push('_');
                 }
                 if ch != '_' && ch != '-' {
-                    snake_case.push(ch.to_lowercase().next().unwrap_or(ch));
+                    snake_case.push(ch.to_ascii_lowercase());
                 } else if ch == '_' {
                     snake_case.push('_');
                 }
@@ -540,7 +537,7 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
                 if ch == '_' {
                     kebab_case.push('-');
                 } else if ch != '-' {
-                    kebab_case.push(ch.to_lowercase().next().unwrap_or(ch));
+                    kebab_case.push(ch.to_ascii_lowercase());
                 } else {
                     kebab_case.push('-');
                 }
@@ -1112,24 +1109,13 @@ mod tests {
         assert_eq!(result, "test_name");
     }
 
-    /// Test strip_raw_prefix function
+    /// Test strip_raw_prefix_owned function
     #[test]
-    fn test_strip_raw_prefix() {
-        assert_eq!(strip_raw_prefix("r#type"), "type");
-        assert_eq!(strip_raw_prefix("r#match"), "match");
-        assert_eq!(strip_raw_prefix("normal"), "normal");
-        assert_eq!(strip_raw_prefix("r#"), "");
-    }
-
-    #[rstest]
-    #[case("", "")]
-    #[case("a", "A")]
-    #[case("user", "User")]
-    #[case("User", "User")]
-    #[case("USER", "USER")]
-    #[case("user_name", "User_name")]
-    fn test_capitalize_first(#[case] input: &str, #[case] expected: &str) {
-        assert_eq!(capitalize_first(input), expected);
+    fn test_strip_raw_prefix_owned() {
+        assert_eq!(strip_raw_prefix_owned("r#type".to_string()), "type");
+        assert_eq!(strip_raw_prefix_owned("r#match".to_string()), "match");
+        assert_eq!(strip_raw_prefix_owned("normal".to_string()), "normal");
+        assert_eq!(strip_raw_prefix_owned("r#".to_string()), "");
     }
 
     // Tests using programmatically created attributes

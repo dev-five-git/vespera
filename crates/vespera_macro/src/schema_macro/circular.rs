@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use super::type_utils::normalize_token_str;
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -19,6 +20,7 @@ use crate::parser::extract_skip;
 /// Produced by [`analyze_circular_refs()`] which parses a definition string once
 /// and extracts all three pieces of information that would otherwise require
 /// three separate parse calls.
+#[derive(Clone)]
 pub struct CircularAnalysis {
     /// Field names that would create circular references.
     pub circular_fields: Vec<String>,
@@ -37,7 +39,7 @@ pub struct CircularAnalysis {
 /// Parses the definition string once and extracts all circular reference
 /// information in a single field walk.
 pub fn analyze_circular_refs(source_module_path: &[String], definition: &str) -> CircularAnalysis {
-    let Ok(parsed) = syn::parse_str::<syn::ItemStruct>(definition) else {
+    let Ok(parsed) = super::file_cache::parse_struct_cached(definition) else {
         return CircularAnalysis {
             circular_fields: Vec::new(),
             has_fk_relations: false,
@@ -61,11 +63,18 @@ pub fn analyze_circular_refs(source_module_path: &[String], definition: &str) ->
     let mut has_fk = false;
     let mut circular_field_required = HashMap::new();
 
+    // Pre-build field name → &Field index for O(1) FK column lookup
+    // instead of O(N) linear search per FK relation
+    let field_by_name: HashMap<String, &syn::Field> = fields_named
+        .named
+        .iter()
+        .filter_map(|f| f.ident.as_ref().map(|id| (id.to_string(), f)))
+        .collect();
     for field in &fields_named.named {
         // FieldsNamed guarantees all fields have identifiers
         let field_ident = field.ident.as_ref().expect("named field has ident");
         let field_name = field_ident.to_string();
-        let ty_str = quote!(#field.ty).to_string().replace(' ', "");
+        let ty_str = normalize_token_str(&quote!(#field.ty));
 
         // --- has_fk_relations logic ---
         if ty_str.contains("HasOne<") || ty_str.contains("BelongsTo<") {
@@ -73,12 +82,8 @@ pub fn analyze_circular_refs(source_module_path: &[String], definition: &str) ->
 
             // --- is_circular_relation_required logic (for ALL FK fields) ---
             let required = extract_belongs_to_from_field(&field.attrs).is_some_and(|fk| {
-                fields_named
-                    .named
-                    .iter()
-                    .find(|f| {
-                        f.ident.as_ref().map(std::string::ToString::to_string) == Some(fk.clone())
-                    })
+                field_by_name
+                    .get(&fk)
                     .is_some_and(|f| !is_option_type(&f.ty))
             });
             circular_field_required.insert(field_name.clone(), required);
@@ -118,7 +123,7 @@ pub fn generate_default_for_relation_field(
     field_attrs: &[syn::Attribute],
     all_fields: &syn::FieldsNamed,
 ) -> TokenStream {
-    let ty_str = quote!(#ty).to_string().replace(' ', "");
+    let ty_str = normalize_token_str(&quote!(#ty));
 
     // Check the SeaORM relation type
     if ty_str.contains("HasMany<") {
@@ -165,7 +170,7 @@ pub fn generate_inline_struct_construction(
     var_name: &str,
 ) -> TokenStream {
     // Parse the related schema definition
-    let Ok(parsed) = syn::parse_str::<syn::ItemStruct>(related_schema_def) else {
+    let Ok(parsed) = super::file_cache::parse_struct_cached(related_schema_def) else {
         // Fallback to From::from if parsing fails
         let var_ident = syn::Ident::new(var_name, proc_macro2::Span::call_site());
         return quote! { <#schema_path as From<_>>::from(#var_ident) };
@@ -233,7 +238,7 @@ pub fn generate_inline_type_construction(
     var_name: &str,
 ) -> TokenStream {
     // Parse the related model definition
-    let Ok(parsed) = syn::parse_str::<syn::ItemStruct>(related_model_def) else {
+    let Ok(parsed) = super::file_cache::parse_struct_cached(related_model_def) else {
         // Fallback to Default if parsing fails
         return quote! { Default::default() };
     };

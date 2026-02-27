@@ -6,7 +6,21 @@ use std::path::Path;
 
 use syn::Type;
 
-use crate::{file_utils::try_read_and_parse_file, metadata::StructMetadata};
+use crate::metadata::StructMetadata;
+use std::path::PathBuf;
+
+/// Build candidate file paths from module segments.
+///
+/// Given a source directory and module segments (e.g., `["models", "memo"]`),
+/// returns both `{src_dir}/models/memo.rs` and `{src_dir}/models/memo/mod.rs`.
+#[inline]
+fn candidate_file_paths(src_dir: &Path, module_segments: &[&str]) -> [PathBuf; 2] {
+    let joined = module_segments.join("/");
+    [
+        src_dir.join(format!("{joined}.rs")),
+        src_dir.join(format!("{joined}/mod.rs")),
+    ]
+}
 
 /// Try to find a struct definition from a module path by reading source files.
 ///
@@ -38,8 +52,8 @@ pub fn find_struct_from_path(
     ty: &Type,
     schema_name_hint: Option<&str>,
 ) -> Option<(StructMetadata, Vec<String>)> {
-    // Get CARGO_MANIFEST_DIR to locate src folder
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+    // Get CARGO_MANIFEST_DIR to locate src folder (cached to avoid repeated syscalls)
+    let manifest_dir = super::file_cache::get_manifest_dir()?;
     let src_dir = Path::new(&manifest_dir).join("src");
 
     // Extract path segments from the type
@@ -80,17 +94,14 @@ pub fn find_struct_from_path(
     let type_module_path: Vec<String> = segments[..segments.len() - 1].to_vec();
 
     // Try different file path patterns
-    let file_paths = vec![
-        src_dir.join(format!("{}.rs", module_segments.join("/"))),
-        src_dir.join(format!("{}/mod.rs", module_segments.join("/"))),
-    ];
+    let file_paths = candidate_file_paths(&src_dir, &module_segments);
 
     for file_path in file_paths {
         if !file_path.exists() {
             continue;
         }
 
-        let file_ast = try_read_and_parse_file(&file_path)?;
+        let file_ast = super::file_cache::get_parsed_ast(&file_path)?;
 
         // Look for the struct in the file
         for item in &file_ast.items {
@@ -134,19 +145,87 @@ pub fn find_struct_by_name_in_all_files(
     struct_name: &str,
     schema_name_hint: Option<&str>,
 ) -> Option<(StructMetadata, Vec<String>)> {
-    // Collect all .rs files recursively
-    let mut rs_files = Vec::new();
-    collect_rs_files_recursive(src_dir, &mut rs_files);
+    // Use cached struct-candidate index: files already filtered by text search
+    let mut rs_files = super::file_cache::get_struct_candidates(src_dir, struct_name);
 
-    // Store: (file_path, struct_metadata)
+    // Pre-compute hint prefix once (used in fast path and fallback disambiguation)
+    let prefix_normalized = schema_name_hint.map(derive_hint_prefix);
+
+    // FAST PATH: If schema_name_hint is provided, try matching files first.
+    // This avoids parsing ALL files for the common same-file pattern:
+    //   schema_type!(Schema from Model, name = "UserSchema")  in user.rs
+    if let Some(prefix_normalized) = &prefix_normalized {
+        // Partition files: candidate files (filename matches hint prefix) vs rest
+        let (candidates, rest): (Vec<_>, Vec<_>) = rs_files.into_iter().partition(|path| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|name| {
+                    let norm = normalize_name(name);
+                    norm == *prefix_normalized || norm.contains(prefix_normalized.as_str())
+                })
+        });
+
+        // Parse only candidate files first
+        let mut found_in_candidates: Vec<(std::path::PathBuf, StructMetadata)> = Vec::new();
+        for file_path in &candidates {
+            let Some(file_ast) = super::file_cache::get_parsed_ast(file_path) else {
+                continue;
+            };
+            for item in &file_ast.items {
+                if let syn::Item::Struct(struct_item) = item
+                    && struct_item.ident == struct_name
+                {
+                    found_in_candidates.push((
+                        file_path.clone(),
+                        StructMetadata::new_model(
+                            struct_name.to_string(),
+                            quote::quote!(#struct_item).to_string(),
+                        ),
+                    ));
+                }
+            }
+        }
+
+        // If exactly one match in candidates, return immediately (fast path hit!)
+        if found_in_candidates.len() == 1 {
+            let (path, metadata) = found_in_candidates.remove(0);
+            let module_path = file_path_to_module_path(&path, src_dir);
+            return Some((metadata, module_path));
+        }
+
+        // If candidates found multiple, try disambiguation by exact filename match
+        if found_in_candidates.len() > 1 {
+            let exact_match: Vec<_> = found_in_candidates
+                .iter()
+                .filter(|(path, _)| {
+                    path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|name| normalize_name(name) == *prefix_normalized)
+                })
+                .collect();
+
+            if exact_match.len() == 1 {
+                let (path, metadata) = exact_match[0];
+                let module_path = file_path_to_module_path(path, src_dir);
+                return Some((metadata.clone(), module_path));
+            }
+
+            // Still ambiguous among candidates
+            return None;
+        }
+
+        // No match in candidates — fall through to scan remaining files
+        rs_files = rest;
+    }
+
+    // FULL SCAN: Parse all remaining files (or all files if no hint)
     let mut found_structs: Vec<(std::path::PathBuf, StructMetadata)> = Vec::new();
 
     for file_path in rs_files {
-        let Some(file_ast) = try_read_and_parse_file(&file_path) else {
+        let Some(file_ast) = super::file_cache::get_parsed_ast(&file_path) else {
             continue;
         };
 
-        // Look for the struct in the file
         for item in &file_ast.items {
             if let syn::Item::Struct(struct_item) = item
                 && struct_item.ident == struct_name
@@ -163,71 +242,42 @@ pub fn find_struct_by_name_in_all_files(
     }
 
     match found_structs.len() {
-        0 => None,
         1 => {
             let (path, metadata) = found_structs.remove(0);
             let module_path = file_path_to_module_path(&path, src_dir);
             Some((metadata, module_path))
         }
-        _ => {
-            // Multiple structs with same name - try to disambiguate using schema_name_hint
-            if let Some(hint) = schema_name_hint {
-                // Extract prefix from schema name (e.g., "UserSchema" -> "user", "MemoSchema" -> "memo")
-                let hint_lower = hint.to_lowercase();
-                let prefix = hint_lower
-                    .strip_suffix("schema")
-                    .or_else(|| hint_lower.strip_suffix("response"))
-                    .or_else(|| hint_lower.strip_suffix("request"))
-                    .unwrap_or(&hint_lower);
-
-                // Normalize prefix: remove underscores for comparison
-                // This allows "AdminUserSchema" (prefix "adminuser") to match "admin_user.rs"
-                let prefix_normalized = prefix.replace('_', "");
-
-                // First, try exact filename match (normalized)
-                // e.g., "admin_user.rs" normalized to "adminuser" matches prefix "adminuser"
-                let exact_match: Vec<_> = found_structs
-                    .iter()
-                    .filter(|(path, _)| {
-                        path.file_stem()
-                            .and_then(|s| s.to_str())
-                            .is_some_and(|name| {
-                                name.to_lowercase().replace('_', "") == prefix_normalized
-                            })
-                    })
-                    .collect();
-
-                if exact_match.len() == 1 {
-                    let (path, metadata) = exact_match[0];
-                    let module_path = file_path_to_module_path(path, src_dir);
-                    return Some((metadata.clone(), module_path));
-                }
-
-                // Fallback: Find files whose normalized name contains the prefix
-                let matching: Vec<_> = found_structs
-                    .into_iter()
-                    .filter(|(path, _)| {
-                        path.file_stem()
-                            .and_then(|s| s.to_str())
-                            .is_some_and(|name| {
-                                name.to_lowercase()
-                                    .replace('_', "")
-                                    .contains(&prefix_normalized)
-                            })
-                    })
-                    .collect();
-
-                if matching.len() == 1 {
-                    let (path, metadata) = matching.into_iter().next().unwrap();
-                    let module_path = file_path_to_module_path(&path, src_dir);
-                    return Some((metadata, module_path));
-                }
-            }
-
-            // Still ambiguous
-            None
-        }
+        _ => None,
     }
+}
+
+/// Derive a normalized prefix from a schema name hint for file matching.
+///
+/// Strips common suffixes ("Schema", "Response", "Request") and normalizes
+/// by removing underscores and lowercasing.
+///
+/// # Examples
+/// - "UserSchema" → "user"
+/// - "MemoResponse" → "memo"
+/// - "AdminUserSchema" → "adminuser"
+fn derive_hint_prefix(hint: &str) -> String {
+    let hint_lower = hint.to_lowercase();
+    let prefix = hint_lower
+        .strip_suffix("schema")
+        .or_else(|| hint_lower.strip_suffix("response"))
+        .or_else(|| hint_lower.strip_suffix("request"))
+        .unwrap_or(&hint_lower);
+    normalize_name(prefix)
+}
+
+/// Normalize a name by lowercasing and removing underscores in a single pass.
+/// Replaces the two-allocation `s.to_lowercase().replace('_', "")` pattern.
+#[inline]
+fn normalize_name(s: &str) -> String {
+    s.chars()
+        .filter(|&c| c != '_')
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }
 
 /// Recursively collect all `.rs` files in a directory.
@@ -283,8 +333,8 @@ pub fn file_path_to_module_path(file_path: &Path, src_dir: &Path) -> Vec<String>
 ///
 /// Similar to `find_struct_from_path` but takes a string path instead of `syn::Type`.
 pub fn find_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
-    // Get CARGO_MANIFEST_DIR to locate src folder
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+    // Get CARGO_MANIFEST_DIR to locate src folder (cached to avoid repeated syscalls)
+    let manifest_dir = super::file_cache::get_manifest_dir()?;
     let src_dir = Path::new(&manifest_dir).join("src");
 
     // Parse the path string into segments
@@ -310,17 +360,14 @@ pub fn find_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
     }
 
     // Try different file path patterns
-    let file_paths = vec![
-        src_dir.join(format!("{}.rs", module_segments.join("/"))),
-        src_dir.join(format!("{}/mod.rs", module_segments.join("/"))),
-    ];
+    let file_paths = candidate_file_paths(&src_dir, &module_segments);
 
     for file_path in file_paths {
         if !file_path.exists() {
             continue;
         }
 
-        let file_ast = try_read_and_parse_file(&file_path)?;
+        let file_ast = super::file_cache::get_parsed_ast(&file_path)?;
 
         // Look for the struct in the file
         for item in &file_ast.items {
@@ -354,8 +401,8 @@ pub fn find_fk_column_from_target_entity(
 ) -> Option<String> {
     use crate::schema_macro::seaorm::{extract_belongs_to_from_field, extract_relation_enum};
 
-    // Get CARGO_MANIFEST_DIR to locate src folder
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+    // Get CARGO_MANIFEST_DIR to locate src folder (cached to avoid repeated syscalls)
+    let manifest_dir = super::file_cache::get_manifest_dir()?;
     let src_dir = Path::new(&manifest_dir).join("src");
 
     // Parse the schema path to get file path
@@ -377,17 +424,14 @@ pub fn find_fk_column_from_target_entity(
     }
 
     // Try different file path patterns
-    let file_paths = vec![
-        src_dir.join(format!("{}.rs", module_segments.join("/"))),
-        src_dir.join(format!("{}/mod.rs", module_segments.join("/"))),
-    ];
+    let file_paths = candidate_file_paths(&src_dir, &module_segments);
 
     for file_path in file_paths {
         if !file_path.exists() {
             continue;
         }
 
-        let file_ast = try_read_and_parse_file(&file_path)?;
+        let file_ast = super::file_cache::get_parsed_ast(&file_path)?;
 
         // Look for Model struct in the file
         for item in &file_ast.items {
@@ -415,8 +459,8 @@ pub fn find_fk_column_from_target_entity(
 /// Converts "`crate::models::user::Schema`" -> finds Model in src/models/user.rs
 #[allow(clippy::too_many_lines)]
 pub fn find_model_from_schema_path(schema_path_str: &str) -> Option<StructMetadata> {
-    // Get CARGO_MANIFEST_DIR to locate src folder
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+    // Get CARGO_MANIFEST_DIR to locate src folder (cached to avoid repeated syscalls)
+    let manifest_dir = super::file_cache::get_manifest_dir()?;
     let src_dir = Path::new(&manifest_dir).join("src");
 
     // Parse the path string and convert Schema path to module path
@@ -443,17 +487,14 @@ pub fn find_model_from_schema_path(schema_path_str: &str) -> Option<StructMetada
     }
 
     // Try different file path patterns
-    let file_paths = vec![
-        src_dir.join(format!("{}.rs", module_segments.join("/"))),
-        src_dir.join(format!("{}/mod.rs", module_segments.join("/"))),
-    ];
+    let file_paths = candidate_file_paths(&src_dir, &module_segments);
 
     for file_path in file_paths {
         if !file_path.exists() {
             continue;
         }
 
-        let file_ast = try_read_and_parse_file(&file_path)?;
+        let file_ast = super::file_cache::get_parsed_ast(&file_path)?;
 
         // Look for Model struct in the file
         for item in &file_ast.items {
@@ -1413,6 +1454,116 @@ pub struct Model {
         assert!(
             result.is_none(),
             "Field without 'from' attribute should return None"
+        );
+    }
+
+    // ============================================================
+    // Coverage tests for find_struct_by_name_in_all_files (candidate/rest paths)
+    // ============================================================
+
+    #[test]
+    #[serial]
+    fn test_find_struct_candidate_unparseable_file() {
+        // Tests line 145: candidate file fails to parse -> continue to next candidate
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path();
+
+        // user.rs matches hint prefix "user" (candidate), contains "Model" text, but won't parse
+        std::fs::write(
+            src_dir.join("user.rs"),
+            "pub struct Model {{{{ broken syntax",
+        )
+        .unwrap();
+
+        // valid.rs contains Model and parses fine (goes to rest since filename doesn't match prefix)
+        std::fs::write(src_dir.join("valid.rs"), "pub struct Model { pub id: i32 }").unwrap();
+
+        let result = find_struct_by_name_in_all_files(src_dir, "Model", Some("UserSchema"));
+
+        assert!(
+            result.is_some(),
+            "Should find Model in valid.rs after skipping unparseable candidate user.rs"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_struct_exact_filename_disambiguation() {
+        // Tests lines 168-170: multiple candidates found, exact filename match disambiguates
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path();
+
+        // user.rs: exact match (normalize_name("user") == prefix "user")
+        std::fs::write(src_dir.join("user.rs"), "pub struct Model { pub id: i32 }").unwrap();
+
+        // user_extended.rs: contains-match only (normalize_name("user_extended") = "userextended" != "user")
+        std::fs::write(
+            src_dir.join("user_extended.rs"),
+            "pub struct Model { pub name: String }",
+        )
+        .unwrap();
+
+        let result = find_struct_by_name_in_all_files(src_dir, "Model", Some("UserSchema"));
+
+        assert!(result.is_some(), "Should resolve via exact filename match");
+        let (metadata, _) = result.unwrap();
+        assert!(
+            metadata.definition.contains("id"),
+            "Should return user.rs Model (with id field)"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_struct_no_match_in_candidates_falls_to_rest() {
+        // Tests line 189: candidates have no struct match -> rs_files = rest -> full scan finds it
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path();
+
+        // user.rs is a candidate (filename matches "user" prefix) but has no struct Model
+        // Must contain "Model" text for get_struct_candidates to include it
+        std::fs::write(
+            src_dir.join("user.rs"),
+            "pub struct Other { pub x: i32 } // Model ref",
+        )
+        .unwrap();
+
+        // data.rs is in rest (filename "data" doesn't contain "user"), has struct Model
+        std::fs::write(src_dir.join("data.rs"), "pub struct Model { pub id: i32 }").unwrap();
+
+        let result = find_struct_by_name_in_all_files(src_dir, "Model", Some("UserSchema"));
+
+        assert!(
+            result.is_some(),
+            "Should find Model in data.rs after candidates had no match"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_struct_full_scan_unparseable_file() {
+        // Tests line 197: full-scan file fails to parse -> continue to next file
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path();
+
+        // user.rs is candidate but no struct Model
+        std::fs::write(
+            src_dir.join("user.rs"),
+            "pub struct Other { pub x: i32 } // Model",
+        )
+        .unwrap();
+
+        // broken.rs is rest, contains "Model" text but won't parse
+        std::fs::write(src_dir.join("broken.rs"), "Model unparseable {{{{{").unwrap();
+
+        // valid.rs is rest, has struct Model
+        std::fs::write(src_dir.join("valid.rs"), "pub struct Model { pub id: i32 }").unwrap();
+
+        let result = find_struct_by_name_in_all_files(src_dir, "Model", Some("UserSchema"));
+
+        assert!(
+            result.is_some(),
+            "Should find Model in valid.rs after skipping unparseable broken.rs in rest"
         );
     }
 }

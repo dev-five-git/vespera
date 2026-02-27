@@ -141,14 +141,14 @@ pub fn validate_partial_fields(
 ///
 /// Returns an empty set for tuple or unit structs.
 pub fn extract_source_field_names(parsed_struct: &syn::ItemStruct) -> HashSet<String> {
-    use crate::parser::strip_raw_prefix;
+    use crate::parser::strip_raw_prefix_owned;
 
     if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
         fields_named
             .named
             .iter()
             .filter_map(|f| f.ident.as_ref())
-            .map(|i| strip_raw_prefix(&i.to_string()).to_string())
+            .map(|i| strip_raw_prefix_owned(i.to_string()))
             .collect()
     } else {
         HashSet::new()

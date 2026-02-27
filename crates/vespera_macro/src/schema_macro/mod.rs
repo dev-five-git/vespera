@@ -6,6 +6,7 @@
 
 mod circular;
 mod codegen;
+mod file_cache;
 mod file_lookup;
 mod from_model;
 mod inline_types;
@@ -14,6 +15,8 @@ mod seaorm;
 mod transformation;
 pub mod type_utils;
 mod validation;
+
+pub use file_cache::print_profile_summary;
 
 use std::collections::{HashMap, HashSet};
 
@@ -48,7 +51,7 @@ use validation::{
 
 use crate::{
     metadata::StructMetadata,
-    parser::{extract_default, extract_field_rename, strip_raw_prefix},
+    parser::{extract_default, extract_field_rename, strip_raw_prefix_owned},
 };
 
 /// Generate schema code from a struct with optional field filtering
@@ -63,18 +66,19 @@ pub fn generate_schema_code(
     let struct_def = schema_storage.get(&type_name).ok_or_else(|| syn::Error::new_spanned(&input.ty, format!("type `{type_name}` not found. Make sure it has #[derive(Schema)] before this macro invocation")))?;
 
     // Parse the struct definition
-    let parsed_struct: syn::ItemStruct = syn::parse_str(&struct_def.definition).map_err(|e| {
-        syn::Error::new_spanned(
-            &input.ty,
-            format!("failed to parse struct definition for `{type_name}`: {e}"),
-        )
-    })?;
+    let parsed_struct: syn::ItemStruct = file_cache::parse_struct_cached(&struct_def.definition)
+        .map_err(|e| {
+            syn::Error::new_spanned(
+                &input.ty,
+                format!("failed to parse struct definition for `{type_name}`: {e}"),
+            )
+        })?;
 
     // Build omit set
-    let omit_set: HashSet<String> = input.omit.clone().unwrap_or_default().into_iter().collect();
+    let omit_set: HashSet<String> = input.omit.iter().flatten().cloned().collect();
 
     // Build pick set
-    let pick_set: HashSet<String> = input.pick.clone().unwrap_or_default().into_iter().collect();
+    let pick_set: HashSet<String> = input.pick.iter().flatten().cloned().collect();
 
     // Generate schema with filtering
     let schema_tokens =
@@ -153,12 +157,13 @@ pub fn generate_schema_type_code(
     };
 
     // Parse the struct definition
-    let parsed_struct: syn::ItemStruct = syn::parse_str(&struct_def.definition).map_err(|e| {
-        syn::Error::new_spanned(
-            &input.source_type,
-            format!("failed to parse struct definition for `{source_type_name}`: {e}"),
-        )
-    })?;
+    let parsed_struct: syn::ItemStruct = file_cache::parse_struct_cached(&struct_def.definition)
+        .map_err(|e| {
+            syn::Error::new_spanned(
+                &input.source_type,
+                format!("failed to parse struct definition for `{source_type_name}`: {e}"),
+            )
+        })?;
 
     // Extract all field names from source struct for validation
     // Include relation fields since they can be converted to Schema types
@@ -195,10 +200,10 @@ pub fn generate_schema_type_code(
     )?;
 
     // Build filter sets and rename map
-    let omit_set = build_omit_set(input.omit.clone());
-    let pick_set = build_pick_set(input.pick.clone());
+    let omit_set = build_omit_set(input.omit.as_ref());
+    let pick_set = build_pick_set(input.pick.as_ref());
     let (partial_all, partial_set) = build_partial_config(&input.partial);
-    let rename_map = build_rename_map(input.rename.clone());
+    let rename_map = build_rename_map(input.rename.as_ref());
 
     // Extract serde attributes from source struct, excluding rename_all (we'll handle it separately)
     let serde_attrs_without_rename_all =
@@ -230,7 +235,7 @@ pub fn generate_schema_type_code(
         for field in &fields_named.named {
             let rust_field_name = field.ident.as_ref().map_or_else(
                 || "unknown".to_string(),
-                |i| strip_raw_prefix(&i.to_string()).to_string(),
+                |i| strip_raw_prefix_owned(i.to_string()),
             );
 
             // Apply omit/pick filters

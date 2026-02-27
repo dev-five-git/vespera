@@ -48,7 +48,7 @@ mod http;
 mod metadata;
 mod method;
 mod openapi_generator;
-mod parse_utils;
+
 mod parser;
 mod route;
 mod route_impl;

@@ -4,16 +4,14 @@
 
 use std::collections::HashMap;
 
+use super::type_utils::normalize_token_str;
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Type;
 
 use super::{
-    circular::{
-        analyze_circular_refs, generate_inline_struct_construction,
-        generate_inline_type_construction,
-    },
-    file_lookup::{find_fk_column_from_target_entity, find_struct_from_schema_path},
+    circular::{generate_inline_struct_construction, generate_inline_type_construction},
+    file_cache::{get_circular_analysis, get_fk_column, get_struct_from_schema_path},
     seaorm::RelationFieldInfo,
     type_utils::snake_to_pascal_case,
 };
@@ -26,26 +24,15 @@ pub fn build_entity_path_from_schema_path(
     schema_path: &TokenStream,
     _source_module_path: &[String],
 ) -> TokenStream {
-    // Parse the schema path to extract segments
+    // Parse the schema path, replace "Schema" with "Entity", and build Idents in one pass
     let path_str = schema_path.to_string();
-    let segments: Vec<&str> = path_str.split("::").map(str::trim).collect();
-
-    // Replace "Schema" with "Entity" in the last segment
-    let entity_segments: Vec<String> = segments
-        .iter()
+    let path_idents: Vec<syn::Ident> = path_str
+        .split("::")
         .map(|s| {
-            if *s == "Schema" {
-                "Entity".to_string()
-            } else {
-                s.to_string()
-            }
+            let s = s.trim();
+            let name = if s == "Schema" { "Entity" } else { s };
+            syn::Ident::new(name, proc_macro2::Span::call_site())
         })
-        .collect();
-
-    // Build the path tokens
-    let path_idents: Vec<syn::Ident> = entity_segments
-        .iter()
-        .map(|s| syn::Ident::new(s, proc_macro2::Span::call_site()))
         .collect();
 
     quote! { #(#path_idents)::* }
@@ -142,21 +129,23 @@ pub fn generate_from_model_with_relations(
                     }
                 }
                 "HasMany" => {
-                    // HasMany with relation_enum: use FK-based query on target entity
-                    // HasMany without relation_enum: use standard find_related
-                    if let Some(ref via_rel_value) = rel.via_rel {
-                        // Look up the FK column from the target entity
-                        let schema_path_str = rel.schema_path.to_string().replace(' ', "");
-                        if let Some(fk_col_name) = find_fk_column_from_target_entity(&schema_path_str, via_rel_value) {
-                            // Convert snake_case FK column to PascalCase for Column enum
+                    // Try via_rel first, fall back to relation_enum as FK source
+                    let fk_rel_source = rel.via_rel.as_ref().or(rel.relation_enum.as_ref());
+                    if let Some(via_rel_value) = fk_rel_source {
+                        let schema_path_str = normalize_token_str(&rel.schema_path);
+                        if let Some(fk_col_name) = get_fk_column(&schema_path_str, via_rel_value) {
                             let fk_col_pascal = snake_to_pascal_case(&fk_col_name);
                             let fk_col_ident = syn::Ident::new(&fk_col_pascal, proc_macro2::Span::call_site());
 
-                            // Build the Column path: entity_path without ::Entity, then ::Column::FkCol
-                            // e.g., crate::models::notification::Entity -> crate::models::notification::Column::TargetUserId
-                            let entity_path_str = entity_path.to_string().replace(' ', "");
+                            let entity_path_str = normalize_token_str(&entity_path);
                             let column_path_str = entity_path_str.replace(":: Entity", ":: Column");
-                            let column_path_idents: Vec<syn::Ident> = column_path_str.split("::").map(str::trim).filter(|s| !s.is_empty()).map(|s| syn::Ident::new(s, proc_macro2::Span::call_site())).collect();
+                            let column_path_idents: Vec<syn::Ident> = column_path_str
+                                .split("::")
+                                .filter_map(|s| {
+                                    let trimmed = s.trim();
+                                    if trimmed.is_empty() { None } else { Some(syn::Ident::new(trimmed, proc_macro2::Span::call_site())) }
+                                })
+                                .collect();
 
                             quote! {
                                 let #field_name = #(#column_path_idents)::*::#fk_col_ident
@@ -169,37 +158,8 @@ pub fn generate_from_model_with_relations(
                                     .await?;
                             }
                         } else {
-                            // FK column not found - fall back to empty vec with warning comment
                             quote! {
-                                // WARNING: Could not find FK column for relation_enum, using empty vec
-                                let #field_name: Vec<_> = vec![];
-                            }
-                        }
-                    } else if let Some(via_rel_value) = &rel.relation_enum {
-                        // Has relation_enum but no via_rel - try using relation_enum as via_rel
-                        let schema_path_str = rel.schema_path.to_string().replace(' ', "");
-                        if let Some(fk_col_name) = find_fk_column_from_target_entity(&schema_path_str, via_rel_value) {
-                            let fk_col_pascal = snake_to_pascal_case(&fk_col_name);
-                            let fk_col_ident = syn::Ident::new(&fk_col_pascal, proc_macro2::Span::call_site());
-
-                            let entity_path_str = entity_path.to_string().replace(' ', "");
-                            let column_path_str = entity_path_str.replace(":: Entity", ":: Column");
-                            let column_path_idents: Vec<syn::Ident> = column_path_str.split("::").map(str::trim).filter(|s| !s.is_empty()).map(|s| syn::Ident::new(s, proc_macro2::Span::call_site())).collect();
-
-                            quote! {
-                                let #field_name = #(#column_path_idents)::*::#fk_col_ident
-                                    .into_column()
-                                    .eq(model.id.clone())
-                                    .into_condition();
-                                let #field_name = #entity_path::find()
-                                    .filter(#field_name)
-                                    .all(db)
-                                    .await?;
-                            }
-                        } else {
-                            // FK column not found - fall back to empty vec
-                            quote! {
-                                // WARNING: Could not find FK column for relation_enum, using empty vec
+                                // WARNING: Could not find FK column for relation, using empty vec
                                 let #field_name: Vec<_> = vec![];
                             }
                         }
@@ -226,12 +186,12 @@ pub fn generate_from_model_with_relations(
         if rel.inline_type_info.is_some() {
             return false;
         }
-        let schema_path_str = rel.schema_path.to_string().replace(' ', "");
+        let schema_path_str = normalize_token_str(&rel.schema_path);
         let model_path_str = schema_path_str.replace("::Schema", "::Model");
-        let related_model = find_struct_from_schema_path(&model_path_str);
+        let related_model = get_struct_from_schema_path(&model_path_str);
 
         if let Some(ref model) = related_model {
-            let analysis = analyze_circular_refs(source_module_path, &model.definition);
+            let analysis = get_circular_analysis(source_module_path, &model.definition);
             // Check if any circular field is a required relation
             analysis.circular_fields.iter().any(|cf| {
                 analysis
@@ -276,6 +236,12 @@ pub fn generate_from_model_with_relations(
         vec![]
     };
 
+    // Pre-build relation lookup for O(1) access in field assignments loop
+    let relation_by_name: HashMap<&syn::Ident, &RelationFieldInfo> = relation_fields
+        .iter()
+        .map(|rel| (&rel.field_name, rel))
+        .collect();
+
     // Build field assignments
     // For relation fields, check for circular references and use inline construction if needed
     let field_assignments: Vec<TokenStream> = field_mappings
@@ -283,26 +249,26 @@ pub fn generate_from_model_with_relations(
         .map(|(new_ident, source_ident, wrapped, is_relation)| {
             if *is_relation {
                 // Find the relation info for this field
-                if let Some(rel) = relation_fields.iter().find(|r| &r.field_name == source_ident) {
+                if let Some(rel) = relation_by_name.get(source_ident) {
                     let schema_path = &rel.schema_path;
 
                     // Try to find the related MODEL definition to check for circular refs
                     // The schema_path is like "crate::models::user::Schema", but the actual
                     // struct is "Model" in the same module. We need to look up the Model
                     // to see if it has relations pointing back to us.
-                    let schema_path_str = schema_path.to_string().replace(' ', "");
+                    let schema_path_str = normalize_token_str(schema_path);
 
                     // Convert schema path to model path: Schema -> Model
                     let model_path_str = schema_path_str.replace("::Schema", "::Model");
 
                     // Try to find the related Model definition from file
-                    let related_model_from_file = find_struct_from_schema_path(&model_path_str);
+                    let related_model_from_file = get_struct_from_schema_path(&model_path_str);
 
                     // Get the definition string
                     let related_def_str = related_model_from_file.as_ref().map_or("", |s| s.definition.as_str());
 
                     // Analyze circular references, FK relations, and FK optionality in ONE pass
-                    let analysis = analyze_circular_refs(source_module_path, related_def_str);
+                    let analysis = get_circular_analysis(source_module_path, related_def_str);
                     let circular_fields = &analysis.circular_fields;
                     let has_circular = !circular_fields.is_empty();
 

@@ -432,8 +432,9 @@ impl Parse for ExportAppInput {
 #[allow(clippy::too_many_lines)]
 pub fn generate_router_code(
     metadata: &CollectedMetadata,
-    docs_info: Option<(String, String)>,
-    redoc_info: Option<(String, String)>,
+    docs_url: Option<&str>,
+    redoc_url: Option<&str>,
+    spec_tokens: Option<proc_macro2::TokenStream>,
     merge_apps: &[syn::Path],
 ) -> proc_macro2::TokenStream {
     let mut router_nests = Vec::new();
@@ -476,93 +477,119 @@ pub fn generate_router_code(
     // Check if we need to merge specs at runtime
     let has_merge = !merge_apps.is_empty();
 
-    if let Some((docs_url, spec)) = docs_info {
+    // Generate merge code once, reuse in both docs_url and redoc_url routes
+    let merge_spec_code: Vec<_> = merge_apps
+        .iter()
+        .map(|app_path| {
+            quote! {
+                if let Ok(other) = vespera::serde_json::from_str::<vespera::OpenApi>(#app_path::OPENAPI_SPEC) {
+                    merged.merge(other);
+                }
+            }
+        })
+        .collect();
+
+    if let Some(docs_url) = docs_url {
         let method_path = http_method_to_token_stream(HttpMethod::Get);
 
         if has_merge {
-            // Generate code that merges specs at runtime using OnceLock
-            let merge_spec_code: Vec<_> = merge_apps
-                .iter()
-                .map(|app_path| {
-                    quote! {
-                        if let Ok(other) = vespera::serde_json::from_str::<vespera::OpenApi>(#app_path::OPENAPI_SPEC) {
-                            merged.merge(other);
-                        }
-                    }
-                })
-                .collect();
-
             router_nests.push(quote!(
                 .route(#docs_url, #method_path(|| async {
                     static MERGED_SPEC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
                     let spec = MERGED_SPEC.get_or_init(|| {
-                        let base_spec = #spec;
-                        let mut merged: vespera::OpenApi = vespera::serde_json::from_str(base_spec).unwrap();
+                        let mut merged: vespera::OpenApi = vespera::serde_json::from_str(__VESPERA_SPEC).unwrap();
                         #(#merge_spec_code)*
                         vespera::serde_json::to_string(&merged).unwrap()
                     });
-                    let html = format!(
-                        r#"<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Swagger UI</title><link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css" /></head><body style="margin: 0; padding: 0;"><div id="swagger-ui"></div><script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script><script src="https://unpkg.com/swagger-ui-dist/swagger-ui-standalone-preset.js"></script><script>const openapiSpec = {};window.onload = () => {{ SwaggerUIBundle({{ spec: openapiSpec, dom_id: "\#swagger-ui", presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset], layout: "StandaloneLayout" }}); }};</script></body></html>"#,
-                        spec
-                    );
-                    vespera::axum::response::Html(html)
+                    static HTML: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+                    let html = HTML.get_or_init(|| {
+                        format!(
+                            r#"<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><title>Swagger UI</title><link rel=\"stylesheet\" href=\"https://unpkg.com/swagger-ui-dist/swagger-ui.css\" /></head><body style=\"margin: 0; padding: 0;\"><div id=\"swagger-ui\"></div><script src=\"https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js\"></script><script src=\"https://unpkg.com/swagger-ui-dist/swagger-ui-standalone-preset.js\"></script><script>const openapiSpec = {};window.onload = () => {{ SwaggerUIBundle({{ spec: openapiSpec, dom_id: \"\#swagger-ui\", presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset], layout: \"StandaloneLayout\" }}); }};</script></body></html>"#,
+                            spec
+                        )
+                    });
+                    vespera::axum::response::Html(html.as_str())
                 }))
             ));
         } else {
-            let html = format!(
-                r#"<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Swagger UI</title><link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css" /></head><body style="margin: 0; padding: 0;"><div id="swagger-ui"></div><script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script><script src="https://unpkg.com/swagger-ui-dist/swagger-ui-standalone-preset.js"></script><script>const openapiSpec = {spec};window.onload = () => {{ SwaggerUIBundle({{ spec: openapiSpec, dom_id: "\#swagger-ui", presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset], layout: "StandaloneLayout" }}); }};</script></body></html>"#
-            );
-
             router_nests.push(quote!(
-                .route(#docs_url, #method_path(|| async { vespera::axum::response::Html(#html) }))
+                .route(#docs_url, #method_path(|| async {
+                    static HTML: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+                    let html = HTML.get_or_init(|| {
+                        format!(
+                            r#"<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><title>Swagger UI</title><link rel=\"stylesheet\" href=\"https://unpkg.com/swagger-ui-dist/swagger-ui.css\" /></head><body style=\"margin: 0; padding: 0;\"><div id=\"swagger-ui\"></div><script src=\"https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js\"></script><script src=\"https://unpkg.com/swagger-ui-dist/swagger-ui-standalone-preset.js\"></script><script>const openapiSpec = {};window.onload = () => {{ SwaggerUIBundle({{ spec: openapiSpec, dom_id: \"\#swagger-ui\", presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset], layout: \"StandaloneLayout\" }}); }};</script></body></html>"#,
+                            __VESPERA_SPEC
+                        )
+                    });
+                    vespera::axum::response::Html(html.as_str())
+                }))
             ));
         }
     }
 
-    if let Some((redoc_url, spec)) = redoc_info {
+    if let Some(redoc_url) = redoc_url {
         let method_path = http_method_to_token_stream(HttpMethod::Get);
 
         if has_merge {
-            // Generate code that merges specs at runtime using OnceLock
-            let merge_spec_code: Vec<_> = merge_apps
-                .iter()
-                .map(|app_path| {
-                    quote! {
-                        if let Ok(other) = vespera::serde_json::from_str::<vespera::OpenApi>(#app_path::OPENAPI_SPEC) {
-                            merged.merge(other);
-                        }
-                    }
-                })
-                .collect();
-
             router_nests.push(quote!(
                 .route(#redoc_url, #method_path(|| async {
                     static MERGED_SPEC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
                     let spec = MERGED_SPEC.get_or_init(|| {
-                        let base_spec = #spec;
-                        let mut merged: vespera::OpenApi = vespera::serde_json::from_str(base_spec).unwrap();
+                        let mut merged: vespera::OpenApi = vespera::serde_json::from_str(__VESPERA_SPEC).unwrap();
                         #(#merge_spec_code)*
                         vespera::serde_json::to_string(&merged).unwrap()
                     });
-                    let html = format!(
-                        r#"<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>ReDoc</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body {{ margin: 0; padding: 0; }}</style><link rel="stylesheet" href="https://unpkg.com/redoc/bundles/redoc.standalone.css" /></head><body><div id="redoc-container"></div><script src="https://unpkg.com/redoc/bundles/redoc.standalone.js"></script><script>const openapiSpec = {};Redoc.init(openapiSpec, {{}}, document.getElementById("redoc-container"));</script></body></html>"#,
-                        spec
-                    );
-                    vespera::axum::response::Html(html)
+                    static HTML: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+                    let html = HTML.get_or_init(|| {
+                        format!(
+                            r#"<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><title>ReDoc</title><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>body {{ margin: 0; padding: 0; }}</style><link rel=\"stylesheet\" href=\"https://unpkg.com/redoc/bundles/redoc.standalone.css\" /></head><body><div id=\"redoc-container\"></div><script src=\"https://unpkg.com/redoc/bundles/redoc.standalone.js\"></script><script>const openapiSpec = {};Redoc.init(openapiSpec, {{}}, document.getElementById(\"redoc-container\"));</script></body></html>"#,
+                            spec
+                        )
+                    });
+                    vespera::axum::response::Html(html.as_str())
                 }))
             ));
         } else {
-            let html = format!(
-                r#"<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>ReDoc</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body {{ margin: 0; padding: 0; }}</style><link rel="stylesheet" href="https://unpkg.com/redoc/bundles/redoc.standalone.css" /></head><body><div id="redoc-container"></div><script src="https://unpkg.com/redoc/bundles/redoc.standalone.js"></script><script>const openapiSpec = {spec};Redoc.init(openapiSpec, {{}}, document.getElementById("redoc-container"));</script></body></html>"#
-            );
-
             router_nests.push(quote!(
-                .route(#redoc_url, #method_path(|| async { vespera::axum::response::Html(#html) }))
+                .route(#redoc_url, #method_path(|| async {
+                    static HTML: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+                    let html = HTML.get_or_init(|| {
+                        format!(
+                            r#"<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><title>ReDoc</title><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>body {{ margin: 0; padding: 0; }}</style><link rel=\"stylesheet\" href=\"https://unpkg.com/redoc/bundles/redoc.standalone.css\" /></head><body><div id=\"redoc-container\"></div><script src=\"https://unpkg.com/redoc/bundles/redoc.standalone.js\"></script><script>const openapiSpec = {};Redoc.init(openapiSpec, {{}}, document.getElementById(\"redoc-container\"));</script></body></html>"#,
+                            __VESPERA_SPEC
+                        )
+                    });
+                    vespera::axum::response::Html(html.as_str())
+                }))
             ));
         }
     }
 
-    if merge_apps.is_empty() {
+    let needs_spec_const = spec_tokens.is_some() && (docs_url.is_some() || redoc_url.is_some());
+
+    if needs_spec_const {
+        let spec_expr = spec_tokens.unwrap();
+        if merge_apps.is_empty() {
+            quote! {
+                {
+                    const __VESPERA_SPEC: &str = #spec_expr;
+                    vespera::axum::Router::new()
+                        #( #router_nests )*
+                }
+            }
+        } else {
+            quote! {
+                {
+                    const __VESPERA_SPEC: &str = #spec_expr;
+                    vespera::VesperaRouter::new(
+                        vespera::axum::Router::new()
+                            #( #router_nests )*,
+                        vec![#( #merge_apps::router ),*]
+                    )
+                }
+            }
+        }
+    } else if merge_apps.is_empty() {
         quote! {
             vespera::axum::Router::new()
                 #( #router_nests )*
@@ -607,6 +634,7 @@ mod tests {
 
         let result = generate_router_code(
             &collect_metadata(temp_dir.path(), folder_name).unwrap().0,
+            None,
             None,
             None,
             &[],
@@ -765,6 +793,7 @@ pub fn get_users() -> String {
             &collect_metadata(temp_dir.path(), folder_name).unwrap().0,
             None,
             None,
+            None,
             &[],
         );
         let code = result.to_string();
@@ -844,6 +873,7 @@ pub fn update_user() -> String {
             &collect_metadata(temp_dir.path(), folder_name).unwrap().0,
             None,
             None,
+            None,
             &[],
         );
         let code = result.to_string();
@@ -898,6 +928,7 @@ pub fn create_users() -> String {
             &collect_metadata(temp_dir.path(), folder_name).unwrap().0,
             None,
             None,
+            None,
             &[],
         );
         let code = result.to_string();
@@ -944,6 +975,7 @@ pub fn index() -> String {
             &collect_metadata(temp_dir.path(), folder_name).unwrap().0,
             None,
             None,
+            None,
             &[],
         );
         let code = result.to_string();
@@ -979,6 +1011,7 @@ pub fn get_users() -> String {
 
         let result = generate_router_code(
             &collect_metadata(temp_dir.path(), folder_name).unwrap().0,
+            None,
             None,
             None,
             &[],
@@ -1177,38 +1210,60 @@ pub fn get_users() -> String {
     #[test]
     fn test_generate_router_code_with_docs() {
         let metadata = CollectedMetadata::new();
-        let docs_info = Some(("/docs".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+        let spec = r#"{"openapi":"3.1.0"}"#;
 
-        let result = generate_router_code(&metadata, docs_info, None, &[]);
+        let result = generate_router_code(
+            &metadata,
+            Some("/docs"),
+            None,
+            Some(quote::quote!(#spec)),
+            &[],
+        );
         let code = result.to_string();
 
         assert!(code.contains("/docs"));
         assert!(code.contains("swagger-ui"));
+        assert!(code.contains("__VESPERA_SPEC"));
+        assert!(code.contains("OnceLock"));
     }
 
     #[test]
     fn test_generate_router_code_with_redoc() {
         let metadata = CollectedMetadata::new();
-        let redoc_info = Some(("/redoc".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+        let spec = r#"{"openapi":"3.1.0"}"#;
 
-        let result = generate_router_code(&metadata, None, redoc_info, &[]);
+        let result = generate_router_code(
+            &metadata,
+            None,
+            Some("/redoc"),
+            Some(quote::quote!(#spec)),
+            &[],
+        );
         let code = result.to_string();
 
         assert!(code.contains("/redoc"));
         assert!(code.contains("redoc"));
+        assert!(code.contains("__VESPERA_SPEC"));
+        assert!(code.contains("OnceLock"));
     }
 
     #[test]
     fn test_generate_router_code_with_both_docs() {
         let metadata = CollectedMetadata::new();
-        let docs_info = Some(("/docs".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
-        let redoc_info = Some(("/redoc".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+        let spec = r#"{"openapi":"3.1.0"}"#;
 
-        let result = generate_router_code(&metadata, docs_info, redoc_info, &[]);
+        let result = generate_router_code(
+            &metadata,
+            Some("/docs"),
+            Some("/redoc"),
+            Some(quote::quote!(#spec)),
+            &[],
+        );
         let code = result.to_string();
 
         assert!(code.contains("/docs"));
         assert!(code.contains("/redoc"));
+        assert!(code.contains("__VESPERA_SPEC"));
     }
 
     #[test]
@@ -1280,7 +1335,7 @@ pub fn get_users() -> String {
             description: None,
         });
 
-        let result = generate_router_code(&metadata, None, None, &[]);
+        let result = generate_router_code(&metadata, None, None, None, &[]);
         let code = result.to_string();
 
         // Router should be generated but without any route calls
@@ -1325,7 +1380,7 @@ pub fn get_users() -> String {
             description: None,
         });
 
-        let result = generate_router_code(&metadata, None, None, &[]);
+        let result = generate_router_code(&metadata, None, None, None, &[]);
         let code = result.to_string();
 
         // Valid route should be present
@@ -1472,7 +1527,7 @@ pub fn get_users() -> String {
         let metadata = CollectedMetadata::new();
         let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(third::ThirdApp)];
 
-        let result = generate_router_code(&metadata, None, None, &merge_apps);
+        let result = generate_router_code(&metadata, None, None, None, &merge_apps);
         let code = result.to_string();
 
         // Should use VesperaRouter instead of plain Router
@@ -1489,10 +1544,16 @@ pub fn get_users() -> String {
     #[test]
     fn test_generate_router_code_with_docs_and_merge() {
         let metadata = CollectedMetadata::new();
-        let docs_info = Some(("/docs".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+        let spec = r#"{"openapi":"3.1.0"}"#;
         let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(app::MyApp)];
 
-        let result = generate_router_code(&metadata, docs_info, None, &merge_apps);
+        let result = generate_router_code(
+            &metadata,
+            Some("/docs"),
+            None,
+            Some(quote::quote!(#spec)),
+            &merge_apps,
+        );
         let code = result.to_string();
 
         // Should have merge code for docs
@@ -1514,10 +1575,16 @@ pub fn get_users() -> String {
     #[test]
     fn test_generate_router_code_with_redoc_and_merge() {
         let metadata = CollectedMetadata::new();
-        let redoc_info = Some(("/redoc".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+        let spec = r#"{"openapi":"3.1.0"}"#;
         let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(other::OtherApp)];
 
-        let result = generate_router_code(&metadata, None, redoc_info, &merge_apps);
+        let result = generate_router_code(
+            &metadata,
+            None,
+            Some("/redoc"),
+            Some(quote::quote!(#spec)),
+            &merge_apps,
+        );
         let code = result.to_string();
 
         // Should have merge code for redoc
@@ -1531,19 +1598,30 @@ pub fn get_users() -> String {
     #[test]
     fn test_generate_router_code_with_both_docs_and_merge() {
         let metadata = CollectedMetadata::new();
-        let docs_info = Some(("/docs".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
-        let redoc_info = Some(("/redoc".to_string(), r#"{"openapi":"3.1.0"}"#.to_string()));
+        let spec = r#"{"openapi":"3.1.0"}"#;
         let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(merged::App)];
 
-        let result = generate_router_code(&metadata, docs_info, redoc_info, &merge_apps);
+        let result = generate_router_code(
+            &metadata,
+            Some("/docs"),
+            Some("/redoc"),
+            Some(quote::quote!(#spec)),
+            &merge_apps,
+        );
         let code = result.to_string();
 
         // Both docs should have merge code
-        // Count MERGED_SPEC occurrences - should be at least 2 (static declarations for docs and redoc)
+        // Count MERGED_SPEC occurrences - should appear in docs and redoc handlers
         let merged_spec_count = code.matches("MERGED_SPEC").count();
         assert!(
             merged_spec_count >= 2,
             "Should have at least 2 MERGED_SPEC for docs and redoc, got: {merged_spec_count}"
+        );
+        // __VESPERA_SPEC should appear exactly once (the const declaration)
+        let vespera_spec_count = code.matches("__VESPERA_SPEC").count();
+        assert!(
+            vespera_spec_count >= 1,
+            "Should have __VESPERA_SPEC const, got: {vespera_spec_count}"
         );
         // Both docs_url and redoc_url should be present
         assert!(
@@ -1560,7 +1638,7 @@ pub fn get_users() -> String {
             syn::parse_quote!(second::App),
         ];
 
-        let result = generate_router_code(&metadata, None, None, &merge_apps);
+        let result = generate_router_code(&metadata, None, None, None, &merge_apps);
         let code = result.to_string();
 
         // Should reference both apps

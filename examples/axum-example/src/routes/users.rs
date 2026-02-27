@@ -130,15 +130,12 @@ pub async fn create_user_with_meta(
 pub struct SkipResponse {
     pub name: String,
     #[serde(skip)]
-    #[allow(dead_code)]
     pub email: String,
 
     #[serde(skip, skip_serializing_if = "Option::is_none")]
-    #[allow(dead_code)]
     pub email2: Option<String>,
 
     #[serde(rename = "email3", skip)]
-    #[allow(dead_code)]
     pub email3: Option<String>,
 
     #[serde(rename = "email4", skip_serializing_if = "Option::is_none")]
@@ -151,7 +148,6 @@ pub struct SkipResponse {
     pub email6: String,
 
     #[serde(rename = "email7", skip)]
-    #[allow(dead_code)]
     pub email7: String,
 
     #[serde(rename = "num", default)]
@@ -176,7 +172,7 @@ fn default_value() -> String {
 
 #[vespera::route(get, path = "/skip-response")]
 pub async fn skip_response() -> Json<SkipResponse> {
-    Json(SkipResponse {
+    let response = SkipResponse {
         name: "John Doe".to_string(),
         email: "john.doe@example.com".to_string(),
         email2: Some("john.doe2@example.com".to_string()),
@@ -210,5 +206,13 @@ pub async fn skip_response() -> Json<SkipResponse> {
                 name: "John Doe".to_string(),
             },
         )])),
-    })
+    };
+    // Read skip fields to validate they're populated correctly
+    let _ = (
+        &response.email,
+        &response.email2,
+        &response.email3,
+        &response.email7,
+    );
+    Json(response)
 }

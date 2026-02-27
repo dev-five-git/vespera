@@ -13,7 +13,8 @@ use crate::{
     metadata::StructMetadata,
     parser::{
         extract_default, extract_field_rename, extract_rename_all, extract_skip,
-        extract_skip_serializing_if, parse_type_to_schema_ref, rename_field, strip_raw_prefix,
+        extract_skip_serializing_if, parse_type_to_schema_ref, rename_field,
+        strip_raw_prefix_owned,
     },
 };
 
@@ -46,7 +47,7 @@ pub fn generate_filtered_schema(
 
             let rust_field_name = field.ident.as_ref().map_or_else(
                 || "unknown".to_string(),
-                |i| strip_raw_prefix(&i.to_string()).to_string(),
+                |i| strip_raw_prefix_owned(i.to_string()),
             );
 
             // Apply rename
@@ -108,7 +109,7 @@ pub fn generate_filtered_schema(
                 schema_type: Some(vespera::schema::SchemaType::Object),
                 properties: if properties.is_empty() { None } else { Some(properties) },
                 required: #required_tokens,
-                ..vespera::schema::Schema::new(vespera::schema::SchemaType::Object)
+                ..vespera::schema::Schema::default()
             }
         }
     }
@@ -132,46 +133,51 @@ pub fn schema_ref_to_tokens(schema_ref: &SchemaRef) -> TokenStream {
     }
 }
 
-/// Convert Schema to `TokenStream` for code generation
-#[allow(clippy::option_if_let_else)]
+/// Convert Schema to `TokenStream` for code generation.
+///
+/// Only emits non-None fields, using `..Default::default()` for the rest.
+/// This reduces generated code volume by ~70% for typical schemas
+/// (e.g., a String field: 3 tokens instead of 10).
 pub fn schema_to_tokens(schema: &Schema) -> TokenStream {
-    let schema_type_tokens = match &schema.schema_type {
-        Some(SchemaType::String) => quote! { Some(vespera::schema::SchemaType::String) },
-        Some(SchemaType::Number) => quote! { Some(vespera::schema::SchemaType::Number) },
-        Some(SchemaType::Integer) => quote! { Some(vespera::schema::SchemaType::Integer) },
-        Some(SchemaType::Boolean) => quote! { Some(vespera::schema::SchemaType::Boolean) },
-        Some(SchemaType::Array) => quote! { Some(vespera::schema::SchemaType::Array) },
-        Some(SchemaType::Object) => quote! { Some(vespera::schema::SchemaType::Object) },
-        Some(SchemaType::Null) => quote! { Some(vespera::schema::SchemaType::Null) },
-        None => quote! { None },
-    };
+    let mut fields: Vec<TokenStream> = Vec::new();
 
-    let format_tokens = if let Some(f) = &schema.format {
-        quote! { Some(#f.to_string()) }
-    } else {
-        quote! { None }
-    };
+    // schema_type
+    if let Some(st) = &schema.schema_type {
+        let st_tokens = match st {
+            SchemaType::String => quote! { vespera::schema::SchemaType::String },
+            SchemaType::Number => quote! { vespera::schema::SchemaType::Number },
+            SchemaType::Integer => quote! { vespera::schema::SchemaType::Integer },
+            SchemaType::Boolean => quote! { vespera::schema::SchemaType::Boolean },
+            SchemaType::Array => quote! { vespera::schema::SchemaType::Array },
+            SchemaType::Object => quote! { vespera::schema::SchemaType::Object },
+            SchemaType::Null => quote! { vespera::schema::SchemaType::Null },
+        };
+        fields.push(quote! { schema_type: Some(#st_tokens) });
+    }
 
-    let nullable_tokens = match schema.nullable {
-        Some(true) => quote! { Some(true) },
-        Some(false) => quote! { Some(false) },
-        None => quote! { None },
-    };
+    // ref_path
+    if let Some(rp) = &schema.ref_path {
+        fields.push(quote! { ref_path: Some(#rp.to_string()) });
+    }
 
-    let ref_path_tokens = if let Some(rp) = &schema.ref_path {
-        quote! { Some(#rp.to_string()) }
-    } else {
-        quote! { None }
-    };
+    // format
+    if let Some(f) = &schema.format {
+        fields.push(quote! { format: Some(#f.to_string()) });
+    }
 
-    let items_tokens = if let Some(items) = &schema.items {
+    // nullable
+    if let Some(n) = schema.nullable {
+        fields.push(quote! { nullable: Some(#n) });
+    }
+
+    // items
+    if let Some(items) = &schema.items {
         let inner = schema_ref_to_tokens(items);
-        quote! { Some(Box::new(#inner)) }
-    } else {
-        quote! { None }
-    };
+        fields.push(quote! { items: Some(Box::new(#inner)) });
+    }
 
-    let properties_tokens = if let Some(props) = &schema.properties {
+    // properties
+    if let Some(props) = &schema.properties {
         let entries: Vec<_> = props
             .iter()
             .map(|(k, v)| {
@@ -179,48 +185,35 @@ pub fn schema_to_tokens(schema: &Schema) -> TokenStream {
                 quote! { (#k.to_string(), #v_tokens) }
             })
             .collect();
-        quote! {
-            Some({
+        fields.push(quote! {
+            properties: Some({
                 let mut map = std::collections::BTreeMap::new();
                 #(map.insert(#entries.0, #entries.1);)*
                 map
             })
-        }
-    } else {
-        quote! { None }
-    };
+        });
+    }
 
-    let required_tokens = if let Some(req) = &schema.required {
+    // required
+    if let Some(req) = &schema.required {
         let req_strs: Vec<_> = req.iter().map(std::string::String::as_str).collect();
-        quote! { Some(vec![#(#req_strs.to_string()),*]) }
-    } else {
-        quote! { None }
-    };
+        fields.push(quote! { required: Some(vec![#(#req_strs.to_string()),*]) });
+    }
 
-    let minimum_tokens = if let Some(min) = schema.minimum {
-        quote! { Some(#min) }
-    } else {
-        quote! { None }
-    };
+    // minimum
+    if let Some(min) = schema.minimum {
+        fields.push(quote! { minimum: Some(#min) });
+    }
 
-    let maximum_tokens = if let Some(max) = schema.maximum {
-        quote! { Some(#max) }
-    } else {
-        quote! { None }
-    };
+    // maximum
+    if let Some(max) = schema.maximum {
+        fields.push(quote! { maximum: Some(#max) });
+    }
 
     quote! {
         vespera::schema::Schema {
-            ref_path: #ref_path_tokens,
-            schema_type: #schema_type_tokens,
-            format: #format_tokens,
-            nullable: #nullable_tokens,
-            items: #items_tokens,
-            properties: #properties_tokens,
-            required: #required_tokens,
-            minimum: #minimum_tokens,
-            maximum: #maximum_tokens,
-            ..vespera::schema::Schema::new(vespera::schema::SchemaType::Object)
+            #(#fields,)*
+            ..vespera::schema::Schema::default()
         }
     }
 }
@@ -369,7 +362,10 @@ mod tests {
         };
         let tokens = schema_to_tokens(&schema);
         let output = tokens.to_string();
-        assert!(output.contains("schema_type : None"));
+        // With conditional emission, schema_type is omitted when None
+        // (..Default::default() provides None)
+        assert!(!output.contains("schema_type"));
+        assert!(output.contains("default"));
     }
 
     #[test]

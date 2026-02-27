@@ -39,7 +39,7 @@ use crate::{
 };
 
 /// Docs info tuple type alias for cleaner signatures
-pub type DocsInfo = (Option<(String, String)>, Option<(String, String)>);
+pub type DocsInfo = (Option<String>, Option<String>, Option<String>);
 
 /// Generate `OpenAPI` JSON and write to files, returning docs info
 pub fn generate_and_write_openapi(
@@ -49,7 +49,7 @@ pub fn generate_and_write_openapi(
 ) -> MacroResult<DocsInfo> {
     if input.openapi_file_names.is_empty() && input.docs_url.is_none() && input.redoc_url.is_none()
     {
-        return Ok((None, None));
+        return Ok((None, None, None));
     }
 
     let mut openapi_doc = generate_openapi_doc_with_metadata(
@@ -84,23 +84,26 @@ pub fn generate_and_write_openapi(
         }
     }
 
-    let json_str = serde_json::to_string_pretty(&openapi_doc).map_err(|e| err_call_site(format!("OpenAPI generation: failed to serialize document to JSON. Error: {e}. Check that all schema types are serializable.")))?;
-
-    for openapi_file_name in &input.openapi_file_names {
-        let file_path = Path::new(openapi_file_name);
-        if let Some(parent) = file_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| err_call_site(format!("OpenAPI output: failed to create directory '{}'. Error: {}. Ensure the path is valid and writable.", parent.display(), e)))?;
+    // Pretty-print for user-visible files
+    if !input.openapi_file_names.is_empty() {
+        let json_pretty = serde_json::to_string_pretty(&openapi_doc).map_err(|e| err_call_site(format!("OpenAPI generation: failed to serialize document to JSON. Error: {e}. Check that all schema types are serializable.")))?;
+        for openapi_file_name in &input.openapi_file_names {
+            let file_path = Path::new(openapi_file_name);
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| err_call_site(format!("OpenAPI output: failed to create directory '{}'. Error: {}. Ensure the path is valid and writable.", parent.display(), e)))?;
+            }
+            std::fs::write(file_path, &json_pretty).map_err(|e| err_call_site(format!("OpenAPI output: failed to write file '{openapi_file_name}'. Error: {e}. Ensure the file path is writable.")))?;
         }
-        std::fs::write(file_path, &json_str).map_err(|e| err_call_site(format!("OpenAPI output: failed to write file '{openapi_file_name}'. Error: {e}. Ensure the file path is writable.")))?;
     }
 
-    let docs_info = input
-        .docs_url
-        .as_ref()
-        .map(|url| (url.clone(), json_str.clone()));
-    let redoc_info = input.redoc_url.as_ref().map(|url| (url.clone(), json_str));
+    // Compact JSON for embedding (smaller binary, faster downstream compilation)
+    let spec_json = if input.docs_url.is_some() || input.redoc_url.is_some() {
+        Some(serde_json::to_string(&openapi_doc).map_err(|e| err_call_site(format!("OpenAPI generation: failed to serialize document to JSON. Error: {e}. Check that all schema types are serializable.")))?)
+    } else {
+        None
+    };
 
-    Ok((docs_info, redoc_info))
+    Ok((input.docs_url.clone(), input.redoc_url.clone(), spec_json))
 }
 
 /// Find the folder path for route scanning
@@ -157,6 +160,12 @@ pub fn process_vespera_macro(
     processed: &ProcessedVesperaInput,
     schema_storage: &HashMap<String, StructMetadata>,
 ) -> syn::Result<proc_macro2::TokenStream> {
+    let profile_start = if std::env::var("VESPERA_PROFILE").is_ok() {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
+
     let folder_path = find_folder_path(&processed.folder_name)?;
     if !folder_path.exists() {
         return Err(syn::Error::new(
@@ -171,14 +180,59 @@ pub fn process_vespera_macro(
     let (mut metadata, file_asts) = collect_metadata(&folder_path, &processed.folder_name).map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", processed.folder_name, e)))?;
     metadata.structs.extend(schema_storage.values().cloned());
 
-    let (docs_info, redoc_info) = generate_and_write_openapi(processed, &metadata, file_asts)?;
+    let (docs_url, redoc_url, spec_json) =
+        generate_and_write_openapi(processed, &metadata, file_asts)?;
 
-    Ok(generate_router_code(
+    let spec_tokens = match spec_json {
+        Some(json) => {
+            let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+            let manifest_path = Path::new(&manifest_dir);
+            let target_dir = find_target_dir(manifest_path);
+            let vespera_dir = target_dir.join("vespera");
+            std::fs::create_dir_all(&vespera_dir).map_err(|e| {
+                syn::Error::new(
+                    Span::call_site(),
+                    format!(
+                        "vespera! macro: failed to create directory '{}': {}",
+                        vespera_dir.display(),
+                        e
+                    ),
+                )
+            })?;
+            let spec_file = vespera_dir.join("vespera_spec.json");
+            std::fs::write(&spec_file, &json).map_err(|e| {
+                syn::Error::new(
+                    Span::call_site(),
+                    format!(
+                        "vespera! macro: failed to write spec file '{}': {}",
+                        spec_file.display(),
+                        e
+                    ),
+                )
+            })?;
+            let path_str = spec_file.display().to_string().replace('\\', "/");
+            Some(quote::quote! { include_str!(#path_str) })
+        }
+        None => None,
+    };
+
+    let result = Ok(generate_router_code(
         &metadata,
-        docs_info,
-        redoc_info,
+        docs_url.as_deref(),
+        redoc_url.as_deref(),
+        spec_tokens,
         &processed.merge,
-    ))
+    ));
+
+    if let Some(start) = profile_start {
+        eprintln!(
+            "[vespera-profile] vespera! macro total: {:?}",
+            start.elapsed()
+        );
+        crate::schema_macro::print_profile_summary();
+    }
+
+    result
 }
 
 /// Process `export_app` macro - extracted for testability
@@ -188,12 +242,18 @@ pub fn process_export_app(
     schema_storage: &HashMap<String, StructMetadata>,
     manifest_dir: &str,
 ) -> syn::Result<proc_macro2::TokenStream> {
+    let profile_start = if std::env::var("VESPERA_PROFILE").is_ok() {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
+
     let folder_path = find_folder_path(folder_name)?;
     if !folder_path.exists() {
         return Err(syn::Error::new(
             Span::call_site(),
             format!(
-                "export_app! macro: route folder '{folder_name}' not found. Create src/{folder_name} or specify a different folder with `dir = \"your_folder\"`."
+                "export_app! macro: route folder '{folder_name}' not found. Create src/{folder_name} or specify a different folder with `dir = \"your_folder\"`.",
             ),
         ));
     }
@@ -214,17 +274,18 @@ pub fn process_export_app(
     std::fs::create_dir_all(&vespera_dir).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to create build cache directory '{}'. Error: {}. Ensure the target directory is writable.", vespera_dir.display(), e)))?;
     let spec_file = vespera_dir.join(format!("{name_str}.openapi.json"));
     std::fs::write(&spec_file, &spec_json).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to write OpenAPI spec file '{}'. Error: {}. Ensure the file path is writable.", spec_file.display(), e)))?;
+    let spec_path_str = spec_file.display().to_string().replace('\\', "/");
 
     // Generate router code (without docs routes, no merge)
-    let router_code = generate_router_code(&metadata, None, None, &[]);
+    let router_code = generate_router_code(&metadata, None, None, None, &[]);
 
-    Ok(quote! {
+    let result = Ok(quote! {
         /// Auto-generated vespera app struct
         pub struct #name;
 
         impl #name {
             /// OpenAPI specification as JSON string
-            pub const OPENAPI_SPEC: &'static str = #spec_json;
+            pub const OPENAPI_SPEC: &'static str = include_str!(#spec_path_str);
 
             /// Create the router for this app.
             /// Returns `Router<()>` which can be merged into any other router.
@@ -232,7 +293,17 @@ pub fn process_export_app(
                 #router_code
             }
         }
-    })
+    });
+
+    if let Some(start) = profile_start {
+        eprintln!(
+            "[vespera-profile] export_app! macro total: {:?}",
+            start.elapsed()
+        );
+        crate::schema_macro::print_profile_summary();
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -269,9 +340,10 @@ mod tests {
         let metadata = CollectedMetadata::new();
         let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
         assert!(result.is_ok());
-        let (docs_info, redoc_info) = result.unwrap();
-        assert!(docs_info.is_none());
-        assert!(redoc_info.is_none());
+        let (docs_url, redoc_url, spec_json) = result.unwrap();
+        assert!(docs_url.is_none());
+        assert!(redoc_url.is_none());
+        assert!(spec_json.is_none());
     }
 
     #[test]
@@ -289,13 +361,14 @@ mod tests {
         let metadata = CollectedMetadata::new();
         let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
         assert!(result.is_ok());
-        let (docs_info, redoc_info) = result.unwrap();
-        assert!(docs_info.is_some());
-        let (url, json) = docs_info.unwrap();
-        assert_eq!(url, "/docs");
+        let (docs_url, redoc_url, spec_json) = result.unwrap();
+        assert!(docs_url.is_some());
+        assert_eq!(docs_url.unwrap(), "/docs");
+        assert!(spec_json.is_some());
+        let json = spec_json.unwrap();
         assert!(json.contains("\"openapi\""));
         assert!(json.contains("Test API"));
-        assert!(redoc_info.is_none());
+        assert!(redoc_url.is_none());
     }
 
     #[test]
@@ -313,11 +386,11 @@ mod tests {
         let metadata = CollectedMetadata::new();
         let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
         assert!(result.is_ok());
-        let (docs_info, redoc_info) = result.unwrap();
-        assert!(docs_info.is_none());
-        assert!(redoc_info.is_some());
-        let (url, _) = redoc_info.unwrap();
-        assert_eq!(url, "/redoc");
+        let (docs_url, redoc_url, spec_json) = result.unwrap();
+        assert!(docs_url.is_none());
+        assert!(redoc_url.is_some());
+        assert_eq!(redoc_url.unwrap(), "/redoc");
+        assert!(spec_json.is_some());
     }
 
     #[test]
@@ -335,9 +408,10 @@ mod tests {
         let metadata = CollectedMetadata::new();
         let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
         assert!(result.is_ok());
-        let (docs_info, redoc_info) = result.unwrap();
-        assert!(docs_info.is_some());
-        assert!(redoc_info.is_some());
+        let (docs_url, redoc_url, spec_json) = result.unwrap();
+        assert!(docs_url.is_some());
+        assert!(redoc_url.is_some());
+        assert!(spec_json.is_some());
     }
 
     #[test]
@@ -852,5 +926,93 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("failed to write OpenAPI spec file"));
+    }
+    #[test]
+    fn test_process_vespera_macro_no_openapi_output() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        create_temp_file(&temp_dir, "empty.rs", "// empty route file\n");
+
+        let processed = ProcessedVesperaInput {
+            folder_name: temp_dir.path().to_string_lossy().to_string(),
+            openapi_file_names: vec![],
+            title: None,
+            version: None,
+            docs_url: None,
+            redoc_url: None,
+            servers: None,
+            merge: vec![],
+        };
+
+        let result = process_vespera_macro(&processed, &HashMap::new());
+        assert!(
+            result.is_ok(),
+            "Should succeed with no openapi output configured"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_process_vespera_macro_with_profiling() {
+        let old_profile = std::env::var("VESPERA_PROFILE").ok();
+        unsafe { std::env::set_var("VESPERA_PROFILE", "1") };
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        create_temp_file(&temp_dir, "empty.rs", "// empty\n");
+
+        let processed = ProcessedVesperaInput {
+            folder_name: temp_dir.path().to_string_lossy().to_string(),
+            openapi_file_names: vec![],
+            title: None,
+            version: None,
+            docs_url: None,
+            redoc_url: None,
+            servers: None,
+            merge: vec![],
+        };
+
+        let result = process_vespera_macro(&processed, &HashMap::new());
+
+        // Restore
+        unsafe {
+            if let Some(val) = old_profile {
+                std::env::set_var("VESPERA_PROFILE", val);
+            } else {
+                std::env::remove_var("VESPERA_PROFILE");
+            }
+        };
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_process_export_app_with_profiling() {
+        let old_profile = std::env::var("VESPERA_PROFILE").ok();
+        unsafe { std::env::set_var("VESPERA_PROFILE", "1") };
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        create_temp_file(&temp_dir, "empty.rs", "// empty\n");
+
+        let name: syn::Ident = syn::parse_quote!(TestProfileApp);
+        let folder_path = temp_dir.path().to_string_lossy().to_string();
+
+        let result = process_export_app(
+            &name,
+            &folder_path,
+            &HashMap::new(),
+            &temp_dir.path().to_string_lossy(),
+        );
+
+        // Restore
+        unsafe {
+            if let Some(val) = old_profile {
+                std::env::set_var("VESPERA_PROFILE", val);
+            } else {
+                std::env::remove_var("VESPERA_PROFILE");
+            }
+        };
+
+        // Exercise the code path
+        let _ = result;
     }
 }

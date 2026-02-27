@@ -3,12 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Read and parse a Rust source file, returning None on error (silent).
-pub fn try_read_and_parse_file(path: &Path) -> Option<syn::File> {
-    let content = std::fs::read_to_string(path).ok()?;
-    syn::parse_file(&content).ok()
-}
-
 /// Read and parse a Rust source file, printing warnings on error.
 #[allow(clippy::similar_names)]
 pub fn read_and_parse_file_warn(path: &Path, context: &str) -> Option<syn::File> {

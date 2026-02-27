@@ -259,8 +259,11 @@ pub fn extract_sea_orm_default_value(attrs: &[syn::Attribute]) -> Option<String>
                 }
 
                 // If quoted string, strip quotes and return inner value
-                if raw_value.starts_with('"') && raw_value.ends_with('"') && raw_value.len() >= 2 {
-                    return Some(raw_value[1..raw_value.len() - 1].to_string());
+                if let Some(inner) = raw_value
+                    .strip_prefix('"')
+                    .and_then(|s| s.strip_suffix('"'))
+                {
+                    return Some(inner.to_string());
                 }
                 // Numeric, bool, or other literal — return as-is
                 return Some(raw_value.to_string());
@@ -367,7 +370,8 @@ pub fn convert_relation_type_to_schema_with_info(
     let absolute_segments: Vec<String> = if !segments.is_empty() && segments[0] == "super" {
         let super_count = segments.iter().take_while(|s| *s == "super").count();
         let parent_path_len = source_module_path.len().saturating_sub(super_count);
-        let mut abs = source_module_path[..parent_path_len].to_vec();
+        let mut abs = Vec::with_capacity(parent_path_len + segments.len() - super_count);
+        abs.extend_from_slice(&source_module_path[..parent_path_len]);
         for seg in segments.iter().skip(super_count) {
             if seg == "Entity" {
                 abs.push("Schema".to_string());
@@ -389,7 +393,8 @@ pub fn convert_relation_type_to_schema_with_info(
             .collect()
     } else {
         let parent_path_len = source_module_path.len().saturating_sub(1);
-        let mut abs = source_module_path[..parent_path_len].to_vec();
+        let mut abs = Vec::with_capacity(parent_path_len + segments.len());
+        abs.extend_from_slice(&source_module_path[..parent_path_len]);
         for seg in &segments {
             if seg == "Entity" {
                 abs.push("Schema".to_string());
