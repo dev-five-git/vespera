@@ -63,6 +63,13 @@ pub fn analyze_circular_refs(source_module_path: &[String], definition: &str) ->
     let mut has_fk = false;
     let mut circular_field_required = HashMap::new();
 
+    // Pre-build field name → &Field index for O(1) FK column lookup
+    // instead of O(N) linear search per FK relation
+    let field_by_name: HashMap<String, &syn::Field> = fields_named
+        .named
+        .iter()
+        .filter_map(|f| f.ident.as_ref().map(|id| (id.to_string(), f)))
+        .collect();
     for field in &fields_named.named {
         // FieldsNamed guarantees all fields have identifiers
         let field_ident = field.ident.as_ref().expect("named field has ident");
@@ -75,12 +82,8 @@ pub fn analyze_circular_refs(source_module_path: &[String], definition: &str) ->
 
             // --- is_circular_relation_required logic (for ALL FK fields) ---
             let required = extract_belongs_to_from_field(&field.attrs).is_some_and(|fk| {
-                fields_named
-                    .named
-                    .iter()
-                    .find(|f| {
-                        f.ident.as_ref().map(std::string::ToString::to_string) == Some(fk.clone())
-                    })
+                field_by_name
+                    .get(&fk)
                     .is_some_and(|f| !is_option_type(&f.ty))
             });
             circular_field_required.insert(field_name.clone(), required);

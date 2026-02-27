@@ -107,8 +107,9 @@ fn build_schema_lookups(
     let mut struct_definitions = HashMap::with_capacity(metadata.structs.len());
 
     for struct_meta in &metadata.structs {
-        known_schema_names.insert(struct_meta.name.clone());
-        struct_definitions.insert(struct_meta.name.clone(), struct_meta.definition.clone());
+        let name = struct_meta.name.clone();
+        struct_definitions.insert(name.clone(), struct_meta.definition.clone());
+        known_schema_names.insert(name);
     }
 
     (known_schema_names, struct_definitions)
@@ -231,47 +232,63 @@ fn build_path_items(
     let mut paths = BTreeMap::new();
     let mut all_tags = BTreeSet::new();
 
+    // Pre-build function name index for O(1) lookup instead of O(items) per route
+    let fn_index: HashMap<&str, HashMap<String, &syn::ItemFn>> = file_cache
+        .iter()
+        .map(|(path, ast)| {
+            let fns: HashMap<String, &syn::ItemFn> = ast
+                .items
+                .iter()
+                .filter_map(|item| {
+                    if let syn::Item::Fn(fn_item) = item {
+                        Some((fn_item.sig.ident.to_string(), fn_item))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            (path.as_str(), fns)
+        })
+        .collect();
+
     for route_meta in &metadata.routes {
-        let Some(file_ast) = file_cache.get(&route_meta.file_path) else {
+        let Some(fns) = fn_index.get(route_meta.file_path.as_str()) else {
             continue;
         };
 
-        for item in &file_ast.items {
-            if let syn::Item::Fn(fn_item) = item
-                && fn_item.sig.ident == route_meta.function_name
-            {
-                let Ok(method) = HttpMethod::try_from(route_meta.method.as_str()) else {
-                    eprintln!(
-                        "vespera: skipping route '{}' — unknown HTTP method '{}'",
-                        route_meta.path, route_meta.method
-                    );
-                    continue;
-                };
+        let Some(fn_item) = fns.get(&route_meta.function_name) else {
+            continue;
+        };
 
-                if let Some(tags) = &route_meta.tags {
-                    for tag in tags {
-                        all_tags.insert(tag.clone());
-                    }
-                }
+        let Ok(method) = HttpMethod::try_from(route_meta.method.as_str()) else {
+            eprintln!(
+                "vespera: skipping route '{}' — unknown HTTP method '{}'",
+                route_meta.path, route_meta.method
+            );
+            continue;
+        };
 
-                let mut operation = build_operation_from_function(
-                    &fn_item.sig,
-                    &route_meta.path,
-                    known_schema_names,
-                    struct_definitions,
-                    route_meta.error_status.as_deref(),
-                    route_meta.tags.as_deref(),
-                );
-                operation.description.clone_from(&route_meta.description);
-
-                let path_item = paths
-                    .entry(route_meta.path.clone())
-                    .or_insert_with(PathItem::default);
-
-                path_item.set_operation(method, operation);
-                break;
+        if let Some(tags) = &route_meta.tags {
+            for tag in tags {
+                all_tags.insert(tag.clone());
             }
         }
+
+        let mut operation = build_operation_from_function(
+            &fn_item.sig,
+            &route_meta.path,
+            known_schema_names,
+            struct_definitions,
+            route_meta.error_status.as_deref(),
+            route_meta.tags.as_deref(),
+        );
+        operation.description.clone_from(&route_meta.description);
+
+        let path_item = paths
+            .entry(route_meta.path.clone())
+            .or_insert_with(PathItem::default);
+
+        path_item.set_operation(method, operation);
     }
 
     (paths, all_tags)
