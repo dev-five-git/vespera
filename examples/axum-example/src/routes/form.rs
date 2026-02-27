@@ -54,7 +54,11 @@ pub async fn subscribe(Form(input): Form<SubscribeRequest>) -> Json<SubscribeRes
 pub async fn contact(Form(input): Form<ContactFormRequest>) -> Json<ContactFormResponse> {
     Json(ContactFormResponse {
         success: true,
-        ticket_id: format!("TICKET-{}-{}", input.name.len() + input.message.len(), input.email.len() + input.subject.as_deref().map_or(0, str::len)),
+        ticket_id: format!(
+            "TICKET-{}-{}",
+            input.name.len() + input.message.len(),
+            input.email.len() + input.subject.as_deref().map_or(0, str::len)
+        ),
     })
 }
 

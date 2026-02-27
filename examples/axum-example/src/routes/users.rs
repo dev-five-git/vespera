@@ -208,6 +208,11 @@ pub async fn skip_response() -> Json<SkipResponse> {
         )])),
     };
     // Read skip fields to validate they're populated correctly
-    let _ = (&response.email, &response.email2, &response.email3, &response.email7);
+    let _ = (
+        &response.email,
+        &response.email2,
+        &response.email3,
+        &response.email7,
+    );
     Json(response)
 }

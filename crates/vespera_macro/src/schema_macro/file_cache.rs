@@ -501,4 +501,14 @@ mod tests {
         unsafe { std::env::remove_var("VESPERA_PROFILE") };
         // Test passes if no panic — output goes to stderr
     }
+
+    #[serial_test::serial]
+    #[test]
+    fn test_print_profile_summary_without_profile_env() {
+        // Ensure VESPERA_PROFILE is not set
+        unsafe { std::env::remove_var("VESPERA_PROFILE") };
+
+        // Should early-return at line 308 without printing anything
+        print_profile_summary();
+    }
 }
