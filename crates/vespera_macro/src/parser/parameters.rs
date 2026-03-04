@@ -14,6 +14,11 @@ use crate::schema_macro::type_utils::{
     is_map_type as utils_is_map_type, is_primitive_like as utils_is_primitive_like,
 };
 
+/// Combined check: type is either a JSON-schema primitive or a known container type.
+fn is_primitive_or_like(ty: &Type) -> bool {
+    is_primitive_type(ty) || utils_is_primitive_like(ty)
+}
+
 /// Convert `SchemaRef` for query parameters, adding nullable flag if optional.
 /// Preserves `$ref` for known types (e.g. enums) — only wraps with nullable when optional.
 fn convert_to_inline_schema(field_schema: SchemaRef, is_optional: bool) -> SchemaRef {
@@ -192,8 +197,7 @@ pub fn parse_function_parameter(
                                 }
 
                                 // Ignore primitive-like query params (including Vec/Option of primitive)
-                                if is_primitive_type(inner_ty) || utils_is_primitive_like(inner_ty)
-                                {
+                                if is_primitive_or_like(inner_ty) {
                                     return None;
                                 }
 
@@ -225,8 +229,7 @@ pub fn parse_function_parameter(
                                     args.args.first()
                             {
                                 // Ignore primitive-like headers
-                                if is_primitive_type(inner_ty) || utils_is_primitive_like(inner_ty)
-                                {
+                                if is_primitive_or_like(inner_ty) {
                                     return None;
                                 }
                                 return Some(vec![Parameter {
@@ -706,7 +709,7 @@ mod tests {
     #[case("CustomType", false)]
     fn test_is_primitive_like_fn(#[case] type_str: &str, #[case] expected: bool) {
         let ty: Type = syn::parse_str(type_str).unwrap();
-        let result = is_primitive_type(&ty) || utils_is_primitive_like(&ty);
+        let result = is_primitive_or_like(&ty);
         assert_eq!(result, expected, "type_str={type_str}");
     }
 

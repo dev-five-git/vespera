@@ -749,14 +749,7 @@ fn sql_function_default_for_type(original_ty: &syn::Type) -> Option<(TokenStream
     let type_name = segment.ident.to_string();
 
     match type_name.as_str() {
-        "DateTimeWithTimeZone" | "DateTimeUtc" => {
-            let expr = quote! {
-                vespera::chrono::DateTime::<vespera::chrono::Utc>::UNIX_EPOCH.fixed_offset()
-            };
-            Some((expr, "1970-01-01T00:00:00+00:00".to_string()))
-        }
-        "DateTime" => {
-            // Could be chrono::DateTime<Tz> — use UTC epoch
+        "DateTimeWithTimeZone" | "DateTimeUtc" | "DateTime" => {
             let expr = quote! {
                 vespera::chrono::DateTime::<vespera::chrono::Utc>::UNIX_EPOCH.fixed_offset()
             };
@@ -805,25 +798,7 @@ fn is_parseable_type(ty: &syn::Type) -> bool {
     let Some(segment) = type_path.path.segments.last() else {
         return false;
     };
-    matches!(
-        segment.ident.to_string().as_str(),
-        "i8" | "i16"
-            | "i32"
-            | "i64"
-            | "i128"
-            | "isize"
-            | "u8"
-            | "u16"
-            | "u32"
-            | "u64"
-            | "u128"
-            | "usize"
-            | "f32"
-            | "f64"
-            | "bool"
-            | "String"
-            | "Decimal"
-    )
+    type_utils::PRIMITIVE_TYPE_NAMES.contains(&segment.ident.to_string().as_str())
 }
 
 #[cfg(test)]

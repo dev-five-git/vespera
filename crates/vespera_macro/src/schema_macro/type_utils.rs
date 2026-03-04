@@ -7,6 +7,16 @@ use quote::quote;
 use serde_json;
 use syn::Type;
 
+/// Primitive type names shared across the crate.
+/// Used by both `is_primitive_type()` (parser) and `is_parseable_type()` (schema_macro).
+/// Note: `"str"` is intentionally excluded — only `is_primitive_type()` considers `str`,
+/// since it appears in parser contexts but not in schema_macro type parsing.
+pub const PRIMITIVE_TYPE_NAMES: &[&str] = &[
+    "i8", "i16", "i32", "i64", "i128", "isize",
+    "u8", "u16", "u32", "u64", "u128", "usize",
+    "f32", "f64", "bool", "String", "Decimal",
+];
+
 /// Normalize a `TokenStream` or `Type` to a compact string by removing spaces.
 ///
 /// This replaces the common `.to_string().replace(' ', "")` pattern used throughout

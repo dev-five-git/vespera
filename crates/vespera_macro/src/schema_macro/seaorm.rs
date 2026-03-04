@@ -133,26 +133,25 @@ pub fn convert_type_with_chrono(ty: &Type, source_module_path: &[String]) -> Tok
     convert_seaorm_type_to_chrono(ty, source_module_path)
 }
 
-/// Extract the "from" field name from a `sea_orm` `belongs_to` attribute.
-/// e.g., `#[sea_orm(belongs_to, from = "user_id", to = "id")]` -> `Some("user_id`")
-/// Also handles: `#[sea_orm(belongs_to = "Entity", from = "user_id", to = "id")]`
-pub fn extract_belongs_to_from_field(attrs: &[syn::Attribute]) -> Option<String> {
+/// Extract a named string value from a `sea_orm` attribute.
+/// Shared helper for `extract_belongs_to_from_field`, `extract_relation_enum`, and `extract_via_rel`.
+fn extract_sea_orm_attr_value(attrs: &[syn::Attribute], attr_name: &str) -> Option<String> {
     attrs.iter().find_map(|attr| {
         if !attr.path().is_ident("sea_orm") {
             return None;
         }
 
-        let mut from_field = None;
-        // Ignore parse errors - we just won't find the field if parsing fails
+        let mut found_value = None;
+        // Ignore parse errors — we just won't find the field if parsing fails
         let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("from") {
-                from_field = meta
+            if meta.path.is_ident(attr_name) {
+                found_value = meta
                     .value()
                     .ok()
                     .and_then(|v| v.parse::<syn::LitStr>().ok())
                     .map(|lit| lit.value());
             } else if meta.input.peek(syn::Token![=]) {
-                // Consume value for key=value pairs (e.g., belongs_to = "...", to = "...")
+                // Consume value for other key=value pairs
                 // Required to allow parsing to continue to next item
                 drop(
                     meta.value()
@@ -161,8 +160,15 @@ pub fn extract_belongs_to_from_field(attrs: &[syn::Attribute]) -> Option<String>
             }
             Ok(())
         });
-        from_field
+        found_value
     })
+}
+
+/// Extract the "from" field name from a `sea_orm` `belongs_to` attribute.
+/// e.g., `#[sea_orm(belongs_to, from = "user_id", to = "id")]` -> `Some("user_id")`
+/// Also handles: `#[sea_orm(belongs_to = "Entity", from = "user_id", to = "id")]`
+pub fn extract_belongs_to_from_field(attrs: &[syn::Attribute]) -> Option<String> {
+    extract_sea_orm_attr_value(attrs, "from")
 }
 
 /// Extract the "`relation_enum`" value from a `sea_orm` attribute.
@@ -171,30 +177,7 @@ pub fn extract_belongs_to_from_field(attrs: &[syn::Attribute]) -> Option<String>
 /// When `relation_enum` is present, it indicates that multiple relations to the same
 /// Entity type exist, and we need to use the specific Relation enum variant for queries.
 pub fn extract_relation_enum(attrs: &[syn::Attribute]) -> Option<String> {
-    attrs.iter().find_map(|attr| {
-        if !attr.path().is_ident("sea_orm") {
-            return None;
-        }
-
-        let mut relation_enum_value = None;
-        let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("relation_enum") {
-                relation_enum_value = meta
-                    .value()
-                    .ok()
-                    .and_then(|v| v.parse::<syn::LitStr>().ok())
-                    .map(|lit| lit.value());
-            } else if meta.input.peek(syn::Token![=]) {
-                // Consume value for other key=value pairs
-                drop(
-                    meta.value()
-                        .and_then(syn::parse::ParseBuffer::parse::<syn::LitStr>),
-                );
-            }
-            Ok(())
-        });
-        relation_enum_value
-    })
+    extract_sea_orm_attr_value(attrs, "relation_enum")
 }
 
 /// Extract the "`via_rel`" value from a `sea_orm` attribute.
@@ -203,30 +186,7 @@ pub fn extract_relation_enum(attrs: &[syn::Attribute]) -> Option<String> {
 /// For `HasMany` relations with `relation_enum`, `via_rel` specifies which Relation variant
 /// on the TARGET entity corresponds to this relation. This allows us to find the FK column.
 pub fn extract_via_rel(attrs: &[syn::Attribute]) -> Option<String> {
-    attrs.iter().find_map(|attr| {
-        if !attr.path().is_ident("sea_orm") {
-            return None;
-        }
-
-        let mut via_rel_value = None;
-        let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("via_rel") {
-                via_rel_value = meta
-                    .value()
-                    .ok()
-                    .and_then(|v| v.parse::<syn::LitStr>().ok())
-                    .map(|lit| lit.value());
-            } else if meta.input.peek(syn::Token![=]) {
-                // Consume value for other key=value pairs
-                drop(
-                    meta.value()
-                        .and_then(syn::parse::ParseBuffer::parse::<syn::LitStr>),
-                );
-            }
-            Ok(())
-        });
-        via_rel_value
-    })
+    extract_sea_orm_attr_value(attrs, "via_rel")
 }
 
 /// Extract `default_value` from a `sea_orm` attribute.
