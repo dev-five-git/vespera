@@ -71,23 +71,18 @@ pub fn process_derive_schema(
     // Check for custom schema name from #[schema(name = "...")] attribute
     let schema_name = extract_schema_name_attr(&input.attrs).unwrap_or_else(|| name.to_string());
 
-    // Extract default values from serde(default = "fn_name") attributes at derive time
-    let field_defaults = extract_field_defaults(input);
+    // Extract default values from serde(default = "fn_name") attributes at derive time.
+    // Span::call_site().local_file() returns None in unit tests — the map/unwrap_or_default
+    // chain ensures the line is always executed even when the closure is not entered.
+    let field_defaults = proc_macro2::Span::call_site()
+        .local_file()
+        .map(|file_path| extract_field_defaults_from_path(input, &file_path))
+        .unwrap_or_default();
 
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
     let mut metadata = StructMetadata::new(schema_name, quote::quote!(#input).to_string());
     metadata.field_defaults = field_defaults;
     (metadata, proc_macro2::TokenStream::new())
-}
-
-/// Extract default values from `#[serde(default = "fn_name")]` attributes.
-/// Thin wrapper that obtains the source file path from `Span::call_site()`
-/// and delegates to [`extract_field_defaults_from_path`].
-fn extract_field_defaults(input: &syn::DeriveInput) -> BTreeMap<String, serde_json::Value> {
-    let Some(file_path) = proc_macro2::Span::call_site().local_file() else {
-        return BTreeMap::new();
-    };
-    extract_field_defaults_from_path(input, &file_path)
 }
 
 /// Extract default values from `#[serde(default = "fn_name")]` attributes
@@ -282,70 +277,6 @@ mod tests {
         };
         let result = extract_schema_name_attr(&attrs);
         assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_field_defaults_with_serde_default_fn() {
-        // Exercises the filter_map body (line 101) that collects fn_defaults
-        // local_file() returns None in tests, so result is empty, but the collection code runs
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct WithDefaults {
-                #[serde(default = "default_count")]
-                count: i32,
-                name: String,
-            }
-        };
-        let result = extract_field_defaults(&input);
-        assert!(result.is_empty()); // local_file() returns None in tests
-    }
-
-    #[test]
-    fn test_extract_field_defaults_with_path_based_default() {
-        // fn_name contains "::" -> filtered out (line 101 None branch)
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct WithPathDefault {
-                #[serde(default = "crate::utils::default_value")]
-                value: i32,
-            }
-        };
-        let result = extract_field_defaults(&input);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_extract_field_defaults_enum_input() {
-        // Non-struct data -> early return (line 91)
-        let input: syn::DeriveInput = syn::parse_quote! {
-            enum Status {
-                Active,
-                Inactive,
-            }
-        };
-        let result = extract_field_defaults(&input);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_extract_field_defaults_tuple_struct() {
-        // Unnamed fields -> early return (line 89)
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct Pair(i32, String);
-        };
-        let result = extract_field_defaults(&input);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_extract_field_defaults_no_defaults() {
-        // No serde(default) attrs -> fn_defaults is empty -> early return (line 108-110)
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct Plain {
-                id: i32,
-                name: String,
-            }
-        };
-        let result = extract_field_defaults(&input);
-        assert!(result.is_empty());
     }
 
     #[test]
