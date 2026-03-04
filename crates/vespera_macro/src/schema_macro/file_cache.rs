@@ -428,7 +428,6 @@ pub fn print_profile_summary() {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
 
     use tempfile::TempDir;
 

@@ -17,8 +17,8 @@ use crate::{
 ///
 /// When `route_storage` contains entries with `file_path`, files covered by
 /// `ROUTE_STORAGE` skip expensive `syn::parse_file()` — route metadata is built
-/// directly from the stored data. Files are still parsed if they contain
-/// `#[derive(Schema)]` (needed by `parse_component_schemas` for defaults).
+/// directly from the stored data. Default values for `serde(default = "fn")`
+/// are already extracted by `#[derive(Schema)]` into `SCHEMA_STORAGE.field_defaults`.
 ///
 /// Returns the metadata AND the parsed file ASTs, so downstream consumers
 /// (e.g., `openapi_generator`) can reuse them without re-reading files from disk.
@@ -113,13 +113,9 @@ pub fn collect_metadata(
                 });
             }
 
-            // Only parse for file_asts if file has struct definitions
-            // (needed by parse_component_schemas for default function extraction)
-            if content.contains("derive") && content.contains("Schema")
-                && let Ok(file_ast) = syn::parse_file(&content)
-            {
-                file_asts.insert(file_path, file_ast);
-            }
+            // No file_asts insertion needed in fast path:
+            // #[derive(Schema)] already extracts serde(default = "fn") values
+            // into SCHEMA_STORAGE.field_defaults (Priority 0 in process_default_functions)
         } else {
             // Slow path: full parsing (fallback for files not in ROUTE_STORAGE)
             let file_ast = syn::parse_file(&content).map_err(|e| err_call_site(format!("vespera! macro: syntax error in '{}': {}. Fix the Rust syntax errors in this file.", file.display(), e)))?;
