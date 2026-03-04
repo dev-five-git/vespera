@@ -121,11 +121,8 @@ fn extract_field_defaults(input: &syn::DeriveInput) -> BTreeMap<String, serde_js
         return defaults;
     };
 
-    // Read and parse the file
-    let Some(file_ast) = crate::file_utils::read_and_parse_file_warn(
-        &file_path,
-        "derive(Schema) default extraction",
-    ) else {
+    // Read and parse the file (cached via FileCache parsed_file_asts)
+    let Some(file_ast) = crate::schema_macro::file_cache::get_parsed_file(&file_path) else {
         return defaults;
     };
 

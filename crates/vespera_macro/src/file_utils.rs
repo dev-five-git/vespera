@@ -3,35 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Read and parse a Rust source file, printing warnings on error.
-#[allow(clippy::similar_names)]
-pub fn read_and_parse_file_warn(path: &Path, context: &str) -> Option<syn::File> {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!(
-                "Warning: {}: Cannot read '{}': {}",
-                context,
-                path.display(),
-                e
-            );
-            return None;
-        }
-    };
-    match syn::parse_file(&content) {
-        Ok(ast) => Some(ast),
-        Err(e) => {
-            eprintln!(
-                "Warning: {}: Parse error in '{}': {}",
-                context,
-                path.display(),
-                e
-            );
-            None
-        }
-    }
-}
-
 pub fn collect_files(folder_path: &Path) -> io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for entry in std::fs::read_dir(folder_path)? {

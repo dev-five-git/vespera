@@ -10,7 +10,6 @@ use vespera_core::{
 };
 
 use crate::{
-    file_utils::read_and_parse_file_warn,
     metadata::CollectedMetadata,
     parser::{
         build_operation_from_function, extract_default, extract_field_rename, extract_rename_all,
@@ -129,7 +128,7 @@ fn build_file_cache(metadata: &CollectedMetadata) -> HashMap<String, syn::File> 
         .collect();
     let mut cache = HashMap::with_capacity(unique_paths.len());
     for path in unique_paths {
-        if let Some(ast) = read_and_parse_file_warn(Path::new(path), "OpenAPI generation") {
+        if let Some(ast) = crate::schema_macro::file_cache::get_parsed_file(Path::new(path)) {
             cache.insert(path.to_string(), ast);
         }
     }

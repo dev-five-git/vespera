@@ -6,7 +6,7 @@
 
 mod circular;
 mod codegen;
-mod file_cache;
+pub mod file_cache;
 mod file_lookup;
 mod from_model;
 mod inline_types;

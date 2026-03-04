@@ -50,14 +50,6 @@ pub fn collect_metadata(
             continue;
         }
 
-        let content = std::fs::read_to_string(&file).map_err(|e| {
-            err_call_site(format!(
-                "vespera! macro: failed to read route file '{}': {}. Check file permissions.",
-                file.display(),
-                e
-            ))
-        })?;
-
         let file_path = file.display().to_string();
 
         // Get module path (cheap — no parsing needed)
@@ -118,7 +110,9 @@ pub fn collect_metadata(
             // into SCHEMA_STORAGE.field_defaults (Priority 0 in process_default_functions)
         } else {
             // Slow path: full parsing (fallback for files not in ROUTE_STORAGE)
-            let file_ast = syn::parse_file(&content).map_err(|e| err_call_site(format!("vespera! macro: syntax error in '{}': {}. Fix the Rust syntax errors in this file.", file.display(), e)))?;
+            // Uses get_parsed_file: single syn::parse_file entry point + content cache
+            let file_ast = crate::schema_macro::file_cache::get_parsed_file(&file)
+                .ok_or_else(|| err_call_site(format!("vespera! macro: cannot read or parse '{}'. Fix the Rust syntax errors in this file.", file.display())))?;
 
             // Store file AST for downstream reuse
             file_asts.insert(file_path.clone(), file_ast);

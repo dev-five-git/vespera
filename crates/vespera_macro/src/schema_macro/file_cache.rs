@@ -33,10 +33,16 @@ struct FileCache {
     /// Built from cheap `String::contains` search, not full parsing.
     struct_candidates: HashMap<(PathBuf, String), Vec<PathBuf>>,
 
-    // NOTE: We do NOT cache `syn::ItemStruct` directly because `syn` types contain
-    // `proc_macro::Span` handles tied to a specific macro invocation context.
+    // NOTE: We CANNOT cache `syn::File` or `syn::ItemStruct` across proc-macro
+    // invocations. Both `syn` and `proc_macro2` types contain `proc_macro::Span`
+    // and `proc_macro::TokenStream` bridge handles allocated in the current
+    // invocation's bridge context. Cloning them in a later invocation panics with
+    // "use-after-free in `proc_macro` handle".
+    //
     // Instead, `struct_definitions` caches extracted definition *strings* which have
-    // no Span handles and are safe to reuse across invocations.
+    // no bridge handles and are safe to reuse. For callers needing `syn::File`,
+    // `get_parsed_file()` caches the file *content* (safe string) and re-parses
+    // per invocation, avoiding redundant disk I/O while staying safe.
 
     // --- Profiling counters (zero-cost when VESPERA_PROFILE is not set) ---
     /// Number of file content reads from disk (cache miss).
@@ -112,6 +118,30 @@ pub fn get_manifest_dir() -> Option<String> {
     })
 }
 
+/// Get a parsed `syn::File` for the given path.
+///
+/// Uses the file content cache to avoid redundant disk I/O, then parses with
+/// `syn::parse_file` each time. We CANNOT cache `syn::File` across proc-macro
+/// invocations because `proc_macro2`/`syn` types contain `proc_macro::TokenStream`
+/// bridge handles that become invalid when the invocation that created them ends.
+pub fn get_parsed_file(path: &Path) -> Option<syn::File> {
+    FILE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        parse_file_cached(&mut cache, path)
+    })
+}
+
+/// **Single call site for `syn::parse_file`.**
+///
+/// Reads file content from the mtime-validated content cache (avoids redundant
+/// disk I/O), then calls `syn::parse_file`. The resulting `syn::File` is NOT
+/// cached — it must be used and dropped within the current proc-macro invocation.
+fn parse_file_cached(cache: &mut FileCache, path: &Path) -> Option<syn::File> {
+    let content = get_file_content_inner(cache, path)?;
+    cache.ast_parses += 1;
+    syn::parse_file(&content).ok()
+}
+
 /// Get candidate files that likely contain `struct_name`, using cache when available.
 ///
 /// Performs a cheap text-based search (`String::contains`) on file contents.
@@ -165,12 +195,9 @@ fn ensure_struct_definitions(cache: &mut FileCache, path: &Path) -> bool {
         return true;
     }
 
-    // Cache miss — parse file and extract all struct definitions
-    let Some(content) = get_file_content_inner(cache, path) else {
-        return false;
-    };
-    cache.ast_parses += 1;
-    let Ok(file_ast) = syn::parse_file(&content) else {
+    // Cache miss — parse file and extract all struct definitions.
+    // Uses parse_file_cached: single syn::parse_file entry point.
+    let Some(file_ast) = parse_file_cached(cache, path) else {
         return false;
     };
 
