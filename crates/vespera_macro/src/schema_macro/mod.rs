@@ -6,7 +6,7 @@
 
 mod circular;
 mod codegen;
-mod file_cache;
+pub mod file_cache;
 mod file_lookup;
 mod from_model;
 mod inline_types;
@@ -103,24 +103,24 @@ pub fn generate_schema_type_code(
     // This may be empty for simple names like `Model` - will be overridden below if found from file
     let mut source_module_path = extract_module_path(&input.source_type);
 
-    // Find struct definition - lookup order depends on whether path is qualified
-    // For qualified paths (crate::models::memo::Model), try file lookup FIRST
-    // to avoid name collisions when multiple modules have same struct name (e.g., Model)
+    // Find struct definition - check SCHEMA_STORAGE first (no file I/O),
+    // fall back to file lookup for types not registered (e.g., SeaORM Model).
     let struct_def_owned: StructMetadata;
     let schema_name_hint = input.schema_name.as_deref();
     let struct_def = if is_qualified_path(&input.source_type) {
-        // Qualified path: try file lookup first, then storage
-        if let Some((found, module_path)) =
+        // Qualified path: try storage first (avoids parse_file for Schema-derived types),
+        // then file lookup for non-Schema types (e.g., SeaORM Model)
+        if let Some(found) = schema_storage.get(&source_type_name) {
+            found
+        } else if let Some((found, module_path)) =
             find_struct_from_path(&input.source_type, schema_name_hint)
         {
             struct_def_owned = found;
-            // Always use the module path from file lookup for qualified paths
+            // Use the module path from file lookup for qualified paths
             // The file lookup derives module path from actual file location, which is more accurate
             // for resolving relative paths like `super::user::Entity`
             source_module_path = module_path;
             &struct_def_owned
-        } else if let Some(found) = schema_storage.get(&source_type_name) {
-            found
         } else {
             return Err(syn::Error::new_spanned(
                 &input.source_type,
@@ -749,14 +749,7 @@ fn sql_function_default_for_type(original_ty: &syn::Type) -> Option<(TokenStream
     let type_name = segment.ident.to_string();
 
     match type_name.as_str() {
-        "DateTimeWithTimeZone" | "DateTimeUtc" => {
-            let expr = quote! {
-                vespera::chrono::DateTime::<vespera::chrono::Utc>::UNIX_EPOCH.fixed_offset()
-            };
-            Some((expr, "1970-01-01T00:00:00+00:00".to_string()))
-        }
-        "DateTime" => {
-            // Could be chrono::DateTime<Tz> — use UTC epoch
+        "DateTimeWithTimeZone" | "DateTimeUtc" | "DateTime" => {
             let expr = quote! {
                 vespera::chrono::DateTime::<vespera::chrono::Utc>::UNIX_EPOCH.fixed_offset()
             };
@@ -805,25 +798,7 @@ fn is_parseable_type(ty: &syn::Type) -> bool {
     let Some(segment) = type_path.path.segments.last() else {
         return false;
     };
-    matches!(
-        segment.ident.to_string().as_str(),
-        "i8" | "i16"
-            | "i32"
-            | "i64"
-            | "i128"
-            | "isize"
-            | "u8"
-            | "u16"
-            | "u32"
-            | "u64"
-            | "u128"
-            | "usize"
-            | "f32"
-            | "f64"
-            | "bool"
-            | "String"
-            | "Decimal"
-    )
+    type_utils::PRIMITIVE_TYPE_NAMES.contains(&segment.ident.to_string().as_str())
 }
 
 #[cfg(test)]

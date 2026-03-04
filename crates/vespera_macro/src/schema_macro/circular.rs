@@ -59,9 +59,9 @@ pub fn analyze_circular_refs(source_module_path: &[String], definition: &str) ->
         .last()
         .map_or("", std::string::String::as_str);
 
-    let mut circular_fields = Vec::new();
+    let mut circular_fields = Vec::with_capacity(fields_named.named.len());
     let mut has_fk = false;
-    let mut circular_field_required = HashMap::new();
+    let mut circular_field_required = HashMap::with_capacity(fields_named.named.len());
 
     // Pre-build field name → &Field index for O(1) FK column lookup
     // instead of O(N) linear search per FK relation
@@ -70,6 +70,11 @@ pub fn analyze_circular_refs(source_module_path: &[String], definition: &str) ->
         .iter()
         .filter_map(|f| f.ident.as_ref().map(|id| (id.to_string(), f)))
         .collect();
+    // Precompute format strings used for circular reference detection
+    let schema_pattern = format!("{source_module}::Schema");
+    let entity_pattern = format!("{source_module}::Entity");
+    let capitalized_pattern = format!("{}Schema", capitalize_first(source_module));
+
     for field in &fields_named.named {
         // FieldsNamed guarantees all fields have identifiers
         let field_ident = field.ident.as_ref().expect("named field has ident");
@@ -95,9 +100,9 @@ pub fn analyze_circular_refs(source_module_path: &[String], definition: &str) ->
             let is_circular = (ty_str.contains("HasOne<")
                 || ty_str.contains("BelongsTo<")
                 || ty_str.contains("Box<"))
-                && (ty_str.contains(&format!("{source_module}::Schema"))
-                    || ty_str.contains(&format!("{source_module}::Entity"))
-                    || ty_str.contains(&format!("{}Schema", capitalize_first(source_module))));
+                && (ty_str.contains(&schema_pattern)
+                    || ty_str.contains(&entity_pattern)
+                    || ty_str.contains(&capitalized_pattern));
 
             if is_circular {
                 circular_fields.push(field_name);

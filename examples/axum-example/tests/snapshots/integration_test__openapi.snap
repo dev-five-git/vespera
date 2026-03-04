@@ -1191,6 +1191,23 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "age",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "uint32"
+            }
           }
         ],
         "responses": {
@@ -1199,7 +1216,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/TestStruct"
                 }
               }
             }

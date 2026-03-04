@@ -100,23 +100,12 @@ pub fn find_struct_from_path(
         if !file_path.exists() {
             continue;
         }
-
-        let file_ast = super::file_cache::get_parsed_ast(&file_path)?;
-
-        // Look for the struct in the file
-        for item in &file_ast.items {
-            match item {
-                syn::Item::Struct(struct_item) if struct_item.ident == struct_name => {
-                    return Some((
-                        StructMetadata::new_model(
-                            struct_name,
-                            quote::quote!(#struct_item).to_string(),
-                        ),
-                        type_module_path,
-                    ));
-                }
-                _ => {}
-            }
+        if let Some(definition) = super::file_cache::get_struct_definition(&file_path, &struct_name)
+        {
+            return Some((
+                StructMetadata::new_model(struct_name, definition),
+                type_module_path,
+            ));
         }
     }
 
@@ -168,21 +157,13 @@ pub fn find_struct_by_name_in_all_files(
         // Parse only candidate files first
         let mut found_in_candidates: Vec<(std::path::PathBuf, StructMetadata)> = Vec::new();
         for file_path in &candidates {
-            let Some(file_ast) = super::file_cache::get_parsed_ast(file_path) else {
-                continue;
-            };
-            for item in &file_ast.items {
-                if let syn::Item::Struct(struct_item) = item
-                    && struct_item.ident == struct_name
-                {
-                    found_in_candidates.push((
-                        file_path.clone(),
-                        StructMetadata::new_model(
-                            struct_name.to_string(),
-                            quote::quote!(#struct_item).to_string(),
-                        ),
-                    ));
-                }
+            if let Some(definition) =
+                super::file_cache::get_struct_definition(file_path, struct_name)
+            {
+                found_in_candidates.push((
+                    file_path.clone(),
+                    StructMetadata::new_model(struct_name.to_string(), definition),
+                ));
             }
         }
 
@@ -222,22 +203,12 @@ pub fn find_struct_by_name_in_all_files(
     let mut found_structs: Vec<(std::path::PathBuf, StructMetadata)> = Vec::new();
 
     for file_path in rs_files {
-        let Some(file_ast) = super::file_cache::get_parsed_ast(&file_path) else {
-            continue;
-        };
-
-        for item in &file_ast.items {
-            if let syn::Item::Struct(struct_item) = item
-                && struct_item.ident == struct_name
-            {
-                found_structs.push((
-                    file_path.clone(),
-                    StructMetadata::new_model(
-                        struct_name.to_string(),
-                        quote::quote!(#struct_item).to_string(),
-                    ),
-                ));
-            }
+        if let Some(definition) = super::file_cache::get_struct_definition(&file_path, struct_name)
+        {
+            found_structs.push((
+                file_path.clone(),
+                StructMetadata::new_model(struct_name.to_string(), definition),
+            ));
         }
     }
 
@@ -366,20 +337,9 @@ pub fn find_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
         if !file_path.exists() {
             continue;
         }
-
-        let file_ast = super::file_cache::get_parsed_ast(&file_path)?;
-
-        // Look for the struct in the file
-        for item in &file_ast.items {
-            match item {
-                syn::Item::Struct(struct_item) if struct_item.ident == struct_name => {
-                    return Some(StructMetadata::new_model(
-                        struct_name,
-                        quote::quote!(#struct_item).to_string(),
-                    ));
-                }
-                _ => {}
-            }
+        if let Some(definition) = super::file_cache::get_struct_definition(&file_path, &struct_name)
+        {
+            return Some(StructMetadata::new_model(struct_name, definition));
         }
     }
 
@@ -431,22 +391,20 @@ pub fn find_fk_column_from_target_entity(
             continue;
         }
 
-        let file_ast = super::file_cache::get_parsed_ast(&file_path)?;
+        let Some(model_def) = super::file_cache::get_struct_definition(&file_path, "Model") else {
+            continue;
+        };
+        let Ok(model) = super::file_cache::parse_struct_cached(&model_def) else {
+            continue;
+        };
 
-        // Look for Model struct in the file
-        for item in &file_ast.items {
-            if let syn::Item::Struct(struct_item) = item
-                && struct_item.ident == "Model"
-            {
-                // Search through fields for the one with matching relation_enum
-                if let syn::Fields::Named(fields_named) = &struct_item.fields {
-                    for field in &fields_named.named {
-                        let field_relation_enum = extract_relation_enum(&field.attrs);
-                        if field_relation_enum.as_deref() == Some(via_rel) {
-                            // Found the matching field, extract FK column from `from` attribute
-                            return extract_belongs_to_from_field(&field.attrs);
-                        }
-                    }
+        // Search through fields for the one with matching relation_enum
+        if let syn::Fields::Named(fields_named) = &model.fields {
+            for field in &fields_named.named {
+                let field_relation_enum = extract_relation_enum(&field.attrs);
+                if field_relation_enum.as_deref() == Some(via_rel) {
+                    // Found the matching field, extract FK column from `from` attribute
+                    return extract_belongs_to_from_field(&field.attrs);
                 }
             }
         }
@@ -493,19 +451,8 @@ pub fn find_model_from_schema_path(schema_path_str: &str) -> Option<StructMetada
         if !file_path.exists() {
             continue;
         }
-
-        let file_ast = super::file_cache::get_parsed_ast(&file_path)?;
-
-        // Look for Model struct in the file
-        for item in &file_ast.items {
-            if let syn::Item::Struct(struct_item) = item
-                && struct_item.ident == "Model"
-            {
-                return Some(StructMetadata::new_model(
-                    "Model".to_string(),
-                    quote::quote!(#struct_item).to_string(),
-                ));
-            }
+        if let Some(definition) = super::file_cache::get_struct_definition(&file_path, "Model") {
+            return Some(StructMetadata::new_model("Model".to_string(), definition));
         }
     }
 
@@ -1564,6 +1511,137 @@ pub struct Model {
         assert!(
             result.is_some(),
             "Should find Model in valid.rs after skipping unparseable broken.rs in rest"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_struct_from_path_qualified_module_path() {
+        // Exercises the candidate_file_paths call (line 82) with a fully qualified path
+        // where the file exists at the expected module location
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create user.rs at the expected module path location
+        std::fs::write(
+            models_dir.join("user.rs"),
+            "pub struct Model { pub id: i32, pub name: String }",
+        )
+        .unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        // Use a fully qualified path: crate::models::user::Model
+        // This ensures module_segments = ["models", "user"] (non-empty after filtering "crate")
+        // which reaches line 82: candidate_file_paths(&src_dir, &module_segments)
+        let ty: syn::Type = syn::parse_str("crate::models::user::Model").unwrap();
+        let result = find_struct_from_path(&ty, None);
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(
+            result.is_some(),
+            "Should find Model struct via qualified path"
+        );
+        let (metadata, module_path) = result.unwrap();
+        assert!(
+            metadata.definition.contains("Model"),
+            "Definition should contain Model"
+        );
+        assert_eq!(
+            module_path,
+            vec!["crate", "models", "user"],
+            "Module path should be inferred from type path"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_struct_from_path_mod_rs_variant() {
+        // Exercises candidate_file_paths with the mod.rs pattern
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models").join("user");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create mod.rs instead of user.rs
+        std::fs::write(
+            models_dir.join("mod.rs"),
+            "pub struct Model { pub id: i32, pub email: String }",
+        )
+        .unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let ty: syn::Type = syn::parse_str("crate::models::user::Model").unwrap();
+        let result = find_struct_from_path(&ty, None);
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(result.is_some(), "Should find Model struct via mod.rs path");
+        let (metadata, _) = result.unwrap();
+        assert!(
+            metadata.definition.contains("email"),
+            "Should find the correct Model with email field"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_fk_column_parse_struct_cached_failure() {
+        // Exercises line 334: get_struct_definition succeeds but parse_struct_cached fails.
+        // We inject an invalid struct definition string into the cache so that
+        // parse_struct_cached returns Err, triggering the `continue` branch.
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create a real file so the file_path exists (candidate_file_paths will find it)
+        let model_file = models_dir.join("item.rs");
+        std::fs::write(&model_file, "pub struct Model { pub id: i32 }").unwrap();
+
+        // Inject a CORRUPT definition for "Model" at this path — syn::parse_str will fail
+        crate::schema_macro::file_cache::inject_struct_definition_for_test(
+            &model_file,
+            "Model",
+            "not valid rust {{ struct }}",
+        );
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        // This should trigger: get_struct_definition -> Some(corrupt) -> parse_struct_cached -> Err -> continue
+        let result =
+            find_fk_column_from_target_entity("crate::models::item::Schema", "SomeRelation");
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(
+            result.is_none(),
+            "Should return None when struct definition fails to parse"
         );
     }
 }

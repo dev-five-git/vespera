@@ -115,6 +115,21 @@ pub fn generate_filtered_schema(
     }
 }
 
+/// Convert `SchemaType` enum variant to its `TokenStream` representation
+fn schema_type_to_tokens(st: &SchemaType) -> TokenStream {
+    let variant = match st {
+        SchemaType::String => "String",
+        SchemaType::Number => "Number",
+        SchemaType::Integer => "Integer",
+        SchemaType::Boolean => "Boolean",
+        SchemaType::Array => "Array",
+        SchemaType::Object => "Object",
+        SchemaType::Null => "Null",
+    };
+    let ident = syn::Ident::new(variant, proc_macro2::Span::call_site());
+    quote! { vespera::schema::SchemaType::#ident }
+}
+
 /// Convert `SchemaRef` to `TokenStream` for code generation
 pub fn schema_ref_to_tokens(schema_ref: &SchemaRef) -> TokenStream {
     match schema_ref {
@@ -139,19 +154,11 @@ pub fn schema_ref_to_tokens(schema_ref: &SchemaRef) -> TokenStream {
 /// This reduces generated code volume by ~70% for typical schemas
 /// (e.g., a String field: 3 tokens instead of 10).
 pub fn schema_to_tokens(schema: &Schema) -> TokenStream {
-    let mut fields: Vec<TokenStream> = Vec::new();
+    let mut fields: Vec<TokenStream> = Vec::with_capacity(4);
 
     // schema_type
     if let Some(st) = &schema.schema_type {
-        let st_tokens = match st {
-            SchemaType::String => quote! { vespera::schema::SchemaType::String },
-            SchemaType::Number => quote! { vespera::schema::SchemaType::Number },
-            SchemaType::Integer => quote! { vespera::schema::SchemaType::Integer },
-            SchemaType::Boolean => quote! { vespera::schema::SchemaType::Boolean },
-            SchemaType::Array => quote! { vespera::schema::SchemaType::Array },
-            SchemaType::Object => quote! { vespera::schema::SchemaType::Object },
-            SchemaType::Null => quote! { vespera::schema::SchemaType::Null },
-        };
+        let st_tokens = schema_type_to_tokens(st);
         fields.push(quote! { schema_type: Some(#st_tokens) });
     }
 

@@ -10,16 +10,23 @@ use crate::{
     file_utils::{collect_files, file_to_segments},
     metadata::{CollectedMetadata, RouteMetadata},
     route::{extract_doc_comment, extract_route_info},
+    route_impl::StoredRouteInfo,
 };
 
 /// Collect routes and structs from a folder.
 ///
+/// When `route_storage` contains entries with `file_path`, files covered by
+/// `ROUTE_STORAGE` skip expensive `syn::parse_file()` — route metadata is built
+/// directly from the stored data. Default values for `serde(default = "fn")`
+/// are already extracted by `#[derive(Schema)]` into `SCHEMA_STORAGE.field_defaults`.
+///
 /// Returns the metadata AND the parsed file ASTs, so downstream consumers
 /// (e.g., `openapi_generator`) can reuse them without re-reading files from disk.
-#[allow(clippy::option_if_let_else)]
+#[allow(clippy::option_if_let_else, clippy::too_many_lines)]
 pub fn collect_metadata(
     folder_path: &Path,
     folder_name: &str,
+    route_storage: &[StoredRouteInfo],
 ) -> MacroResult<(CollectedMetadata, HashMap<String, syn::File>)> {
     let mut metadata = CollectedMetadata::new();
 
@@ -27,27 +34,25 @@ pub fn collect_metadata(
 
     let mut file_asts = HashMap::with_capacity(files.len());
 
+    // Index ROUTE_STORAGE entries by file path for O(1) lookup
+    let storage_by_file: HashMap<&str, Vec<&StoredRouteInfo>> = {
+        let mut map: HashMap<&str, Vec<&StoredRouteInfo>> = HashMap::new();
+        for stored in route_storage {
+            if let Some(ref fp) = stored.file_path {
+                map.entry(fp.as_str()).or_default().push(stored);
+            }
+        }
+        map
+    };
+
     for file in files {
         if file.extension().is_none_or(|e| e != "rs") {
             continue;
         }
 
-        let content = std::fs::read_to_string(&file).map_err(|e| {
-            err_call_site(format!(
-                "vespera! macro: failed to read route file '{}': {}. Check file permissions.",
-                file.display(),
-                e
-            ))
-        })?;
-
-        let file_ast = syn::parse_file(&content).map_err(|e| err_call_site(format!("vespera! macro: syntax error in '{}': {}. Fix the Rust syntax errors in this file.", file.display(), e)))?;
-
-        // Store file AST for downstream reuse (keyed by display path to match RouteMetadata.file_path)
         let file_path = file.display().to_string();
-        file_asts.insert(file_path.clone(), file_ast);
-        let file_ast = &file_asts[&file_path];
 
-        // Get module path
+        // Get module path (cheap — no parsing needed)
         let segments = file
             .strip_prefix(folder_path)
             .map(|file_stem| file_to_segments(file_stem, folder_path))
@@ -69,12 +74,10 @@ pub fn collect_metadata(
         // Pre-compute base path once per file (avoids repeated segments.join per route)
         let base_path = format!("/{}", segments.join("/"));
 
-        // Collect routes
-        for item in &file_ast.items {
-            if let Item::Fn(fn_item) = item
-                && let Some(route_info) = extract_route_info(&fn_item.attrs)
-            {
-                let route_path = if let Some(custom_path) = &route_info.path {
+        // Fast path: ROUTE_STORAGE has entries for this file — skip syn::parse_file()
+        if let Some(stored_routes) = storage_by_file.get(file_path.as_str()) {
+            for stored in stored_routes {
+                let route_path = if let Some(ref custom_path) = stored.custom_path {
                     let trimmed_base = base_path.trim_end_matches('/');
                     format!("{trimmed_base}/{}", custom_path.trim_start_matches('/'))
                 } else {
@@ -82,28 +85,103 @@ pub fn collect_metadata(
                 };
                 let route_path = route_path.replace('_', "-");
 
-                // Description priority: route attribute > doc comment
-                let description = route_info
-                    .description
-                    .clone()
-                    .or_else(|| extract_doc_comment(&fn_item.attrs));
+                // Extract doc comment from fn_item_str if no explicit description
+                let description = stored.description.clone().or_else(|| {
+                    syn::parse_str::<syn::ItemFn>(&stored.fn_item_str)
+                        .ok()
+                        .and_then(|fn_item| extract_doc_comment(&fn_item.attrs))
+                });
 
                 metadata.routes.push(RouteMetadata {
-                    method: route_info.method,
+                    method: stored.method.clone().unwrap_or_default(),
                     path: route_path,
-                    function_name: fn_item.sig.ident.to_string(),
+                    function_name: stored.fn_name.clone(),
                     module_path: module_path.clone(),
                     file_path: file_path.clone(),
-                    signature: quote::quote!(#fn_item).to_string(),
-                    error_status: route_info.error_status.clone(),
-                    tags: route_info.tags.clone(),
+                    signature: stored.fn_item_str.clone(),
+                    error_status: stored.error_status.clone(),
+                    tags: stored.tags.clone(),
                     description,
                 });
+            }
+
+            // No file_asts insertion needed in fast path:
+            // #[derive(Schema)] already extracts serde(default = "fn") values
+            // into SCHEMA_STORAGE.field_defaults (Priority 0 in process_default_functions)
+        } else {
+            // Slow path: full parsing (fallback for files not in ROUTE_STORAGE)
+            // Uses get_parsed_file: single syn::parse_file entry point + content cache
+            let file_ast = crate::schema_macro::file_cache::get_parsed_file(&file).ok_or_else(|| err_call_site(format!("vespera! macro: cannot read or parse '{}'. Fix the Rust syntax errors in this file.", file.display())))?;
+
+            // Store file AST for downstream reuse
+            file_asts.insert(file_path.clone(), file_ast);
+            let file_ast = &file_asts[&file_path];
+
+            // Collect routes from AST
+            for item in &file_ast.items {
+                if let Item::Fn(fn_item) = item
+                    && let Some(route_info) = extract_route_info(&fn_item.attrs)
+                {
+                    let route_path = if let Some(custom_path) = &route_info.path {
+                        let trimmed_base = base_path.trim_end_matches('/');
+                        format!("{trimmed_base}/{}", custom_path.trim_start_matches('/'))
+                    } else {
+                        base_path.clone()
+                    };
+                    let route_path = route_path.replace('_', "-");
+
+                    // Description priority: route attribute > doc comment
+                    let description = route_info
+                        .description
+                        .clone()
+                        .or_else(|| extract_doc_comment(&fn_item.attrs));
+
+                    metadata.routes.push(RouteMetadata {
+                        method: route_info.method,
+                        path: route_path,
+                        function_name: fn_item.sig.ident.to_string(),
+                        module_path: module_path.clone(),
+                        file_path: file_path.clone(),
+                        signature: quote::quote!(#fn_item).to_string(),
+                        error_status: route_info.error_status.clone(),
+                        tags: route_info.tags.clone(),
+                        description,
+                    });
+                }
             }
         }
     }
 
     Ok((metadata, file_asts))
+}
+
+/// Collect file modification times without reading content.
+/// Used for cache invalidation — much cheaper than full `collect_metadata()`.
+pub fn collect_file_fingerprints(folder_path: &Path) -> MacroResult<HashMap<String, u64>> {
+    let files = collect_files(folder_path).map_err(|e| {
+        err_call_site(format!(
+            "vespera! macro: failed to scan route folder '{}': {}",
+            folder_path.display(),
+            e
+        ))
+    })?;
+
+    let mut fingerprints = HashMap::with_capacity(files.len());
+    for file in files {
+        if file.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        let mtime = std::fs::metadata(&file)
+            .and_then(|m| m.modified())
+            .map(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            })
+            .unwrap_or(0);
+        fingerprints.insert(file.display().to_string(), mtime);
+    }
+    Ok(fingerprints)
 }
 
 #[cfg(test)]
@@ -129,7 +207,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let folder_name = "routes";
 
-        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         assert!(metadata.routes.is_empty());
         assert!(metadata.structs.is_empty());
@@ -248,7 +326,7 @@ pub fn get_users() -> String {
             create_temp_file(&temp_dir, filename, content);
         }
 
-        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         let route = &metadata.routes[0];
         assert_eq!(route.method, expected_method);
@@ -271,7 +349,7 @@ pub fn get_users() -> String {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let folder_name = "routes";
 
-        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         assert_eq!(metadata.routes.len(), 0);
 
@@ -294,7 +372,7 @@ pub struct User {
 ",
         );
 
-        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         assert_eq!(metadata.routes.len(), 0);
         assert_eq!(metadata.structs.len(), 0);
@@ -326,7 +404,7 @@ pub fn get_user() -> User {
 "#,
         );
 
-        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         assert_eq!(metadata.routes.len(), 1);
 
@@ -368,7 +446,7 @@ pub fn get_posts() -> String {
 "#,
         );
 
-        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         assert_eq!(metadata.routes.len(), 3);
         assert_eq!(metadata.structs.len(), 0);
@@ -419,7 +497,7 @@ pub struct Post {
 ",
         );
 
-        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         assert_eq!(metadata.routes.len(), 0);
 
@@ -442,7 +520,7 @@ pub fn index() -> String {
 "#,
         );
 
-        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         assert_eq!(metadata.routes.len(), 1);
         let route = &metadata.routes[0];
@@ -469,7 +547,7 @@ pub fn get_users() -> String {
 "#,
         );
 
-        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         assert_eq!(metadata.routes.len(), 1);
         let route = &metadata.routes[0];
@@ -498,7 +576,7 @@ pub fn get_users() -> String {
 
         create_temp_file(&temp_dir, "readme.md", "# Readme");
 
-        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         // Only .rs file should be processed
         assert_eq!(metadata.routes.len(), 1);
@@ -525,7 +603,7 @@ pub fn get_users() -> String {
 
         create_temp_file(&temp_dir, "invalid.rs", "invalid rust syntax {");
 
-        let metadata = collect_metadata(temp_dir.path(), folder_name).map(|(m, _)| m);
+        let metadata = collect_metadata(temp_dir.path(), folder_name, &[]).map(|(m, _)| m);
 
         // Only valid file should be processed
         assert!(metadata.is_err());
@@ -549,7 +627,7 @@ pub fn get_users() -> String {
 "#,
         );
 
-        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         assert_eq!(metadata.routes.len(), 1);
         let route = &metadata.routes[0];
@@ -596,7 +674,7 @@ pub fn options_handler() -> String { "options".to_string() }
 "#,
         );
 
-        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         assert_eq!(metadata.routes.len(), 7);
 
@@ -618,7 +696,7 @@ pub fn options_handler() -> String { "options".to_string() }
         let non_existent_path = std::path::Path::new("/nonexistent/path/that/does/not/exist");
         let folder_name = "routes";
 
-        let result = collect_metadata(non_existent_path, folder_name);
+        let result = collect_metadata(non_existent_path, folder_name, &[]);
 
         // Should return error when collect_files fails
         assert!(result.is_err());
@@ -667,7 +745,7 @@ pub fn get_users() -> String {
         }
 
         // Attempt to collect metadata - should fail with "failed to read route file" error
-        let result = collect_metadata(temp_dir.path(), folder_name);
+        let result = collect_metadata(temp_dir.path(), folder_name, &[]);
 
         // Verify error message
         assert!(result.is_err());
@@ -716,7 +794,7 @@ pub fn get() -> String { "ok".to_string() }
 "#,
         );
 
-        let result = collect_metadata(temp_dir.path(), folder_name);
+        let result = collect_metadata(temp_dir.path(), folder_name, &[]);
         assert!(result.is_ok());
 
         drop(temp_dir);
@@ -734,7 +812,7 @@ pub fn get() -> String { "ok".to_string() }
         create_temp_file(&temp_dir, "invalid.rs", "{{{");
 
         // This should fail during syntax parsing, not file reading
-        let result = collect_metadata(temp_dir.path(), folder_name);
+        let result = collect_metadata(temp_dir.path(), folder_name, &[]);
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("syntax error"));
@@ -778,7 +856,7 @@ pub fn get_users() -> String {
         );
 
         // Collect metadata from the subdirectory
-        let (metadata, _file_asts) = collect_metadata(&sub_dir, folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(&sub_dir, folder_name, &[]).unwrap();
 
         // Should collect the route (strip_prefix succeeds in normal cases)
         assert_eq!(metadata.routes.len(), 1);
@@ -806,7 +884,7 @@ pub struct User {
 ",
         );
 
-        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         // Struct without Schema derive should not be collected
         assert_eq!(metadata.structs.len(), 0);
@@ -832,10 +910,201 @@ pub struct User {
 ",
         );
 
-        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name).unwrap();
+        let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         // Struct with only Debug/Clone derive (no Schema) should not be collected
         assert_eq!(metadata.structs.len(), 0);
+
+        drop(temp_dir);
+    }
+
+    #[test]
+    fn test_collect_metadata_fast_path_with_route_storage() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let folder_name = "routes";
+
+        // Create a .rs file that the fast path will match against
+        let file_path = create_temp_file(
+            &temp_dir,
+            "users.rs",
+            r#"
+pub async fn get_users() -> String {
+    "users".to_string()
+}
+"#,
+        );
+
+        let file_path_str = file_path.display().to_string();
+
+        // Create StoredRouteInfo entries that match this file
+        let route_storage = vec![StoredRouteInfo {
+            fn_name: "get_users".to_string(),
+            method: Some("get".to_string()),
+            custom_path: None,
+            error_status: None,
+            tags: Some(vec!["users".to_string()]),
+            description: Some("Get all users".to_string()),
+            fn_item_str: "pub async fn get_users() -> String { \"users\".to_string() }".to_string(),
+            file_path: Some(file_path_str.clone()),
+        }];
+
+        let (metadata, file_asts) =
+            collect_metadata(temp_dir.path(), folder_name, &route_storage).unwrap();
+
+        // Fast path should produce route metadata
+        assert_eq!(metadata.routes.len(), 1);
+        let route = &metadata.routes[0];
+        assert_eq!(route.function_name, "get_users");
+        assert_eq!(route.method, "get");
+        assert_eq!(route.tags, Some(vec!["users".to_string()]));
+        assert_eq!(route.description, Some("Get all users".to_string()));
+        assert_eq!(route.module_path, "routes::users");
+
+        // Fast path should NOT insert file ASTs (no parsing needed)
+        assert!(
+            file_asts.is_empty(),
+            "Fast path should not populate file_asts"
+        );
+
+        drop(temp_dir);
+    }
+
+    #[test]
+    fn test_collect_metadata_fast_path_with_custom_path() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let folder_name = "routes";
+
+        let file_path = create_temp_file(
+            &temp_dir,
+            "users.rs",
+            r#"
+pub async fn get_user() -> String {
+    "user".to_string()
+}
+"#,
+        );
+
+        let file_path_str = file_path.display().to_string();
+
+        let route_storage = vec![StoredRouteInfo {
+            fn_name: "get_user".to_string(),
+            method: Some("get".to_string()),
+            custom_path: Some("/{id}".to_string()),
+            error_status: Some(vec![404]),
+            tags: None,
+            description: None,
+            fn_item_str: "pub async fn get_user(id: i32) -> String { \"user\".to_string() }"
+                .to_string(),
+            file_path: Some(file_path_str.clone()),
+        }];
+
+        let (metadata, _) = collect_metadata(temp_dir.path(), folder_name, &route_storage).unwrap();
+
+        assert_eq!(metadata.routes.len(), 1);
+        let route = &metadata.routes[0];
+        assert_eq!(route.path, "/users/{id}");
+        assert!(route.error_status.is_some());
+        assert_eq!(route.error_status.as_ref().unwrap(), &vec![404]);
+
+        drop(temp_dir);
+    }
+
+    #[test]
+    fn test_collect_metadata_fast_path_empty_folder_name() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let folder_name = "";
+
+        let file_path = create_temp_file(
+            &temp_dir,
+            "users.rs",
+            r#"
+pub async fn list_users() -> String {
+    "list".to_string()
+}
+"#,
+        );
+
+        let file_path_str = file_path.display().to_string();
+
+        let route_storage = vec![StoredRouteInfo {
+            fn_name: "list_users".to_string(),
+            method: Some("get".to_string()),
+            custom_path: None,
+            error_status: None,
+            tags: None,
+            description: None,
+            fn_item_str: "pub async fn list_users() -> String { \"list\".to_string() }".to_string(),
+            file_path: Some(file_path_str),
+        }];
+
+        let (metadata, _) = collect_metadata(temp_dir.path(), folder_name, &route_storage).unwrap();
+
+        assert_eq!(metadata.routes.len(), 1);
+        let route = &metadata.routes[0];
+        // With empty folder_name, module_path should be just segments (no prefix)
+        assert_eq!(route.module_path, "users");
+
+        drop(temp_dir);
+    }
+
+    #[test]
+    fn test_collect_metadata_fast_path_doc_comment_extraction() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let folder_name = "routes";
+
+        let file_path = create_temp_file(&temp_dir, "items.rs", "// placeholder\n");
+
+        let file_path_str = file_path.display().to_string();
+
+        // fn_item_str includes a doc comment, description is None
+        // so the fast path should extract the doc comment
+        let route_storage = vec![StoredRouteInfo {
+            fn_name: "get_items".to_string(),
+            method: Some("get".to_string()),
+            custom_path: None,
+            error_status: None,
+            tags: None,
+            description: None, // No explicit description -> should extract from doc comment
+            fn_item_str:
+                "/// List all items\npub async fn get_items() -> String { \"items\".to_string() }"
+                    .to_string(),
+            file_path: Some(file_path_str),
+        }];
+
+        let (metadata, _) = collect_metadata(temp_dir.path(), folder_name, &route_storage).unwrap();
+
+        assert_eq!(metadata.routes.len(), 1);
+        let route = &metadata.routes[0];
+        // Description should be extracted from the doc comment in fn_item_str
+        assert_eq!(route.description, Some("List all items".to_string()));
+
+        drop(temp_dir);
+    }
+
+    #[test]
+    fn test_collect_file_fingerprints_skips_non_rs_files() {
+        // Exercises line 121: non-.rs files should be skipped
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create both .rs and non-.rs files
+        create_temp_file(&temp_dir, "valid.rs", "pub fn hello() {}");
+        create_temp_file(&temp_dir, "readme.txt", "This is a readme");
+        create_temp_file(&temp_dir, "data.json", "{}");
+        create_temp_file(&temp_dir, "script.py", "print('hello')");
+
+        let fingerprints = collect_file_fingerprints(temp_dir.path()).unwrap();
+
+        // Only .rs files should be in fingerprints
+        assert_eq!(
+            fingerprints.len(),
+            1,
+            "Only .rs files should be fingerprinted"
+        );
+        let keys: Vec<&String> = fingerprints.keys().collect();
+        assert!(
+            keys[0].ends_with("valid.rs"),
+            "The only fingerprinted file should be valid.rs"
+        );
 
         drop(temp_dir);
     }

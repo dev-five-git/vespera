@@ -1,5 +1,7 @@
 //! Metadata collection and storage for routes and schemas
 
+use std::collections::{BTreeMap, HashMap};
+
 use serde::{Deserialize, Serialize};
 
 /// Route metadata
@@ -40,6 +42,11 @@ pub struct StructMetadata {
     /// - false: from cross-file lookup - only for `schema_type`! source, NOT in openapi.json
     #[serde(default = "default_include_in_openapi")]
     pub include_in_openapi: bool,
+    /// Pre-extracted default values for fields with `#[serde(default = "fn_name")]`.
+    /// Key: Rust field name, Value: extracted default value.
+    /// Populated by `#[derive(Schema)]` to avoid AST re-parsing in `vespera!()`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub field_defaults: BTreeMap<String, serde_json::Value>,
 }
 
 const fn default_include_in_openapi() -> bool {
@@ -51,7 +58,8 @@ impl Default for StructMetadata {
         Self {
             name: String::new(),
             definition: String::new(),
-            include_in_openapi: true, // Default to true (appears in OpenAPI)
+            include_in_openapi: true,
+            field_defaults: BTreeMap::new(),
         }
     }
 }
@@ -63,6 +71,7 @@ impl StructMetadata {
             name,
             definition,
             include_in_openapi: true,
+            field_defaults: BTreeMap::new(),
         }
     }
 
@@ -72,6 +81,7 @@ impl StructMetadata {
             name,
             definition,
             include_in_openapi: false,
+            field_defaults: BTreeMap::new(),
         }
     }
 }
@@ -91,6 +101,29 @@ impl CollectedMetadata {
             routes: Vec::new(),
             structs: Vec::new(),
         }
+    }
+
+    /// Check for duplicate schema names among `include_in_openapi` structs.
+    /// Returns `Err` with a descriptive message if duplicates are found.
+    pub fn check_duplicate_schema_names(&self) -> Result<(), String> {
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        for (i, s) in self.structs.iter().enumerate() {
+            if !s.include_in_openapi {
+                continue;
+            }
+            if let Some(&prev_idx) = seen.get(s.name.as_str()) {
+                // Only report if definitions actually differ (identical re-registration is OK)
+                if self.structs[prev_idx].definition != s.definition {
+                    return Err(format!(
+                        "Duplicate OpenAPI schema name '{}'. Two different structs produce the same schema name, which would corrupt the OpenAPI spec. Rename one of them or use #[schema(name = \"...\")].",
+                        s.name
+                    ));
+                }
+            } else {
+                seen.insert(&s.name, i);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -148,6 +181,7 @@ mod tests {
         assert_eq!(original.name, restored.name);
         assert_eq!(original.definition, restored.definition);
         assert_eq!(original.include_in_openapi, restored.include_in_openapi);
+        assert!(restored.field_defaults.is_empty());
     }
 
     #[test]
@@ -155,5 +189,64 @@ mod tests {
         let meta = CollectedMetadata::new();
         assert!(meta.routes.is_empty());
         assert!(meta.structs.is_empty());
+    }
+
+    #[test]
+    fn test_check_duplicate_schema_names_no_duplicates() {
+        let mut meta = CollectedMetadata::new();
+        meta.structs
+            .push(StructMetadata::new("User".into(), "struct User {}".into()));
+        meta.structs
+            .push(StructMetadata::new("Post".into(), "struct Post {}".into()));
+        assert!(meta.check_duplicate_schema_names().is_ok());
+    }
+
+    #[test]
+    fn test_check_duplicate_schema_names_different_definitions() {
+        let mut meta = CollectedMetadata::new();
+        meta.structs.push(StructMetadata::new(
+            "User".into(),
+            "struct User { id: i32 }".into(),
+        ));
+        meta.structs.push(StructMetadata::new(
+            "User".into(),
+            "struct User { name: String }".into(),
+        ));
+        let err = meta.check_duplicate_schema_names().unwrap_err();
+        assert!(
+            err.contains("Duplicate OpenAPI schema name 'User'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_check_duplicate_schema_names_identical_definition_ok() {
+        let mut meta = CollectedMetadata::new();
+        let def = "struct User { id: i32 }".to_string();
+        meta.structs
+            .push(StructMetadata::new("User".into(), def.clone()));
+        meta.structs.push(StructMetadata::new("User".into(), def));
+        assert!(meta.check_duplicate_schema_names().is_ok());
+    }
+
+    #[test]
+    fn test_check_duplicate_schema_names_ignores_models() {
+        let mut meta = CollectedMetadata::new();
+        meta.structs.push(StructMetadata::new_model(
+            "Model".into(),
+            "struct Model { id: i32 }".into(),
+        ));
+        meta.structs.push(StructMetadata::new_model(
+            "Model".into(),
+            "struct Model { name: String }".into(),
+        ));
+        // Models (include_in_openapi=false) are not checked
+        assert!(meta.check_duplicate_schema_names().is_ok());
+    }
+
+    #[test]
+    fn test_check_duplicate_schema_names_empty() {
+        let meta = CollectedMetadata::new();
+        assert!(meta.check_duplicate_schema_names().is_ok());
     }
 }

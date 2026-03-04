@@ -26,32 +26,39 @@ use super::{
 };
 
 /// Check if a type is a primitive Rust type that maps directly to a JSON Schema type.
+/// Inline integer schema with an OpenAPI format string.
+fn integer_with_format(format: &str) -> SchemaRef {
+    SchemaRef::Inline(Box::new(Schema {
+        format: Some(format.to_string()),
+        ..Schema::integer()
+    }))
+}
+
+/// Inline number schema with an OpenAPI format string.
+fn number_with_format(format: &str) -> SchemaRef {
+    SchemaRef::Inline(Box::new(Schema {
+        format: Some(format.to_string()),
+        ..Schema::number()
+    }))
+}
+
+/// Inline string schema with an OpenAPI format string.
+fn string_with_format(format: &str) -> SchemaRef {
+    SchemaRef::Inline(Box::new(Schema {
+        format: Some(format.to_string()),
+        ..Schema::string()
+    }))
+}
+
 pub fn is_primitive_type(ty: &Type) -> bool {
     match ty {
         Type::Path(type_path) => {
             let path = &type_path.path;
             if path.segments.len() == 1 {
                 let ident = path.segments[0].ident.to_string();
-                matches!(
-                    ident.as_str(),
-                    "i8" | "i16"
-                        | "i32"
-                        | "i64"
-                        | "i128"
-                        | "isize"
-                        | "u8"
-                        | "u16"
-                        | "u32"
-                        | "u64"
-                        | "u128"
-                        | "usize"
-                        | "f32"
-                        | "f64"
-                        | "bool"
-                        | "String"
-                        | "str"
-                        | "Decimal"
-                )
+                ident == "str"
+                    || crate::schema_macro::type_utils::PRIMITIVE_TYPE_NAMES
+                        .contains(&ident.as_str())
             } else {
                 false
             }
@@ -233,39 +240,15 @@ fn parse_type_impl(
             match ident_str.as_str() {
                 // Signed integers: use OpenAPI format registry
                 // https://spec.openapis.org/registry/format/index.html
-                "i8" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("int8".to_string()),
-                    ..Schema::integer()
-                })),
-                "i16" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("int16".to_string()),
-                    ..Schema::integer()
-                })),
-                "i32" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("int32".to_string()),
-                    ..Schema::integer()
-                })),
-                "i64" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("int64".to_string()),
-                    ..Schema::integer()
-                })),
+                "i8" => integer_with_format("int8"),
+                "i16" => integer_with_format("int16"),
+                "i32" => integer_with_format("int32"),
+                "i64" => integer_with_format("int64"),
                 // Unsigned integers: use OpenAPI format registry
-                "u8" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("uint8".to_string()),
-                    ..Schema::integer()
-                })),
-                "u16" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("uint16".to_string()),
-                    ..Schema::integer()
-                })),
-                "u32" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("uint32".to_string()),
-                    ..Schema::integer()
-                })),
-                "u64" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("uint64".to_string()),
-                    ..Schema::integer()
-                })),
+                "u8" => integer_with_format("uint8"),
+                "u16" => integer_with_format("uint16"),
+                "u32" => integer_with_format("uint32"),
+                "u64" => integer_with_format("uint64"),
                 // i128, isize, StatusCode: no standard format in the registry
                 "i128" | "isize" | "StatusCode" => SchemaRef::Inline(Box::new(Schema::integer())),
                 // u128, usize: unsigned with no standard format — use minimum: 0
@@ -273,27 +256,12 @@ fn parse_type_impl(
                     minimum: Some(0.0),
                     ..Schema::integer()
                 })),
-                "f32" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("float".to_string()),
-                    ..Schema::number()
-                })),
-                "f64" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("double".to_string()),
-                    ..Schema::number()
-                })),
-                "Decimal" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("decimal".to_string()),
-                    ..Schema::number()
-                })),
+                "f32" => number_with_format("float"),
+                "f64" => number_with_format("double"),
+                "Decimal" => number_with_format("decimal"),
                 "bool" => SchemaRef::Inline(Box::new(Schema::boolean())),
-                "char" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("char".to_string()),
-                    ..Schema::string()
-                })),
-                "Uuid" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("uuid".to_string()),
-                    ..Schema::string()
-                })),
+                "char" => string_with_format("char"),
+                "Uuid" => string_with_format("uuid"),
                 "String" | "str" => SchemaRef::Inline(Box::new(Schema::string())),
                 // Date-time types from chrono and time crates
                 "DateTime"
@@ -302,29 +270,14 @@ fn parse_type_impl(
                 | "DateTimeUtc"
                 | "DateTimeLocal"
                 | "OffsetDateTime"
-                | "PrimitiveDateTime" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("date-time".to_string()),
-                    ..Schema::string()
-                })),
-                "NaiveDate" | "Date" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("date".to_string()),
-                    ..Schema::string()
-                })),
-                "NaiveTime" | "Time" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("time".to_string()),
-                    ..Schema::string()
-                })),
+                | "PrimitiveDateTime" => string_with_format("date-time"),
+                "NaiveDate" | "Date" => string_with_format("date"),
+                "NaiveTime" | "Time" => string_with_format("time"),
                 // Duration types
-                "Duration" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("duration".to_string()),
-                    ..Schema::string()
-                })),
+                "Duration" => string_with_format("duration"),
                 // File upload types (axum_typed_multipart / tempfile)
                 // FieldData<NamedTempFile> → string with binary format
-                "FieldData" | "NamedTempFile" => SchemaRef::Inline(Box::new(Schema {
-                    format: Some("binary".to_string()),
-                    ..Schema::string()
-                })),
+                "FieldData" | "NamedTempFile" => string_with_format("binary"),
                 // Standard library types that should not be referenced
                 // Note: HashMap and BTreeMap are handled above in generic types
                 "Vec" | "HashSet" | "BTreeSet" | "Option" | "Result" | "Json" | "Path"

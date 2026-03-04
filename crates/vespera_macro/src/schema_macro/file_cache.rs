@@ -33,10 +33,16 @@ struct FileCache {
     /// Built from cheap `String::contains` search, not full parsing.
     struct_candidates: HashMap<(PathBuf, String), Vec<PathBuf>>,
 
-    // NOTE: We intentionally do NOT cache parsed `syn::ItemStruct` here.
-    // `syn` types contain `proc_macro::Span` handles that are tied to a specific
-    // macro invocation context. Caching them across invocations causes
-    // "use-after-free in `proc_macro` handle" panics.
+    // NOTE: We CANNOT cache `syn::File` or `syn::ItemStruct` across proc-macro
+    // invocations. Both `syn` and `proc_macro2` types contain `proc_macro::Span`
+    // and `proc_macro::TokenStream` bridge handles allocated in the current
+    // invocation's bridge context. Cloning them in a later invocation panics with
+    // "use-after-free in `proc_macro` handle".
+    //
+    // Instead, `struct_definitions` caches extracted definition *strings* which have
+    // no bridge handles and are safe to reuse. For callers needing `syn::File`,
+    // `get_parsed_file()` caches the file *content* (safe string) and re-parses
+    // per invocation, avoiding redundant disk I/O while staying safe.
 
     // --- Profiling counters (zero-cost when VESPERA_PROFILE is not set) ---
     /// Number of file content reads from disk (cache miss).
@@ -58,6 +64,9 @@ struct FileCache {
     fk_column_lookup: HashMap<(String, String), Option<String>>,
     /// Cached module path extraction from schema paths: path_str → Vec<module segments>.
     module_path_cache: HashMap<String, Vec<String>>,
+    /// Cached struct definitions from files: file_path → (mtime, struct_name → definition_string).
+    /// Unlike `syn::File`, strings have no `proc_macro::Span` handles, safe to cache.
+    struct_definitions: HashMap<PathBuf, (SystemTime, HashMap<String, String>)>,
     /// Cached CARGO_MANIFEST_DIR value to avoid repeated syscalls.
     /// Within a single compilation, this never changes.
     manifest_dir: Option<String>,
@@ -67,6 +76,7 @@ struct FileCache {
     struct_lookup_cache_hits: usize,
     fk_column_cache_hits: usize,
     module_path_cache_hits: usize,
+    struct_def_cache_hits: usize,
 }
 
 thread_local! {
@@ -87,6 +97,8 @@ thread_local! {
         struct_lookup_cache_hits: 0,
         fk_column_cache_hits: 0,
         module_path_cache_hits: 0,
+        struct_definitions: HashMap::with_capacity(32),
+        struct_def_cache_hits: 0,
     });
 }
 
@@ -104,6 +116,30 @@ pub fn get_manifest_dir() -> Option<String> {
         cache.manifest_dir.clone_from(&dir);
         dir
     })
+}
+
+/// Get a parsed `syn::File` for the given path.
+///
+/// Uses the file content cache to avoid redundant disk I/O, then parses with
+/// `syn::parse_file` each time. We CANNOT cache `syn::File` across proc-macro
+/// invocations because `proc_macro2`/`syn` types contain `proc_macro::TokenStream`
+/// bridge handles that become invalid when the invocation that created them ends.
+pub fn get_parsed_file(path: &Path) -> Option<syn::File> {
+    FILE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        parse_file_cached(&mut cache, path)
+    })
+}
+
+/// **Single call site for `syn::parse_file`.**
+///
+/// Reads file content from the mtime-validated content cache (avoids redundant
+/// disk I/O), then calls `syn::parse_file`. The resulting `syn::File` is NOT
+/// cached — it must be used and dropped within the current proc-macro invocation.
+fn parse_file_cached(cache: &mut FileCache, path: &Path) -> Option<syn::File> {
+    let content = get_file_content_inner(cache, path)?;
+    cache.ast_parses += 1;
+    syn::parse_file(&content).ok()
 }
 
 /// Get candidate files that likely contain `struct_name`, using cache when available.
@@ -145,18 +181,64 @@ pub fn get_struct_candidates(src_dir: &Path, struct_name: &str) -> Vec<PathBuf> 
         candidates
     })
 }
+/// Ensure struct definitions are extracted and cached for the given file.
+/// On first call, parses the file and caches all struct definitions as strings.
+/// On subsequent calls, checks mtime to validate cache.
+fn ensure_struct_definitions(cache: &mut FileCache, path: &Path) -> bool {
+    let current_mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
 
-/// Get a parsed `syn::File` for the given path, using cached file content.
+    if let Some(mtime) = current_mtime
+        && let Some((cached_mtime, _)) = cache.struct_definitions.get(path)
+        && *cached_mtime == mtime
+    {
+        cache.struct_def_cache_hits += 1;
+        return true;
+    }
+
+    // Cache miss — parse file and extract all struct definitions.
+    // Uses parse_file_cached: single syn::parse_file entry point.
+    let Some(file_ast) = parse_file_cached(cache, path) else {
+        return false;
+    };
+
+    let mut defs = HashMap::new();
+    for item in &file_ast.items {
+        if let syn::Item::Struct(struct_item) = item {
+            let name = struct_item.ident.to_string();
+            let def = quote::quote!(#struct_item).to_string();
+            defs.insert(name, def);
+        }
+    }
+
+    if let Some(mtime) = current_mtime {
+        cache
+            .struct_definitions
+            .insert(path.to_path_buf(), (mtime, defs));
+    }
+
+    true
+}
+
+/// Get a struct definition string by name from a file, using cached extraction.
 ///
-/// File content is cached with mtime-based invalidation. Parsing always runs
-/// (syn types aren't Send), but I/O is avoided on cache hits.
-/// Returns `None` if the file cannot be read or parsed.
-pub fn get_parsed_ast(path: &Path) -> Option<syn::File> {
+/// On first call for a file, parses via `syn::parse_file` and caches ALL struct
+/// definitions as strings. Subsequent calls for the same file return from cache
+/// without re-parsing.
+///
+/// The cached data contains no `proc_macro::Span` handles,
+/// so it's safe to reuse across macro invocations.
+pub fn get_struct_definition(path: &Path, struct_name: &str) -> Option<String> {
     FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let content = get_file_content_inner(&mut cache, path)?;
-        cache.ast_parses += 1;
-        syn::parse_file(&content).ok()
+        if !ensure_struct_definitions(&mut cache, path) {
+            return None;
+        }
+        cache
+            .struct_definitions
+            .get(path)?
+            .1
+            .get(struct_name)
+            .cloned()
     })
 }
 
@@ -191,7 +273,7 @@ fn get_file_content_inner(cache: &mut FileCache, path: &Path) -> Option<String> 
 /// NOTE: Results are NOT cached across calls. `syn::ItemStruct` contains
 /// `proc_macro::Span` handles that are tied to a specific macro invocation
 /// context — caching them causes "use-after-free" panics in the proc_macro bridge.
-/// File I/O caching (via `get_parsed_ast`) is the primary performance win;
+/// File I/O caching (via `get_struct_definition`) is the primary performance win;
 /// definition string parsing is fast (microseconds per struct).
 pub fn parse_struct_cached(definition: &str) -> Result<syn::ItemStruct, syn::Error> {
     FILE_CACHE.with(|cache| {
@@ -242,7 +324,7 @@ pub fn get_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
         return result;
     }
 
-    // 2. Compute — this re-enters FILE_CACHE via get_parsed_ast (safe: our borrow is dropped)
+    // 2. Compute — this re-enters FILE_CACHE via get_struct_definition (safe: our borrow is dropped)
     let result = super::file_lookup::find_struct_from_schema_path(path_str);
 
     // 3. Store — new borrow
@@ -270,7 +352,7 @@ pub fn get_fk_column(schema_path: &str, via_rel: &str) -> Option<String> {
         return result;
     }
 
-    // 2. Compute — this re-enters FILE_CACHE via get_parsed_ast (safe: our borrow is dropped)
+    // 2. Compute — this re-enters FILE_CACHE via get_struct_definition (safe: our borrow is dropped)
     let result = super::file_lookup::find_fk_column_from_target_entity(schema_path, via_rel);
 
     // 3. Store — new borrow
@@ -366,6 +448,11 @@ pub fn print_profile_summary() {
             cache.fk_column_lookup.len()
         );
         eprintln!(
+            "  struct definitions: {} cache hits, {} entries",
+            cache.struct_def_cache_hits,
+            cache.struct_definitions.len()
+        );
+        eprintln!(
             "  module path: {} cache hits, {} entries",
             cache.module_path_cache_hits,
             cache.module_path_cache.len()
@@ -373,9 +460,29 @@ pub fn print_profile_summary() {
     });
 }
 
+/// Inject a fake struct definition into the cache for testing.
+/// Uses the file's real mtime so `ensure_struct_definitions` won't invalidate the cache.
+/// Enables tests to simulate scenarios where `get_struct_definition` succeeds
+/// but `parse_struct_cached` fails (defensive code path).
+#[cfg(test)]
+pub fn inject_struct_definition_for_test(path: &std::path::Path, name: &str, definition: &str) {
+    FILE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let mtime = std::fs::metadata(path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let entry = cache
+            .struct_definitions
+            .entry(path.to_path_buf())
+            .or_insert_with(|| (mtime, HashMap::new()));
+        entry.0 = mtime;
+        entry.1.insert(name.to_string(), definition.to_string());
+    });
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
 
     use tempfile::TempDir;
 
@@ -400,45 +507,6 @@ mod tests {
         let candidates = get_struct_candidates(src_dir, "Model");
         assert_eq!(candidates.len(), 1);
         assert!(candidates[0].ends_with("has_model.rs"));
-    }
-
-    #[test]
-    fn test_get_parsed_ast_returns_valid_ast() {
-        let temp_dir = TempDir::new().unwrap();
-        let file_path = temp_dir.path().join("test.rs");
-        std::fs::write(&file_path, "pub struct Foo { pub x: i32 }").unwrap();
-
-        let ast = get_parsed_ast(&file_path);
-        assert!(ast.is_some());
-        assert!(!ast.unwrap().items.is_empty());
-    }
-
-    #[test]
-    fn test_get_parsed_ast_caches_content() {
-        let temp_dir = TempDir::new().unwrap();
-        let file_path = temp_dir.path().join("cached.rs");
-        std::fs::write(&file_path, "pub struct Bar;").unwrap();
-
-        let ast1 = get_parsed_ast(&file_path);
-        let ast2 = get_parsed_ast(&file_path);
-        assert!(ast1.is_some());
-        assert!(ast2.is_some());
-    }
-
-    #[test]
-    fn test_get_parsed_ast_returns_none_for_invalid() {
-        let result = get_parsed_ast(Path::new("/nonexistent/path.rs"));
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_get_parsed_ast_returns_none_for_unparseable() {
-        let temp_dir = TempDir::new().unwrap();
-        let file_path = temp_dir.path().join("broken.rs");
-        std::fs::write(&file_path, "this is not valid rust {{{{").unwrap();
-
-        let result = get_parsed_ast(&file_path);
-        assert!(result.is_none());
     }
 
     #[test]

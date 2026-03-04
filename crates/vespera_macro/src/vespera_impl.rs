@@ -25,27 +25,112 @@
 //! - [`process_export_app`] - Main `export_app`! macro implementation
 //! - [`generate_and_write_openapi`] - `OpenAPI` generation and file I/O
 
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    path::Path,
+};
 
 use proc_macro2::Span;
 use quote::quote;
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
-    collector::collect_metadata,
+    collector::{collect_file_fingerprints, collect_metadata},
     error::{MacroResult, err_call_site},
     metadata::{CollectedMetadata, StructMetadata},
     openapi_generator::generate_openapi_doc_with_metadata,
+    route_impl::StoredRouteInfo,
     router_codegen::{ProcessedVesperaInput, generate_router_code},
 };
 
 /// Docs info tuple type alias for cleaner signatures
 pub type DocsInfo = (Option<String>, Option<String>, Option<String>);
 
+/// Cache for avoiding redundant route scanning and OpenAPI generation.
+/// Persisted to `target/vespera/routes.cache` across builds.
+#[derive(Serialize, Deserialize)]
+struct VesperaCache {
+    /// File path → modification time (secs since UNIX_EPOCH)
+    file_fingerprints: HashMap<String, u64>,
+    /// Hash of SCHEMA_STORAGE contents
+    schema_hash: u64,
+    /// Hash of OpenAPI config (title, version, servers, docs_url, etc.)
+    config_hash: u64,
+    /// Cached route/struct metadata
+    metadata: CollectedMetadata,
+    /// Compact JSON for docs embedding (None if docs disabled)
+    spec_json: Option<String>,
+    /// Pretty JSON for file output (None if no openapi file configured)
+    spec_pretty: Option<String>,
+}
+
+/// Compute a deterministic hash of SCHEMA_STORAGE contents.
+fn compute_schema_hash(schema_storage: &HashMap<String, StructMetadata>) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut keys: Vec<&String> = schema_storage.keys().collect();
+    keys.sort();
+    for key in keys {
+        key.hash(&mut hasher);
+        let meta = &schema_storage[key];
+        meta.name.hash(&mut hasher);
+        meta.definition.hash(&mut hasher);
+        meta.include_in_openapi.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Compute a deterministic hash of OpenAPI config fields.
+fn compute_config_hash(processed: &ProcessedVesperaInput) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    processed.title.hash(&mut hasher);
+    processed.version.hash(&mut hasher);
+    processed.docs_url.hash(&mut hasher);
+    processed.redoc_url.hash(&mut hasher);
+    processed.openapi_file_names.hash(&mut hasher);
+    if let Some(ref servers) = processed.servers {
+        for s in servers {
+            s.url.hash(&mut hasher);
+        }
+    }
+    for merge_path in &processed.merge {
+        quote!(#merge_path).to_string().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Get the path to the routes cache file.
+fn get_cache_path() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let manifest_path = Path::new(&manifest_dir);
+    find_target_dir(manifest_path)
+        .join("vespera")
+        .join("routes.cache")
+}
+
+/// Try to read and deserialize a cache file. Returns None on any failure.
+fn read_cache(cache_path: &Path) -> Option<VesperaCache> {
+    let content = std::fs::read_to_string(cache_path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+/// Write cache to disk. Failures are silently ignored (cache is best-effort).
+fn write_cache(cache_path: &Path, cache: &VesperaCache) {
+    if let Some(parent) = cache_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(cache) {
+        let _ = std::fs::write(cache_path, json);
+    }
+}
+
 /// Generate `OpenAPI` JSON and write to files, returning docs info
 pub fn generate_and_write_openapi(
     input: &ProcessedVesperaInput,
     metadata: &CollectedMetadata,
     file_asts: HashMap<String, syn::File>,
+    route_storage: &[StoredRouteInfo],
 ) -> MacroResult<DocsInfo> {
     if input.openapi_file_names.is_empty() && input.docs_url.is_none() && input.redoc_url.is_none()
     {
@@ -58,6 +143,7 @@ pub fn generate_and_write_openapi(
         input.servers.clone(),
         metadata,
         Some(file_asts),
+        route_storage,
     );
 
     // Merge specs from child apps at compile time
@@ -92,7 +178,12 @@ pub fn generate_and_write_openapi(
             if let Some(parent) = file_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| err_call_site(format!("OpenAPI output: failed to create directory '{}'. Error: {}. Ensure the path is valid and writable.", parent.display(), e)))?;
             }
-            std::fs::write(file_path, &json_pretty).map_err(|e| err_call_site(format!("OpenAPI output: failed to write file '{openapi_file_name}'. Error: {e}. Ensure the file path is writable.")))?;
+            let should_write = std::fs::read_to_string(file_path)
+                .map(|existing| existing != json_pretty)
+                .unwrap_or(true);
+            if should_write {
+                std::fs::write(file_path, &json_pretty).map_err(|e| err_call_site(format!("OpenAPI output: failed to write file '{openapi_file_name}'. Error: {e}. Ensure the file path is writable.")))?;
+            }
         }
     }
 
@@ -155,10 +246,132 @@ pub fn find_target_dir(manifest_path: &Path) -> std::path::PathBuf {
     manifest_path.join("target")
 }
 
+/// Supplement collector's `RouteMetadata` with data from `ROUTE_STORAGE`.
+///
+/// `#[route]` stores metadata at attribute expansion time.
+/// `collector.rs` re-parses the same data from file ASTs.
+/// This function merges ROUTE_STORAGE data into collector's output,
+/// preferring ROUTE_STORAGE values when they provide richer info.
+///
+/// Matching is by function name. If multiple routes share a function name,
+/// the match is ambiguous and ROUTE_STORAGE data is skipped for safety.
+fn merge_route_storage_data(metadata: &mut CollectedMetadata, route_storage: &[StoredRouteInfo]) {
+    if route_storage.is_empty() {
+        return;
+    }
+
+    for route in &mut metadata.routes {
+        // Find matching StoredRouteInfo by function name
+        let mut matches = route_storage
+            .iter()
+            .filter(|s| s.fn_name == route.function_name);
+
+        let Some(stored) = matches.next() else {
+            continue;
+        };
+
+        // Skip if ambiguous (multiple routes with same function name)
+        if matches.next().is_some() {
+            continue;
+        }
+
+        // Supplement with ROUTE_STORAGE data
+        // Only override when ROUTE_STORAGE has an explicit value
+        if let Some(ref tags) = stored.tags {
+            route.tags = Some(tags.clone());
+        }
+        if let Some(ref desc) = stored.description {
+            route.description = Some(desc.clone());
+        }
+        if let Some(ref status) = stored.error_status {
+            route.error_status = Some(status.clone());
+        }
+    }
+}
+
+/// Write cached OpenAPI spec to output files if they are stale or missing.
+pub fn ensure_openapi_files_from_cache(
+    openapi_file_names: &[String],
+    spec_pretty: Option<&str>,
+) -> syn::Result<()> {
+    let Some(pretty) = spec_pretty else {
+        return Ok(());
+    };
+    for openapi_file_name in openapi_file_names {
+        let file_path = Path::new(openapi_file_name);
+        let should_write = std::fs::read_to_string(file_path)
+            .map(|existing| existing != *pretty)
+            .unwrap_or(true);
+        if should_write {
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    syn::Error::new(
+                        Span::call_site(),
+                        format!(
+                            "OpenAPI output: failed to create directory '{}': {}",
+                            parent.display(),
+                            e
+                        ),
+                    )
+                })?;
+            }
+            std::fs::write(file_path, pretty).map_err(|e| {
+                syn::Error::new(
+                    Span::call_site(),
+                    format!("OpenAPI output: failed to write file '{openapi_file_name}': {e}"),
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Write compact spec JSON to target dir for `include_str!` embedding.
+fn write_spec_for_embedding(
+    spec_json: Option<String>,
+) -> syn::Result<Option<proc_macro2::TokenStream>> {
+    let Some(json) = spec_json else {
+        return Ok(None);
+    };
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let manifest_path = Path::new(&manifest_dir);
+    let target_dir = find_target_dir(manifest_path);
+    let vespera_dir = target_dir.join("vespera");
+    std::fs::create_dir_all(&vespera_dir).map_err(|e| {
+        syn::Error::new(
+            Span::call_site(),
+            format!(
+                "vespera! macro: failed to create directory '{}': {}",
+                vespera_dir.display(),
+                e
+            ),
+        )
+    })?;
+    let spec_file = vespera_dir.join("vespera_spec.json");
+    let should_write = std::fs::read_to_string(&spec_file)
+        .map(|existing| existing != json)
+        .unwrap_or(true);
+    if should_write {
+        std::fs::write(&spec_file, &json).map_err(|e| {
+            syn::Error::new(
+                Span::call_site(),
+                format!(
+                    "vespera! macro: failed to write spec file '{}': {}",
+                    spec_file.display(),
+                    e
+                ),
+            )
+        })?;
+    }
+    let path_str = spec_file.display().to_string().replace('\\', "/");
+    Ok(Some(quote::quote! { include_str!(#path_str) }))
+}
+
 /// Process vespera macro - extracted for testability
 pub fn process_vespera_macro(
     processed: &ProcessedVesperaInput,
     schema_storage: &HashMap<String, StructMetadata>,
+    route_storage: &[StoredRouteInfo],
 ) -> syn::Result<proc_macro2::TokenStream> {
     let profile_start = if std::env::var("VESPERA_PROFILE").is_ok() {
         Some(std::time::Instant::now())
@@ -177,49 +390,79 @@ pub fn process_vespera_macro(
         ));
     }
 
-    let (mut metadata, file_asts) = collect_metadata(&folder_path, &processed.folder_name).map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", processed.folder_name, e)))?;
-    metadata.structs.extend(schema_storage.values().cloned());
+    // --- Incremental cache check ---
+    let cache_path = get_cache_path();
+    let fingerprints = collect_file_fingerprints(&folder_path)
+        .map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: {e}")))?;
+    let schema_hash = compute_schema_hash(schema_storage);
+    let config_hash = compute_config_hash(processed);
 
-    let (docs_url, redoc_url, spec_json) =
-        generate_and_write_openapi(processed, &metadata, file_asts)?;
+    let cached = read_cache(&cache_path);
+    let cache_hit = cached.as_ref().is_some_and(|c| {
+        c.file_fingerprints == fingerprints
+            && c.schema_hash == schema_hash
+            && c.config_hash == config_hash
+    });
 
-    let spec_tokens = match spec_json {
-        Some(json) => {
-            let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-            let manifest_path = Path::new(&manifest_dir);
-            let target_dir = find_target_dir(manifest_path);
-            let vespera_dir = target_dir.join("vespera");
-            std::fs::create_dir_all(&vespera_dir).map_err(|e| {
-                syn::Error::new(
-                    Span::call_site(),
-                    format!(
-                        "vespera! macro: failed to create directory '{}': {}",
-                        vespera_dir.display(),
-                        e
-                    ),
-                )
-            })?;
-            let spec_file = vespera_dir.join("vespera_spec.json");
-            std::fs::write(&spec_file, &json).map_err(|e| {
-                syn::Error::new(
-                    Span::call_site(),
-                    format!(
-                        "vespera! macro: failed to write spec file '{}': {}",
-                        spec_file.display(),
-                        e
-                    ),
-                )
-            })?;
-            let path_str = spec_file.display().to_string().replace('\\', "/");
-            Some(quote::quote! { include_str!(#path_str) })
-        }
-        None => None,
+    let (metadata, spec_json) = if cache_hit {
+        let cache = cached.unwrap();
+        let mut metadata = cache.metadata;
+        metadata.structs.extend(schema_storage.values().cloned());
+        merge_route_storage_data(&mut metadata, route_storage);
+        metadata
+            .check_duplicate_schema_names()
+            .map_err(|msg| syn::Error::new(Span::call_site(), format!("vespera! macro: {msg}")))?;
+
+        // Ensure openapi.json files exist and are up-to-date from cache
+        ensure_openapi_files_from_cache(
+            &processed.openapi_file_names,
+            cache.spec_pretty.as_deref(),
+        )?;
+
+        (metadata, cache.spec_json)
+    } else {
+        let (mut metadata, file_asts) = collect_metadata(&folder_path, &processed.folder_name, route_storage).map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", processed.folder_name, e)))?;
+
+        // Clone metadata before extending (cache stores file-only structs)
+        let cache_metadata = metadata.clone();
+        metadata.structs.extend(schema_storage.values().cloned());
+        merge_route_storage_data(&mut metadata, route_storage);
+        metadata
+            .check_duplicate_schema_names()
+            .map_err(|msg| syn::Error::new(Span::call_site(), format!("vespera! macro: {msg}")))?;
+
+        let (_, _, spec_json) =
+            generate_and_write_openapi(processed, &metadata, file_asts, route_storage)?;
+
+        // Read back spec_pretty from first openapi file for caching
+        let spec_pretty = processed
+            .openapi_file_names
+            .first()
+            .and_then(|f| std::fs::read_to_string(f).ok());
+
+        // Persist cache (best-effort, failures are silent)
+        write_cache(
+            &cache_path,
+            &VesperaCache {
+                file_fingerprints: fingerprints,
+                schema_hash,
+                config_hash,
+                metadata: cache_metadata,
+                spec_json: spec_json.clone(),
+                spec_pretty,
+            },
+        );
+
+        (metadata, spec_json)
     };
+
+    // Write compact spec for include_str! embedding
+    let spec_tokens = write_spec_for_embedding(spec_json)?;
 
     let result = Ok(generate_router_code(
         &metadata,
-        docs_url.as_deref(),
-        redoc_url.as_deref(),
+        processed.docs_url.as_deref(),
+        processed.redoc_url.as_deref(),
         spec_tokens,
         &processed.merge,
     ));
@@ -241,6 +484,7 @@ pub fn process_export_app(
     folder_name: &str,
     schema_storage: &HashMap<String, StructMetadata>,
     manifest_dir: &str,
+    route_storage: &[StoredRouteInfo],
 ) -> syn::Result<proc_macro2::TokenStream> {
     let profile_start = if std::env::var("VESPERA_PROFILE").is_ok() {
         Some(std::time::Instant::now())
@@ -258,12 +502,22 @@ pub fn process_export_app(
         ));
     }
 
-    let (mut metadata, file_asts) = collect_metadata(&folder_path, folder_name).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to scan route folder '{folder_name}'. Error: {e}. Check that all .rs files have valid Rust syntax.")))?;
+    let (mut metadata, file_asts) = collect_metadata(&folder_path, folder_name, route_storage).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to scan route folder '{folder_name}'. Error: {e}. Check that all .rs files have valid Rust syntax.")))?;
     metadata.structs.extend(schema_storage.values().cloned());
+    merge_route_storage_data(&mut metadata, route_storage);
+    metadata
+        .check_duplicate_schema_names()
+        .map_err(|msg| syn::Error::new(Span::call_site(), format!("export_app! macro: {msg}")))?;
 
     // Generate OpenAPI spec JSON string
-    let openapi_doc =
-        generate_openapi_doc_with_metadata(None, None, None, &metadata, Some(file_asts));
+    let openapi_doc = generate_openapi_doc_with_metadata(
+        None,
+        None,
+        None,
+        &metadata,
+        Some(file_asts),
+        route_storage,
+    );
     let spec_json = serde_json::to_string(&openapi_doc).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to serialize OpenAPI spec to JSON. Error: {e}. Check that all schema types are serializable.")))?;
 
     // Write spec to temp file for compile-time merging by parent apps
@@ -313,6 +567,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::metadata::RouteMetadata;
 
     fn create_temp_file(dir: &TempDir, filename: &str, content: &str) -> std::path::PathBuf {
         let file_path = dir.path().join(filename);
@@ -338,7 +593,7 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
         assert!(result.is_ok());
         let (docs_url, redoc_url, spec_json) = result.unwrap();
         assert!(docs_url.is_none());
@@ -359,7 +614,7 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
         assert!(result.is_ok());
         let (docs_url, redoc_url, spec_json) = result.unwrap();
         assert!(docs_url.is_some());
@@ -384,7 +639,7 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
         assert!(result.is_ok());
         let (docs_url, redoc_url, spec_json) = result.unwrap();
         assert!(docs_url.is_none());
@@ -406,7 +661,7 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
         assert!(result.is_ok());
         let (docs_url, redoc_url, spec_json) = result.unwrap();
         assert!(docs_url.is_some());
@@ -430,7 +685,7 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
         assert!(result.is_ok());
 
         // Verify file was written
@@ -457,7 +712,7 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
         assert!(result.is_ok());
 
         // Verify nested directories and file were created
@@ -584,7 +839,7 @@ mod tests {
             servers: None,
             merge: vec![],
         };
-        let result = process_vespera_macro(&processed, &HashMap::new());
+        let result = process_vespera_macro(&processed, &HashMap::new(), &[]);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("route folder") && err.contains("not found"));
@@ -609,7 +864,7 @@ mod tests {
         };
 
         // This exercises the collect_metadata path (which handles parse errors gracefully)
-        let result = process_vespera_macro(&processed, &HashMap::new());
+        let result = process_vespera_macro(&processed, &HashMap::new(), &[]);
         // Result may succeed or fail depending on how collect_metadata handles invalid files
         let _ = result;
     }
@@ -641,7 +896,7 @@ mod tests {
         };
 
         // This exercises the schema_storage extend path
-        let result = process_vespera_macro(&processed, &schema_storage);
+        let result = process_vespera_macro(&processed, &schema_storage, &[]);
         // We only care about exercising the code path
         let _ = result;
     }
@@ -657,6 +912,7 @@ mod tests {
             "nonexistent_folder_xyz",
             &HashMap::new(),
             &temp_dir.path().to_string_lossy(),
+            &[],
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -679,6 +935,7 @@ mod tests {
             &folder_path,
             &HashMap::new(),
             &temp_dir.path().to_string_lossy(),
+            &[],
         );
         // We only care about exercising the code path
         let _ = result;
@@ -707,6 +964,7 @@ mod tests {
             &folder_path,
             &schema_storage,
             &temp_dir.path().to_string_lossy(),
+            &[],
         );
         // Exercises the schema_storage.extend path
         let _ = result;
@@ -729,7 +987,7 @@ mod tests {
         };
         let metadata = CollectedMetadata::new();
         // This should still work - merge logic is skipped when CARGO_MANIFEST_DIR lookup fails
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
         assert!(result.is_ok());
     }
 
@@ -764,7 +1022,7 @@ mod tests {
         };
         let metadata = CollectedMetadata::new();
 
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
 
         // Restore CARGO_MANIFEST_DIR
         if let Some(old_value) = old_manifest_dir {
@@ -841,7 +1099,7 @@ mod tests {
         };
         let metadata = CollectedMetadata::new();
 
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new());
+        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("failed to write file"));
@@ -863,6 +1121,7 @@ mod tests {
             &folder_path,
             &HashMap::new(),
             &temp_dir.path().to_string_lossy(),
+            &[],
         );
 
         assert!(result.is_err());
@@ -891,6 +1150,7 @@ mod tests {
             &folder_path,
             &HashMap::new(),
             &temp_dir.path().to_string_lossy(),
+            &[],
         );
 
         assert!(result.is_err());
@@ -921,6 +1181,7 @@ mod tests {
             &folder_path,
             &HashMap::new(),
             &temp_dir.path().to_string_lossy(),
+            &[],
         );
 
         assert!(result.is_err());
@@ -943,7 +1204,7 @@ mod tests {
             merge: vec![],
         };
 
-        let result = process_vespera_macro(&processed, &HashMap::new());
+        let result = process_vespera_macro(&processed, &HashMap::new(), &[]);
         assert!(
             result.is_ok(),
             "Should succeed with no openapi output configured"
@@ -970,7 +1231,7 @@ mod tests {
             merge: vec![],
         };
 
-        let result = process_vespera_macro(&processed, &HashMap::new());
+        let result = process_vespera_macro(&processed, &HashMap::new(), &[]);
 
         // Restore
         unsafe {
@@ -1001,6 +1262,7 @@ mod tests {
             &folder_path,
             &HashMap::new(),
             &temp_dir.path().to_string_lossy(),
+            &[],
         );
 
         // Restore
@@ -1014,5 +1276,449 @@ mod tests {
 
         // Exercise the code path
         let _ = result;
+    }
+
+    // ========== Tests for merge_route_storage_data ==========
+
+    #[test]
+    fn test_merge_route_storage_empty_storage() {
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "get".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "routes".to_string(),
+            file_path: "routes/users.rs".to_string(),
+            signature: "pub async fn get_users() -> Json<Vec<User>>".to_string(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+
+        merge_route_storage_data(&mut metadata, &[]);
+        // No changes when storage is empty
+        assert!(metadata.routes[0].tags.is_none());
+        assert!(metadata.routes[0].description.is_none());
+        assert!(metadata.routes[0].error_status.is_none());
+    }
+
+    #[test]
+    fn test_merge_route_storage_matching_route() {
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "get".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "routes".to_string(),
+            file_path: "routes/users.rs".to_string(),
+            signature: "pub async fn get_users() -> Json<Vec<User>>".to_string(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+
+        let storage = vec![StoredRouteInfo {
+            fn_name: "get_users".to_string(),
+            method: Some("get".to_string()),
+            custom_path: None,
+            error_status: Some(vec![400, 404]),
+            tags: Some(vec!["users".to_string()]),
+            description: Some("List all users".to_string()),
+            fn_item_str: String::new(),
+            file_path: None,
+        }];
+
+        merge_route_storage_data(&mut metadata, &storage);
+        assert_eq!(metadata.routes[0].tags, Some(vec!["users".to_string()]));
+        assert_eq!(
+            metadata.routes[0].description,
+            Some("List all users".to_string())
+        );
+        assert_eq!(metadata.routes[0].error_status, Some(vec![400, 404]));
+    }
+
+    #[test]
+    fn test_merge_route_storage_no_match() {
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "get".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "routes".to_string(),
+            file_path: "routes/users.rs".to_string(),
+            signature: String::new(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+
+        let storage = vec![StoredRouteInfo {
+            fn_name: "create_user".to_string(),
+            method: Some("post".to_string()),
+            custom_path: None,
+            error_status: Some(vec![400]),
+            tags: Some(vec!["users".to_string()]),
+            description: None,
+            fn_item_str: String::new(),
+            file_path: None,
+        }];
+
+        merge_route_storage_data(&mut metadata, &storage);
+        // No match — fields unchanged
+        assert!(metadata.routes[0].tags.is_none());
+        assert!(metadata.routes[0].error_status.is_none());
+    }
+
+    #[test]
+    fn test_merge_route_storage_ambiguous_skipped() {
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "get".to_string(),
+            path: "/users".to_string(),
+            function_name: "handler".to_string(),
+            module_path: "routes".to_string(),
+            file_path: "routes/users.rs".to_string(),
+            signature: String::new(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+
+        // Two StoredRouteInfo with same fn_name — ambiguous
+        let storage = vec![
+            StoredRouteInfo {
+                fn_name: "handler".to_string(),
+                method: Some("get".to_string()),
+                custom_path: None,
+                error_status: None,
+                tags: Some(vec!["file-a".to_string()]),
+                description: None,
+                fn_item_str: String::new(),
+                file_path: None,
+            },
+            StoredRouteInfo {
+                fn_name: "handler".to_string(),
+                method: Some("post".to_string()),
+                custom_path: None,
+                error_status: None,
+                tags: Some(vec!["file-b".to_string()]),
+                description: None,
+                fn_item_str: String::new(),
+                file_path: None,
+            },
+        ];
+
+        merge_route_storage_data(&mut metadata, &storage);
+        // Ambiguous match — no merge
+        assert!(metadata.routes[0].tags.is_none());
+    }
+
+    #[test]
+    fn test_merge_route_storage_preserves_existing() {
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "get".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "routes".to_string(),
+            file_path: "routes/users.rs".to_string(),
+            signature: String::new(),
+            error_status: Some(vec![500]),
+            tags: Some(vec!["existing-tag".to_string()]),
+            description: Some("Existing description".to_string()),
+        });
+
+        let storage = vec![StoredRouteInfo {
+            fn_name: "get_users".to_string(),
+            method: Some("get".to_string()),
+            custom_path: None,
+            error_status: Some(vec![400, 404]),
+            tags: Some(vec!["new-tag".to_string()]),
+            description: Some("New description".to_string()),
+            fn_item_str: String::new(),
+            file_path: None,
+        }];
+
+        merge_route_storage_data(&mut metadata, &storage);
+        // ROUTE_STORAGE values override when they have explicit values
+        assert_eq!(metadata.routes[0].tags, Some(vec!["new-tag".to_string()]));
+        assert_eq!(
+            metadata.routes[0].description,
+            Some("New description".to_string())
+        );
+        assert_eq!(metadata.routes[0].error_status, Some(vec![400, 404]));
+    }
+
+    #[test]
+    fn test_merge_route_storage_partial_fields() {
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "get".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "routes".to_string(),
+            file_path: "routes/users.rs".to_string(),
+            signature: String::new(),
+            error_status: None,
+            tags: Some(vec!["from-collector".to_string()]),
+            description: Some("From doc comment".to_string()),
+        });
+
+        // StoredRouteInfo with only error_status (tags/description are None)
+        let storage = vec![StoredRouteInfo {
+            fn_name: "get_users".to_string(),
+            method: Some("get".to_string()),
+            custom_path: None,
+            error_status: Some(vec![400]),
+            tags: None,
+            description: None,
+            fn_item_str: String::new(),
+            file_path: None,
+        }];
+
+        merge_route_storage_data(&mut metadata, &storage);
+        // Only error_status should be set; tags and description preserved from collector
+        assert_eq!(
+            metadata.routes[0].tags,
+            Some(vec!["from-collector".to_string()])
+        );
+        assert_eq!(
+            metadata.routes[0].description,
+            Some("From doc comment".to_string())
+        );
+        assert_eq!(metadata.routes[0].error_status, Some(vec![400]));
+    }
+
+    #[test]
+    fn test_compute_config_hash_with_servers() {
+        // Exercises lines 92-96: servers loop in compute_config_hash
+        let processed_no_servers = ProcessedVesperaInput {
+            folder_name: "routes".to_string(),
+            openapi_file_names: vec![],
+            title: None,
+            version: None,
+            docs_url: None,
+            redoc_url: None,
+            servers: None,
+            merge: vec![],
+        };
+
+        let processed_with_servers = ProcessedVesperaInput {
+            folder_name: "routes".to_string(),
+            openapi_file_names: vec![],
+            title: None,
+            version: None,
+            docs_url: None,
+            redoc_url: None,
+            servers: Some(vec![
+                vespera_core::openapi::Server {
+                    url: "https://api.example.com".to_string(),
+                    description: None,
+                    variables: None,
+                },
+                vespera_core::openapi::Server {
+                    url: "http://localhost:3000".to_string(),
+                    description: None,
+                    variables: None,
+                },
+            ]),
+            merge: vec![],
+        };
+
+        let hash_no_servers = compute_config_hash(&processed_no_servers);
+        let hash_with_servers = compute_config_hash(&processed_with_servers);
+
+        // Different servers should produce different hashes
+        assert_ne!(
+            hash_no_servers, hash_with_servers,
+            "Servers should affect config hash"
+        );
+    }
+
+    #[test]
+    fn test_compute_config_hash_with_merge() {
+        // Exercises lines 97-99: merge loop in compute_config_hash
+        let processed_no_merge = ProcessedVesperaInput {
+            folder_name: "routes".to_string(),
+            openapi_file_names: vec![],
+            title: None,
+            version: None,
+            docs_url: None,
+            redoc_url: None,
+            servers: None,
+            merge: vec![],
+        };
+
+        let processed_with_merge = ProcessedVesperaInput {
+            folder_name: "routes".to_string(),
+            openapi_file_names: vec![],
+            title: None,
+            version: None,
+            docs_url: None,
+            redoc_url: None,
+            servers: None,
+            merge: vec![syn::parse_quote!(app::TestApp)],
+        };
+
+        let hash_no_merge = compute_config_hash(&processed_no_merge);
+        let hash_with_merge = compute_config_hash(&processed_with_merge);
+
+        assert_ne!(
+            hash_no_merge, hash_with_merge,
+            "Merge paths should affect config hash"
+        );
+    }
+
+    #[test]
+    fn test_ensure_openapi_files_from_cache_none_spec() {
+        // Exercises lines 266-267: early return when spec_pretty is None
+        let result = ensure_openapi_files_from_cache(&["dummy.json".to_string()], None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_ensure_openapi_files_from_cache_writes_file() {
+        // Exercises lines 269-276: write new file
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let output_path = temp_dir.path().join("api.json");
+        let spec = r#"{"openapi":"3.1.0"}"#;
+
+        let result = ensure_openapi_files_from_cache(
+            &[output_path.to_string_lossy().to_string()],
+            Some(spec),
+        );
+        assert!(result.is_ok());
+        assert_eq!(fs::read_to_string(&output_path).unwrap(), spec);
+    }
+
+    #[test]
+    fn test_ensure_openapi_files_from_cache_skip_unchanged() {
+        // Exercises line 271-272: should_write is false when content matches
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let output_path = temp_dir.path().join("api.json");
+        let spec = r#"{"openapi":"3.1.0"}"#;
+
+        // Write file first with same content
+        fs::write(&output_path, spec).unwrap();
+
+        let result = ensure_openapi_files_from_cache(
+            &[output_path.to_string_lossy().to_string()],
+            Some(spec),
+        );
+        assert!(result.is_ok());
+        // File should still contain same content (no unnecessary write)
+        assert_eq!(fs::read_to_string(&output_path).unwrap(), spec);
+    }
+
+    #[test]
+    fn test_ensure_openapi_files_from_cache_creates_parent_dirs() {
+        // Exercises lines 273-274: create parent directories
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let output_path = temp_dir.path().join("nested").join("dir").join("api.json");
+        let spec = r#"{"openapi":"3.1.0"}"#;
+
+        let result = ensure_openapi_files_from_cache(
+            &[output_path.to_string_lossy().to_string()],
+            Some(spec),
+        );
+        assert!(result.is_ok());
+        assert!(output_path.exists());
+        assert_eq!(fs::read_to_string(&output_path).unwrap(), spec);
+    }
+
+    #[test]
+    fn test_ensure_openapi_files_from_cache_write_error() {
+        // Exercises line 276: write failure
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let output_path = temp_dir.path().join("api.json");
+
+        // Create a directory where the file should be -> write will fail
+        fs::create_dir(&output_path).unwrap();
+
+        let result = ensure_openapi_files_from_cache(
+            &[output_path.to_string_lossy().to_string()],
+            Some("spec"),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_ensure_openapi_files_from_cache_multiple_files() {
+        // Exercises the loop with multiple file names (line 269)
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path1 = temp_dir.path().join("api1.json");
+        let path2 = temp_dir.path().join("api2.json");
+        let spec = r#"{"openapi":"3.1.0"}"#;
+
+        let result = ensure_openapi_files_from_cache(
+            &[
+                path1.to_string_lossy().to_string(),
+                path2.to_string_lossy().to_string(),
+            ],
+            Some(spec),
+        );
+        assert!(result.is_ok());
+        assert_eq!(fs::read_to_string(&path1).unwrap(), spec);
+        assert_eq!(fs::read_to_string(&path2).unwrap(), spec);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_process_vespera_macro_cache_hit() {
+        // Exercises lines 320-324, 327, 329: the cache_hit branch in process_vespera_macro.
+        // First call populates the cache, second call hits it.
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        create_temp_file(
+            &temp_dir,
+            "users.rs",
+            "pub async fn list_users() -> String { \"users\".to_string() }\n",
+        );
+
+        let folder_path = temp_dir.path().to_string_lossy().to_string();
+        let openapi_path = temp_dir.path().join("openapi.json");
+
+        // Set CARGO_MANIFEST_DIR so cache path resolves to temp_dir/target/vespera/
+        let old_manifest = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let processed = ProcessedVesperaInput {
+            folder_name: folder_path.clone(),
+            openapi_file_names: vec![openapi_path.to_string_lossy().to_string()],
+            title: Some("Test API".to_string()),
+            version: Some("1.0.0".to_string()),
+            docs_url: Some("/docs".to_string()),
+            redoc_url: None,
+            servers: None,
+            merge: vec![],
+        };
+
+        // First call: cache MISS — scans files, generates spec, writes cache
+        let result1 = process_vespera_macro(&processed, &HashMap::new(), &[]);
+        assert!(
+            result1.is_ok(),
+            "First call (cache miss) should succeed: {:?}",
+            result1.err()
+        );
+        assert!(
+            openapi_path.exists(),
+            "openapi.json should be written on first call"
+        );
+
+        // Second call: cache HIT — exercises lines 320-324, 327, 329
+        let result2 = process_vespera_macro(&processed, &HashMap::new(), &[]);
+        assert!(
+            result2.is_ok(),
+            "Second call (cache hit) should succeed: {:?}",
+            result2.err()
+        );
+
+        // Restore CARGO_MANIFEST_DIR
+        unsafe {
+            if let Some(val) = old_manifest {
+                std::env::set_var("CARGO_MANIFEST_DIR", val);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        };
     }
 }
