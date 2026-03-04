@@ -58,6 +58,7 @@ mod schema_macro;
 mod vespera_impl;
 
 use proc_macro::TokenStream;
+pub(crate) use route_impl::ROUTE_STORAGE;
 pub(crate) use schema_impl::SCHEMA_STORAGE;
 
 use crate::{
@@ -242,8 +243,11 @@ pub fn vespera(input: TokenStream) -> TokenStream {
     let schema_storage = SCHEMA_STORAGE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let route_storage = ROUTE_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    match process_vespera_macro(&processed, &schema_storage) {
+    match process_vespera_macro(&processed, &schema_storage, &route_storage) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
     }
@@ -286,7 +290,11 @@ pub fn export_app(input: TokenStream) -> TokenStream {
         return syn::Error::new(proc_macro2::Span::call_site(), "export_app! macro: CARGO_MANIFEST_DIR is not set. This macro must be used within a cargo build.").to_compile_error().into();
     };
 
-    match process_export_app(&name, &folder_name, &schema_storage, &manifest_dir) {
+    let route_storage = ROUTE_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    match process_export_app(&name, &folder_name, &schema_storage, &manifest_dir, &route_storage) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
     }

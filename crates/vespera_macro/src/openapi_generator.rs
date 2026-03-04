@@ -16,6 +16,7 @@ use crate::{
         build_operation_from_function, extract_default, extract_field_rename, extract_rename_all,
         parse_enum_to_schema, parse_struct_to_schema, rename_field, strip_raw_prefix_owned,
     },
+    route_impl::StoredRouteInfo,
     schema_macro::type_utils::get_type_default as utils_get_type_default,
 };
 
@@ -29,6 +30,7 @@ pub fn generate_openapi_doc_with_metadata(
     servers: Option<Vec<Server>>,
     metadata: &CollectedMetadata,
     file_cache: Option<HashMap<String, syn::File>>,
+    route_storage: &[StoredRouteInfo],
 ) -> OpenApi {
     let (known_schema_names, struct_definitions) = build_schema_lookups(metadata);
     let file_cache = file_cache.unwrap_or_else(|| build_file_cache(metadata));
@@ -47,6 +49,7 @@ pub fn generate_openapi_doc_with_metadata(
         &known_schema_names,
         &struct_definitions,
         &file_cache,
+        route_storage,
     );
 
     OpenApi {
@@ -220,18 +223,30 @@ fn parse_component_schemas(
 
 /// Build path items and collect tags from route metadata.
 ///
-/// Uses pre-built `file_cache` to avoid re-reading and re-parsing source files.
-/// Each unique file is parsed exactly once in `build_file_cache`.
+/// Uses `route_storage` (from `#[route]` macro) as the primary source for function
+/// signatures. Falls back to pre-built `file_cache` when ROUTE_STORAGE doesn't
+/// have an entry (e.g., during tests or for routes added without the attribute).
 fn build_path_items(
     metadata: &CollectedMetadata,
     known_schema_names: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
     file_cache: &HashMap<String, syn::File>,
+    route_storage: &[StoredRouteInfo],
 ) -> (BTreeMap<String, PathItem>, BTreeSet<String>) {
     let mut paths = BTreeMap::new();
     let mut all_tags = BTreeSet::new();
 
-    // Pre-build function name index for O(1) lookup instead of O(items) per route
+    // Primary source: pre-parse function items from ROUTE_STORAGE (populated by #[route])
+    let route_fn_cache: HashMap<&str, syn::ItemFn> = route_storage
+        .iter()
+        .filter_map(|s| {
+            syn::parse_str::<syn::ItemFn>(&s.fn_item_str)
+                .ok()
+                .map(|item| (s.fn_name.as_str(), item))
+        })
+        .collect();
+
+    // Fallback source: function index from file ASTs (for routes not in ROUTE_STORAGE)
     let fn_index: HashMap<&str, HashMap<String, &syn::ItemFn>> = file_cache
         .iter()
         .map(|(path, ast)| {
@@ -251,17 +266,20 @@ fn build_path_items(
         .collect();
 
     for route_meta in &metadata.routes {
-        let Some(fns) = fn_index.get(route_meta.file_path.as_str()) else {
-            continue;
-        };
-
-        let Some(fn_item) = fns.get(&route_meta.function_name) else {
+        // Try ROUTE_STORAGE first (avoids file_cache dependency for known routes)
+        let fn_sig = if let Some(cached_fn) = route_fn_cache.get(route_meta.function_name.as_str()) {
+            &cached_fn.sig
+        } else if let Some(fns) = fn_index.get(route_meta.file_path.as_str())
+            && let Some(fn_item) = fns.get(&route_meta.function_name)
+        {
+            &fn_item.sig
+        } else {
             continue;
         };
 
         let Ok(method) = HttpMethod::try_from(route_meta.method.as_str()) else {
             eprintln!(
-                "vespera: skipping route '{}' — unknown HTTP method '{}'",
+                "vespera: skipping route '{}' \u{2014} unknown HTTP method '{}'",
                 route_meta.path, route_meta.method
             );
             continue;
@@ -274,7 +292,7 @@ fn build_path_items(
         }
 
         let mut operation = build_operation_from_function(
-            &fn_item.sig,
+            fn_sig,
             &route_meta.path,
             known_schema_names,
             struct_definitions,
@@ -523,7 +541,7 @@ mod tests {
     fn test_generate_openapi_empty_metadata() {
         let metadata = CollectedMetadata::new();
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
 
         assert_eq!(doc.openapi, OpenApiVersion::V3_1_0);
         assert_eq!(doc.info.title, "API");
@@ -550,7 +568,7 @@ mod tests {
     ) {
         let metadata = CollectedMetadata::new();
 
-        let doc = generate_openapi_doc_with_metadata(title, version, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(title, version, None, &metadata, None, &[]);
 
         assert_eq!(doc.info.title, expected_title);
         assert_eq!(doc.info.version, expected_version);
@@ -581,7 +599,7 @@ pub fn get_users() -> String {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
 
         assert!(doc.paths.contains_key("/users"));
         let path_item = doc.paths.get("/users").unwrap();
@@ -599,7 +617,7 @@ pub fn get_users() -> String {
             ..Default::default()
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
 
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
         let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
@@ -615,7 +633,7 @@ pub fn get_users() -> String {
             ..Default::default()
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
 
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
         let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
@@ -632,7 +650,7 @@ pub fn get_users() -> String {
             ..Default::default()
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
 
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
         let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
@@ -668,7 +686,7 @@ pub fn get_status() -> Status {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
 
         // Check enum schema
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
@@ -695,7 +713,7 @@ pub fn get_status() -> Status {
         });
 
         // This should gracefully handle the invalid item (skip it) instead of panicking
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
         // The invalid struct definition should be skipped, resulting in no schemas
         assert!(doc.components.is_none() || doc.components.as_ref().unwrap().schemas.is_none());
     }
@@ -730,13 +748,7 @@ pub fn get_user() -> User {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(
-            Some("Test API".to_string()),
-            Some("1.0.0".to_string()),
-            None,
-            &metadata,
-            None,
-        );
+        let doc = generate_openapi_doc_with_metadata(Some("Test API".to_string()), Some("1.0.0".to_string()), None, &metadata, None, &[]);
 
         // Check struct schema
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
@@ -791,7 +803,7 @@ pub fn create_user() -> String {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
 
         assert_eq!(doc.paths.len(), 1); // Same path, different methods
         let path_item = doc.paths.get("/users").unwrap();
@@ -860,7 +872,7 @@ pub fn create_user() -> String {
         }
 
         // Should not panic, just skip invalid files
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
 
         // Check struct
         if expect_struct {
@@ -905,7 +917,7 @@ pub fn get_users() -> String {
             description: Some("Get all users".to_string()),
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
 
         // Check route has description
         let path_item = doc.paths.get("/users").unwrap();
@@ -935,7 +947,7 @@ pub fn get_users() -> String {
             },
         ];
 
-        let doc = generate_openapi_doc_with_metadata(None, None, Some(servers), &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, Some(servers), &metadata, None, &[]);
 
         assert!(doc.servers.is_some());
         let doc_servers = doc.servers.unwrap();
@@ -1179,7 +1191,7 @@ pub fn get_user() -> User {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
 
         // Struct should be present
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
@@ -1225,7 +1237,7 @@ pub fn get_config() -> Config {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
 
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
         let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
@@ -1296,7 +1308,7 @@ pub fn get_user() -> User {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
 
         // Struct should be found via fallback and processed
         assert!(doc.components.as_ref().unwrap().schemas.is_some());
@@ -1435,7 +1447,7 @@ pub fn get_users() -> String {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
 
         // Route with unknown HTTP method should be skipped entirely
         assert!(
@@ -1487,7 +1499,7 @@ pub fn create_users() -> String {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
 
         // Only the valid POST route should appear
         assert_eq!(doc.paths.len(), 1);
@@ -1515,7 +1527,7 @@ pub fn create_users() -> String {
         });
 
         // Should gracefully skip unparseable definitions
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
         // The unparseable definition should be skipped
         assert!(doc.components.is_none() || doc.components.as_ref().unwrap().schemas.is_none());
     }
@@ -1698,7 +1710,7 @@ pub fn create_users() -> String {
             description: None,
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
         assert!(
             doc.paths.is_empty(),
             "Route with non-matching function should be skipped"

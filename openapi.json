@@ -1187,6 +1187,23 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "age",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "uint32"
+            }
           }
         ],
         "responses": {
@@ -1195,7 +1212,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/TestStruct"
                 }
               }
             }
