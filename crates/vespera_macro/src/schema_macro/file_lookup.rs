@@ -1513,4 +1513,92 @@ pub struct Model {
             "Should find Model in valid.rs after skipping unparseable broken.rs in rest"
         );
     }
+
+    #[test]
+    #[serial]
+    fn test_find_struct_from_path_qualified_module_path() {
+        // Exercises the candidate_file_paths call (line 82) with a fully qualified path
+        // where the file exists at the expected module location
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create user.rs at the expected module path location
+        std::fs::write(
+            models_dir.join("user.rs"),
+            "pub struct Model { pub id: i32, pub name: String }",
+        )
+        .unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        // Use a fully qualified path: crate::models::user::Model
+        // This ensures module_segments = ["models", "user"] (non-empty after filtering "crate")
+        // which reaches line 82: candidate_file_paths(&src_dir, &module_segments)
+        let ty: syn::Type = syn::parse_str("crate::models::user::Model").unwrap();
+        let result = find_struct_from_path(&ty, None);
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(
+            result.is_some(),
+            "Should find Model struct via qualified path"
+        );
+        let (metadata, module_path) = result.unwrap();
+        assert!(
+            metadata.definition.contains("Model"),
+            "Definition should contain Model"
+        );
+        assert_eq!(
+            module_path,
+            vec!["crate", "models", "user"],
+            "Module path should be inferred from type path"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_struct_from_path_mod_rs_variant() {
+        // Exercises candidate_file_paths with the mod.rs pattern
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path().join("src");
+        let models_dir = src_dir.join("models").join("user");
+        std::fs::create_dir_all(&models_dir).unwrap();
+
+        // Create mod.rs instead of user.rs
+        std::fs::write(
+            models_dir.join("mod.rs"),
+            "pub struct Model { pub id: i32, pub email: String }",
+        )
+        .unwrap();
+
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+        let ty: syn::Type = syn::parse_str("crate::models::user::Model").unwrap();
+        let result = find_struct_from_path(&ty, None);
+
+        unsafe {
+            if let Some(dir) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", dir);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
+
+        assert!(result.is_some(), "Should find Model struct via mod.rs path");
+        let (metadata, _) = result.unwrap();
+        assert!(
+            metadata.definition.contains("email"),
+            "Should find the correct Model with email field"
+        );
+    }
 }

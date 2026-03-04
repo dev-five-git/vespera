@@ -127,14 +127,25 @@ fn extract_field_defaults(input: &syn::DeriveInput) -> BTreeMap<String, serde_js
     };
 
     // Extract default values from functions
+    defaults.extend(extract_defaults_from_file(&fn_defaults, &file_ast));
+    defaults
+}
+
+/// Extract default values by finding functions in the given file AST.
+/// Separated from `extract_field_defaults` for testability (proc_macro2::Span
+/// is not available in unit tests).
+pub fn extract_defaults_from_file(
+    fn_defaults: &[(String, String)],
+    file_ast: &syn::File,
+) -> BTreeMap<String, serde_json::Value> {
+    let mut defaults = BTreeMap::new();
     for (field_name, fn_name) in fn_defaults {
-        if let Some(func) = crate::openapi_generator::find_function_in_file(&file_ast, &fn_name)
+        if let Some(func) = crate::openapi_generator::find_function_in_file(file_ast, fn_name)
             && let Some(value) = crate::openapi_generator::extract_default_value_from_function(func)
         {
-            defaults.insert(field_name, value);
+            defaults.insert(field_name.clone(), value);
         }
     }
-
     defaults
 }
 
@@ -261,6 +272,120 @@ mod tests {
         };
         let result = extract_schema_name_attr(&attrs);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_field_defaults_with_serde_default_fn() {
+        // Exercises the filter_map body (line 101) that collects fn_defaults
+        // local_file() returns None in tests, so result is empty, but the collection code runs
+        let input: syn::DeriveInput = syn::parse_quote! {
+            struct WithDefaults {
+                #[serde(default = "default_count")]
+                count: i32,
+                name: String,
+            }
+        };
+        let result = extract_field_defaults(&input);
+        assert!(result.is_empty()); // local_file() returns None in tests
+    }
+
+    #[test]
+    fn test_extract_field_defaults_with_path_based_default() {
+        // fn_name contains "::" -> filtered out (line 101 None branch)
+        let input: syn::DeriveInput = syn::parse_quote! {
+            struct WithPathDefault {
+                #[serde(default = "crate::utils::default_value")]
+                value: i32,
+            }
+        };
+        let result = extract_field_defaults(&input);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_field_defaults_enum_input() {
+        // Non-struct data -> early return (line 91)
+        let input: syn::DeriveInput = syn::parse_quote! {
+            enum Status {
+                Active,
+                Inactive,
+            }
+        };
+        let result = extract_field_defaults(&input);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_field_defaults_tuple_struct() {
+        // Unnamed fields -> early return (line 89)
+        let input: syn::DeriveInput = syn::parse_quote! {
+            struct Pair(i32, String);
+        };
+        let result = extract_field_defaults(&input);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_field_defaults_no_defaults() {
+        // No serde(default) attrs -> fn_defaults is empty -> early return (line 108-110)
+        let input: syn::DeriveInput = syn::parse_quote! {
+            struct Plain {
+                id: i32,
+                name: String,
+            }
+        };
+        let result = extract_field_defaults(&input);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_defaults_from_file_finds_functions() {
+        // Directly tests the extracted function (covers lines 123-131)
+        let file_ast: syn::File = syn::parse_quote! {
+            fn default_count() -> i32 { 42 }
+            fn default_name() -> String { "hello".to_string() }
+        };
+        let fn_defaults = vec![
+            ("count".to_string(), "default_count".to_string()),
+            ("name".to_string(), "default_name".to_string()),
+        ];
+        let result = extract_defaults_from_file(&fn_defaults, &file_ast);
+        assert_eq!(result.get("count"), Some(&serde_json::json!(42)));
+        assert_eq!(result.get("name"), Some(&serde_json::json!("hello")));
+    }
+
+    #[test]
+    fn test_extract_defaults_from_file_missing_function() {
+        // Function not found in AST -> skipped
+        let file_ast: syn::File = syn::parse_quote! {
+            fn other_function() -> i32 { 0 }
+        };
+        let fn_defaults = vec![("count".to_string(), "nonexistent_fn".to_string())];
+        let result = extract_defaults_from_file(&fn_defaults, &file_ast);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_defaults_from_file_non_extractable_value() {
+        // Function exists but returns an assignment statement or block (not directly extractable)
+        let file_ast: syn::File = syn::parse_quote! {
+            fn default_value() -> String {
+                let x = String::new();
+                x  // Assignment before return - block statement
+            }
+        };
+        let fn_defaults = vec![("value".to_string(), "default_value".to_string())];
+        let result = extract_defaults_from_file(&fn_defaults, &file_ast);
+        // Block statements with multiple statements are not extractable
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_defaults_from_file_empty_input() {
+        let file_ast: syn::File = syn::parse_quote! {};
+        let fn_defaults: Vec<(String, String)> = vec![];
+        let result = extract_defaults_from_file(&fn_defaults, &file_ast);
+        assert!(result.is_empty());
     }
 
     #[test]

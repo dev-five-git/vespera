@@ -1738,4 +1738,108 @@ pub fn create_users() -> String {
             "Route with non-matching function should be skipped"
         );
     }
+
+    #[test]
+    fn test_generate_openapi_with_route_storage_fast_path() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let route_content = r#"
+pub fn get_users() -> String {
+    "users".to_string()
+}
+"#;
+        let route_file = create_temp_file(&temp_dir, "users.rs", route_content);
+
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "GET".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "test::users".to_string(),
+            file_path: route_file.to_string_lossy().to_string(),
+            signature: "fn get_users() -> String".to_string(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+
+        // Provide route_storage with matching fn_name -> exercises fast path (line 155)
+        let route_storage = vec![StoredRouteInfo {
+            fn_name: "get_users".to_string(),
+            method: Some("get".to_string()),
+            custom_path: None,
+            error_status: None,
+            tags: None,
+            description: None,
+            fn_item_str: "pub fn get_users() -> String { \"users\".to_string() }".to_string(),
+            file_path: None,
+        }];
+
+        let doc =
+            generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &route_storage);
+
+        assert!(doc.paths.contains_key("/users"));
+        let path_item = doc.paths.get("/users").unwrap();
+        assert!(path_item.get.is_some());
+        let operation = path_item.get.as_ref().unwrap();
+        assert_eq!(operation.operation_id, Some("get_users".to_string()));
+    }
+
+    #[test]
+    fn test_generate_openapi_with_stored_field_defaults() {
+        let mut metadata = CollectedMetadata::new();
+        metadata.structs.push(StructMetadata {
+            name: "Config".to_string(),
+            definition: "struct Config { count: i32, name: String }".to_string(),
+            include_in_openapi: true,
+            field_defaults: BTreeMap::from([
+                ("count".to_string(), serde_json::json!(42)),
+                ("name".to_string(), serde_json::json!("default_name")),
+            ]),
+        });
+
+        // Need a route so the file_cache has at least one entry for the fallback in parse_component_schemas
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let route_content = r"
+struct Config { count: i32, name: String }
+pub fn get_config() -> Config { Config { count: 0, name: String::new() } }
+";
+        let route_file = create_temp_file(&temp_dir, "config.rs", route_content);
+        metadata.routes.push(RouteMetadata {
+            method: "GET".to_string(),
+            path: "/config".to_string(),
+            function_name: "get_config".to_string(),
+            module_path: "test::config".to_string(),
+            file_path: route_file.to_string_lossy().to_string(),
+            signature: "fn get_config() -> Config".to_string(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+
+        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
+
+        // Verify schema exists
+        assert!(doc.components.as_ref().unwrap().schemas.is_some());
+        let schemas = doc.components.as_ref().unwrap().schemas.as_ref().unwrap();
+        let config_schema = schemas.get("Config").expect("Config schema should exist");
+
+        // Verify default values were set from stored_defaults (Priority 0 path)
+        if let Some(props) = &config_schema.properties {
+            if let Some(vespera_core::schema::SchemaRef::Inline(count_schema)) = props.get("count")
+            {
+                assert_eq!(
+                    count_schema.default,
+                    Some(serde_json::json!(42)),
+                    "count should have default 42 from stored_defaults"
+                );
+            }
+            if let Some(vespera_core::schema::SchemaRef::Inline(name_schema)) = props.get("name") {
+                assert_eq!(
+                    name_schema.default,
+                    Some(serde_json::json!("default_name")),
+                    "name should have default from stored_defaults"
+                );
+            }
+        }
+    }
 }

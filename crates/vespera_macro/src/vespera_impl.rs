@@ -290,7 +290,7 @@ fn merge_route_storage_data(metadata: &mut CollectedMetadata, route_storage: &[S
 }
 
 /// Write cached OpenAPI spec to output files if they are stale or missing.
-fn ensure_openapi_files_from_cache(
+pub fn ensure_openapi_files_from_cache(
     openapi_file_names: &[String],
     spec_pretty: Option<&str>,
 ) -> syn::Result<()> {
@@ -421,16 +421,7 @@ pub fn process_vespera_macro(
 
         (metadata, cache.spec_json)
     } else {
-        let (mut metadata, file_asts) = collect_metadata(&folder_path, &processed.folder_name, route_storage)
-            .map_err(|e| {
-                syn::Error::new(
-                    Span::call_site(),
-                    format!(
-                        "vespera! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.",
-                        processed.folder_name, e
-                    ),
-                )
-            })?;
+        let (mut metadata, file_asts) = collect_metadata(&folder_path, &processed.folder_name, route_storage).map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", processed.folder_name, e)))?;
 
         // Clone metadata before extending (cache stores file-only structs)
         let cache_metadata = metadata.clone();
@@ -1496,5 +1487,178 @@ mod tests {
             Some("From doc comment".to_string())
         );
         assert_eq!(metadata.routes[0].error_status, Some(vec![400]));
+    }
+
+    #[test]
+    fn test_compute_config_hash_with_servers() {
+        // Exercises lines 92-96: servers loop in compute_config_hash
+        let processed_no_servers = ProcessedVesperaInput {
+            folder_name: "routes".to_string(),
+            openapi_file_names: vec![],
+            title: None,
+            version: None,
+            docs_url: None,
+            redoc_url: None,
+            servers: None,
+            merge: vec![],
+        };
+
+        let processed_with_servers = ProcessedVesperaInput {
+            folder_name: "routes".to_string(),
+            openapi_file_names: vec![],
+            title: None,
+            version: None,
+            docs_url: None,
+            redoc_url: None,
+            servers: Some(vec![
+                vespera_core::openapi::Server {
+                    url: "https://api.example.com".to_string(),
+                    description: None,
+                    variables: None,
+                },
+                vespera_core::openapi::Server {
+                    url: "http://localhost:3000".to_string(),
+                    description: None,
+                    variables: None,
+                },
+            ]),
+            merge: vec![],
+        };
+
+        let hash_no_servers = compute_config_hash(&processed_no_servers);
+        let hash_with_servers = compute_config_hash(&processed_with_servers);
+
+        // Different servers should produce different hashes
+        assert_ne!(
+            hash_no_servers, hash_with_servers,
+            "Servers should affect config hash"
+        );
+    }
+
+    #[test]
+    fn test_compute_config_hash_with_merge() {
+        // Exercises lines 97-99: merge loop in compute_config_hash
+        let processed_no_merge = ProcessedVesperaInput {
+            folder_name: "routes".to_string(),
+            openapi_file_names: vec![],
+            title: None,
+            version: None,
+            docs_url: None,
+            redoc_url: None,
+            servers: None,
+            merge: vec![],
+        };
+
+        let processed_with_merge = ProcessedVesperaInput {
+            folder_name: "routes".to_string(),
+            openapi_file_names: vec![],
+            title: None,
+            version: None,
+            docs_url: None,
+            redoc_url: None,
+            servers: None,
+            merge: vec![syn::parse_quote!(app::TestApp)],
+        };
+
+        let hash_no_merge = compute_config_hash(&processed_no_merge);
+        let hash_with_merge = compute_config_hash(&processed_with_merge);
+
+        assert_ne!(
+            hash_no_merge, hash_with_merge,
+            "Merge paths should affect config hash"
+        );
+    }
+
+    #[test]
+    fn test_ensure_openapi_files_from_cache_none_spec() {
+        // Exercises lines 266-267: early return when spec_pretty is None
+        let result = ensure_openapi_files_from_cache(&["dummy.json".to_string()], None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_ensure_openapi_files_from_cache_writes_file() {
+        // Exercises lines 269-276: write new file
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let output_path = temp_dir.path().join("api.json");
+        let spec = r#"{"openapi":"3.1.0"}"#;
+
+        let result = ensure_openapi_files_from_cache(
+            &[output_path.to_string_lossy().to_string()],
+            Some(spec),
+        );
+        assert!(result.is_ok());
+        assert_eq!(fs::read_to_string(&output_path).unwrap(), spec);
+    }
+
+    #[test]
+    fn test_ensure_openapi_files_from_cache_skip_unchanged() {
+        // Exercises line 271-272: should_write is false when content matches
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let output_path = temp_dir.path().join("api.json");
+        let spec = r#"{"openapi":"3.1.0"}"#;
+
+        // Write file first with same content
+        fs::write(&output_path, spec).unwrap();
+
+        let result = ensure_openapi_files_from_cache(
+            &[output_path.to_string_lossy().to_string()],
+            Some(spec),
+        );
+        assert!(result.is_ok());
+        // File should still contain same content (no unnecessary write)
+        assert_eq!(fs::read_to_string(&output_path).unwrap(), spec);
+    }
+
+    #[test]
+    fn test_ensure_openapi_files_from_cache_creates_parent_dirs() {
+        // Exercises lines 273-274: create parent directories
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let output_path = temp_dir.path().join("nested").join("dir").join("api.json");
+        let spec = r#"{"openapi":"3.1.0"}"#;
+
+        let result = ensure_openapi_files_from_cache(
+            &[output_path.to_string_lossy().to_string()],
+            Some(spec),
+        );
+        assert!(result.is_ok());
+        assert!(output_path.exists());
+        assert_eq!(fs::read_to_string(&output_path).unwrap(), spec);
+    }
+
+    #[test]
+    fn test_ensure_openapi_files_from_cache_write_error() {
+        // Exercises line 276: write failure
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let output_path = temp_dir.path().join("api.json");
+
+        // Create a directory where the file should be -> write will fail
+        fs::create_dir(&output_path).unwrap();
+
+        let result = ensure_openapi_files_from_cache(
+            &[output_path.to_string_lossy().to_string()],
+            Some("spec"),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_ensure_openapi_files_from_cache_multiple_files() {
+        // Exercises the loop with multiple file names (line 269)
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path1 = temp_dir.path().join("api1.json");
+        let path2 = temp_dir.path().join("api2.json");
+        let spec = r#"{"openapi":"3.1.0"}"#;
+
+        let result = ensure_openapi_files_from_cache(
+            &[
+                path1.to_string_lossy().to_string(),
+                path2.to_string_lossy().to_string(),
+            ],
+            Some(spec),
+        );
+        assert!(result.is_ok());
+        assert_eq!(fs::read_to_string(&path1).unwrap(), spec);
+        assert_eq!(fs::read_to_string(&path2).unwrap(), spec);
     }
 }
