@@ -49,6 +49,7 @@ mod metadata;
 mod method;
 mod openapi_generator;
 
+mod multipart_impl;
 mod parser;
 mod route;
 mod route_impl;
@@ -90,6 +91,31 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(name, metadata);
     TokenStream::from(expanded)
+}
+
+/// Derive macro for `Multipart` with serde attribute support.
+///
+/// This is vespera's re-implementation of `axum_typed_multipart`'s derive macro
+/// that natively supports `#[serde(rename_all)]` and `#[serde(rename)]` for
+/// field name resolution in multipart form data.
+///
+/// # Supported Attributes
+///
+/// **Struct-level:**
+/// - `#[serde(rename_all = "camelCase")]` — rename all fields (highest priority)
+/// - `#[try_from_multipart(rename_all = "camelCase")]` — fallback rename
+/// - `#[try_from_multipart(strict)]` — reject unknown/duplicate fields
+///
+/// **Field-level:**
+/// - `#[form_data(field_name = "...")]` — explicit field name override
+/// - `#[serde(rename = "...")]` — serde field rename
+/// - `#[form_data(limit = "10MiB")]` — field size limit
+/// - `#[form_data(default)]` — use `Default::default()` when missing
+#[cfg(not(tarpaulin_include))]
+#[proc_macro_derive(Multipart, attributes(serde, form_data, try_from_multipart))]
+pub fn derive_multipart(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    TokenStream::from(multipart_impl::process_derive(&input))
 }
 
 /// Generate an `OpenAPI` Schema from a type with optional field filtering.

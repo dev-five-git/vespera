@@ -65,9 +65,9 @@ pub fn convert_seaorm_type_to_chrono(ty: &Type, source_module_path: &[String]) -
         }
         "DateTimeUtc" => quote! { vespera::chrono::DateTime<vespera::chrono::Utc> },
         "DateTimeLocal" => quote! { vespera::chrono::DateTime<vespera::chrono::Local> },
-        // axum_typed_multipart types - resolve via vespera re-exports
+        // Multipart types - resolve via vespera::multipart
         "FieldData" => {
-            // Preserve inner generic: FieldData<T> → vespera::axum_typed_multipart::FieldData<T>
+            // Preserve inner generic: FieldData<T> → vespera::multipart::FieldData<T>
             if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                 let inner_args: Vec<_> = args
                     .args
@@ -82,9 +82,9 @@ pub fn convert_seaorm_type_to_chrono(ty: &Type, source_module_path: &[String]) -
                         }
                     })
                     .collect();
-                quote! { vespera::axum_typed_multipart::FieldData<#(#inner_args),*> }
+                quote! { vespera::multipart::FieldData<#(#inner_args),*> }
             } else {
-                quote! { vespera::axum_typed_multipart::FieldData }
+                quote! { vespera::multipart::FieldData }
             }
         }
         "NamedTempFile" => quote! { vespera::tempfile::NamedTempFile },
@@ -658,13 +658,13 @@ mod tests {
 
     #[test]
     fn test_convert_seaorm_type_field_data_with_generic() {
-        // FieldData<NamedTempFile> → vespera::axum_typed_multipart::FieldData<vespera::tempfile::NamedTempFile>
+        // FieldData<NamedTempFile> → vespera::multipart::FieldData<vespera::tempfile::NamedTempFile>
         let ty: syn::Type = syn::parse_str("FieldData<NamedTempFile>").unwrap();
         let tokens = convert_seaorm_type_to_chrono(&ty, &[]);
         let output = tokens.to_string();
         assert!(
-            output.contains("vespera :: axum_typed_multipart :: FieldData"),
-            "Should resolve FieldData via vespera re-export: {output}"
+            output.contains("vespera :: multipart :: FieldData"),
+            "Should resolve FieldData via vespera::multipart: {output}"
         );
         assert!(
             output.contains("vespera :: tempfile :: NamedTempFile"),
@@ -674,12 +674,12 @@ mod tests {
 
     #[test]
     fn test_convert_seaorm_type_field_data_without_generic() {
-        // FieldData (no generics) → vespera::axum_typed_multipart::FieldData
+        // FieldData (no generics) → vespera::multipart::FieldData
         let ty: syn::Type = syn::parse_str("FieldData").unwrap();
         let tokens = convert_seaorm_type_to_chrono(&ty, &[]);
         let output = tokens.to_string();
         assert!(
-            output.contains("vespera :: axum_typed_multipart :: FieldData"),
+            output.contains("vespera :: multipart :: FieldData"),
             "Should resolve bare FieldData: {output}"
         );
         // Should NOT contain nested generic
@@ -696,7 +696,7 @@ mod tests {
         let tokens = convert_seaorm_type_to_chrono(&ty, &[]);
         let output = tokens.to_string();
         assert!(
-            output.contains("vespera :: axum_typed_multipart :: FieldData"),
+            output.contains("vespera :: multipart :: FieldData"),
             "Should still resolve FieldData: {output}"
         );
     }

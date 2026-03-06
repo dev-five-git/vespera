@@ -275,7 +275,7 @@ fn parse_type_impl(
                 "NaiveTime" | "Time" => string_with_format("time"),
                 // Duration types
                 "Duration" => string_with_format("duration"),
-                // File upload types (axum_typed_multipart / tempfile)
+                // File upload types (vespera::multipart / tempfile)
                 // FieldData<NamedTempFile> → string with binary format
                 "FieldData" | "NamedTempFile" => string_with_format("binary"),
                 // Standard library types that should not be referenced

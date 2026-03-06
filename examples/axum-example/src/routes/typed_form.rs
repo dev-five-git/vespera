@@ -1,9 +1,9 @@
-use axum_typed_multipart::{FieldData, TryFromMultipart, TypedMultipart};
 use serde::Serialize;
 use tempfile::NamedTempFile;
 use vespera::axum::Json;
 use vespera::axum::http::StatusCode;
-use vespera::{Schema, route};
+use vespera::multipart::{FieldData, TypedMultipart};
+use vespera::{Multipart, Schema, route};
 
 // ============== Request/Response DTOs ==============
 
@@ -19,7 +19,7 @@ pub struct FileUploadResponse {
     pub created_at: String,
 }
 
-#[derive(Debug, TryFromMultipart, Schema)]
+#[derive(Debug, Multipart, Schema)]
 pub struct CreateFileUploadRequest {
     pub name: String,
     #[form_data(limit = "10MiB")]
@@ -29,7 +29,7 @@ pub struct CreateFileUploadRequest {
     pub tags: Option<String>,
 }
 
-#[derive(Debug, TryFromMultipart, Schema)]
+#[derive(Debug, Multipart, Schema)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateFileUploadRequest {
     pub name: Option<String>,
@@ -41,7 +41,7 @@ pub struct UpdateFileUploadRequest {
     pub is_active: Option<bool>,
 }
 
-// Generated via schema_type! with multipart: derives TryFromMultipart + Schema,
+// Generated via schema_type! with multipart: derives Multipart + Schema,
 // partial makes all fields Option, omits the "document" field, preserves form_data attrs.
 // Note: multipart automatically sets clone = false (FieldData<NamedTempFile> doesn't implement Clone).
 vespera::schema_type!(PatchFileUploadRequest from UpdateFileUploadRequest, multipart, partial, omit = ["document"]);

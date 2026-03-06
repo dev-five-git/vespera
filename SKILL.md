@@ -345,7 +345,7 @@ Json(model.into())  // Easy conversion!
 | `rename` | Rename fields | API naming differs from model |
 | `rename_all` | Serde rename strategy | Different casing needed |
 | `add` | Add new fields | New fields not in model (breaks `From` impl) |
-| `multipart` | Derive `TryFromMultipart` | Multipart form-data endpoints |
+| `multipart` | Derive `Multipart` | Multipart form-data endpoints |
 
 **Avoid (Special Cases Only):**
 
@@ -446,14 +446,15 @@ pub async fn patch_user(
 
 ### Multipart Mode (`multipart`)
 
-Generate `TryFromMultipart` structs from existing multipart request types:
+Generate `Multipart` structs from existing multipart request types:
 
 ```rust
-use axum_typed_multipart::{FieldData, TryFromMultipart, TypedMultipart};
+use vespera::multipart::{FieldData, TypedMultipart};
+use vespera::{Multipart, Schema};
 use tempfile::NamedTempFile;
 
 // Base multipart struct (manually defined)
-#[derive(TryFromMultipart, vespera::Schema)]
+#[derive(Multipart, Schema)]
 pub struct CreateUploadRequest {
     pub name: String,
     #[form_data(limit = "10MiB")]
@@ -464,7 +465,7 @@ pub struct CreateUploadRequest {
 }
 
 // Derive a partial update struct via schema_type!
-// - Derives TryFromMultipart (not serde)
+// - Derives Multipart (not serde)
 // - All fields become Option<T> (partial)
 // - "document" field excluded
 // - #[form_data(limit = "10MiB")] preserved from source
@@ -475,18 +476,17 @@ schema_type!(PatchUploadRequest from CreateUploadRequest, multipart, partial, om
 
 | Aspect | Normal Mode | Multipart Mode |
 |--------|------------|----------------|
-| Derives | `Serialize`, `Deserialize` | `TryFromMultipart` |
+| Derives | `Serialize`, `Deserialize` | `Multipart` |
 | Struct attrs | `#[serde(rename_all=...)]` | None |
 | Field attrs | `#[serde(...)]` preserved | `#[form_data(...)]` preserved |
 | Relation fields | Included (BelongsTo/HasOne) | **Skipped** (can't represent in forms) |
 | `From` impl | Auto-generated | **Not generated** |
 
-**OpenAPI rename alignment:** The schema parser reads `#[form_data(field_name = "...")]` and `#[try_from_multipart(rename_all = "...")]` as fallbacks when serde attrs are absent, ensuring OpenAPI field names match runtime multipart parsing.
+**OpenAPI rename alignment:** The schema parser reads `#[form_data(field_name = "...")]` and `#[serde(rename_all = "...")]` for multipart structs, ensuring OpenAPI field names match runtime multipart parsing.
 
 **Dependencies required in your Cargo.toml:**
 ```toml
-axum = "0.8"                   # Required: TryFromMultipart references axum internals
-axum_typed_multipart = "0.16"  # The multipart crate
+vespera = "0.1"                # Includes multipart support natively
 tempfile = "3"                 # For NamedTempFile file uploads
 ```
 

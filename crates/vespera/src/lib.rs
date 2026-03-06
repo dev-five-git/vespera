@@ -20,7 +20,7 @@ pub mod openapi {
 pub use vespera_core::openapi::OpenApi;
 
 // Re-export macros from vespera_macro
-pub use vespera_macro::{Schema, export_app, route, schema, schema_type, vespera};
+pub use vespera_macro::{Multipart, Schema, export_app, route, schema, schema_type, vespera};
 
 // Re-export serde_json for merge feature (runtime spec merging)
 pub use serde_json;
@@ -29,9 +29,8 @@ pub use serde_json;
 // This allows generated types to use chrono::DateTime without users adding chrono dependency
 pub use chrono;
 
-// Re-export axum_typed_multipart for schema_type! multipart mode
-// This allows generated types to use FieldData/TryFromMultipart without users adding the dependency
-pub use axum_typed_multipart;
+// Native multipart form data extraction (replaces axum_typed_multipart)
+pub mod multipart;
 
 // Re-export tempfile for schema_type! multipart mode (NamedTempFile)
 pub use tempfile;

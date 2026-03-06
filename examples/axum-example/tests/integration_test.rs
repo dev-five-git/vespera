@@ -725,7 +725,7 @@ async fn test_memo_update_with_added_id_field() {
     assert_eq!(result["id"], 42, "id should be present (added field)");
 }
 
-// Tests for TypedMultipart (TryFromMultipart) request body extraction
+// Tests for TypedMultipart (Multipart) request body extraction
 
 #[tokio::test]
 async fn test_typed_form_list_file_uploads() {
@@ -814,8 +814,8 @@ async fn test_typed_form_update_file_upload() {
     let app = create_app().await;
     let server = TestServer::new(app);
 
-    // UpdateFileUploadRequest has #[serde(rename_all = "camelCase")] which TryFromMultipart ignores.
-    // TryFromMultipart uses the Rust field name (snake_case) at runtime.
+    // UpdateFileUploadRequest has #[serde(rename_all = "camelCase")] which vespera::Multipart respects.
+    // The Multipart derive reads serde attrs to match field names at runtime.
     let form = MultipartForm::new()
         .add_text("name", "Updated Upload")
         .add_text("tags", "updated, tags")

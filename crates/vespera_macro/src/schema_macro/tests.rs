@@ -1859,7 +1859,7 @@ fn test_extract_belongs_to_from_field_with_equals_value() {
 
 #[test]
 fn test_generate_schema_type_code_multipart_basic() {
-    // Tests: multipart mode generates TryFromMultipart derive, suppresses From impl
+    // Tests: multipart mode generates Multipart derive, suppresses From impl
     let storage = to_storage(vec![create_test_struct_metadata(
         "UploadRequest",
         "pub struct UploadRequest { pub name: String, pub description: Option<String> }",
@@ -1872,8 +1872,8 @@ fn test_generate_schema_type_code_multipart_basic() {
     assert!(result.is_ok());
     let (tokens, _metadata) = result.unwrap();
     let output = tokens.to_string();
-    // Should derive TryFromMultipart
-    assert!(output.contains("TryFromMultipart"));
+    // Should derive Multipart
+    assert!(output.contains("Multipart"));
     // Should NOT have From impl (multipart suppresses it)
     assert!(!output.contains("impl From"));
     // Should have the struct fields
@@ -1896,8 +1896,8 @@ fn test_generate_schema_type_code_multipart_with_rename() {
     assert!(result.is_ok());
     let (tokens, _metadata) = result.unwrap();
     let output = tokens.to_string();
-    // Should derive TryFromMultipart
-    assert!(output.contains("TryFromMultipart"));
+    // Should derive Multipart
+    assert!(output.contains("Multipart"));
     // Should have renamed field
     assert!(output.contains("document_path"));
     // Original name should NOT appear as field
@@ -1953,8 +1953,8 @@ fn test_generate_schema_type_code_multipart_skips_relations() {
     // Regular fields should be present
     assert!(output.contains("id"));
     assert!(output.contains("title"));
-    // Should derive TryFromMultipart
-    assert!(output.contains("TryFromMultipart"));
+    // Should derive Multipart
+    assert!(output.contains("Multipart"));
 }
 
 #[test]
@@ -1972,8 +1972,8 @@ fn test_generate_schema_type_code_multipart_partial() {
     assert!(result.is_ok());
     let (tokens, _metadata) = result.unwrap();
     let output = tokens.to_string();
-    // Should derive TryFromMultipart
-    assert!(output.contains("TryFromMultipart"));
+    // Should derive Multipart
+    assert!(output.contains("Multipart"));
     // Fields should be wrapped in Option (partial)
     assert!(output.contains("Option"));
     // Should NOT have From impl

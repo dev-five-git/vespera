@@ -121,7 +121,7 @@ pub struct SchemaTypeInput {
     /// Serde `rename_all` strategy (e.g., "camelCase", "`snake_case`", "`PascalCase`")
     /// If not specified, defaults to "camelCase" when source has no `rename_all`
     pub rename_all: Option<String>,
-    /// Whether to generate a multipart/form-data struct (derives `TryFromMultipart` instead of serde)
+    /// Whether to generate a multipart/form-data struct (derives `Multipart` instead of serde)
     /// Use `multipart` bare keyword to set this to true.
     pub multipart: bool,
     /// Whether to omit fields that have database defaults (sea_orm `default_value` or `primary_key`).
@@ -295,7 +295,7 @@ impl Parse for SchemaTypeInput {
                     rename_all = Some(rename_all_lit.value());
                 }
                 "multipart" => {
-                    // bare `multipart` - derive TryFromMultipart instead of serde
+                    // bare `multipart` - derive Multipart instead of serde
                     multipart = true;
                 }
                 "omit_default" => {

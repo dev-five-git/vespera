@@ -168,13 +168,14 @@ pub struct CreateUserRequest {
 
 #### Typed Multipart (Recommended)
 
-Upload files using `TypedMultipart` from [`axum_typed_multipart`](https://crates.io/crates/axum_typed_multipart):
+Upload files using vespera's built-in `TypedMultipart` extractor:
 
 ```rust
-use axum_typed_multipart::{FieldData, TryFromMultipart, TypedMultipart};
+use vespera::multipart::{FieldData, TypedMultipart};
+use vespera::{Multipart, Schema};
 use tempfile::NamedTempFile;
 
-#[derive(TryFromMultipart, vespera::Schema)]
+#[derive(Multipart, Schema)]
 pub struct CreateUploadRequest {
     pub name: String,
     #[form_data(limit = "10MiB")]
@@ -188,8 +189,6 @@ pub async fn create_upload(
 ```
 
 Vespera automatically generates `multipart/form-data` content type in OpenAPI, and maps `FieldData<NamedTempFile>` to `{ "type": "string", "format": "binary" }`.
-
-> **Note:** `axum` must be a direct dependency of your project (not just via vespera) because `TryFromMultipart` internally references `axum::extract::multipart::Multipart`.
 
 #### Raw Multipart (Untyped)
 
@@ -444,10 +443,10 @@ vespera::schema_type!(Schema from Model, name = "MemoSchema");
 
 ### Multipart Mode
 
-Generate `TryFromMultipart` structs from existing types using the `multipart` keyword:
+Generate `Multipart` structs from existing types using the `multipart` keyword:
 
 ```rust
-#[derive(TryFromMultipart, vespera::Schema)]
+#[derive(vespera::Multipart, vespera::Schema)]
 pub struct CreateUploadRequest {
     pub name: String,
     #[form_data(limit = "10MiB")]
@@ -455,12 +454,12 @@ pub struct CreateUploadRequest {
     pub description: Option<String>,
 }
 
-// Generates a TryFromMultipart struct (no serde derives), all fields Optional
+// Generates a Multipart struct (no serde derives), all fields Optional
 schema_type!(PatchUploadRequest from CreateUploadRequest, multipart, partial, omit = ["file"]);
 ```
 
 When `multipart` is enabled:
-- Derives `TryFromMultipart` instead of `Serialize`/`Deserialize`
+- Derives `Multipart` instead of `Serialize`/`Deserialize`
 - Suppresses `#[serde(...)]` attributes (multipart parsing is not serde-based)
 - Preserves `#[form_data(...)]` attributes from source struct
 - Skips SeaORM relation fields (nested objects can't be represented in multipart forms)
@@ -479,7 +478,7 @@ When `multipart` is enabled:
 | `name` | Custom OpenAPI schema name: `name = "UserSchema"` |
 | `rename_all` | Serde rename strategy: `rename_all = "camelCase"` |
 | `ignore` | Skip Schema derive (bare keyword, no value) |
-| `multipart` | Derive `TryFromMultipart` instead of serde (bare keyword) |
+| `multipart` | Derive `Multipart` instead of serde (bare keyword) |
 | `omit_default` | Auto-omit fields with DB defaults: `primary_key`, `default_value` (bare keyword) |
 
 ---
