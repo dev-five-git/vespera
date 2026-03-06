@@ -1743,3 +1743,61 @@ async fn test_struct_level_serde_default_all_provided() {
     assert_eq!(result["count"], 99);
     assert_eq!(result["active"], true);
 }
+
+// ============== Multipart error path coverage tests ==========================
+//
+// These tests trigger real axum MultipartRejection / MultipartError paths
+// to cover From impls and Display arms for InvalidRequest/InvalidRequestBody.
+
+#[tokio::test]
+async fn test_multipart_rejection_non_multipart_content_type() {
+    // Sending JSON to a multipart handler triggers MultipartRejection → InvalidRequest
+    let server = TestServer::new(create_coverage_test_app());
+
+    let response = server
+        .post("/strict-test")
+        .content_type("application/json")
+        .bytes(b"{\"name\":\"x\",\"age\":1}".to_vec().into())
+        .await;
+
+    response.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    let body = response.text();
+    assert!(
+        body.contains("Invalid multipart request"),
+        "Should use InvalidRequest Display: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_multipart_rejection_missing_content_type() {
+    // Sending raw bytes with no content type triggers MultipartRejection
+    let server = TestServer::new(create_coverage_test_app());
+
+    let response = server
+        .post("/vec-test")
+        .bytes(b"not multipart".to_vec().into())
+        .await;
+
+    // axum rejects with 4xx because there's no multipart content-type
+    assert!(
+        response.status_code().is_client_error(),
+        "Should be a client error, got {}",
+        response.status_code()
+    );
+}
+
+#[tokio::test]
+async fn test_numeric_field_non_utf8_bytes() {
+    // Send non-UTF-8 bytes for a numeric (i32) field → WrongFieldType from from_utf8 error
+    let server = TestServer::new(create_coverage_test_app());
+
+    let invalid_utf8 = Part::bytes(vec![0xFF, 0xFE, 0xFD]).file_name("bad.bin");
+    let form = MultipartForm::new()
+        .add_text("name", "Alice")
+        .add_part("count", invalid_utf8)
+        .add_text("score", "1.0")
+        .add_text("initial", "A");
+
+    let response = server.post("/numeric-char-test").multipart(form).await;
+    response.assert_status(axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}

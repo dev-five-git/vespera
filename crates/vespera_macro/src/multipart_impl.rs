@@ -984,4 +984,203 @@ mod tests {
             "non-strict should not check for unknown fields"
         );
     }
+
+    // ─── process_fields direct tests ────────────────────────────────────
+    //
+    // Exercise process_fields directly to ensure quote! token construction
+    // for each branch (parse_value, strict assignment, field matching) is
+    // fully traced by the coverage tool.
+
+    fn parse_fields_from(code: &str) -> syn::DeriveInput {
+        syn::parse_str(code).unwrap()
+    }
+
+    fn get_named_fields(
+        input: &syn::DeriveInput,
+    ) -> &syn::punctuated::Punctuated<syn::Field, syn::token::Comma> {
+        match &input.data {
+            syn::Data::Struct(s) => match &s.fields {
+                Fields::Named(n) => &n.named,
+                _ => panic!("expected named fields"),
+            },
+            _ => panic!("expected struct"),
+        }
+    }
+
+    #[test]
+    fn test_process_fields_required_field_generates_parse_value() {
+        let input = parse_fields_from("struct T { pub name: String }");
+        let fields = get_named_fields(&input);
+        let cg = process_fields(fields.iter(), None, false, false);
+
+        // parse_value is interpolated into each assignment
+        let assignment_code = cg
+            .assignments
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            assignment_code.contains("TryFromFieldWithState"),
+            "parse_value should contain turbofish call"
+        );
+        assert!(
+            assignment_code.contains("try_from_field_with_state"),
+            "should call try_from_field_with_state"
+        );
+        assert!(
+            assignment_code.contains("\"name\""),
+            "should match on field name"
+        );
+
+        // post_loop should have MissingField check for required fields
+        let post_code = cg
+            .post_loop
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            post_code.contains("MissingField"),
+            "required field should have MissingField check"
+        );
+    }
+
+    #[test]
+    fn test_process_fields_strict_required_field_generates_duplicate_check() {
+        let input = parse_fields_from("struct T { pub name: String, pub age: i32 }");
+        let fields = get_named_fields(&input);
+        let cg = process_fields(fields.iter(), None, true, false);
+
+        // strict mode: assignments should contain is_none + DuplicateField check
+        let assignment_code = cg
+            .assignments
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            assignment_code.contains("is_none"),
+            "strict assignment should check is_none"
+        );
+        assert!(
+            assignment_code.contains("DuplicateField"),
+            "strict assignment should have DuplicateField"
+        );
+        assert!(
+            assignment_code.contains("\"name\""),
+            "should match name field"
+        );
+        assert!(
+            assignment_code.contains("\"age\""),
+            "should match age field"
+        );
+
+        // Both fields should have parse_value with turbofish
+        assert!(
+            assignment_code.contains("TryFromFieldWithState"),
+            "should contain turbofish"
+        );
+    }
+
+    #[test]
+    fn test_process_fields_vec_field_generates_push() {
+        let input = parse_fields_from("struct T { pub tags: Vec<String> }");
+        let fields = get_named_fields(&input);
+        let cg = process_fields(fields.iter(), None, false, false);
+
+        let decl_code = cg
+            .declarations
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            decl_code.contains("Vec :: new"),
+            "Vec field should initialize with Vec::new()"
+        );
+
+        let assignment_code = cg
+            .assignments
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            assignment_code.contains("push"),
+            "Vec field assignment should use push"
+        );
+
+        // Vec fields should NOT have post_loop (no MissingField check)
+        assert!(
+            cg.post_loop.is_empty(),
+            "Vec fields should not have post-loop checks"
+        );
+    }
+
+    #[test]
+    fn test_process_fields_option_field_no_missing_check() {
+        let input = parse_fields_from("struct T { pub bio: Option<String> }");
+        let fields = get_named_fields(&input);
+        let cg = process_fields(fields.iter(), None, false, false);
+
+        let decl_code = cg
+            .declarations
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            decl_code.contains("Option :: None"),
+            "Option field should initialize to None"
+        );
+
+        // Option fields should NOT have post_loop
+        assert!(
+            cg.post_loop.is_empty(),
+            "Option fields should not have post-loop checks"
+        );
+    }
+
+    #[test]
+    fn test_process_fields_strict_vec_field_uses_push_not_duplicate() {
+        let input = parse_fields_from("struct T { pub tags: Vec<String> }");
+        let fields = get_named_fields(&input);
+        let cg = process_fields(fields.iter(), None, true, false);
+
+        // Even in strict mode, Vec fields use push (not duplicate check)
+        let assignment_code = cg
+            .assignments
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            assignment_code.contains("push"),
+            "Vec in strict mode should still use push"
+        );
+        assert!(
+            !assignment_code.contains("DuplicateField"),
+            "Vec should not have duplicate check"
+        );
+    }
+
+    #[test]
+    fn test_process_fields_mixed_types() {
+        let input = parse_fields_from(
+            "struct T { pub name: String, pub tags: Vec<String>, pub bio: Option<String> }",
+        );
+        let fields = get_named_fields(&input);
+        let cg = process_fields(fields.iter(), None, false, false);
+
+        assert_eq!(cg.idents.len(), 3, "should have 3 fields");
+        assert_eq!(cg.declarations.len(), 3, "should have 3 declarations");
+        assert_eq!(cg.assignments.len(), 3, "should have 3 assignments");
+        // Only 'name' is required (not Option, not Vec), so 1 post_loop
+        assert_eq!(
+            cg.post_loop.len(),
+            1,
+            "only required field should have post-loop"
+        );
+    }
 }
