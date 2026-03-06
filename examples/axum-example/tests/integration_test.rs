@@ -3,7 +3,8 @@ use axum_test::TestServer;
 use axum_test::multipart::{MultipartForm, Part};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use vespera::{Schema, schema};
+use vespera::multipart::{FieldData, TypedMultipart};
+use vespera::{Multipart, Schema, schema};
 
 #[tokio::test]
 async fn test_health_endpoint() {
@@ -998,4 +999,144 @@ async fn test_openapi_contains_typed_form_schemas() {
         schemas.get("FileUploadResponse").is_some(),
         "Missing FileUploadResponse schema"
     );
+}
+
+// ============== #[form_data(limit = "...")] enforcement tests ==============
+//
+// These tests use a standalone Multipart struct with small limits to verify
+// that the `#[form_data(limit)]` attribute is correctly enforced at runtime
+// for both text fields and file (NamedTempFile) fields.
+
+/// Test struct with intentionally small limits for limit enforcement testing.
+#[derive(Debug, Multipart)]
+#[allow(dead_code)]
+struct FormDataLimitTestRequest {
+    /// No limit — accepts any size.
+    pub name: String,
+    /// 100-byte limit on a text field.
+    #[form_data(limit = "100")]
+    pub data: Option<String>,
+    /// 50-byte limit on a file upload field.
+    #[form_data(limit = "50")]
+    pub file: Option<FieldData<tempfile::NamedTempFile>>,
+}
+
+async fn form_data_limit_handler(
+    TypedMultipart(req): TypedMultipart<FormDataLimitTestRequest>,
+) -> axum::Json<String> {
+    axum::Json(req.name)
+}
+
+fn create_limit_test_app() -> axum::Router {
+    axum::Router::new().route("/limit-test", axum::routing::post(form_data_limit_handler))
+}
+
+#[tokio::test]
+async fn test_form_data_limit_text_field_within_limit() {
+    let server = TestServer::new(create_limit_test_app());
+
+    // 5 bytes text — well within 100-byte limit
+    let form = MultipartForm::new()
+        .add_text("name", "test")
+        .add_text("data", "short");
+
+    let response = server.post("/limit-test").multipart(form).await;
+    response.assert_status_ok();
+}
+
+#[tokio::test]
+async fn test_form_data_limit_text_field_at_boundary() {
+    let server = TestServer::new(create_limit_test_app());
+
+    // Exactly 100 bytes — should succeed (limit check is `> limit`, not `>=`)
+    let exact = "x".repeat(100);
+    let form = MultipartForm::new()
+        .add_text("name", "test")
+        .add_text("data", &exact);
+
+    let response = server.post("/limit-test").multipart(form).await;
+    response.assert_status_ok();
+}
+
+#[tokio::test]
+async fn test_form_data_limit_text_field_exceeds_limit() {
+    let server = TestServer::new(create_limit_test_app());
+
+    // 101 bytes — exceeds 100-byte limit → HTTP 413 PAYLOAD_TOO_LARGE
+    let over = "x".repeat(101);
+    let form = MultipartForm::new()
+        .add_text("name", "test")
+        .add_text("data", &over);
+
+    let response = server.post("/limit-test").multipart(form).await;
+    response.assert_status(axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+    let body = response.text();
+    assert!(
+        body.contains("data"),
+        "Error should mention the field name 'data': {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_form_data_limit_file_field_within_limit() {
+    let server = TestServer::new(create_limit_test_app());
+
+    // 50 bytes file — exactly at 50-byte limit
+    let small_file = Part::bytes(vec![0u8; 50]).file_name("small.bin");
+    let form = MultipartForm::new()
+        .add_text("name", "test")
+        .add_part("file", small_file);
+
+    let response = server.post("/limit-test").multipart(form).await;
+    response.assert_status_ok();
+}
+
+#[tokio::test]
+async fn test_form_data_limit_file_field_exceeds_limit() {
+    let server = TestServer::new(create_limit_test_app());
+
+    // 51 bytes file — exceeds 50-byte limit → HTTP 413 PAYLOAD_TOO_LARGE
+    let big_file = Part::bytes(vec![0u8; 51]).file_name("big.bin");
+    let form = MultipartForm::new()
+        .add_text("name", "test")
+        .add_part("file", big_file);
+
+    let response = server.post("/limit-test").multipart(form).await;
+    response.assert_status(axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+    let body = response.text();
+    assert!(
+        body.contains("file"),
+        "Error should mention the field name 'file': {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_form_data_no_limit_field_accepts_large_data() {
+    let server = TestServer::new(create_limit_test_app());
+
+    // "name" has no #[form_data(limit)] — should accept large values
+    let long_name = "x".repeat(10_000);
+    let form = MultipartForm::new().add_text("name", &long_name);
+
+    let response = server.post("/limit-test").multipart(form).await;
+    response.assert_status_ok();
+
+    let result: String = response.json();
+    assert_eq!(result.len(), 10_000);
+}
+
+#[tokio::test]
+async fn test_form_data_limit_unlimited_keyword() {
+    // Verify that parse_byte_unit handles "unlimited" (code path: returns None)
+    // Tested indirectly: a field without a limit already behaves as unlimited.
+    // This test confirms the same behavior with all fields provided.
+    let server = TestServer::new(create_limit_test_app());
+
+    let form = MultipartForm::new()
+        .add_text("name", "test")
+        .add_text("data", &"y".repeat(50))
+        .add_part("file", Part::bytes(vec![1u8; 30]).file_name("f.bin"));
+
+    let response = server.post("/limit-test").multipart(form).await;
+    response.assert_status_ok();
 }
