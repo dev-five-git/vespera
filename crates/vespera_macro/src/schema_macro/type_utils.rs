@@ -143,6 +143,8 @@ pub fn is_primitive_or_known_type(name: &str) -> bool {
             | "Time"  // SeaORM re-export of chrono::NaiveTime
             // UUID
             | "Uuid"
+            // Decimal (rust_decimal / sea_orm re-export)
+            | "Decimal"
             // Serde JSON
             | "Value"
     )
@@ -336,6 +338,7 @@ mod tests {
     #[case("HashMap", true)]
     #[case("DateTime", true)]
     #[case("Uuid", true)]
+    #[case("Decimal", true)]
     #[case("DateTimeWithTimeZone", true)]
     #[case("CustomType", false)]
     #[case("MyStruct", false)]
@@ -539,6 +542,20 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_type_to_absolute_path_decimal() {
+        let ty: syn::Type = syn::parse_str("Decimal").unwrap();
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "review".to_string(),
+        ];
+        let tokens = resolve_type_to_absolute_path(&ty, &module_path);
+        let output = tokens.to_string();
+        // Decimal is a known type — must NOT be resolved to crate::models::review::Decimal
+        assert_eq!(output.trim(), "Decimal");
+    }
+
+    #[test]
     fn test_resolve_type_to_absolute_path_custom_type() {
         let ty: syn::Type = syn::parse_str("MemoStatus").unwrap();
         let module_path = vec![
@@ -591,6 +608,10 @@ mod tests {
     #[rstest]
     #[case("String", Some(serde_json::Value::String(String::new())))]
     #[case("i32", Some(serde_json::Value::Number(serde_json::Number::from(0))))]
+    #[case(
+        "Decimal",
+        Some(serde_json::Value::Number(serde_json::Number::from(0)))
+    )]
     #[case("bool", Some(serde_json::Value::Bool(false)))]
     #[case("f64", Some(serde_json::Value::Number(serde_json::Number::from_f64(0.0).unwrap())))]
     #[case("CustomType", None)]

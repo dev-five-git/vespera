@@ -7,7 +7,7 @@ use vespera::{Schema, schema};
 #[tokio::test]
 async fn test_health_endpoint() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server.get("/health").await;
 
@@ -18,7 +18,7 @@ async fn test_health_endpoint() {
 #[tokio::test]
 async fn test_mod_file_endpoint() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server.get("/hello").await;
 
@@ -34,7 +34,7 @@ async fn test_mod_file_endpoint() {
 #[tokio::test]
 async fn test_get_users() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server.get("/users").await;
 
@@ -53,7 +53,7 @@ async fn test_get_users() {
 #[tokio::test]
 async fn test_get_user_by_id() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server.get("/users/42").await;
 
@@ -68,7 +68,7 @@ async fn test_get_user_by_id() {
 #[tokio::test]
 async fn test_create_user() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let new_user = json!({
         "name": "Charlie",
@@ -88,7 +88,7 @@ async fn test_create_user() {
 #[tokio::test]
 async fn test_get_nonexistent_user() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server.get("/users/999").await;
 
@@ -100,7 +100,7 @@ async fn test_get_nonexistent_user() {
 #[tokio::test]
 async fn test_prefix_variable() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server.get("/path/prefix/123").await;
 
@@ -111,7 +111,7 @@ async fn test_prefix_variable() {
 #[tokio::test]
 async fn test_invalid_path() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server.get("/nonexistent").await;
 
@@ -121,7 +121,7 @@ async fn test_invalid_path() {
 #[tokio::test]
 async fn test_mod_file_with_complex_struct_body() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let complex_body = json!({
         "name": "Test User",
@@ -210,7 +210,7 @@ async fn test_mod_file_with_complex_struct_body() {
 #[tokio::test]
 async fn test_mod_file_with_complex_struct_body_with_rename() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let complex_body = json!({
         "name": "Test User Renamed",
@@ -300,7 +300,7 @@ async fn test_mod_file_with_complex_struct_body_with_rename() {
 #[tokio::test]
 async fn test_third_app_root_endpoint() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server.get("/third").await;
 
@@ -311,7 +311,7 @@ async fn test_third_app_root_endpoint() {
 #[tokio::test]
 async fn test_third_app_hello_endpoint() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server.get("/third/hello").await;
 
@@ -322,7 +322,7 @@ async fn test_third_app_hello_endpoint() {
 #[tokio::test]
 async fn test_third_app_map_query_endpoint() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server.get("/third/map-query?name=test&age=25").await;
 
@@ -333,7 +333,7 @@ async fn test_third_app_map_query_endpoint() {
 #[tokio::test]
 async fn test_third_app_map_query_with_optional() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .get("/third/map-query?name=test&age=25&optional_age=30")
@@ -388,7 +388,7 @@ async fn test_openapi_contains_third_app_schemas() {
 #[tokio::test]
 async fn test_app_with_layer() {
     let app = create_app_with_layer().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Test that routes still work with the layer applied
     let response = server.get("/health").await;
@@ -611,7 +611,7 @@ fn test_schema_macro_omit_with_rust_field_name() {
 #[tokio::test]
 async fn test_get_user_dto_with_renamed_fields() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server.get("/users/dto/42").await;
 
@@ -642,7 +642,7 @@ async fn test_get_user_dto_with_renamed_fields() {
 #[tokio::test]
 async fn test_create_user_with_meta_add_fields() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // CreateUserWithMeta has: name, email (from User) + request_id, created_at (added)
     // Note: Field names are camelCase in JSON due to serde rename_all = "camelCase"
@@ -672,7 +672,7 @@ async fn test_create_user_with_meta_add_fields() {
 #[tokio::test]
 async fn test_memo_create_with_picked_fields() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // CreateMemoRequest has only: title, content (picked from Memo)
     let request_body = json!({
@@ -702,7 +702,7 @@ async fn test_memo_create_with_picked_fields() {
 #[tokio::test]
 async fn test_memo_update_with_added_id_field() {
     let app = create_app().await;
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // UpdateMemoRequest has: title, content (picked) + id (added)
     let request_body = json!({
