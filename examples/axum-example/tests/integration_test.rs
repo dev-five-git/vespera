@@ -1134,7 +1134,7 @@ async fn test_form_data_limit_unlimited_keyword() {
 
     let form = MultipartForm::new()
         .add_text("name", "test")
-        .add_text("data", &"y".repeat(50))
+        .add_text("data", "y".repeat(50))
         .add_part("file", Part::bytes(vec![1u8; 30]).file_name("f.bin"));
 
     let response = server.post("/limit-test").multipart(form).await;
