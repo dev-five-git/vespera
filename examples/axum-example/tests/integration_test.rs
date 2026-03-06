@@ -1801,3 +1801,33 @@ async fn test_numeric_field_non_utf8_bytes() {
     let response = server.post("/numeric-char-test").multipart(form).await;
     response.assert_status(axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
+
+#[tokio::test]
+async fn test_multipart_error_malformed_body_stream() {
+    // Send a valid multipart Content-Type so from_request succeeds,
+    // but with a corrupted body so next_field() returns Err(MultipartError).
+    // This covers From<MultipartError> (line 135) and InvalidRequestBody Display (lines 93-94).
+    let server = TestServer::new(create_coverage_test_app());
+
+    let boundary = "TESTBOUNDARY";
+    // Start a valid boundary, then inject invalid header bytes (0xFF is not valid in HTTP headers).
+    // multer will attempt to parse these as field headers and fail.
+    let mut body = Vec::new();
+    body.extend_from_slice(b"--TESTBOUNDARY\r\n");
+    body.extend_from_slice(&[0x01, 0x02, 0xFF, 0xFE]); // invalid header bytes
+    body.extend_from_slice(b"\r\n\r\ndata\r\n--TESTBOUNDARY--");
+
+    let response = server
+        .post("/strict-test")
+        .content_type(&format!("multipart/form-data; boundary={boundary}"))
+        .bytes(body.into())
+        .await;
+
+    // multer rejects the invalid header bytes → MultipartError → From<MultipartError> → InvalidRequestBody
+    response.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    let body = response.text();
+    assert!(
+        body.contains("Invalid multipart body"),
+        "Expected InvalidRequestBody Display output, got: {body}"
+    );
+}

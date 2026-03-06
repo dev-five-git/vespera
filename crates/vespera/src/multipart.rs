@@ -313,7 +313,7 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let mut multipart = axum::extract::Multipart::from_request(req, state)
             .await
-            .map_err(|source| TypedMultipartError::InvalidRequest { source })?;
+            .map_err(TypedMultipartError::from)?;
         let value = T::try_from_multipart_with_state(&mut multipart, state).await?;
         Ok(Self(value))
     }
