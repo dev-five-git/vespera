@@ -429,10 +429,10 @@ impl Parse for ExportAppInput {
 }
 
 /// Swagger UI HTML template. Contains `{}` format placeholder for the OpenAPI spec JSON.
-const SWAGGER_UI_HTML: &str = r#"<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><title>Swagger UI</title><link rel=\"stylesheet\" href=\"https://unpkg.com/swagger-ui-dist/swagger-ui.css\" /></head><body style=\"margin: 0; padding: 0;\"><div id=\"swagger-ui\"></div><script src=\"https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js\"></script><script src=\"https://unpkg.com/swagger-ui-dist/swagger-ui-standalone-preset.js\"></script><script>const openapiSpec = {};window.onload = () => {{ SwaggerUIBundle({{ spec: openapiSpec, dom_id: \"\#swagger-ui\", presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset], layout: \"StandaloneLayout\" }}); }};</script></body></html>"#;
+const SWAGGER_UI_HTML: &str = r##"<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Swagger UI</title><link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css" /></head><body style="margin: 0; padding: 0;"><div id="swagger-ui"></div><script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script><script src="https://unpkg.com/swagger-ui-dist/swagger-ui-standalone-preset.js"></script><script>const openapiSpec = {};window.onload = () => {{ SwaggerUIBundle({{ spec: openapiSpec, dom_id: "#swagger-ui", presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset], layout: "StandaloneLayout" }}); }};</script></body></html>"##;
 
 /// ReDoc HTML template. Contains `{}` format placeholder for the OpenAPI spec JSON.
-const REDOC_HTML: &str = r#"<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><title>ReDoc</title><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>body {{ margin: 0; padding: 0; }}</style><link rel=\"stylesheet\" href=\"https://unpkg.com/redoc/bundles/redoc.standalone.css\" /></head><body><div id=\"redoc-container\"></div><script src=\"https://unpkg.com/redoc/bundles/redoc.standalone.js\"></script><script>const openapiSpec = {};Redoc.init(openapiSpec, {{}}, document.getElementById(\"redoc-container\"));</script></body></html>"#;
+const REDOC_HTML: &str = r#"<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>ReDoc</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body {{ margin: 0; padding: 0; }}</style><link rel="stylesheet" href="https://unpkg.com/redoc/bundles/redoc.standalone.css" /></head><body><div id="redoc-container"></div><script src="https://unpkg.com/redoc/bundles/redoc.standalone.js"></script><script>const openapiSpec = {};Redoc.init(openapiSpec, {{}}, document.getElementById("redoc-container"));</script></body></html>"#;
 
 /// Generate a documentation route handler (Swagger UI or ReDoc).
 ///
@@ -1264,6 +1264,37 @@ pub fn get_users() -> String {
         assert!(code.contains("/docs"));
         assert!(code.contains("/redoc"));
         assert!(code.contains("__VESPERA_SPEC"));
+    }
+
+    #[test]
+    fn test_swagger_html_template_renders_valid_quotes() {
+        assert!(
+            !SWAGGER_UI_HTML.contains(r#"\""#),
+            "Swagger template should not contain literal backslash-quotes: {SWAGGER_UI_HTML}"
+        );
+        assert!(
+            SWAGGER_UI_HTML.contains(r#"href="https://unpkg.com/swagger-ui-dist/swagger-ui.css""#)
+        );
+        assert!(
+            SWAGGER_UI_HTML
+                .contains(r#"src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js""#)
+        );
+        assert!(SWAGGER_UI_HTML.contains(r##"dom_id: "#swagger-ui""##));
+    }
+
+    #[test]
+    fn test_redoc_html_template_renders_valid_quotes() {
+        assert!(
+            !REDOC_HTML.contains(r#"\""#),
+            "ReDoc template should not contain literal backslash-quotes: {REDOC_HTML}"
+        );
+        assert!(
+            REDOC_HTML.contains(r#"href="https://unpkg.com/redoc/bundles/redoc.standalone.css""#)
+        );
+        assert!(
+            REDOC_HTML.contains(r#"src="https://unpkg.com/redoc/bundles/redoc.standalone.js""#)
+        );
+        assert!(REDOC_HTML.contains(r#"document.getElementById("redoc-container")"#));
     }
 
     #[test]
