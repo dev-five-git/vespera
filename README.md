@@ -511,6 +511,65 @@ let summary: vespera::schema::Schema = schema!(User, pick = ["id", "name"]);
 
 ---
 
+## Cron Jobs
+
+Schedule background tasks with `#[vespera::cron]`. Uses [tokio-cron-scheduler](https://crates.io/crates/tokio-cron-scheduler) under the hood.
+
+### Enable Feature
+
+```toml
+[dependencies]
+vespera = { version = "0.1", features = ["cron"] }
+```
+
+### Define Cron Jobs
+
+Place `#[vespera::cron("...")]` on any `pub async fn` with zero parameters. The function can live anywhere in your project — no special directory required.
+
+```rust
+// src/cron/cleanup.rs, src/tasks.rs, or even src/routes/users.rs — anywhere works
+#[vespera::cron("1/10 * * * * *")]
+pub async fn cleanup_sessions() {
+    println!("Running cleanup every 10 seconds");
+}
+
+#[vespera::cron("0 0 * * * *")]
+pub async fn hourly_report() {
+    println!("Running hourly report");
+}
+```
+
+### How It Works
+
+1. `#[cron("...")]` registers the job at compile time (like `#[route]`)
+2. `vespera!()` auto-discovers all registered cron jobs — no extra parameters needed
+3. A background scheduler spawns via `tokio::spawn` when the app starts
+
+```rust
+// No cron-specific config — just works
+let app = vespera!(docs_url = "/docs");
+```
+
+### Cron Expression Format
+
+Uses 6-field cron expressions (`sec min hour day month weekday`):
+
+| Expression | Schedule |
+|-----------|----------|
+| `0 */5 * * * *` | Every 5 minutes |
+| `0 0 * * * *` | Every hour |
+| `0 0 0 * * *` | Daily at midnight |
+| `1/10 * * * * *` | Every 10 seconds |
+| `0 30 9 * * Mon-Fri` | Weekdays at 9:30 AM |
+
+### Requirements
+
+- Functions must be `pub async fn`
+- Functions must take **no parameters** (no `State`, no extractors)
+- The `cron` feature must be enabled
+
+---
+
 ## Advanced Usage
 
 ### Adding State

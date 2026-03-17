@@ -8,6 +8,7 @@ repository.workspace = true
 
 [features]
 default = ["axum-extra/typed-header", "axum-extra/form", "axum-extra/query", "axum-extra/multipart", "axum-extra/cookie"]
+cron = ["dep:tokio-cron-scheduler", "dep:tokio"]
 
 [dependencies]
 vespera_core = { workspace = true }
@@ -19,6 +20,8 @@ tempfile = "3"
 serde_json = "1"
 tower-layer = "0.3"
 tower-service = "0.3"
+tokio-cron-scheduler = { version = "0.13", optional = true }
+tokio = { version = "1", features = ["rt"], optional = true }
 
 [lints]
 workspace = true

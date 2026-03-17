@@ -42,6 +42,7 @@
 
 mod args;
 mod collector;
+mod cron_impl;
 mod error;
 mod file_utils;
 mod http;
@@ -58,6 +59,7 @@ mod schema_impl;
 mod schema_macro;
 mod vespera_impl;
 
+pub(crate) use cron_impl::CRON_STORAGE;
 use proc_macro::TokenStream;
 pub(crate) use route_impl::ROUTE_STORAGE;
 pub(crate) use schema_impl::SCHEMA_STORAGE;
@@ -72,6 +74,26 @@ use crate::{
 #[proc_macro_attribute]
 pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
     match route_impl::process_route_attribute(attr.into(), item.into()) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// cron attribute macro
+///
+/// Mark a function as a cron job with the given cron expression.
+///
+/// # Example
+/// ```ignore
+/// #[vespera::cron("0 */5 * * * *")]
+/// pub async fn cleanup_sessions() {
+///     println!("Running cleanup");
+/// }
+/// ```
+#[cfg(not(tarpaulin_include))]
+#[proc_macro_attribute]
+pub fn cron(attr: TokenStream, item: TokenStream) -> TokenStream {
+    match cron_impl::process_cron_attribute(attr.into(), item.into()) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
     }
