@@ -13,7 +13,7 @@
     "/": {
       "get": {
         "operationId": "root_endpoint",
-        "description": "Health check endpoint",
+        "description": "/ Health check endpoint",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -88,7 +88,7 @@
         "tags": [
           "config"
         ],
-        "description": "Get current config",
+        "description": "/ Get current config",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -107,7 +107,7 @@
         "tags": [
           "config"
         ],
-        "description": "Update config",
+        "description": "/ Update config",
         "requestBody": {
           "required": true,
           "content": {
@@ -307,7 +307,7 @@
         "tags": [
           "error"
         ],
-        "description": "Logout endpoint that uses CookieJar to clear cookies",
+        "description": "/ Logout endpoint that uses CookieJar to clear cookies",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -495,7 +495,7 @@
         "tags": [
           "error"
         ],
-        "description": "Delete endpoint that returns just a StatusCode",
+        "description": "/ Delete endpoint that returns just a StatusCode",
         "parameters": [
           {
             "name": "id",
@@ -530,7 +530,7 @@
         "tags": [
           "flatten"
         ],
-        "description": "List users with pagination (demonstrates flatten for request/response)\n\nThe request accepts flattened pagination parameters (page, per_page)\nand returns a response with flattened metadata (total, has_more).",
+        "description": "/ List users with pagination (demonstrates flatten for request/response)\n/\n/ The request accepts flattened pagination parameters (page, per_page)\n/ and returns a response with flattened metadata (total, has_more).",
         "requestBody": {
           "required": true,
           "content": {
@@ -561,7 +561,7 @@
         "tags": [
           "flatten"
         ],
-        "description": "Advanced search endpoint with multiple flatten fields",
+        "description": "/ Advanced search endpoint with multiple flatten fields",
         "requestBody": {
           "required": true,
           "content": {
@@ -629,7 +629,7 @@
         "tags": [
           "form"
         ],
-        "description": "Subscribe to newsletter via form submission",
+        "description": "/ Subscribe to newsletter via form submission",
         "requestBody": {
           "required": true,
           "content": {
@@ -660,7 +660,7 @@
         "tags": [
           "form"
         ],
-        "description": "Submit a contact form",
+        "description": "/ Submit a contact form",
         "requestBody": {
           "required": true,
           "content": {
@@ -691,7 +691,7 @@
         "tags": [
           "form"
         ],
-        "description": "Upload a file via raw multipart form data",
+        "description": "/ Upload a file via raw multipart form data",
         "requestBody": {
           "required": true,
           "content": {
@@ -926,7 +926,7 @@
         "tags": [
           "hello"
         ],
-        "description": "Hello!!",
+        "description": "/ Hello!!",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -990,7 +990,7 @@
     "/memos": {
       "post": {
         "operationId": "create_memo",
-        "description": "Create a new memo",
+        "description": "/ Create a new memo",
         "requestBody": {
           "required": true,
           "content": {
@@ -1016,7 +1016,7 @@
       },
       "put": {
         "operationId": "update_memo",
-        "description": "Update a memo",
+        "description": "/ Update a memo",
         "requestBody": {
           "required": true,
           "content": {
@@ -1044,7 +1044,7 @@
     "/memos/format": {
       "get": {
         "operationId": "get_memo_format",
-        "description": "Get memo response format",
+        "description": "/ Get memo response format",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1062,7 +1062,7 @@
     "/memos/{id}": {
       "get": {
         "operationId": "get_memo",
-        "description": "Get memo by id",
+        "description": "/ Get memo by id",
         "parameters": [
           {
             "name": "id",
@@ -1449,7 +1449,7 @@
     "/third": {
       "get": {
         "operationId": "third_root_endpoint",
-        "description": "Third app root endpoint",
+        "description": "/ Third app root endpoint",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1470,7 +1470,7 @@
         "tags": [
           "third"
         ],
-        "description": "Third app hello endpoint",
+        "description": "/ Third app hello endpoint",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1540,7 +1540,7 @@
         "tags": [
           "typed-form"
         ],
-        "description": "List all file uploads",
+        "description": "/ List all file uploads",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1562,7 +1562,7 @@
         "tags": [
           "typed-form"
         ],
-        "description": "Create a new file upload with multipart form data",
+        "description": "/ Create a new file upload with multipart form data",
         "requestBody": {
           "required": true,
           "content": {
@@ -1603,7 +1603,7 @@
         "tags": [
           "typed-form"
         ],
-        "description": "Update a file upload with multipart form data",
+        "description": "/ Update a file upload with multipart form data",
         "parameters": [
           {
             "name": "id",
@@ -1653,7 +1653,7 @@
         "tags": [
           "typed-form"
         ],
-        "description": "Patch a file upload (partial update via schema_type! multipart)",
+        "description": "/ Patch a file upload (partial update via schema_type! multipart)",
         "parameters": [
           {
             "name": "id",
@@ -1762,7 +1762,7 @@
     "/users": {
       "get": {
         "operationId": "get_users",
-        "description": "Get all users (returns public response without internal_score)",
+        "description": "/ Get all users (returns public response without internal_score)",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1781,7 +1781,7 @@
       },
       "post": {
         "operationId": "create_user",
-        "description": "Create a new user\nRequest body uses CreateUserRequest (generated from User with only name, email)",
+        "description": "/ Create a new user\n/ Request body uses CreateUserRequest (generated from User with only name, email)",
         "requestBody": {
           "required": true,
           "content": {
@@ -1809,7 +1809,7 @@
     "/users/dto/{id}": {
       "get": {
         "operationId": "get_user_dto",
-        "description": "Get user DTO (demonstrates field rename feature)\nThe Rust struct uses user_id/display_name, but JSON uses id/name",
+        "description": "/ Get user DTO (demonstrates field rename feature)\n/ The Rust struct uses user_id/display_name, but JSON uses id/name",
         "parameters": [
           {
             "name": "id",
@@ -1855,7 +1855,7 @@
     "/users/summary": {
       "get": {
         "operationId": "get_users_summary",
-        "description": "Get user summaries (minimal fields for list views)",
+        "description": "/ Get user summaries (minimal fields for list views)",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1876,7 +1876,7 @@
     "/users/with-meta": {
       "post": {
         "operationId": "create_user_with_meta",
-        "description": "Create a new user with metadata (demonstrates `add` feature)\nRequest body uses CreateUserWithMeta (picks name/email, adds request_id/created_at)",
+        "description": "/ Create a new user with metadata (demonstrates `add` feature)\n/ Request body uses CreateUserWithMeta (picks name/email, adds request_id/created_at)",
         "requestBody": {
           "required": true,
           "content": {
@@ -1904,7 +1904,7 @@
     "/users/{id}": {
       "get": {
         "operationId": "get_user",
-        "description": "Get user by ID (full internal view)",
+        "description": "/ Get user by ID (full internal view)",
         "parameters": [
           {
             "name": "id",
@@ -1936,7 +1936,7 @@
         "tags": [
           "uuid_items"
         ],
-        "description": "List all UUID items",
+        "description": "/ List all UUID items",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1958,7 +1958,7 @@
         "tags": [
           "uuid_items"
         ],
-        "description": "Create a new UUID item",
+        "description": "/ Create a new UUID item",
         "requestBody": {
           "required": true,
           "content": {
@@ -2511,17 +2511,17 @@
       },
       "CreateUuidItemRequest": {
         "type": "object",
-        "description": "UUID item model for testing UUID format in OpenAPI",
+        "description": "/ UUID item model for testing UUID format in OpenAPI",
         "properties": {
           "externalRef": {
             "type": "string",
             "format": "uuid",
-            "description": "External reference UUID",
+            "description": "/ External reference UUID",
             "nullable": true
           },
           "name": {
             "type": "string",
-            "description": "Item name"
+            "description": "/ Item name"
           },
           "tags": {
             "type": "array",
@@ -3949,32 +3949,32 @@
       },
       "UserSchema": {
         "type": "object",
-        "description": "User model",
+        "description": "/ User model",
         "properties": {
           "createdAt": {
             "type": "string",
             "format": "date-time",
-            "description": "Created at",
+            "description": "/ Created at",
             "default": "1970-01-01T00:00:00+00:00"
           },
           "email": {
             "type": "string",
-            "description": "User email"
+            "description": "/ User email"
           },
           "id": {
             "type": "integer",
             "format": "int32",
-            "description": "User ID",
+            "description": "/ User ID",
             "default": 0
           },
           "name": {
             "type": "string",
-            "description": "User name"
+            "description": "/ User name"
           },
           "updatedAt": {
             "type": "string",
             "format": "date-time",
-            "description": "Updated at",
+            "description": "/ Updated at",
             "default": "1970-01-01T00:00:00+00:00"
           }
         },
@@ -4005,23 +4005,23 @@
       },
       "UuidItem": {
         "type": "object",
-        "description": "UUID item model for testing UUID format in OpenAPI",
+        "description": "/ UUID item model for testing UUID format in OpenAPI",
         "properties": {
           "externalRef": {
             "type": "string",
             "format": "uuid",
-            "description": "External reference UUID",
+            "description": "/ External reference UUID",
             "nullable": true
           },
           "id": {
             "type": "string",
             "format": "uuid",
-            "description": "Item ID",
+            "description": "/ Item ID",
             "default": "00000000-0000-0000-0000-000000000000"
           },
           "name": {
             "type": "string",
-            "description": "Item name"
+            "description": "/ Item name"
           },
           "tags": {
             "type": "array",
@@ -4039,29 +4039,29 @@
       },
       "UuidItemSchema": {
         "type": "object",
-        "description": "UUID item model for testing UUID format in OpenAPI",
+        "description": "/ UUID item model for testing UUID format in OpenAPI",
         "properties": {
           "createdAt": {
             "type": "string",
             "format": "date-time",
-            "description": "Created at",
+            "description": "/ Created at",
             "default": "1970-01-01T00:00:00+00:00"
           },
           "externalRef": {
             "type": "string",
             "format": "uuid",
-            "description": "External reference UUID",
+            "description": "/ External reference UUID",
             "nullable": true
           },
           "id": {
             "type": "string",
             "format": "uuid",
-            "description": "Item ID",
+            "description": "/ Item ID",
             "default": "00000000-0000-0000-0000-000000000000"
           },
           "name": {
             "type": "string",
-            "description": "Item name"
+            "description": "/ Item name"
           }
         },
         "required": [
