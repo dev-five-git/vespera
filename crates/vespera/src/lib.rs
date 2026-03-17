@@ -20,7 +20,7 @@ pub mod openapi {
 pub use vespera_core::openapi::OpenApi;
 
 // Re-export macros from vespera_macro
-pub use vespera_macro::{Multipart, Schema, export_app, route, schema, schema_type, vespera};
+pub use vespera_macro::{Multipart, Schema, cron, export_app, route, schema, schema_type, vespera};
 
 // Re-export serde_json for merge feature (runtime spec merging)
 pub use serde_json;
@@ -34,6 +34,14 @@ pub mod multipart;
 
 // Re-export tempfile for schema_type! multipart mode (NamedTempFile)
 pub use tempfile;
+
+// Re-export tokio-cron-scheduler for cron job support
+#[cfg(feature = "cron")]
+pub use tokio_cron_scheduler;
+
+// Re-export tokio for cron scheduler spawning
+#[cfg(feature = "cron")]
+pub use tokio;
 
 // Re-export axum for convenience
 pub mod axum {

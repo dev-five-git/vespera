@@ -42,7 +42,10 @@ use syn::{
 };
 use vespera_core::{openapi::Server, route::HttpMethod};
 
-use crate::{metadata::CollectedMetadata, method::http_method_to_token_stream};
+use crate::{
+    metadata::{CollectedMetadata, CronMetadata},
+    method::http_method_to_token_stream,
+};
 
 /// Server configuration for `OpenAPI`
 #[derive(Clone)]
@@ -474,6 +477,66 @@ fn generate_docs_route_tokens(
         )
     }
 }
+/// Generate cron scheduler spawn code from collected cron metadata.
+fn generate_cron_scheduler_code(cron_jobs: &[CronMetadata]) -> proc_macro2::TokenStream {
+    if cron_jobs.is_empty() {
+        return quote!();
+    }
+
+    let job_additions: Vec<proc_macro2::TokenStream> = cron_jobs
+        .iter()
+        .map(|cron| {
+            let expression = &cron.expression;
+            let module_path = &cron.module_path;
+            let function_name = &cron.function_name;
+
+            // Build the full path: crate::module::function
+            let mut p: syn::punctuated::Punctuated<syn::PathSegment, syn::Token![::]> =
+                syn::punctuated::Punctuated::new();
+            p.push(syn::PathSegment {
+                ident: syn::Ident::new("crate", Span::call_site()),
+                arguments: syn::PathArguments::None,
+            });
+            p.extend(module_path.split("::").filter_map(|s| {
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(syn::PathSegment {
+                        ident: syn::Ident::new(s, Span::call_site()),
+                        arguments: syn::PathArguments::None,
+                    })
+                }
+            }));
+            let func_ident = syn::Ident::new(function_name, Span::call_site());
+
+            let err_create = format!("vespera: failed to create cron job '{function_name}'");
+            let err_add = format!("vespera: failed to add cron job '{function_name}'");
+
+            quote! {
+                __vespera_cron_scheduler.add(
+                    vespera::tokio_cron_scheduler::Job::new_async(#expression, |_uuid, _l| {
+                        Box::pin(async move {
+                            #p::#func_ident().await;
+                        })
+                    }).expect(#err_create)
+                ).await.expect(#err_add);
+            }
+        })
+        .collect();
+
+    quote! {
+        vespera::tokio::spawn(async move {
+            let mut __vespera_cron_scheduler = vespera::tokio_cron_scheduler::JobScheduler::new().await
+                .expect("vespera: failed to create cron scheduler");
+            #(#job_additions)*
+            __vespera_cron_scheduler.start().await
+                .expect("vespera: failed to start cron scheduler");
+            // Keep scheduler alive forever
+            ::std::future::pending::<()>().await;
+        });
+    }
+}
+
 /// Generate Axum router code from collected metadata
 #[allow(clippy::too_many_lines)]
 pub fn generate_router_code(
@@ -482,6 +545,7 @@ pub fn generate_router_code(
     redoc_url: Option<&str>,
     spec_tokens: Option<proc_macro2::TokenStream>,
     merge_apps: &[syn::Path],
+    cron_jobs: &[CronMetadata],
 ) -> proc_macro2::TokenStream {
     let mut router_nests = Vec::new();
 
@@ -554,6 +618,7 @@ pub fn generate_router_code(
     }
 
     let needs_spec_const = spec_tokens.is_some() && (docs_url.is_some() || redoc_url.is_some());
+    let cron_code = generate_cron_scheduler_code(cron_jobs);
 
     if needs_spec_const {
         let spec_expr = spec_tokens.unwrap();
@@ -561,6 +626,7 @@ pub fn generate_router_code(
             quote! {
                 {
                     const __VESPERA_SPEC: &str = #spec_expr;
+                    #cron_code
                     vespera::axum::Router::new()
                         #( #router_nests )*
                 }
@@ -569,6 +635,7 @@ pub fn generate_router_code(
             quote! {
                 {
                     const __VESPERA_SPEC: &str = #spec_expr;
+                    #cron_code
                     vespera::VesperaRouter::new(
                         vespera::axum::Router::new()
                             #( #router_nests )*,
@@ -578,20 +645,43 @@ pub fn generate_router_code(
             }
         }
     } else if merge_apps.is_empty() {
-        quote! {
-            vespera::axum::Router::new()
-                #( #router_nests )*
+        if cron_jobs.is_empty() {
+            quote! {
+                vespera::axum::Router::new()
+                    #( #router_nests )*
+            }
+        } else {
+            quote! {
+                {
+                    #cron_code
+                    vespera::axum::Router::new()
+                        #( #router_nests )*
+                }
+            }
         }
     } else {
         // When merging apps, return VesperaRouter which defers the merge
         // until with_state() is called. This is necessary because Axum requires
         // merged routers to have the same state type.
-        quote! {
-            vespera::VesperaRouter::new(
-                vespera::axum::Router::new()
-                    #( #router_nests )*,
-                vec![#( #merge_apps::router ),*]
-            )
+        if cron_jobs.is_empty() {
+            quote! {
+                vespera::VesperaRouter::new(
+                    vespera::axum::Router::new()
+                        #( #router_nests )*,
+                    vec![#( #merge_apps::router ),*]
+                )
+            }
+        } else {
+            quote! {
+                {
+                    #cron_code
+                    vespera::VesperaRouter::new(
+                        vespera::axum::Router::new()
+                            #( #router_nests )*,
+                        vec![#( #merge_apps::router ),*]
+                    )
+                }
+            }
         }
     }
 }
@@ -627,6 +717,7 @@ mod tests {
             None,
             None,
             None,
+            &[],
             &[],
         );
         let code = result.to_string();
@@ -787,6 +878,7 @@ pub fn get_users() -> String {
             None,
             None,
             &[],
+            &[],
         );
         let code = result.to_string();
 
@@ -869,6 +961,7 @@ pub fn update_user() -> String {
             None,
             None,
             &[],
+            &[],
         );
         let code = result.to_string();
 
@@ -926,6 +1019,7 @@ pub fn create_users() -> String {
             None,
             None,
             &[],
+            &[],
         );
         let code = result.to_string();
 
@@ -975,6 +1069,7 @@ pub fn index() -> String {
             None,
             None,
             &[],
+            &[],
         );
         let code = result.to_string();
 
@@ -1014,6 +1109,7 @@ pub fn get_users() -> String {
             None,
             None,
             None,
+            &[],
             &[],
         );
         let code = result.to_string();
@@ -1218,6 +1314,7 @@ pub fn get_users() -> String {
             None,
             Some(quote::quote!(#spec)),
             &[],
+            &[],
         );
         let code = result.to_string();
 
@@ -1238,6 +1335,7 @@ pub fn get_users() -> String {
             Some("/redoc"),
             Some(quote::quote!(#spec)),
             &[],
+            &[],
         );
         let code = result.to_string();
 
@@ -1257,6 +1355,7 @@ pub fn get_users() -> String {
             Some("/docs"),
             Some("/redoc"),
             Some(quote::quote!(#spec)),
+            &[],
             &[],
         );
         let code = result.to_string();
@@ -1353,6 +1452,7 @@ pub fn get_users() -> String {
         let mut metadata = CollectedMetadata {
             routes: Vec::new(),
             structs: Vec::new(),
+            crons: Vec::new(),
         };
         metadata.routes.push(crate::metadata::RouteMetadata {
             method: "INVALID".to_string(),
@@ -1366,7 +1466,7 @@ pub fn get_users() -> String {
             description: None,
         });
 
-        let result = generate_router_code(&metadata, None, None, None, &[]);
+        let result = generate_router_code(&metadata, None, None, None, &[], &[]);
         let code = result.to_string();
 
         // Router should be generated but without any route calls
@@ -1412,7 +1512,7 @@ pub fn get_users() -> String {
             description: None,
         });
 
-        let result = generate_router_code(&metadata, None, None, None, &[]);
+        let result = generate_router_code(&metadata, None, None, None, &[], &[]);
         let code = result.to_string();
 
         // Valid route should be present
@@ -1559,7 +1659,7 @@ pub fn get_users() -> String {
         let metadata = CollectedMetadata::new();
         let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(third::ThirdApp)];
 
-        let result = generate_router_code(&metadata, None, None, None, &merge_apps);
+        let result = generate_router_code(&metadata, None, None, None, &merge_apps, &[]);
         let code = result.to_string();
 
         // Should use VesperaRouter instead of plain Router
@@ -1585,6 +1685,7 @@ pub fn get_users() -> String {
             None,
             Some(quote::quote!(#spec)),
             &merge_apps,
+            &[],
         );
         let code = result.to_string();
 
@@ -1616,6 +1717,7 @@ pub fn get_users() -> String {
             Some("/redoc"),
             Some(quote::quote!(#spec)),
             &merge_apps,
+            &[],
         );
         let code = result.to_string();
 
@@ -1639,6 +1741,7 @@ pub fn get_users() -> String {
             Some("/redoc"),
             Some(quote::quote!(#spec)),
             &merge_apps,
+            &[],
         );
         let code = result.to_string();
 
@@ -1670,13 +1773,70 @@ pub fn get_users() -> String {
             syn::parse_quote!(second::App),
         ];
 
-        let result = generate_router_code(&metadata, None, None, None, &merge_apps);
+        let result = generate_router_code(&metadata, None, None, None, &merge_apps, &[]);
         let code = result.to_string();
 
         // Should reference both apps
         assert!(
             code.contains("first") && code.contains("second"),
             "Should reference both merge apps, got: {code}"
+        );
+    }
+
+    // ========== Tests for generate_router_code with cron jobs ==========
+
+    #[test]
+    fn test_generate_router_code_with_merge_and_cron() {
+        let metadata = CollectedMetadata::new();
+        let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(third::ThirdApp)];
+        let cron_jobs = vec![CronMetadata {
+            expression: "0 */5 * * * *".to_string(),
+            function_name: "cleanup".to_string(),
+            module_path: "tasks".to_string(),
+            file_path: "src/tasks.rs".to_string(),
+        }];
+
+        let result = generate_router_code(&metadata, None, None, None, &merge_apps, &cron_jobs);
+        let code = result.to_string();
+
+        assert!(
+            code.contains("VesperaRouter"),
+            "Should use VesperaRouter for merge, got: {code}"
+        );
+        assert!(
+            code.contains("JobScheduler"),
+            "Should contain cron scheduler code, got: {code}"
+        );
+        assert!(
+            code.contains("cleanup"),
+            "Should reference cron function, got: {code}"
+        );
+    }
+
+    #[test]
+    fn test_generate_router_code_with_cron_no_merge() {
+        let metadata = CollectedMetadata::new();
+        let cron_jobs = vec![CronMetadata {
+            expression: "1/10 * * * * *".to_string(),
+            function_name: "heartbeat".to_string(),
+            module_path: "cron::health".to_string(),
+            file_path: "src/cron/health.rs".to_string(),
+        }];
+
+        let result = generate_router_code(&metadata, None, None, None, &[], &cron_jobs);
+        let code = result.to_string();
+
+        assert!(
+            !code.contains("VesperaRouter"),
+            "Should NOT use VesperaRouter without merge, got: {code}"
+        );
+        assert!(
+            code.contains("JobScheduler"),
+            "Should contain cron scheduler code, got: {code}"
+        );
+        assert!(
+            code.contains("heartbeat"),
+            "Should reference cron function, got: {code}"
         );
     }
 

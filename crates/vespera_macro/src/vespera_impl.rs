@@ -368,6 +368,7 @@ fn write_spec_for_embedding(
 }
 
 /// Process vespera macro - extracted for testability
+#[allow(clippy::too_many_lines)]
 pub fn process_vespera_macro(
     processed: &ProcessedVesperaInput,
     schema_storage: &HashMap<String, StructMetadata>,
@@ -459,12 +460,63 @@ pub fn process_vespera_macro(
     // Write compact spec for include_str! embedding
     let spec_tokens = write_spec_for_embedding(spec_json)?;
 
+    // --- Cron job discovery from CRON_STORAGE ---
+    // #[cron("...")] attribute already registers metadata at expansion time.
+    // No folder scanning needed — just read the storage.
+    let cron_jobs: Vec<crate::metadata::CronMetadata> = {
+        let storage = crate::CRON_STORAGE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let src_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .map(|d| {
+                let p = std::path::PathBuf::from(d).join("src");
+                // Canonicalize for reliable prefix stripping
+                let canonical = p.canonicalize().unwrap_or(p);
+                canonical.display().to_string().replace('\\', "/")
+            })
+            .unwrap_or_default();
+        storage
+            .iter()
+            .map(|s| {
+                // Derive module path from file_path relative to src/
+                let module_path = s
+                    .file_path
+                    .as_ref()
+                    .map(|fp| {
+                        let canonical = std::path::Path::new(fp)
+                            .canonicalize()
+                            .map_or_else(|_| fp.clone(), |p| p.display().to_string());
+                        let normalized = canonical.replace('\\', "/");
+                        let relative = normalized
+                            .strip_prefix(&src_dir)
+                            .map_or(&*normalized, |rest| rest.trim_start_matches('/'));
+                        // Convert path to module path: strip .rs, replace / with ::, strip mod
+                        // Replace hyphens with underscores (Rust module convention)
+                        relative
+                            .trim_end_matches(".rs")
+                            .replace('/', "::")
+                            .replace('-', "_")
+                            .trim_end_matches("::mod")
+                            .to_string()
+                    })
+                    .unwrap_or_default();
+                crate::metadata::CronMetadata {
+                    expression: s.expression.clone(),
+                    function_name: s.fn_name.clone(),
+                    module_path,
+                    file_path: s.file_path.clone().unwrap_or_default(),
+                }
+            })
+            .collect()
+    };
+
     let result = Ok(generate_router_code(
         &metadata,
         processed.docs_url.as_deref(),
         processed.redoc_url.as_deref(),
         spec_tokens,
         &processed.merge,
+        &cron_jobs,
     ));
 
     if let Some(start) = profile_start {
@@ -531,7 +583,7 @@ pub fn process_export_app(
     let spec_path_str = spec_file.display().to_string().replace('\\', "/");
 
     // Generate router code (without docs routes, no merge)
-    let router_code = generate_router_code(&metadata, None, None, None, &[]);
+    let router_code = generate_router_code(&metadata, None, None, None, &[], &[]);
 
     let result = Ok(quote! {
         /// Auto-generated vespera app struct
@@ -899,6 +951,80 @@ mod tests {
         let result = process_vespera_macro(&processed, &schema_storage, &[]);
         // We only care about exercising the code path
         let _ = result;
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_process_vespera_macro_with_cron_storage() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create src/ subfolder structure to simulate a real project
+        let src_dir = temp_dir.path().join("src");
+        std::fs::create_dir_all(src_dir.join("routes")).expect("create routes dir");
+        std::fs::write(src_dir.join("routes").join("health.rs"), "// empty\n")
+            .expect("write health.rs");
+
+        // Set CARGO_MANIFEST_DIR so module path derivation works
+        let old_manifest = std::env::var("CARGO_MANIFEST_DIR").ok();
+        unsafe {
+            std::env::set_var(
+                "CARGO_MANIFEST_DIR",
+                temp_dir.path().to_string_lossy().as_ref(),
+            );
+        }
+
+        // Populate CRON_STORAGE with a fake cron entry
+        {
+            let mut storage = crate::CRON_STORAGE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            storage.push(crate::cron_impl::StoredCronInfo {
+                fn_name: "test_cron_job".to_string(),
+                expression: "0 */5 * * * *".to_string(),
+                file_path: Some(
+                    src_dir
+                        .join("routes")
+                        .join("health.rs")
+                        .display()
+                        .to_string(),
+                ),
+            });
+        }
+
+        let processed = ProcessedVesperaInput {
+            folder_name: src_dir.join("routes").to_string_lossy().to_string(),
+            openapi_file_names: vec![],
+            title: None,
+            version: None,
+            docs_url: None,
+            redoc_url: None,
+            servers: None,
+            merge: vec![],
+        };
+
+        // This exercises the CRON_STORAGE → CronMetadata derivation path
+        let result = process_vespera_macro(&processed, &HashMap::new(), &[]);
+        assert!(
+            result.is_ok(),
+            "Should succeed with cron storage: {result:?}"
+        );
+
+        // Clean up CRON_STORAGE
+        {
+            let mut storage = crate::CRON_STORAGE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            storage.retain(|s| s.fn_name != "test_cron_job");
+        }
+
+        // Restore CARGO_MANIFEST_DIR
+        unsafe {
+            if let Some(val) = old_manifest {
+                std::env::set_var("CARGO_MANIFEST_DIR", val);
+            } else {
+                std::env::remove_var("CARGO_MANIFEST_DIR");
+            }
+        }
     }
 
     // ========== Tests for process_export_app ==========

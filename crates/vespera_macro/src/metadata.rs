@@ -86,6 +86,19 @@ impl StructMetadata {
     }
 }
 
+/// Cron job metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CronMetadata {
+    /// Cron expression (e.g., "0 */5 * * * *")
+    pub expression: String,
+    /// Function name
+    pub function_name: String,
+    /// Module path (e.g., "cron::cleanup")
+    pub module_path: String,
+    /// File path
+    pub file_path: String,
+}
+
 /// Collected metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectedMetadata {
@@ -93,6 +106,9 @@ pub struct CollectedMetadata {
     pub routes: Vec<RouteMetadata>,
     /// Structs
     pub structs: Vec<StructMetadata>,
+    /// Cron jobs
+    #[serde(default)]
+    pub crons: Vec<CronMetadata>,
 }
 
 impl CollectedMetadata {
@@ -100,6 +116,7 @@ impl CollectedMetadata {
         Self {
             routes: Vec::new(),
             structs: Vec::new(),
+            crons: Vec::new(),
         }
     }
 
