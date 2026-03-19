@@ -12,4 +12,5 @@ coverage-report
 *.class
 .gradle/
 build/
-bin
+bin/
+.settings/
