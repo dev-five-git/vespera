@@ -15,9 +15,11 @@
 
 use std::sync::{LazyLock, OnceLock};
 
-use jni::objects::{JClass, JString};
-use jni::sys::jstring;
-use jni::JNIEnv;
+use jni::{
+    JNIEnv,
+    objects::{JClass, JString},
+    sys::jstring,
+};
 
 use crate::inprocess;
 
@@ -139,7 +141,8 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatch<'l
         }
     }))
     .unwrap_or_else(|_| {
-        serde_json::to_string(&inprocess::error_envelope("panic in Rust engine")).unwrap_or_default()
+        serde_json::to_string(&inprocess::error_envelope("panic in Rust engine"))
+            .unwrap_or_default()
     });
 
     env.new_string(json)

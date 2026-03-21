@@ -13,10 +13,7 @@ use vespera::{axum, vespera};
 
 /// Build the application router.
 pub fn create_app() -> axum::Router {
-    vespera!(
-        title = "Document Validation API",
-        version = "0.1.0"
-    )
+    vespera!(title = "Document Validation API", version = "0.1.0")
 }
 
 // Register this app for JNI dispatch — one line, no boilerplate.
@@ -27,7 +24,7 @@ vespera::jni_app!(create_app);
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use vespera::inprocess::{dispatch, RequestEnvelope};
+    use vespera::inprocess::{RequestEnvelope, dispatch};
 
     use super::*;
 
@@ -73,7 +70,11 @@ mod tests {
             "classification": "internal",
             "effectiveDate": "2025-01-01"
         });
-        let json = dispatch(create_app(), &req("POST", "/documents/validate", &body.to_string())).await;
+        let json = dispatch(
+            create_app(),
+            &req("POST", "/documents/validate", &body.to_string()),
+        )
+        .await;
         let v = parse(&json);
         assert_eq!(v["status"], 200);
         let inner: serde_json::Value = serde_json::from_str(v["body"].as_str().unwrap()).unwrap();
@@ -91,7 +92,11 @@ mod tests {
             "classification": "bogus",
             "effectiveDate": "not-a-date"
         });
-        let json = dispatch(create_app(), &req("POST", "/documents/validate", &body.to_string())).await;
+        let json = dispatch(
+            create_app(),
+            &req("POST", "/documents/validate", &body.to_string()),
+        )
+        .await;
         let v = parse(&json);
         assert_eq!(v["status"], 200);
         let inner: serde_json::Value = serde_json::from_str(v["body"].as_str().unwrap()).unwrap();
@@ -132,5 +137,93 @@ mod tests {
         };
         let json = dispatch(create_app(), &envelope).await;
         assert_eq!(parse(&json)["status"], 200);
+    }
+
+    // ── Coverage: inprocess::dispatch_typed ───────────────────────
+    #[tokio::test]
+    async fn dispatch_typed_returns_envelope() {
+        use vespera::inprocess::dispatch_typed;
+        let result = dispatch_typed(create_app(), &req("GET", "/health", "")).await;
+        assert_eq!(result.status, 200);
+        assert!(result.body.contains("ok"));
+        assert!(!result.metadata.version.is_empty());
+    }
+
+    // ── Coverage: inprocess::parse_request ────────────────────────
+    #[test]
+    fn parse_request_valid() {
+        use vespera::inprocess::parse_request;
+        let envelope = parse_request(r#"{"method":"GET","path":"/health"}"#).unwrap();
+        assert_eq!(envelope.method, "GET");
+        assert_eq!(envelope.path, "/health");
+        assert!(envelope.query.is_empty());
+        assert!(envelope.headers.is_empty());
+        assert!(envelope.body.is_empty());
+    }
+
+    #[test]
+    fn parse_request_invalid_json() {
+        use vespera::inprocess::parse_request;
+        let err = parse_request("not json").unwrap_err();
+        assert!(err.contains("invalid request envelope"));
+    }
+
+    // ── Coverage: inprocess::error_envelope ───────────────────────
+    #[test]
+    fn error_envelope_creates_500() {
+        use vespera::inprocess::error_envelope;
+        let e = error_envelope("something broke");
+        assert_eq!(e.status, 500);
+        assert_eq!(e.body, "something broke");
+        assert!(e.headers.is_empty());
+        assert!(!e.metadata.version.is_empty());
+    }
+
+    // ── Coverage: content-type auto-inject ────────────────────────
+    #[tokio::test]
+    async fn body_without_content_type_gets_default() {
+        // Send a body WITHOUT content-type header — dispatch should inject it
+        let envelope = RequestEnvelope {
+            method: "POST".into(),
+            path: "/documents/validate".into(),
+            query: String::new(),
+            headers: HashMap::new(), // no content-type
+            body: serde_json::json!({
+                "documentType": "memo",
+                "title": "Test",
+                "content": "Content for testing auto content-type injection in dispatch.",
+                "author": "Test",
+                "department": "Test",
+                "classification": "public",
+                "effectiveDate": "2025-01-01"
+            })
+            .to_string(),
+        };
+        let json = dispatch(create_app(), &envelope).await;
+        // Should succeed (200) because content-type was auto-injected
+        assert_eq!(parse(&json)["status"], 200);
+    }
+
+    // ── Coverage: invalid HTTP method fallback ────────────────────
+    #[tokio::test]
+    async fn invalid_method_falls_back_to_get() {
+        let envelope = RequestEnvelope {
+            method: "INVALID_METHOD".into(),
+            path: "/nonexistent".into(),
+            query: String::new(),
+            headers: HashMap::new(),
+            body: String::new(),
+        };
+        let json = dispatch(create_app(), &envelope).await;
+        // Invalid method parses → fallback GET, unknown route → 404
+        assert_eq!(parse(&json)["status"], 404);
+    }
+
+    // ── Coverage: jni::register_app + dispatch_test ──────────────
+    #[tokio::test]
+    async fn jni_dispatch_test_helper() {
+        use vespera::jni::dispatch_test;
+        let json = dispatch_test(create_app, &req("GET", "/health", "")).await;
+        assert!(json.contains("\"status\":200"));
     }
 }

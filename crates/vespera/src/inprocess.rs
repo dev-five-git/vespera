@@ -28,8 +28,7 @@
 
 use std::collections::HashMap;
 
-use axum::body::Body;
-use axum::Router;
+use axum::{Router, body::Body};
 use http::{Method, Request};
 use http_body_util::BodyExt;
 use serde::{Deserialize, Serialize};
@@ -91,9 +90,7 @@ pub async fn dispatch(router: Router, envelope: &RequestEnvelope) -> String {
 
     serde_json::to_string(&result).unwrap_or_else(|e| {
         let version = result.metadata.version;
-        format!(
-            r#"{{"status":500,"headers":{{}},"body":"serialize: {e}","metadata":{{"version":"{version}"}}}}"#
-        )
+        format!(r#"{{"status":500,"headers":{{}},"body":"serialize: {e}","metadata":{{"version":"{version}"}}}}"#)
     })
 }
 

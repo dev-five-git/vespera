@@ -1,10 +1,15 @@
 use axum_example::{create_app, create_app_with_layer};
-use axum_test::TestServer;
-use axum_test::multipart::{MultipartForm, Part};
+use axum_test::{
+    TestServer,
+    multipart::{MultipartForm, Part},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use vespera::multipart::{FieldData, TypedMultipart};
-use vespera::{Multipart, Schema, schema, axum};
+use vespera::{
+    Multipart, Schema, axum,
+    multipart::{FieldData, TypedMultipart},
+    schema,
+};
 
 #[tokio::test]
 async fn test_health_endpoint() {

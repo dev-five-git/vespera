@@ -7,8 +7,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use vespera::Schema;
-use vespera::axum::Json;
+use vespera::{Schema, axum::Json};
 
 // ── DTOs (with Schema for OpenAPI) ───────────────────────────────────
 
@@ -122,13 +121,7 @@ fn validate_document(req: &ValidateDocumentRequest) -> ValidationResult {
 
     let word_count = req.content.split_whitespace().count();
     if word_count > 0 && word_count < MIN_WORD_COUNT {
-        warnings.push(ValidationWarning {
-            code: "CONTENT_SHORT".into(),
-            field: "content".into(),
-            message: format!(
-                "Document content is very short ({word_count} words, recommended minimum: {MIN_WORD_COUNT})"
-            ),
-        });
+        warnings.push(ValidationWarning { code: "CONTENT_SHORT".into(), field: "content".into(), message: format!("Document content is very short ({word_count} words, recommended minimum: {MIN_WORD_COUNT})") });
     }
 
     let level = classification_to_level(&req.classification);
