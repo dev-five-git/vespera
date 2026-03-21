@@ -3,7 +3,7 @@
 //! # Quick start
 //!
 //! ```ignore
-//! vespera_jni::jni_app!(create_app);
+//! vespera::jni_app!(create_app);
 //! ```
 //!
 //! The [`jni_app!`] macro generates `JNI_OnLoad` which registers your
@@ -13,29 +13,16 @@
 
 #![allow(unsafe_code)]
 
-use std::sync::LazyLock;
-
-pub use vespera_inprocess;
-
-/// Re-export `jni` so the `jni_app!` macro resolves without a direct dep.
 pub use jni;
-
-// ── Global Tokio Runtime ─────────────────────────────────────────────
-
-/// Multi-threaded Tokio runtime shared across all JNI calls.
-pub static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("failed to create Tokio runtime")
-});
+pub use vespera_inprocess;
 
 /// Generate the `JNI_OnLoad` export that registers your app.
 ///
 /// ```ignore
-/// vespera_jni::jni_app!(create_app);
+/// vespera::jni_app!(create_app);
 /// ```
 #[macro_export]
+#[cfg(not(tarpaulin_include))]
 macro_rules! jni_app {
     ($factory:expr) => {
         #[unsafe(no_mangle)]
@@ -49,15 +36,22 @@ macro_rules! jni_app {
     };
 }
 
-// ── JNI Export (JVM-only) ────────────────────────────────────────────
-
+// Everything below requires a JVM — excluded from coverage.
 #[cfg(not(tarpaulin_include))]
-mod jni_export {
+mod jni_impl {
+    use std::sync::LazyLock;
+
     use jni::JNIEnv;
     use jni::objects::{JClass, JString};
     use jni::sys::jstring;
 
-    use super::RUNTIME;
+    /// Multi-threaded Tokio runtime shared across all JNI calls.
+    pub static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create Tokio runtime")
+    });
 
     /// `com.devfive.vespera.bridge.VesperaBridge.dispatch(String) -> String`
     #[unsafe(no_mangle)]
