@@ -24,6 +24,7 @@ pub use vespera_inprocess;
 #[macro_export]
 macro_rules! jni_app {
     ($factory:expr) => {
+        #[cfg(not(tarpaulin_include))]
         #[unsafe(no_mangle)]
         pub extern "system" fn JNI_OnLoad(
             _vm: $crate::jni::JavaVM,
