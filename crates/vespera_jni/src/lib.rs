@@ -49,20 +49,15 @@ macro_rules! jni_app {
     };
 }
 
-fn serialize_error(msg: &str) -> String {
-    serde_json::to_string(&vespera_inprocess::error_envelope(msg))
-        .expect("error_envelope serialization is infallible")
-}
-
 // ── JNI Export (JVM-only) ────────────────────────────────────────────
 
 #[cfg(not(tarpaulin_include))]
 mod jni_export {
+    use jni::JNIEnv;
     use jni::objects::{JClass, JString};
     use jni::sys::jstring;
-    use jni::JNIEnv;
 
-    use super::{serialize_error, RUNTIME};
+    use super::RUNTIME;
 
     /// `com.devfive.vespera.bridge.VesperaBridge.dispatch(String) -> String`
     #[unsafe(no_mangle)]
@@ -74,7 +69,7 @@ mod jni_export {
         let input = if let Ok(s) = env.get_string(&request_json) {
             String::from(s)
         } else {
-            let err = serialize_error("invalid request envelope string");
+            let err = vespera_inprocess::serialize_error("invalid request envelope string");
             return env
                 .new_string(err)
                 .map(JString::into_raw)
@@ -84,7 +79,7 @@ mod jni_export {
         let json = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             vespera_inprocess::dispatch_from_json(&input, &RUNTIME)
         }))
-        .unwrap_or_else(|_| serialize_error("panic in Rust engine"));
+        .unwrap_or_else(|_| vespera_inprocess::serialize_error("panic in Rust engine"));
 
         env.new_string(json)
             .map(JString::into_raw)

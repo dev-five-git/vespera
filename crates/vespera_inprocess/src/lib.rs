@@ -139,26 +139,28 @@ where
 /// Returns a JSON response envelope string. Requires a tokio runtime
 /// on the current thread (the caller provides it — e.g. JNI crate
 /// uses a `LazyLock<Runtime>`).
-///
-/// # Panics
-///
-/// Panics if no app has been registered via [`register_app`].
 pub fn dispatch_from_json(input: &str, runtime: &tokio::runtime::Runtime) -> String {
-    let Some(factory) = APP_FACTORY.get() else {
-        return serde_json::to_string(&error_envelope(
-            "no app registered — call register_app() at init time",
-        ))
-        .expect("error_envelope serialization is infallible");
-    };
+    APP_FACTORY.get().map_or_else(
+        || serialize_error("no app registered — call register_app() at init time"),
+        |factory| dispatch_json_with(input, runtime, factory.as_ref()),
+    )
+}
 
+/// Dispatch with an explicit factory — fully testable without global state.
+pub fn dispatch_json_with(
+    input: &str,
+    runtime: &tokio::runtime::Runtime,
+    factory: &dyn Fn() -> Router,
+) -> String {
     match parse_request(input) {
-        Ok(envelope) => {
-            let router = factory();
-            runtime.block_on(dispatch(router, &envelope))
-        }
-        Err(msg) => serde_json::to_string(&error_envelope(&msg))
-            .expect("error_envelope serialization is infallible"),
+        Ok(envelope) => runtime.block_on(dispatch(factory(), &envelope)),
+        Err(msg) => serialize_error(&msg),
     }
+}
+
+/// Serialize an error envelope to JSON.
+pub fn serialize_error(msg: &str) -> String {
+    serde_json::to_string(&error_envelope(msg)).expect("error_envelope serialization is infallible")
 }
 
 // ── Internal ─────────────────────────────────────────────────────────

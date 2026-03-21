@@ -3612,7 +3612,6 @@ name = "vespera_jni"
 version = "0.1.44"
 dependencies = [
  "jni",
- "serde_json",
  "tokio",
  "vespera_inprocess",
 ]

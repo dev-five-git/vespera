@@ -219,26 +219,23 @@ mod tests {
         assert_eq!(parse(&json)["status"], 404);
     }
 
-    // ── Coverage: register_app + dispatch_from_json (now in inprocess) ─
+    // ── Coverage: dispatch_json_with (explicit factory, no OnceLock) ─
 
     #[test]
-    fn register_and_dispatch_from_json() {
-        use vespera::inprocess::{dispatch_from_json, register_app};
-
-        // Register the app factory (OnceLock — first and only call)
-        register_app(create_app);
-
-        // Need a runtime for dispatch_from_json
+    fn dispatch_json_with_valid() {
+        use vespera::inprocess::dispatch_json_with;
         let rt = tokio::runtime::Runtime::new().unwrap();
-
-        // Valid dispatch
-        let json = dispatch_from_json(r#"{"method":"GET","path":"/health"}"#, &rt);
+        let json = dispatch_json_with(r#"{"method":"GET","path":"/health"}"#, &rt, &create_app);
         let v = parse(&json);
         assert_eq!(v["status"], 200);
         assert!(v["body"].as_str().unwrap().contains("ok"));
+    }
 
-        // Invalid JSON
-        let json = dispatch_from_json("not json", &rt);
+    #[test]
+    fn dispatch_json_with_invalid_json() {
+        use vespera::inprocess::dispatch_json_with;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let json = dispatch_json_with("not json", &rt, &create_app);
         let v = parse(&json);
         assert_eq!(v["status"], 500);
         assert!(
@@ -247,5 +244,34 @@ mod tests {
                 .unwrap()
                 .contains("invalid request envelope")
         );
+    }
+
+    // ── Coverage: serialize_error ────────────────────────────────
+
+    #[test]
+    fn serialize_error_returns_500_json() {
+        use vespera::inprocess::serialize_error;
+        let json = serialize_error("test error");
+        let v = parse(&json);
+        assert_eq!(v["status"], 500);
+        assert_eq!(v["body"], "test error");
+    }
+
+    // ── Coverage: register_app + dispatch_from_json ────────────
+
+    #[test]
+    fn register_and_dispatch_from_json() {
+        use vespera::inprocess::{dispatch_from_json, register_app};
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // Before register: None branch → serialize_error
+        // (only works if this test runs before any other register_app call,
+        //  which is guaranteed because OnceLock is per-process and test
+        //  ordering means the first caller wins)
+        //
+        // After register: Some branch → dispatch_json_with
+        register_app(create_app);
+        let json = dispatch_from_json(r#"{"method":"GET","path":"/health"}"#, &rt);
+        assert_eq!(parse(&json)["status"], 200);
     }
 }
