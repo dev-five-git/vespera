@@ -1,0 +1,19 @@
+[package]
+name = "vespera_inprocess"
+version.workspace = true
+edition.workspace = true
+description = "In-process HTTP dispatch for axum — drive a Router via oneshot without a TCP socket"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum = "0.8"
+http = "1"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt"] }
+
+[lints]
+workspace = true

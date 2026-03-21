@@ -9,6 +9,8 @@ repository.workspace = true
 [features]
 default = ["axum-extra/typed-header", "axum-extra/form", "axum-extra/query", "axum-extra/multipart", "axum-extra/cookie"]
 cron = ["dep:tokio-cron-scheduler", "dep:tokio"]
+inprocess = ["dep:vespera_inprocess"]
+jni = ["inprocess", "dep:vespera_jni"]
 
 [dependencies]
 vespera_core = { workspace = true }
@@ -22,6 +24,8 @@ tower-layer = "0.3"
 tower-service = "0.3"
 tokio-cron-scheduler = { version = "0.13", optional = true }
 tokio = { version = "1", features = ["rt"], optional = true }
+vespera_inprocess = { workspace = true, optional = true }
+vespera_jni = { workspace = true, optional = true }
 
 [lints]
 workspace = true

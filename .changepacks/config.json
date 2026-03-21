@@ -1,5 +1,5 @@
 {
-  "ignore": ["**", "!crates/**"],
+  "ignore": ["**", "!crates/**", "!libs/**"],
   "baseBranch": "main",
   "latestPackage": "crates/vespera/Cargo.toml",
   "publish": {}

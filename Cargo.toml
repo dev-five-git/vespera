@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "examples/*"]
+exclude = ["examples/java-jni-demo"]
 
 [workspace.package]
 version = "0.1.44"
@@ -12,6 +13,8 @@ readme = "README.md"
 [workspace.dependencies]
 vespera_core = { path = "crates/vespera_core", version = "0.1.44" }
 vespera_macro = { path = "crates/vespera_macro", version = "0.1.44" }
+vespera_inprocess = { path = "crates/vespera_inprocess", version = "0.1.44" }
+vespera_jni = { path = "crates/vespera_jni", version = "0.1.44" }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

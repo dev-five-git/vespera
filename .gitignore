@@ -7,3 +7,16 @@ build_rs_cov.profraw
 .claude
 .DS_Store
 coverage-report
+
+# Java build artifacts
+*.class
+.gradle/
+build/
+bin/
+
+# IDE
+.settings/
+.classpath
+.project
+*.iml
+.idea/
