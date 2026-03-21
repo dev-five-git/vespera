@@ -2,5 +2,8 @@
   "ignore": ["**", "!crates/**", "!libs/**"],
   "baseBranch": "main",
   "latestPackage": "crates/vespera/Cargo.toml",
+  "updateOn": {
+    "Cargo.toml": ["libs/vespera-bridge/build.gradle.kts"]
+  },
   "publish": {}
 }

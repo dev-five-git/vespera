@@ -3568,7 +3568,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vespera"
-version = "0.1.45"
+version = "0.1.46"
 dependencies = [
  "axum",
  "axum-extra",
@@ -3587,7 +3587,7 @@ dependencies = [
 
 [[package]]
 name = "vespera_core"
-version = "0.1.45"
+version = "0.1.46"
 dependencies = [
  "rstest",
  "serde",
@@ -3596,7 +3596,7 @@ dependencies = [
 
 [[package]]
 name = "vespera_inprocess"
-version = "0.1.45"
+version = "0.1.46"
 dependencies = [
  "axum",
  "http",
@@ -3609,7 +3609,7 @@ dependencies = [
 
 [[package]]
 name = "vespera_jni"
-version = "0.1.45"
+version = "0.1.46"
 dependencies = [
  "jni",
  "tokio",
@@ -3618,7 +3618,7 @@ dependencies = [
 
 [[package]]
 name = "vespera_macro"
-version = "0.1.45"
+version = "0.1.46"
 dependencies = [
  "insta",
  "proc-macro2",

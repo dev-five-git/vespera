@@ -80,6 +80,9 @@ jobs:
           publish: true
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    outputs:
+      changepacks: ${{ steps.changepacks.outputs.changepacks }}
+      release_assets_urls: ${{ steps.changepacks.outputs.release_assets_urls }}
 
   # publish vespera-bridge Java library to GitHub Packages
   publish-java:
