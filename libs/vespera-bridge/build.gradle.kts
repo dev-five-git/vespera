@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.devfive.vespera"
-version = "0.0.0"
+version = "0.1.0"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
