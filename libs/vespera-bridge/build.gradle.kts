@@ -31,6 +31,25 @@ dependencies {
     api("com.fasterxml.jackson.core:jackson-databind:2.17.0")
 }
 
+// TODO: Remove after confirming CI secrets work
+logger.lifecycle("=== Maven Central Publish Debug ===")
+listOf(
+    "mavenCentralUsername",
+    "mavenCentralPassword",
+    "signingInMemoryKeyId",
+    "signingInMemoryKey",
+    "signingInMemoryKeyPassword",
+).forEach { key ->
+    val value = providers.gradleProperty(key).orNull
+    val status = when {
+        value == null -> "MISSING"
+        value.isBlank() -> "EMPTY"
+        else -> "OK (${value.length} chars)"
+    }
+    logger.lifecycle("  [ENV CHECK] $key = $status")
+}
+logger.lifecycle("==================================")
+
 mavenPublishing {
     publishToMavenCentral(automaticRelease = true)
     signAllPublications()
