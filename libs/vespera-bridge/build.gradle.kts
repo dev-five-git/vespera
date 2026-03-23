@@ -1,18 +1,15 @@
 plugins {
     `java-library`
-    `maven-publish`
-    signing
+    id("com.vanniktech.maven.publish") version "0.30.0"
 }
 
 group = "io.github.dev-five-git"
-version = "0.0.4"
+version = "0.0.3"
 
 java {
     toolchain {
         languageVersion.set(JavaLanguageVersion.of(17))
     }
-    withSourcesJar()
-    withJavadocJar()
 }
 
 tasks.withType<Javadoc> {
@@ -33,64 +30,40 @@ dependencies {
     api("com.fasterxml.jackson.core:jackson-databind:2.17.0")
 }
 
-publishing {
-    publications {
-        create<MavenPublication>("mavenJava") {
-            from(components["java"])
+mavenPublishing {
+    publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
+    signAllPublications()
 
-            groupId = project.group.toString()
-            artifactId = "vespera-bridge"
-            version = project.version.toString()
+    coordinates(
+        groupId = "kr.devfive",
+        artifactId = "vespera-bridge",
+        version = project.version.toString(),
+    )
 
-            pom {
-                name.set("vespera-bridge")
-                description.set("JNI bridge for Rust vespera engine — drop-in Spring proxy with single-JAR deployment")
-                url.set("https://github.com/dev-five-git/vespera")
+    pom {
+        name.set("vespera-bridge")
+        description.set("JNI bridge for Rust vespera engine - drop-in Spring proxy with single-JAR deployment")
+        url.set("https://github.com/dev-five-git/vespera")
 
-                licenses {
-                    license {
-                        name.set("MIT License")
-                        url.set("https://opensource.org/licenses/MIT")
-                    }
-                }
-
-                developers {
-                    developer {
-                        id.set("owjs3901")
-                        name.set("devfive")
-                        email.set("contact@devfive.kr")
-                    }
-                }
-
-                scm {
-                    url.set("https://github.com/dev-five-git/vespera")
-                    connection.set("scm:git:git://github.com/dev-five-git/vespera.git")
-                    developerConnection.set("scm:git:ssh://git@github.com:dev-five-git/vespera.git")
-                }
+        licenses {
+            license {
+                name.set("MIT License")
+                url.set("https://opensource.org/licenses/MIT")
             }
         }
-    }
 
-    repositories {
-        val ghUser = System.getenv("GITHUB_ACTOR")
-        val ghToken = System.getenv("GITHUB_TOKEN")
-        maven {
-            name = "GitHubPackages"
-            url = uri("https://maven.pkg.github.com/dev-five-git/vespera")
-            credentials {
-                username = ghUser
-                password = ghToken
+        developers {
+            developer {
+                id.set("owjs3901")
+                name.set("devfive")
+                email.set("contact@devfive.kr")
             }
         }
-    }
-}
 
-signing {
-    val signingKey = System.getenv("SIGNING_KEY")
-    val signingPassword = System.getenv("SIGNING_PASSWORD")
-
-    if (!signingKey.isNullOrBlank() && !signingPassword.isNullOrBlank()) {
-        useInMemoryPgpKeys(signingKey, signingPassword)
-        sign(publishing.publications)
+        scm {
+            url.set("https://github.com/dev-five-git/vespera")
+            connection.set("scm:git:git://github.com/dev-five-git/vespera.git")
+            developerConnection.set("scm:git:ssh://git@github.com:dev-five-git/vespera.git")
+        }
     }
 }
