@@ -5,5 +5,7 @@
   "updateOn": {
     "Cargo.toml": ["libs/vespera-bridge/build.gradle.kts"]
   },
-  "publish": {}
+  "publish": {
+    "java": "./gradlew gradlew signMavenPublication --stacktrace"
+  }
 }
