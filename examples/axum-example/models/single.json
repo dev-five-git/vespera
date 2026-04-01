@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/dev-five-git/vespertide/refs/heads/main/schemas/model.schema.json",
+  "name": "single",
+  "columns": [
+    {
+      "name": "username",
+      "type": { "kind": "varchar", "length": 32 },
+      "nullable": false,
+      "primary_key": true
+    }
+  ]
+}

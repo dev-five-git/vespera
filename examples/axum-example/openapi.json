@@ -3467,6 +3467,60 @@
           "createdAt"
         ]
       },
+      "SingleRelSchema": {
+        "type": "object",
+        "properties": {
+          "single": {
+            "$ref": "#/components/schemas/SingleRelSchema_Single"
+          },
+          "username": {
+            "type": "string",
+            "default": ""
+          }
+        },
+        "required": [
+          "username",
+          "single"
+        ]
+      },
+      "SingleRelSchema_Single": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "username"
+        ]
+      },
+      "SingleSchema": {
+        "type": "object",
+        "properties": {
+          "singleRel": {
+            "$ref": "#/components/schemas/SingleSchema_SingleRel",
+            "nullable": true
+          },
+          "username": {
+            "type": "string",
+            "default": ""
+          }
+        },
+        "required": [
+          "username"
+        ]
+      },
+      "SingleSchema_SingleRel": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "username"
+        ]
+      },
       "SkipResponse": {
         "type": "object",
         "properties": {

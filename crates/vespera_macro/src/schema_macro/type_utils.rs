@@ -16,15 +16,19 @@ pub const PRIMITIVE_TYPE_NAMES: &[&str] = &[
     "f64", "bool", "String", "Decimal",
 ];
 
-/// Normalize a `TokenStream` or `Type` to a compact string by removing spaces.
+/// Normalize a `TokenStream` or `Type` to a compact string by removing all whitespace.
 ///
 /// This replaces the common `.to_string().replace(' ', "")` pattern used throughout
 /// the codebase to produce deterministic path strings for comparison and cache keys.
+///
+/// Removes spaces, newlines, and carriage returns — `proc_macro2`'s `Display` impl
+/// may insert newlines when token sequences exceed an internal line-length threshold,
+/// which would break substring checks like `contains("HasOne<")`.
 #[inline]
 pub fn normalize_token_str(displayable: &impl std::fmt::Display) -> String {
     let s = displayable.to_string();
-    if s.contains(' ') {
-        s.replace(' ', "")
+    if s.contains(|c: char| c.is_ascii_whitespace()) {
+        s.replace(|c: char| c.is_ascii_whitespace(), "")
     } else {
         s
     }
