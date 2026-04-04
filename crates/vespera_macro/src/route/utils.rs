@@ -14,8 +14,13 @@ pub fn extract_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
             }) = &meta_nv.value
         {
             let line = lit_str.value();
-            // Trim leading space that rustdoc adds
-            let trimmed = line.strip_prefix(' ').unwrap_or(&line);
+            // Trim leading space that rustdoc adds.
+            // Also handle `" / "` prefix that can appear when doc-comment
+            // markers leak through TokenStream → string → parse roundtrips.
+            let trimmed = line
+                .strip_prefix(" / ")
+                .or_else(|| line.strip_prefix(' '))
+                .unwrap_or(&line);
             doc_lines.push(trimmed.to_string());
         }
     }

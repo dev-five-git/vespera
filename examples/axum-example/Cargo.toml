@@ -10,7 +10,7 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tower-http = { version = "0.6", features = ["cors"] }
-sea-orm = { version = "^2.0.0-rc.36", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "with-uuid"] }
+sea-orm = { version = "^2.0.0-rc.37", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "with-uuid"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 tempfile = "3"
 
@@ -20,6 +20,6 @@ third = { path = "../third" }
 vespera = { path = "../../crates/vespera" }
 
 [dev-dependencies]
-axum-test = "19.1"
-insta = "1.46"
+axum-test = "20.0"
+insta = "1.47"
 
