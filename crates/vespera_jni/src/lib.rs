@@ -41,8 +41,9 @@ macro_rules! jni_app {
 mod jni_impl {
     use std::sync::LazyLock;
 
-    use jni::JNIEnv;
-    use jni::objects::{JClass, JString};
+    use jni::EnvUnowned;
+    use jni::errors::ThrowRuntimeExAndDefault;
+    use jni::objects::{JClass, JObject, JString};
     use jni::sys::jstring;
 
     /// Multi-threaded Tokio runtime shared across all JNI calls.
@@ -56,27 +57,26 @@ mod jni_impl {
     /// `com.devfive.vespera.bridge.VesperaBridge.dispatch(String) -> String`
     #[unsafe(no_mangle)]
     pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatch<'local>(
-        mut env: JNIEnv<'local>,
+        mut unowned_env: EnvUnowned<'local>,
         _class: JClass<'local>,
         request_json: JString<'local>,
     ) -> jstring {
-        let input = if let Ok(s) = env.get_string(&request_json) {
-            String::from(s)
-        } else {
-            let err = vespera_inprocess::serialize_error("invalid request envelope string");
-            return env
-                .new_string(err)
-                .map(JString::into_raw)
-                .unwrap_or(std::ptr::null_mut());
-        };
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<JObject<'local>> {
+                let Ok(input) = request_json.try_to_string(env) else {
+                    let err =
+                        vespera_inprocess::serialize_error("invalid request envelope string");
+                    return Ok(env.new_string(err)?.into());
+                };
 
-        let json = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            vespera_inprocess::dispatch_from_json(&input, &RUNTIME)
-        }))
-        .unwrap_or_else(|_| vespera_inprocess::serialize_error("panic in Rust engine"));
+                let json = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    vespera_inprocess::dispatch_from_json(&input, &RUNTIME)
+                }))
+                .unwrap_or_else(|_| vespera_inprocess::serialize_error("panic in Rust engine"));
 
-        env.new_string(json)
-            .map(JString::into_raw)
-            .unwrap_or(std::ptr::null_mut())
+                Ok(env.new_string(json)?.into())
+            })
+            .resolve::<ThrowRuntimeExAndDefault>()
+            .into_raw()
     }
 }
