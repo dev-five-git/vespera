@@ -22,7 +22,7 @@ tempfile = "3"
 serde_json = "1"
 tower-layer = "0.3"
 tower-service = "0.3"
-tokio-cron-scheduler = { version = "0.13", optional = true }
+tokio-cron-scheduler = { version = "0.15", optional = true }
 tokio = { version = "1", features = ["rt"], optional = true }
 vespera_inprocess = { workspace = true, optional = true }
 vespera_jni = { workspace = true, optional = true }

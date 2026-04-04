@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 vespera_inprocess = { workspace = true }
-jni = "0.21"
+jni = "0.22"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [lints]

@@ -144,7 +144,11 @@ pub fn process_route_attribute(
             .as_ref()
             .and_then(extract_error_status_codes),
         tags: route_args.tags.as_ref().and_then(extract_tag_strings),
-        description: route_args.description.as_ref().map(syn::LitStr::value),
+        description: route_args
+            .description
+            .as_ref()
+            .map(syn::LitStr::value)
+            .or_else(|| crate::route::extract_doc_comment(&item_fn.attrs)),
         fn_item_str: item.to_string(),
         file_path: proc_macro2::Span::call_site()
             .local_file()

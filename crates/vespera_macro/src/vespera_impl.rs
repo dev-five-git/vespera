@@ -52,6 +52,9 @@ pub type DocsInfo = (Option<String>, Option<String>, Option<String>);
 /// Persisted to `target/vespera/routes.cache` across builds.
 #[derive(Serialize, Deserialize)]
 struct VesperaCache {
+    /// Macro crate version — invalidates cache when macro code changes
+    #[serde(default)]
+    macro_version: String,
     /// File path → modification time (secs since UNIX_EPOCH)
     file_fingerprints: HashMap<String, u64>,
     /// Hash of SCHEMA_STORAGE contents
@@ -398,9 +401,11 @@ pub fn process_vespera_macro(
     let schema_hash = compute_schema_hash(schema_storage);
     let config_hash = compute_config_hash(processed);
 
+    let macro_version = env!("CARGO_PKG_VERSION").to_string();
     let cached = read_cache(&cache_path);
     let cache_hit = cached.as_ref().is_some_and(|c| {
-        c.file_fingerprints == fingerprints
+        c.macro_version == macro_version
+            && c.file_fingerprints == fingerprints
             && c.schema_hash == schema_hash
             && c.config_hash == config_hash
     });
@@ -445,6 +450,7 @@ pub fn process_vespera_macro(
         write_cache(
             &cache_path,
             &VesperaCache {
+                macro_version: macro_version.clone(),
                 file_fingerprints: fingerprints,
                 schema_hash,
                 config_hash,
