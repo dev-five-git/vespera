@@ -4,17 +4,17 @@ members = ["crates/*", "examples/*"]
 exclude = ["examples/java-jni-demo"]
 
 [workspace.package]
-version = "0.1.49"
+version = "0.1.50"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/dev-five-git/vespera"
 readme = "README.md"
 
 [workspace.dependencies]
-vespera_core = { path = "crates/vespera_core", version = "0.1.49" }
-vespera_macro = { path = "crates/vespera_macro", version = "0.1.49" }
-vespera_inprocess = { path = "crates/vespera_inprocess", version = "0.1.49" }
-vespera_jni = { path = "crates/vespera_jni", version = "0.1.49" }
+vespera_core = { path = "crates/vespera_core", version = "0.1.50" }
+vespera_macro = { path = "crates/vespera_macro", version = "0.1.50" }
+vespera_inprocess = { path = "crates/vespera_inprocess", version = "0.1.50" }
+vespera_jni = { path = "crates/vespera_jni", version = "0.1.50" }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
