@@ -630,4 +630,20 @@ struct Config {
         let defaults = extract_field_defaults_from_path(&input, Path::new("/dummy.rs"));
         assert!(defaults.is_empty(), "Enum should return empty defaults");
     }
+
+    #[test]
+    fn test_process_derive_schema_ref_override_excludes_openapi() {
+        let input: syn::DeriveInput = syn::parse_quote! {
+            #[derive(Clone)]
+            #[schema(ref = "ExternalUser")]
+            struct UserSchema {
+                id: i32,
+            }
+        };
+
+        let (metadata, tokens) = process_derive_schema(&input);
+        assert_eq!(metadata.name, "UserSchema");
+        assert!(!metadata.include_in_openapi);
+        assert!(tokens.is_empty());
+    }
 }

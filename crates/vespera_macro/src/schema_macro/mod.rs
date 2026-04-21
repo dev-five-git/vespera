@@ -54,6 +54,11 @@ use crate::{
     parser::{extract_default, extract_field_rename, strip_raw_prefix_owned},
 };
 
+#[cfg(test)]
+struct __VesperaSameFileLookupFixture {
+    value: i32,
+}
+
 fn derive_response_base_name(name: &str) -> String {
     for suffix in ["Response", "Request", "Schema"] {
         if let Some(stripped) = name.strip_suffix(suffix)
@@ -73,7 +78,17 @@ fn find_same_file_struct_metadata(
         return Some(metadata.clone());
     }
 
-    let file_path = proc_macro2::Span::call_site().local_file()?;
+    let file_path = proc_macro2::Span::call_site().local_file();
+    #[cfg(test)]
+    let file_path = file_path.or_else(|| {
+        Some(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("src")
+                .join("schema_macro")
+                .join("mod.rs"),
+        )
+    });
+    let file_path = file_path?;
     let definition = file_cache::get_struct_definition(&file_path, struct_name)?;
     Some(StructMetadata::new(struct_name.to_string(), definition))
 }

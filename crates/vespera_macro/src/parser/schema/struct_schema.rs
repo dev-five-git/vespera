@@ -552,4 +552,49 @@ mod tests {
         );
         assert!(schema.properties.is_some());
     }
+
+    #[test]
+    fn test_parse_struct_to_schema_transparent_tuple_wrapper_uses_ref_schema() {
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r"
+            #[serde(transparent)]
+            struct Wrapper(User);
+        ",
+        )
+        .unwrap();
+
+        let mut struct_defs = HashMap::new();
+        struct_defs.insert("User".to_string(), "struct User { id: i32 }".to_string());
+        let mut known = HashSet::new();
+        known.insert("User".to_string());
+
+        let schema = parse_struct_to_schema(&struct_item, &known, &struct_defs);
+        assert!(schema.all_of.is_some());
+        let all_of = schema.all_of.unwrap();
+        assert_eq!(all_of.len(), 1);
+        match &all_of[0] {
+            SchemaRef::Ref(reference) => {
+                assert_eq!(reference.ref_path, "#/components/schemas/User");
+            }
+            SchemaRef::Inline(_) => {
+                panic!("expected $ref wrapper for transparent tuple known schema")
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_struct_to_schema_transparent_multi_field_tuple_falls_back() {
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r"
+            #[serde(transparent)]
+            struct Wrapper(String, String);
+        ",
+        )
+        .unwrap();
+
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
+        assert_eq!(schema.schema_type, Some(SchemaType::Object));
+        assert!(schema.properties.is_none());
+        assert!(schema.all_of.is_none());
+    }
 }

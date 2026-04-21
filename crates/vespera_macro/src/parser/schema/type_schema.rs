@@ -1470,4 +1470,36 @@ mod tests {
         let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
         assert!(matches!(schema_ref, SchemaRef::Inline(_)));
     }
+
+    #[test]
+    fn test_known_schema_ref_override_returns_inline_ref_schema() {
+        let mut known = HashSet::new();
+        known.insert("UserSchema".to_string());
+
+        let mut defs = HashMap::new();
+        defs.insert(
+            "UserSchema".to_string(),
+            r#"
+            #[schema(ref = "ExternalUser", nullable)]
+            struct UserSchema {
+                id: i32,
+            }
+            "#
+            .to_string(),
+        );
+
+        let ty: Type = syn::parse_str("UserSchema").unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &known, &defs);
+
+        match schema_ref {
+            SchemaRef::Inline(schema) => {
+                assert_eq!(
+                    schema.ref_path.as_deref(),
+                    Some("#/components/schemas/ExternalUser")
+                );
+                assert_eq!(schema.nullable, Some(true));
+            }
+            SchemaRef::Ref(_) => panic!("expected inline schema ref override"),
+        }
+    }
 }

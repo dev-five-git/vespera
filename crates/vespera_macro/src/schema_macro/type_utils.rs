@@ -265,10 +265,12 @@ pub fn resolve_type_to_absolute_path(ty: &Type, source_module_path: &[String]) -
         return quote! { #(#rendered_segments)::* };
     }
 
-    // Get the single segment
-    let Some(segment) = type_path.path.segments.first() else {
-        return quote! { #ty };
-    };
+    // Safe after the empty-path early return above.
+    let segment = type_path
+        .path
+        .segments
+        .first()
+        .expect("type path should have at least one segment");
 
     let ident_str = segment.ident.to_string();
     let args = render_path_arguments(&segment.arguments, source_module_path);
@@ -646,6 +648,15 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_type_to_absolute_path_known_type_with_generic_args() {
+        let ty: syn::Type = syn::parse_str("Option<String>").unwrap();
+        let module_path = vec!["crate".to_string(), "models".to_string()];
+        let tokens = resolve_type_to_absolute_path(&ty, &module_path);
+        let output = tokens.to_string();
+        assert_eq!(output.trim(), "Option < String >");
+    }
+
+    #[test]
     fn test_resolve_type_to_absolute_path_decimal() {
         let ty: syn::Type = syn::parse_str("Decimal").unwrap();
         let module_path = vec![
@@ -858,5 +869,63 @@ mod tests {
     fn test_is_primitive_like_vec_of_datetime() {
         let ty: syn::Type = syn::parse_str("Vec<DateTime<Utc>>").unwrap();
         assert!(is_primitive_like(&ty));
+    }
+
+    #[test]
+    fn test_normalize_known_type_in_generic_non_path_and_empty_path() {
+        let ref_ty: syn::Type = syn::parse_str("&str").unwrap();
+        assert_eq!(
+            normalize_known_type_in_generic(&ref_ty, &[]).to_string(),
+            quote!(&str).to_string()
+        );
+
+        let empty_ty = empty_type_path();
+        assert_eq!(
+            normalize_known_type_in_generic(&empty_ty, &[]).to_string(),
+            quote!(#empty_ty).to_string()
+        );
+    }
+
+    #[test]
+    fn test_normalize_known_type_in_generic_preserves_qualified_paths_and_leading_colon() {
+        let ty: syn::Type = syn::parse_str("::crate::models::CustomType").unwrap();
+        let output = normalize_known_type_in_generic(&ty, &[]).to_string();
+        assert!(output.contains(":: crate :: models :: CustomType"));
+    }
+
+    #[test]
+    fn test_normalize_known_type_in_generic_preserves_qualified_paths_without_leading_colon() {
+        let ty: syn::Type = syn::parse_str("crate::models::CustomType").unwrap();
+        let output = normalize_known_type_in_generic(&ty, &[]).to_string();
+        assert!(output.contains("crate :: models :: CustomType"));
+    }
+
+    #[test]
+    fn test_render_path_arguments_handles_lifetime_and_parenthesized_args() {
+        let lifetime_ty: syn::Type = syn::parse_str("Borrowed<'a>").unwrap();
+        let lifetime_args = match lifetime_ty {
+            syn::Type::Path(type_path) => type_path.path.segments.last().unwrap().arguments.clone(),
+            _ => panic!("expected path type"),
+        };
+        assert_eq!(
+            render_path_arguments(&lifetime_args, &[]).to_string(),
+            "< 'a >"
+        );
+
+        let fn_args = PathArguments::Parenthesized(syn::parse_quote!((i32) -> String));
+        let fn_output = render_path_arguments(&fn_args, &[]).to_string();
+        assert!(fn_output.contains("(i32)"));
+        assert!(fn_output.contains("-> String"));
+    }
+
+    #[test]
+    fn test_resolve_type_to_absolute_path_leading_colon_and_empty_path() {
+        let ty: syn::Type = syn::parse_str("::crate::models::User").unwrap();
+        let tokens = resolve_type_to_absolute_path(&ty, &["ignored".to_string()]);
+        assert!(tokens.to_string().contains(":: crate :: models :: User"));
+
+        let empty_ty = empty_type_path();
+        let tokens = resolve_type_to_absolute_path(&empty_ty, &["crate".to_string()]);
+        assert!(tokens.to_string().trim().is_empty());
     }
 }
