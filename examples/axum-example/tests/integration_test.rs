@@ -1027,7 +1027,9 @@ async fn test_openapi_memo_detail_same_file_relation_adapter_schema() {
         "#/components/schemas/MemoCommentInMemoDetail"
     );
     assert!(
-        schemas.get("__VesperaMemoDetailResponseUserRelation").is_none(),
+        schemas
+            .get("__VesperaMemoDetailResponseUserRelation")
+            .is_none(),
         "Internal relation adapter should not appear in OpenAPI components"
     );
 }

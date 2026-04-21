@@ -81,7 +81,11 @@ pub fn process_derive_schema(
 
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
     let mut metadata = StructMetadata::new(schema_name, quote::quote!(#input).to_string());
-    if input.attrs.iter().any(|attr| attr.path().is_ident("schema")) {
+    if input
+        .attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("schema"))
+    {
         let mut has_ref_override = false;
         for attr in &input.attrs {
             if !attr.path().is_ident("schema") {

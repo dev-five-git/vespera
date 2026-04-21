@@ -11,9 +11,8 @@ use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 use super::{
     serde_attrs::{
         extract_doc_comment, extract_field_rename, extract_flatten, extract_rename_all,
-        extract_schema_ref_override,
-        extract_transparent,
-        extract_skip, rename_field, strip_raw_prefix_owned,
+        extract_schema_ref_override, extract_skip, extract_transparent, rename_field,
+        strip_raw_prefix_owned,
     },
     type_schema::parse_type_to_schema_ref,
 };
@@ -289,12 +288,12 @@ mod tests {
     #[test]
     fn test_parse_struct_to_schema_serde_transparent_named_wrapper_uses_inner_schema() {
         let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
+            r"
             #[serde(transparent)]
             struct Wrapper {
                 value: Box<String>,
             }
-        "#,
+        ",
         )
         .unwrap();
 
@@ -316,7 +315,10 @@ mod tests {
         .unwrap();
 
         let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
-        assert_eq!(schema.ref_path.as_deref(), Some("#/components/schemas/UserSchema"));
+        assert_eq!(
+            schema.ref_path.as_deref(),
+            Some("#/components/schemas/UserSchema")
+        );
         assert_eq!(schema.nullable, Some(true));
     }
 

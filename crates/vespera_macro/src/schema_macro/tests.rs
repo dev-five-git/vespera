@@ -8,16 +8,6 @@ use serial_test::serial;
 
 use super::*;
 
-struct UserInArticle {
-    id: i32,
-    name: String,
-}
-
-struct CategoryInArticle {
-    id: i64,
-    name: String,
-}
-
 fn create_test_struct_metadata(name: &str, definition: &str) -> StructMetadata {
     StructMetadata::new(name.to_string(), definition.to_string())
 }

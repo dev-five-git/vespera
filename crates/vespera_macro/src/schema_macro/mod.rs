@@ -93,7 +93,10 @@ fn schema_component_name_from_path(schema_path: &TokenStream) -> String {
     if segments.last().is_some_and(|segment| segment == "Schema") && segments.len() > 1 {
         format!("{}Schema", capitalize_first(&segments[segments.len() - 2]))
     } else {
-        segments.last().cloned().unwrap_or_else(|| "Schema".to_string())
+        segments
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "Schema".to_string())
     }
 }
 
@@ -116,7 +119,7 @@ fn has_derive(struct_item: &syn::ItemStruct, derive_name: &str) -> bool {
 
 fn build_named_struct_field_assignments(
     struct_item: &syn::ItemStruct,
-    source_expr: TokenStream,
+    source_expr: &TokenStream,
 ) -> syn::Result<Vec<TokenStream>> {
     let syn::Fields::Named(fields_named) = &struct_item.fields else {
         return Err(syn::Error::new_spanned(
@@ -179,7 +182,12 @@ fn build_proxy_to_dto_assignments(struct_item: &syn::ItemStruct) -> syn::Result<
     let assignments = fields_named
         .named
         .iter()
-        .filter_map(|field| field.ident.as_ref().map(|ident| quote! { #ident: proxy.#ident }))
+        .filter_map(|field| {
+            field
+                .ident
+                .as_ref()
+                .map(|ident| quote! { #ident: proxy.#ident })
+        })
         .collect();
 
     Ok(assignments)
@@ -222,11 +230,19 @@ fn maybe_generate_same_file_relation_override(
         .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e.to_string()))?;
     let dto_ident = syn::Ident::new(&dto_name, proc_macro2::Span::call_site());
     let wrapper_ident = syn::Ident::new(
-        &format!("__Vespera{}{}Relation", new_type_name, snake_to_pascal_case(field_name)),
+        &format!(
+            "__Vespera{}{}Relation",
+            new_type_name,
+            snake_to_pascal_case(field_name)
+        ),
         proc_macro2::Span::call_site(),
     );
     let proxy_ident = syn::Ident::new(
-        &format!("__Vespera{}{}Proxy", new_type_name, snake_to_pascal_case(field_name)),
+        &format!(
+            "__Vespera{}{}Proxy",
+            new_type_name,
+            snake_to_pascal_case(field_name)
+        ),
         proc_macro2::Span::call_site(),
     );
     let schema_ref_name = schema_component_name_from_path(&rel_info.schema_path);
@@ -248,7 +264,8 @@ fn maybe_generate_same_file_relation_override(
     let Some(model_ty) = related_model_type_from_schema_path(&rel_info.schema_path) else {
         return Ok(None);
     };
-    let from_model_assignments = build_named_struct_field_assignments(&dto_struct, quote! { source })?;
+    let source_expr = quote! { source };
+    let from_model_assignments = build_named_struct_field_assignments(&dto_struct, &source_expr)?;
 
     let mut helper_tokens = Vec::new();
 
@@ -286,7 +303,7 @@ fn maybe_generate_same_file_relation_override(
         });
     }
 
-        helper_tokens.push(quote! {
+    helper_tokens.push(quote! {
             impl From<#model_ty> for #dto_ident {
                 fn from(source: #model_ty) -> Self {
                 Self {
@@ -308,7 +325,10 @@ fn maybe_generate_same_file_relation_override(
         }
     });
 
-    Ok(Some((quote! { #wrapper_ident }, quote! { #(#helper_tokens)* })))
+    Ok(Some((
+        quote! { #wrapper_ident },
+        quote! { #(#helper_tokens)* },
+    )))
 }
 
 /// Generate schema code from a struct with optional field filtering
@@ -586,7 +606,7 @@ pub fn generate_schema_type_code(
                             {
                                 relation_override_helpers.push(helper_tokens);
                                 (Box::new(override_field_ty), Some(rel_info))
-                            } else 
+                            } else
                             // Check for circular references and potentially use inline type
                             if let Some(inline_type) = generate_inline_relation_type(
                                 new_type_name,
