@@ -441,6 +441,57 @@ vespera::schema_type!(Schema from Model, name = "MemoSchema");
 
 **Circular Reference Handling:** When schemas reference each other (e.g., User ↔ Memo), the macro automatically detects and handles circular references by inlining fields to prevent infinite recursion.
 
+### Same-File Relation Adapters
+
+For response DTOs that live in the same route file, `schema_type!` can now keep the handler code unchanged even when a SeaORM relation should be exposed through a custom local DTO.
+
+Example:
+
+```rust
+#[derive(Serialize, vespera::Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInArticle {
+    pub id: Uuid,
+    pub name: String,
+    pub email: String,
+    pub profile_image: Option<String>,
+}
+
+#[derive(Serialize, vespera::Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryInArticle {
+    pub id: i64,
+    pub name: String,
+    pub parent_category_id: Option<i64>,
+    pub is_active: bool,
+    pub is_menu: bool,
+}
+
+schema_type!(
+    ArticleResponse from crate::models::article::Model,
+    add = [("article_review_users": Vec<ArticleReviewUserInArticle>)]
+);
+
+// Existing handler code stays valid.
+Ok(ArticleResponse {
+    user: user.into(),
+    category: category.into(),
+    article_review_users,
+    ..
+})
+```
+
+How it works:
+
+- `schema_type!` looks for same-file DTOs named `{RelationNamePascal}In{ResponseBase}`
+  - `user` on `ArticleResponse` → `UserInArticle`
+  - `category` on `ArticleResponse` → `CategoryInArticle`
+- It generates local compile adapters so `Option<Model>.into()` works unchanged in the handler
+- Those adapters stay internal to Rust typing
+- OpenAPI does **not** expose the generated adapter wrapper names; the spec still points at the original related schemas (`UserSchema`, `CategorySchema`)
+
+Use this when you want route-local response DTOs for single-value relations (`HasOne` / `BelongsTo`) without rewriting the route construction logic.
+
 ### Multipart Mode
 
 Generate `Multipart` structs from existing types using the `multipart` keyword:

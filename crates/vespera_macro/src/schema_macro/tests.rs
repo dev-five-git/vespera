@@ -8,6 +8,16 @@ use serial_test::serial;
 
 use super::*;
 
+struct UserInArticle {
+    id: i32,
+    name: String,
+}
+
+struct CategoryInArticle {
+    id: i64,
+    name: String,
+}
+
 fn create_test_struct_metadata(name: &str, definition: &str) -> StructMetadata {
     StructMetadata::new(name.to_string(), definition.to_string())
 }
@@ -210,6 +220,85 @@ fn test_generate_schema_type_code_with_add() {
     let output = tokens.to_string();
     assert!(output.contains("UserWithExtra"));
     assert!(output.contains("extra"));
+}
+
+#[test]
+fn test_generate_schema_type_code_relation_fields_can_be_omitted_and_readded_with_custom_types() {
+    let storage = to_storage(vec![create_test_struct_metadata(
+        "Model",
+        r#"#[sea_orm(table_name = "article")]
+            pub struct Model {
+                pub id: i64,
+                pub title: String,
+                pub user: HasOne<super::user::Entity>,
+                pub category: HasOne<super::category::Entity>,
+                pub article_review_users: HasMany<super::article_review_user::Entity>
+            }"#,
+    )]);
+
+    let tokens = quote!(
+        ArticleResponse from Model,
+        omit = ["user", "category", "article_review_users"],
+        add = [
+            ("user": Option<UserInArticle>),
+            ("category": Option<CategoryInArticle>),
+            ("article_review_users": Vec<ArticleReviewUserInArticle>)
+        ]
+    );
+    let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+    let result = generate_schema_type_code(&input, &storage);
+
+    assert!(result.is_ok());
+    let (tokens, _metadata) = result.unwrap();
+    let output = tokens.to_string();
+    assert!(output.contains("pub user : Option < UserInArticle >"));
+    assert!(output.contains("pub category : Option < CategoryInArticle >"));
+    assert!(output.contains("pub article_review_users : Vec < ArticleReviewUserInArticle >"));
+    assert!(!output.contains("Box < Schema >"));
+    assert!(!output.contains("impl From"));
+}
+
+#[test]
+fn test_generate_schema_type_code_same_file_relation_adapters_for_add_mode() {
+    let storage = to_storage(vec![
+        create_test_struct_metadata(
+            "Model",
+            r#"#[sea_orm(table_name = "article")]
+                pub struct Model {
+                    pub id: i64,
+                    pub title: String,
+                    pub user: HasOne<super::user::Entity>,
+                    pub category: HasOne<super::category::Entity>,
+                    pub article_review_users: HasMany<super::article_review_user::Entity>
+                }"#,
+        ),
+        create_test_struct_metadata(
+            "UserInArticle",
+            "struct UserInArticle { id: i32, name: String }",
+        ),
+        create_test_struct_metadata(
+            "CategoryInArticle",
+            "struct CategoryInArticle { id: i64, name: String }",
+        ),
+    ]);
+
+    let tokens = quote!(
+        ArticleResponse from Model,
+        add = [("article_review_users": Vec<ArticleReviewUserInArticle>)]
+    );
+    let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+    let result = generate_schema_type_code(&input, &storage);
+
+    assert!(result.is_ok());
+    let (tokens, _metadata) = result.unwrap();
+    let output = tokens.to_string();
+    assert!(output.contains("pub user : __VesperaArticleResponseUserRelation"));
+    assert!(output.contains("pub category : __VesperaArticleResponseCategoryRelation"));
+    assert!(output.contains("impl From < Option <"));
+    assert!(output.contains("for __VesperaArticleResponseUserRelation"));
+    assert!(output.contains("for __VesperaArticleResponseCategoryRelation"));
+    assert!(output.contains("impl Clone for UserInArticle"));
+    assert!(output.contains("impl Clone for CategoryInArticle"));
 }
 
 #[test]

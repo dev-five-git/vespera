@@ -44,6 +44,27 @@ schema_type!(MemoResponseComments from crate::models::memo::Model, pick = ["memo
 // Test rename_all override: use snake_case instead of default camelCase
 schema_type!(MemoSnakeCase from crate::models::memo::Model, pick = ["id", "user_id", "created_at"], rename_all = "snake_case");
 
+#[derive(serde::Serialize, vespera::Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInMemoDetail {
+    pub id: i32,
+    pub email: String,
+    pub name: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, vespera::Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoCommentInMemoDetail {
+    pub id: i32,
+    pub memo_id: i32,
+    pub content: String,
+}
+
+schema_type!(
+    MemoDetailResponse from crate::models::memo::Model,
+    add = [("memo_comments": Vec<MemoCommentInMemoDetail>)]
+);
+
 /// Create a new memo
 #[vespera::route(post)]
 pub async fn create_memo(Json(req): Json<CreateMemoRequest>) -> Json<CreateMemoRequest> {
@@ -108,6 +129,45 @@ pub async fn get_memo_rel(
             .await
             .unwrap(),
     )
+}
+
+#[vespera::route(get, path = "/{id}/detail")]
+pub async fn get_memo_detail(Path(id): Path<i32>) -> Json<MemoDetailResponse> {
+    let now: vespera::chrono::DateTime<vespera::chrono::FixedOffset> =
+        vespera::chrono::Utc::now().fixed_offset();
+    let memo = crate::models::memo::Model {
+        id,
+        user_id: 7,
+        title: "Detailed Memo".to_string(),
+        content: "Detail content".to_string(),
+        status: crate::models::memo::MemoStatus::Published,
+        created_at: now,
+        updated_at: now,
+    };
+    let user = Some(crate::models::user::Model {
+        id: 7,
+        email: "memo@example.com".to_string(),
+        name: "Memo User".to_string(),
+        created_at: now,
+        updated_at: now,
+    });
+    let memo_comments = vec![MemoCommentInMemoDetail {
+        id: 100,
+        memo_id: id,
+        content: "Looks good".to_string(),
+    }];
+
+    Json(MemoDetailResponse {
+        id: memo.id,
+        user_id: memo.user_id,
+        title: memo.title,
+        content: memo.content,
+        status: memo.status,
+        created_at: memo.created_at,
+        updated_at: memo.updated_at,
+        user: user.into(),
+        memo_comments,
+    })
 }
 
 /// Get memo response format

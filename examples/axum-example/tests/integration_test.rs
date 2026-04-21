@@ -731,6 +731,30 @@ async fn test_memo_update_with_added_id_field() {
     assert_eq!(result["id"], 42, "id should be present (added field)");
 }
 
+#[tokio::test]
+async fn test_memo_detail_same_file_relation_adapter_runtime_shape() {
+    let app = create_app().await;
+    let server = TestServer::new(app);
+
+    let response = server.get("/memos/9/detail").await;
+
+    response.assert_status_ok();
+    let result: serde_json::Value = response.json();
+
+    assert_eq!(result["id"], 9);
+    assert_eq!(result["title"], "Detailed Memo");
+    assert_eq!(result["user"]["id"], 7);
+    assert_eq!(result["user"]["email"], "memo@example.com");
+    assert_eq!(result["user"]["name"], "Memo User");
+    assert!(result["user"].get("createdAt").is_none());
+    assert!(result["user"].get("updatedAt").is_none());
+
+    let comments = result["memoComments"].as_array().unwrap();
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0]["memoId"], 9);
+    assert_eq!(comments[0]["content"], "Looks good");
+}
+
 // Tests for TypedMultipart (Multipart) request body extraction
 
 #[tokio::test]
@@ -974,6 +998,37 @@ async fn test_openapi_contains_typed_form_routes() {
     assert!(
         content.get("multipart/form-data").is_some(),
         "PATCH /typed-form/{{id}} should use multipart/form-data content type"
+    );
+}
+
+#[tokio::test]
+async fn test_openapi_memo_detail_same_file_relation_adapter_schema() {
+    let openapi_content = std::fs::read_to_string("openapi.json").unwrap();
+    let openapi: serde_json::Value = serde_json::from_str(&openapi_content).unwrap();
+
+    let paths = openapi.get("paths").unwrap();
+    let schemas = openapi
+        .get("components")
+        .and_then(|c| c.get("schemas"))
+        .unwrap();
+
+    assert!(
+        paths.get("/memos/{id}/detail").is_some(),
+        "Missing /memos/{{id}}/detail route in OpenAPI spec"
+    );
+
+    let memo_detail = &schemas["MemoDetailResponse"];
+    assert_eq!(
+        memo_detail["properties"]["user"]["$ref"],
+        "#/components/schemas/UserSchema"
+    );
+    assert_eq!(
+        memo_detail["properties"]["memoComments"]["items"]["$ref"],
+        "#/components/schemas/MemoCommentInMemoDetail"
+    );
+    assert!(
+        schemas.get("__VesperaMemoDetailResponseUserRelation").is_none(),
+        "Internal relation adapter should not appear in OpenAPI components"
     );
 }
 

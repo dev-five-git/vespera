@@ -81,6 +81,26 @@ pub fn process_derive_schema(
 
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
     let mut metadata = StructMetadata::new(schema_name, quote::quote!(#input).to_string());
+    if input.attrs.iter().any(|attr| attr.path().is_ident("schema")) {
+        let mut has_ref_override = false;
+        for attr in &input.attrs {
+            if !attr.path().is_ident("schema") {
+                continue;
+            }
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("ref") {
+                    has_ref_override = true;
+                }
+                Ok(())
+            });
+            if has_ref_override {
+                break;
+            }
+        }
+        if has_ref_override {
+            metadata.include_in_openapi = false;
+        }
+    }
     metadata.field_defaults = field_defaults;
     (metadata, proc_macro2::TokenStream::new())
 }

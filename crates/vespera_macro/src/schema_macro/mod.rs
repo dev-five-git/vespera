@@ -41,8 +41,8 @@ use transformation::{
     should_wrap_in_option,
 };
 use type_utils::{
-    extract_module_path, extract_type_name, is_option_type, is_qualified_path, is_seaorm_model,
-    is_seaorm_relation_type,
+    capitalize_first, extract_module_path, extract_type_name, is_option_type, is_qualified_path,
+    is_seaorm_model, is_seaorm_relation_type, snake_to_pascal_case,
 };
 use validation::{
     extract_source_field_names, validate_omit_fields, validate_partial_fields,
@@ -53,6 +53,263 @@ use crate::{
     metadata::StructMetadata,
     parser::{extract_default, extract_field_rename, strip_raw_prefix_owned},
 };
+
+fn derive_response_base_name(name: &str) -> String {
+    for suffix in ["Response", "Request", "Schema"] {
+        if let Some(stripped) = name.strip_suffix(suffix)
+            && !stripped.is_empty()
+        {
+            return stripped.to_string();
+        }
+    }
+    name.to_string()
+}
+
+fn find_same_file_struct_metadata(
+    struct_name: &str,
+    schema_storage: &HashMap<String, StructMetadata>,
+) -> Option<StructMetadata> {
+    if let Some(metadata) = schema_storage.get(struct_name) {
+        return Some(metadata.clone());
+    }
+
+    let file_path = proc_macro2::Span::call_site().local_file()?;
+    let definition = file_cache::get_struct_definition(&file_path, struct_name)?;
+    Some(StructMetadata::new(struct_name.to_string(), definition))
+}
+
+fn related_model_type_from_schema_path(schema_path: &TokenStream) -> Option<syn::Type> {
+    let schema_path_str = schema_path.to_string().replace("Schema", "Model");
+    syn::parse_str(&schema_path_str).ok()
+}
+
+fn schema_component_name_from_path(schema_path: &TokenStream) -> String {
+    let segments: Vec<String> = schema_path
+        .to_string()
+        .split("::")
+        .map(|segment| segment.trim().to_string())
+        .collect();
+
+    if segments.last().is_some_and(|segment| segment == "Schema") && segments.len() > 1 {
+        format!("{}Schema", capitalize_first(&segments[segments.len() - 2]))
+    } else {
+        segments.last().cloned().unwrap_or_else(|| "Schema".to_string())
+    }
+}
+
+fn has_derive(struct_item: &syn::ItemStruct, derive_name: &str) -> bool {
+    struct_item.attrs.iter().any(|attr| {
+        if !attr.path().is_ident("derive") {
+            return false;
+        }
+
+        let mut found = false;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident(derive_name) {
+                found = true;
+            }
+            Ok(())
+        });
+        found
+    })
+}
+
+fn build_named_struct_field_assignments(
+    struct_item: &syn::ItemStruct,
+    source_expr: TokenStream,
+) -> syn::Result<Vec<TokenStream>> {
+    let syn::Fields::Named(fields_named) = &struct_item.fields else {
+        return Err(syn::Error::new_spanned(
+            struct_item,
+            "same-file relation override DTO must be a named-field struct",
+        ));
+    };
+
+    let assignments = fields_named
+        .named
+        .iter()
+        .filter_map(|field| {
+            field.ident.as_ref().map(|ident| {
+                quote! { #ident: #source_expr . #ident.clone() }
+            })
+        })
+        .collect();
+
+    Ok(assignments)
+}
+
+fn build_proxy_fields(struct_item: &syn::ItemStruct) -> syn::Result<Vec<TokenStream>> {
+    let syn::Fields::Named(fields_named) = &struct_item.fields else {
+        return Err(syn::Error::new_spanned(
+            struct_item,
+            "same-file relation override DTO must be a named-field struct",
+        ));
+    };
+
+    let fields = fields_named
+        .named
+        .iter()
+        .filter_map(|field| {
+            field.ident.as_ref().map(|ident| {
+                let ty = &field.ty;
+                let attrs: Vec<_> = field
+                    .attrs
+                    .iter()
+                    .filter(|attr| attr.path().is_ident("serde") || attr.path().is_ident("doc"))
+                    .collect();
+                quote! {
+                    #(#attrs)*
+                    #ident: #ty
+                }
+            })
+        })
+        .collect();
+
+    Ok(fields)
+}
+
+fn build_proxy_to_dto_assignments(struct_item: &syn::ItemStruct) -> syn::Result<Vec<TokenStream>> {
+    let syn::Fields::Named(fields_named) = &struct_item.fields else {
+        return Err(syn::Error::new_spanned(
+            struct_item,
+            "same-file relation override DTO must be a named-field struct",
+        ));
+    };
+
+    let assignments = fields_named
+        .named
+        .iter()
+        .filter_map(|field| field.ident.as_ref().map(|ident| quote! { #ident: proxy.#ident }))
+        .collect();
+
+    Ok(assignments)
+}
+
+fn build_clone_assignments(struct_item: &syn::ItemStruct) -> syn::Result<Vec<TokenStream>> {
+    let syn::Fields::Named(fields_named) = &struct_item.fields else {
+        return Err(syn::Error::new_spanned(
+            struct_item,
+            "same-file relation override DTO must be a named-field struct",
+        ));
+    };
+
+    let assignments = fields_named
+        .named
+        .iter()
+        .filter_map(|field| {
+            field.ident.as_ref().map(|ident| {
+                quote! { #ident: self.#ident.clone() }
+            })
+        })
+        .collect();
+
+    Ok(assignments)
+}
+
+fn maybe_generate_same_file_relation_override(
+    new_type_name: &syn::Ident,
+    field_name: &str,
+    rel_info: &RelationFieldInfo,
+    schema_storage: &HashMap<String, StructMetadata>,
+) -> syn::Result<Option<(TokenStream, TokenStream)>> {
+    let response_base = derive_response_base_name(&new_type_name.to_string());
+    let dto_name = format!("{}In{}", snake_to_pascal_case(field_name), response_base);
+    let Some(dto_meta) = find_same_file_struct_metadata(&dto_name, schema_storage) else {
+        return Ok(None);
+    };
+
+    let dto_struct: syn::ItemStruct = file_cache::parse_struct_cached(&dto_meta.definition)
+        .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e.to_string()))?;
+    let dto_ident = syn::Ident::new(&dto_name, proc_macro2::Span::call_site());
+    let wrapper_ident = syn::Ident::new(
+        &format!("__Vespera{}{}Relation", new_type_name, snake_to_pascal_case(field_name)),
+        proc_macro2::Span::call_site(),
+    );
+    let proxy_ident = syn::Ident::new(
+        &format!("__Vespera{}{}Proxy", new_type_name, snake_to_pascal_case(field_name)),
+        proc_macro2::Span::call_site(),
+    );
+    let schema_ref_name = schema_component_name_from_path(&rel_info.schema_path);
+
+    let dto_serde_attrs: Vec<_> = dto_struct
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("serde"))
+        .collect();
+    let dto_doc_attrs: Vec<_> = dto_struct
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("doc"))
+        .collect();
+
+    let proxy_fields = build_proxy_fields(&dto_struct)?;
+    let proxy_to_dto = build_proxy_to_dto_assignments(&dto_struct)?;
+    let clone_assignments = build_clone_assignments(&dto_struct)?;
+    let Some(model_ty) = related_model_type_from_schema_path(&rel_info.schema_path) else {
+        return Ok(None);
+    };
+    let from_model_assignments = build_named_struct_field_assignments(&dto_struct, quote! { source })?;
+
+    let mut helper_tokens = Vec::new();
+
+    if !has_derive(&dto_struct, "Clone") {
+        helper_tokens.push(quote! {
+            impl Clone for #dto_ident {
+                fn clone(&self) -> Self {
+                    Self {
+                        #(#clone_assignments),*
+                    }
+                }
+            }
+        });
+    }
+
+    if !has_derive(&dto_struct, "Deserialize") {
+        helper_tokens.push(quote! {
+            #[derive(serde::Deserialize)]
+            #(#dto_serde_attrs)*
+            struct #proxy_ident {
+                #(#proxy_fields),*
+            }
+
+            impl<'de> serde::Deserialize<'de> for #dto_ident {
+                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+                where
+                    D: serde::Deserializer<'de>,
+                {
+                    let proxy = #proxy_ident::deserialize(deserializer)?;
+                    Ok(Self {
+                        #(#proxy_to_dto),*
+                    })
+                }
+            }
+        });
+    }
+
+        helper_tokens.push(quote! {
+            impl From<#model_ty> for #dto_ident {
+                fn from(source: #model_ty) -> Self {
+                Self {
+                    #(#from_model_assignments),*
+                }
+            }
+        }
+
+        #(#dto_doc_attrs)*
+        #[derive(serde::Serialize, serde::Deserialize, Clone, vespera::Schema)]
+        #[serde(transparent)]
+        #[schema(ref = #schema_ref_name, nullable)]
+        struct #wrapper_ident(pub Option<#dto_ident>);
+
+        impl From<Option<#model_ty>> for #wrapper_ident {
+            fn from(source: Option<#model_ty>) -> Self {
+                Self(source.map(Into::into))
+            }
+        }
+    });
+
+    Ok(Some((quote! { #wrapper_ident }, quote! { #(#helper_tokens)* })))
+}
 
 /// Generate schema code from a struct with optional field filtering
 pub fn generate_schema_code(
@@ -230,6 +487,8 @@ pub fn generate_schema_type_code(
     let mut inline_type_definitions: Vec<TokenStream> = Vec::new();
     // Track default value functions generated from sea_orm(default_value)
     let mut default_functions: Vec<TokenStream> = Vec::new();
+    // Track same-file relation override helpers
+    let mut relation_override_helpers: Vec<TokenStream> = Vec::new();
 
     if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
         for field in &fields_named.named {
@@ -316,6 +575,18 @@ pub fn generate_schema_type_code(
                             }
                         } else {
                             // BelongsTo/HasOne: Include by default
+                            if input.add.is_some()
+                                && let Some((override_field_ty, helper_tokens)) =
+                                    maybe_generate_same_file_relation_override(
+                                        new_type_name,
+                                        &rust_field_name,
+                                        &rel_info,
+                                        schema_storage,
+                                    )?
+                            {
+                                relation_override_helpers.push(helper_tokens);
+                                (Box::new(override_field_ty), Some(rel_info))
+                            } else 
                             // Check for circular references and potentially use inline type
                             if let Some(inline_type) = generate_inline_relation_type(
                                 new_type_name,
@@ -599,6 +870,9 @@ pub fn generate_schema_type_code(
         quote! {
             // Inline types for circular relation references
             #(#inline_type_definitions)*
+
+            // Same-file relation override helpers
+            #(#relation_override_helpers)*
 
             // Default value functions for sea_orm(default_value) fields
             #(#default_functions)*

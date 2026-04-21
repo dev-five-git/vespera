@@ -158,6 +158,48 @@ pub fn extract_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
     None
 }
 
+/// Extract whether `#[serde(transparent)]` is present on a struct.
+pub fn extract_transparent(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        if !attr.path().is_ident("serde") {
+            return false;
+        }
+
+        let mut is_transparent = false;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("transparent") {
+                is_transparent = true;
+            }
+            Ok(())
+        });
+        is_transparent
+    })
+}
+
+/// Extract `#[schema(ref = "Name", nullable)]` override from a struct.
+pub fn extract_schema_ref_override(attrs: &[syn::Attribute]) -> Option<(String, bool)> {
+    attrs.iter().find_map(|attr| {
+        if !attr.path().is_ident("schema") {
+            return None;
+        }
+
+        let mut ref_name = None;
+        let mut nullable = false;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("ref") {
+                let value = meta.value()?;
+                let lit: syn::LitStr = value.parse()?;
+                ref_name = Some(lit.value());
+            } else if meta.path.is_ident("nullable") {
+                nullable = true;
+            }
+            Ok(())
+        });
+
+        ref_name.map(|name| (name, nullable))
+    })
+}
+
 pub fn extract_field_rename(attrs: &[syn::Attribute]) -> Option<String> {
     // First check serde attrs (higher priority)
     for attr in attrs {

@@ -397,6 +397,55 @@ vespera::schema_type!(Schema from Model, name = "MemoSchema");
 
 **Required Logic:** `required` is determined **solely by nullability** (`Option<T>`). Fields with `#[serde(default)]` or `#[serde(skip_serializing_if)]` are still `required` unless they are `Option<T>`.
 
+### Same-File Relation Adapters
+
+When a route file defines a local response DTO for a relation, Vespera can preserve unchanged handler code while still generating the right OpenAPI.
+
+Example:
+
+```rust
+#[derive(Serialize, vespera::Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInArticle {
+    pub id: Uuid,
+    pub name: String,
+    pub email: String,
+    pub profile_image: Option<String>,
+}
+
+#[derive(Serialize, vespera::Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryInArticle {
+    pub id: i64,
+    pub name: String,
+    pub parent_category_id: Option<i64>,
+    pub is_active: bool,
+    pub is_menu: bool,
+}
+
+schema_type!(
+    ArticleResponse from crate::models::article::Model,
+    add = [("article_review_users": Vec<ArticleReviewUserInArticle>)]
+);
+
+Ok(ArticleResponse {
+    user: user.into(),
+    category: category.into(),
+    article_review_users,
+    ..
+})
+```
+
+Rules:
+
+- Only applies to single-value relations (`HasOne` / `BelongsTo`)
+- The local DTO name must follow `{RelationNamePascal}In{ResponseBase}`
+  - `user` on `ArticleResponse` → `UserInArticle`
+  - `category` on `ArticleResponse` → `CategoryInArticle`
+- Vespera generates local compile adapters so `Option<Model>.into()` works without changing the route
+- The adapter wrapper is hidden from OpenAPI; the spec still references the original related schema (`UserSchema`, `CategorySchema`)
+- `HasMany` relations remain excluded by default unless explicitly `pick`ed or `add`ed
+
 ### Complete Example
 
 ```rust

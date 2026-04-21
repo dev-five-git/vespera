@@ -1,5 +1,6 @@
 ---
 source: examples/axum-example/tests/integration_test.rs
+assertion_line: 413
 expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
 ---
 {
@@ -1085,6 +1086,34 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MemoResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/memos/{id}/detail": {
+      "get": {
+        "operationId": "get_memo_detail",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoDetailResponse"
                 }
               }
             }
@@ -3041,6 +3070,27 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "age"
         ]
       },
+      "MemoCommentInMemoDetail": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "memoId": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "memoId",
+          "content"
+        ]
+      },
       "MemoCommentSchema": {
         "type": "object",
         "properties": {
@@ -3086,6 +3136,60 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "updatedAt",
           "user",
           "memo"
+        ]
+      },
+      "MemoDetailResponse": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "default": "1970-01-01T00:00:00+00:00"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "memoComments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemoCommentInMemoDetail"
+            }
+          },
+          "status": {
+            "$ref": "#/components/schemas/MemoStatus"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "default": "1970-01-01T00:00:00+00:00"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserSchema",
+            "nullable": true
+          },
+          "userId": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "title",
+          "content",
+          "status",
+          "createdAt",
+          "updatedAt",
+          "user",
+          "memoComments"
         ]
       },
       "MemoResponse": {
@@ -3912,6 +4016,26 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "id",
+          "name"
+        ]
+      },
+      "UserInMemoDetail": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
           "name"
         ]
       },
