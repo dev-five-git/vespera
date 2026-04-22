@@ -2,6 +2,11 @@ import { globalCss, ThemeScript } from '@devup-ui/react'
 import { resetCss } from '@devup-ui/reset-css'
 import type { Metadata } from 'next'
 
+import { Header } from '@/components/header'
+import { HeaderProvider } from '@/components/header/header-provider'
+import { MobileMenu } from '@/components/mobile-menu'
+import { SheetProvider } from '@/components/sheet'
+
 resetCss()
 
 globalCss({
@@ -122,7 +127,15 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
         <meta content="width=device-width, initial-scale=1.0" name="viewport" />
         <link href="/favicon.ico" rel="shortcut icon" />
       </head>
-      <body>{children}</body>
+      <body>
+        <SheetProvider>
+          <HeaderProvider>
+            <Header />
+            <MobileMenu />
+            {children}
+          </HeaderProvider>
+        </SheetProvider>
+      </body>
     </html>
   )
 }

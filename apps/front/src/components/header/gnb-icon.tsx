@@ -2,7 +2,14 @@ import { Box } from '@devup-ui/react'
 import { ComponentProps } from 'react'
 
 export interface GnbIconProps {
-  icon: 'discord' | 'github' | 'kakao' | 'theme-light' | 'theme-dark'
+  icon:
+    | 'discord'
+    | 'github'
+    | 'kakao'
+    | 'theme-light'
+    | 'theme-dark'
+    | 'search'
+    | 'hamburger'
 }
 
 export function GnbIcon({
@@ -20,6 +27,8 @@ export function GnbIcon({
           discord: "url('/icons/discord.svg')",
           github: "url('/icons/github.svg')",
           kakao: "url('/icons/kakao.svg')",
+          search: "url('/icons/search.svg')",
+          hamburger: "url('/icons/hamburger.svg')",
         }[icon]
       }
       maskPos="center"
