@@ -1,6 +1,7 @@
 import { Box, Center, css, Flex, Image } from '@devup-ui/react'
 
-import { SheetTrigger } from '../sheet'
+import { Hamburger } from '../mobile-menu/hamburger'
+import { SheetBoundary, SheetTrigger } from '../sheet'
 import { Effect } from './effect'
 import { GnbIcon } from './gnb-icon'
 import { HeaderContainer } from './header-container'
@@ -16,8 +17,8 @@ export function Header() {
         w="100%"
       >
         <Center
-          flexDir={[null, null, null, null, 'row']}
-          gap={[null, null, null, null, '16px']}
+          flexDir={[null, null, null, 'row']}
+          gap={[null, null, null, '16px']}
         >
           <Flex alignItems="center" gap="8px">
             <Image h="28px" src="/icons/logo-image.svg" w="21px" />
@@ -32,32 +33,25 @@ export function Header() {
             />
           </Flex>
 
-          <Flex
-            alignItems="center"
-            display={['none', null, null, null, 'flex']}
-          >
+          <Flex alignItems="center" display={['none', null, null, 'flex']}>
             <Menu>Documentation</Menu>
             <Menu>About us</Menu>
           </Flex>
         </Center>
         <Flex alignItems="center" gap="$spacingSpacing24">
-          <Flex
-            alignItems="center"
-            display={['flex', null, null, null, 'none']}
-          >
-            <Effect className={css({ _hover: { bg: 'revert' } })}>
-              <GnbIcon icon="search" />
-            </Effect>
+          <Flex alignItems="center" display={['flex', null, null, 'none']}>
+            <SheetBoundary reverse>
+              <Effect className={css({ _hover: { bg: 'revert' } })}>
+                <GnbIcon icon="search" />
+              </Effect>
+            </SheetBoundary>
             <SheetTrigger>
               <Effect className={css({ _hover: { bg: 'revert' } })}>
-                <GnbIcon icon="hamburger" />
+                <Hamburger />
               </Effect>
             </SheetTrigger>
           </Flex>
-          <Flex
-            alignItems="center"
-            display={['none', null, null, null, 'flex']}
-          >
+          <Flex alignItems="center" display={['none', null, null, 'flex']}>
             <Effect>
               <GnbIcon icon="github" />
             </Effect>

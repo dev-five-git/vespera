@@ -134,6 +134,14 @@ export function SheetContainer({
     return () => document.removeEventListener('click', handleOutsideClick)
   }, [setIsOpen, isOpen])
 
+  useEffect(() => {
+    if (isOpen) {
+      document.body.style.overflow = 'hidden'
+    } else {
+      document.body.style.overflow = 'auto'
+    }
+  }, [isOpen])
+
   return (
     render && (
       <Box
@@ -155,8 +163,6 @@ export function SheetContainer({
         )}
         onAnimationEnd={() => setInnerOpen(isOpen)}
         pos="fixed"
-        px="24px"
-        py="30px"
         style={{
           animationName: {
             left: { open: keyframes.leftOpen, close: keyframes.leftClose },
@@ -175,6 +181,18 @@ export function SheetContainer({
       />
     )
   )
+}
+
+export function SheetBoundary({
+  children,
+  reverse = false,
+}: {
+  children: React.ReactNode
+  reverse?: boolean
+}) {
+  const { isOpen } = useSheet()
+  if (reverse) return isOpen ? null : children
+  return isOpen ? children : null
 }
 
 export function Sheet() {
