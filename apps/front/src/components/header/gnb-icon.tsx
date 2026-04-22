@@ -10,6 +10,7 @@ export interface GnbIconProps {
     | 'theme-dark'
     | 'search'
     | 'hamburger'
+    | 'devfive'
 }
 
 export function GnbIcon({
@@ -29,6 +30,7 @@ export function GnbIcon({
           kakao: "url('/icons/kakao.svg')",
           search: "url('/icons/search.svg')",
           hamburger: "url('/icons/hamburger.svg')",
+          devfive: "url('/icons/devfive.svg')",
         }[icon]
       }
       maskPos="center"

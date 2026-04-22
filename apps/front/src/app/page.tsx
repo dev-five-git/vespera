@@ -1,6 +1,8 @@
-import { Box, Center, Flex, Text, VStack } from '@devup-ui/react'
+import { Box, Center, css, Flex, Text, VStack } from '@devup-ui/react'
+import { Image } from '@devup-ui/react'
 
 import { Button } from '@/components/button'
+import { GnbIcon } from '@/components/header/gnb-icon'
 
 export default function HomePage() {
   return (
@@ -46,442 +48,233 @@ export default function HomePage() {
           </VStack>
         </Center>
 
-        <Box bg="#FFF" color="#10131F" py={[16, null, 24]}>
-          <Box maxW="1200px" mx="auto" px={[4, null, 8]}>
-            <Text
-              as="h2"
-              color="#10131F"
-              fontSize={['28px', null, '40px']}
-              fontWeight={700}
-              letterSpacing="-0.01em"
-              mb={4}
-            >
-              Title
-            </Text>
-            <Text
-              color="#4B5263"
-              fontSize={['15px', null, '16px']}
-              lineHeight={1.6}
-              maxW="760px"
-              mb={12}
-            >
-              Lorem ipsum dolor sit amet. Etiam sit amet feugiat turpis. Proin
-              nec ante a sem vestibulum sodales non ut ex. Lorem ipsum dolor sit
-              amet, consectetur adipiscing elit.
-            </Text>
-
-            <Flex flexWrap="wrap" gap={5}>
+        <Center
+          bg="$containerBackground"
+          flexDir="column"
+          overflow="hidden"
+          px="20px"
+          py="$spacingSpacing80"
+        >
+          <VStack gap="40px" maxW="1280px" w="100%">
+            <VStack gap="16px">
+              <Text color="$title" typography="h3">
+                Title
+              </Text>
+              <Text color="$text" typography="body">
+                Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nullam
+                venenatis, elit in hendrerit porta, augue ante scelerisque diam,{' '}
+                <br />
+                ac egestas lacus est nec urna. Cras commodo risus hendrerit,
+                suscipit nibh at, porttitor dui.
+              </Text>
+            </VStack>
+            <VStack flexDir={[null, null, null, 'row']} gap={5}>
               {[0, 1, 2, 3].map((i) => (
-                <Box
-                  key={i}
-                  _hover={{
-                    borderColor: '#377DFF',
-                    transform: 'translateY(-2px)',
-                  }}
-                  bg="#F3F4F6"
-                  border="1px solid transparent"
-                  borderRadius="14px"
-                  flex="1 1 240px"
-                  minW="240px"
-                  p={6}
-                  transition="all .2s"
-                >
-                  <Box
-                    bg="linear-gradient(135deg,#377DFF 0%,#003EA0 100%)"
-                    borderRadius="10px"
-                    boxSize="44px"
-                    mb={5}
-                  />
-                  <Text color="#10131F" fontSize="17px" fontWeight={700} mb={2}>
-                    Feature title
-                  </Text>
-                  <Text color="#4B5263" fontSize="14px" lineHeight={1.6}>
-                    Lorem ipsum dolor sit amet. Etiam sit amet feugiat turpis.
-                    Proin nec ante a sem vestibulum sodales non ut ex.
-                  </Text>
-                </Box>
-              ))}
-            </Flex>
-          </Box>
-        </Box>
-
-        <Box py={[16, null, 24]}>
-          <Box maxW="1200px" mx="auto" px={[4, null, 8]}>
-            <Text
-              as="h2"
-              color="#FFF"
-              fontSize={['28px', null, '40px']}
-              fontWeight={700}
-              letterSpacing="-0.01em"
-              mb={4}
-            >
-              How it works
-            </Text>
-            <Text
-              color="#B6B6B6"
-              fontSize={['15px', null, '16px']}
-              lineHeight={1.6}
-              maxW="760px"
-              mb={12}
-            >
-              Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nullam
-              venenatis ac egestas lacus est nec urna.
-            </Text>
-
-            <Flex
-              alignItems="stretch"
-              flexDir={['column', null, 'row']}
-              gap={8}
-            >
-              <VStack flex={1} gap={6}>
-                <Box
-                  bg="rgba(255,255,255,0.03)"
-                  border="1px solid rgba(255,255,255,0.08)"
-                  borderRadius="14px"
-                  p={6}
-                >
-                  <Text color="#FFF" fontSize="18px" fontWeight={700} mb={2}>
-                    작동 방법
-                  </Text>
-                  <Text color="#B6B6B6" fontSize="14px" lineHeight={1.6} mb={4}>
-                    Lorem ipsum dolor sit amet. Etiam sit amet feugiat turpis.
-                    Proin nec ante a sem vestibulum sodales non ut ex.
-                  </Text>
-                  <Text
-                    _hover={{ color: '#FFF' }}
-                    as="a"
-                    color="#377DFF"
-                    cursor="pointer"
-                    fontSize="14px"
-                    fontWeight={600}
-                  >
-                    Learn more →
-                  </Text>
-                </Box>
-
-                <Flex flexDir={['column', null, 'row']} gap={6} w="100%">
-                  <Box
-                    bg="rgba(255,255,255,0.03)"
-                    border="1px solid rgba(255,255,255,0.08)"
-                    borderRadius="14px"
-                    flex={1}
-                    p={6}
-                  >
-                    <Text color="#FFF" fontSize="16px" fontWeight={700} mb={2}>
-                      예시
-                    </Text>
-                    <Text color="#B6B6B6" fontSize="13px" lineHeight={1.6}>
-                      Lorem ipsum dolor sit amet. Etiam sit amet feugiat turpis.
-                    </Text>
-                  </Box>
-                  <Box
-                    bg="rgba(255,255,255,0.03)"
-                    border="1px solid rgba(255,255,255,0.08)"
-                    borderRadius="14px"
-                    flex={1}
-                    p={6}
-                  >
-                    <Text color="#FFF" fontSize="16px" fontWeight={700} mb={2}>
-                      성과
-                    </Text>
-                    <Text color="#B6B6B6" fontSize="13px" lineHeight={1.6}>
-                      Lorem ipsum dolor sit amet. Etiam sit amet feugiat turpis.
-                    </Text>
-                  </Box>
-                </Flex>
-              </VStack>
-
-              <Box
-                bg="#0D1220"
-                border="1px solid rgba(255,255,255,0.08)"
-                borderRadius="14px"
-                flex={1}
-                overflow="hidden"
-              >
                 <Flex
-                  alignItems="center"
-                  borderBottom="1px solid rgba(255,255,255,0.08)"
-                  gap={2}
-                  px={4}
-                  py={3}
+                  key={i}
+                  bg="$cardBase"
+                  borderRadius="$spacingSpacing08"
+                  minH={['200px', null, null, '320px']}
+                  overflow="hidden"
+                  px={['$spacingSpacing20', null, null, '$spacingSpacing24']}
+                  py={['$spacingSpacing16', null, null, '$spacingSpacing24']}
                 >
-                  <Box bg="#FF5F57" borderRadius="50%" boxSize="12px" />
-                  <Box bg="#FEBC2E" borderRadius="50%" boxSize="12px" />
-                  <Box bg="#28C840" borderRadius="50%" boxSize="12px" />
-                  <Text color="#626770" fontSize="12px" ml={3}>
-                    example.tsx
-                  </Text>
+                  <VStack
+                    flex="1"
+                    gap={['10px', null, null, '$spacingSpacing12']}
+                  >
+                    <Text color="$title" typography="title">
+                      Feature title
+                    </Text>
+                    <Text color="$textSub" typography="body">
+                      Lorem ipsum dolor sit amet. Etiam sit amet feugiat turpis.
+                      Proin nec ante a sem vestibulum sodales non ut ex.{' '}
+                    </Text>
+                  </VStack>
                 </Flex>
-                <Box
-                  as="pre"
-                  color="#B6B6B6"
-                  fontFamily="ui-monospace, 'SF Mono', Menlo, monospace"
-                  fontSize="13px"
-                  lineHeight={1.7}
-                  overflow="auto"
-                  p={5}
-                >
-                  <Box as="code">
-                    <Box as="span" color="#C792EA">
-                      import
-                    </Box>{' '}
-                    <Box as="span" color="#82AAFF">
-                      {'{ Box }'}
-                    </Box>{' '}
-                    <Box as="span" color="#C792EA">
-                      from
-                    </Box>{' '}
-                    <Box as="span" color="#C3E88D">
-                      &apos;@devup-ui/react&apos;
-                    </Box>
-                    {'\n\n'}
-                    <Box as="span" color="#C792EA">
-                      export default function
-                    </Box>{' '}
-                    <Box as="span" color="#82AAFF">
-                      Page
-                    </Box>
-                    <Box as="span" color="#89DDFF">
-                      () {'{'}
-                    </Box>
-                    {'\n  '}
-                    <Box as="span" color="#C792EA">
-                      return
-                    </Box>{' '}
-                    <Box as="span" color="#89DDFF">
-                      {'<'}
-                    </Box>
-                    <Box as="span" color="#F07178">
-                      Box
-                    </Box>{' '}
-                    <Box as="span" color="#FFCB6B">
-                      bg
-                    </Box>
-                    <Box as="span" color="#89DDFF">
-                      =
-                    </Box>
-                    <Box as="span" color="#C3E88D">
-                      &quot;$primary&quot;
-                    </Box>{' '}
-                    <Box as="span" color="#FFCB6B">
-                      p
-                    </Box>
-                    <Box as="span" color="#89DDFF">
-                      =
-                    </Box>
-                    <Box as="span" color="#F78C6C">
-                      {'{4}'}
-                    </Box>
-                    <Box as="span" color="#89DDFF">
-                      {'>'}
-                    </Box>
-                    {'\n    Hello Vespera\n  '}
-                    <Box as="span" color="#89DDFF">
-                      {'</'}
-                    </Box>
-                    <Box as="span" color="#F07178">
-                      Box
-                    </Box>
-                    <Box as="span" color="#89DDFF">
-                      {'>'}
-                    </Box>
-                    {'\n'}
-                    <Box as="span" color="#89DDFF">
-                      {'}'}
-                    </Box>
-                  </Box>
-                </Box>
-              </Box>
-            </Flex>
-          </Box>
-        </Box>
+              ))}
+            </VStack>
+          </VStack>
+        </Center>
 
-        <Box overflow="hidden" pos="relative" py={[16, null, 24]}>
-          <Box
-            bg="radial-gradient(circle, #377DFF 0%, transparent 70%)"
-            filter="blur(80px)"
-            h="500px"
-            left="-10%"
-            opacity={0.3}
-            pos="absolute"
-            top="50%"
-            transform="translateY(-50%)"
-            w="500px"
-          />
-
-          <Box maxW="1200px" mx="auto" pos="relative" px={[4, null, 8]}>
-            <Flex
+        <Center
+          bg="#10131F"
+          flexDir="column"
+          overflow="hidden"
+          px="20px"
+          py={['80px', null, null, '120px']}
+        >
+          <VStack gap="40px" maxW={[null, null, null, '1280px']} w="100%">
+            <VStack gap="16px">
+              <Text color="#FFF" typography="h3">
+                Title
+              </Text>
+              <Text color="#FFF" typography="body">
+                Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nullam
+                venenatis ac egestas lacus est nec urna.{' '}
+              </Text>
+            </VStack>
+            <VStack
               alignItems="center"
-              bg="rgba(255,255,255,0.03)"
-              border="1px solid rgba(255,255,255,0.08)"
-              borderRadius="20px"
-              flexDir={['column', null, 'row']}
-              gap={10}
-              overflow="hidden"
-              p={[8, null, 12]}
+              flexDir={[null, null, null, 'row-reverse']}
+              gap="$spacingSpacing32"
               pos="relative"
             >
-              <Box flexShrink={0} h="240px" pos="relative" w="240px">
-                <Box
-                  border="1px solid rgba(255,255,255,0.08)"
-                  borderRadius="50%"
-                  boxSize="240px"
-                  left={0}
+              <Flex
+                bg="linear-gradient(90deg, #161A2A 0%, #121F33 100%)"
+                borderRadius="$spacingSpacing08"
+                flexShrink="0"
+                h="424px"
+                justifyContent="center"
+                overflow="hidden"
+                pos="relative"
+                px="$spacingSpacing20"
+                py="20px"
+                w="624px"
+              >
+                <Image
+                  left="76px"
                   pos="absolute"
-                  top={0}
+                  right="0px"
+                  src="/images/code.webp"
+                  top="47px"
+                  w="100%"
                 />
                 <Box
-                  border="1px solid rgba(255,255,255,0.12)"
-                  borderRadius="50%"
-                  boxSize="170px"
-                  left="35px"
+                  bottom="27px"
+                  left="50%"
                   pos="absolute"
-                  top="35px"
-                />
-                <Box
-                  border="1px solid rgba(255,255,255,0.18)"
-                  borderRadius="50%"
-                  boxSize="100px"
-                  left="70px"
-                  pos="absolute"
-                  top="70px"
-                />
-                <Box
-                  bg="radial-gradient(circle at 30% 30%, #88B5FF 0%, #377DFF 60%, #003EA0 100%)"
-                  borderRadius="50%"
-                  boxShadow="0 0 40px rgba(55,125,255,0.6)"
-                  boxSize="44px"
-                  left="98px"
-                  pos="absolute"
-                  top="98px"
-                />
-                <Box
-                  bg="#377DFF"
-                  borderRadius="50%"
-                  boxShadow="0 0 16px rgba(55,125,255,0.8)"
-                  boxSize="14px"
-                  left="226px"
-                  pos="absolute"
-                  top="113px"
-                />
-                <Box
-                  bg="#82AAFF"
-                  borderRadius="50%"
-                  boxShadow="0 0 12px rgba(130,170,255,0.6)"
-                  boxSize="10px"
-                  left="30px"
-                  pos="absolute"
-                  top="40px"
-                />
-                <Box
-                  bg="#FFF"
-                  borderRadius="50%"
-                  boxSize="6px"
-                  left="200px"
-                  opacity={0.6}
-                  pos="absolute"
-                  top="190px"
-                />
-              </Box>
-
-              <Box flex={1} textAlign={['center', null, 'left']}>
-                <Text
-                  as="h2"
-                  color="#FFF"
-                  fontSize={['24px', null, '32px']}
-                  fontWeight={700}
-                  letterSpacing="-0.01em"
-                  mb={3}
+                  transform="translateX(-50%)"
                 >
-                  Join our community
-                </Text>
-                <Text
-                  color="#B6B6B6"
-                  fontSize={['15px', null, '16px']}
-                  lineHeight={1.6}
-                  mb={6}
-                >
-                  Join our Discord and help build the future of frontend with
-                  CSS-in-JS!
-                </Text>
-                <Flex gap={3} justifyContent={['center', null, 'flex-start']}>
-                  <Box
-                    _hover={{ bg: '#2960CC' }}
-                    as="a"
-                    bg="#377DFF"
-                    borderRadius="10px"
-                    color="#FFF"
-                    cursor="pointer"
-                    fontSize="14px"
-                    fontWeight={600}
-                    px={5}
-                    py="10px"
-                    transition="background .2s"
+                  <Button>Learn more</Button>
+                </Box>
+              </Flex>
+              <VStack gap="$spacingSpacing12" w="100%">
+                {[1, 2, 3].map((i) => (
+                  <Flex
+                    key={i}
+                    _hover={{
+                      bg: '#1F2737',
+                    }}
+                    // selected:
+                    //   'linear-gradient(90deg, #161A2A 0%, #121F33 100%)',
+                    bg="linear-gradient(90deg, #161A2A 0%, #121F33 100%)"
+                    border="solid 2px $caption"
+                    borderRadius="$spacingSpacing08"
+                    overflow="hidden"
+                    px="$spacingSpacing24"
+                    py="$spacingSpacing20"
+                    transition="all .1s"
                   >
-                    Discord
-                  </Box>
-                  <Box
-                    _hover={{ bg: 'rgba(255,255,255,0.06)' }}
-                    as="a"
-                    border="1px solid rgba(255,255,255,0.2)"
-                    borderRadius="10px"
-                    color="#FFF"
-                    cursor="pointer"
-                    fontSize="14px"
-                    fontWeight={600}
-                    px={5}
-                    py="10px"
-                    transition="background .2s"
-                  >
-                    GitHub
-                  </Box>
-                </Flex>
-              </Box>
-            </Flex>
-          </Box>
-        </Box>
+                    <VStack
+                      flex="1"
+                      gap={['10px', null, null, '$spacingSpacing12']}
+                    >
+                      <Text color="#FFF" typography="title">
+                        How to Use
+                      </Text>
+                      <Text color="#FFF" typography="body">
+                        Lorem ipsum dolor sit amet. Etiam sit amet feugiat
+                        turpis. Proin nec ante a sem vestibulum sodales non ut
+                        ex.{' '}
+                      </Text>
+                    </VStack>
+                  </Flex>
+                ))}
+              </VStack>
+            </VStack>
+          </VStack>
+        </Center>
 
-        <Box as="footer" borderTop="1px solid rgba(255,255,255,0.08)" py={10}>
-          <Box maxW="1200px" mx="auto" px={[4, null, 8]}>
-            <Flex
-              alignItems={['flex-start', null, 'center']}
-              flexDir={['column', null, 'row']}
-              gap={6}
-              justifyContent="space-between"
-            >
-              <VStack alignItems="flex-start" gap={2}>
-                <Flex alignItems="center" gap={2}>
-                  <Box
-                    bg="linear-gradient(135deg,#377DFF 0%,#003EA0 100%)"
-                    borderRadius="6px"
-                    boxSize="24px"
-                  />
-                  <Text color="#FFF" fontSize="16px" fontWeight={700}>
-                    DEVFIVE
-                  </Text>
-                </Flex>
-                <Text color="#626770" fontSize="13px">
-                  Copyright © 데브파이브. All Rights Reserved.
-                </Text>
-              </VStack>
-              <VStack alignItems={['flex-start', null, 'flex-end']} gap={1}>
-                <Text color="#B6B6B6" fontSize="13px">
-                  문의 및 의견 제출
-                </Text>
-                <Text
-                  _hover={{ color: '#FFF' }}
-                  as="a"
-                  color="#377DFF"
-                  cursor="pointer"
-                  fontSize="14px"
-                  fontWeight={600}
-                >
-                  contact@devfive.kr
-                </Text>
-              </VStack>
+        <VStack
+          alignItems={[null, null, null, 'flex-end']}
+          bg="#000"
+          gap="40px"
+          h={['600px', null, null, 'unset']}
+          overflow="hidden"
+          pos="relative"
+          px={['20px', null, null, '40px']}
+          py={['80px', null, null, '120px']}
+        >
+          <VStack
+            gap="40px"
+            justifyContent="center"
+            maxW="480px"
+            mr={[null, null, null, '210px']}
+            w="100%"
+            zIndex="10"
+          >
+            <VStack gap="16px">
+              <Text color="#FFF" typography="h3">
+                Join our community
+              </Text>
+              <Text color="#FFF" typography="body">
+                Join our Discord and help build the future of frontend with
+                CSS-in-JS!{' '}
+              </Text>
+            </VStack>
+            <Flex alignItems="center" gap="16px">
+              <Flex
+                _active={{
+                  bg: '#6B9FFF99',
+                }}
+                _hover={{
+                  bg: '#6B9FFF66',
+                }}
+                alignItems="center"
+                bg="#6B9FFF40"
+                borderRadius="100px"
+                p="16px"
+              >
+                <GnbIcon
+                  className={css({ bg: '$vesperaPrimary' })}
+                  icon="discord"
+                />
+              </Flex>
+              <Flex
+                _active={{
+                  bg: '#6B9FFF99',
+                }}
+                _hover={{
+                  bg: '#6B9FFF66',
+                }}
+                alignItems="center"
+                bg="#6B9FFF40"
+                borderRadius="100px"
+                p="16px"
+              >
+                <GnbIcon
+                  className={css({ bg: '$vesperaPrimary' })}
+                  icon="kakao"
+                />
+              </Flex>
+              <Flex
+                _active={{
+                  bg: '#6B9FFF99',
+                }}
+                _hover={{
+                  bg: '#6B9FFF66',
+                }}
+                alignItems="center"
+                bg="#6B9FFF40"
+                borderRadius="100px"
+                p="16px"
+              >
+                <GnbIcon
+                  className={css({ bg: '$vesperaPrimary' })}
+                  icon="devfive"
+                />
+              </Flex>
             </Flex>
-          </Box>
-        </Box>
+          </VStack>
+          <Image
+            bottom="-225px"
+            boxSize="500px"
+            left="-122px"
+            pos="absolute"
+            src="/images/join-us-bg.webp"
+          />
+        </VStack>
       </Box>
     </>
   )

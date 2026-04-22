@@ -2,6 +2,7 @@ import { globalCss, ThemeScript } from '@devup-ui/react'
 import { resetCss } from '@devup-ui/reset-css'
 import type { Metadata } from 'next'
 
+import { Footer } from '@/components/footer'
 import { Header } from '@/components/header'
 import { HeaderProvider } from '@/components/header/header-provider'
 import { MobileMenu } from '@/components/mobile-menu'
@@ -71,9 +72,9 @@ globalCss({
     lineHeight: '1.5',
     letterSpacing: '-0.03em',
   },
-  // body: {
-  //   fontFamily: 'Pretendard',
-  // },
+  body: {
+    fontFamily: 'Pretendard',
+  },
 })
 
 export const metadata: Metadata = {
@@ -133,6 +134,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
             <Header />
             <MobileMenu />
             {children}
+            <Footer />
           </HeaderProvider>
         </SheetProvider>
       </body>
