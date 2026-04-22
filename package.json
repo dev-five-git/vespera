@@ -1,0 +1,31 @@
+{
+  "name": "vespera",
+  "version": "0.1.51",
+  "type": "module",
+  "description": "**FastAPI-like developer experience for Rust.** Zero-config OpenAPI 3.1 generation for Axum.",
+  "author": "devfive",
+  "devDependencies": {
+    "eslint-plugin-devup": "^2.0.18",
+    "oxlint": "^1.61.0",
+    "husky": "^9.1",
+    "bun-test-env-dom": "^1.0",
+    "@devup-ui/bun-plugin": "^1.0",
+    "@types/bun": "^1.3"
+  },
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "prelint": "cargo clippy -- -D warnings && cargo fmt --check && cargo check",
+    "build": "bun run -F ./apps/front build && bun run -F ./apps/admin build",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "prelint:fix": "cargo clippy --fix --allow-dirty && cargo fmt && cargo check",
+    "test": "bun test",
+    "posttest": "cargo tarpaulin --out xml --out stdout --out html --all-targets",
+    "dev": "bun run --workspaces dev",
+    "api": "cargo run",
+    "prepare": "husky",
+    "changepacks": "bunx @changepacks/cli"
+  }
+}

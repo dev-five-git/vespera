@@ -21,3 +21,4 @@ bin/
 *.iml
 .idea/
 .omc
+node_modules
