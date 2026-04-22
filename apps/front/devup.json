@@ -1,0 +1,452 @@
+{
+    "theme": {
+        "colors": {
+            "light": {
+                "vesperaPrimary": "#377DFF",
+                "vesperaPrimaryDark": "#003EA0",
+                "vespertidePrimary": "#0EC35C",
+                "vespertidePrimaryDark": "#0A6F36",
+                "vespertideSelected": "#CDF4CF",
+                "vespertideHover": "#F2F6F2",
+                "vespertideActive": "#E9F5E9",
+                "vespertideSecondary": "#FDF6DE",
+                "link": "#006BFF",
+                "text": "#171D2B",
+                "menutext": "#10131F",
+                "vesperaBg": "#F5F5F5",
+                "vespertideBg": "#F6F7F4",
+                "containerBackground": "#FFF",
+                "border": "#D6D9DF",
+                "success": "#4CAF50",
+                "warning": "#FF9800",
+                "error": "#F44336",
+                "info": "#2196F3",
+                "base": "#FFF",
+                "negativeBase": "#000",
+                "title": "#10131F",
+                "caption": "#9EA5B3",
+                "textSub": "#4B5263",
+                "cardBase": "#F3F4F6",
+                "vesperaHover": "#F9FAFB",
+                "vesperaSelected": "#DBEBFF",
+                "vesperaActive": "#EFF6FF"
+            },
+            "dark": {
+                "vesperaPrimary": "#101E30",
+                "vesperaPrimaryDark": "#0D3160",
+                "vespertidePrimary": "#0EC35C",
+                "vespertidePrimaryDark": "#0A6F36",
+                "vespertideSelected": "#3B9D65",
+                "vespertideHover": "#343B3C",
+                "vespertideActive": "#1F3724",
+                "vespertideSecondary": "#151C0B",
+                "link": "#006BFF",
+                "text": "#B6B6B6",
+                "menutext": "#FFF",
+                "vesperaBg": "#000",
+                "vespertideBg": "#000",
+                "containerBackground": "#181D24",
+                "border": "#626770",
+                "success": "#4CAF50",
+                "warning": "#FF9800",
+                "error": "#F44336",
+                "info": "#2196F3",
+                "base": "#000",
+                "negativeBase": "#FFF",
+                "title": "#FAFAFA",
+                "caption": "#959DAA",
+                "textSub": "#959CAF",
+                "cardBase": "#14171D",
+                "vesperaHover": "#212733",
+                "vesperaSelected": "#003EA0",
+                "vesperaActive": "#0A274D"
+            }
+        },
+        "length": {
+            "light": {
+                "spacingSpacing02": "2px",
+                "spacingSpacing04": "4px",
+                "spacingSpacing06": "6px",
+                "spacingSpacing08": "8px",
+                "spacingSpacing12": "12px",
+                "spacingSpacing16": "16px",
+                "spacingSpacing20": "20px",
+                "spacingSpacing24": "24px",
+                "spacingSpacing32": "32px",
+                "spacingSpacing40": "40px",
+                "spacingSpacing48": "48px",
+                "spacingSpacing64": "64px",
+                "spacingSpacing80": "80px",
+                "spacingSpacing120": "120px",
+                "spacingSpacing160": "160px",
+                "spacingSpacing200": "200px",
+                "borderRadiusRadius04": "4px",
+                "borderRadiusRadius08": "8px",
+                "borderRadiusRadius12": "12px",
+                "borderRadiusRadius16": "16px",
+                "borderRadiusRadius20": "20px",
+                "borderRadiusRadius24": "24px",
+                "borderRadiusRadius32": "32px",
+                "borderRadiusRadius40": "40px",
+                "borderRadiusRadiusMax": "9999px"
+            },
+            "dark": {
+                "spacingSpacing02": "2px",
+                "spacingSpacing04": "4px",
+                "spacingSpacing06": "6px",
+                "spacingSpacing08": "8px",
+                "spacingSpacing12": "12px",
+                "spacingSpacing16": "16px",
+                "spacingSpacing20": "20px",
+                "spacingSpacing24": "24px",
+                "spacingSpacing32": "32px",
+                "spacingSpacing40": "40px",
+                "spacingSpacing48": "48px",
+                "spacingSpacing64": "64px",
+                "spacingSpacing80": "80px",
+                "spacingSpacing120": "120px",
+                "spacingSpacing160": "160px",
+                "spacingSpacing200": "200px",
+                "borderRadiusRadius04": "4px",
+                "borderRadiusRadius08": "8px",
+                "borderRadiusRadius12": "12px",
+                "borderRadiusRadius16": "16px",
+                "borderRadiusRadius20": "20px",
+                "borderRadiusRadius24": "24px",
+                "borderRadiusRadius32": "32px",
+                "borderRadiusRadius40": "40px",
+                "borderRadiusRadiusMax": "9999px"
+            }
+        },
+        "typography": {
+            "displaySm": {
+                "fontFamily": "Pretendard",
+                "fontWeight": 700,
+                "fontSize": "48px",
+                "lineHeight": 1.3,
+                "letterSpacing": "-0.02em"
+            },
+            "h1": [
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 600,
+                    "fontSize": "28px",
+                    "lineHeight": 1.4,
+                    "letterSpacing": "-0.01em"
+                },
+                null,
+                null,
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 700,
+                    "fontSize": "40px",
+                    "lineHeight": 1.4,
+                    "letterSpacing": "-0.01em"
+                },
+                null,
+                null
+            ],
+            "h2": [
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 700,
+                    "fontSize": "24px",
+                    "lineHeight": 1.3,
+                    "letterSpacing": "-0.01em"
+                },
+                null,
+                null,
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 700,
+                    "fontSize": "36px",
+                    "lineHeight": 1.3,
+                    "letterSpacing": "-0.01em"
+                },
+                null,
+                null
+            ],
+            "h3": [
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 700,
+                    "fontSize": "22px",
+                    "lineHeight": 1.4,
+                    "letterSpacing": "-0.01em"
+                },
+                null,
+                null,
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 700,
+                    "fontSize": "32px",
+                    "lineHeight": 1.4,
+                    "letterSpacing": "-0.01em"
+                },
+                null,
+                null
+            ],
+            "h4": [
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 700,
+                    "fontSize": "20px",
+                    "lineHeight": 1.4,
+                    "letterSpacing": "-0.01em"
+                },
+                null,
+                null,
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 700,
+                    "fontSize": "28px",
+                    "lineHeight": 1.4,
+                    "letterSpacing": "-0.01em"
+                },
+                null,
+                null
+            ],
+            "h5": [
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 600,
+                    "fontSize": "18px",
+                    "lineHeight": 1.4,
+                    "letterSpacing": "-0.01em"
+                },
+                null,
+                null,
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 600,
+                    "fontSize": "24px",
+                    "lineHeight": 1.3,
+                    "letterSpacing": "-0.01em"
+                },
+                null,
+                null
+            ],
+            "title": [
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 500,
+                    "fontSize": "17px",
+                    "lineHeight": 1.4,
+                    "letterSpacing": "-0.02em"
+                },
+                null,
+                null,
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 500,
+                    "fontSize": "20px",
+                    "lineHeight": 1.4,
+                    "letterSpacing": "-0.02em"
+                },
+                null,
+                null
+            ],
+            "bodyLg": [
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 500,
+                    "fontSize": "16px",
+                    "lineHeight": 1.6,
+                    "letterSpacing": "-0.02em"
+                },
+                null,
+                null,
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 600,
+                    "fontSize": "18px",
+                    "lineHeight": 1.5,
+                    "letterSpacing": "-0.02em"
+                },
+                null,
+                null
+            ],
+            "body": [
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 500,
+                    "fontSize": "15px",
+                    "lineHeight": 1.5,
+                    "letterSpacing": "-0.02em"
+                },
+                null,
+                null,
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 500,
+                    "fontSize": "16px",
+                    "lineHeight": 1.5,
+                    "letterSpacing": "-0.02em"
+                },
+                null,
+                null
+            ],
+            "bodySm": [
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 400,
+                    "fontSize": "14px",
+                    "lineHeight": 1.5,
+                    "letterSpacing": "-0.02em"
+                },
+                null,
+                null,
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 400,
+                    "fontSize": "15px",
+                    "lineHeight": 1.6,
+                    "letterSpacing": "-0.02em"
+                },
+                null,
+                null
+            ],
+            "caption": [
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 500,
+                    "fontSize": "13px",
+                    "lineHeight": 1.5,
+                    "letterSpacing": "-0.01em"
+                },
+                null,
+                null,
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 500,
+                    "fontSize": "14px",
+                    "lineHeight": 1.5,
+                    "letterSpacing": "-0.01em"
+                },
+                null,
+                null
+            ],
+            "buttonSm": [
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 600,
+                    "fontSize": "14px",
+                    "lineHeight": 1.2,
+                    "letterSpacing": "-0.02em"
+                },
+                null,
+                null,
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 500,
+                    "fontSize": "14px",
+                    "lineHeight": 1.5,
+                    "letterSpacing": "-0.02em"
+                },
+                null,
+                null
+            ],
+            "tiny": {
+                "fontFamily": "Pretendard",
+                "fontWeight": 500,
+                "fontSize": "12px",
+                "lineHeight": 1.5,
+                "letterSpacing": "-0.01em"
+            },
+            "titleB": [
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 700,
+                    "fontSize": "17px",
+                    "lineHeight": 1.4,
+                    "letterSpacing": "-0.02em"
+                },
+                null,
+                null,
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 700,
+                    "fontSize": "20px",
+                    "lineHeight": 1.4,
+                    "letterSpacing": "-0.02em"
+                },
+                null,
+                null
+            ],
+            "menu": [
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 600,
+                    "fontSize": "15px",
+                    "lineHeight": 1.3,
+                    "letterSpacing": "0em"
+                },
+                null,
+                null,
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 600,
+                    "fontSize": "16px",
+                    "lineHeight": 1.3,
+                    "letterSpacing": "0em"
+                },
+                null,
+                null
+            ],
+            "captionB": [
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 700,
+                    "fontSize": "13px",
+                    "lineHeight": 1.5,
+                    "letterSpacing": "-0.01em"
+                },
+                null,
+                null,
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 700,
+                    "fontSize": "14px",
+                    "lineHeight": 1.5,
+                    "letterSpacing": "-0.01em"
+                },
+                null,
+                null
+            ],
+            "tinyB": {
+                "fontFamily": "Pretendard",
+                "fontWeight": 700,
+                "fontSize": "12px",
+                "lineHeight": 1.5,
+                "letterSpacing": "-0.01em"
+            },
+            "bodyLgEb": [
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 800,
+                    "fontSize": "16px",
+                    "lineHeight": 1.6,
+                    "letterSpacing": "-0.02em"
+                },
+                null,
+                null,
+                {
+                    "fontFamily": "Pretendard",
+                    "fontWeight": 800,
+                    "fontSize": "18px",
+                    "lineHeight": 1.5,
+                    "letterSpacing": "-0.02em"
+                },
+                null,
+                null
+            ],
+            "dispalySm": {
+                "fontFamily": "Pretendard",
+                "fontWeight": 700,
+                "fontSize": "32px",
+                "lineHeight": 1.3,
+                "letterSpacing": "-0.02em"
+            }
+        }
+    }
+}
