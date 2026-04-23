@@ -1,17 +1,19 @@
-import { Box } from '@devup-ui/react'
+import { Box, Grid } from '@devup-ui/react'
 import { type ComponentProps } from 'react'
 
 export const Table = ({ ...props }: ComponentProps<'table'>) => {
   return (
-    <Box borderRadius="0.5rem" overflowX="auto">
-      <Box
-        {...props}
-        as="table"
-        borderCollapse="collapse"
-        borderSpacing={0}
-        whiteSpace="nowrap"
-      />
-    </Box>
+    <Grid>
+      <Box maxW="100%" overflow="auto" w="100%">
+        <Box
+          as="table"
+          borderCollapse="collapse"
+          borderSpacing={0}
+          whiteSpace="nowrap"
+          {...props}
+        />
+      </Box>
+    </Grid>
   )
 }
 

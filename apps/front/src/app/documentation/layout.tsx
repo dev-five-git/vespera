@@ -48,6 +48,7 @@ export default function PageLayout({
         <Box
           className="markdown-body"
           flex="1"
+          overflowX="auto"
           px={['20px', null, '$spacingSpacing48']}
           py={['20px', null, '$spacingSpacing32']}
         >

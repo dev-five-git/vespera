@@ -6,7 +6,7 @@ import type { NextConfig } from 'next'
 const withMDX = createMDX({
   extension: /\.mdx?$/,
   options: {
-    rehypePlugins: ['rehype-slug'],
+    rehypePlugins: ['rehype-slug', 'rehype-pretty-code'],
   },
 })
 

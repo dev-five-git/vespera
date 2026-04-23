@@ -14,11 +14,33 @@ globalCss({
   html: {
     scrollPaddingTop: '68px',
   },
-  a: {
-    textDecoration: 'none',
+  body: {
+    fontFamily: 'Pretendard',
+  },
+  figure: {
+    margin: 0,
+  },
+  code: {
+    py: '8px',
+    px: '16px',
+    fontFamily: 'D2Coding',
+    fontSize: ['13px', '15px'],
+    fontStyle: 'normal',
+    fontWeight: 700,
+    lineHeight: '1.5',
+    letterSpacing: '-0.03em',
   },
   pre: {
     borderRadius: '10px',
+  },
+  'pre,code,figure': {
+    overflowX: 'auto',
+  },
+  'pre>code': {
+    overflowX: 'auto',
+  },
+  a: {
+    textDecoration: 'none',
   },
   fontFaces: [
     {
@@ -70,17 +92,6 @@ globalCss({
       fontDisplay: 'swap',
     },
   ],
-  code: {
-    fontFamily: 'D2Coding',
-    fontSize: ['13px', '15px'],
-    fontStyle: 'normal',
-    fontWeight: 700,
-    lineHeight: '1.5',
-    letterSpacing: '-0.03em',
-  },
-  body: {
-    fontFamily: 'Pretendard',
-  },
 })
 
 export const metadata: Metadata = {

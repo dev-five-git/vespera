@@ -2,23 +2,7 @@ import { Box, Text } from '@devup-ui/react'
 import type { MDXComponents } from 'mdx/types'
 import { ComponentProps } from 'react'
 
-import { Code } from './components/code'
-
 export const _components = {
-  code({ node, inline, className, children, ...props }: any) {
-    const match = /language-(\w+)/.exec(className || '')
-    return !inline && match ? (
-      <Code
-        language={match[1]}
-        value={String(children).replace(/\n$/, '')}
-        {...props}
-      />
-    ) : (
-      <code className={className} {...props}>
-        {children}
-      </code>
-    )
-  },
   h1(props: ComponentProps<typeof Text<'h1'>>) {
     return <Text as="h1" color="$title" typography="h1" {...props} />
   },
@@ -41,16 +25,11 @@ export const _components = {
       </Text>
     )
   },
-  pre({ children }: { children: React.ReactNode }) {
-    return <Box as="pre">{children}</Box>
-  },
   table({ children }: { children: React.ReactNode }) {
     return (
       <Box
         as="table"
         border="none"
-        maxW="100%"
-        minW="600px"
         selectors={{
           '& thead, & tbody': {
             border: 'none',
