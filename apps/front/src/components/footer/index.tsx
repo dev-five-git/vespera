@@ -18,7 +18,7 @@ export function Footer() {
         w="100%"
       >
         <VStack gap="20px">
-          <Text color="#FFF" typography="footerBold" wordBreak="keep-all">
+          <Text color="#FFF" typography="footerB" wordBreak="keep-all">
             문의 및 의견 제출
             <br />
             contact@devfive.kr
@@ -32,7 +32,7 @@ export function Footer() {
           gap="4px"
           justifyContent={['flex-start', null, null, 'flex-end']}
         >
-          <Text color="#FFF" typography="footerBold">
+          <Text color="#FFF" typography="footerB">
             DEVFIVE{' '}
           </Text>
           <Box
