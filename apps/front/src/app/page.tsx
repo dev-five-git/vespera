@@ -1,5 +1,6 @@
 import { Box, Center, css, Flex, Text, VStack } from '@devup-ui/react'
 import { Image } from '@devup-ui/react'
+import Link from 'next/link'
 
 import {
   ExampleContainer,
@@ -224,57 +225,76 @@ export default function HomePage() {
               </Text>
             </VStack>
             <Flex alignItems="center" gap="16px">
-              <Flex
-                _active={{
-                  bg: '#6B9FFF99',
-                }}
-                _hover={{
-                  bg: '#6B9FFF66',
-                }}
-                alignItems="center"
-                bg="#6B9FFF40"
-                borderRadius="100px"
-                p="16px"
+              <Link
+                href="https://discord.com/invite/8zjcGc7cWh"
+                rel="noopener noreferrer"
+                target="_blank"
               >
-                <GnbIcon
-                  className={css({ bg: '$vesperaPrimary' })}
-                  icon="discord"
-                />
-              </Flex>
-              <Flex
-                _active={{
-                  bg: '#6B9FFF99',
-                }}
-                _hover={{
-                  bg: '#6B9FFF66',
-                }}
-                alignItems="center"
-                bg="#6B9FFF40"
-                borderRadius="100px"
-                p="16px"
+                <Flex
+                  _active={{
+                    bg: '#6B9FFF99',
+                  }}
+                  _hover={{
+                    bg: '#6B9FFF66',
+                  }}
+                  alignItems="center"
+                  bg="#6B9FFF40"
+                  borderRadius="100px"
+                  cursor="pointer"
+                  p="16px"
+                >
+                  <GnbIcon
+                    className={css({ bg: '$vesperaPrimary' })}
+                    icon="discord"
+                  />
+                </Flex>
+              </Link>
+              <Link
+                href="https://open.kakao.com/o/giONwVAh"
+                rel="noopener noreferrer"
+                target="_blank"
               >
-                <GnbIcon
-                  className={css({ bg: '$vesperaPrimary' })}
-                  icon="kakao"
-                />
-              </Flex>
-              <Flex
-                _active={{
-                  bg: '#6B9FFF99',
-                }}
-                _hover={{
-                  bg: '#6B9FFF66',
-                }}
-                alignItems="center"
-                bg="#6B9FFF40"
-                borderRadius="100px"
-                p="16px"
+                <Flex
+                  _active={{
+                    bg: '#6B9FFF99',
+                  }}
+                  _hover={{
+                    bg: '#6B9FFF66',
+                  }}
+                  alignItems="center"
+                  bg="#6B9FFF40"
+                  borderRadius="100px"
+                  p="16px"
+                >
+                  <GnbIcon
+                    className={css({ bg: '$vesperaPrimary' })}
+                    icon="kakao"
+                  />
+                </Flex>
+              </Link>
+              <Link
+                href="https://devfive.kr"
+                rel="noopener noreferrer"
+                target="_blank"
               >
-                <GnbIcon
-                  className={css({ bg: '$vesperaPrimary' })}
-                  icon="devfive"
-                />
-              </Flex>
+                <Flex
+                  _active={{
+                    bg: '#6B9FFF99',
+                  }}
+                  _hover={{
+                    bg: '#6B9FFF66',
+                  }}
+                  alignItems="center"
+                  bg="#6B9FFF40"
+                  borderRadius="100px"
+                  p="16px"
+                >
+                  <GnbIcon
+                    className={css({ bg: '$vesperaPrimary' })}
+                    icon="devfive"
+                  />
+                </Flex>
+              </Link>
             </Flex>
           </VStack>
           <Image

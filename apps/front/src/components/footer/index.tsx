@@ -1,4 +1,5 @@
 import { Box, Flex, Text, VStack } from '@devup-ui/react'
+import Link from 'next/link'
 
 export function Footer() {
   return (
@@ -27,23 +28,25 @@ export function Footer() {
             Copyright © DEVFIVE. All Rights Reserved.{' '}
           </Text>
         </VStack>
-        <Flex
-          flex="1"
-          gap="4px"
-          justifyContent={['flex-start', null, null, 'flex-end']}
-        >
-          <Text color="#FFF" typography="footerB">
-            DEVFIVE{' '}
-          </Text>
-          <Box
-            bg="#FFF"
-            boxSize="24px"
-            maskImage="url('/icons/external-link.svg')"
-            maskPos="center"
-            maskRepeat="no-repeat"
-            maskSize="contain"
-          />
-        </Flex>
+        <Link href="https://devfive.kr">
+          <Flex
+            flex="1"
+            gap="4px"
+            justifyContent={['flex-start', null, null, 'flex-end']}
+          >
+            <Text color="#FFF" typography="footerB">
+              DEVFIVE{' '}
+            </Text>
+            <Box
+              bg="#FFF"
+              boxSize="24px"
+              maskImage="url('/icons/external-link.svg')"
+              maskPos="center"
+              maskRepeat="no-repeat"
+              maskSize="contain"
+            />
+          </Flex>
+        </Link>
       </VStack>
     </Flex>
   )
