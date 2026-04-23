@@ -15,7 +15,13 @@ export default function PageLayout({
   children: React.ReactNode
 }) {
   return (
-    <Flex maxW="1440px" minH="calc(100vh - 212px)" mx="auto" pt="68px" w="100%">
+    <Flex
+      maxW="1440px"
+      minH={['calc(100vh - 196px)', null, null, 'calc(100vh - 212px)']}
+      mx="auto"
+      pt="68px"
+      w="100%"
+    >
       <Box
         borderRight="solid 1px $border"
         display={['none', null, null, 'block']}
@@ -69,7 +75,6 @@ export default function PageLayout({
                 <Text color="$text" flex="1" typography="captionB">
                   Contents
                 </Text>
-                {/* <MenuIcon Property1="bottom" /> */}
               </Flex>
               <VStack>
                 <TableOfContentsIterator>

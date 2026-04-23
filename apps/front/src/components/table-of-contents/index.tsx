@@ -1,5 +1,6 @@
 'use client'
 
+import { usePathname } from 'next/navigation'
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 
 export interface Content {
@@ -42,6 +43,7 @@ export function TableOfContentsProvider({
 }: {
   children: React.ReactNode
 }) {
+  const pathname = usePathname()
   const [contents, setContents] = useState<{ label: string; value: string }[]>(
     [],
   )
@@ -92,9 +94,12 @@ export function TableOfContentsProvider({
     return () => {
       elements.forEach((element) => {
         io.unobserve(element)
+        setContents((prev) =>
+          prev.filter((content) => content.value !== element.id),
+        )
       })
     }
-  }, [io])
+  }, [io, pathname])
 
   return (
     <TableOfContentsContext.Provider

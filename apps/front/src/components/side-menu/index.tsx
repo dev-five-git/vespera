@@ -1,5 +1,6 @@
 'use client'
 import { Box, Flex, Grid, Text, VStack } from '@devup-ui/react'
+import Link from 'next/link'
 import { useState } from 'react'
 
 import { SideMenuItem } from '@/constants'
@@ -22,10 +23,12 @@ export function SideMenuIcon({ expanded = false }: { expanded?: boolean }) {
 }
 
 export function SideMenu({
+  hrefPrefix = '/documentation',
   value,
   childMenus,
   children,
 }: {
+  hrefPrefix?: string
   value?: string
   childMenus?: SideMenuItem[]
   children?: React.ReactNode
@@ -33,44 +36,47 @@ export function SideMenu({
   const [expanded, setExpanded] = useState(false)
   const { selected, setSelected } = useSideMenu()
   const isSelected = selected === value
+  const href = [hrefPrefix, value].join('/')
   return (
     <>
-      <Flex
-        _active={{
-          bg: '$vesperaActive',
-        }}
-        _hover={{
-          bg: '$vesperaHover',
-        }}
-        alignItems="center"
-        aria-expanded={childMenus ? expanded : undefined}
-        aria-label="side menu"
-        bg={isSelected ? '$vesperaSelected' : 'transparent'}
-        borderRadius="$spacingSpacing08"
-        gap="$spacingSpacing08"
-        onClick={() => {
-          setSelected(value ?? null)
-          setExpanded((prev) => !prev)
-        }}
-        pl="$spacingSpacing16"
-        pr="$spacingSpacing12"
-        py={['$spacingSpacing12', null, null, null, '$spacingSpacing08']}
-      >
-        <Text
+      <Link href={!childMenus ? href : '#'}>
+        <Flex
           _active={{
-            color: '$title',
+            bg: '$vesperaActive',
           }}
           _hover={{
-            color: '$title',
+            bg: '$vesperaHover',
           }}
-          color={isSelected ? '$title' : '$textSub'}
-          flex="1"
-          typography="buttonSm"
+          alignItems="center"
+          aria-expanded={childMenus ? expanded : undefined}
+          aria-label="side menu"
+          bg={isSelected ? '$vesperaSelected' : 'transparent'}
+          borderRadius="$spacingSpacing08"
+          gap="$spacingSpacing08"
+          onClick={() => {
+            setSelected(value ?? null)
+            setExpanded((prev) => !prev)
+          }}
+          pl="$spacingSpacing16"
+          pr="$spacingSpacing12"
+          py={['$spacingSpacing12', null, null, null, '$spacingSpacing08']}
         >
-          {children}
-        </Text>
-        {childMenus && <SideMenuIcon expanded={expanded} />}
-      </Flex>
+          <Text
+            _active={{
+              color: '$title',
+            }}
+            _hover={{
+              color: '$title',
+            }}
+            color={isSelected ? '$title' : '$textSub'}
+            flex="1"
+            typography="buttonSm"
+          >
+            {children}
+          </Text>
+          {childMenus && <SideMenuIcon expanded={expanded} />}
+        </Flex>
+      </Link>
 
       {childMenus && (
         <Grid
@@ -82,7 +88,12 @@ export function SideMenu({
               <Box borderRight="solid 1px $border" w="16px" />
               <VStack flexGrow="1">
                 {childMenus.map(({ value, label, children: childMenus }) => (
-                  <SideMenu key={value} childMenus={childMenus} value={value}>
+                  <SideMenu
+                    key={value}
+                    childMenus={childMenus}
+                    hrefPrefix={href}
+                    value={value}
+                  >
                     {label}
                   </SideMenu>
                 ))}
