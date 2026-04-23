@@ -37,9 +37,10 @@ function Anchor() {
         alignItems="center"
         borderRadius="$spacingSpacing08"
         py="$spacingSpacing08"
+        role="group"
       >
         <Text
-          _hover={{
+          _groupHover={{
             color: '$title',
           }}
           color={isSelected ? '$vesperaPrimary' : '$caption'}

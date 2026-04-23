@@ -60,12 +60,13 @@ export function SideMenu({
           pl="$spacingSpacing16"
           pr="$spacingSpacing12"
           py={['$spacingSpacing12', null, null, null, '$spacingSpacing08']}
+          role="group"
         >
           <Text
-            _active={{
+            _groupActive={{
               color: '$title',
             }}
-            _hover={{
+            _groupHover={{
               color: '$title',
             }}
             color={isSelected ? '$title' : '$textSub'}

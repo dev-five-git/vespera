@@ -1,4 +1,5 @@
 import { css, Flex, Text, VStack } from '@devup-ui/react'
+import Link from 'next/link'
 
 import { SIDE_MENU_ITEMS } from '@/constants'
 
@@ -67,27 +68,47 @@ export function MobileMenu() {
             </Flex>
           </VStack>
           <Flex alignItems="center">
-            <Effect>
-              <GnbIcon icon="github" />
-            </Effect>
-            <Effect>
-              <GnbIcon icon="discord" />
-            </Effect>
-            <Effect>
-              <GnbIcon icon="kakao" />
-            </Effect>
-            <Effect>
-              <LightThemeBoundary>
-                <ThemeToggle>
+            <Link
+              href="https://github.com/dev-five-git/vespera"
+              rel="noopener noreferrer"
+              target="_blank"
+            >
+              <Effect>
+                <GnbIcon icon="github" />
+              </Effect>
+            </Link>
+            <Link
+              href="https://discord.com/invite/8zjcGc7cWh"
+              rel="noopener noreferrer"
+              target="_blank"
+            >
+              <Effect>
+                <GnbIcon icon="discord" />
+              </Effect>
+            </Link>
+            <Link
+              href="https://open.kakao.com/o/giONwVAh"
+              rel="noopener noreferrer"
+              target="_blank"
+            >
+              <Effect>
+                <GnbIcon icon="kakao" />
+              </Effect>
+            </Link>
+            <LightThemeBoundary>
+              <ThemeToggle>
+                <Effect>
                   <GnbIcon icon="theme-light" />
-                </ThemeToggle>
-              </LightThemeBoundary>
-              <LightThemeBoundary reverse>
-                <ThemeToggle>
+                </Effect>
+              </ThemeToggle>
+            </LightThemeBoundary>
+            <LightThemeBoundary reverse>
+              <ThemeToggle>
+                <Effect>
                   <GnbIcon icon="theme-dark" />
-                </ThemeToggle>
-              </LightThemeBoundary>
-            </Effect>
+                </Effect>
+              </ThemeToggle>
+            </LightThemeBoundary>
           </Flex>
         </SideMenuClickDetector>
       </SideMenuProvider>

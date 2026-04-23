@@ -10,7 +10,10 @@ export function ThemeToggle(props: ComponentProps<typeof Button<'button'>>) {
       bg="transparent"
       border="none"
       cursor="pointer"
-      onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+      onClick={(e) => {
+        e.nativeEvent.stopImmediatePropagation()
+        setTheme(theme === 'light' ? 'dark' : 'light')
+      }}
       p="0"
       styleOrder={1}
       {...props}

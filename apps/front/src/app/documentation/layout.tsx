@@ -17,7 +17,7 @@ export default function PageLayout({
   return (
     <Flex
       maxW="1440px"
-      minH={['calc(100vh - 196px)', null, null, 'calc(100vh - 212px)']}
+      minH={['calc(100vh - 183px)', null, null, 'calc(100vh - 212px)']}
       mx="auto"
       pt="68px"
       w="100%"
