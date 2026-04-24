@@ -26,6 +26,7 @@ export default function Page() {
       minH="calc(100vh - 212px)"
       mx="auto"
       overflow="hidden"
+      px="20px"
       py="100px"
       w="100%"
     >
@@ -46,7 +47,7 @@ export default function Page() {
         </VStack>
         <Grid
           gap="$spacingSpacing16"
-          gridTemplateColumns="repeat(3, 1fr)"
+          gridTemplateColumns={['repeat(1,1fr)', null, null, 'repeat(3, 1fr)']}
           gridTemplateRows="repeat(2, 1fr)"
         >
           <AboutUs />
