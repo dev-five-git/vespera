@@ -1,3 +1,4 @@
+import { css } from '@devup-ui/react'
 import { Box, Flex, Text, VStack } from '@devup-ui/react'
 import Link from 'next/link'
 
@@ -28,7 +29,10 @@ export function Footer() {
             Copyright © DEVFIVE. All Rights Reserved.{' '}
           </Text>
         </VStack>
-        <Link href="https://devfive.kr">
+        <Link
+          className={css({ display: 'contents' })}
+          href="https://devfive.kr"
+        >
           <Flex
             flex="1"
             gap="4px"
