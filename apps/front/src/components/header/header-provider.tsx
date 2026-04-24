@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useContext, useMemo, useState } from 'react'
 
 import { useSheet } from '../sheet'
 
@@ -8,8 +8,9 @@ const HeaderContext = createContext<{
   menuOpen: boolean
   setMenuOpen: (menuOpen: boolean) => void
   transparent: boolean
-  sentinels: Set<HTMLElement>
   isSentinelVisible: boolean
+  setIsSentinelVisible: (isSentinelVisible: boolean) => void
+  intersectionObserver: IntersectionObserver | null
 } | null>(null)
 
 export function useHeader() {
@@ -24,7 +25,6 @@ export function HeaderProvider({ children }: { children: React.ReactNode }) {
   const { isOpen } = useSheet()
   const [menuOpen, setMenuOpen] = useState(false)
   const transparent = !isOpen
-  const sentinels = useMemo<Set<HTMLElement>>(() => new Set(), [])
   const [isSentinelVisible, setIsSentinelVisible] = useState(false)
 
   const io = useMemo(() => {
@@ -41,26 +41,15 @@ export function HeaderProvider({ children }: { children: React.ReactNode }) {
     )
   }, [])
 
-  useEffect(() => {
-    if (!io) return
-    sentinels.forEach((element) => {
-      io.observe(element)
-    })
-    return () => {
-      sentinels.forEach((element) => {
-        io.unobserve(element)
-      })
-    }
-  }, [io, sentinels])
-
   return (
     <HeaderContext.Provider
       value={{
         menuOpen,
         setMenuOpen,
         transparent,
-        sentinels,
-        isSentinelVisible,
+        isSentinelVisible: isSentinelVisible && transparent,
+        setIsSentinelVisible,
+        intersectionObserver: io,
       }}
     >
       {children}

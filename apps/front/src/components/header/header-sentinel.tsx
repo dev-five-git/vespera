@@ -8,14 +8,20 @@ import { useHeader } from './header-provider'
 export function HeaderSentinel(
   props: ComponentPropsWithoutRef<typeof Box<'div'>>,
 ) {
-  const { sentinels } = useHeader()
+  const { intersectionObserver, setIsSentinelVisible } = useHeader()
   return (
     <Box
       ref={(node) => {
         if (!node) return
-        sentinels.add(node)
+        intersectionObserver?.observe(node)
         return () => {
-          sentinels.delete(node)
+          if (!intersectionObserver) return
+          const ioEntries = intersectionObserver.takeRecords()
+          ioEntries.some((entry) => entry.isIntersecting)
+            ? setIsSentinelVisible(true)
+            : setIsSentinelVisible(false)
+
+          intersectionObserver?.unobserve(node)
         }
       }}
       {...props}
