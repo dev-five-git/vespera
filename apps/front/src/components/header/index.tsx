@@ -34,10 +34,10 @@ export function Header() {
 
           <Flex alignItems="center" display={['none', null, null, 'flex']}>
             <Link href="/documentation">
-              <Menu>Documentation</Menu>
+              <Menu value="/documentation">Documentation</Menu>
             </Link>
             <Link href="/about-us">
-              <Menu>About us</Menu>
+              <Menu value="/about-us">About us</Menu>
             </Link>
           </Flex>
         </Center>
