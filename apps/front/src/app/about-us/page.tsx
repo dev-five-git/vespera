@@ -1,6 +1,22 @@
 import { Grid, Text, VStack } from '@devup-ui/react'
+import type { Metadata } from 'next'
 
 import { AboutUs } from '@/components/about-us'
+
+export const metadata: Metadata = {
+  title: 'Vespera - About us',
+  description: 'About the team behind Vespera',
+  alternates: {
+    canonical: '/about-us',
+  },
+  openGraph: {
+    title: 'Vespera - About us',
+    description: 'About the team behind Vespera',
+    url: '/about-us',
+    siteName: 'Vespera',
+  },
+}
+
 export default function Page() {
   return (
     <VStack

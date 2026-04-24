@@ -1,5 +1,6 @@
 import { Box, Center, css, Flex, Text, VStack } from '@devup-ui/react'
 import { Image } from '@devup-ui/react'
+import type { Metadata } from 'next'
 import Link from 'next/link'
 
 import {
@@ -10,6 +11,12 @@ import {
 import { Button } from '@/components/button'
 import { GnbIcon } from '@/components/header/gnb-icon'
 import { HeaderSentinel } from '@/components/header/header-sentinel'
+
+export const metadata: Metadata = {
+  alternates: {
+    canonical: '/',
+  },
+}
 
 const EXAMPLES = [
   {
