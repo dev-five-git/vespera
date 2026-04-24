@@ -88,6 +88,7 @@ export function ExampleImage({
   const { selectedExample } = useExample()
   return (
     <Image
+      alt={selectedExample?.title ?? ''}
       bottom="0px"
       h="100%"
       left={['39px', null, null, '76px']}

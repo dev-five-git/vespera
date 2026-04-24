@@ -312,6 +312,7 @@ export default function HomePage() {
               </Flex>
             </VStack>
             <Image
+              alt="join our community background image"
               bottom="-305px"
               boxSize="500px"
               left="-142px"

@@ -27,7 +27,12 @@ export function Header() {
         >
           <Link href="/">
             <Flex alignItems="center" gap="8px">
-              <Image h="28px" src="/icons/logo-image.svg" w="21px" />
+              <Image
+                alt="Vespera logo"
+                h="28px"
+                src="/icons/logo-image.svg"
+                w="21px"
+              />
               <HeaderLogoText />
             </Flex>
           </Link>
