@@ -4,10 +4,11 @@ import { css } from '@devup-ui/react'
 import clsx from 'clsx'
 import { ComponentProps } from 'react'
 
-import { useSheet } from '../sheet'
+import { useSheetRouter } from '../sheet/router'
 
 export function Hamburger({ className, ...props }: ComponentProps<'svg'>) {
-  const { isOpen } = useSheet()
+  const { route } = useSheetRouter()
+  const isOpen = route === 'mobile-menu'
   return (
     <svg
       className={clsx(

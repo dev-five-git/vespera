@@ -3,14 +3,16 @@
 import { Center } from '@devup-ui/react'
 import { ComponentProps } from 'react'
 
+import { useSearchContext } from '../search/provider'
 import { useHeader } from './header-provider'
 
 export function HeaderContainer(props: ComponentProps<typeof Center<'div'>>) {
   const { transparent } = useHeader()
+  const { dimmed } = useSearchContext()
   return (
     <Center
       backdropFilter={transparent ? 'blur(20px)' : 'none'}
-      bg={transparent ? '#FFFFFF03' : '$containerBackground'}
+      bg={transparent && !dimmed ? '#FFFFFF03' : '$containerBackground'}
       flexDir="column"
       left="0px"
       pl="16px"

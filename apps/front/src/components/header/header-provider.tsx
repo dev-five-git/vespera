@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useMemo, useState } from 'react'
 
-import { useSheet } from '../sheet'
+import { useSheetRouter } from '../sheet/router'
 
 const HeaderContext = createContext<{
   menuOpen: boolean
@@ -22,9 +22,9 @@ export function useHeader() {
 }
 
 export function HeaderProvider({ children }: { children: React.ReactNode }) {
-  const { isOpen } = useSheet()
+  const { route } = useSheetRouter()
   const [menuOpen, setMenuOpen] = useState(false)
-  const transparent = !isOpen
+  const transparent = route !== 'mobile-menu'
   const [isSentinelVisible, setIsSentinelVisible] = useState(false)
 
   const io = useMemo(() => {

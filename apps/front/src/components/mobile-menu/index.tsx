@@ -5,7 +5,7 @@ import { SIDE_MENU_ITEMS } from '@/constants'
 
 import { Effect } from '../header/effect'
 import { GnbIcon } from '../header/gnb-icon'
-import { SheetContainer } from '../sheet'
+import { SheetRouteContainer } from '../sheet/router'
 import { SideMenu } from '../side-menu'
 import { SideMenuProvider } from '../side-menu/side-menu-provider'
 import { LightThemeBoundary } from '../theme/light-theme-boundary'
@@ -14,13 +14,14 @@ import { SideMenuClickDetector } from './side-menu-click-detector'
 
 export function MobileMenu() {
   return (
-    <SheetContainer
+    <SheetRouteContainer
       className={css({
         borderRadius: '0px',
         top: '68px',
         overflow: 'auto',
         pb: '$spacingSpacing80',
       })}
+      name="mobile-menu"
       position="right"
     >
       <SideMenuProvider>
@@ -112,6 +113,6 @@ export function MobileMenu() {
           </Flex>
         </SideMenuClickDetector>
       </SideMenuProvider>
-    </SheetContainer>
+    </SheetRouteContainer>
   )
 }
