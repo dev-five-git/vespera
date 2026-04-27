@@ -18,7 +18,7 @@
   ],
   "scripts": {
     "prelint": "cargo clippy -- -D warnings && cargo fmt --check && cargo check",
-    "build": "bun run -F ./apps/front build && bun run -F ./apps/admin build",
+    "build": "bun run -F ./apps/landing build",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "prelint:fix": "cargo clippy --fix --allow-dirty && cargo fmt && cargo check",
