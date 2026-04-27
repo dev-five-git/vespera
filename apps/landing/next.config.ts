@@ -14,8 +14,6 @@ const nextConfig: NextConfig = {
   /* config options here */
   pageExtensions: ['js', 'jsx', 'md', 'mdx', 'ts', 'tsx'],
   output: 'export',
-  basePath: '/vespera',
-  assetPrefix: '/vespera/',
   experimental: {
     optimizePackageImports: ['@devup-ui/reset-css', '@devup-ui/components'],
   },
