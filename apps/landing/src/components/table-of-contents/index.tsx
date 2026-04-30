@@ -6,6 +6,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 export interface Content {
   label: string
   value: string
+  pathname: string
 }
 
 function sortContentsByDomOrder(items: Content[]): Content[] {
@@ -44,13 +45,15 @@ export function TableOfContentsProvider({
   children: React.ReactNode
 }) {
   const pathname = usePathname()
-  const [contents, setContents] = useState<{ label: string; value: string }[]>(
+  const [contents, setContents] = useState<Content[]>([])
+  const [intersectingContents, setIntersectingContents] = useState<Content[]>(
     [],
   )
-
-  const [intersectingContents, setIntersectingContents] = useState<
-    { label: string; value: string }[]
-  >([])
+  if (intersectingContents.some((content) => content.pathname !== pathname)) {
+    setIntersectingContents((prev) =>
+      prev.filter((content) => content.pathname === pathname),
+    )
+  }
 
   const highlightedContent = intersectingContents[0] ?? null
 
@@ -62,6 +65,7 @@ export function TableOfContentsProvider({
         const item = {
           label: entry.target.innerText ?? '',
           value: entry.target.id ?? '',
+          pathname: pathname ?? '',
         }
         setContents((prev) =>
           prev.some((content) => content.value === item.value)
@@ -81,7 +85,7 @@ export function TableOfContentsProvider({
         }
       })
     })
-  }, [])
+  }, [pathname])
 
   useEffect(() => {
     if (!io) return
