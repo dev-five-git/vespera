@@ -1,6 +1,6 @@
 ---
 name: vespera
-description: Build APIs with Vespera - FastAPI-like DX for Rust/Axum. Covers route handlers, Schema derivation, and OpenAPI generation.
+description: "Build REST APIs with Vespera, a FastAPI-inspired framework for Rust/Axum. Define pub async fn route handlers with Path/Query/Json extractors, derive request/response schemas with schema_type!, and auto-generate OpenAPI 3.1 docs at compile time. Use when creating Rust web services with Axum, adding HTTP endpoints with #[vespera::route], configuring Swagger/ReDoc documentation, deriving OpenAPI schemas from SeaORM models, handling multipart uploads, or merging multi-crate API specs."
 ---
 
 # Vespera Usage Guide
@@ -27,6 +27,17 @@ pub async fn get_user(Path(id): Path<u32>) -> Json<User> { ... }
 #[derive(Serialize, Deserialize, vespera::Schema)]
 pub struct User { id: u32, name: String }
 ```
+
+> **Validate**: After adding routes, run `npx @apidevtools/swagger-cli validate openapi.json` to confirm the generated spec includes all endpoints.
+
+### End-to-End Workflow
+
+1. **Define model** — create SeaORM entity or plain struct with `#[derive(Schema)]`
+2. **Create schema_type!** — derive request/response types with `pick`/`omit` from the model
+3. **Write handler** — `pub async fn` with extractors (`Path`, `Query`, `Json`, etc.)
+4. **Annotate** — add `#[vespera::route(method, path = "...")]`
+5. **Build** — `cargo build` regenerates `openapi.json` automatically
+6. **Validate** — `npx @apidevtools/swagger-cli validate openapi.json`
 
 ---
 
@@ -182,42 +193,6 @@ npx @apidevtools/swagger-cli validate openapi.json
 > - SeaORM relation support (HasOne, BelongsTo, HasMany)
 > - No manual field synchronization
 
-### Best Practices
-
-| DO | DON'T |
-|----|-------|
-| Use `pick` to select only needed fields | Define manual structs that duplicate Model fields |
-| Use `omit` to exclude sensitive fields | Use `name` parameter unnecessarily |
-| Use full `crate::models::...` paths | Rely on implicit module resolution |
-| Define schema near route handlers | Scatter schemas across unrelated files |
-
-**Primary Parameters (USE THESE):**
-- `pick = [...]` - Allowlist: include ONLY these fields
-- `omit = [...]` - Denylist: exclude these fields
-- `omit_default` - Auto-omit fields with DB defaults (primary_key, default_value)
-
-**Advanced Parameters (USE SPARINGLY):**
-- `partial` - For PATCH endpoints only
-- `rename` - Only when API naming differs from model
-- `add` - Only when truly new fields needed (breaks `From` impl)
-- `name` - **AVOID** unless same-file Model reference (see below)
-
-### Why Not Manual Structs?
-
-```rust
-// ❌ BAD: Manual struct definition - requires sync with Model
-#[derive(Serialize, Deserialize, Schema)]
-pub struct UserResponse {
-    pub id: i32,
-    pub name: String,
-    pub email: String,
-    // Forgot to add new field? Schema out of sync!
-}
-
-// ✅ GOOD: Derive from Model - always in sync
-schema_type!(UserResponse from crate::models::user::Model, omit = ["password_hash"]);
-```
-
 ### Basic Syntax
 
 ```rust
@@ -257,37 +232,6 @@ schema_type!(InternalDTO from Model, ignore);
 // Disable Clone derive
 schema_type!(LargeResponse from SomeType, clone = false);
 ```
-
-### Same-File Model Reference (When to Use `name`)
-
-> **The `name` parameter is ONLY needed for same-file Model references.**
-> For cross-file references, use full paths and descriptive struct names instead.
-
-When defining Schema in the same file as Model (common for SeaORM entities):
-
-```rust
-// In src/models/user.rs
-pub struct Model {
-    pub id: i32,
-    pub name: String,
-    pub status: UserStatus,  // Custom enum - auto-resolved to absolute path
-}
-
-pub enum UserStatus { Active, Inactive }
-
-// ✅ CORRECT: Same-file reference - use `name` for OpenAPI schema name
-vespera::schema_type!(Schema from Model, name = "UserSchema");
-
-// ❌ WRONG: Using `name` for cross-file reference
-// schema_type!(Schema from crate::models::user::Model, name = "UserResponse");
-// ✅ CORRECT: Use descriptive struct name instead
-// schema_type!(UserResponse from crate::models::user::Model, omit = ["password"]);
-```
-
-**Why avoid `name` for cross-file references?**
-- The struct name itself becomes the OpenAPI schema name
-- `UserResponse` is clearer than `Schema` with `name = "UserResponse"`
-- Less parameters = less complexity
 
 ### Cross-File References
 
@@ -329,31 +273,19 @@ Json(model.into())  // Easy conversion!
 
 ### Parameters
 
-**Recommended (Primary):**
-
-| Parameter | Description | Example |
-|-----------|-------------|---------|
-| `pick` | Include only these fields | `pick = ["name", "email"]` |
-| `omit` | Exclude these fields | `omit = ["password"]` |
-| `omit_default` | Auto-omit fields with DB defaults | `omit_default` (bare keyword) |
-
-**Situational (Use When Needed):**
-
-| Parameter | Description | When to Use |
-|-----------|-------------|-------------|
-| `partial` | Make fields optional | PATCH endpoints only |
-| `rename` | Rename fields | API naming differs from model |
-| `rename_all` | Serde rename strategy | Different casing needed |
-| `add` | Add new fields | New fields not in model (breaks `From` impl) |
-| `multipart` | Derive `Multipart` | Multipart form-data endpoints |
-
-**Avoid (Special Cases Only):**
-
-| Parameter | Description | When to Use |
-|-----------|-------------|-------------|
-| `name` | Custom OpenAPI schema name | **Same-file Model reference only** |
-| `ignore` | Skip Schema derive | Internal DTOs not for OpenAPI |
-| `clone` | Control Clone derive | Large structs where Clone is expensive |
+| Parameter | Priority | Description | Usage |
+|-----------|----------|-------------|-------|
+| `pick` | Primary | Include only these fields | `pick = ["name", "email"]` |
+| `omit` | Primary | Exclude these fields | `omit = ["password"]` |
+| `omit_default` | Primary | Auto-omit fields with DB defaults | Bare keyword |
+| `partial` | Situational | Make fields optional | PATCH endpoints only |
+| `rename` | Situational | Rename fields | API naming differs from model |
+| `rename_all` | Situational | Serde rename strategy | Different casing needed |
+| `add` | Situational | Add new fields (breaks `From`) | New fields not in model |
+| `multipart` | Situational | Derive `Multipart` | Multipart form-data endpoints |
+| `name` | Avoid | Custom OpenAPI schema name | Same-file Model reference only |
+| `ignore` | Avoid | Skip Schema derive | Internal DTOs not for OpenAPI |
+| `clone` | Avoid | Control Clone derive | Large structs where Clone is expensive |
 
 ### SeaORM Integration (RECOMMENDED)
 
@@ -445,53 +377,6 @@ Rules:
 - Vespera generates local compile adapters so `Option<Model>.into()` works without changing the route
 - The adapter wrapper is hidden from OpenAPI; the spec still references the original related schema (`UserSchema`, `CategorySchema`)
 - `HasMany` relations remain excluded by default unless explicitly `pick`ed or `add`ed
-
-### Complete Example
-
-```rust
-// ============================================
-// src/models/user.rs (SeaORM entity)
-// ============================================
-#[derive(Clone, Debug, DeriveEntityModel, Serialize, Deserialize)]
-#[sea_orm(table_name = "users")]
-pub struct Model {
-    #[sea_orm(primary_key)]
-    pub id: i32,
-    pub name: String,
-    pub email: String,
-    pub status: UserStatus,
-    pub password_hash: String,  // Never expose!
-    pub created_at: DateTimeWithTimeZone,
-}
-
-// ✅ Same-file: use `name` parameter for OpenAPI schema name
-vespera::schema_type!(Schema from Model, name = "UserSchema");
-
-// ============================================
-// src/routes/users.rs (Route handlers)
-// ============================================
-use vespera::schema_type;
-
-// ✅ Cross-file: use descriptive struct names + pick/omit
-// NO `name` parameter needed - struct name = OpenAPI schema name
-schema_type!(CreateUserRequest from crate::models::user::Model, pick = ["name", "email"]);
-schema_type!(UserResponse from crate::models::user::Model, omit = ["password_hash"]);
-schema_type!(UserPatch from crate::models::user::Model, omit = ["password_hash", "id"], partial);
-
-#[vespera::route(get, path = "/{id}")]
-pub async fn get_user(Path(id): Path<i32>, State(db): State<DbPool>) -> Json<UserResponse> {
-    let user = User::find_by_id(id).one(&db).await.unwrap().unwrap();
-    Json(user.into())  // From impl handles conversion
-}
-
-#[vespera::route(patch, path = "/{id}")]
-pub async fn patch_user(
-    Path(id): Path<i32>,
-    Json(patch): Json<UserPatch>,  // All fields are Option<T>
-) -> Json<UserResponse> {
-    // Apply partial update...
-}
-```
 
 ### Multipart Mode (`multipart`)
 
