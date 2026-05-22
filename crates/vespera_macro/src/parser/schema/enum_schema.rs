@@ -755,7 +755,7 @@ mod tests {
         let one_of = schema.clone().one_of.expect("one_of missing");
         assert_eq!(one_of.len(), expected_one_of_len);
 
-        if let Some(inner_expected) = expected_inner_type.clone() {
+        if let Some(inner_expected) = expected_inner_type {
             if let SchemaRef::Inline(obj) = &one_of[0] {
                 let props = obj.properties.as_ref().expect("props missing");
                 // take first property value

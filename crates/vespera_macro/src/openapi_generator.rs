@@ -240,17 +240,11 @@ fn build_path_items(
     let mut paths = BTreeMap::new();
     let mut all_tags = BTreeSet::new();
 
-    // Primary source: pre-parse function items from ROUTE_STORAGE (populated by #[route])
-    let route_fn_cache: HashMap<&str, syn::ItemFn> = route_storage
-        .iter()
-        .filter_map(|s| {
-            syn::parse_str::<syn::ItemFn>(&s.fn_item_str)
-                .ok()
-                .map(|item| (s.fn_name.as_str(), item))
-        })
-        .collect();
-
-    // Fallback source: function index from file ASTs (for routes not in ROUTE_STORAGE)
+    // Build the file-AST function index FIRST so the storage-parse step
+    // below can skip any function whose AST is already reachable through
+    // `file_cache`.  `collector::collect_metadata` has already walked
+    // these files via `syn::parse_file`, so re-parsing `fn_item_str`
+    // from ROUTE_STORAGE for the same function is pure duplicated work.
     let fn_index: HashMap<&str, HashMap<String, &syn::ItemFn>> = file_cache
         .iter()
         .map(|(path, ast)| {
@@ -266,6 +260,30 @@ fn build_path_items(
                 })
                 .collect();
             (path.as_str(), fns)
+        })
+        .collect();
+
+    // Primary source: parse function items from ROUTE_STORAGE only when
+    // the function is *not* already covered by `fn_index`.  Routes whose
+    // owning file is in `file_cache` short-circuit through `fn_index` in
+    // the loop below, so the parse is wasted work.  The lookup order in
+    // the loop preserves the original ROUTE_STORAGE-first priority for
+    // any route that does end up in this cache (e.g. routes registered
+    // via `#[route]` from files outside the scanned routes folder).
+    let route_fn_cache: HashMap<&str, syn::ItemFn> = route_storage
+        .iter()
+        .filter_map(|s| {
+            let already_in_ast = s
+                .file_path
+                .as_deref()
+                .and_then(|fp| fn_index.get(fp))
+                .is_some_and(|fns| fns.contains_key(&s.fn_name));
+            if already_in_ast {
+                return None;
+            }
+            syn::parse_str::<syn::ItemFn>(&s.fn_item_str)
+                .ok()
+                .map(|item| (s.fn_name.as_str(), item))
         })
         .collect();
 

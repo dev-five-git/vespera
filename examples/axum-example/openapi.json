@@ -2564,6 +2564,38 @@
           "tags"
         ]
       },
+      "DocumentMetadata": {
+        "type": "object",
+        "properties": {
+          "charCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "classificationLevel": {
+            "type": "integer",
+            "format": "uint8"
+          },
+          "estimatedPages": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retentionYears": {
+            "type": "integer",
+            "format": "uint32"
+          },
+          "wordCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "wordCount",
+          "charCount",
+          "estimatedPages",
+          "classificationLevel",
+          "retentionYears"
+        ]
+      },
       "Enum": {
         "type": "string",
         "enum": [
@@ -4245,6 +4277,116 @@
           "id",
           "name",
           "createdAt"
+        ]
+      },
+      "ValidateDocumentRequest": {
+        "type": "object",
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "classification": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "department": {
+            "type": "string"
+          },
+          "documentType": {
+            "type": "string"
+          },
+          "effectiveDate": {
+            "type": "string"
+          },
+          "expiryDate": {
+            "type": "string",
+            "nullable": true
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "documentType",
+          "title",
+          "content",
+          "author",
+          "department",
+          "classification",
+          "effectiveDate"
+        ]
+      },
+      "ValidationError": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "field",
+          "message"
+        ]
+      },
+      "ValidationResult": {
+        "type": "object",
+        "properties": {
+          "documentId": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            }
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/DocumentMetadata"
+          },
+          "valid": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationWarning"
+            }
+          }
+        },
+        "required": [
+          "valid",
+          "documentId",
+          "errors",
+          "warnings",
+          "metadata"
+        ]
+      },
+      "ValidationWarning": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "field",
+          "message"
         ]
       }
     }

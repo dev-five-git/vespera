@@ -238,7 +238,7 @@ mod tests {
 
     fn param_schema_type(param: &Parameter) -> Option<SchemaType> {
         match param.schema.as_ref()? {
-            SchemaRef::Inline(schema) => schema.schema_type.clone(),
+            SchemaRef::Inline(schema) => schema.schema_type,
             SchemaRef::Ref(_) => None,
         }
     }
@@ -293,7 +293,7 @@ mod tests {
                 if let Some(schema_ty) = &exp.schema {
                     match media.schema.as_ref().expect("schema expected") {
                         SchemaRef::Inline(schema) => {
-                            assert_eq!(schema.schema_type, Some(schema_ty.clone()));
+                            assert_eq!(schema.schema_type, Some(*schema_ty));
                         }
                         SchemaRef::Ref(_) => panic!("expected inline schema"),
                     }
@@ -327,7 +327,7 @@ mod tests {
             if let Some(schema_ty) = &exp.schema {
                 match media.schema.as_ref().expect("schema expected") {
                     SchemaRef::Inline(schema) => {
-                        assert_eq!(schema.schema_type, Some(schema_ty.clone()));
+                        assert_eq!(schema.schema_type, Some(*schema_ty));
                     }
                     SchemaRef::Ref(_) => panic!("expected inline schema"),
                 }

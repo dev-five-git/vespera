@@ -18,6 +18,7 @@ mod validation;
 
 pub use file_cache::print_profile_summary;
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use codegen::generate_filtered_schema;
@@ -70,12 +71,16 @@ fn derive_response_base_name(name: &str) -> String {
     name.to_string()
 }
 
-fn find_same_file_struct_metadata(
+fn find_same_file_struct_metadata<'a>(
     struct_name: &str,
-    schema_storage: &HashMap<String, StructMetadata>,
-) -> Option<StructMetadata> {
+    schema_storage: &'a HashMap<String, StructMetadata>,
+) -> Option<Cow<'a, StructMetadata>> {
+    // Cache hit: hand back a borrow so the (potentially large) struct
+    // definition string is not cloned per lookup.  The fallback path
+    // produces an owned `StructMetadata` from disk, so the unified return
+    // type is `Cow<'_, StructMetadata>`.
     if let Some(metadata) = schema_storage.get(struct_name) {
-        return Some(metadata.clone());
+        return Some(Cow::Borrowed(metadata));
     }
 
     let file_path = proc_macro2::Span::call_site().local_file();
@@ -90,7 +95,10 @@ fn find_same_file_struct_metadata(
     });
     let file_path = file_path?;
     let definition = file_cache::get_struct_definition(&file_path, struct_name)?;
-    Some(StructMetadata::new(struct_name.to_string(), definition))
+    Some(Cow::Owned(StructMetadata::new(
+        struct_name.to_string(),
+        definition,
+    )))
 }
 
 fn related_model_type_from_schema_path(schema_path: &TokenStream) -> Option<syn::Type> {
@@ -99,19 +107,19 @@ fn related_model_type_from_schema_path(schema_path: &TokenStream) -> Option<syn:
 }
 
 fn schema_component_name_from_path(schema_path: &TokenStream) -> String {
-    let segments: Vec<String> = schema_path
-        .to_string()
-        .split("::")
-        .map(|segment| segment.trim().to_string())
-        .collect();
+    // Keep the stringified path alive in this scope so the `&str`
+    // segments borrow from it.  The previous implementation collected
+    // owned `String`s — one allocation per path segment — even though
+    // each segment is only ever inspected as `&str`.
+    let path_str = schema_path.to_string();
+    let segments: Vec<&str> = path_str.split("::").map(str::trim).collect();
 
-    if segments.last().is_some_and(|segment| segment == "Schema") && segments.len() > 1 {
-        format!("{}Schema", capitalize_first(&segments[segments.len() - 2]))
+    if segments.last().is_some_and(|s| *s == "Schema") && segments.len() > 1 {
+        format!("{}Schema", capitalize_first(segments[segments.len() - 2]))
     } else {
         segments
             .last()
-            .cloned()
-            .unwrap_or_else(|| "Schema".to_string())
+            .map_or_else(|| "Schema".to_string(), |s| (*s).to_string())
     }
 }
 
@@ -282,10 +290,16 @@ fn maybe_generate_same_file_relation_override(
     let source_expr = quote! { source };
     let from_model_assignments = build_named_struct_field_assignments(&dto_struct, &source_expr)?;
 
-    let mut helper_tokens = Vec::new();
-
-    if !has_derive(&dto_struct, "Clone") {
-        helper_tokens.push(quote! {
+    // Coalesced helpers: previously three separate `quote!` invocations
+    // and a `Vec<TokenStream>` accumulator were stitched together with
+    // `#(#helper_tokens)*`.  We instead build the conditional Clone /
+    // Deserialize sub-blocks as their own `TokenStream`s and splice
+    // them into a single `quote!`, producing the same emitted Rust code
+    // with one accumulator allocation removed.
+    let clone_impl = if has_derive(&dto_struct, "Clone") {
+        quote! {}
+    } else {
+        quote! {
             impl Clone for #dto_ident {
                 fn clone(&self) -> Self {
                     Self {
@@ -293,11 +307,13 @@ fn maybe_generate_same_file_relation_override(
                     }
                 }
             }
-        });
-    }
+        }
+    };
 
-    if !has_derive(&dto_struct, "Deserialize") {
-        helper_tokens.push(quote! {
+    let deserialize_impl = if has_derive(&dto_struct, "Deserialize") {
+        quote! {}
+    } else {
+        quote! {
             #[derive(serde::Deserialize)]
             #(#dto_serde_attrs)*
             struct #proxy_ident {
@@ -315,12 +331,15 @@ fn maybe_generate_same_file_relation_override(
                     })
                 }
             }
-        });
-    }
+        }
+    };
 
-    helper_tokens.push(quote! {
-            impl From<#model_ty> for #dto_ident {
-                fn from(source: #model_ty) -> Self {
+    let helpers = quote! {
+        #clone_impl
+        #deserialize_impl
+
+        impl From<#model_ty> for #dto_ident {
+            fn from(source: #model_ty) -> Self {
                 Self {
                     #(#from_model_assignments),*
                 }
@@ -338,12 +357,9 @@ fn maybe_generate_same_file_relation_override(
                 Self(source.map(Into::into))
             }
         }
-    });
+    };
 
-    Ok(Some((
-        quote! { #wrapper_ident },
-        quote! { #(#helper_tokens)* },
-    )))
+    Ok(Some((quote! { #wrapper_ident }, helpers)))
 }
 
 /// Generate schema code from a struct with optional field filtering

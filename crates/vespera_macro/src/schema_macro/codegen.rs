@@ -115,8 +115,12 @@ pub fn generate_filtered_schema(
     }
 }
 
-/// Convert `SchemaType` enum variant to its `TokenStream` representation
-fn schema_type_to_tokens(st: &SchemaType) -> TokenStream {
+/// Convert `SchemaType` enum variant to its `TokenStream` representation.
+///
+/// `SchemaType` is a unit enum that derives `Copy`, so taking it by value
+/// is strictly cheaper than borrowing (satisfies
+/// `clippy::trivially_copy_pass_by_ref`).
+fn schema_type_to_tokens(st: SchemaType) -> TokenStream {
     let variant = match st {
         SchemaType::String => "String",
         SchemaType::Number => "Number",
@@ -157,7 +161,7 @@ pub fn schema_to_tokens(schema: &Schema) -> TokenStream {
     let mut fields: Vec<TokenStream> = Vec::with_capacity(4);
 
     // schema_type
-    if let Some(st) = &schema.schema_type {
+    if let Some(st) = schema.schema_type {
         let st_tokens = schema_type_to_tokens(st);
         fields.push(quote! { schema_type: Some(#st_tokens) });
     }

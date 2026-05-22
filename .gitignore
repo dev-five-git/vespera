@@ -21,4 +21,5 @@ bin/
 *.iml
 .idea/
 .omc
+.omo
 node_modules

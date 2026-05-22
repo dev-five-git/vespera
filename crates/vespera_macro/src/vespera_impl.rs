@@ -173,7 +173,17 @@ pub fn generate_and_write_openapi(
         }
     }
 
-    // Pretty-print for user-visible files
+    // NOTE on F-01: an earlier audit suggested serialising the
+    // `OpenApi` document once into `serde_json::Value` and emitting
+    // pretty + compact from the cached `Value`.  We deliberately do
+    // **not** do that here.  Going through `Value` re-orders every
+    // object's keys alphabetically (because the default
+    // `serde_json::Map` is `BTreeMap`-backed), which silently changes
+    // the field order in every user-visible `openapi.json` file.  The
+    // marginal build-time saving is not worth churning the output of a
+    // file users diff in CI.  Keep two direct serialisations.
+    //
+    // Pretty-print for user-visible files.
     if !input.openapi_file_names.is_empty() {
         let json_pretty = serde_json::to_string_pretty(&openapi_doc).map_err(|e| err_call_site(format!("OpenAPI generation: failed to serialize document to JSON. Error: {e}. Check that all schema types are serializable.")))?;
         for openapi_file_name in &input.openapi_file_names {
@@ -189,7 +199,7 @@ pub fn generate_and_write_openapi(
         }
     }
 
-    // Compact JSON for embedding (smaller binary, faster downstream compilation)
+    // Compact JSON for embedding (smaller binary, faster downstream compilation).
     let spec_json = if input.docs_url.is_some() || input.redoc_url.is_some() {
         Some(serde_json::to_string(&openapi_doc).map_err(|e| err_call_site(format!("OpenAPI generation: failed to serialize document to JSON. Error: {e}. Check that all schema types are serializable.")))?)
     } else {
@@ -227,10 +237,11 @@ pub fn find_target_dir(manifest_path: &Path) -> std::path::PathBuf {
             last_with_lock = Some(dir.to_path_buf());
         }
 
-        // Check if this is a workspace root (has Cargo.toml with [workspace])
-        let cargo_toml = dir.join("Cargo.toml");
-        if cargo_toml.exists()
-            && let Ok(contents) = std::fs::read_to_string(&cargo_toml)
+        // Check if this is a workspace root (has Cargo.toml with [workspace]).
+        // `read_to_string` already fails when the file does not exist, so the
+        // previous `.exists()` pre-flight is redundant — drop it to save one
+        // stat per iteration of the walk.
+        if let Ok(contents) = std::fs::read_to_string(dir.join("Cargo.toml"))
             && contents.contains("[workspace]")
         {
             return dir.join("target");
@@ -262,23 +273,27 @@ fn merge_route_storage_data(metadata: &mut CollectedMetadata, route_storage: &[S
         return;
     }
 
-    for route in &mut metadata.routes {
-        // Find matching StoredRouteInfo by function name
-        let mut matches = route_storage
-            .iter()
-            .filter(|s| s.fn_name == route.function_name);
+    // Build `fn_name -> Option<&StoredRouteInfo>` index in a single pass:
+    // `Some(_)` when the name is unique, `None` when it is ambiguous
+    // (appears more than once).  This turns the previous O(N*M) nested
+    // scan into O(N + M).
+    let mut stored_index: HashMap<&str, Option<&StoredRouteInfo>> =
+        HashMap::with_capacity(route_storage.len());
+    for stored in route_storage {
+        stored_index
+            .entry(stored.fn_name.as_str())
+            .and_modify(|slot| *slot = None)
+            .or_insert(Some(stored));
+    }
 
-        let Some(stored) = matches.next() else {
+    for route in &mut metadata.routes {
+        // Skip if no match or ambiguous (multiple routes share fn_name).
+        let Some(Some(stored)) = stored_index.get(route.function_name.as_str()) else {
             continue;
         };
 
-        // Skip if ambiguous (multiple routes with same function name)
-        if matches.next().is_some() {
-            continue;
-        }
-
-        // Supplement with ROUTE_STORAGE data
-        // Only override when ROUTE_STORAGE has an explicit value
+        // Supplement with ROUTE_STORAGE data — only override when an
+        // explicit value is present.
         if let Some(ref tags) = stored.tags {
             route.tags = Some(tags.clone());
         }

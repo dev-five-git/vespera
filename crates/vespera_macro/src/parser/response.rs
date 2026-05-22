@@ -306,7 +306,7 @@ mod tests {
     fn assert_schema_matches(schema_ref: &SchemaRef, expected: &ExpectedSchema) {
         match schema_ref {
             SchemaRef::Inline(schema) => {
-                assert_eq!(schema.schema_type, Some(expected.schema_type.clone()));
+                assert_eq!(schema.schema_type, Some(expected.schema_type));
                 assert_eq!(schema.nullable.unwrap_or(false), expected.nullable);
                 if let Some(item_ty) = &expected.items_schema_type {
                     let items = schema
@@ -315,7 +315,7 @@ mod tests {
                         .expect("items should be present for array");
                     match items.as_ref() {
                         SchemaRef::Inline(item_schema) => {
-                            assert_eq!(item_schema.schema_type, Some(item_ty.clone()));
+                            assert_eq!(item_schema.schema_type, Some(*item_ty));
                         }
                         SchemaRef::Ref(_) => panic!("expected inline schema for array items"),
                     }
