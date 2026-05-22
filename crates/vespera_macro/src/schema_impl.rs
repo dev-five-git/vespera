@@ -106,7 +106,15 @@ pub fn process_derive_schema(
         }
     }
     metadata.field_defaults = field_defaults;
-    (metadata, proc_macro2::TokenStream::new())
+
+    // When the `validation` feature is enabled on `vespera_macro`,
+    // additionally emit `impl ::vespera::__validation::garde::Validate
+    // for #StructName { ... }` so the field-level `#[schema(...)]`
+    // constraints carry runtime checks alongside their OpenAPI metadata.
+    // The emit function returns an empty `TokenStream` when no field
+    // requests a runtime rule or when the feature is off.
+    let expanded = crate::garde_emit::emit_garde_validate(input);
+    (metadata, expanded)
 }
 
 /// Extract default values from `#[serde(default = "fn_name")]` attributes

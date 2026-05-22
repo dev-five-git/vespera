@@ -4,7 +4,7 @@ mod parameters;
 mod path;
 mod request_body;
 mod response;
-mod schema;
+pub mod schema;
 pub use operation::build_operation_from_function;
 pub use schema::{
     extract_default, extract_field_rename, extract_rename_all, extract_skip,

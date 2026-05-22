@@ -31,6 +31,7 @@
 
 mod enum_schema;
 mod generics;
+pub mod schema_attrs;
 mod serde_attrs;
 mod struct_schema;
 mod type_schema;

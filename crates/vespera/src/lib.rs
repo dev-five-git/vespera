@@ -122,6 +122,23 @@ where
 pub use tower_layer;
 pub use tower_service;
 
+/// Runtime validation — private re-export of `garde` used by the
+/// `#[derive(Schema)]` codegen.  Users never reference this module
+/// directly; it exists so the macro-emitted impl bodies stay inside the
+/// `vespera` namespace and so we retain the freedom to swap the
+/// validator backend later without touching user code.
+#[cfg(feature = "validation")]
+#[doc(hidden)]
+pub mod __validation;
+
+/// [`Validated<T>`] extractor — wraps any axum extractor and runs
+/// `garde::Validate` on the inner payload before the handler is called.
+/// Failure produces `422 Unprocessable Entity` with a JSON error envelope.
+#[cfg(feature = "validation")]
+mod validated;
+#[cfg(feature = "validation")]
+pub use validated::{ValidatePayload, Validated};
+
 /// In-process dispatch — drive an axum Router without a TCP socket.
 #[cfg(feature = "inprocess")]
 pub use vespera_inprocess as inprocess;

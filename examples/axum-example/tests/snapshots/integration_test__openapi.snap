@@ -2015,6 +2015,27 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           }
         }
       }
+    },
+    "/validated/users": {
+      "post": {
+        "operationId": "create_validated_user",
+        "tags": [
+          "validated"
+        ],
+        "description": "Echo back the validated input.  If the request body fails\nvalidation, this handler never runs — the `Validated` extractor\nreturns a `422` before it is reached.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidatedUserRequest"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4251,6 +4272,46 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "name",
           "createdAt"
         ]
+      },
+      "ValidatedUserRequest": {
+        "type": "object",
+        "description": "Validated request body for `POST /validated/users`.",
+        "properties": {
+          "age": {
+            "type": "integer",
+            "format": "uint32",
+            "description": "Display age (0–150).",
+            "minimum": 0,
+            "maximum": 150
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "Primary contact email — validated at the format level."
+          },
+          "tags": {
+            "type": "array",
+            "description": "Arbitrary tag list, 1–5 items.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 5
+          },
+          "username": {
+            "type": "string",
+            "description": "User-chosen handle.",
+            "minLength": 3,
+            "maxLength": 32,
+            "pattern": "^[a-z0-9_]+$"
+          }
+        },
+        "required": [
+          "username",
+          "email",
+          "age",
+          "tags"
+        ]
       }
     }
   },
@@ -4278,6 +4339,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
     },
     {
       "name": "uuid_items"
+    },
+    {
+      "name": "validated"
     },
     {
       "name": "third"

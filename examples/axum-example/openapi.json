@@ -2010,6 +2010,27 @@
           }
         }
       }
+    },
+    "/validated/users": {
+      "post": {
+        "operationId": "create_validated_user",
+        "tags": [
+          "validated"
+        ],
+        "description": "Echo back the validated input.  If the request body fails\nvalidation, this handler never runs — the `Validated` extractor\nreturns a `422` before it is reached.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidatedUserRequest"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2562,38 +2583,6 @@
         "required": [
           "name",
           "tags"
-        ]
-      },
-      "DocumentMetadata": {
-        "type": "object",
-        "properties": {
-          "charCount": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "classificationLevel": {
-            "type": "integer",
-            "format": "uint8"
-          },
-          "estimatedPages": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "retentionYears": {
-            "type": "integer",
-            "format": "uint32"
-          },
-          "wordCount": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "required": [
-          "wordCount",
-          "charCount",
-          "estimatedPages",
-          "classificationLevel",
-          "retentionYears"
         ]
       },
       "Enum": {
@@ -4279,114 +4268,44 @@
           "createdAt"
         ]
       },
-      "ValidateDocumentRequest": {
+      "ValidatedUserRequest": {
         "type": "object",
+        "description": "Validated request body for `POST /validated/users`.",
         "properties": {
-          "author": {
-            "type": "string"
+          "age": {
+            "type": "integer",
+            "format": "uint32",
+            "description": "Display age (0–150).",
+            "minimum": 0,
+            "maximum": 150
           },
-          "classification": {
-            "type": "string"
-          },
-          "content": {
-            "type": "string"
-          },
-          "department": {
-            "type": "string"
-          },
-          "documentType": {
-            "type": "string"
-          },
-          "effectiveDate": {
-            "type": "string"
-          },
-          "expiryDate": {
+          "email": {
             "type": "string",
-            "nullable": true
+            "format": "email",
+            "description": "Primary contact email — validated at the format level."
           },
-          "title": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "documentType",
-          "title",
-          "content",
-          "author",
-          "department",
-          "classification",
-          "effectiveDate"
-        ]
-      },
-      "ValidationError": {
-        "type": "object",
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "field": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "field",
-          "message"
-        ]
-      },
-      "ValidationResult": {
-        "type": "object",
-        "properties": {
-          "documentId": {
-            "type": "string"
-          },
-          "errors": {
+          "tags": {
             "type": "array",
+            "description": "Arbitrary tag list, 1–5 items.",
             "items": {
-              "$ref": "#/components/schemas/ValidationError"
-            }
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 5
           },
-          "metadata": {
-            "$ref": "#/components/schemas/DocumentMetadata"
-          },
-          "valid": {
-            "type": "boolean"
-          },
-          "warnings": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ValidationWarning"
-            }
+          "username": {
+            "type": "string",
+            "description": "User-chosen handle.",
+            "minLength": 3,
+            "maxLength": 32,
+            "pattern": "^[a-z0-9_]+$"
           }
         },
         "required": [
-          "valid",
-          "documentId",
-          "errors",
-          "warnings",
-          "metadata"
-        ]
-      },
-      "ValidationWarning": {
-        "type": "object",
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "field": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "field",
-          "message"
+          "username",
+          "email",
+          "age",
+          "tags"
         ]
       }
     }
@@ -4415,6 +4334,9 @@
     },
     {
       "name": "uuid_items"
+    },
+    {
+      "name": "validated"
     },
     {
       "name": "third"
