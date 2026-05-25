@@ -19,7 +19,9 @@ let app = vespera!(openapi = "openapi.json", docs_url = "/docs");
 |---------|---------|-----------------|
 | Route registration | Automatic (file-based) | Manual `Router::new().route(...)` |
 | OpenAPI spec | Generated at compile time | Hand-written or runtime generation |
-| Schema extraction | From Rust types | Manual JSON Schema |
+| Schema extraction | From Rust types (`#[derive(Schema)]`) | Manual JSON Schema |
+| **Request validation** | **`Validated<T>` extractor → auto `422`** | Manual checks in every handler |
+| **Server startup** | **`.serve("0.0.0.0:3000")` one-liner** | `TcpListener::bind` + `axum::serve` |
 | Swagger UI | Built-in | Separate setup |
 | Type safety | Compile-time verified | Runtime errors |
 
@@ -73,21 +75,25 @@ pub async fn create_user(Json(user): Json<User>) -> Json<User> {
 
 **`src/main.rs`**:
 ```rust
-use vespera::vespera;
+use vespera::{vespera, Serve};
 
 #[tokio::main]
-async fn main() {
-    let app = vespera!(
+async fn main() -> std::io::Result<()> {
+    println!("Swagger UI: http://localhost:3000/docs");
+    vespera!(
         openapi = "openapi.json",
         title = "My API",
         docs_url = "/docs"
-    );
-
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("Swagger UI: http://localhost:3000/docs");
-    axum::serve(listener, app).await.unwrap();
+    )
+    .serve("0.0.0.0:3000")
+    .await
 }
 ```
+
+> `.serve(addr)` is a vespera-provided extension trait on `axum::Router` — it
+> replaces the usual `TcpListener::bind` + `axum::serve(...)` dance with a
+> single chained call. `addr` accepts anything `tokio::net::ToSocketAddrs`
+> takes (strings, tuples, `SocketAddr`).
 
 ### 4. Run
 
@@ -150,6 +156,60 @@ pub struct CreateUserRequest {
     pub bio: Option<String>,        // Optional field
 }
 ```
+
+### Request Validation (`Validated<T>` → `422`)
+
+`Validated<T>` wraps any axum extractor (`Json`, `Form`, `Query`, `Path`) and
+runs the inner type's [`garde::Validate`] impl **before** the handler is
+called. Validation failures are converted to **`422 Unprocessable Entity`**
+with a canonical JSON envelope — no manual error mapping per handler.
+
+```rust
+use vespera::{Validated, Schema, axum::Json};
+use garde::Validate;
+
+#[derive(serde::Deserialize, Schema, Validate)]
+pub struct CreateUser {
+    #[garde(length(min = 3, max = 32))]
+    pub username: String,
+    #[garde(email)]
+    pub email: String,
+    #[garde(range(min = 18, max = 120))]
+    pub age: u8,
+}
+
+#[vespera::route(post, tags = ["users"])]
+pub async fn create_user(
+    Validated(Json(req)): Validated<Json<CreateUser>>,
+) -> Json<&'static str> {
+    // `req` has already passed garde validation.
+    Json("ok")
+}
+```
+
+**Failure response (`HTTP/1.1 422 Unprocessable Entity`):**
+
+```json
+{
+  "errors": [
+    { "path": "username", "message": "length is lower than 3" },
+    { "path": "email",    "message": "not a valid email" }
+  ]
+}
+```
+
+Works with every common extractor — same `422` envelope on the wire:
+
+| Extractor | Validates |
+|---|---|
+| `Validated<Json<T>>` | JSON body |
+| `Validated<Form<T>>` | URL-encoded form body |
+| `Validated<Query<T>>` | URL query parameters |
+| `Validated<Path<T>>` | Path parameters |
+
+Under JNI, the same `422` body is **hoisted** into the binary wire header as
+`"validation_errors": [...]` — Java decoders consume validation errors
+without parsing the body. See [`crates/vespera/tests/jni_validation.rs`](./crates/vespera/tests/jni_validation.rs).
 
 ### Supported Extractors
 

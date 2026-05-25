@@ -10,23 +10,129 @@ Vespera = FastAPI DX for Rust. Zero-config OpenAPI 3.1 generation via compile-ti
 ## Quick Start
 
 ```rust
-// 1. Main entry - vespera! macro handles everything
-let app = vespera!(
-    openapi = "openapi.json",  // writes file at compile time
-    title = "My API",
-    version = "1.0.0",
-    docs_url = "/docs",        // Swagger UI
-    redoc_url = "/redoc"       // ReDoc alternative
-);
+use vespera::{vespera, Serve, Schema, Validated, axum::Json};
+use axum::extract::Path;
+use serde::{Deserialize, Serialize};
+use garde::Validate;
 
-// 2. Route handlers - MUST be pub async fn
+// 1. Custom types — derive Schema for OpenAPI inclusion.
+//    Add `garde::Validate` to opt into 422 validation.
+#[derive(Serialize, Deserialize, Schema, Validate)]
+pub struct CreateUser {
+    #[garde(length(min = 3, max = 32))]
+    pub name: String,
+    #[garde(email)]
+    pub email: String,
+}
+
+// 2. Route handlers — MUST be `pub async fn`.
 #[vespera::route(get, path = "/{id}", tags = ["users"])]
-pub async fn get_user(Path(id): Path<u32>) -> Json<User> { ... }
+pub async fn get_user(Path(id): Path<u32>) -> Json<CreateUser> { /* ... */ }
 
-// 3. Custom types - derive Schema for OpenAPI inclusion
-#[derive(Serialize, Deserialize, vespera::Schema)]
-pub struct User { id: u32, name: String }
+// 3. Validated extractor → automatic 422 on bad input.
+#[vespera::route(post, tags = ["users"])]
+pub async fn create_user(
+    Validated(Json(req)): Validated<Json<CreateUser>>,
+) -> Json<&'static str> {
+    // `req` already passed validation. Failures never reach here.
+    Json("ok")
+}
+
+// 4. Main — one-liner `.serve()` from the `Serve` extension trait.
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    vespera!(
+        openapi  = "openapi.json", // writes file at compile time
+        title    = "My API",
+        version  = "1.0.0",
+        docs_url = "/docs",        // Swagger UI
+        redoc_url = "/redoc"       // ReDoc alternative
+    )
+    .serve("0.0.0.0:3000")
+    .await
+}
 ```
+
+---
+
+## Request Validation (`Validated<T>` → `422`)
+
+Wrap any extractor with `Validated<...>` to enforce `garde::Validate` **before**
+the handler runs. Vespera converts validation failures into a canonical
+`422 Unprocessable Entity` response — no per-handler error mapping.
+
+```rust
+use vespera::{Validated, axum::Json};
+
+#[vespera::route(post)]
+pub async fn create(
+    Validated(Json(req)): Validated<Json<CreateUser>>,
+) -> Json<&'static str> {
+    Json("ok")
+}
+```
+
+**Response on validation failure (status `422`, content-type `application/json`):**
+
+```json
+{
+  "errors": [
+    { "path": "name",  "message": "length is lower than 3" },
+    { "path": "email", "message": "not a valid email" }
+  ]
+}
+```
+
+### Supported wrappers
+
+| Wrapper | Validates |
+|---|---|
+| `Validated<Json<T>>` | JSON body |
+| `Validated<Form<T>>` | URL-encoded form body |
+| `Validated<Query<T>>` | URL query string |
+| `Validated<Path<T>>` | Path parameters |
+
+### Requirements
+
+- `T` (or the inner type of `Json<T>`, `Form<T>`, …) must implement
+  `garde::Validate<Context = ()>`.
+- Derive `garde::Validate` and annotate fields with `#[garde(...)]` rules
+  (`length`, `email`, `range`, `pattern`, custom, …).
+- Vespera's `#[derive(Schema)]` continues to drive the OpenAPI spec — the two
+  derives compose cleanly on the same struct.
+
+### JNI / Binary wire integration
+
+When a `Validated` rejection crosses the JNI boundary, the JSON envelope
+(`{"errors":[...]}`) is **hoisted** into the binary wire-format header as
+`"validation_errors": [...]`. Java decoders inspect the field directly
+without re-parsing the body. See
+`crates/vespera/tests/jni_validation.rs` for the pinned contract.
+
+---
+
+## One-Liner Server Startup (`Serve`)
+
+`vespera::Serve` is an extension trait on `axum::Router`. It replaces the
+standard `TcpListener::bind` + `axum::serve(...)` dance with a single chained
+call:
+
+```rust
+use vespera::{vespera, Serve};
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    vespera!(title = "My API")
+        .serve("0.0.0.0:3000")
+        .await
+}
+```
+
+- `addr` accepts anything `tokio::net::ToSocketAddrs` accepts — strings
+  (`"0.0.0.0:3000"`), tuples (`("127.0.0.1", 8080)`), `SocketAddr`, etc.
+- Works on **any** `axum::Router`, including the output of `Router::merge`,
+  `Router::nest`, or `vespera!(...)` itself.
+- Returns `std::io::Result<()>` — propagate with `?` from `main`.
 
 ---
 

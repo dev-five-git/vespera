@@ -3,11 +3,28 @@
 **Generated:** 2026-03-21
 **Branch:** main
 
+> This file is the **single source of truth** for repository conventions.
+> `CLAUDE.md` is intentionally a one-line redirect (`@AGENTS.md`) — never duplicate
+> guidance into CLAUDE.md.
+
 ## OVERVIEW
 
 Vespera is a fully automated OpenAPI 3.1 engine for Axum - delivers FastAPI-like DX to Rust. Zero-config route discovery via compile-time macro scanning.
 
 Also provides in-process dispatch (`vespera_inprocess` crate) and JNI integration (`vespera_jni` crate) for embedding Rust axum apps inside Java/Spring applications without HTTP overhead.
+
+### Headline Capabilities (2026)
+
+| Capability | Where | Notes |
+|---|---|---|
+| **`#[derive(Schema)]` → OpenAPI 3.1** | `vespera_macro::Schema` | Rust types become JSON Schema at compile time, including serde renames, `Option<T>`, `Vec<T>`, SeaORM relations |
+| **`Validated<T>` extractor + auto-`422`** | `vespera::Validated`, `crates/vespera/src/validated.rs` | Wraps `Json`/`Form`/`Query`/`Path` and runs `garde::Validate` before the handler — rejection is **`422 Unprocessable Entity`** with `{"errors":[{"path","message"}]}` JSON envelope |
+| **`schema_type! { ... }`** | `vespera_macro::schema_type` | Derive request/response DTOs from existing structs (`pick` / `omit` / `partial` / `add` / `multipart` / `omit_default`) — first-class SeaORM relation support |
+| **One-liner `.serve(addr)`** | `vespera::Serve` (`crates/vespera/src/serve.rs`) | Extension trait on `axum::Router` — `create_app().serve("0.0.0.0:3000").await` replaces 3 lines of `TcpListener::bind` + `axum::serve` boilerplate |
+| **Binary wire format (JNI)** | `vespera_inprocess` | `[u32 BE len | UTF-8 JSON header | raw body]` — multipart / PDFs / images travel as raw bytes; **`422` validation errors hoisted** into the wire header as `"validation_errors": [...]` so Java decoders never special-case error shapes |
+| **Multi-app routing (JNI/FFI)** | `vespera::jni_apps! { "_default" => app, "admin" => admin_app }` | Wire header carries optional `"app"` field; Java side picks per request via `X-Vespera-App` header (configurable via `AppNameResolver`) |
+| **Zero-config Spring autoconfigure** | `libs/vespera-bridge/.../VesperaBridgeAutoConfiguration` | `VesperaProxyController` + `AppNameResolver` + `DispatchModeResolver` beans auto-registered; replace any of them via `@ConditionalOnMissingBean` |
+| **Cron jobs** | `#[vespera::cron("...")]` | Auto-discovered like routes; runs via `tokio-cron-scheduler` |
 
 ## STRUCTURE
 
@@ -247,6 +264,76 @@ Generate request/response types from existing structs with powerful transformati
 | `name` | Custom OpenAPI schema name |
 | `rename_all` | Serde rename strategy |
 | `ignore` | Skip Schema derive |
+
+## REPOSITORY SHAPE
+
+Vespera is a **hybrid monorepo** with two workspaces co-located at the repo root:
+
+| Workspace | Manager | Members | Purpose |
+|---|---|---|---|
+| Cargo (`Cargo.toml`) | cargo | `crates/*`, `examples/*` (excluding `examples/java-jni-demo`) | OpenAPI engine, proc-macros, JNI bridge |
+| Bun (`package.json`) | bun | `apps/*` | Marketing/docs site + admin panel (Next.js) |
+
+`bun run ...` operates on the Node side; `cargo ...` on the Rust side. Many root
+scripts deliberately cross the boundary — e.g., `prelint` runs `cargo
+clippy/fmt/check` **before** oxlint touches JS.
+
+### Common Commands
+
+```bash
+# --- Rust side ---
+cargo build                           # Build all crates
+cargo test --workspace                # All Rust tests
+cargo test -p vespera_macro           # One crate
+cargo test --test <name> -- <filter>  # Single integration test
+cargo tarpaulin --out stdout          # Coverage (via `bun run posttest`)
+
+# --- Lint / format (order matters — `prelint` runs Rust FIRST) ---
+bun run lint                          # oxlint (after `cargo clippy + fmt --check + check`)
+bun run lint:fix                      # oxlint --fix (after `cargo clippy --fix && cargo fmt`)
+
+# --- Front-end workspace ---
+bun run dev                           # `dev` in every apps/*
+bun run build                         # apps/front + apps/admin
+cd apps/front && bun dev              # Single-app dev (preferred per devfive-frontend)
+
+# --- Tests (Bun side) ---
+bun test                              # Root runs bun test + tarpaulin (posttest hook)
+
+# --- Release tooling ---
+bun run changepacks                   # @changepacks/cli version bumps
+```
+
+> **`prelint` gotcha:** any Rust warning fails the JS lint. Run `bun run
+> lint:fix` to auto-resolve both sides.
+
+### Frontend (`apps/front`)
+
+Next.js 16 App Router + React 19 + `@devup-ui/react` (build-time CSS-in-JS).
+Theme tokens live in `apps/front/devup.json` and use `$token` syntax in JSX
+props only.
+
+- `apps/front/src/app/` contains **only** `layout.tsx` + `page.tsx` — all other
+  components live in `src/components/` (per devfive-frontend conventions).
+- Styling uses devup-ui shorthand props (`bg`, `p`, `w`, `_hover`,
+  `[mobile,null,pc]` responsive arrays). Never `style={{...}}` or Tailwind.
+
+### Where Tests Live
+
+| Concern | Location |
+|---|---|
+| Macro integration tests | `crates/vespera_macro/tests/` (+ `insta` snapshots) |
+| Validated/422 contract | `crates/vespera/tests/validated_extractor.rs`, `crates/vespera/tests/jni_validation.rs` |
+| Core unit tests | `crates/vespera_core/src/**` inline `#[cfg(test)]` |
+| JNI end-to-end | `examples/rust-jni-demo` (Rust + Java + Gradle) |
+| Front tests | `apps/front/src/__tests__/` (`bun test` + `bun-test-env-dom`) |
+
+`insta` snapshots — run `cargo insta review` to accept drifts.
+
+### Pre-Commit (Husky)
+
+`bun run prepare` installs husky; commits trigger `.husky/` hooks (typically
+`lint`). Never bypass with `--no-verify`; fix the underlying finding.
 
 ## CONVENTIONS
 
