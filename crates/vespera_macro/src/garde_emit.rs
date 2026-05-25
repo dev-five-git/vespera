@@ -145,7 +145,8 @@ fn emit_field_block(
     let field_name_str = field_ident.to_string();
     let numeric_kind = rust_numeric_kind(peel_option(field_ty).unwrap_or(field_ty));
     let rule_blocks = emit_rule_blocks(c, &field_name_str, numeric_kind.as_deref());
-    if rule_blocks.is_empty() {
+    let dive_block = emit_dive_block(c);
+    if rule_blocks.is_empty() && dive_block.is_empty() {
         return None;
     }
 
@@ -159,6 +160,7 @@ fn emit_field_block(
                 );
                 if let ::std::option::Option::Some(__garde_binding) = #field_ident {
                     #rule_blocks
+                    #dive_block
                 }
             }
         }
@@ -170,11 +172,42 @@ fn emit_field_block(
                 );
                 let __garde_binding = &*#field_ident;
                 #rule_blocks
+                #dive_block
             }
         }
     };
 
     Some(block)
+}
+
+/// Emit the `garde::Validate::validate_into` call for fields annotated
+/// with `#[schema(dive)]`.
+///
+/// Garde's runtime `Validate` impls for `Option<T>`, `Vec<T>`,
+/// `HashMap<K, V>`, and `BTreeMap<K, V>` automatically unwrap /
+/// iterate, so the emitted call is identical regardless of container —
+/// it dispatches to the appropriate impl by trait resolution and the
+/// runtime pushes the right path components (`name`, `tags[0]`,
+/// `m["key"]`, …).
+///
+/// For Option-typed fields we already emit an outer `if let Some(...)`
+/// so `__garde_binding` is the unwrapped inner value here; the
+/// `Option`-aware behaviour is therefore intentionally bypassed for
+/// uniformity with the other rule blocks in this file.
+#[cfg(feature = "validation")]
+fn emit_dive_block(c: &SchemaConstraints) -> TokenStream {
+    if c.dive == Some(true) {
+        quote! {
+            ::vespera::__validation::garde::Validate::validate_into(
+                &*__garde_binding,
+                __garde_user_ctx,
+                &mut __garde_path,
+                __garde_report,
+            );
+        }
+    } else {
+        TokenStream::new()
+    }
 }
 
 #[cfg(feature = "validation")]
@@ -624,6 +657,91 @@ mod tests {
                 pub id: String,
             }
         };
+        assert!(emit_to_string(s).is_empty());
+    }
+
+    // ── nested validation (`#[schema(dive)]`) emission ──────────────
+
+    #[test]
+    fn dive_on_plain_field_emits_validate_into_call() {
+        let s: DeriveInput = parse_quote! {
+            struct Order {
+                #[schema(dive)]
+                pub address: Address,
+            }
+        };
+        let out = emit_to_string(s);
+        assert!(out.contains("impl :: vespera :: __validation :: garde :: Validate for Order"));
+        assert!(out.contains("Validate :: validate_into"));
+        assert!(out.contains("\"address\""));
+    }
+
+    #[test]
+    fn dive_on_option_wraps_in_if_let_some() {
+        let s: DeriveInput = parse_quote! {
+            struct Order {
+                #[schema(dive)]
+                pub address: Option<Address>,
+            }
+        };
+        let out = emit_to_string(s);
+        assert!(out.contains("if let :: std :: option :: Option :: Some"));
+        assert!(out.contains("Validate :: validate_into"));
+    }
+
+    #[test]
+    fn dive_on_vec_emits_single_validate_into_call() {
+        // garde's runtime `Vec<T>: Validate` impl iterates and pushes
+        // `[idx]` path components automatically — the macro only emits
+        // one `validate_into` call regardless of container kind.
+        let s: DeriveInput = parse_quote! {
+            struct Order {
+                #[schema(dive)]
+                pub items: Vec<LineItem>,
+            }
+        };
+        let out = emit_to_string(s);
+        assert!(out.contains("Validate :: validate_into"));
+        // `validate_into` appears twice: once as the outer fn declaration
+        // (`fn validate_into(...)`) and once as the inner trait dispatch
+        // (`Validate :: validate_into(...)`).  Anything more would mean
+        // the macro is iterating itself, which is what we explicitly
+        // delegate to garde's runtime `Vec<T>: Validate` impl.
+        assert_eq!(
+            out.matches("validate_into").count(),
+            2,
+            "expected outer fn + one inner trait call; iteration is garde-runtime, \
+             so the macro must NOT emit a `for` loop"
+        );
+        // `for` keyword appears in `impl ... for Order` — count only
+        // tokens that look like loop iteration (`for <ident> in `).
+        let loop_count = out.matches("in __garde_binding").count();
+        assert_eq!(loop_count, 0, "macro must not emit explicit iteration");
+    }
+
+    #[test]
+    fn dive_combined_with_length_emits_both_rules() {
+        let s: DeriveInput = parse_quote! {
+            struct Order {
+                #[schema(min_items = 1, max_items = 10, dive)]
+                pub items: Vec<LineItem>,
+            }
+        };
+        let out = emit_to_string(s);
+        assert!(out.contains("length :: simple :: apply"));
+        assert!(out.contains("Validate :: validate_into"));
+    }
+
+    #[test]
+    fn dive_false_disables_emission() {
+        let s: DeriveInput = parse_quote! {
+            struct Order {
+                #[schema(dive = false)]
+                pub address: Address,
+            }
+        };
+        // `dive = false` is the same as no annotation — no rule
+        // produced means no `impl Validate` emitted.
         assert!(emit_to_string(s).is_empty());
     }
 }

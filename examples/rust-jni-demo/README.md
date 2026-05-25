@@ -158,10 +158,30 @@ public class DemoApplication {
 
 1. `vespera::jni_app!` generates `JNI_OnLoad` → calls `vespera::inprocess::register_app(create_app)`
 2. Java calls `VesperaBridge.init("rust_jni_demo")` → loads cdylib → triggers `JNI_OnLoad`
-3. `VesperaProxyController` catches all HTTP requests → calls `VesperaBridge.dispatch(json)`
-4. JNI symbol delegates to `vespera::inprocess::dispatch_from_json()`
-5. `dispatch_from_json` gets the registered factory → builds Router → `router.oneshot(request)`
-6. No TCP between Java and Rust
+3. `VesperaProxyController` catches all HTTP requests → encodes them into the **binary wire format** via `VesperaBridge.encodeRequest(...)` → calls `VesperaBridge.dispatchBytes(byte[])`
+4. JNI symbol delegates to `vespera::inprocess::dispatch_from_bytes()`
+5. `dispatch_from_bytes` parses the wire header, looks up the cached `Router`, and runs `router.oneshot(request)` with the raw body bytes
+6. Response wire bytes flow back the same way; `VesperaBridge.decodeResponse(byte[])` produces a `DecodedResponse` and the controller returns either `ResponseEntity<String>` (text-like Content-Type) or `ResponseEntity<byte[]>` (binary)
+7. No TCP between Java and Rust; **no base64** — multipart uploads, PDFs, images travel as raw bytes
+
+#### Wire format
+
+```
+[u32 BE header_len][UTF-8 JSON header][raw body bytes]
+```
+
+Header JSON (request and response):
+
+```jsonc
+// request
+{ "v": 1, "method": "POST", "path": "/upload",
+  "query": "user=alice", "headers": {"content-type": "..."} }
+
+// response
+{ "v": 1, "status": 200, "headers": {...}, "metadata": {"version": "0.1.51"} }
+```
+
+All failure paths (malformed wire, Rust panic, no app registered) return a length-prefixed wire response with `status: 4xx/5xx` and a plain-text body, so the Java decoder never has to special-case errors.
 
 ### Maven/Gradle dependency
 

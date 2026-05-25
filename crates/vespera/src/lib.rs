@@ -147,7 +147,8 @@ pub use vespera_inprocess as inprocess;
 #[cfg(feature = "jni")]
 pub use vespera_jni as jni;
 
-/// Generate the `JNI_OnLoad` export that registers your app.
+/// Generate the `JNI_OnLoad` export that registers your app
+/// (single-app, default).
 ///
 /// ```ignore
 /// vespera::jni_app!(create_app);
@@ -157,5 +158,25 @@ pub use vespera_jni as jni;
 macro_rules! jni_app {
     ($factory:expr) => {
         $crate::jni::jni_app!($factory);
+    };
+}
+
+/// Generate the `JNI_OnLoad` export that registers **multiple named
+/// apps** for multi-app routing.  See [`vespera_jni::jni_apps!`] for
+/// details.
+///
+/// ```ignore
+/// vespera::jni_apps! {
+///     "admin"  => admin_app,
+///     "public" => public_app,
+/// }
+/// ```
+#[cfg(feature = "jni")]
+#[macro_export]
+macro_rules! jni_apps {
+    ( $( $name:literal => $factory:expr ),+ $(,)? ) => {
+        $crate::jni::jni_apps! {
+            $( $name => $factory ),+
+        }
     };
 }

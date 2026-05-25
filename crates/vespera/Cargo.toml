@@ -53,6 +53,10 @@ garde = { workspace = true, optional = true }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tower = { version = "0.5", features = ["util"] }
+# Integration tests for the JNI dispatch path call
+# `vespera_inprocess::{register_app, dispatch_from_json}` directly so
+# they don't need the `inprocess` cargo feature to be enabled.
+vespera_inprocess = { workspace = true }
 
 [lints]
 workspace = true

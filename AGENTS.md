@@ -19,7 +19,7 @@ vespera/
 │   ├── vespera_core/         # OpenAPI types, route/schema abstractions
 │   ├── vespera_macro/        # Proc-macros (main logic lives here)
 │   ├── vespera_inprocess/    # In-process dispatch (transport-agnostic)
-│   │   └── src/lib.rs        # dispatch(), register_app(), dispatch_from_json()
+│   │   └── src/lib.rs        # dispatch(), register_app(), dispatch_from_bytes()
 │   └── vespera_jni/          # JNI bridge (depends on vespera_inprocess)
 │       └── src/lib.rs        # RUNTIME, jni_app! macro, JNI symbol export
 ├── libs/
@@ -46,7 +46,7 @@ vespera/
 | Add core types | `crates/vespera_core/src/` | OpenAPI spec types |
 | Test new features | `examples/axum-example/` | Add route, run example |
 | In-process dispatch | `crates/vespera_inprocess/src/lib.rs` | RequestEnvelope → Router → ResponseEnvelope |
-| App factory (FFI pattern) | `crates/vespera_inprocess/src/lib.rs` | register_app(), dispatch_from_json() |
+| App factory (FFI pattern) | `crates/vespera_inprocess/src/lib.rs` | register_app(), dispatch_from_bytes() |
 | JNI integration | `crates/vespera_jni/src/lib.rs` | RUNTIME, jni_app! macro, JNI symbol export |
 | Java bridge library | `libs/vespera-bridge/` | com.devfive.vespera.bridge package |
 | JNI demo (Rust) | `examples/rust-jni-demo/src/` | Routes + vespera::jni_app! |
@@ -76,9 +76,10 @@ vespera (OpenAPI framework)
 
 vespera_inprocess (transport layer — no JNI deps)
   ├── axum (direct — owns Router re-export)
+  ├── bytes (Bytes for zero-copy body handling)
   ├── http, http-body-util, tower
   ├── serde, serde_json
-  └── tokio (rt only — for dispatch_from_json Runtime param)
+  └── tokio (rt only — for dispatch_from_bytes Runtime param)
 
 vespera_jni (JNI glue — thin layer)
   ├── vespera_inprocess (via workspace)
@@ -120,16 +121,96 @@ Feature flags:
 ## JNI ARCHITECTURE
 
 ```
-Java (Spring Boot)          Rust (cdylib)           vespera crates
-─────────────────          ──────────────          ─────────────────
-VesperaBridge.init()   →   JNI_OnLoad             vespera_inprocess::register_app()
-    ↓                          ↓
-VesperaBridge.dispatch() → JNI symbol             vespera_inprocess::dispatch_from_json()
-    ↓                          ↓                        ↓
-VesperaProxyController     catch_unwind            router.oneshot(request)
-    ↓                          ↓                        ↓
-ResponseEntity             JSON envelope           axum handlers
+Java (Spring Boot)              Rust (cdylib)           vespera crates
+─────────────────              ──────────────          ─────────────────
+VesperaBridge.init()       →   JNI_OnLoad             vespera_inprocess::register_app()
+    ↓                              ↓
+VesperaBridge.dispatchBytes() → JNI symbol            vespera_inprocess::dispatch_from_bytes()
+    ↓                              ↓                        ↓
+VesperaProxyController         catch_unwind           router.oneshot(request)
+    ↓                              ↓                        ↓
+ResponseEntity                 binary wire response   axum handlers
+   (String OR byte[])          [u32 BE | JSON | body]
 ```
+
+### Binary Wire Format
+
+Both request and response use the same layout:
+
+```
+bytes 0..4    : u32 BE = header_json byte length N
+bytes 4..4+N  : UTF-8 JSON
+                  (request)  { "v":1, "method", "path",
+                               "query"?, "headers"? }
+                  (response) { "v":1, "status", "headers",
+                               "metadata", "validation_errors"? }
+bytes 4+N..   : raw body bytes (UTF-8 text or binary —
+                no encoding applied)
+```
+
+- No base64 — multipart uploads / PDFs / images travel as raw bytes.
+- `"v":1` is the protocol version; mismatched versions get a `400` wire response.
+- All failure modes (malformed wire, panic in Rust, no app registered) return a valid length-prefixed wire response, so the Java decoder never has to special-case errors.
+- `validation_errors` is an optional array hoisted from 422 JSON bodies (`{"errors":[...]}`) — original body preserved verbatim alongside.
+
+### JNI Dispatch Modes (four symbols)
+
+| Symbol | Java native | Mode | Memory |
+|---|---|---|---|
+| `Java_...dispatchBytes` | `byte[] dispatchBytes(byte[])` | sync | full body |
+| `Java_...dispatchAsync` | `void dispatchAsync(CompletableFuture<byte[]>, byte[])` | async | full body |
+| `Java_...dispatchStreaming` | `byte[] dispatchStreaming(byte[], OutputStream)` | sync response-streaming | chunk-bounded response |
+| `Java_...dispatchFullStreaming` | `byte[] dispatchFullStreaming(byte[], InputStream, OutputStream)` | sync bidirectional streaming | chunk-bounded both directions |
+
+All four share the same wire format, registered router, and panic-safe `catch_unwind` discipline. `dispatchAsync` spawns the dispatch on Rust's shared Tokio runtime via `tokio::spawn` (panic → `JoinError` → `error_wire(500)`) and completes the `CompletableFuture` from a worker thread via `attach_current_thread`. `dispatchStreaming` drains the response body chunk-by-chunk via `http_body::Body::frame()` and writes each chunk to the Java `OutputStream`. `dispatchFullStreaming` adds request-side streaming: a `tokio::task::spawn_blocking` thread pulls 16 KiB chunks from `InputStream.read(byte[])` and feeds them into axum via an `mpsc::channel`-backed `http_body::Body`, giving natural backpressure (bounded 16-slot channel) so 1 GiB uploads run in `O(chunk_size)` RAM.
+
+### Rust Public API (vespera_inprocess)
+
+| Function | Sig | Use |
+|---|---|---|
+| `register_app(F)` | sync | Register the default app (first-wins, BC) |
+| `register_app_named(&str, F)` | sync | Register a named app for multi-app routing |
+| `dispatch_from_bytes(Vec<u8>, &Runtime) -> Vec<u8>` | sync | FFI entry, blocks on runtime |
+| `dispatch_from_bytes_async(Vec<u8>) -> Vec<u8>` (async) | async | inside an existing runtime |
+| `dispatch_streaming_async<F>(Vec<u8>, F) -> Vec<u8>` (async) | response streaming async | `F: FnMut(&[u8])` body chunks |
+| `dispatch_bidirectional_streaming<P,F>(Vec<u8>, P, F) -> Vec<u8>` (async) | bidirectional streaming | `P: FnMut() -> Option<Vec<u8>> + Send + 'static`, `F: FnMut(&[u8])` |
+| `error_wire(u16, &str) -> Vec<u8>` | sync | wire-format error builder |
+| `dispatch_typed(Router, &RequestEnvelope) -> ResponseEnvelope` | async | direct axum API (BC) |
+
+### Multi-app routing
+
+**Use case**: multi-app is primarily a feature for **external-dispatcher scenarios** — JNI (Java host picks app per request via header), WebAssembly bridge, C FFI, or any in-process embedding where the host distinguishes between multiple independent vespera API surfaces.  For Rust **standalone** servers (`axum::serve(...)`), the native axum patterns (`Router::merge()`, `Router::nest()`) are more idiomatic for modularization — `register_app_named` adds no value when the same binary owns both the router registration and the HTTP entry point.
+
+The wire header carries an optional `"app": "<name>"` field (default
+omitted → `"_default"` app).  Dispatch looks the name up in
+`APP_ROUTERS: RwLock<HashMap<String, Router>>` and returns:
+
+- 404 wire response if the name is registered but no such app exists
+- 400 wire response if the name fails validation (non-empty, ≤ 64 bytes, `[A-Za-z0-9_-]`)
+- Otherwise the matching `Router` is cloned (Arc-backed) and dispatched
+
+Two Rust-side macros assemble the single mandatory `JNI_OnLoad`:
+
+```rust
+vespera::jni_app!(create_app);                        // BC sugar for single default app
+
+vespera::jni_apps! {                                  // multi-app primary API
+    "_default" => create_app,
+    "admin"    => admin_app,
+    "public"   => public_app,
+}
+```
+
+### Spring Boot autoconfigure (Java side)
+
+`vespera-bridge` ships a Spring Boot autoconfiguration that wires up
+`VesperaProxyController` + two strategy beans, both replaceable via
+`@ConditionalOnMissingBean`:
+
+- `AppNameResolver` (default: `HeaderAppNameResolver("X-Vespera-App")`) — picks app per request
+- `DispatchModeResolver` (default: `BidirectionalStreamingDispatchModeResolver`) — picks `DispatchMode`
+
+Property `vespera.bridge.controller-enabled=false` disables the whole controller for BYO scenarios.  See [`libs/vespera-bridge/README.md`](libs/vespera-bridge/README.md#customization) for the customization recipes.
 
 ### Rust side (example app — 2 lines of JNI code):
 ```rust

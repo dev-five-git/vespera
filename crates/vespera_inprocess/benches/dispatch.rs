@@ -1,16 +1,13 @@
-//! Criterion benchmarks quantifying the performance review patches.
+//! Criterion benchmarks for the in-process dispatch surface.
 //!
-//! Each benchmark group compares **two paths** that are both reachable
-//! from the *current* code base, so a single `cargo bench` run produces
-//! the before/after comparison without git tricks:
+//! Three groups:
 //!
 //! - `router_path`: `Router::clone()` of a pre-built router  (post-P1)
 //!   vs rebuilding the router from a factory closure        (pre-P1, simulated).
 //! - `dispatch_path`: `dispatch_owned(router, env)`          (post-P2)
-//!   vs `dispatch(router, &env)` which clones internally     (pre-P2).
-//! - `full_flow`: realistic JNI flow `dispatch_from_json`-style — parse +
-//!   cached router + owned dispatch (post-P1+P2) vs parse + per-call
-//!   build + borrowed dispatch (pre-P1+P2).
+//!   vs `dispatch_typed(router, &env)` which clones internally (pre-P2).
+//! - `wire_path`: end-to-end `dispatch_from_bytes` — wire-format
+//!   round-trip including header JSON parse + body byte handling.
 //!
 //! Scaling axes:
 //! - `route_count`: 10 / 100 / 500 routes (Router-build dominance).
@@ -25,7 +22,9 @@ use axum::{
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
-use vespera_inprocess::{RequestEnvelope, dispatch, dispatch_owned, dispatch_typed, parse_request};
+use vespera_inprocess::{
+    RequestEnvelope, dispatch_from_bytes, dispatch_owned, dispatch_typed, register_app,
+};
 
 // ── Test fixtures ────────────────────────────────────────────────────
 
@@ -43,9 +42,7 @@ async fn handler_echo(Json(payload): Json<Echo>) -> Json<Echo> {
 }
 
 /// Build a router with `n_routes` distinct GET endpoints plus one
-/// `POST /echo` that echoes the request body.  This simulates the
-/// `vespera!()` macro-expanded `Router::new().route(...).route(...)...`
-/// chain that runs inside the user's `create_app()`.
+/// `POST /echo` that echoes the request body.
 fn build_router(n_routes: usize) -> Router {
     let mut router = Router::new().route("/echo", post(handler_echo));
     for i in 0..n_routes {
@@ -55,23 +52,7 @@ fn build_router(n_routes: usize) -> Router {
     router
 }
 
-/// JSON-encoded `RequestEnvelope` whose body is `body_kb * 1024` bytes
-/// of valid UTF-8 (so we measure the realistic clone/move cost without
-/// triggering the lossy decode path).
-fn make_envelope_json(body_kb: usize) -> String {
-    let body_str = "x".repeat(body_kb * 1024);
-    let envelope = serde_json::json!({
-        "method": "POST",
-        "path": "/echo",
-        "query": "",
-        "headers": { "content-type": "application/json" },
-        "body": serde_json::to_string(&Echo { body: body_str }).unwrap(),
-    });
-    envelope.to_string()
-}
-
-/// Owned `RequestEnvelope` mirror of `make_envelope_json` for the
-/// dispatch-only benches that skip the JSON parse step.
+/// Owned `RequestEnvelope` for the direct-API benches.
 fn make_envelope(body_kb: usize) -> RequestEnvelope {
     let body_str = "x".repeat(body_kb * 1024);
     let mut headers = HashMap::new();
@@ -85,35 +66,31 @@ fn make_envelope(body_kb: usize) -> RequestEnvelope {
     }
 }
 
-// ── Naive (pre-patch) reference paths ────────────────────────────────
-
-/// Simulates the pre-patch `dispatch_from_json`:
-///   factory() per call  +  dispatch with borrowed envelope (internal clone).
-fn naive_dispatch_from_json(
-    input: &str,
-    runtime: &Runtime,
-    factory: &dyn Fn() -> Router,
-) -> String {
-    let envelope = parse_request(input).expect("valid envelope");
-    let router = factory(); // pre-P1: factory called per request
-    runtime.block_on(dispatch(router, &envelope)) // pre-P2: dispatch clones envelope internally
-}
-
-/// Simulates the post-patch hot path explicitly so the comparison
-/// against `naive_dispatch_from_json` is apples-to-apples (no detour
-/// through the global `APP_ROUTER` `OnceLock`).
-fn patched_dispatch_from_json(input: &str, runtime: &Runtime, cached_router: &Router) -> String {
-    let envelope = parse_request(input).expect("valid envelope");
-    let router = cached_router.clone(); // post-P1: cheap Arc-backed clone
-    let response = runtime.block_on(dispatch_owned(router, envelope));
-    serde_json::to_string(&response).expect("response is serializable")
+/// Wire-format request payload for the `dispatch_from_bytes` bench.
+fn make_wire_request(body_kb: usize) -> Vec<u8> {
+    let body_str = serde_json::to_string(&Echo {
+        body: "x".repeat(body_kb * 1024),
+    })
+    .unwrap();
+    let header = serde_json::json!({
+        "v": 1,
+        "method": "POST",
+        "path": "/echo",
+        "headers": {"content-type": "application/json"},
+    });
+    let header_bytes = serde_json::to_vec(&header).unwrap();
+    let header_len = u32::try_from(header_bytes.len()).unwrap();
+    let body_bytes = body_str.as_bytes();
+    let mut wire = Vec::with_capacity(4 + header_bytes.len() + body_bytes.len());
+    wire.extend_from_slice(&header_len.to_be_bytes());
+    wire.extend_from_slice(&header_bytes);
+    wire.extend_from_slice(body_bytes);
+    wire
 }
 
 // ── Benchmarks ───────────────────────────────────────────────────────
 
-/// P1 isolation: cached Router::clone() vs factory rebuild per call.
-/// Dispatch step is identical (`dispatch_owned`) on both sides so any
-/// delta is attributable to router construction.
+/// P1 isolation: cached `Router::clone()` vs factory rebuild per call.
 fn bench_router_path(c: &mut Criterion) {
     let runtime = Runtime::new().expect("tokio runtime");
     let envelope_template = make_envelope(1); // 1 KB body, fixed
@@ -148,20 +125,15 @@ fn bench_router_path(c: &mut Criterion) {
     group.finish();
 }
 
-/// P2 isolation: `dispatch_owned` (envelope moved into HTTP request) vs
-/// `dispatch_typed` (envelope borrowed → clone then `dispatch_owned`
-/// internally).  Each iteration **freshly parses** the envelope from JSON
-/// so the owned path genuinely avoids a clone; the borrowed path pays
-/// for exactly one extra `RequestEnvelope::clone()` inside
-/// `dispatch_typed`.  Both arms return `ResponseEnvelope` so the
-/// response-JSON serialization cost is excluded.
+/// P2 isolation: `dispatch_owned` (envelope moved) vs `dispatch_typed`
+/// (envelope borrowed → cloned internally).
 fn bench_dispatch_path(c: &mut Criterion) {
     let runtime = Runtime::new().expect("tokio runtime");
     let cached = build_router(20);
     let mut group = c.benchmark_group("dispatch_path");
 
     for &body_kb in &[1_usize, 64, 1024] {
-        let envelope_json = make_envelope_json(body_kb);
+        let template = make_envelope(body_kb);
         group.throughput(Throughput::Bytes((body_kb * 1024) as u64));
 
         group.bench_with_input(
@@ -169,8 +141,7 @@ fn bench_dispatch_path(c: &mut Criterion) {
             &body_kb,
             |b, _| {
                 b.iter(|| {
-                    let env = parse_request(&envelope_json).expect("valid envelope");
-                    runtime.block_on(dispatch_owned(cached.clone(), env))
+                    runtime.block_on(dispatch_owned(cached.clone(), template.clone()))
                 });
             },
         );
@@ -179,10 +150,7 @@ fn bench_dispatch_path(c: &mut Criterion) {
             BenchmarkId::new("borrowed_pre_P2", body_kb),
             &body_kb,
             |b, _| {
-                b.iter(|| {
-                    let env = parse_request(&envelope_json).expect("valid envelope");
-                    runtime.block_on(dispatch_typed(cached.clone(), &env))
-                });
+                b.iter(|| runtime.block_on(dispatch_typed(cached.clone(), &template)));
             },
         );
     }
@@ -190,38 +158,32 @@ fn bench_dispatch_path(c: &mut Criterion) {
     group.finish();
 }
 
-/// End-to-end JNI-style flow: JSON in → JSON out.  Combines P1 + P2 so
-/// the headline “Router rebuild + body clone” cost is visible.
-fn bench_full_flow(c: &mut Criterion) {
+/// End-to-end binary-wire flow: encoded request bytes → decoded
+/// response bytes via the registered app.  Measures the realistic FFI
+/// cost the JNI bridge pays.
+fn bench_wire_path(c: &mut Criterion) {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| register_app(|| build_router(100)));
+
     let runtime = Runtime::new().expect("tokio runtime");
-    let cached_100 = build_router(100);
-    let mut group = c.benchmark_group("full_flow");
+    let mut group = c.benchmark_group("wire_path");
 
     for &body_kb in &[1_usize, 64, 1024] {
-        let envelope_json = make_envelope_json(body_kb);
+        let wire = make_wire_request(body_kb);
         group.throughput(Throughput::Bytes((body_kb * 1024) as u64));
 
         group.bench_with_input(
-            BenchmarkId::new("patched_post_P1_P2", body_kb),
+            BenchmarkId::new("dispatch_from_bytes", body_kb),
             &body_kb,
             |b, _| {
-                b.iter(|| patched_dispatch_from_json(&envelope_json, &runtime, &cached_100));
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("naive_pre_P1_P2", body_kb),
-            &body_kb,
-            |b, _| {
-                b.iter(|| {
-                    naive_dispatch_from_json(&envelope_json, &runtime, &|| build_router(100))
-                });
+                b.iter(|| dispatch_from_bytes(wire.clone(), &runtime));
             },
         );
     }
 
     group.finish();
+    drop(runtime);
 }
 
-criterion_group!(benches, bench_router_path, bench_dispatch_path, bench_full_flow);
+criterion_group!(benches, bench_router_path, bench_dispatch_path, bench_wire_path);
 criterion_main!(benches);

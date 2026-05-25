@@ -38,28 +38,34 @@ use crate::args;
 /// Metadata stored by `#[route]` for later consumption by `vespera!()`.
 ///
 /// Each invocation of `#[route]` pushes one entry into [`ROUTE_STORAGE`].
-/// The `vespera!()` macro reads this storage to supplement file-based route discovery.
+/// The `vespera!()` macro reads this storage to supplement file-based
+/// route discovery — when `file_path` is populated, the collector can
+/// build route metadata directly from this struct without re-parsing
+/// the source file with `syn::parse_file()`.
 #[derive(Debug, Clone)]
 pub struct StoredRouteInfo {
-    /// Function name (e.g., `"get_user"`)
+    /// Function name (e.g., `"get_user"`).
     pub fn_name: String,
-    /// HTTP method — stored for Phase 3 (skip file re-parsing)
-    #[allow(dead_code)]
+    /// HTTP method (e.g., `"get"`, `"post"`).  Used by the collector's
+    /// fast path ([`crate::collector`]) to populate `RouteMetadata.method`
+    /// without re-parsing the source file.
     pub method: Option<String>,
-    /// Custom path from `path = "/{id}"` — stored for Phase 3
-    #[allow(dead_code)]
+    /// Custom path from `path = "/{id}"`.  Used by the collector to
+    /// derive the full route URL when present.
     pub custom_path: Option<String>,
-    /// Additional error status codes from `error_status = [400, 404]`
+    /// Additional error status codes from `error_status = [400, 404]`.
     pub error_status: Option<Vec<u16>>,
-    /// Tags for `OpenAPI` grouping from `tags = ["users"]`
+    /// Tags for `OpenAPI` grouping from `tags = ["users"]`.
     pub tags: Option<Vec<String>>,
-    /// Description from `description = "Get user by ID"`
+    /// Description from `description = "Get user by ID"`.
     pub description: Option<String>,
-    /// Source file path from `Span::call_site().local_file()` (requires Rust 1.88+)
+    /// Source file path from `Span::call_site().local_file()` (requires Rust 1.88+).
     /// `None` on older Rust — collector falls back to full file parsing.
     pub file_path: Option<String>,
-    /// Full function item as string for later AST re-parsing (Phase 3)
-    #[allow(dead_code)]
+    /// Full function item as a string.  Re-parsed via `syn::parse_str()`
+    /// by both [`crate::collector`] and [`crate::openapi_generator`] so
+    /// the source file does not need to be opened from disk for routes
+    /// already known via `ROUTE_STORAGE`.
     pub fn_item_str: String,
 }
 

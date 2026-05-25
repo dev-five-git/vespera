@@ -67,6 +67,19 @@ pub struct SchemaConstraints {
     pub example: Option<serde_json::Value>,
     pub read_only: Option<bool>,
     pub write_only: Option<bool>,
+
+    // ── nested validation ───────────────────────────────────────────
+    /// When `Some(true)`, the field is recursively validated by
+    /// invoking `garde::Validate::validate_into` on its value.  The
+    /// path of any reported error is prefixed with the field name
+    /// (e.g. `"address.city"`), and garde's runtime impls for
+    /// `Option`, `Vec`, `HashMap`, `BTreeMap` automatically handle
+    /// unwrapping / iteration.  This corresponds to
+    /// `#[garde(dive)]` semantics and is opt-in to avoid accidental
+    /// trait-bound failures on field types that don't implement
+    /// `garde::Validate` (e.g. `chrono::DateTime`, `uuid::Uuid`,
+    /// most third-party newtypes).
+    pub dive: Option<bool>,
 }
 
 impl SchemaConstraints {
@@ -88,6 +101,7 @@ impl SchemaConstraints {
             && self.example.is_none()
             && self.read_only.is_none()
             && self.write_only.is_none()
+            && self.dive.is_none()
     }
 
     /// `true` when at least one constraint produces a `garde` runtime rule
@@ -109,6 +123,7 @@ impl SchemaConstraints {
                 self.format.as_deref(),
                 Some("email" | "uri" | "url" | "ipv4" | "ipv6" | "ip")
             )
+            || self.dive == Some(true)
     }
 }
 
@@ -163,6 +178,13 @@ pub fn extract_schema_constraints(attrs: &[Attribute]) -> SchemaConstraints {
                 out.read_only = Some(parse_bool_or_default_true(&meta)?);
             } else if meta.path.is_ident("write_only") {
                 out.write_only = Some(parse_bool_or_default_true(&meta)?);
+            } else if meta.path.is_ident("dive") {
+                // Opt-in recursive validation.  Mirrors `#[garde(dive)]`:
+                // emits a `Validate::validate_into` call so nested
+                // structs, `Vec<Validate>`, `Option<Validate>`,
+                // `HashMap<_, Validate>` are validated transparently
+                // and errors carry dotted paths like "address.city".
+                out.dive = Some(parse_bool_or_default_true(&meta)?);
             } else {
                 // Unknown key — could be a struct-level key like `name`,
                 // `ref`, `nullable`, `default` that lives on the same
@@ -422,6 +444,31 @@ mod tests {
         let c = parse(&[parse_quote!(#[schema(read_only, write_only = false)])]);
         assert_eq!(c.read_only, Some(true));
         assert_eq!(c.write_only, Some(false));
+    }
+
+    #[test]
+    fn dive_bare_keyword_defaults_to_true() {
+        let c = parse(&[parse_quote!(#[schema(dive)])]);
+        assert_eq!(c.dive, Some(true));
+        assert!(c.has_runtime_rule(), "dive should count as a runtime rule");
+    }
+
+    #[test]
+    fn dive_explicit_false_disables_runtime_rule() {
+        let c = parse(&[parse_quote!(#[schema(dive = false)])]);
+        assert_eq!(c.dive, Some(false));
+        assert!(
+            !c.has_runtime_rule(),
+            "dive = false must not register a runtime rule"
+        );
+    }
+
+    #[test]
+    fn dive_combines_with_other_constraints() {
+        let c = parse(&[parse_quote!(#[schema(min_items = 1, max_items = 10, dive)])]);
+        assert_eq!(c.min_items, Some(1));
+        assert_eq!(c.max_items, Some(10));
+        assert_eq!(c.dive, Some(true));
     }
 
     #[test]

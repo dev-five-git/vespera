@@ -714,16 +714,51 @@ This automatically:
 
 ---
 
+## JNI / Java Integration
+
+Embed your Vespera router inside a Java/Spring application — no TCP, no JSON envelope overhead.
+
+```rust
+// Cargo.toml
+// vespera = { version = "0.1", features = ["jni"] }
+
+pub fn create_app() -> axum::Router {
+    vespera!(title = "My API")
+}
+
+vespera::jni_app!(create_app);
+```
+
+```java
+@SpringBootApplication
+@ComponentScan(basePackages = {"com.example.app", "com.devfive.vespera.bridge"})
+public class MyApp {
+    public static void main(String[] args) {
+        VesperaBridge.init("my_rust_lib");
+        SpringApplication.run(MyApp.class, args);
+    }
+}
+```
+
+The `VesperaProxyController` auto-registers as a catch-all and forwards every HTTP request through a length-prefixed **binary wire format** (`[u32 BE | UTF-8 JSON header | raw body]`) — multipart uploads, PDFs, and images travel raw, with zero base64 overhead.
+
+See [`libs/vespera-bridge`](./libs/vespera-bridge/) for the Java library docs and [`examples/rust-jni-demo`](./examples/rust-jni-demo/) for a complete end-to-end demo.
+
 ## Project Structure
 
 ```
 vespera/
 ├── crates/
-│   ├── vespera/           # Main crate - re-exports everything
-│   ├── vespera_core/      # OpenAPI types and abstractions
-│   └── vespera_macro/     # Proc-macros (compile-time magic)
+│   ├── vespera/              # Main crate - re-exports everything
+│   ├── vespera_core/         # OpenAPI types and abstractions
+│   ├── vespera_macro/        # Proc-macros (compile-time magic)
+│   ├── vespera_inprocess/    # In-process axum dispatch + binary wire API
+│   └── vespera_jni/          # JNI glue (Runtime + JNI symbol)
+├── libs/
+│   └── vespera-bridge/       # Java library (kr.devfive:vespera-bridge)
 └── examples/
-    └── axum-example/      # Complete example application
+    ├── axum-example/         # Standalone OpenAPI server
+    └── rust-jni-demo/        # Rust + Spring Boot JNI integration
 ```
 
 ---

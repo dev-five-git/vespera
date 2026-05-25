@@ -1070,6 +1070,10 @@ async fn test_openapi_contains_typed_form_schemas() {
 // for both text fields and file (NamedTempFile) fields.
 
 /// Test struct with intentionally small limits for limit enforcement testing.
+/// The `data` and `file` fields are intentionally not read in the handler —
+/// the test exercises the multipart parser's limit-rejection path, so the
+/// fields must exist (so the derive macro registers them with their limits)
+/// but the handler never touches their values.
 #[derive(Debug, Multipart)]
 #[allow(dead_code)]
 struct FormDataLimitTestRequest {
@@ -1215,7 +1219,6 @@ fn default_greeting() -> String {
 /// Test struct with serde rename and default attributes.
 #[derive(Debug, Multipart)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
 struct SerdeAttrTestRequest {
     /// Uses camelCase rename from struct-level rename_all.
     pub user_name: String,
@@ -1244,7 +1247,6 @@ async fn serde_attr_handler(
 /// Test struct with struct-level `#[serde(default)]`.
 #[derive(Debug, Multipart)]
 #[serde(default)]
-#[allow(dead_code)]
 struct StructDefaultTestRequest {
     pub name: String,
     pub count: i32,
@@ -1396,7 +1398,6 @@ async fn test_serde_default_overridden_when_provided() {
 
 /// Test struct with Vec<T> field for repeated multipart fields.
 #[derive(Debug, Multipart)]
-#[allow(dead_code)]
 struct VecFieldTestRequest {
     pub name: String,
     pub tags: Vec<String>,
@@ -1414,7 +1415,6 @@ async fn vec_field_handler(
 /// Test struct with strict mode enabled.
 #[derive(Debug, Multipart)]
 #[try_from_multipart(strict)]
-#[allow(dead_code)]
 struct StrictModeTestRequest {
     pub name: String,
     pub age: i32,
@@ -1431,7 +1431,6 @@ async fn strict_mode_handler(
 
 /// Test struct with form_data(field_name) override.
 #[derive(Debug, Multipart)]
-#[allow(dead_code)]
 struct FieldNameOverrideTestRequest {
     pub name: String,
     #[form_data(field_name = "custom_field")]
@@ -1449,7 +1448,6 @@ async fn field_name_override_handler(
 
 /// Test struct with form_data(default) attribute.
 #[derive(Debug, Multipart)]
-#[allow(dead_code)]
 struct FormDataDefaultTestRequest {
     pub name: String,
     #[form_data(default)]
@@ -1467,7 +1465,6 @@ async fn form_data_default_handler(
 
 /// Test struct with numeric and char fields for type parsing coverage.
 #[derive(Debug, Multipart)]
-#[allow(dead_code)]
 struct NumericCharTestRequest {
     pub name: String,
     pub count: i32,

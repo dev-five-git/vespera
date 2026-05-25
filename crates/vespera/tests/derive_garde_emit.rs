@@ -142,3 +142,143 @@ fn multiple_field_violations_all_reported_in_one_report() {
     // username triggers both pattern and (implicitly satisfied) length.
     assert!(report.iter().count() >= 3, "got {paths:?}");
 }
+
+// ── nested validation via `#[schema(dive)]` ──────────────────────────
+
+#[derive(Schema, serde::Deserialize)]
+#[allow(dead_code)]
+struct Address {
+    #[schema(min_length = 1, max_length = 64)]
+    pub city: String,
+    #[schema(pattern = "^[A-Z0-9-]+$")]
+    pub postal_code: String,
+}
+
+#[derive(Schema, serde::Deserialize)]
+#[allow(dead_code)]
+struct LineItem {
+    #[schema(min_length = 1)]
+    pub sku: String,
+    #[schema(minimum = 1)]
+    pub quantity: u32,
+}
+
+#[derive(Schema, serde::Deserialize)]
+#[allow(dead_code, clippy::struct_field_names)]
+struct Order {
+    #[schema(min_length = 1)]
+    pub order_id: String,
+
+    #[schema(dive)]
+    pub primary_address: Address,
+
+    #[schema(dive)]
+    pub billing_address: Option<Address>,
+
+    #[schema(min_items = 1, max_items = 100, dive)]
+    pub line_items: Vec<LineItem>,
+}
+
+fn good_order() -> Order {
+    Order {
+        order_id: "ORD-001".to_owned(),
+        primary_address: Address {
+            city: "Seoul".to_owned(),
+            postal_code: "12345".to_owned(),
+        },
+        billing_address: None,
+        line_items: vec![LineItem {
+            sku: "SKU-1".to_owned(),
+            quantity: 2,
+        }],
+    }
+}
+
+#[test]
+fn nested_validation_clean_order_passes() {
+    assert!(good_order().validate().is_ok());
+}
+
+#[test]
+fn nested_validation_inner_field_violation_reports_dotted_path() {
+    let mut o = good_order();
+    o.primary_address.city = String::new(); // violates min_length = 1
+    let report = o.validate().expect_err("nested validation must fail");
+    let paths: Vec<String> = report.iter().map(|(p, _)| p.to_string()).collect();
+    assert!(
+        paths.iter().any(|p| p == "primary_address.city"),
+        "expected dotted path `primary_address.city`, got {paths:?}"
+    );
+}
+
+#[test]
+fn nested_validation_option_none_skips_inner_checks() {
+    // billing_address = None → inner validation must not run, no
+    // billing_address.* errors in the report.
+    let o = good_order();
+    assert!(o.billing_address.is_none());
+    assert!(o.validate().is_ok());
+}
+
+#[test]
+fn nested_validation_option_some_runs_inner_checks() {
+    let mut o = good_order();
+    o.billing_address = Some(Address {
+        city: String::new(),                 // violates min_length = 1
+        postal_code: "ZZ999".to_owned(),     // valid pattern
+    });
+    let report = o.validate().expect_err("billing_address Some must validate");
+    let paths: Vec<String> = report.iter().map(|(p, _)| p.to_string()).collect();
+    assert!(
+        paths.iter().any(|p| p == "billing_address.city"),
+        "expected `billing_address.city`, got {paths:?}"
+    );
+}
+
+#[test]
+fn nested_validation_vec_iterates_with_indexed_path() {
+    let mut o = good_order();
+    o.line_items = vec![
+        LineItem {
+            sku: "OK-1".to_owned(),
+            quantity: 1,
+        },
+        LineItem {
+            sku: String::new(), // violates min_length=1 at index 1
+            quantity: 0,         // violates minimum=1 at index 1
+        },
+    ];
+    let report = o.validate().expect_err("line_items[1] should fail");
+    let paths: Vec<String> = report.iter().map(|(p, _)| p.to_string()).collect();
+    assert!(
+        paths.iter().any(|p| p == "line_items[1].sku"),
+        "expected indexed path `line_items[1].sku`, got {paths:?}"
+    );
+    assert!(
+        paths.iter().any(|p| p == "line_items[1].quantity"),
+        "expected indexed path `line_items[1].quantity`, got {paths:?}"
+    );
+}
+
+#[test]
+fn nested_validation_vec_min_items_and_dive_both_enforced() {
+    let mut o = good_order();
+    o.line_items.clear(); // violates min_items = 1
+    let report = o.validate().expect_err("empty line_items must fail");
+    let paths: Vec<String> = report.iter().map(|(p, _)| p.to_string()).collect();
+    assert!(
+        paths.iter().any(|p| p == "line_items"),
+        "expected outer `line_items` length error, got {paths:?}"
+    );
+}
+
+#[test]
+fn nested_validation_outer_and_inner_violations_both_reported() {
+    let mut o = good_order();
+    o.order_id = String::new(); // outer min_length=1
+    o.primary_address.postal_code = "lowercase".to_owned(); // inner pattern
+    let report = o.validate().expect_err("two-level failure");
+    let paths: Vec<String> = report.iter().map(|(p, _)| p.to_string()).collect();
+    assert!(paths.iter().any(|p| p == "order_id"));
+    assert!(paths.iter().any(|p| p == "primary_address.postal_code"));
+}
