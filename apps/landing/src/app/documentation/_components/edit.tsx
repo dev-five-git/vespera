@@ -6,9 +6,9 @@ export function Edit() {
       alignItems="center"
       borderRadius="$spacingSpacing08"
       cursor="pointer"
+      data-group
       gap="$spacingSpacing08"
       py="$spacingSpacing08"
-      role="group"
     >
       <Text
         _groupHover={{

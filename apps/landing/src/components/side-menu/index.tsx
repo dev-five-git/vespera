@@ -39,7 +39,11 @@ export function SideMenu({
   const href = [hrefPrefix, value].join('/')
   return (
     <>
-      <Link href={!childMenus ? href : '#'}>
+      <Link
+        aria-expanded={childMenus ? expanded : undefined}
+        aria-label="side menu"
+        href={!childMenus ? href : '#'}
+      >
         <Flex
           _active={{
             bg: '$vesperaActive',
@@ -48,10 +52,9 @@ export function SideMenu({
             bg: '$vesperaHover',
           }}
           alignItems="center"
-          aria-expanded={childMenus ? expanded : undefined}
-          aria-label="side menu"
           bg={isSelected ? '$vesperaSelected' : 'transparent'}
           borderRadius="$spacingSpacing08"
+          data-group
           gap="$spacingSpacing08"
           onClick={() => {
             setSelected(value ?? null)
@@ -60,7 +63,6 @@ export function SideMenu({
           pl="$spacingSpacing16"
           pr="$spacingSpacing12"
           py={['$spacingSpacing12', null, null, null, '$spacingSpacing08']}
-          role="group"
         >
           <Text
             _groupActive={{
