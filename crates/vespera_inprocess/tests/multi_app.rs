@@ -48,8 +48,7 @@ fn encode_wire(method: &str, path: &str, app: Option<&str>) -> Vec<u8> {
     if let Some(a) = app {
         header.insert("app".to_owned(), Value::String(a.to_owned()));
     }
-    let header_bytes =
-        serde_json::to_vec(&Value::Object(header)).expect("header serialise");
+    let header_bytes = serde_json::to_vec(&Value::Object(header)).expect("header serialise");
     let header_len = u32::try_from(header_bytes.len()).unwrap();
     let mut wire = Vec::with_capacity(4 + header_bytes.len());
     wire.extend_from_slice(&header_len.to_be_bytes());

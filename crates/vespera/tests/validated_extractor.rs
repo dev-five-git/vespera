@@ -41,9 +41,7 @@ async fn valid_payload_returns_200() {
         .method("POST")
         .uri("/posts")
         .header("content-type", "application/json")
-        .body(Body::from(
-            r#"{"title":"My Post","content":"hello world"}"#,
-        ))
+        .body(Body::from(r#"{"title":"My Post","content":"hello world"}"#))
         .unwrap();
 
     let res = app.oneshot(req).await.unwrap();
@@ -78,8 +76,7 @@ async fn short_title_returns_422_with_path_keyed_envelope() {
     assert!(
         errors
             .iter()
-            .any(|e| e["path"].as_str() == Some("title")
-                && e["message"].as_str().is_some()),
+            .any(|e| e["path"].as_str() == Some("title") && e["message"].as_str().is_some()),
         "expected an error with path=\"title\", got {body:#}"
     );
 }
@@ -119,10 +116,7 @@ async fn multiple_violations_all_appear_in_envelope() {
     let body: ::serde_json::Value =
         ::serde_json::from_str(&body_to_string(res.into_body()).await).unwrap();
     let errors = body["errors"].as_array().unwrap();
-    let paths: Vec<&str> = errors
-        .iter()
-        .filter_map(|e| e["path"].as_str())
-        .collect();
+    let paths: Vec<&str> = errors.iter().filter_map(|e| e["path"].as_str()).collect();
     assert!(paths.contains(&"title"), "got {paths:?}");
     assert!(paths.contains(&"content"), "got {paths:?}");
 }
@@ -215,10 +209,7 @@ fn good_payload() -> ::serde_json::Value {
 /// Send `payload` to `/all` and decode the response as
 /// `(status, body_json)`.  Asserts `application/json` content-type when
 /// the status is `422` (the canonical validation envelope).
-async fn dispatch(
-    app: Router,
-    payload: ::serde_json::Value,
-) -> (u16, ::serde_json::Value) {
+async fn dispatch(app: Router, payload: ::serde_json::Value) -> (u16, ::serde_json::Value) {
     let req = Request::builder()
         .method("POST")
         .uri("/all")
@@ -229,13 +220,14 @@ async fn dispatch(
     let status = res.status().as_u16();
     if status == 422 {
         assert_eq!(
-            res.headers().get("content-type").map(|v| v.to_str().unwrap()),
+            res.headers()
+                .get("content-type")
+                .map(|v| v.to_str().unwrap()),
             Some("application/json"),
         );
     }
-    let body: ::serde_json::Value =
-        ::serde_json::from_str(&body_to_string(res.into_body()).await)
-            .unwrap_or(::serde_json::Value::Null);
+    let body: ::serde_json::Value = ::serde_json::from_str(&body_to_string(res.into_body()).await)
+        .unwrap_or(::serde_json::Value::Null);
     (status, body)
 }
 
@@ -248,8 +240,7 @@ fn assert_envelope_has_field_error(body: &::serde_json::Value, field: &str) {
     assert!(
         errors
             .iter()
-            .any(|e| e["path"].as_str() == Some(field)
-                && e["message"].as_str().is_some()),
+            .any(|e| e["path"].as_str() == Some(field) && e["message"].as_str().is_some()),
         "expected an error with path=\"{field}\" + message, got {body:#}",
     );
 }
@@ -317,9 +308,7 @@ async fn rule_range_minimum_violation_returns_422() {
         #[schema(minimum = 0, maximum = 150)]
         age: i32,
     }
-    async fn handler(
-        Validated(::axum::Json(_)): Validated<::axum::Json<Signed>>,
-    ) -> &'static str {
+    async fn handler(Validated(::axum::Json(_)): Validated<::axum::Json<Signed>>) -> &'static str {
         "ok"
     }
     let app = Router::new().route("/n", post(handler));
@@ -398,8 +387,7 @@ async fn multiple_per_rule_violations_all_appear_in_envelope() {
     let (status, body) = dispatch(all_rules_router(), bad).await;
     assert_eq!(status, 422);
     for field in [
-        "username", "email", "homepage", "addr_v4", "addr_v6", "age", "tags",
-        "nickname",
+        "username", "email", "homepage", "addr_v4", "addr_v6", "age", "tags", "nickname",
     ] {
         assert_envelope_has_field_error(&body, field);
     }

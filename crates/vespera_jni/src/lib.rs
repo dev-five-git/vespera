@@ -205,9 +205,7 @@ mod jni_impl {
             RUNTIME.spawn(async move {
                 let response = tokio::spawn(vespera_inprocess::dispatch_from_bytes_async(input))
                     .await
-                    .unwrap_or_else(|_| {
-                        vespera_inprocess::error_wire(500, "panic in Rust engine")
-                    });
+                    .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
 
                 // Re-attach to JVM on this worker thread; subsequent
                 // dispatches on the same thread will hit the TLS fast
@@ -241,7 +239,9 @@ mod jni_impl {
     /// regular `error_wire(...)` response (header + small body) and
     /// the `OutputStream` is **not** written to.
     #[unsafe(no_mangle)]
-    pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStreaming<'local>(
+    pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStreaming<
+        'local,
+    >(
         mut unowned_env: EnvUnowned<'local>,
         _class: JClass<'local>,
         request_bytes: JByteArray<'local>,
@@ -273,26 +273,23 @@ mod jni_impl {
                             // even for streams with thousands of chunks.
                             let _ = jvm.attach_current_thread(
                                 |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
-                                    env.with_local_frame::<_, _, jni::errors::Error>(
-                                        8,
-                                        |env| {
-                                            let arr = env.byte_array_from_slice(chunk)?;
-                                            let arr_obj: JObject = arr.into();
-                                            env.call_method(
-                                                &stream_global,
-                                                jni_str!("write"),
-                                                jni_sig!("([B)V"),
-                                                &[JValue::Object(&arr_obj)],
-                                            )?;
-                                            // Any IOException thrown by write() is left
-                                            // pending on the env; clear it so subsequent
-                                            // chunks on the same thread aren't poisoned.
-                                            if env.exception_check() {
-                                                env.exception_clear();
-                                            }
-                                            Ok(())
-                                        },
-                                    )
+                                    env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
+                                        let arr = env.byte_array_from_slice(chunk)?;
+                                        let arr_obj: JObject = arr.into();
+                                        env.call_method(
+                                            &stream_global,
+                                            jni_str!("write"),
+                                            jni_sig!("([B)V"),
+                                            &[JValue::Object(&arr_obj)],
+                                        )?;
+                                        // Any IOException thrown by write() is left
+                                        // pending on the env; clear it so subsequent
+                                        // chunks on the same thread aren't poisoned.
+                                        if env.exception_check() {
+                                            env.exception_clear();
+                                        }
+                                        Ok(())
+                                    })
                                 },
                             );
                         },
@@ -331,7 +328,9 @@ mod jni_impl {
     /// `error_wire(...)` response in the returned bytes and neither
     /// stream is touched.
     #[unsafe(no_mangle)]
-    pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFullStreaming<'local>(
+    pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFullStreaming<
+        'local,
+    >(
         mut unowned_env: EnvUnowned<'local>,
         _class: JClass<'local>,
         header_bytes: JByteArray<'local>,
@@ -359,18 +358,17 @@ mod jni_impl {
                 let push_jvm = jvm;
                 let push_global = output_global;
 
-                let header_response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    RUNTIME.block_on(vespera_inprocess::dispatch_bidirectional_streaming(
-                        header_input,
-                        // Pull request body chunks from Java InputStream.
-                        // Runs on a tokio blocking thread (spawn_blocking
-                        // inside dispatch_bidirectional_streaming).
-                        move || -> Option<Vec<u8>> {
-                            let result: jni::errors::Result<Option<Vec<u8>>> = pull_jvm
-                                .attach_current_thread(|env| {
-                                    env.with_local_frame::<_, _, jni::errors::Error>(
-                                        8,
-                                        |env| {
+                let header_response =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        RUNTIME.block_on(vespera_inprocess::dispatch_bidirectional_streaming(
+                            header_input,
+                            // Pull request body chunks from Java InputStream.
+                            // Runs on a tokio blocking thread (spawn_blocking
+                            // inside dispatch_bidirectional_streaming).
+                            move || -> Option<Vec<u8>> {
+                                let result: jni::errors::Result<Option<Vec<u8>>> = pull_jvm
+                                    .attach_current_thread(|env| {
+                                        env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
                                             let arr = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
                                             let n = env
                                                 .call_method(
@@ -389,36 +387,35 @@ mod jni_impl {
                                             let mut data = env.convert_byte_array(&arr)?;
                                             data.truncate(usize::try_from(n).unwrap_or(0));
                                             Ok(Some(data))
-                                        },
-                                    )
-                                });
-                            result.ok().flatten()
-                        },
-                        // Push response body chunks to Java OutputStream.
-                        // Runs on the tokio worker driving the dispatch.
-                        |chunk: &[u8]| {
-                            let _ = push_jvm.attach_current_thread(
-                                |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
-                                    env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
-                                        let arr = env.byte_array_from_slice(chunk)?;
-                                        let arr_obj: JObject = arr.into();
-                                        env.call_method(
-                                            &push_global,
-                                            jni_str!("write"),
-                                            jni_sig!("([B)V"),
-                                            &[JValue::Object(&arr_obj)],
-                                        )?;
-                                        if env.exception_check() {
-                                            env.exception_clear();
-                                        }
-                                        Ok(())
-                                    })
-                                },
-                            );
-                        },
-                    ))
-                }))
-                .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
+                                        })
+                                    });
+                                result.ok().flatten()
+                            },
+                            // Push response body chunks to Java OutputStream.
+                            // Runs on the tokio worker driving the dispatch.
+                            |chunk: &[u8]| {
+                                let _ = push_jvm.attach_current_thread(
+                                    |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
+                                        env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
+                                            let arr = env.byte_array_from_slice(chunk)?;
+                                            let arr_obj: JObject = arr.into();
+                                            env.call_method(
+                                                &push_global,
+                                                jni_str!("write"),
+                                                jni_sig!("([B)V"),
+                                                &[JValue::Object(&arr_obj)],
+                                            )?;
+                                            if env.exception_check() {
+                                                env.exception_clear();
+                                            }
+                                            Ok(())
+                                        })
+                                    },
+                                );
+                            },
+                        ))
+                    }))
+                    .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
 
                 Ok(env.byte_array_from_slice(&header_response)?.into())
             })
@@ -439,7 +436,9 @@ mod jni_impl {
     /// (length-prefixed JSON).  On error `outputStream` is not
     /// touched.
     #[unsafe(no_mangle)]
-    pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStreamingWithHeader<'local>(
+    pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStreamingWithHeader<
+        'local,
+    >(
         mut unowned_env: EnvUnowned<'local>,
         _class: JClass<'local>,
         request_bytes: JByteArray<'local>,
@@ -543,51 +542,53 @@ mod jni_impl {
             // recovery semantics depend on which side of the header
             // callback the panic landed.
             let _panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                RUNTIME.block_on(vespera_inprocess::dispatch_bidirectional_streaming_with_header(
-                    header_input,
-                    move || -> Option<Vec<u8>> {
-                        let result: jni::errors::Result<Option<Vec<u8>>> = pull_jvm
-                            .attach_current_thread(|env| {
-                                env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
-                                    let arr = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
-                                    let n = env
-                                        .call_method(
-                                            &pull_global,
-                                            jni_str!("read"),
-                                            jni_sig!("([B)I"),
-                                            &[JValue::Object(arr.as_ref())],
-                                        )?
-                                        .i()?;
-                                    if env.exception_check() {
-                                        env.exception_clear();
-                                    }
-                                    if n <= 0 {
-                                        return Ok(None);
-                                    }
-                                    let mut data = env.convert_byte_array(&arr)?;
-                                    data.truncate(usize::try_from(n).unwrap_or(0));
-                                    Ok(Some(data))
-                                })
-                            });
-                        result.ok().flatten()
-                    },
-                    |chunk: &[u8]| {
-                        let _ = push_jvm.attach_current_thread(
-                            |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
-                                env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
-                                    write_chunk_to_stream(env, &push_global, chunk)
-                                })
-                            },
-                        );
-                    },
-                    |header_bytes: &[u8]| {
-                        let _ = header_jvm.attach_current_thread(
-                            |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
-                                call_header_consumer(env, &header_for_cb, header_bytes)
-                            },
-                        );
-                    },
-                ));
+                RUNTIME.block_on(
+                    vespera_inprocess::dispatch_bidirectional_streaming_with_header(
+                        header_input,
+                        move || -> Option<Vec<u8>> {
+                            let result: jni::errors::Result<Option<Vec<u8>>> = pull_jvm
+                                .attach_current_thread(|env| {
+                                    env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
+                                        let arr = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
+                                        let n = env
+                                            .call_method(
+                                                &pull_global,
+                                                jni_str!("read"),
+                                                jni_sig!("([B)I"),
+                                                &[JValue::Object(arr.as_ref())],
+                                            )?
+                                            .i()?;
+                                        if env.exception_check() {
+                                            env.exception_clear();
+                                        }
+                                        if n <= 0 {
+                                            return Ok(None);
+                                        }
+                                        let mut data = env.convert_byte_array(&arr)?;
+                                        data.truncate(usize::try_from(n).unwrap_or(0));
+                                        Ok(Some(data))
+                                    })
+                                });
+                            result.ok().flatten()
+                        },
+                        |chunk: &[u8]| {
+                            let _ = push_jvm.attach_current_thread(
+                                |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
+                                    env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
+                                        write_chunk_to_stream(env, &push_global, chunk)
+                                    })
+                                },
+                            );
+                        },
+                        |header_bytes: &[u8]| {
+                            let _ = header_jvm.attach_current_thread(
+                                |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
+                                    call_header_consumer(env, &header_for_cb, header_bytes)
+                                },
+                            );
+                        },
+                    ),
+                );
             }));
 
             Ok(())

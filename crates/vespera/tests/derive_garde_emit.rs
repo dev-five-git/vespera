@@ -224,10 +224,12 @@ fn nested_validation_option_none_skips_inner_checks() {
 fn nested_validation_option_some_runs_inner_checks() {
     let mut o = good_order();
     o.billing_address = Some(Address {
-        city: String::new(),                 // violates min_length = 1
-        postal_code: "ZZ999".to_owned(),     // valid pattern
+        city: String::new(),             // violates min_length = 1
+        postal_code: "ZZ999".to_owned(), // valid pattern
     });
-    let report = o.validate().expect_err("billing_address Some must validate");
+    let report = o
+        .validate()
+        .expect_err("billing_address Some must validate");
     let paths: Vec<String> = report.iter().map(|(p, _)| p.to_string()).collect();
     assert!(
         paths.iter().any(|p| p == "billing_address.city"),
@@ -245,7 +247,7 @@ fn nested_validation_vec_iterates_with_indexed_path() {
         },
         LineItem {
             sku: String::new(), // violates min_length=1 at index 1
-            quantity: 0,         // violates minimum=1 at index 1
+            quantity: 0,        // violates minimum=1 at index 1
         },
     ];
     let report = o.validate().expect_err("line_items[1] should fail");

@@ -33,9 +33,7 @@ struct JniReq {
     age: u32,
 }
 
-async fn jni_handler(
-    Validated(Json(_payload)): Validated<Json<JniReq>>,
-) -> &'static str {
+async fn jni_handler(Validated(Json(_payload)): Validated<Json<JniReq>>) -> &'static str {
     "ok"
 }
 
@@ -74,9 +72,12 @@ fn decode_wire(resp: &[u8]) -> (Value, Vec<u8>) {
     assert!(resp.len() >= 4, "wire response too short");
     let len_bytes: [u8; 4] = resp[..4].try_into().expect("4 bytes");
     let header_len = u32::from_be_bytes(len_bytes) as usize;
-    assert!(4 + header_len <= resp.len(), "header_len overflows response");
-    let header: Value = serde_json::from_slice(&resp[4..4 + header_len])
-        .expect("response header is valid JSON");
+    assert!(
+        4 + header_len <= resp.len(),
+        "header_len overflows response"
+    );
+    let header: Value =
+        serde_json::from_slice(&resp[4..4 + header_len]).expect("response header is valid JSON");
     let body = resp[4 + header_len..].to_vec();
     (header, body)
 }
@@ -167,7 +168,9 @@ fn jni_dispatch_short_username_returns_422_envelope_with_path() {
         .as_array()
         .unwrap_or_else(|| panic!("errors array missing in body: {error_body:#}"));
     assert!(
-        errors.iter().any(|e| e["path"].as_str() == Some("username")),
+        errors
+            .iter()
+            .any(|e| e["path"].as_str() == Some("username")),
         "expected `username` in error paths, got {error_body:#}"
     );
 
@@ -222,20 +225,14 @@ fn jni_dispatch_multiple_violations_envelope_contains_all_paths() {
 
     assert_eq!(header["status"].as_u64().unwrap(), 422);
     let errors = error_body["errors"].as_array().unwrap();
-    let paths: Vec<&str> = errors
-        .iter()
-        .filter_map(|e| e["path"].as_str())
-        .collect();
+    let paths: Vec<&str> = errors.iter().filter_map(|e| e["path"].as_str()).collect();
     assert!(paths.contains(&"username"), "got {paths:?}");
     assert!(paths.contains(&"email"), "got {paths:?}");
     assert!(paths.contains(&"age"), "got {paths:?}");
 
     // NEW: hoisted validation_errors must mirror the body.
     let hoisted = header["validation_errors"].as_array().unwrap();
-    let hoisted_paths: Vec<&str> = hoisted
-        .iter()
-        .filter_map(|e| e["path"].as_str())
-        .collect();
+    let hoisted_paths: Vec<&str> = hoisted.iter().filter_map(|e| e["path"].as_str()).collect();
     assert!(hoisted_paths.contains(&"username"), "got {hoisted_paths:?}");
     assert!(hoisted_paths.contains(&"email"), "got {hoisted_paths:?}");
     assert!(hoisted_paths.contains(&"age"), "got {hoisted_paths:?}");

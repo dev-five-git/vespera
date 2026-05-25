@@ -51,4 +51,3 @@ pub async fn create_validated_user(
 ) -> Json<ValidatedUserRequest> {
     Json(req)
 }
-

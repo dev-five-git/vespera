@@ -324,9 +324,7 @@ pub fn schema_type(input: TokenStream) -> TokenStream {
     // definitions are textually different (the pre-registered one is
     // synthesised by `schema_macro`; the derive-emitted one is the
     // expanded struct token stream).
-    if ignore_schema
-        && let Some(metadata) = generated_metadata
-    {
+    if ignore_schema && let Some(metadata) = generated_metadata {
         let name = metadata.name.clone();
         SCHEMA_STORAGE
             .lock()

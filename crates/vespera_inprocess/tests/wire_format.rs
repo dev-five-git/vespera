@@ -23,8 +23,8 @@ fn dispatch(wire: Vec<u8>) -> (Value, Vec<u8>) {
         4 + header_len <= resp.len(),
         "header_len {header_len} overflows response"
     );
-    let header: Value = serde_json::from_slice(&resp[4..4 + header_len])
-        .expect("response header is valid JSON");
+    let header: Value =
+        serde_json::from_slice(&resp[4..4 + header_len]).expect("response header is valid JSON");
     let body = resp[4 + header_len..].to_vec();
     (header, body)
 }

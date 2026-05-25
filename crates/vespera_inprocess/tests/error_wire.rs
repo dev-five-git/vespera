@@ -12,8 +12,7 @@ fn decode(resp: &[u8]) -> (Value, Vec<u8>) {
     let len_bytes: [u8; 4] = resp[..4].try_into().expect("4 bytes");
     let header_len = u32::from_be_bytes(len_bytes) as usize;
     assert!(4 + header_len <= resp.len(), "header_len overflows");
-    let header: Value =
-        serde_json::from_slice(&resp[4..4 + header_len]).expect("header JSON");
+    let header: Value = serde_json::from_slice(&resp[4..4 + header_len]).expect("header JSON");
     let body = resp[4 + header_len..].to_vec();
     (header, body)
 }

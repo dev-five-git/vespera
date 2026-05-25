@@ -236,5 +236,4 @@ mod tests {
         // Invalid method parses → fallback GET, unknown route → 404
         assert_eq!(parse(&json)["status"], 404);
     }
-
 }

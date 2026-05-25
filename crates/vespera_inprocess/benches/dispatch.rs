@@ -140,9 +140,7 @@ fn bench_dispatch_path(c: &mut Criterion) {
             BenchmarkId::new("owned_post_P2", body_kb),
             &body_kb,
             |b, _| {
-                b.iter(|| {
-                    runtime.block_on(dispatch_owned(cached.clone(), template.clone()))
-                });
+                b.iter(|| runtime.block_on(dispatch_owned(cached.clone(), template.clone())));
             },
         );
 
@@ -185,5 +183,10 @@ fn bench_wire_path(c: &mut Criterion) {
     drop(runtime);
 }
 
-criterion_group!(benches, bench_router_path, bench_dispatch_path, bench_wire_path);
+criterion_group!(
+    benches,
+    bench_router_path,
+    bench_dispatch_path,
+    bench_wire_path
+);
 criterion_main!(benches);

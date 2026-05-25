@@ -110,11 +110,7 @@ fn encode_wire(
 }
 
 fn decode_wire(resp: &[u8]) -> (Value, Vec<u8>) {
-    assert!(
-        resp.len() >= 4,
-        "wire response too short ({})",
-        resp.len()
-    );
+    assert!(resp.len() >= 4, "wire response too short ({})", resp.len());
     let len_bytes: [u8; 4] = resp[..4].try_into().expect("4 bytes");
     let header_len = u32::from_be_bytes(len_bytes) as usize;
     assert!(
@@ -122,8 +118,8 @@ fn decode_wire(resp: &[u8]) -> (Value, Vec<u8>) {
         "header_len {header_len} overflows response ({} bytes)",
         resp.len()
     );
-    let header: Value = serde_json::from_slice(&resp[4..4 + header_len])
-        .expect("response header JSON parses");
+    let header: Value =
+        serde_json::from_slice(&resp[4..4 + header_len]).expect("response header JSON parses");
     let body = resp[4 + header_len..].to_vec();
     (header, body)
 }
@@ -164,7 +160,9 @@ fn post_json_body_echoes_back() {
 #[test]
 fn post_octet_stream_preserves_non_utf8_bytes() {
     // Includes 0x00, 0xFF, and an invalid UTF-8 sequence (0xC0 0xC0).
-    let raw: Vec<u8> = vec![0x00, 0x01, 0x02, 0xC0, 0xC0, 0xFE, 0xFF, 0xDE, 0xAD, 0xBE, 0xEF];
+    let raw: Vec<u8> = vec![
+        0x00, 0x01, 0x02, 0xC0, 0xC0, 0xFE, 0xFF, 0xDE, 0xAD, 0xBE, 0xEF,
+    ];
     let (header, body) = dispatch(encode_wire(
         "POST",
         "/echo/bytes",
@@ -327,11 +325,7 @@ async fn dispatch_bidirectional_streaming_roundtrips_small_body() {
     );
 
     // Request body chunks to push.
-    let chunks: Vec<Vec<u8>> = vec![
-        b"hello ".to_vec(),
-        b"world".to_vec(),
-        b"!".to_vec(),
-    ];
+    let chunks: Vec<Vec<u8>> = vec![b"hello ".to_vec(), b"world".to_vec(), b"!".to_vec()];
     let chunks_iter = Mutex::new(chunks.into_iter());
     let pull_chunk = move || -> Option<Vec<u8>> { chunks_iter.lock().unwrap().next() };
 
@@ -342,12 +336,9 @@ async fn dispatch_bidirectional_streaming_roundtrips_small_body() {
         received_clone.lock().unwrap().extend_from_slice(chunk);
     };
 
-    let header_bytes = vespera_inprocess::dispatch_bidirectional_streaming(
-        header_only_wire,
-        pull_chunk,
-        on_chunk,
-    )
-    .await;
+    let header_bytes =
+        vespera_inprocess::dispatch_bidirectional_streaming(header_only_wire, pull_chunk, on_chunk)
+            .await;
 
     let (header, body) = decode_wire(&header_bytes);
     assert_eq!(header["status"].as_u64(), Some(200));
@@ -395,12 +386,9 @@ async fn dispatch_bidirectional_streaming_large_request_body() {
         received_clone.lock().unwrap().extend_from_slice(chunk);
     };
 
-    let header_bytes = vespera_inprocess::dispatch_bidirectional_streaming(
-        header_only_wire,
-        pull_chunk,
-        on_chunk,
-    )
-    .await;
+    let header_bytes =
+        vespera_inprocess::dispatch_bidirectional_streaming(header_only_wire, pull_chunk, on_chunk)
+            .await;
 
     let (header, _) = decode_wire(&header_bytes);
     assert_eq!(header["status"].as_u64(), Some(200));
@@ -444,5 +432,8 @@ async fn dispatch_streaming_async_emits_error_wire_on_malformed_input() {
         !body.is_empty(),
         "error response must carry the error message in its body"
     );
-    assert!(chunks.is_empty(), "no chunks should fire on malformed input");
+    assert!(
+        chunks.is_empty(),
+        "no chunks should fire on malformed input"
+    );
 }

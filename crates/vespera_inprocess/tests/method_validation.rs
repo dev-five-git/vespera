@@ -27,11 +27,8 @@ fn router_with_get_test() -> Router {
 async fn method_with_space_returns_405() {
     // Before the fix, "BAD METHOD" was silently coerced to GET and the
     // request hit the GET handler at /test with status 200.
-    let response = dispatch_typed(
-        router_with_get_test(),
-        &envelope_with_method("BAD METHOD"),
-    )
-    .await;
+    let response =
+        dispatch_typed(router_with_get_test(), &envelope_with_method("BAD METHOD")).await;
     assert_eq!(response.status, 405);
     assert!(
         response.body.contains("BAD METHOD"),
@@ -42,15 +39,13 @@ async fn method_with_space_returns_405() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn empty_method_returns_405() {
-    let response =
-        dispatch_typed(router_with_get_test(), &envelope_with_method("")).await;
+    let response = dispatch_typed(router_with_get_test(), &envelope_with_method("")).await;
     assert_eq!(response.status, 405);
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn method_with_control_char_returns_405() {
-    let response =
-        dispatch_typed(router_with_get_test(), &envelope_with_method("GET\n")).await;
+    let response = dispatch_typed(router_with_get_test(), &envelope_with_method("GET\n")).await;
     assert_eq!(response.status, 405);
 }
 
@@ -58,8 +53,7 @@ async fn method_with_control_char_returns_405() {
 async fn valid_method_dispatches_normally() {
     // Sanity check: a real GET still reaches the handler.  The 405
     // short-circuit must not regress the happy path.
-    let response =
-        dispatch_typed(router_with_get_test(), &envelope_with_method("GET")).await;
+    let response = dispatch_typed(router_with_get_test(), &envelope_with_method("GET")).await;
     assert_eq!(response.status, 200);
     assert_eq!(response.body, "would-have-been-wrong");
 }

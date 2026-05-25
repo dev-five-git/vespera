@@ -239,10 +239,8 @@ fn apply_constraints_to_schema_ref(schema_ref: &mut SchemaRef, c: &SchemaConstra
             // mem::replace lets us move the Ref out without leaving an
             // invalid value behind; the placeholder is overwritten
             // before the function returns.
-            let taken = std::mem::replace(
-                schema_ref,
-                SchemaRef::Inline(Box::new(Schema::object())),
-            );
+            let taken =
+                std::mem::replace(schema_ref, SchemaRef::Inline(Box::new(Schema::object())));
             if let SchemaRef::Ref(reference) = taken {
                 let mut wrapper = Schema {
                     all_of: Some(vec![SchemaRef::Ref(reference)]),

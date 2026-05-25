@@ -190,8 +190,7 @@ struct ValidationErrorItem {
 /// clone.
 pub async fn dispatch(router: Router, envelope: &RequestEnvelope) -> String {
     let result = dispatch_owned(router, envelope.clone()).await;
-    serde_json::to_string(&result)
-        .expect("ResponseEnvelope serialization is infallible")
+    serde_json::to_string(&result).expect("ResponseEnvelope serialization is infallible")
 }
 
 /// Typed dispatch — returns a [`ResponseEnvelope`] directly.
@@ -728,11 +727,7 @@ where
         }
     }
 
-    Ok((
-        status,
-        resp_headers,
-        ResponseMetadata { version },
-    ))
+    Ok((status, resp_headers, ResponseMetadata { version }))
 }
 
 /// Collect status, headers, body bytes, and metadata from an axum
@@ -839,10 +834,7 @@ async fn dispatch_and_split(
     query: String,
     headers: HashMap<String, String>,
     body: Body,
-) -> Result<
-    (u16, HashMap<String, HeaderValue>, ResponseMetadata, Body),
-    (u16, String),
-> {
+) -> Result<(u16, HashMap<String, HeaderValue>, ResponseMetadata, Body), (u16, String)> {
     let Ok(http_method) = method_str.parse::<Method>() else {
         return Err((
             405,
@@ -1236,8 +1228,6 @@ impl HttpBody for ChannelBody {
         }
     }
 }
-
-
 
 /// Parse a wire-format request.  On success returns the deserialised
 /// header and the owned body bytes (zero-copy via `Vec::split_off`).

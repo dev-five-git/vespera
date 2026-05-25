@@ -30,8 +30,7 @@ pub trait Serve {
     /// `addr` accepts anything that implements
     /// [`tokio::net::ToSocketAddrs`] — strings (`"0.0.0.0:3000"`),
     /// tuples (`("127.0.0.1", 8080)`), [`std::net::SocketAddr`], …
-    fn serve(self, addr: impl ToSocketAddrs)
-    -> impl std::future::Future<Output = io::Result<()>>;
+    fn serve(self, addr: impl ToSocketAddrs) -> impl std::future::Future<Output = io::Result<()>>;
 }
 
 impl Serve for axum::Router {

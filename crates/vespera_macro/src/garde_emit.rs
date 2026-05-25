@@ -269,10 +269,7 @@ fn emit_rule_blocks(
 
     // ── Pattern (pattern = "..." → static LazyLock<Regex>) ────────────
     if let Some(pattern) = &c.pattern {
-        let static_ident = format_ident!(
-            "__VESPERA_PATTERN_{}",
-            field_name.to_ascii_uppercase()
-        );
+        let static_ident = format_ident!("__VESPERA_PATTERN_{}", field_name.to_ascii_uppercase());
         blocks.push(quote! {
             {
                 static #static_ident: ::std::sync::LazyLock<

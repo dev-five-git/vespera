@@ -38,9 +38,7 @@ struct UploadResult {
     file_last_byte: u8,
 }
 
-async fn upload_handler(
-    TypedMultipart(mut req): TypedMultipart<UploadReq>,
-) -> Json<UploadResult> {
+async fn upload_handler(TypedMultipart(mut req): TypedMultipart<UploadReq>) -> Json<UploadResult> {
     let mut buf = Vec::new();
     let f = req.file.contents.as_file_mut();
     // multipart parser leaves the file cursor at EOF after writing
