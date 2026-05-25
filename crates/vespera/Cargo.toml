@@ -19,7 +19,7 @@ default = [
     "axum-extra/cookie",
     "validation",
 ]
-cron = ["dep:tokio-cron-scheduler", "dep:tokio"]
+cron = ["dep:tokio-cron-scheduler"]
 inprocess = ["dep:vespera_inprocess"]
 jni = ["inprocess", "dep:vespera_jni"]
 # Runtime validation: `#[derive(Schema)]` additionally emits
@@ -38,7 +38,10 @@ serde_json = "1"
 tower-layer = "0.3"
 tower-service = "0.3"
 tokio-cron-scheduler = { version = "0.15", optional = true }
-tokio = { version = "1", features = ["rt"], optional = true }
+# Used by the `Serve` extension trait to bind a TcpListener and drive
+# axum::serve.  Default-on because virtually every axum user already
+# has tokio in their dependency graph.
+tokio = { version = "1", features = ["net", "rt"] }
 vespera_inprocess = { workspace = true, optional = true }
 vespera_jni = { workspace = true, optional = true }
 # Hidden behind `validation` feature; re-exported via the private

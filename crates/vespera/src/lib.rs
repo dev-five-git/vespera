@@ -143,6 +143,10 @@ pub use validated::{ValidatePayload, Validated};
 #[cfg(feature = "inprocess")]
 pub use vespera_inprocess as inprocess;
 
+/// One-liner `Router::serve(addr)` extension — see [`serve::Serve`].
+pub mod serve;
+pub use serve::Serve;
+
 /// JNI bridge — call Rust axum apps from Java.
 #[cfg(feature = "jni")]
 pub use vespera_jni as jni;
