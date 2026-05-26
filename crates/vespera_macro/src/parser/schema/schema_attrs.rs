@@ -508,4 +508,111 @@ mod tests {
             self.format.is_none() && self.example.is_none() && self.read_only.is_none()
         }
     }
+
+    // ── extra coverage tests ─────────────────────────────────────────
+
+    #[test]
+    fn negative_float_minimum() {
+        // Exercises the `Lit::Float` arm inside parse_f64's unary-minus
+        // branch (not the Int arm that `negative_minimum` covers).
+        let c = parse(&[parse_quote!(#[schema(minimum = -0.5)])]);
+        assert_eq!(c.minimum, Some(-0.5));
+    }
+
+    #[test]
+    fn example_negative_float_round_trips_as_f64() {
+        // Negative float literal must serialize as a JSON number with
+        // a fractional component — covers the `positive.as_f64()`
+        // branch inside expr_to_json_value (the i64 fast path above
+        // it is exercised separately by `example_with_various_...`).
+        let c = parse(&[parse_quote!(#[schema(example = -2.5)])]);
+        assert_eq!(c.example, Some(serde_json::json!(-2.5)));
+    }
+
+    #[test]
+    fn example_null_literal_yields_json_null() {
+        let c = parse(&[parse_quote!(#[schema(example = null)])]);
+        assert_eq!(c.example, Some(serde_json::Value::Null));
+    }
+
+    #[test]
+    fn negative_non_literal_minimum_is_silently_ignored() {
+        // parse_f64 rejects non-literal expressions after `-`.  The
+        // outer parse_nested_meta swallows the syn::Error so the
+        // overall constraint set remains empty.
+        let c = parse(&[parse_quote!(#[schema(minimum = -CONST)])]);
+        assert_eq!(c.minimum, None);
+    }
+
+    #[test]
+    fn non_unary_non_lit_minimum_expr_is_silently_ignored() {
+        // Anything that is neither a literal nor a unary `-` literal
+        // (here: a function call) goes to the `other => Err(...)`
+        // arm at the bottom of parse_f64.
+        let c = parse(&[parse_quote!(#[schema(minimum = foo())])]);
+        assert_eq!(c.minimum, None);
+    }
+
+    #[test]
+    fn non_neg_unary_minimum_expr_is_silently_ignored() {
+        // `!x` is a unary op but not `Neg` — hits the inner fallback
+        // inside the unary arm of parse_f64.
+        let c = parse(&[parse_quote!(#[schema(minimum = !5)])]);
+        assert_eq!(c.minimum, None);
+    }
+
+    #[test]
+    fn negative_non_numeric_literal_minimum_is_silently_ignored() {
+        // `-true` and `-"x"` are unary-neg of non-numeric literals.
+        // Drives the `other =>` arm inside parse_f64's unary branch
+        // (after the Int/Float arms).
+        let c1 = parse(&[parse_quote!(#[schema(minimum = -true)])]);
+        assert_eq!(c1.minimum, None);
+        let c2 = parse(&[parse_quote!(#[schema(minimum = -"x")])]);
+        assert_eq!(c2.minimum, None);
+    }
+
+    #[test]
+    fn example_negative_non_lit_is_silently_ignored() {
+        // `example = -CONST` — the inner literal isn't a number, so
+        // expr_to_json_value's "negate a literal" branch falls
+        // through to the trailing Err.
+        let c = parse(&[parse_quote!(#[schema(example = -CONST)])]);
+        assert_eq!(c.example, None);
+    }
+
+    #[test]
+    fn example_non_lit_non_path_is_silently_ignored() {
+        // Function-call expression — neither a literal, a unary
+        // negation of a literal, nor the special `null` path.
+        let c = parse(&[parse_quote!(#[schema(example = some_fn())])]);
+        assert_eq!(c.example, None);
+    }
+
+    #[test]
+    fn example_byte_string_literal_is_silently_ignored() {
+        // Byte-string literals fall through `lit_to_json_value`'s
+        // explicit match arms to the `other => Err(...)` fallback.
+        let c = parse(&[parse_quote!(#[schema(example = b"bytes")])]);
+        assert_eq!(c.example, None);
+    }
+
+    #[test]
+    fn unknown_key_with_value_is_consumed_without_error() {
+        // The `else { ... }` branch inside `parse_nested_meta` must
+        // consume any `= value` payload of an unrecognised key so
+        // sibling keys still parse.  Pair an unknown key WITH a
+        // recognised one to confirm the latter still lands.
+        let c = parse(&[parse_quote!(#[schema(unknown_key = "value", min_length = 3)])]);
+        assert_eq!(c.min_length, Some(3));
+    }
+
+    #[test]
+    fn bare_unknown_key_does_not_panic() {
+        // Bare keyword form of an unknown key — `meta.value()` will
+        // return Err, the `if let Ok(value)` falls through, and
+        // parse_nested_meta moves on.
+        let c = parse(&[parse_quote!(#[schema(unknown_bare_kw, min_length = 3)])]);
+        assert_eq!(c.min_length, Some(3));
+    }
 }

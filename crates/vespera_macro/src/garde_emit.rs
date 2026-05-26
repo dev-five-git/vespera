@@ -754,4 +754,193 @@ mod tests {
         // produced means no `impl Validate` emitted.
         assert!(emit_to_string(s).is_empty());
     }
+
+    // ── format=ipv6 / format=ip / unknown format ────────────────────
+
+    #[test]
+    fn format_ipv6_emits_ip_apply_with_v6_kind() {
+        let s: DeriveInput = parse_quote! {
+            struct Host {
+                #[schema(format = "ipv6")]
+                pub addr: String,
+            }
+        };
+        let out = emit_to_string(s);
+        assert!(out.contains("ip :: apply"));
+        assert!(out.contains("IpKind :: V6"));
+    }
+
+    #[test]
+    fn format_ip_emits_ip_apply_with_any_kind() {
+        let s: DeriveInput = parse_quote! {
+            struct Host {
+                #[schema(format = "ip")]
+                pub addr: String,
+            }
+        };
+        let out = emit_to_string(s);
+        assert!(out.contains("ip :: apply"));
+        assert!(out.contains("IpKind :: Any"));
+    }
+
+    #[test]
+    fn format_url_alias_emits_url_apply() {
+        // `format = "url"` is the documented alias for `"uri"` —
+        // both must dispatch to garde's `url::apply`.
+        let s: DeriveInput = parse_quote! {
+            struct Site {
+                #[schema(format = "url")]
+                pub home: String,
+            }
+        };
+        let out = emit_to_string(s);
+        assert!(out.contains("url :: apply"));
+    }
+
+    #[test]
+    fn unknown_format_with_other_rule_skips_format_branch() {
+        // Combining an unsupported `format = "custom"` with a known
+        // runtime rule (`min_length = 3`) forces the emitter to enter
+        // `emit_rule_blocks` AND fall through the unknown-format
+        // branch — exercising the `_ => {}` arm.
+        let s: DeriveInput = parse_quote! {
+            struct Doc {
+                #[schema(min_length = 3, format = "custom-thing")]
+                pub id: String,
+            }
+        };
+        let out = emit_to_string(s);
+        assert!(out.contains("length :: chars :: apply"));
+        // The unknown format MUST NOT produce any `ip::`/`email::`/
+        // `url::` call — confirms the `_ => {}` arm took effect.
+        assert!(!out.contains("ip :: apply"));
+        assert!(!out.contains("email :: apply"));
+        assert!(!out.contains("url :: apply"));
+    }
+
+    // ── mixed-field structs exercising the no-runtime-rule early exit
+    //    inside emit_field_block ────────────────────────────────────
+
+    #[test]
+    fn mixed_validated_and_unvalidated_fields_emit_only_validated_blocks() {
+        // `a` has a runtime rule; `b` does not.  emit_field_block must
+        // hit its early `return None` for `b` while still emitting `a`.
+        let s: DeriveInput = parse_quote! {
+            struct Mixed {
+                #[schema(min_length = 3)]
+                pub a: String,
+                pub b: String,
+            }
+        };
+        let out = emit_to_string(s);
+        assert!(out.contains("impl :: vespera :: __validation :: garde :: Validate for Mixed"));
+        assert!(out.contains("\"a\""));
+        // Field `b` has no constraint — no path literal should appear.
+        assert!(!out.contains("\"b\""));
+    }
+
+    // ── one-sided numeric bounds exercising numeric_some(None, _) ───
+
+    #[test]
+    fn only_minimum_set_emits_none_for_max_bound() {
+        let s: DeriveInput = parse_quote! {
+            struct N {
+                #[schema(minimum = 0)]
+                pub n: u32,
+            }
+        };
+        let out = emit_to_string(s);
+        assert!(out.contains("range :: apply"));
+        // The missing upper bound must serialize as Option::None.
+        assert!(out.contains("Option :: None"));
+    }
+
+    #[test]
+    fn only_maximum_set_emits_none_for_min_bound() {
+        let s: DeriveInput = parse_quote! {
+            struct N {
+                #[schema(maximum = 100)]
+                pub n: u32,
+            }
+        };
+        let out = emit_to_string(s);
+        assert!(out.contains("range :: apply"));
+        assert!(out.contains("Option :: None"));
+    }
+
+    // ── numeric_some with unknown numeric_kind (non-primitive field) ─
+
+    #[test]
+    fn minimum_on_non_primitive_field_falls_back_to_as_wildcard() {
+        // Field type is a user-defined `Money` newtype — peel_option
+        // returns None and rust_numeric_kind returns None, forcing
+        // numeric_some down the `as _` fallback branch.
+        let s: DeriveInput = parse_quote! {
+            struct Order {
+                #[schema(minimum = 0)]
+                pub price: Money,
+            }
+        };
+        let out = emit_to_string(s);
+        assert!(out.contains("range :: apply"));
+        assert!(
+            out.contains("as _"),
+            "non-primitive field should emit `as _` fallback, got: {out}"
+        );
+    }
+
+    // ── is_option_type / peel_option / rust_numeric_kind branches ───
+
+    #[test]
+    fn tuple_typed_field_does_not_trip_option_or_numeric_helpers() {
+        // Tuple types are Type::Tuple, not Type::Path — drives the
+        // non-Path early-return branches inside is_option_type,
+        // peel_option, and rust_numeric_kind.
+        let s: DeriveInput = parse_quote! {
+            struct WithTuple {
+                #[schema(min_length = 3)]
+                pub x: (String,),
+            }
+        };
+        let out = emit_to_string(s);
+        // Tuple is not an Option — outer rule block must NOT wrap in
+        // `if let Some`.
+        assert!(!out.contains("if let :: std :: option :: Option :: Some"));
+        assert!(out.contains("length :: chars :: apply"));
+    }
+
+    #[test]
+    fn bare_option_without_angle_brackets_falls_through_peel() {
+        // `Option` with no type argument hits the PathArguments::None
+        // branch inside peel_option.  is_option_type still returns
+        // true (last segment is `Option`), so the rule block wraps in
+        // `if let Some`.
+        let s: DeriveInput = parse_quote! {
+            struct BareOption {
+                #[schema(min_length = 3)]
+                pub x: Option,
+            }
+        };
+        let out = emit_to_string(s);
+        assert!(out.contains("if let :: std :: option :: Option :: Some"));
+    }
+
+    #[test]
+    fn option_with_lifetime_only_arg_falls_through_find_map() {
+        // `Option<'static>` is syntactically a valid path with one
+        // angle-bracketed argument — but the argument is a Lifetime,
+        // not a Type, so peel_option's `find_map` returns None.
+        // Semantically nonsensical, but the macro must not panic.
+        let s: DeriveInput = parse_quote! {
+            struct WithLifetime {
+                #[schema(min_length = 3)]
+                pub x: Option<'static>,
+            }
+        };
+        let out = emit_to_string(s);
+        // The rule block still emits — peel_option returning None just
+        // means rust_numeric_kind is invoked on the outer `Option<'a>`
+        // type, which also returns None.  No panic, no compile_error.
+        assert!(out.contains("length :: chars :: apply"));
+    }
 }
