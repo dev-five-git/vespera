@@ -21,10 +21,23 @@
 //! - **`multiple_of`**: OpenAPI annotation only; no garde counterpart.
 //! - **`unique_items`**: OpenAPI annotation only.
 
-use proc_macro2::{Span, TokenStream};
-use quote::{format_ident, quote};
-use syn::{Data, DeriveInput, Fields, GenericArgument, PathArguments, Type};
+// `TokenStream` and `DeriveInput` are used by both the `validation`-on
+// and `validation`-off stubs of `emit_garde_validate` below, so they
+// stay outside any `cfg` gate.  Everything else is only referenced from
+// the `#[cfg(feature = "validation")]` code path and would trip
+// `-D unused-imports` when this crate is built with default features
+// (e.g. during `cargo publish --dry-run`).
+use proc_macro2::TokenStream;
+use syn::DeriveInput;
 
+#[cfg(feature = "validation")]
+use proc_macro2::Span;
+#[cfg(feature = "validation")]
+use quote::{format_ident, quote};
+#[cfg(feature = "validation")]
+use syn::{Data, Fields, GenericArgument, PathArguments, Type};
+
+#[cfg(feature = "validation")]
 use crate::parser::schema::schema_attrs::{SchemaConstraints, extract_schema_constraints};
 
 /// Public entry point used by `process_derive_schema`.

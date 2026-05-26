@@ -107,7 +107,15 @@ impl SchemaConstraints {
     /// `true` when at least one constraint produces a `garde` runtime rule
     /// (excludes pure-OpenAPI annotations such as `example` / `read_only` /
     /// `write_only` / `unique_items`).
+    ///
+    /// Consumed by `garde_emit::emit_garde_validate` (gated on the
+    /// `validation` feature) and by the unit tests below.  When the macro
+    /// crate is compiled with default features (e.g. during
+    /// `cargo publish --dry-run`), the call site in `garde_emit` is
+    /// stripped out and only the tests reference this method — so
+    /// silence `dead_code` only in that configuration.
     #[must_use]
+    #[cfg_attr(not(feature = "validation"), allow(dead_code))]
     pub fn has_runtime_rule(&self) -> bool {
         self.min_length.is_some()
             || self.max_length.is_some()
