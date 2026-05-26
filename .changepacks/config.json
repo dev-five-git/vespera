@@ -3,7 +3,10 @@
   "baseBranch": "main",
   "latestPackage": "crates/vespera/Cargo.toml",
   "updateOn": {
-    "Cargo.toml": ["libs/vespera-bridge/build.gradle.kts"]
+    "Cargo.toml": [
+      "libs/vespera-bridge/build.gradle.kts",
+      "libs/vespera-bridge-gradle-plugin/build.gradle.kts"
+    ]
   },
   "publish": {
     "java": "./gradlew publishToMavenCentral --stacktrace"
