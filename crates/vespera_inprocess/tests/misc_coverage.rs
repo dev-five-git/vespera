@@ -52,6 +52,26 @@ async fn triple_header() -> Response {
     (headers, "trace").into_response()
 }
 
+/// 422 response that explicitly emits TWO `content-type` headers to
+/// exercise the `HeaderValue::Multi` branch inside
+/// `try_hoist_validation_errors`.
+async fn unprocessable_with_multi_content_type() -> Response {
+    use axum::http::{HeaderName, HeaderValue, StatusCode};
+    let mut headers = HeaderMap::new();
+    let ct = HeaderName::from_static("content-type");
+    headers.append(ct.clone(), HeaderValue::from_static("application/json"));
+    headers.append(
+        ct,
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        headers,
+        r#"{"errors":[{"path":"x","message":"bad","code":"len"}]}"#,
+    )
+        .into_response()
+}
+
 /// Echoes back the raw query string the handler observes; used to
 /// confirm the `format!("{path}?{query}")` reassembly inside
 /// `dispatch_response_streaming`.
@@ -65,6 +85,7 @@ fn make_router() -> Router {
         .route("/echo_ct", post(echo_ct))
         .route("/triple", get(triple_header))
         .route("/q", get(echo_query))
+        .route("/422_multi_ct", get(unprocessable_with_multi_content_type))
 }
 
 const APP: &str = "misc_coverage_app";
@@ -280,6 +301,26 @@ fn body_without_content_type_defaults_to_json() {
     );
 }
 
+#[test]
+fn body_with_explicit_content_type_header_is_forwarded() {
+    // Exercises the headers-map branch in `encode_wire`'s helper —
+    // i.e. the test wire-builder's `if !headers_json.is_empty()` arm.
+    install_router();
+    let runtime = rt();
+    let wire = encode_wire(
+        1,
+        "POST",
+        "/echo_ct",
+        HashMap::from([("content-type", "text/plain")]),
+        b"hello",
+        Some(APP),
+    );
+    let resp = dispatch_from_bytes(wire, &runtime);
+    let (header, body) = decode_wire(&resp);
+    assert_eq!(header["status"].as_u64(), Some(200));
+    assert_eq!(String::from_utf8_lossy(&body), "text/plain");
+}
+
 // ── streaming with non-empty query / no content-type ──────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -329,6 +370,32 @@ async fn streaming_async_post_body_without_content_type_defaults_to_json() {
         String::from_utf8(buf.lock().unwrap().clone()).unwrap(),
         "application/json"
     );
+}
+
+#[test]
+fn hoist_validation_errors_handles_multi_content_type_422_response() {
+    // A 422 response with TWO content-type headers — exercises the
+    // `HeaderValue::Multi` arm of `try_hoist_validation_errors`'s
+    // mime detection.  The wire response must still hoist the
+    // `errors` array into the header.
+    install_router();
+    let runtime = rt();
+    let wire = encode_wire(1, "GET", "/422_multi_ct", HashMap::new(), &[], Some(APP));
+    let resp = dispatch_from_bytes(wire, &runtime);
+    let (header, body) = decode_wire(&resp);
+    assert_eq!(header["status"].as_u64(), Some(422));
+    // Hoisted into the wire header — proves the Multi-content-type
+    // branch returned a non-empty mime and the body was parsed.
+    let errs = header["validation_errors"]
+        .as_array()
+        .unwrap_or_else(|| panic!("validation_errors missing from wire header: {header:#}"));
+    assert_eq!(errs.len(), 1);
+    assert_eq!(errs[0]["path"].as_str(), Some("x"));
+    assert_eq!(errs[0]["message"].as_str(), Some("bad"));
+    assert_eq!(errs[0]["code"].as_str(), Some("len"));
+    // Original body preserved verbatim.
+    let body_str = String::from_utf8_lossy(&body);
+    assert!(body_str.contains(r#""path":"x""#));
 }
 
 #[test]

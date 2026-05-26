@@ -42,6 +42,78 @@ pub struct RouteInfo {
     pub description: Option<String>,
 }
 
+/// Convert a parsed [`RouteArgs`] into the simpler [`RouteInfo`] used by
+/// the collector / OpenAPI emitter.  Factored out so the inline conversion
+/// gets its own basic block and shows up cleanly in coverage reports.
+///
+/// The `path` / `description` extraction uses `if let` instead of
+/// `Option::map(...)` so the unwrap branch is attributed to a source
+/// line rather than an internal closure call site that LLVM coverage
+/// reports as zero hits even when the field is `Some`.
+#[allow(clippy::manual_map, clippy::option_if_let_else)]
+fn build_route_info_from_args(route_args: &RouteArgs) -> RouteInfo {
+    let method = route_args
+        .method
+        .as_ref()
+        .map_or_else(|| "get".to_string(), syn::Ident::to_string);
+    let path = if let Some(lit) = route_args.path.as_ref() {
+        Some(lit.value())
+    } else {
+        None
+    };
+
+    let error_status = route_args.error_status.as_ref().and_then(|array| {
+        let mut status_codes = Vec::new();
+        for elem in &array.elems {
+            if let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(lit_int),
+                ..
+            }) = elem
+                && let Ok(code) = lit_int.base10_parse::<u16>()
+            {
+                status_codes.push(code);
+            }
+        }
+        if status_codes.is_empty() {
+            None
+        } else {
+            Some(status_codes)
+        }
+    });
+
+    let tags = route_args.tags.as_ref().and_then(|array| {
+        let mut tag_list = Vec::new();
+        for elem in &array.elems {
+            if let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(lit_str),
+                ..
+            }) = elem
+            {
+                tag_list.push(lit_str.value());
+            }
+        }
+        if tag_list.is_empty() {
+            None
+        } else {
+            Some(tag_list)
+        }
+    });
+
+    let description = if let Some(lit) = route_args.description.as_ref() {
+        Some(lit.value())
+    } else {
+        None
+    };
+
+    RouteInfo {
+        method,
+        path,
+        error_status,
+        tags,
+        description,
+    }
+}
+
 pub fn check_route_by_meta(meta: &syn::Meta) -> bool {
     match meta {
         syn::Meta::List(meta_list) => {
@@ -69,101 +141,54 @@ pub fn check_route_by_meta(meta: &syn::Meta) -> bool {
 pub fn extract_route_info(attrs: &[syn::Attribute]) -> Option<RouteInfo> {
     for attr in attrs {
         // Check if attribute path is "vespera" or "route"
-        if check_route_by_meta(&attr.meta) {
-            match &attr.meta {
-                syn::Meta::List(meta_list) => {
-                    // Try to parse as RouteArgs
-                    if let Ok(route_args) = meta_list.parse_args::<RouteArgs>() {
-                        let method = route_args
-                            .method
-                            .as_ref()
-                            .map_or_else(|| "get".to_string(), syn::Ident::to_string);
-                        let path = route_args.path.as_ref().map(syn::LitStr::value);
-
-                        // Parse error_status array if present
-                        let error_status = route_args.error_status.as_ref().and_then(|array| {
-                            let mut status_codes = Vec::new();
-                            for elem in &array.elems {
-                                if let syn::Expr::Lit(syn::ExprLit {
-                                    lit: syn::Lit::Int(lit_int),
-                                    ..
-                                }) = elem
-                                    && let Ok(code) = lit_int.base10_parse::<u16>()
-                                {
-                                    status_codes.push(code);
-                                }
-                            }
-                            if status_codes.is_empty() {
-                                None
-                            } else {
-                                Some(status_codes)
-                            }
-                        });
-
-                        // Parse tags array if present
-                        let tags = route_args.tags.as_ref().and_then(|array| {
-                            let mut tag_list = Vec::new();
-                            for elem in &array.elems {
-                                if let syn::Expr::Lit(syn::ExprLit {
-                                    lit: syn::Lit::Str(lit_str),
-                                    ..
-                                }) = elem
-                                {
-                                    tag_list.push(lit_str.value());
-                                }
-                            }
-                            if tag_list.is_empty() {
-                                None
-                            } else {
-                                Some(tag_list)
-                            }
-                        });
-
-                        // Parse description if present
-                        let description = route_args.description.as_ref().map(syn::LitStr::value);
-
-                        return Some(RouteInfo {
-                            method,
-                            path,
-                            error_status,
-                            tags,
-                            description,
-                        });
-                    }
-                }
-                // Try to parse as Meta::NameValue (e.g., #[route = "patch"])
-                syn::Meta::NameValue(meta_nv) => {
-                    if let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(lit_str),
-                        ..
-                    }) = &meta_nv.value
-                    {
-                        let method_str = lit_str.value().to_lowercase();
-                        if is_http_method(&method_str) {
-                            return Some(RouteInfo {
-                                method: method_str,
-                                path: None,
-                                error_status: None,
-                                tags: None,
-                                description: None,
-                            });
-                        }
-                    }
-                }
-                // Try to parse as Meta::Path (e.g., #[route])
-                syn::Meta::Path(_) => {
-                    return Some(RouteInfo {
-                        method: "get".to_string(),
-                        path: None,
-                        error_status: None,
-                        tags: None,
-                        description: None,
-                    });
-                }
-            }
+        let is_route_meta = check_route_by_meta(&attr.meta);
+        if is_route_meta && let Some(info) = try_extract_from_meta(&attr.meta) {
+            return Some(info);
         }
     }
     None
+}
+
+/// Translate a single `#[route(...)]` / `#[vespera::route(...)]` meta into
+/// a [`RouteInfo`], handling all three meta shapes (List / NameValue /
+/// Path).  Pulled out of [`extract_route_info`] so the per-shape branches
+/// each get their own basic block in coverage instrumentation.
+fn try_extract_from_meta(meta: &syn::Meta) -> Option<RouteInfo> {
+    match meta {
+        syn::Meta::List(meta_list) => {
+            let route_args = meta_list.parse_args::<RouteArgs>().ok()?;
+            Some(build_route_info_from_args(&route_args))
+        }
+        // `#[route = "patch"]` form.
+        syn::Meta::NameValue(meta_nv) => {
+            let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(lit_str),
+                ..
+            }) = &meta_nv.value
+            else {
+                return None;
+            };
+            let method_str = lit_str.value().to_lowercase();
+            if !is_http_method(&method_str) {
+                return None;
+            }
+            Some(RouteInfo {
+                method: method_str,
+                path: None,
+                error_status: None,
+                tags: None,
+                description: None,
+            })
+        }
+        // `#[route]` bare form — defaults to GET.
+        syn::Meta::Path(_) => Some(RouteInfo {
+            method: "get".to_string(),
+            path: None,
+            error_status: None,
+            tags: None,
+            description: None,
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -276,7 +301,12 @@ mod tests {
     #[case("fn test() {}", None)]
     // Invalid method in NameValue format
     #[case("#[route = \"invalid\"] fn test() {}", None)]
-    #[case("#[route = \"GET\"] fn test() {}", Some(("get".to_string(), None, None)))] // lowercase conversion
+    #[case("#[route = \"GET\"] fn test() {}", Some(("get".to_string(), None, None)))]
+    // lowercase conversion
+    // Non-string literal in NameValue format — value isn't a Lit::Str so
+    // the `let ... else { return None; }` branch fires.
+    #[case("#[route = 42] fn test() {}", None)]
+    #[case("#[route = true] fn test() {}", None)]
     // Multiple attributes - should find route attribute
     #[case("#[derive(Debug)] #[route(get, path = \"/api\")] #[test] fn test() {}", Some(("get".to_string(), Some("/api".to_string()), None)))]
     // Multiple route attributes - first one wins

@@ -55,12 +55,21 @@ async fn echo_query(uri: axum::http::Uri) -> String {
     uri.query().unwrap_or("").to_owned()
 }
 
+/// Handler that returns immediately WITHOUT consuming the request
+/// body — used to exercise the producer's "receiver dropped" break
+/// branch in `bidirectional_streaming_inner` when chunks are pushed
+/// faster than the body is consumed.
+async fn discard_body() -> &'static str {
+    "ok"
+}
+
 fn make_router() -> Router {
     Router::new()
         .route("/ping", get(ping))
         .route("/echo", post(echo_bytes))
         .route("/triple", get(triple_header))
         .route("/q", get(echo_query))
+        .route("/discard", post(discard_body))
 }
 
 fn install_router() {
@@ -446,6 +455,100 @@ async fn bidirectional_with_header_invalid_method_returns_405() {
     let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
     assert_eq!(header_json["status"].as_u64(), Some(405));
     assert!(body_buf.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bidirectional_with_header_break_when_receiver_dropped_mid_stream() {
+    // Producer pushes many non-empty chunks; the handler ignores the
+    // body and returns immediately, so the bounded 16-slot mpsc fills
+    // up, `tx.blocking_send` blocks, and once the request body is
+    // dropped (handler finished) the send fails and the producer
+    // takes the `break` branch.  Pull counter must end short of the
+    // 1000-chunk source — proving the early break ran.
+    install_router();
+    let wire = encode_wire(
+        "POST",
+        "/discard",
+        HashMap::from([("content-type", "application/octet-stream")]),
+        &[],
+    );
+
+    let counter = Arc::new(Mutex::new(0u32));
+    let counter_clone = Arc::clone(&counter);
+    let pull = move || -> Option<Vec<u8>> {
+        let mut g = counter_clone.lock().unwrap();
+        if *g >= 1000 {
+            return None;
+        }
+        *g += 1;
+        // 4 KiB chunks — large enough that 16 slots ≈ 64 KiB worth
+        // pile up before the handler decides to return.
+        Some(vec![0u8; 4096])
+    };
+
+    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let h = Arc::clone(&header_buf);
+    let b = Arc::clone(&body_buf);
+
+    dispatch_bidirectional_streaming_with_header(
+        wire,
+        pull,
+        move |chunk| b.lock().unwrap().extend_from_slice(chunk),
+        move |hdr| h.lock().unwrap().extend_from_slice(hdr),
+    )
+    .await;
+
+    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    assert_eq!(header_json["status"].as_u64(), Some(200));
+    let pulled = *counter.lock().unwrap();
+    assert!(
+        pulled < 1000,
+        "producer should have aborted early (got {pulled} of 1000 pulls before break)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bidirectional_with_header_slow_producer_yields_poll_pending() {
+    // Producer sleeps between chunks so the consumer polls an empty
+    // channel and exercises the `Poll::Pending` arm of ChannelBody.
+    install_router();
+    let wire = encode_wire(
+        "POST",
+        "/echo",
+        HashMap::from([("content-type", "application/octet-stream")]),
+        &[],
+    );
+
+    let counter = Arc::new(Mutex::new(0u32));
+    let counter_clone = Arc::clone(&counter);
+    let pull = move || -> Option<Vec<u8>> {
+        let mut g = counter_clone.lock().unwrap();
+        if *g >= 3 {
+            return None;
+        }
+        *g += 1;
+        // Sleep so the consumer drains the channel and hits Pending.
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        Some(b"chunk".to_vec())
+    };
+
+    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let h = Arc::clone(&header_buf);
+    let b = Arc::clone(&body_buf);
+
+    dispatch_bidirectional_streaming_with_header(
+        wire,
+        pull,
+        move |chunk| b.lock().unwrap().extend_from_slice(chunk),
+        move |hdr| h.lock().unwrap().extend_from_slice(hdr),
+    )
+    .await;
+
+    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    assert_eq!(header_json["status"].as_u64(), Some(200));
+    assert_eq!(body_buf.lock().unwrap().as_slice(), b"chunkchunkchunk");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

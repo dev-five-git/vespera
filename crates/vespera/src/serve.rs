@@ -36,7 +36,6 @@ pub trait Serve {
 impl Serve for axum::Router {
     async fn serve(self, addr: impl ToSocketAddrs) -> io::Result<()> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        axum::serve(listener, self).await?;
-        Ok(())
+        axum::serve(listener, self).await
     }
 }

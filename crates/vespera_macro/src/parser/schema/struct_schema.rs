@@ -870,4 +870,32 @@ mod tests {
         let field = field_schema(&schema, "pin");
         assert_eq!(field.min_length, Some(4));
     }
+
+    #[test]
+    fn schema_exclusive_maximum_and_minimum_land_on_emitted_field_schema() {
+        // `exclusive_minimum` / `exclusive_maximum` / `multiple_of` /
+        // `unique_items` are OpenAPI-only annotations (no garde rule
+        // counterpart).  The struct-schema parser still propagates them
+        // onto the per-field `Schema` so the resulting `openapi.json`
+        // carries them verbatim.
+        let s: syn::ItemStruct = syn::parse_str(
+            r"
+            struct Price {
+                #[schema(minimum = 0, maximum = 100, exclusive_minimum, exclusive_maximum, multiple_of = 0.5)]
+                amount: f64,
+
+                #[schema(min_items = 1, max_items = 5, unique_items)]
+                tags: Vec<String>,
+            }
+            ",
+        )
+        .unwrap();
+        let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+        let amount = field_schema(&schema, "amount");
+        assert_eq!(amount.exclusive_minimum, Some(true));
+        assert_eq!(amount.exclusive_maximum, Some(true));
+        assert_eq!(amount.multiple_of, Some(0.5));
+        let tags = field_schema(&schema, "tags");
+        assert_eq!(tags.unique_items, Some(true));
+    }
 }

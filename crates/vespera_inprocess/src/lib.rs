@@ -1157,18 +1157,16 @@ async fn bidirectional_streaming_inner<P, F, H>(
 
     let producer_handle = tokio::task::spawn_blocking(move || {
         let mut pull = pull_chunk;
-        loop {
-            match pull() {
-                // Ignore empty Some(chunk) — only None signals EOF.
-                Some(chunk) if chunk.is_empty() => {}
-                Some(chunk) => {
-                    if tx.blocking_send(Bytes::from(chunk)).is_err() {
-                        // Receiver (axum body) dropped — handler aborted
-                        // mid-stream; stop pulling.
-                        break;
-                    }
-                }
-                None => break, // EOF
+        // `None` from `pull()` ends the stream; an empty `Some(_)` is
+        // skipped (it's not EOF); a failed `blocking_send` means the
+        // receiver — axum's request body — was dropped because the
+        // handler aborted mid-stream, so we stop pulling.
+        while let Some(chunk) = pull() {
+            if chunk.is_empty() {
+                continue;
+            }
+            if tx.blocking_send(Bytes::from(chunk)).is_err() {
+                break;
             }
         }
         // tx dropped at end of scope → axum sees end-of-stream.

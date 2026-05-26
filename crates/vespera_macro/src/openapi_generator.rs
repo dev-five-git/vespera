@@ -639,6 +639,68 @@ pub fn get_users() -> String {
     }
 
     #[test]
+    fn test_generate_openapi_route_storage_dedup_skips_already_in_ast() {
+        // When a route's `fn_item_str` was already discovered by parsing
+        // the source file via `file_cache`, the storage-parse step must
+        // skip re-parsing it — exercises the `already_in_ast → return None`
+        // branch inside `route_fn_cache` construction.
+        use crate::route_impl::StoredRouteInfo;
+
+        let route_file_path = "/virtual/users.rs".to_string();
+        let route_src = "pub fn get_users() -> String { \"users\".to_string() }";
+        let parsed: syn::File = syn::parse_str(route_src).expect("route src parses");
+        let mut file_cache: HashMap<String, syn::File> = HashMap::new();
+        file_cache.insert(route_file_path.clone(), parsed);
+
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "GET".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "test::users".to_string(),
+            file_path: route_file_path.clone(),
+            signature: "fn get_users() -> String".to_string(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+
+        // The route is registered in BOTH file_cache (via AST) and
+        // ROUTE_STORAGE — the storage-parse step must short-circuit.
+        let route_storage = vec![StoredRouteInfo {
+            fn_name: "get_users".to_string(),
+            method: Some("get".to_string()),
+            custom_path: None,
+            error_status: None,
+            tags: None,
+            description: None,
+            file_path: Some(route_file_path),
+            fn_item_str: route_src.to_string(),
+        }];
+
+        let doc = generate_openapi_doc_with_metadata(
+            None,
+            None,
+            None,
+            &metadata,
+            Some(file_cache),
+            &route_storage,
+        );
+
+        // The route should still be picked up via the file_cache AST
+        // path — proves dedup didn't break route discovery.
+        assert!(doc.paths.contains_key("/users"));
+        let op = doc
+            .paths
+            .get("/users")
+            .unwrap()
+            .get
+            .as_ref()
+            .expect("GET op");
+        assert_eq!(op.operation_id, Some("get_users".to_string()));
+    }
+
+    #[test]
     fn test_generate_openapi_with_struct() {
         let mut metadata = CollectedMetadata::new();
         metadata.structs.push(StructMetadata {
