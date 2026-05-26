@@ -1,1 +1,0 @@
-{"changes":{"libs/vespera-bridge/build.gradle.kts":"Patch","libs/vespera-bridge-gradle-plugin/build.gradle.kts":"Patch"},"note":"Fix Maven Central publish: probe signingInMemoryKey (the actual private key, which CI sets) instead of signingInMemoryKeyId (which CI does not set); also chmod +x both gradlew binaries","date":"2026-05-26T16:19:26.1458553Z"}
