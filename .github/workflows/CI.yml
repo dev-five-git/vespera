@@ -82,8 +82,11 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
       - name: Make gradlew executable
-        working-directory: ./libs/vespera-bridge
-        run: chmod +x gradlew
+        # Both Java packages need their gradlew runnable — changepacks
+        # invokes `./gradlew publish` from each project directory.
+        run: |
+          chmod +x libs/vespera-bridge/gradlew
+          chmod +x libs/vespera-bridge-gradle-plugin/gradlew
       - uses: changepacks/action@main
         id: changepacks
         with:

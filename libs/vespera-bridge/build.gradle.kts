@@ -41,8 +41,13 @@ tasks.named<Test>("test") {
 // Gate Maven Central signing on the presence of in-memory signing
 // credentials so `publishToMavenLocal` works for development /
 // dogfooding without GPG keys, while production releases still sign.
-val shouldSign = !providers.gradleProperty("signingInMemoryKeyId").orNull.isNullOrBlank()
-        || !System.getenv("ORG_GRADLE_PROJECT_signingInMemoryKeyId").isNullOrBlank()
+//
+// We probe `signingInMemoryKey` (the actual PGP private key) rather
+// than `signingInMemoryKeyId` because CI only sets the former — the
+// vanniktech maven-publish plugin's `signAllPublications()` derives
+// the key ID from the key bytes when no explicit ID is supplied.
+val shouldSign = !providers.gradleProperty("signingInMemoryKey").orNull.isNullOrBlank()
+        || !System.getenv("ORG_GRADLE_PROJECT_signingInMemoryKey").isNullOrBlank()
 
 mavenPublishing {
     publishToMavenCentral(automaticRelease = true)
