@@ -14,6 +14,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use super::circular::CircularAnalysis;
@@ -27,7 +28,12 @@ struct FileCache {
 
     /// Cached file contents: file path → (mtime, content string).
     /// Mtime is checked to invalidate stale entries in long-lived processes.
-    file_contents: HashMap<PathBuf, (SystemTime, String)>,
+    ///
+    /// `Arc<String>` lets the cache hand out cheap pointer-clones instead of
+    /// copying the entire file body on every lookup.  The previous `String`
+    /// variant cloned `O(file_size)` bytes per cache hit and a second time
+    /// on insert; both become single-word `Arc::clone`s.
+    file_contents: HashMap<PathBuf, (SystemTime, Arc<String>)>,
 
     /// Struct name candidate index: (src_dir, struct_name) → files containing that name.
     /// Built from cheap `String::contains` search, not full parsing.
@@ -244,7 +250,10 @@ pub fn get_struct_definition(path: &Path, struct_name: &str) -> Option<String> {
 
 /// Internal helper: get file content from cache or read from disk.
 /// Checks mtime for invalidation.
-fn get_file_content_inner(cache: &mut FileCache, path: &Path) -> Option<String> {
+///
+/// Returns `Arc<String>` so callers share a single allocation instead of
+/// cloning the whole file body per lookup.
+fn get_file_content_inner(cache: &mut FileCache, path: &Path) -> Option<Arc<String>> {
     let current_mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
 
     if let Some(mtime) = current_mtime
@@ -252,17 +261,17 @@ fn get_file_content_inner(cache: &mut FileCache, path: &Path) -> Option<String> 
         && *cached_mtime == mtime
     {
         cache.content_cache_hits += 1;
-        return Some(content.clone());
+        return Some(Arc::clone(content));
     }
 
     // Cache miss or stale — read and cache
-    let content = std::fs::read_to_string(path).ok()?;
+    let content = Arc::new(std::fs::read_to_string(path).ok()?);
     cache.file_disk_reads += 1;
 
     if let Some(mtime) = current_mtime {
         cache
             .file_contents
-            .insert(path.to_path_buf(), (mtime, content.clone()));
+            .insert(path.to_path_buf(), (mtime, Arc::clone(&content)));
     }
 
     Some(content)
@@ -381,21 +390,17 @@ pub fn get_module_path_from_schema_path(schema_path: &proc_macro2::TokenStream) 
         return result;
     }
 
-    // 2. Compute from the string directly (avoids double to_string())
-    let segments: Vec<&str> = path_str
+    // 2. Compute directly: collect once, pop the trailing schema segment.
+    //    The previous version built an intermediate `Vec<&str>` and then
+    //    re-allocated it into a `Vec<String>` (one wasted allocation per
+    //    cache miss).
+    let mut result: Vec<String> = path_str
         .split("::")
         .map(str::trim)
         .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
         .collect();
-
-    let result = if segments.len() > 1 {
-        segments[..segments.len() - 1]
-            .iter()
-            .map(ToString::to_string)
-            .collect()
-    } else {
-        vec![]
-    };
+    result.pop(); // drop the trailing segment (the schema name itself)
 
     // 3. Store — new borrow
     FILE_CACHE.with(|cache| {

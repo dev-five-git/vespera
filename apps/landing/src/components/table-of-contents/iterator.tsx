@@ -36,8 +36,8 @@ function Anchor() {
       <Flex
         alignItems="center"
         borderRadius="$spacingSpacing08"
+        data-group
         py="$spacingSpacing08"
-        role="group"
       >
         <Text
           _groupHover={{

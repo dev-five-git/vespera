@@ -321,7 +321,7 @@ impl Parse for SchemaTypeInput {
             ));
         }
 
-        Ok(Self {
+        let parsed = Self {
             new_type,
             source_type,
             omit,
@@ -335,7 +335,8 @@ impl Parse for SchemaTypeInput {
             rename_all,
             multipart,
             omit_default,
-        })
+        };
+        Ok(parsed)
     }
 }
 

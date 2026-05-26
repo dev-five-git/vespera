@@ -9,6 +9,16 @@ repository.workspace = true
 [lib]
 proc-macro = true
 
+[features]
+# When enabled, `#[derive(Schema)]` additionally emits an
+# `impl ::vespera::__validation::garde::Validate` block that wires the
+# field-level `#[schema(min_length=..., pattern=..., minimum=..., ...)]`
+# constraints into garde's runtime validators.  The proc-macro itself
+# does NOT depend on `garde` — it only emits token streams that reference
+# the path; the user's `vespera = { features = ["validation"] }` is what
+# actually pulls in the runtime crate.
+validation = []
+
 [dependencies]
 quote = "1"
 syn = { version = "2", features = ["full"] }

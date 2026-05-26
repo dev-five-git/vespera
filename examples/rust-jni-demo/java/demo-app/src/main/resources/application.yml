@@ -8,3 +8,5 @@ spring:
 logging:
   level:
     kr.go.demo: DEBUG
+    com.devfive.vespera.bridge: DEBUG
+    org.springframework.web.servlet: DEBUG

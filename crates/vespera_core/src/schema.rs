@@ -36,7 +36,7 @@ impl Reference {
 }
 
 /// JSON Schema type
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SchemaType {
     String,
@@ -364,7 +364,7 @@ pub struct Components {
 }
 
 /// Security scheme type
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SecuritySchemeType {
     ApiKey,

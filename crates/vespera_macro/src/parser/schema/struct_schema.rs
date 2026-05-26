@@ -9,6 +9,7 @@ use syn::{Fields, Type};
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
 use super::{
+    schema_attrs::{SchemaConstraints, extract_schema_constraints},
     serde_attrs::{
         extract_doc_comment, extract_field_rename, extract_flatten, extract_rename_all,
         extract_schema_ref_override, extract_skip, extract_transparent, rename_field,
@@ -143,6 +144,18 @@ pub fn parse_struct_to_schema(
                     }
                 }
 
+                // Extract field-level `#[schema(min_length=..., pattern=...,
+                // minimum=..., format=..., example=..., read_only, ...)]`
+                // constraints and merge them into the field schema.  When
+                // the field references a component schema via `$ref`, we
+                // promote it to an `allOf` wrapper (mirroring the
+                // description-on-ref pattern above) so the constraints can
+                // sit alongside the reference.
+                let constraints = extract_schema_constraints(&field.attrs);
+                if !constraints.is_empty() {
+                    apply_constraints_to_schema_ref(&mut schema_ref, &constraints);
+                }
+
                 // Required is determined solely by nullability (Option<T>).
                 // Fields with #[serde(default)] still have defaults applied in
                 // openapi_generator, but that does NOT affect required status.
@@ -212,6 +225,80 @@ pub fn parse_struct_to_schema(
             all_of: Some(all_of),
             ..Default::default()
         }
+    }
+}
+
+/// Merge field-level `#[schema(...)]` constraints into the field's
+/// `SchemaRef`.  For `Inline` variants the constraints are written
+/// directly onto the inner `Schema`; for `Ref` variants we promote to an
+/// `allOf` wrapper so the constraints can sit alongside `$ref`.
+fn apply_constraints_to_schema_ref(schema_ref: &mut SchemaRef, c: &SchemaConstraints) {
+    match schema_ref {
+        SchemaRef::Inline(schema) => apply_constraints(schema, c),
+        SchemaRef::Ref(_) => {
+            // mem::replace lets us move the Ref out without leaving an
+            // invalid value behind; the placeholder is overwritten
+            // before the function returns.
+            let taken =
+                std::mem::replace(schema_ref, SchemaRef::Inline(Box::new(Schema::object())));
+            if let SchemaRef::Ref(reference) = taken {
+                let mut wrapper = Schema {
+                    all_of: Some(vec![SchemaRef::Ref(reference)]),
+                    ..Default::default()
+                };
+                apply_constraints(&mut wrapper, c);
+                *schema_ref = SchemaRef::Inline(Box::new(wrapper));
+            }
+        }
+    }
+}
+
+/// Apply each set constraint to the corresponding `Schema` field.
+fn apply_constraints(schema: &mut Schema, c: &SchemaConstraints) {
+    if let Some(v) = c.min_length {
+        schema.min_length = Some(v);
+    }
+    if let Some(v) = c.max_length {
+        schema.max_length = Some(v);
+    }
+    if let Some(ref v) = c.pattern {
+        schema.pattern = Some(v.clone());
+    }
+    if let Some(v) = c.minimum {
+        schema.minimum = Some(v);
+    }
+    if let Some(v) = c.maximum {
+        schema.maximum = Some(v);
+    }
+    if let Some(v) = c.exclusive_minimum {
+        schema.exclusive_minimum = Some(v);
+    }
+    if let Some(v) = c.exclusive_maximum {
+        schema.exclusive_maximum = Some(v);
+    }
+    if let Some(v) = c.multiple_of {
+        schema.multiple_of = Some(v);
+    }
+    if let Some(v) = c.min_items {
+        schema.min_items = Some(v);
+    }
+    if let Some(v) = c.max_items {
+        schema.max_items = Some(v);
+    }
+    if let Some(v) = c.unique_items {
+        schema.unique_items = Some(v);
+    }
+    if let Some(ref v) = c.format {
+        schema.format = Some(v.clone());
+    }
+    if let Some(ref v) = c.example {
+        schema.example = Some(v.clone());
+    }
+    if let Some(v) = c.read_only {
+        schema.read_only = Some(v);
+    }
+    if let Some(v) = c.write_only {
+        schema.write_only = Some(v);
     }
 }
 
@@ -596,5 +683,219 @@ mod tests {
         assert_eq!(schema.schema_type, Some(SchemaType::Object));
         assert!(schema.properties.is_none());
         assert!(schema.all_of.is_none());
+    }
+
+    // ── field-level `#[schema(...)]` constraint propagation ─────────
+
+    fn field_schema<'a>(schema: &'a Schema, field: &str) -> &'a Schema {
+        let props = schema.properties.as_ref().expect("properties missing");
+        let entry = props.get(field).expect("field missing");
+        match entry {
+            SchemaRef::Inline(boxed) => boxed.as_ref(),
+            SchemaRef::Ref(_) => panic!("expected inline schema for field '{field}'"),
+        }
+    }
+
+    #[test]
+    fn schema_constraints_min_max_length_and_pattern_on_string_field() {
+        let s: syn::ItemStruct = syn::parse_str(
+            r#"
+            struct CreateUser {
+                #[schema(min_length = 3, max_length = 32, pattern = "^[a-z]+$")]
+                username: String,
+            }
+            "#,
+        )
+        .unwrap();
+        let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+        let field = field_schema(&schema, "username");
+        assert_eq!(field.min_length, Some(3));
+        assert_eq!(field.max_length, Some(32));
+        assert_eq!(field.pattern.as_deref(), Some("^[a-z]+$"));
+    }
+
+    #[test]
+    fn schema_constraints_minimum_maximum_on_numeric_field() {
+        let s: syn::ItemStruct = syn::parse_str(
+            r"
+            struct Profile {
+                #[schema(minimum = 0, maximum = 150)]
+                age: u32,
+            }
+            ",
+        )
+        .unwrap();
+        let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+        let field = field_schema(&schema, "age");
+        assert_eq!(field.minimum, Some(0.0));
+        assert_eq!(field.maximum, Some(150.0));
+    }
+
+    #[test]
+    fn schema_constraints_format_email_on_string_field() {
+        let s: syn::ItemStruct = syn::parse_str(
+            r#"
+            struct Contact {
+                #[schema(format = "email")]
+                email: String,
+            }
+            "#,
+        )
+        .unwrap();
+        let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+        let field = field_schema(&schema, "email");
+        assert_eq!(field.format.as_deref(), Some("email"));
+    }
+
+    #[test]
+    fn schema_constraints_read_only_write_only_example() {
+        let s: syn::ItemStruct = syn::parse_str(
+            r#"
+            struct User {
+                #[schema(read_only, example = "abc-123")]
+                id: String,
+                #[schema(write_only)]
+                password: String,
+            }
+            "#,
+        )
+        .unwrap();
+        let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+        let id_field = field_schema(&schema, "id");
+        assert_eq!(id_field.read_only, Some(true));
+        assert_eq!(id_field.example, Some(serde_json::json!("abc-123")));
+        let pw_field = field_schema(&schema, "password");
+        assert_eq!(pw_field.write_only, Some(true));
+    }
+
+    #[test]
+    fn schema_constraints_min_max_items_unique_on_vec_field() {
+        let s: syn::ItemStruct = syn::parse_str(
+            r"
+            struct Post {
+                #[schema(min_items = 1, max_items = 5, unique_items)]
+                tags: Vec<String>,
+            }
+            ",
+        )
+        .unwrap();
+        let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+        let field = field_schema(&schema, "tags");
+        assert_eq!(field.min_items, Some(1));
+        assert_eq!(field.max_items, Some(5));
+        assert_eq!(field.unique_items, Some(true));
+    }
+
+    #[test]
+    fn schema_constraints_exclusive_bounds_and_multiple_of() {
+        let s: syn::ItemStruct = syn::parse_str(
+            r"
+            struct Price {
+                #[schema(minimum = 0, exclusive_minimum, multiple_of = 0.01)]
+                amount: f64,
+            }
+            ",
+        )
+        .unwrap();
+        let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+        let field = field_schema(&schema, "amount");
+        assert_eq!(field.minimum, Some(0.0));
+        assert_eq!(field.exclusive_minimum, Some(true));
+        assert_eq!(field.multiple_of, Some(0.01));
+    }
+
+    #[test]
+    fn schema_constraints_on_ref_field_promote_to_allof_wrapper() {
+        // A field referencing a known component schema must keep its
+        // `$ref` but gain the constraints via an `allOf` wrapper so the
+        // OpenAPI consumer still sees the reference.
+        let mut known = HashSet::new();
+        known.insert("Address".to_string());
+        let s: syn::ItemStruct = syn::parse_str(
+            r"
+            struct Order {
+                #[schema(read_only)]
+                shipping: Address,
+            }
+            ",
+        )
+        .unwrap();
+        let schema = parse_struct_to_schema(&s, &known, &HashMap::new());
+        let field = field_schema(&schema, "shipping");
+        assert_eq!(field.read_only, Some(true));
+        let all_of = field.all_of.as_ref().expect("allOf wrap missing");
+        assert_eq!(all_of.len(), 1);
+        assert!(matches!(all_of[0], SchemaRef::Ref(_)));
+    }
+
+    #[test]
+    fn schema_constraints_coexist_with_doc_comment_on_ref_field() {
+        // When BOTH a doc comment AND constraints are present on a
+        // `$ref` field, the doc comment converts it to allOf first, then
+        // constraints are layered onto the same wrapper.
+        let mut known = HashSet::new();
+        known.insert("Address".to_string());
+        let s: syn::ItemStruct = syn::parse_str(
+            r"
+            struct Order {
+                /// Shipping address — must be present.
+                #[schema(read_only, write_only = false)]
+                shipping: Address,
+            }
+            ",
+        )
+        .unwrap();
+        let schema = parse_struct_to_schema(&s, &known, &HashMap::new());
+        let field = field_schema(&schema, "shipping");
+        assert!(field.description.is_some(), "doc comment lost");
+        assert_eq!(field.read_only, Some(true));
+        assert_eq!(field.write_only, Some(false));
+        assert!(field.all_of.is_some(), "allOf wrap lost");
+    }
+
+    #[test]
+    fn schema_constraints_unknown_keys_on_field_are_silently_ignored() {
+        // Struct-level keys (e.g. `name`) accidentally placed on a field
+        // attribute should not trip the parser nor produce constraints.
+        let s: syn::ItemStruct = syn::parse_str(
+            r#"
+            struct Account {
+                #[schema(name = "Stray", min_length = 4)]
+                pin: String,
+            }
+            "#,
+        )
+        .unwrap();
+        let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+        let field = field_schema(&schema, "pin");
+        assert_eq!(field.min_length, Some(4));
+    }
+
+    #[test]
+    fn schema_exclusive_maximum_and_minimum_land_on_emitted_field_schema() {
+        // `exclusive_minimum` / `exclusive_maximum` / `multiple_of` /
+        // `unique_items` are OpenAPI-only annotations (no garde rule
+        // counterpart).  The struct-schema parser still propagates them
+        // onto the per-field `Schema` so the resulting `openapi.json`
+        // carries them verbatim.
+        let s: syn::ItemStruct = syn::parse_str(
+            r"
+            struct Price {
+                #[schema(minimum = 0, maximum = 100, exclusive_minimum, exclusive_maximum, multiple_of = 0.5)]
+                amount: f64,
+
+                #[schema(min_items = 1, max_items = 5, unique_items)]
+                tags: Vec<String>,
+            }
+            ",
+        )
+        .unwrap();
+        let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+        let amount = field_schema(&schema, "amount");
+        assert_eq!(amount.exclusive_minimum, Some(true));
+        assert_eq!(amount.exclusive_maximum, Some(true));
+        assert_eq!(amount.multiple_of, Some(0.5));
+        let tags = field_schema(&schema, "tags");
+        assert_eq!(tags.unique_items, Some(true));
     }
 }

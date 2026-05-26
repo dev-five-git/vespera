@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "kr.devfive"
-version = "0.0.14"
+version = "0.0.15"
 
 java {
     toolchain {
@@ -29,30 +29,24 @@ repositories {
 dependencies {
     api("org.springframework.boot:spring-boot-starter-web:3.2.5")
     api("com.fasterxml.jackson.core:jackson-databind:2.17.0")
+
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.10.2")
 }
 
-// TODO: Remove after confirming CI secrets work
-logger.lifecycle("=== Maven Central Publish Debug ===")
-listOf(
-    "mavenCentralUsername",
-    "mavenCentralPassword",
-    "signingInMemoryKeyId",
-    "signingInMemoryKey",
-    "signingInMemoryKeyPassword",
-).forEach { key ->
-    val value = providers.gradleProperty(key).orNull
-    val status = when {
-        value == null -> "MISSING"
-        value.isBlank() -> "EMPTY"
-        else -> "OK (${value.length} chars)"
-    }
-    logger.lifecycle("  [ENV CHECK] $key = $status")
+tasks.named<Test>("test") {
+    useJUnitPlatform()
 }
-logger.lifecycle("==================================")
+
+// Gate Maven Central signing on the presence of in-memory signing
+// credentials so `publishToMavenLocal` works for development /
+// dogfooding without GPG keys, while production releases still sign.
+val shouldSign = !providers.gradleProperty("signingInMemoryKeyId").orNull.isNullOrBlank()
+        || !System.getenv("ORG_GRADLE_PROJECT_signingInMemoryKeyId").isNullOrBlank()
 
 mavenPublishing {
     publishToMavenCentral(automaticRelease = true)
-    signAllPublications()
+    if (shouldSign) signAllPublications()
 
     coordinates(
         groupId = "kr.devfive",

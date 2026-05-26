@@ -53,7 +53,7 @@ impl TryFrom<&str> for HttpMethod {
 }
 
 /// Parameter location in the request
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ParameterLocation {
     Query,

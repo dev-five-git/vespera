@@ -7,10 +7,25 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["axum-extra/typed-header", "axum-extra/form", "axum-extra/query", "axum-extra/multipart", "axum-extra/cookie"]
-cron = ["dep:tokio-cron-scheduler", "dep:tokio"]
+# `validation` is on by default — `#[derive(Schema)]` automatically emits
+# `impl garde::Validate` blocks and the `Validated<T>` extractor is
+# available.  Opt out with `default-features = false` if you need a
+# leaner build without the `garde` runtime dependency.
+default = [
+    "axum-extra/typed-header",
+    "axum-extra/form",
+    "axum-extra/query",
+    "axum-extra/multipart",
+    "axum-extra/cookie",
+    "validation",
+]
+cron = ["dep:tokio-cron-scheduler"]
 inprocess = ["dep:vespera_inprocess"]
 jni = ["inprocess", "dep:vespera_jni"]
+# Runtime validation: `#[derive(Schema)]` additionally emits
+# `impl garde::Validate` and the `Validated<T>` extractor is enabled.
+# The `garde` crate is bundled internally and never named by user code.
+validation = ["dep:garde", "vespera_macro/validation"]
 
 [dependencies]
 vespera_core = { workspace = true }
@@ -23,9 +38,28 @@ serde_json = "1"
 tower-layer = "0.3"
 tower-service = "0.3"
 tokio-cron-scheduler = { version = "0.15", optional = true }
-tokio = { version = "1", features = ["rt"], optional = true }
+# Used by the `Serve` extension trait to bind a TcpListener and drive
+# axum::serve.  Default-on because virtually every axum user already
+# has tokio in their dependency graph.
+tokio = { version = "1", features = ["net", "rt"] }
 vespera_inprocess = { workspace = true, optional = true }
 vespera_jni = { workspace = true, optional = true }
+# Hidden behind `validation` feature; re-exported via the private
+# `vespera::__validation` module so the proc-macro can name it
+# without forcing the user to add `garde` to their own Cargo.toml.
+garde = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Used by integration tests under `tests/` that exercise the
+# `Validated<T>` extractor and the macro-emitted `garde::Validate`
+# impls.  Not pulled into the production build.
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tower = { version = "0.5", features = ["util"] }
+# Integration tests for the JNI dispatch path call
+# `vespera_inprocess::{register_app, dispatch_from_json}` directly so
+# they don't need the `inprocess` cargo feature to be enabled.
+vespera_inprocess = { workspace = true }
 
 [lints]
 workspace = true

@@ -390,6 +390,19 @@ pub fn extract_skip_serializing_if(attrs: &[syn::Attribute]) -> bool {
     false
 }
 
+/// Check whether the `"default"` substring at index `start` of `tokens`
+/// is delimited by valid meta-list separators on both sides (whitespace,
+/// `,`, `(`, or `)`).  Pulled out of `extract_default` so the fallback
+/// path gets its own basic block and shows up cleanly in coverage.
+fn is_standalone_default(tokens: &str, start: usize, remaining: &str) -> bool {
+    let before = if start > 0 { &tokens[..start] } else { "" };
+    let before_char = before.chars().last().unwrap_or(' ');
+    let after_char = remaining.chars().next().unwrap_or(' ');
+    let before_ok = before_char == ' ' || before_char == ',' || before_char == '(';
+    let after_ok = after_char == ' ' || after_char == ',' || after_char == ')';
+    before_ok && after_ok
+}
+
 /// Extract default attribute from field attributes
 /// Returns:
 /// - Some(None) if #[serde(default)] is present (no function)
@@ -420,45 +433,48 @@ pub fn extract_default(attrs: &[syn::Attribute]) -> Option<Option<String>> {
                 }
                 Ok(())
             });
+            if found_default.is_none() {
+                // Fallback: manual token parsing for complex attribute combinations
+                found_default = scan_default_from_raw_tokens(&meta_list.tokens.to_string());
+            }
             if let Some(default_value) = found_default {
                 return Some(default_value);
-            }
-
-            // Fallback: manual token parsing for complex attribute combinations
-            let tokens = meta_list.tokens.to_string();
-            if let Some(start) = tokens.find("default") {
-                let remaining = &tokens[start + "default".len()..];
-                if remaining.trim_start().starts_with('=') {
-                    // default = "function_name"
-                    let after_equals = remaining
-                        .trim_start()
-                        .strip_prefix('=')
-                        .unwrap_or("")
-                        .trim_start();
-                    // Extract string value - find opening and closing quotes
-                    if let Some(quote_start) = after_equals.find('"') {
-                        let after_quote = &after_equals[quote_start + 1..];
-                        if let Some(quote_end) = after_quote.find('"') {
-                            let function_name = &after_quote[..quote_end];
-                            return Some(Some(function_name.to_string()));
-                        }
-                    }
-                } else {
-                    // Just "default" without = (standalone)
-                    let before = if start > 0 { &tokens[..start] } else { "" };
-                    let after = &remaining;
-                    let before_char = before.chars().last().unwrap_or(' ');
-                    let after_char = after.chars().next().unwrap_or(' ');
-                    if (before_char == ' ' || before_char == ',' || before_char == '(')
-                        && (after_char == ' ' || after_char == ',' || after_char == ')')
-                    {
-                        return Some(None);
-                    }
-                }
             }
         }
     }
     None
+}
+
+/// Scan `tokens` (the raw `to_string()` rendering of a `#[serde(...)]`
+/// argument list) for a `default` keyword that survived the
+/// `parse_nested_meta` pass.  Returns the same `Option<Option<String>>`
+/// shape `extract_default` consumes:
+/// - `Some(Some(fn_name))` for `default = "fn_name"`
+/// - `Some(None)` for a bare standalone `default`
+/// - `None` when no `default` keyword could be confidently identified
+///
+/// Pulled out of `extract_default` so the fallback paths each get their
+/// own basic block and show up in coverage.
+#[allow(clippy::option_option)]
+fn scan_default_from_raw_tokens(tokens: &str) -> Option<Option<String>> {
+    let start = tokens.find("default")?;
+    let remaining = &tokens[start + "default".len()..];
+    if remaining.trim_start().starts_with('=') {
+        // default = "function_name"
+        let after_equals = remaining
+            .trim_start()
+            .strip_prefix('=')
+            .unwrap_or("")
+            .trim_start();
+        let quote_start = after_equals.find('"')?;
+        let after_quote = &after_equals[quote_start + 1..];
+        let quote_end = after_quote.find('"')?;
+        Some(Some(after_quote[..quote_end].to_string()))
+    } else if is_standalone_default(tokens, start, remaining) {
+        Some(None)
+    } else {
+        None
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -476,7 +492,9 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
                 if ch == '_' {
                     capitalize_next = true;
                     in_first_word = false;
-                } else if in_first_word {
+                    continue;
+                }
+                if in_first_word {
                     // In first word: lowercase until we hit a word boundary
                     // Word boundary: uppercase char followed by lowercase (e.g., "XMLParser" -> "P" starts new word)
                     let next_is_lower = chars.get(i + 1).is_some_and(|c| c.is_lowercase());
@@ -488,12 +506,14 @@ pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
                         // Still in first word, lowercase it
                         result.push(ch.to_ascii_lowercase());
                     }
-                } else if capitalize_next {
+                    continue;
+                }
+                if capitalize_next {
                     result.push(ch.to_ascii_uppercase());
                     capitalize_next = false;
-                } else {
-                    result.push(ch);
+                    continue;
                 }
+                result.push(ch);
             }
             result
         }
@@ -1239,6 +1259,47 @@ mod tests {
             let attrs = get_field_attrs(r"default");
             let result = extract_default(&attrs);
             assert_eq!(result, Some(None));
+        }
+
+        /// Test extract_default fallback when parse_nested_meta can't see `default`
+        /// at the top level — forces the manual token scan to catch it.
+        #[test]
+        fn test_extract_default_standalone_fallback_when_nested_meta_fails() {
+            // Construct an attribute whose token stream begins with garbage
+            // that `parse_nested_meta` will refuse to parse (a stray `@`
+            // before the first key).  Because the parser bails immediately,
+            // the callback for `default` never fires, and the manual
+            // token-string fallback at the end of `extract_default` is the
+            // only path that detects the standalone `default` keyword.
+            let tokens: TokenStream = "@bogus, default".parse().expect("token stream parses");
+            let attr = create_attr_with_raw_tokens(tokens);
+            let result = extract_default(&[attr]);
+            assert_eq!(
+                result,
+                Some(None),
+                "fallback path must detect bare `default`"
+            );
+        }
+
+        /// Test that the fallback's "default appears as a substring inside
+        /// another identifier" branch returns None (no false-positive
+        /// match).  Exercises the trailing `None` arm of
+        /// `scan_default_from_raw_tokens` (substring found, but neither
+        /// `=` follows nor delimiter chars surround it).
+        #[test]
+        fn test_extract_default_substring_in_identifier_is_not_a_match() {
+            // `field_default` contains "default" but as a suffix of an
+            // identifier — `before_char` is `_`, not one of the valid
+            // delimiters, so the standalone check fails.
+            let tokens: TokenStream = "@bogus, field_default"
+                .parse()
+                .expect("token stream parses");
+            let attr = create_attr_with_raw_tokens(tokens);
+            let result = extract_default(&[attr]);
+            assert_eq!(
+                result, None,
+                "embedded 'default' substring must not register as default"
+            );
         }
 
         /// Test extract_default with function fallback

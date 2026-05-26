@@ -45,6 +45,7 @@ mod collector;
 mod cron_impl;
 mod error;
 mod file_utils;
+mod garde_emit;
 mod http;
 mod metadata;
 mod method;
@@ -102,16 +103,53 @@ pub fn cron(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Derive macro for Schema
 ///
 /// Supports `#[schema(name = "CustomName")]` attribute to set custom `OpenAPI` schema name.
+///
+/// # Duplicate schema name detection
+///
+/// `SCHEMA_STORAGE` is keyed by the OpenAPI schema name (struct ident by
+/// default, or `#[schema(name = "...")]` if specified).  When two
+/// **different** struct definitions register under the same name, only
+/// the last one would survive in `openapi.json` — a silent footgun
+/// that has bitten real users.  This derive therefore checks the
+/// storage before inserting and emits a `compile_error!` so the
+/// conflict surfaces at build time instead of at spec-generation time.
+///
+/// Identical re-registrations (e.g. incremental rebuilds running the
+/// same derive twice) are idempotent: the definition token-stream
+/// matches and the second call is a no-op.
 #[cfg(not(tarpaulin_include))]
 #[proc_macro_derive(Schema, attributes(schema, serde))]
 pub fn derive_schema(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     let (metadata, expanded) = schema_impl::process_derive_schema(&input);
     let name = metadata.name.clone();
-    SCHEMA_STORAGE
+
+    let mut storage = SCHEMA_STORAGE
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(name, metadata);
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    if let Some(existing) = storage.get(&name)
+        && existing.definition != metadata.definition
+    {
+        // Two distinct struct definitions both ask for the same
+        // OpenAPI schema name.  Surface this as a hard compile error
+        // — the alternative (silent last-write-wins overwrite) hides
+        // schemas from the generated `openapi.json` in a way that is
+        // only discovered by inspecting the spec.
+        let span = input.ident.span();
+        let msg = format!(
+            "duplicate vespera Schema name `{name}` -- two different struct \
+             definitions both register under the same OpenAPI schema name. \
+             The later definition would silently overwrite the earlier one \
+             in the generated `openapi.json`. Rename one of the structs, or \
+             annotate one with `#[schema(name = \"OtherName\")]` to give \
+             them distinct OpenAPI names."
+        );
+        let err = syn::Error::new(span, msg).to_compile_error();
+        return TokenStream::from(err);
+    }
+
+    storage.insert(name, metadata);
     TokenStream::from(expanded)
 }
 
@@ -259,6 +297,7 @@ pub fn schema(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn schema_type(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as schema_macro::SchemaTypeInput);
+    let ignore_schema = input.ignore_schema;
 
     // Get stored schemas and generate code
     let (tokens, generated_metadata) = {
@@ -271,9 +310,21 @@ pub fn schema_type(input: TokenStream) -> TokenStream {
         }
     };
 
-    // If custom name is provided, register the schema directly
-    // This ensures it appears in OpenAPI even when `ignore` is set
-    if let Some(metadata) = generated_metadata {
+    // The emitted token stream contains a struct with
+    // `#[derive(Schema)]`; that derive macro registers the schema into
+    // `SCHEMA_STORAGE` on its own.  We only need to pre-register here
+    // when `ignore_schema` is set, because in that case the emitted
+    // struct does NOT carry `#[derive(Schema)]` and would otherwise
+    // be invisible to the OpenAPI generator.
+    //
+    // Pre-registering in the non-ignore path would cause the
+    // duplicate-name check in `derive_schema` to fire on every
+    // `schema_type!` call — the macro's own pre-insert collides with
+    // the derive's later insert because the two `StructMetadata`
+    // definitions are textually different (the pre-registered one is
+    // synthesised by `schema_macro`; the derive-emitted one is the
+    // expanded struct token stream).
+    if ignore_schema && let Some(metadata) = generated_metadata {
         let name = metadata.name.clone();
         SCHEMA_STORAGE
             .lock()

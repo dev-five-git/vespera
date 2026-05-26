@@ -240,17 +240,11 @@ fn build_path_items(
     let mut paths = BTreeMap::new();
     let mut all_tags = BTreeSet::new();
 
-    // Primary source: pre-parse function items from ROUTE_STORAGE (populated by #[route])
-    let route_fn_cache: HashMap<&str, syn::ItemFn> = route_storage
-        .iter()
-        .filter_map(|s| {
-            syn::parse_str::<syn::ItemFn>(&s.fn_item_str)
-                .ok()
-                .map(|item| (s.fn_name.as_str(), item))
-        })
-        .collect();
-
-    // Fallback source: function index from file ASTs (for routes not in ROUTE_STORAGE)
+    // Build the file-AST function index FIRST so the storage-parse step
+    // below can skip any function whose AST is already reachable through
+    // `file_cache`.  `collector::collect_metadata` has already walked
+    // these files via `syn::parse_file`, so re-parsing `fn_item_str`
+    // from ROUTE_STORAGE for the same function is pure duplicated work.
     let fn_index: HashMap<&str, HashMap<String, &syn::ItemFn>> = file_cache
         .iter()
         .map(|(path, ast)| {
@@ -266,6 +260,30 @@ fn build_path_items(
                 })
                 .collect();
             (path.as_str(), fns)
+        })
+        .collect();
+
+    // Primary source: parse function items from ROUTE_STORAGE only when
+    // the function is *not* already covered by `fn_index`.  Routes whose
+    // owning file is in `file_cache` short-circuit through `fn_index` in
+    // the loop below, so the parse is wasted work.  The lookup order in
+    // the loop preserves the original ROUTE_STORAGE-first priority for
+    // any route that does end up in this cache (e.g. routes registered
+    // via `#[route]` from files outside the scanned routes folder).
+    let route_fn_cache: HashMap<&str, syn::ItemFn> = route_storage
+        .iter()
+        .filter_map(|s| {
+            let already_in_ast = s
+                .file_path
+                .as_deref()
+                .and_then(|fp| fn_index.get(fp))
+                .is_some_and(|fns| fns.contains_key(&s.fn_name));
+            if already_in_ast {
+                return None;
+            }
+            syn::parse_str::<syn::ItemFn>(&s.fn_item_str)
+                .ok()
+                .map(|item| (s.fn_name.as_str(), item))
         })
         .collect();
 
@@ -618,6 +636,68 @@ pub fn get_users() -> String {
         assert!(path_item.get.is_some());
         let operation = path_item.get.as_ref().unwrap();
         assert_eq!(operation.operation_id, Some("get_users".to_string()));
+    }
+
+    #[test]
+    fn test_generate_openapi_route_storage_dedup_skips_already_in_ast() {
+        // When a route's `fn_item_str` was already discovered by parsing
+        // the source file via `file_cache`, the storage-parse step must
+        // skip re-parsing it — exercises the `already_in_ast → return None`
+        // branch inside `route_fn_cache` construction.
+        use crate::route_impl::StoredRouteInfo;
+
+        let route_file_path = "/virtual/users.rs".to_string();
+        let route_src = "pub fn get_users() -> String { \"users\".to_string() }";
+        let parsed: syn::File = syn::parse_str(route_src).expect("route src parses");
+        let mut file_cache: HashMap<String, syn::File> = HashMap::new();
+        file_cache.insert(route_file_path.clone(), parsed);
+
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "GET".to_string(),
+            path: "/users".to_string(),
+            function_name: "get_users".to_string(),
+            module_path: "test::users".to_string(),
+            file_path: route_file_path.clone(),
+            signature: "fn get_users() -> String".to_string(),
+            error_status: None,
+            tags: None,
+            description: None,
+        });
+
+        // The route is registered in BOTH file_cache (via AST) and
+        // ROUTE_STORAGE — the storage-parse step must short-circuit.
+        let route_storage = vec![StoredRouteInfo {
+            fn_name: "get_users".to_string(),
+            method: Some("get".to_string()),
+            custom_path: None,
+            error_status: None,
+            tags: None,
+            description: None,
+            file_path: Some(route_file_path),
+            fn_item_str: route_src.to_string(),
+        }];
+
+        let doc = generate_openapi_doc_with_metadata(
+            None,
+            None,
+            None,
+            &metadata,
+            Some(file_cache),
+            &route_storage,
+        );
+
+        // The route should still be picked up via the file_cache AST
+        // path — proves dedup didn't break route discovery.
+        assert!(doc.paths.contains_key("/users"));
+        let op = doc
+            .paths
+            .get("/users")
+            .unwrap()
+            .get
+            .as_ref()
+            .expect("GET op");
+        assert_eq!(op.operation_id, Some("get_users".to_string()));
     }
 
     #[test]

@@ -21,4 +21,8 @@ bin/
 *.iml
 .idea/
 .omc
+.omo
 node_modules
+
+# Generated OpenAPI artifacts at workspace root
+/openapi*.json

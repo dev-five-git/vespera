@@ -292,6 +292,61 @@ fn test_generate_schema_type_code_same_file_relation_adapters_for_add_mode() {
 }
 
 #[test]
+fn test_maybe_generate_same_file_relation_override_skips_redundant_clone_and_deserialize_impls() {
+    // Same-file relation override DTOs that ALREADY carry `Clone` and
+    // `Deserialize` derives must NOT have the macro re-emit those
+    // impls — otherwise the generated code would conflict with the
+    // user-provided derive.  Hits the "DTO already has derive" empty-
+    // quote branches inside `maybe_generate_same_file_relation_override`.
+    let rel_info = RelationFieldInfo {
+        field_name: syn::Ident::new("user", proc_macro2::Span::call_site()),
+        relation_type: "HasOne".to_string(),
+        schema_path: quote!(crate::models::user::Schema),
+        is_optional: true,
+        inline_type_info: None,
+        relation_enum: None,
+        fk_column: None,
+        via_rel: None,
+    };
+    // Bare `Clone` and `Deserialize` idents — has_derive matches the
+    // single-segment path, hitting the empty-quote branches at lines
+    // 208 (clone_impl) and 222 (deserialize_impl).
+    let storage = to_storage(vec![create_test_struct_metadata(
+        "UserInArticle",
+        r"#[derive(Clone, Deserialize)]
+            struct UserInArticle { id: i32, name: String }",
+    )]);
+    let new_type_name = syn::Ident::new("ArticleResponse", proc_macro2::Span::call_site());
+
+    let (override_field_ty, helper_tokens) =
+        maybe_generate_same_file_relation_override(&new_type_name, "user", &rel_info, &storage)
+            .expect("override generation should succeed")
+            .expect("DTO is present in storage → override should be generated");
+
+    let output = helper_tokens.to_string();
+    let field_ty = override_field_ty.to_string();
+    assert!(
+        field_ty.contains("__VesperaArticleResponseUserRelation"),
+        "expected override field type to reference relation adapter, got: {field_ty}"
+    );
+    // No `impl Clone for UserInArticle` — DTO already derives Clone.
+    assert!(
+        !output.contains("impl Clone for UserInArticle"),
+        "macro should skip Clone impl when DTO already derives Clone, got: {output}"
+    );
+    // No proxy `Deserialize` derive struct — DTO already derives Deserialize.
+    assert!(
+        !output.contains("__VesperaArticleResponseUserProxy"),
+        "macro should skip Deserialize proxy when DTO already derives Deserialize, got: {output}"
+    );
+    // Relation wrapper struct still emitted regardless of derives.
+    assert!(
+        output.contains("__VesperaArticleResponseUserRelation"),
+        "relation wrapper missing: {output}"
+    );
+}
+
+#[test]
 fn test_generate_schema_type_code_generates_from_impl() {
     let storage = to_storage(vec![create_test_struct_metadata(
         "User",

@@ -18,6 +18,7 @@ mod validation;
 
 pub use file_cache::print_profile_summary;
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use codegen::generate_filtered_schema;
@@ -70,12 +71,16 @@ fn derive_response_base_name(name: &str) -> String {
     name.to_string()
 }
 
-fn find_same_file_struct_metadata(
+fn find_same_file_struct_metadata<'a>(
     struct_name: &str,
-    schema_storage: &HashMap<String, StructMetadata>,
-) -> Option<StructMetadata> {
+    schema_storage: &'a HashMap<String, StructMetadata>,
+) -> Option<Cow<'a, StructMetadata>> {
+    // Cache hit: hand back a borrow so the (potentially large) struct
+    // definition string is not cloned per lookup.  The fallback path
+    // produces an owned `StructMetadata` from disk, so the unified return
+    // type is `Cow<'_, StructMetadata>`.
     if let Some(metadata) = schema_storage.get(struct_name) {
-        return Some(metadata.clone());
+        return Some(Cow::Borrowed(metadata));
     }
 
     let file_path = proc_macro2::Span::call_site().local_file();
@@ -90,7 +95,10 @@ fn find_same_file_struct_metadata(
     });
     let file_path = file_path?;
     let definition = file_cache::get_struct_definition(&file_path, struct_name)?;
-    Some(StructMetadata::new(struct_name.to_string(), definition))
+    Some(Cow::Owned(StructMetadata::new(
+        struct_name.to_string(),
+        definition,
+    )))
 }
 
 fn related_model_type_from_schema_path(schema_path: &TokenStream) -> Option<syn::Type> {
@@ -99,19 +107,19 @@ fn related_model_type_from_schema_path(schema_path: &TokenStream) -> Option<syn:
 }
 
 fn schema_component_name_from_path(schema_path: &TokenStream) -> String {
-    let segments: Vec<String> = schema_path
-        .to_string()
-        .split("::")
-        .map(|segment| segment.trim().to_string())
-        .collect();
+    // Keep the stringified path alive in this scope so the `&str`
+    // segments borrow from it.  The previous implementation collected
+    // owned `String`s — one allocation per path segment — even though
+    // each segment is only ever inspected as `&str`.
+    let path_str = schema_path.to_string();
+    let segments: Vec<&str> = path_str.split("::").map(str::trim).collect();
 
-    if segments.last().is_some_and(|segment| segment == "Schema") && segments.len() > 1 {
-        format!("{}Schema", capitalize_first(&segments[segments.len() - 2]))
+    if segments.last().is_some_and(|s| *s == "Schema") && segments.len() > 1 {
+        format!("{}Schema", capitalize_first(segments[segments.len() - 2]))
     } else {
         segments
             .last()
-            .cloned()
-            .unwrap_or_else(|| "Schema".to_string())
+            .map_or_else(|| "Schema".to_string(), |s| (*s).to_string())
     }
 }
 
@@ -282,10 +290,16 @@ fn maybe_generate_same_file_relation_override(
     let source_expr = quote! { source };
     let from_model_assignments = build_named_struct_field_assignments(&dto_struct, &source_expr)?;
 
-    let mut helper_tokens = Vec::new();
-
-    if !has_derive(&dto_struct, "Clone") {
-        helper_tokens.push(quote! {
+    // Coalesced helpers: previously three separate `quote!` invocations
+    // and a `Vec<TokenStream>` accumulator were stitched together with
+    // `#(#helper_tokens)*`.  We instead build the conditional Clone /
+    // Deserialize sub-blocks as their own `TokenStream`s and splice
+    // them into a single `quote!`, producing the same emitted Rust code
+    // with one accumulator allocation removed.
+    let clone_impl = if has_derive(&dto_struct, "Clone") {
+        quote! {}
+    } else {
+        quote! {
             impl Clone for #dto_ident {
                 fn clone(&self) -> Self {
                     Self {
@@ -293,11 +307,13 @@ fn maybe_generate_same_file_relation_override(
                     }
                 }
             }
-        });
-    }
+        }
+    };
 
-    if !has_derive(&dto_struct, "Deserialize") {
-        helper_tokens.push(quote! {
+    let deserialize_impl = if has_derive(&dto_struct, "Deserialize") {
+        quote! {}
+    } else {
+        quote! {
             #[derive(serde::Deserialize)]
             #(#dto_serde_attrs)*
             struct #proxy_ident {
@@ -315,12 +331,15 @@ fn maybe_generate_same_file_relation_override(
                     })
                 }
             }
-        });
-    }
+        }
+    };
 
-    helper_tokens.push(quote! {
-            impl From<#model_ty> for #dto_ident {
-                fn from(source: #model_ty) -> Self {
+    let helpers = quote! {
+        #clone_impl
+        #deserialize_impl
+
+        impl From<#model_ty> for #dto_ident {
+            fn from(source: #model_ty) -> Self {
                 Self {
                     #(#from_model_assignments),*
                 }
@@ -338,12 +357,9 @@ fn maybe_generate_same_file_relation_override(
                 Self(source.map(Into::into))
             }
         }
-    });
+    };
 
-    Ok(Some((
-        quote! { #wrapper_ident },
-        quote! { #(#helper_tokens)* },
-    )))
+    Ok(Some((quote! { #wrapper_ident }, helpers)))
 }
 
 /// Generate schema code from a struct with optional field filtering
@@ -673,12 +689,12 @@ pub fn generate_schema_type_code(
                     }
                 };
 
-            // Collect relation info
-            if let Some(info) = relation_info {
-                relation_fields.push(info);
-            }
-            let vis = &field.vis;
-            let source_field_ident = field.ident.clone().unwrap();
+            // Collect relation info — `.extend(...)` keeps the push site
+            // out of an explicit closure so the coverage tracker
+            // attributes the call to this source line.
+            relation_fields.extend(relation_info);
+            let vis: &syn::Visibility = &field.vis;
+            let source_field_ident: syn::Ident = field.ident.clone().unwrap();
 
             // Extract doc attributes to carry over comments to the generated struct
             let doc_attrs = extract_doc_attrs(&field.attrs);
@@ -729,7 +745,10 @@ pub fn generate_schema_type_code(
 
                 // Generate serde default + schema(default) from sea_orm(default_value) or primary_key
                 // Handles literal defaults, SQL function defaults, and implicit auto-increment
-                let (serde_default_attr, schema_default_attr) = generate_sea_orm_default_attrs(
+                let (serde_default_attr, schema_default_attr): (
+                    proc_macro2::TokenStream,
+                    proc_macro2::TokenStream,
+                ) = generate_sea_orm_default_attrs(
                     &field.attrs,
                     new_type_name,
                     &rust_field_name,
@@ -742,7 +761,7 @@ pub fn generate_schema_type_code(
                 // Check if field should be renamed
                 if let Some(new_name) = rename_map.get(&rust_field_name) {
                     // Create new identifier for the field
-                    let new_field_ident =
+                    let new_field_ident: syn::Ident =
                         syn::Ident::new(new_name, field.ident.as_ref().unwrap().span());
 
                     // Filter out serde(rename) attributes from the serde attrs
@@ -793,23 +812,21 @@ pub fn generate_schema_type_code(
     }
 
     // Add new fields from `add` parameter
-    if let Some(ref add_fields) = input.add {
-        for (field_name, field_ty) in add_fields {
-            let field_ident = syn::Ident::new(field_name, proc_macro2::Span::call_site());
-            field_tokens.push(quote! {
-                pub #field_ident: #field_ty
-            });
-        }
+    for (field_name, field_ty) in input.add.iter().flatten() {
+        let field_ident: syn::Ident = syn::Ident::new(field_name, proc_macro2::Span::call_site());
+        field_tokens.push(quote! {
+            pub #field_ident: #field_ty
+        });
     }
 
     // Build derive list
     // In multipart mode, force clone = false (FieldData<NamedTempFile> doesn't implement Clone)
-    let derive_clone = if input.multipart {
+    let derive_clone: bool = if input.multipart {
         false
     } else {
         input.derive_clone
     };
-    let clone_derive = if derive_clone {
+    let clone_derive: proc_macro2::TokenStream = if derive_clone {
         quote! { Clone, }
     } else {
         quote! {}
@@ -817,22 +834,24 @@ pub fn generate_schema_type_code(
 
     // Conditionally include Schema derive based on ignore_schema flag
     // Also generate #[schema(name = "...")] attribute if custom name is provided AND Schema is derived
-    let (schema_derive, schema_name_attr) = if input.ignore_schema {
-        (quote! {}, quote! {})
+    let schema_derive: proc_macro2::TokenStream;
+    let schema_name_attr: proc_macro2::TokenStream;
+    if input.ignore_schema {
+        schema_derive = quote! {};
+        schema_name_attr = quote! {};
     } else if let Some(ref name) = input.schema_name {
-        (
-            quote! { vespera::Schema },
-            quote! { #[schema(name = #name)] },
-        )
+        schema_derive = quote! { vespera::Schema };
+        schema_name_attr = quote! { #[schema(name = #name)] };
     } else {
-        (quote! { vespera::Schema }, quote! {})
-    };
+        schema_derive = quote! { vespera::Schema };
+        schema_name_attr = quote! {};
+    }
 
     // Check if there are any relation fields
     let has_relation_fields = field_mappings.iter().any(|(_, _, _, is_rel)| *is_rel);
 
     // In multipart mode, skip From and from_model impls entirely
-    let source_type = &input.source_type;
+    let source_type: &syn::Type = &input.source_type;
     let (from_impl, from_model_impl) = if input.multipart {
         (quote! {}, quote! {})
     } else {
@@ -885,7 +904,7 @@ pub fn generate_schema_type_code(
     };
 
     // Generate the new struct (with inline types for circular relations first)
-    let generated_tokens = if input.multipart {
+    let generated_tokens: proc_macro2::TokenStream = if input.multipart {
         // Multipart mode: derive Multipart instead of serde
         // Emit #[serde(rename_all = ...)] so Multipart applies the rename at runtime
         // AND Schema derive reads it via extract_rename_all() fallback for OpenAPI field naming

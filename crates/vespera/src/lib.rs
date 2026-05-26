@@ -122,15 +122,37 @@ where
 pub use tower_layer;
 pub use tower_service;
 
+/// Runtime validation — private re-export of `garde` used by the
+/// `#[derive(Schema)]` codegen.  Users never reference this module
+/// directly; it exists so the macro-emitted impl bodies stay inside the
+/// `vespera` namespace and so we retain the freedom to swap the
+/// validator backend later without touching user code.
+#[cfg(feature = "validation")]
+#[doc(hidden)]
+pub mod __validation;
+
+/// [`Validated<T>`] extractor — wraps any axum extractor and runs
+/// `garde::Validate` on the inner payload before the handler is called.
+/// Failure produces `422 Unprocessable Entity` with a JSON error envelope.
+#[cfg(feature = "validation")]
+mod validated;
+#[cfg(feature = "validation")]
+pub use validated::{ValidatePayload, Validated};
+
 /// In-process dispatch — drive an axum Router without a TCP socket.
 #[cfg(feature = "inprocess")]
 pub use vespera_inprocess as inprocess;
+
+/// One-liner `Router::serve(addr)` extension — see [`serve::Serve`].
+pub mod serve;
+pub use serve::Serve;
 
 /// JNI bridge — call Rust axum apps from Java.
 #[cfg(feature = "jni")]
 pub use vespera_jni as jni;
 
-/// Generate the `JNI_OnLoad` export that registers your app.
+/// Generate the `JNI_OnLoad` export that registers your app
+/// (single-app, default).
 ///
 /// ```ignore
 /// vespera::jni_app!(create_app);
@@ -140,5 +162,25 @@ pub use vespera_jni as jni;
 macro_rules! jni_app {
     ($factory:expr) => {
         $crate::jni::jni_app!($factory);
+    };
+}
+
+/// Generate the `JNI_OnLoad` export that registers **multiple named
+/// apps** for multi-app routing.  See [`vespera_jni::jni_apps!`] for
+/// details.
+///
+/// ```ignore
+/// vespera::jni_apps! {
+///     "admin"  => admin_app,
+///     "public" => public_app,
+/// }
+/// ```
+#[cfg(feature = "jni")]
+#[macro_export]
+macro_rules! jni_apps {
+    ( $( $name:literal => $factory:expr ),+ $(,)? ) => {
+        $crate::jni::jni_apps! {
+            $( $name => $factory ),+
+        }
     };
 }

@@ -627,7 +627,7 @@ mod tests {
             }
 
             let params = result.as_ref().expect("Expected Some parameters");
-            let got_locs: Vec<ParameterLocation> = params.iter().map(|p| p.r#in.clone()).collect();
+            let got_locs: Vec<ParameterLocation> = params.iter().map(|p| p.r#in).collect();
             assert_eq!(
                 got_locs, *expected,
                 "Location mismatch at arg index {idx}, func: {func_src}"

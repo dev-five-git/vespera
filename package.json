@@ -5,23 +5,23 @@
   "description": "**FastAPI-like developer experience for Rust.** Zero-config OpenAPI 3.1 generation for Axum.",
   "author": "devfive",
   "devDependencies": {
-    "eslint-plugin-devup": "^2.0.18",
-    "oxlint": "^1.61.0",
+    "eslint-plugin-devup": "^2.0.19",
+    "oxlint": "^1.66.0",
     "husky": "^9.1",
     "bun-test-env-dom": "^1.0",
     "@devup-ui/bun-plugin": "^1.0",
-    "@types/bun": "^1.3",
-    "eslint": "9"
+    "@types/bun": "^1.3"
   },
   "workspaces": [
     "apps/*"
   ],
   "scripts": {
-    "prelint": "cargo clippy -- -D warnings && cargo fmt --check && cargo check",
+    "prelint": "cargo clippy --all-targets --all-features -- -D warnings && cargo clippy --workspace --no-default-features -- -D warnings && cargo fmt --check",
     "build": "bun run -F ./apps/landing build",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
-    "prelint:fix": "cargo clippy --fix --allow-dirty && cargo fmt && cargo check",
+    "prelint:fix": "cargo clippy --fix --all-targets --all-features --allow-dirty && cargo clippy --fix --workspace --no-default-features --allow-dirty && cargo fmt",
+    "lint:publish": "cargo publish --dry-run -p vespera_core && cargo publish --dry-run -p vespera_macro && cargo publish --dry-run -p vespera_inprocess && cargo publish --dry-run -p vespera_jni && cargo publish --dry-run -p vespera",
     "test": "bun test",
     "posttest": "cargo tarpaulin --out xml --out stdout --out html --all-targets",
     "dev": "bun run --workspaces dev",

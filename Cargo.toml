@@ -15,6 +15,10 @@ vespera_core = { path = "crates/vespera_core", version = "0.1.51" }
 vespera_macro = { path = "crates/vespera_macro", version = "0.1.51" }
 vespera_inprocess = { path = "crates/vespera_inprocess", version = "0.1.51" }
 vespera_jni = { path = "crates/vespera_jni", version = "0.1.51" }
+# Runtime validator backend.  Held behind the `validation` feature on
+# the `vespera` crate; users never name it directly — the proc-macro
+# emits paths via `::vespera::__validation::garde::...`.
+garde = { version = "0.23", default-features = false, features = ["email", "url", "pattern"] }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
