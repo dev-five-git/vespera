@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "kr.devfive"
-version = "0.0.15"
+version = "0.1.0"
 
 java {
     toolchain {
