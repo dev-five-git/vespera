@@ -57,4 +57,19 @@ public enum DispatchMode {
      * no special configuration.
      */
     BIDIRECTIONAL_STREAMING,
+
+    /**
+     * Direct-buffer dispatch via
+     * {@link VesperaBridge#dispatchDirectPooled(byte[], boolean)} —
+     * eliminates the JNI region copies and per-call Java heap array
+     * allocations of {@link #SYNC}.
+     *
+     * <p><strong>Opt-in only</strong> — never selected by the
+     * autoconfigured default resolver.  Wire a
+     * {@link SmartDispatchModeResolver} (or a custom resolver) to use
+     * it.  Suitable for small, bounded payloads with a known
+     * {@code Content-Length}; large or unbounded bodies belong on
+     * {@link #BIDIRECTIONAL_STREAMING}.
+     */
+    DIRECT,
 }

@@ -14,6 +14,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
@@ -97,6 +99,10 @@ public class VesperaProxyController {
             case STREAMING:
                 dispatchStreaming(request, response, appName, method, path, query,
                         headers, readBody(request));
+                return null;
+            case DIRECT:
+                dispatchDirectMode(response, appName, method, path, query, headers,
+                        readBody(request));
                 return null;
             case BIDIRECTIONAL_STREAMING:
             default:
@@ -186,6 +192,70 @@ public class VesperaProxyController {
                 request.getInputStream(),
                 response.getOutputStream());
         response.getOutputStream().flush();
+    }
+
+    /**
+     * Direct-buffer dispatch — request body materialised (DIRECT is
+     * gated to small bounded payloads by the resolver), response served
+     * from the pooled direct buffer without a {@code byte[]}
+     * materialisation: the header slice is decoded to commit
+     * status/headers, then the body region is channelled straight into
+     * the servlet output stream.
+     *
+     * <p>Overflow retry (which re-runs the Rust handler) is permitted
+     * only for idempotent methods; for others the dispatch falls back
+     * to {@link VesperaBridge#dispatchBytes(byte[])} semantics via the
+     * thrown {@link VesperaBridge.BufferTooSmallException} → SYNC
+     * retry, which never double-executes.
+     */
+    private static void dispatchDirectMode(
+            HttpServletResponse response,
+            String appName, String method, String path, String query,
+            Map<String, String> headers, byte[] body) throws IOException {
+        byte[] bodyBytes = body != null ? body : new byte[0];
+        byte[] wireReq = VesperaBridge.encodeRequest(
+                appName, method, path, query, headers, bodyBytes);
+
+        ByteBuffer wireResp;
+        try {
+            wireResp = VesperaBridge.dispatchDirectPooled(wireReq, isIdempotent(method));
+        } catch (VesperaBridge.BufferTooSmallException overflow) {
+            // Non-idempotent + response larger than the pool: the first
+            // dispatch already ran; its result was discarded.  Serving
+            // via dispatchBytes would run the handler a second time, so
+            // surface the size to the operator instead of silently
+            // double-executing.  (The resolver should keep
+            // non-idempotent methods off DIRECT in the first place.)
+            response.setStatus(500);
+            response.getOutputStream().write(
+                    ("vespera DIRECT overflow: response needs "
+                            + overflow.requiredSize()
+                            + " bytes; route this request via BIDIRECTIONAL_STREAMING")
+                            .getBytes(StandardCharsets.UTF_8));
+            response.getOutputStream().flush();
+            return;
+        }
+
+        // Commit status + headers from the wire header slice (small copy).
+        int headerLen = wireResp.getInt(0);
+        byte[] headerWire = new byte[4 + headerLen];
+        wireResp.get(0, headerWire);
+        applyDecodedHeader(headerWire, response);
+
+        // Stream the body region of the direct buffer straight out.
+        wireResp.position(4 + headerLen);
+        if (wireResp.hasRemaining()) {
+            Channels.newChannel(response.getOutputStream()).write(wireResp);
+        }
+        response.getOutputStream().flush();
+    }
+
+    /** Idempotent per RFC 9110 — safe to re-run on DIRECT overflow retry. */
+    private static boolean isIdempotent(String method) {
+        return switch (method == null ? "" : method.toUpperCase(Locale.ROOT)) {
+            case "GET", "HEAD", "PUT", "DELETE", "OPTIONS" -> true;
+            default -> false;
+        };
     }
 
     // ── Helpers ──────────────────────────────────────────────────────

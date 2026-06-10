@@ -99,8 +99,8 @@ mod jni_impl {
 
     use jni::EnvUnowned;
     use jni::errors::ThrowRuntimeExAndDefault;
-    use jni::objects::{Global, JByteArray, JClass, JObject, JValue};
-    use jni::sys::jbyteArray;
+    use jni::objects::{Global, JByteArray, JByteBuffer, JClass, JObject, JValue};
+    use jni::sys::{jbyteArray, jint};
     use jni::{jni_sig, jni_str};
 
     /// Multi-threaded Tokio runtime shared across all JNI calls.
@@ -148,6 +148,136 @@ mod jni_impl {
             })
             .resolve::<ThrowRuntimeExAndDefault>()
             .into_raw()
+    }
+
+    /// Sentinel for [`Java_..._dispatchDirect`]: the response (or its
+    /// required size) cannot be represented in the `jint` return value
+    /// (> `i32::MAX` bytes).
+    ///
+    /// `jint::MIN` is the only value the `-(required_size)` protocol can
+    /// never produce: `required_size <= i32::MAX`, so the most negative
+    /// legitimate return is `-(i32::MAX) == jint::MIN + 1`.
+    const DIRECT_UNREPRESENTABLE: jint = jint::MIN;
+
+    // Compile-time proof that the sentinel cannot collide with any
+    // legitimate `-(required_size)` value.
+    const _: () = assert!(DIRECT_UNREPRESENTABLE < -i32::MAX);
+
+    /// Copy `response` into the caller's direct out buffer.
+    ///
+    /// Returns:
+    /// * `>= 0` — bytes written (`response` fit entirely)
+    /// * `< 0`  — `-(required_size)`: nothing written, caller must retry
+    ///   with a buffer of at least `required_size` bytes
+    /// * [`DIRECT_UNREPRESENTABLE`] — response exceeds `i32::MAX` bytes
+    ///   and cannot be expressed in the return-code protocol
+    ///
+    /// # Safety contract (upheld by the caller)
+    ///
+    /// `out_addr` must point to a writable region of at least `out_cap`
+    /// bytes that stays valid for the duration of this call (a JNI
+    /// direct buffer pinned by the live `JByteBuffer` local ref).
+    fn write_response_to_out(out_addr: *mut u8, out_cap: usize, response: &[u8]) -> jint {
+        if response.len() <= out_cap {
+            // SAFETY: `response.len() <= out_cap` and the caller
+            // guarantees `out_addr..out_addr+out_cap` is writable.
+            // Source and destination cannot overlap: `response` is a
+            // Rust-owned Vec, the destination is a Java direct buffer.
+            unsafe {
+                std::ptr::copy_nonoverlapping(response.as_ptr(), out_addr, response.len());
+            }
+            // Java buffer capacities are jint-bounded, so len <= cap
+            // always fits i32.
+            jint::try_from(response.len()).unwrap_or(DIRECT_UNREPRESENTABLE)
+        } else {
+            jint::try_from(response.len()).map_or(DIRECT_UNREPRESENTABLE, |required| -required)
+        }
+    }
+
+    /// `com.devfive.vespera.bridge.VesperaBridge.dispatchDirect0(ByteBuffer, int, ByteBuffer) -> int`
+    /// (private native; the public Java wrapper `dispatchDirect` validates
+    /// buffer directness before crossing JNI)
+    ///
+    /// **Direct-buffer** synchronous dispatch — the zero-JNI-region-copy
+    /// sibling of [`Java_...dispatchBytes`].
+    ///
+    /// Contract (mirrored in the Java wrapper's javadoc):
+    /// * `in_buf` / `out_buf` MUST be **direct** `ByteBuffer`s.  The
+    ///   Java wrapper enforces this before crossing JNI; non-direct
+    ///   buffers reaching this symbol produce a thrown
+    ///   `RuntimeException` (the jni crate surfaces a null direct
+    ///   address as `Err`).
+    /// * The wire request is read from `in_buf[0..in_len]` — explicit
+    ///   `in_len`, **never** the buffer's position/limit (eliminates
+    ///   the classic "forgot to flip()" corruption).
+    /// * Return `>= 0`: a complete wire response was written to
+    ///   `out_buf[0..n]`.
+    /// * Return `< 0`: `-(required_size)` — response did not fit;
+    ///   nothing was written.  Retrying re-runs the dispatch, so the
+    ///   Java side only auto-retries idempotent methods.
+    /// * `Integer.MIN_VALUE + 1`: response size exceeds `i32::MAX`.
+    ///
+    /// Compared with `dispatchBytes`, this path removes BOTH JNI
+    /// region copies (Java `byte[]` ↔ Rust) and the per-call Java heap
+    /// array allocations.  One plain native memcpy remains on each
+    /// side: request → Rust-owned `Vec` (axum's `Body` requires
+    /// `'static` ownership) and response `Vec` → out buffer.
+    ///
+    /// # Safety invariants (comment-locked)
+    ///
+    /// 1. `in_buf` / `out_buf` stay rooted as live local refs for the
+    ///    whole call — HotSpot neither moves nor frees the backing
+    ///    memory of a direct buffer while its object is reachable.
+    /// 2. The raw addresses derived from them are used **only within
+    ///    this function body** — never captured by closures, spawned
+    ///    tasks, or returned structs.
+    /// 3. The input slice is copied into a Rust-owned `Vec` *before*
+    ///    dispatch, so nothing borrowed from the buffer outlives the
+    ///    read.
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDirect0<'local>(
+        mut unowned_env: EnvUnowned<'local>,
+        _class: JClass<'local>,
+        in_buf: JByteBuffer<'local>,
+        in_len: jint,
+        out_buf: JByteBuffer<'local>,
+    ) -> jint {
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<jint> {
+                // Err here (null address ⇒ heap buffer, or JVM trouble)
+                // is thrown as RuntimeException via the resolve below —
+                // defense in depth behind the Java-side isDirect() check.
+                let in_addr = env.get_direct_buffer_address(&in_buf)?;
+                let in_cap = env.get_direct_buffer_capacity(&in_buf)?;
+                let out_addr = env.get_direct_buffer_address(&out_buf)?;
+                let out_cap = env.get_direct_buffer_capacity(&out_buf)?;
+
+                // Validate in_len against the buffer's real capacity —
+                // all failures still produce a valid wire response in
+                // `out_buf`, per the dispatch* family contract.
+                let input = match usize::try_from(in_len) {
+                    Ok(len) if len <= in_cap => {
+                        // SAFETY: invariants 1–3 above; `len <= in_cap`
+                        // bounds the read inside the direct buffer.
+                        unsafe { std::slice::from_raw_parts(in_addr, len) }.to_vec()
+                    }
+                    _ => {
+                        let err = vespera_inprocess::error_wire(
+                            400,
+                            "invalid in_len (negative or exceeds buffer capacity)",
+                        );
+                        return Ok(write_response_to_out(out_addr, out_cap, &err));
+                    }
+                };
+
+                let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    vespera_inprocess::dispatch_from_bytes(input, &RUNTIME)
+                }))
+                .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
+
+                Ok(write_response_to_out(out_addr, out_cap, &response))
+            })
+            .resolve::<ThrowRuntimeExAndDefault>()
     }
 
     /// `com.devfive.vespera.bridge.VesperaBridge.dispatchAsync(CompletableFuture<byte[]>, byte[]) -> void`
@@ -675,5 +805,46 @@ mod jni_impl {
             env.exception_clear();
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod direct_tests {
+        use super::write_response_to_out;
+
+        #[test]
+        fn response_fits_returns_len_and_writes_bytes() {
+            let mut out = vec![0u8; 16];
+            let response = b"hello wire";
+            let n = write_response_to_out(out.as_mut_ptr(), out.len(), response);
+            assert_eq!(n, 10);
+            assert_eq!(&out[..10], response);
+        }
+
+        #[test]
+        fn exact_fit_boundary() {
+            let mut out = vec![0u8; 4];
+            let n = write_response_to_out(out.as_mut_ptr(), out.len(), b"abcd");
+            assert_eq!(n, 4);
+            assert_eq!(&out[..], b"abcd");
+        }
+
+        #[test]
+        fn overflow_returns_negative_required_size_and_writes_nothing() {
+            let mut out = vec![0xAAu8; 4];
+            let n = write_response_to_out(out.as_mut_ptr(), out.len(), b"too large");
+            assert_eq!(n, -9);
+            assert_eq!(
+                &out[..],
+                &[0xAA; 4],
+                "overflow must not touch the out buffer"
+            );
+        }
+
+        #[test]
+        fn zero_capacity_overflow() {
+            let mut out: Vec<u8> = Vec::new();
+            let n = write_response_to_out(out.as_mut_ptr(), 0, b"x");
+            assert_eq!(n, -1);
+        }
     }
 }

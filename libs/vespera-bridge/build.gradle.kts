@@ -31,6 +31,8 @@ dependencies {
     api("com.fasterxml.jackson.core:jackson-databind:2.17.0")
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    // MockHttpServletRequest for resolver unit tests (no servlet container).
+    testImplementation("org.springframework:spring-test:6.1.6")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.10.2")
 }
 

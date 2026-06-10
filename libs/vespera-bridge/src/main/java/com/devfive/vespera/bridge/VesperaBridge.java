@@ -288,6 +288,180 @@ public class VesperaBridge {
             InputStream inputStream,
             OutputStream outputStream);
 
+    // ── Direct-buffer dispatch (zero JNI-region-copy path) ─────────────
+
+    /**
+     * Thrown by {@link #dispatchDirectPooled(byte[], boolean)} when the
+     * response exceeds the out-buffer capacity and the caller disallowed
+     * automatic retry (non-idempotent requests).  Carries the exact
+     * buffer size needed for a successful retry.
+     *
+     * <p><strong>Retrying re-runs the dispatch</strong> — the Rust
+     * handler executes again.  Only retry idempotent requests
+     * (GET/HEAD/PUT/DELETE) automatically; for POST/PATCH the caller
+     * must decide.
+     */
+    public static final class BufferTooSmallException extends RuntimeException {
+        private final int requiredSize;
+
+        public BufferTooSmallException(int requiredSize) {
+            super("response requires a " + requiredSize
+                    + "-byte direct out buffer; retry would re-run the dispatch");
+            this.requiredSize = requiredSize;
+        }
+
+        /** Exact out-buffer capacity needed for a successful retry. */
+        public int requiredSize() {
+            return requiredSize;
+        }
+    }
+
+    /** Initial per-thread direct buffer capacity (64 KiB). */
+    private static final int DIRECT_INITIAL_CAPACITY = 64 * 1024;
+
+    /**
+     * Maximum per-thread direct buffer capacity (default 4 MiB,
+     * overridable via the {@code vespera.direct.maxBufferBytes} system
+     * property).  Payloads beyond the cap fall back to
+     * {@link #dispatchBytes(byte[])}.
+     */
+    private static final int DIRECT_MAX_CAPACITY = Integer.getInteger(
+            "vespera.direct.maxBufferBytes", 4 * 1024 * 1024);
+
+    /** Index 0 = request buffer, index 1 = response buffer. */
+    private static final ThreadLocal<ByteBuffer[]> DIRECT_POOL =
+            ThreadLocal.withInitial(() -> new ByteBuffer[] {
+                    ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY),
+                    ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY)});
+
+    /**
+     * Raw native entry — validated by {@link #dispatchDirect(ByteBuffer,
+     * int, ByteBuffer)}; never call this directly.
+     */
+    private static native int dispatchDirect0(ByteBuffer in, int inLen, ByteBuffer out);
+
+    /**
+     * <strong>Direct-buffer</strong> synchronous dispatch — eliminates
+     * both JNI region copies ({@code byte[]} ↔ native) and the per-call
+     * Java heap array allocations of {@link #dispatchBytes(byte[])}.
+     *
+     * <p><strong>Contract</strong> (position/limit are IGNORED — the
+     * explicit {@code inLen} parameter is authoritative):
+     * <ul>
+     *   <li>{@code in} and {@code out} MUST be <em>direct</em> buffers;
+     *       heap buffers are rejected here, before crossing JNI.</li>
+     *   <li>The wire request is read from absolute offsets
+     *       {@code in[0..inLen]}.</li>
+     *   <li>Return {@code >= 0}: a complete wire response occupies
+     *       {@code out[0..n]}.</li>
+     *   <li>Return {@code < 0}: {@code -(requiredSize)} — the response
+     *       did not fit and <em>nothing was written</em>.  Retrying
+     *       re-runs the dispatch (see {@link BufferTooSmallException}).</li>
+     *   <li>{@code Integer.MIN_VALUE}: response exceeds 2 GiB and is
+     *       unrepresentable in this protocol.</li>
+     * </ul>
+     *
+     * <p>The buffers are only accessed for the duration of this call;
+     * they may be reused immediately after it returns.
+     *
+     * @param in    direct buffer holding the wire request at [0..inLen)
+     * @param inLen number of valid request bytes in {@code in}
+     * @param out   direct buffer that receives the wire response
+     * @return bytes written, or the negative protocol codes above
+     * @throws IllegalArgumentException if either buffer is not direct,
+     *         {@code inLen} is negative, or exceeds {@code in.capacity()}
+     */
+    public static int dispatchDirect(ByteBuffer in, int inLen, ByteBuffer out) {
+        Objects.requireNonNull(in, "in");
+        Objects.requireNonNull(out, "out");
+        if (!in.isDirect() || !out.isDirect()) {
+            throw new IllegalArgumentException(
+                    "dispatchDirect requires direct ByteBuffers (use ByteBuffer.allocateDirect)");
+        }
+        if (inLen < 0 || inLen > in.capacity()) {
+            throw new IllegalArgumentException(
+                    "inLen " + inLen + " out of range for in.capacity() " + in.capacity());
+        }
+        return dispatchDirect0(in, inLen, out);
+    }
+
+    /**
+     * Pooled convenience around {@link #dispatchDirect(ByteBuffer, int,
+     * ByteBuffer)} using per-thread reusable direct buffers (64 KiB
+     * initial, doubling up to {@code vespera.direct.maxBufferBytes},
+     * default 4 MiB).
+     *
+     * <p>Returns a <strong>read-only view</strong> of the thread-local
+     * response buffer covering exactly the wire response bytes.  The
+     * view is valid only until the next {@code dispatchDirect*} call on
+     * the same thread — consume (or copy) it before dispatching again.
+     *
+     * <p>Fallback / overflow policy:
+     * <ul>
+     *   <li>Request larger than the cap → falls back to
+     *       {@link #dispatchBytes(byte[])} (safe: no dispatch has run
+     *       yet) and wraps the result.</li>
+     *   <li>Response overflow with {@code retryOnOverflow == true} →
+     *       grows the out buffer (or falls back to {@code dispatchBytes}
+     *       beyond the cap) and dispatches again.  <strong>The handler
+     *       runs twice</strong> — only pass {@code true} for idempotent
+     *       requests.</li>
+     *   <li>Response overflow with {@code retryOnOverflow == false} →
+     *       throws {@link BufferTooSmallException}.</li>
+     * </ul>
+     *
+     * @param wireRequest      length-prefixed binary wire request
+     * @param retryOnOverflow  whether a response overflow may re-run the
+     *                         dispatch (idempotent requests only)
+     * @return read-only buffer view of the wire response, positioned at
+     *         0 with {@code limit()} = response length
+     */
+    public static ByteBuffer dispatchDirectPooled(byte[] wireRequest, boolean retryOnOverflow) {
+        Objects.requireNonNull(wireRequest, "wireRequest");
+        if (wireRequest.length > DIRECT_MAX_CAPACITY) {
+            // No dispatch has run yet — byte[] fallback is safe for any method.
+            return ByteBuffer.wrap(dispatchBytes(wireRequest)).asReadOnlyBuffer();
+        }
+        ByteBuffer[] pool = DIRECT_POOL.get();
+        if (pool[0].capacity() < wireRequest.length) {
+            pool[0] = ByteBuffer.allocateDirect(grownCapacity(wireRequest.length));
+        }
+        ByteBuffer in = pool[0];
+        in.clear();
+        in.put(wireRequest);
+
+        int n = dispatchDirect(in, wireRequest.length, pool[1]);
+        if (n < 0 && n != Integer.MIN_VALUE) {
+            int required = -n;
+            if (!retryOnOverflow) {
+                throw new BufferTooSmallException(required);
+            }
+            if (required > DIRECT_MAX_CAPACITY) {
+                // Retry permitted; beyond the pool cap use the byte[] path.
+                return ByteBuffer.wrap(dispatchBytes(wireRequest)).asReadOnlyBuffer();
+            }
+            pool[1] = ByteBuffer.allocateDirect(grownCapacity(required));
+            n = dispatchDirect(in, wireRequest.length, pool[1]);
+        }
+        if (n < 0) {
+            throw new IllegalStateException(
+                    "dispatchDirect protocol violation: return code " + n + " after retry");
+        }
+        ByteBuffer view = pool[1].asReadOnlyBuffer();
+        view.position(0).limit(n);
+        return view;
+    }
+
+    /** Smallest power-of-two-ish growth ≥ {@code needed}, capped. */
+    private static int grownCapacity(int needed) {
+        int cap = DIRECT_INITIAL_CAPACITY;
+        while (cap < needed) {
+            cap = Math.min(cap * 2, DIRECT_MAX_CAPACITY);
+            if (cap == DIRECT_MAX_CAPACITY) break;
+        }
+        return Math.max(cap, needed);
+    }
+
     /**
      * Encode a request into the binary wire format.
      *

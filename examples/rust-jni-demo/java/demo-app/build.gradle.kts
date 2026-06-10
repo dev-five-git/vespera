@@ -21,7 +21,9 @@ version = "0.1.0"
 vespera {
     crateName.set("rust_jni_demo")
     cargoRoot.set(rootProject.layout.projectDirectory.dir("../../.."))
-    bridgeVersion.set("0.0.15")
+    // Dogfoods the locally published bridge (./gradlew publishToMavenLocal
+    // in libs/vespera-bridge) — required for the dispatchDirect E2E tests.
+    bridgeVersion.set("0.1.1")
 }
 
 dependencies {
