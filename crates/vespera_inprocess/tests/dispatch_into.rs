@@ -2,7 +2,6 @@
 //! ([`vespera_inprocess::dispatch_into_async`]) — the
 //! zero-materialisation path used by the JNI direct-buffer symbol.
 
-use std::collections::HashMap;
 use std::sync::Once;
 
 use axum::Json;
@@ -133,11 +132,17 @@ fn status_422_preserves_validation_error_hoisting() {
     let DirectWriteResult::Complete(n) = dispatch_into(wire, &mut out, &rt) else {
         panic!("422 must fit");
     };
+    assert_eq!(
+        &out[..n],
+        &reference[..],
+        "422 direct path must be byte-identical to dispatch_from_bytes \
+         (hoisting + body verbatim)"
+    );
     let (header, body) = decode(&out[..n]);
     assert_eq!(header["status"].as_u64(), Some(422));
-    assert_eq!(
-        header["validation_errors"], ref_header["validation_errors"],
-        "direct path must hoist identically to dispatch_from_bytes"
+    assert!(
+        header["validation_errors"].is_array(),
+        "hoisted validation_errors present"
     );
     assert!(!body.is_empty(), "original 422 body preserved verbatim");
 }
@@ -196,6 +201,33 @@ fn overflow_then_retry_with_exact_size_succeeds() {
     let result = dispatch_into(wire.clone(), &mut exact, &rt);
     assert_eq!(result, DirectWriteResult::Complete(required));
     assert_eq!(exact, dispatch_from_bytes(wire, &rt));
+}
 
-    let _ = HashMap::<String, String>::new();
+#[test]
+fn body_without_content_type_matches_byte_path() {
+    // Regression for the Content-Type defaulting drift: dispatch_parts
+    // injects `content-type: application/json` for non-empty bodies
+    // without one; the direct-write path must do the same or JSON
+    // extractors behave differently across dispatch modes.
+    install();
+    let rt = runtime();
+    let header = json!({"v": 1, "method": "POST", "path": "/echo"}); // no headers at all
+    let header_bytes = serde_json::to_vec(&header).unwrap();
+    let body = b"{\"k\":1}";
+    let mut wire = u32::try_from(header_bytes.len())
+        .unwrap()
+        .to_be_bytes()
+        .to_vec();
+    wire.extend_from_slice(&header_bytes);
+    wire.extend_from_slice(body);
+
+    let reference = dispatch_from_bytes(wire.clone(), &rt);
+    let mut out = vec![0u8; reference.len() + 64];
+    let result = dispatch_into(wire, &mut out, &rt);
+    assert_eq!(result, DirectWriteResult::Complete(reference.len()));
+    assert_eq!(
+        &out[..reference.len()],
+        &reference[..],
+        "direct path must apply the same content-type defaulting as the byte path"
+    );
 }

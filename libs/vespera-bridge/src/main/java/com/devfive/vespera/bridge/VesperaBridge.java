@@ -514,6 +514,13 @@ public class VesperaBridge {
             pool[1] = ByteBuffer.allocateDirect(grownCapacity(required));
             n = dispatchDirect(pool[0], reqLen, pool[1]);
         }
+        if (n < 0 && n != Integer.MIN_VALUE) {
+            // A second overflow is legitimate: the retry re-ran the
+            // handler, and a non-deterministic handler may produce a
+            // larger response this time.  Surface the new exact size
+            // instead of retrying unboundedly.
+            throw new BufferTooSmallException(-n);
+        }
         if (n < 0) {
             throw new IllegalStateException(
                     "dispatchDirect protocol violation: return code " + n + " after retry");

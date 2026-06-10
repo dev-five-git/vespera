@@ -648,12 +648,26 @@ pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteR
         Err(wire) => return write_wire_into(out, &wire),
     };
 
+    // Mirror dispatch_parts' Content-Type defaulting (body present, no
+    // content-type → application/json) so the direct-write path is
+    // request-compatible with dispatch_from_bytes.  dispatch_and_split
+    // itself cannot do this: its streaming callers hand it an opaque
+    // Body whose emptiness is unknowable up front.
+    let mut req_headers = header.headers;
+    if !body_bytes.is_empty()
+        && !req_headers
+            .keys()
+            .any(|k| k.eq_ignore_ascii_case("content-type"))
+    {
+        req_headers.insert("content-type".to_owned(), "application/json".to_owned());
+    }
+
     let (status, headers, metadata, mut body) = match dispatch_and_split(
         router,
         &header.method,
         header.path,
         header.query,
-        header.headers,
+        req_headers,
         Body::from(body_bytes),
     )
     .await

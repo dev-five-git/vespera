@@ -203,10 +203,11 @@ public class VesperaProxyController {
      * the servlet output stream.
      *
      * <p>Overflow retry (which re-runs the Rust handler) is permitted
-     * only for idempotent methods; for others the dispatch falls back
-     * to {@link VesperaBridge#dispatchBytes(byte[])} semantics via the
-     * thrown {@link VesperaBridge.BufferTooSmallException} → SYNC
-     * retry, which never double-executes.
+     * only for idempotent methods; for others a
+     * {@link VesperaBridge.BufferTooSmallException} surfaces as a
+     * {@code 500} with the required size — the controller never
+     * double-executes a non-idempotent handler.  (The resolver should
+     * keep such requests off DIRECT in the first place.)
      */
     private static void dispatchDirectMode(
             HttpServletResponse response,
