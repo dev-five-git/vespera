@@ -62,7 +62,7 @@ use std::collections::HashMap;
 use std::collections::btree_map::Entry;
 use std::convert::Infallible;
 use std::pin::Pin;
-use std::sync::{LazyLock, RwLock};
+use std::sync::{LazyLock, OnceLock, RwLock};
 use std::task::{Context, Poll};
 
 use axum::body::Body;
@@ -88,6 +88,103 @@ pub const DEFAULT_APP_NAME: &str = "_default";
 /// Maximum allowed length of an app name (after trimming).  Sized so
 /// names fit comfortably in URL path segments and log lines.
 const MAX_APP_NAME_LEN: usize = 64;
+
+// ── Streaming Configuration ──────────────────────────────────────────
+
+/// Default per-chunk buffer size for streaming dispatches (64 KiB).
+///
+/// Large enough to amortise per-chunk FFI overhead (JNI region copy +
+/// `OutputStream.write` call per chunk), small enough to keep memory
+/// bounded for multi-GB streams.
+pub const DEFAULT_STREAMING_CHUNK_BYTES: usize = 64 * 1024;
+
+/// Default capacity (slots) of the bounded mpsc channel that feeds
+/// request-body chunks into axum during bidirectional streaming.
+pub const DEFAULT_STREAMING_CHANNEL_CAPACITY: usize = 16;
+
+const MIN_STREAMING_CHUNK_BYTES: usize = 4 * 1024;
+const MAX_STREAMING_CHUNK_BYTES: usize = 8 * 1024 * 1024;
+const MIN_STREAMING_CHANNEL_CAPACITY: usize = 1;
+const MAX_STREAMING_CHANNEL_CAPACITY: usize = 1024;
+
+static STREAMING_CHUNK_BYTES: OnceLock<usize> = OnceLock::new();
+static STREAMING_CHANNEL_CAPACITY: OnceLock<usize> = OnceLock::new();
+
+/// Parse an optional config string into a clamped `usize`, falling
+/// back to `default` when absent or unparseable.
+fn parse_config_value(raw: Option<&str>, default: usize, min: usize, max: usize) -> usize {
+    raw.and_then(|s| s.trim().parse::<usize>().ok())
+        .map_or(default, |v| v.clamp(min, max))
+}
+
+/// Effective per-chunk buffer size for streaming dispatches.
+///
+/// Resolution order (first hit wins, then cached for the process
+/// lifetime via `OnceLock` — a single atomic load per call):
+///
+/// 1. [`set_streaming_chunk_bytes`] called before the first read
+/// 2. `VESPERA_STREAMING_CHUNK_BYTES` environment variable
+/// 3. [`DEFAULT_STREAMING_CHUNK_BYTES`] (64 KiB)
+///
+/// Values are clamped to `[4 KiB, 8 MiB]`.
+#[must_use]
+pub fn streaming_chunk_bytes() -> usize {
+    *STREAMING_CHUNK_BYTES.get_or_init(|| {
+        parse_config_value(
+            std::env::var("VESPERA_STREAMING_CHUNK_BYTES")
+                .ok()
+                .as_deref(),
+            DEFAULT_STREAMING_CHUNK_BYTES,
+            MIN_STREAMING_CHUNK_BYTES,
+            MAX_STREAMING_CHUNK_BYTES,
+        )
+    })
+}
+
+/// Override the streaming chunk size **before the first dispatch**
+/// (e.g. from a host-language configuration hook at init time).
+///
+/// Returns `false` when the value was already fixed — either by a
+/// previous call or because a dispatch has already read it.  The
+/// supplied value is clamped to `[4 KiB, 8 MiB]`.
+pub fn set_streaming_chunk_bytes(bytes: usize) -> bool {
+    STREAMING_CHUNK_BYTES
+        .set(bytes.clamp(MIN_STREAMING_CHUNK_BYTES, MAX_STREAMING_CHUNK_BYTES))
+        .is_ok()
+}
+
+/// Effective bound (slots) of the bidirectional request-body channel.
+///
+/// Same resolution order as [`streaming_chunk_bytes`]:
+/// [`set_streaming_channel_capacity`] >
+/// `VESPERA_STREAMING_CHANNEL_CAPACITY` env var >
+/// [`DEFAULT_STREAMING_CHANNEL_CAPACITY`] (16).  Clamped to
+/// `[1, 1024]`.
+#[must_use]
+pub fn streaming_channel_capacity() -> usize {
+    *STREAMING_CHANNEL_CAPACITY.get_or_init(|| {
+        parse_config_value(
+            std::env::var("VESPERA_STREAMING_CHANNEL_CAPACITY")
+                .ok()
+                .as_deref(),
+            DEFAULT_STREAMING_CHANNEL_CAPACITY,
+            MIN_STREAMING_CHANNEL_CAPACITY,
+            MAX_STREAMING_CHANNEL_CAPACITY,
+        )
+    })
+}
+
+/// Override the bidirectional channel capacity **before the first
+/// dispatch**.  Returns `false` when already fixed.  Clamped to
+/// `[1, 1024]`.
+pub fn set_streaming_channel_capacity(slots: usize) -> bool {
+    STREAMING_CHANNEL_CAPACITY
+        .set(slots.clamp(
+            MIN_STREAMING_CHANNEL_CAPACITY,
+            MAX_STREAMING_CHANNEL_CAPACITY,
+        ))
+        .is_ok()
+}
 
 // ── Envelope Types ───────────────────────────────────────────────────
 
@@ -154,36 +251,223 @@ pub struct ResponseEnvelope {
 
 // ── Wire Format Types (internal) ─────────────────────────────────────
 
+/// Request wire header, deserialized **borrowing from the input
+/// buffer**: every string field is a `Cow` that points straight into
+/// the wire bytes (zero allocation) unless the JSON value contains
+/// escape sequences, in which case deserialization transparently
+/// falls back to an owned copy.
+///
+/// Direct `Cow<str>` fields borrow via serde-derive's `borrow`
+/// special-casing; `headers` and `app` need the custom
+/// [`de_cow_map`] / [`de_opt_cow`] deserializers because serde's
+/// stock `Cow` impl inside containers always copies.
 #[derive(Debug, Deserialize)]
-struct WireRequestHeader {
+struct WireRequestHeader<'a> {
     /// Wire protocol version; clients MUST send 1.
     #[serde(default)]
     v: u8,
-    method: String,
-    path: String,
-    #[serde(default)]
-    query: String,
-    #[serde(default)]
-    headers: HashMap<String, String>,
+    #[serde(borrow)]
+    method: Cow<'a, str>,
+    #[serde(borrow)]
+    path: Cow<'a, str>,
+    #[serde(default, borrow)]
+    query: Cow<'a, str>,
+    /// Request headers as a flat list — dispatch only ever *iterates*
+    /// them (never looks one up by key), so a `Vec` skips the
+    /// `HashMap` bucket allocation + per-key hashing entirely.
+    /// Repeated names are forwarded as repeated request headers
+    /// (valid HTTP; the previous `HashMap` silently kept the last
+    /// duplicate of a degenerate duplicate-key JSON header).
+    #[serde(default, borrow, deserialize_with = "de_cow_pairs")]
+    headers: CowPairs<'a>,
     /// Optional name of the target app for multi-app routing.  When
     /// omitted (or empty), the request is dispatched to the default
     /// app registered via [`register_app`].  Use [`register_app_named`]
     /// to register additional named apps.
-    #[serde(default)]
-    app: Option<String>,
+    #[serde(default, borrow, deserialize_with = "de_opt_cow")]
+    app: Option<Cow<'a, str>>,
 }
 
+/// `Cow<str>` wrapper whose `Deserialize` impl borrows from the input
+/// when the JSON string carries no escape sequences.
+struct BorrowableCow<'a>(Cow<'a, str>);
+
+impl<'de> Deserialize<'de> for BorrowableCow<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = BorrowableCow<'de>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a string")
+            }
+
+            fn visit_borrowed_str<E: serde::de::Error>(
+                self,
+                v: &'de str,
+            ) -> Result<Self::Value, E> {
+                Ok(BorrowableCow(Cow::Borrowed(v)))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(BorrowableCow(Cow::Owned(v.to_owned())))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+                Ok(BorrowableCow(Cow::Owned(v)))
+            }
+        }
+        deserializer.deserialize_str(V)
+    }
+}
+
+/// Flat list of `(name, value)` request-header pairs borrowing from
+/// the wire input.
+type CowPairs<'a> = Vec<(Cow<'a, str>, Cow<'a, str>)>;
+
+/// Deserialize a JSON object into a flat `Vec` of `(name, value)`
+/// pairs whose strings borrow from the input where possible — one
+/// `Vec` allocation instead of `HashMap` buckets + per-key hashing.
+fn de_cow_pairs<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<CowPairs<'de>, D::Error> {
+    struct V;
+    impl<'de> serde::de::Visitor<'de> for V {
+        type Value = CowPairs<'de>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a map of strings")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut access: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut out = Vec::with_capacity(access.size_hint().unwrap_or(0));
+            while let Some((k, v)) =
+                access.next_entry::<BorrowableCow<'de>, BorrowableCow<'de>>()?
+            {
+                out.push((k.0, v.0));
+            }
+            Ok(out)
+        }
+    }
+    deserializer.deserialize_map(V)
+}
+
+/// Deserialize an `Option<Cow>` that borrows from the input where
+/// possible.
+fn de_opt_cow<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Cow<'de, str>>, D::Error> {
+    struct V;
+    impl<'de> serde::de::Visitor<'de> for V {
+        type Value = Option<Cow<'de, str>>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a string or null")
+        }
+
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_some<D2: serde::Deserializer<'de>>(
+            self,
+            deserializer: D2,
+        ) -> Result<Self::Value, D2::Error> {
+            BorrowableCow::deserialize(deserializer).map(|c| Some(c.0))
+        }
+    }
+    deserializer.deserialize_option(V)
+}
+
+// wire-order locked — field order defines the serialized wire header
+// byte layout (`v`, `status`, `headers`, `metadata`,
+// `validation_errors?`).  See tests/wire_contract.rs.
 #[derive(Debug, Serialize)]
-struct WireResponseHeader<'a> {
+struct WireResponseHeader<'a, H: Serialize> {
     v: u8,
     status: u16,
-    headers: &'a BTreeMap<String, HeaderValue>,
+    headers: &'a H,
     metadata: &'a ResponseMetadata,
     /// Validation errors hoisted from a 422 JSON body so Java decoders
     /// can read them with a single header parse.  `None` for any other
     /// status; the original body is preserved verbatim regardless.
     #[serde(skip_serializing_if = "Option::is_none")]
     validation_errors: Option<Vec<ValidationErrorItem>>,
+}
+
+/// Zero-allocation serializer for response headers: renders an
+/// [`http::HeaderMap`] as the wire's sorted name → value JSON map,
+/// borrowing every name and value straight from the map.
+///
+/// Byte-compatible with the previous `BTreeMap<String, HeaderValue>`
+/// representation (locked by tests/wire_contract.rs):
+/// - names sort in byte order (`HeaderName`s are lowercase ASCII, so
+///   `sort_unstable` equals `BTreeMap` ordering)
+/// - single-valued headers render as a JSON string, repeated names as
+///   a JSON array in insertion order (the untagged `HeaderValue`
+///   shape)
+/// - non-UTF-8 header values render as `""` (same `unwrap_or("")`
+///   behaviour as the old owned conversion)
+struct WireHeaders<'a>(&'a http::HeaderMap);
+
+impl Serialize for WireHeaders<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        // `HeaderMap::keys` yields each distinct name exactly once.
+        let mut names: Vec<&str> = self.0.keys().map(http::HeaderName::as_str).collect();
+        names.sort_unstable();
+        let mut map = serializer.serialize_map(Some(names.len()))?;
+        for name in names {
+            let mut values = self.0.get_all(name).iter();
+            let first = values
+                .next()
+                .expect("HeaderMap::keys yields only present names");
+            if values.next().is_none() {
+                map.serialize_entry(name, first.to_str().unwrap_or(""))?;
+            } else {
+                map.serialize_entry(name, &WireHeaderValues(self.0, name))?;
+            }
+        }
+        map.end()
+    }
+}
+
+/// Serializes the repeated values of one header name as a JSON array.
+struct WireHeaderValues<'a>(&'a http::HeaderMap, &'a str);
+
+impl Serialize for WireHeaderValues<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(
+            self.0
+                .get_all(self.1)
+                .iter()
+                .map(|v| v.to_str().unwrap_or("")),
+        )
+    }
+}
+
+/// Append `[u32 BE header_len | header JSON]` to `out`, serializing
+/// the header view **directly into the output buffer** — no
+/// intermediate `Vec` and no second memcpy of the header JSON.
+///
+/// Typical wire headers are well under this reservation, so the
+/// serializer usually writes without reallocating.
+const WIRE_HEADER_RESERVE: usize = 192;
+
+fn write_wire_header_into<H: Serialize>(out: &mut Vec<u8>, view: &WireResponseHeader<'_, H>) {
+    out.extend_from_slice(&[0u8; 4]);
+    let start = out.len();
+    serde_json::to_writer(&mut *out, view).expect("WireResponseHeader serialization is infallible");
+    let header_len =
+        u32::try_from(out.len() - start).expect("response header JSON exceeds u32::MAX bytes");
+    out[start - 4..start].copy_from_slice(&header_len.to_be_bytes());
 }
 
 /// One entry in the wire header's `validation_errors` array.  Fields
@@ -225,13 +509,20 @@ pub async fn dispatch_typed(router: Router, envelope: &RequestEnvelope) -> Respo
 /// This is the hot path used by callers (e.g. custom FFI transports)
 /// that already own a freshly built envelope.
 pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> ResponseEnvelope {
+    let RequestEnvelope {
+        method,
+        path,
+        query,
+        headers,
+        body,
+    } = envelope;
     let parts = match dispatch_parts(
         router,
-        &envelope.method,
-        envelope.path,
-        envelope.query,
-        envelope.headers,
-        Bytes::from(envelope.body),
+        &method,
+        &path,
+        &query,
+        headers.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+        Bytes::from(body),
     )
     .await
     {
@@ -276,6 +567,21 @@ pub fn error_envelope(message: &str) -> ResponseEnvelope {
 /// cannot poison the map.
 static APP_ROUTERS: LazyLock<RwLock<HashMap<String, Router>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Lock-free fast path for the **default** app.
+///
+/// The overwhelmingly common dispatch case is a wire header without
+/// an `"app"` field — routing to [`DEFAULT_APP_NAME`].  Resolving it
+/// through `APP_ROUTERS` costs an `RwLock` read acquisition per
+/// request, which parks threads under high concurrency.  This
+/// `OnceLock` mirror is set (exactly once, inside the registration
+/// write lock so it can never diverge from the map) by the first
+/// successful `_default` registration and read with a single atomic
+/// load + `Router::clone` (`Arc` refcount bump) on every dispatch.
+///
+/// Named apps keep using the `RwLock<HashMap>` — they are the rare
+/// multi-app case and can be registered at any time.
+static DEFAULT_ROUTER: OnceLock<Router> = OnceLock::new();
 
 /// Validate an app name for registration / lookup.
 ///
@@ -374,13 +680,21 @@ where
     // Build the router OUTSIDE the write lock so a panicking factory
     // cannot poison the map.
     let router = factory();
+    let is_default = name == DEFAULT_APP_NAME;
     let mut map = APP_ROUTERS
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Double-check: another thread may have inserted between our read
     // and write.  First-wins still holds — use Entry to avoid the
     // map.contains_key + map.insert double lookup.
-    map.entry(name).or_insert(router);
+    let stored = map.entry(name).or_insert(router);
+    if is_default {
+        // Mirror the default app into the lock-free fast path.  Done
+        // under the write lock with the *stored* router (not our local
+        // candidate) so the mirror always equals the map's first-wins
+        // winner, even when two threads race the registration.
+        let _ = DEFAULT_ROUTER.set(stored.clone());
+    }
 }
 
 /// Resolve a [`Router`] for a wire request, applying default-app
@@ -400,6 +714,13 @@ fn resolve_app_router(header: &WireRequestHeader) -> Result<Router, Vec<u8>> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(DEFAULT_APP_NAME);
+    // Lock-free fast path: default-app dispatch (the common case)
+    // resolves with one atomic load — no RwLock acquisition.
+    if name == DEFAULT_APP_NAME
+        && let Some(router) = DEFAULT_ROUTER.get()
+    {
+        return Ok(router.clone());
+    }
     {
         let map = APP_ROUTERS
             .read()
@@ -481,8 +802,12 @@ pub async fn dispatch_streaming_async<F>(input: Vec<u8>, mut on_chunk: F) -> Vec
 where
     F: FnMut(&[u8]),
 {
-    let (header, body_bytes) = match parse_wire_request(input) {
+    let (header_bytes, body_bytes) = match split_wire_request(input) {
         Ok(parts) => parts,
+        Err(msg) => return error_wire(400, &msg),
+    };
+    let header = match parse_wire_header(&header_bytes) {
+        Ok(h) => h,
         Err(msg) => return error_wire(400, &msg),
     };
     if header.v != WIRE_VERSION {
@@ -501,9 +826,9 @@ where
     let (status, headers, metadata) = match dispatch_response_streaming(
         router,
         &header.method,
-        header.path,
-        header.query,
-        header.headers,
+        &header.path,
+        &header.query,
+        header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         body_bytes,
         &mut on_chunk,
     )
@@ -516,7 +841,7 @@ where
     let header_view = WireResponseHeader {
         v: WIRE_VERSION,
         status,
-        headers: &headers,
+        headers: &WireHeaders(&headers),
         metadata: &metadata,
         // Streaming path does not hoist 422 validation errors —
         // hoisting requires materialising the full body, which is
@@ -524,13 +849,8 @@ where
         // validation hoisting should use dispatch_from_bytes_async.
         validation_errors: None,
     };
-    let header_json =
-        serde_json::to_vec(&header_view).expect("WireResponseHeader serialization is infallible");
-    let header_len =
-        u32::try_from(header_json.len()).expect("response header JSON exceeds u32::MAX bytes");
-    let mut out = Vec::with_capacity(4 + header_json.len());
-    out.extend_from_slice(&header_len.to_be_bytes());
-    out.extend_from_slice(&header_json);
+    let mut out = Vec::with_capacity(4 + WIRE_HEADER_RESERVE);
+    write_wire_header_into(&mut out, &header_view);
     out
 }
 
@@ -545,8 +865,12 @@ where
 pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
     // Wire-level checks first: malformed input must report parse
     // errors regardless of whether an app is registered.
-    let (header, body_bytes) = match parse_wire_request(input) {
+    let (header_bytes, body_bytes) = match split_wire_request(input) {
         Ok(parts) => parts,
+        Err(msg) => return error_wire(400, &msg),
+    };
+    let header = match parse_wire_header(&header_bytes) {
+        Ok(h) => h,
         Err(msg) => return error_wire(400, &msg),
     };
     if header.v != WIRE_VERSION {
@@ -565,9 +889,9 @@ pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
     let parts = match dispatch_parts(
         router,
         &header.method,
-        header.path,
-        header.query,
-        header.headers,
+        &header.path,
+        &header.query,
+        header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         body_bytes,
     )
     .await
@@ -627,8 +951,12 @@ pub fn dispatch_into(
 /// **exact** required size.  The handler has already run; retrying
 /// runs it again — callers must gate retries on idempotency.
 pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResult {
-    let (header, body_bytes) = match parse_wire_request(input) {
+    let (header_bytes, body_bytes) = match split_wire_request(input) {
         Ok(parts) => parts,
+        Err(msg) => return write_wire_into(out, &error_wire(400, &msg)),
+    };
+    let header = match parse_wire_header(&header_bytes) {
+        Ok(h) => h,
         Err(msg) => return write_wire_into(out, &error_wire(400, &msg)),
     };
     if header.v != WIRE_VERSION {
@@ -650,25 +978,24 @@ pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteR
 
     // Mirror dispatch_parts' Content-Type defaulting (body present, no
     // content-type → application/json) so the direct-write path is
-    // request-compatible with dispatch_from_bytes.  dispatch_and_split
-    // itself cannot do this: its streaming callers hand it an opaque
-    // Body whose emptiness is unknowable up front.
-    let mut req_headers = header.headers;
-    if !body_bytes.is_empty()
-        && !req_headers
-            .keys()
-            .any(|k| k.eq_ignore_ascii_case("content-type"))
-    {
-        req_headers.insert("content-type".to_owned(), "application/json".to_owned());
-    }
+    // request-compatible with dispatch_from_bytes.  The body's
+    // emptiness is known here (unlike the streaming callers), so the
+    // default is applied on the request builder — no map insert, no
+    // String allocations.
+    let default_json_content_type = !body_bytes.is_empty()
+        && !header
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
 
     let (status, headers, metadata, mut body) = match dispatch_and_split(
         router,
         &header.method,
-        header.path,
-        header.query,
-        req_headers,
+        &header.path,
+        &header.query,
+        header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         Body::from(body_bytes),
+        default_json_content_type,
     )
     .await
     {
@@ -736,10 +1063,10 @@ fn write_wire_into(out: &mut [u8], wire: &[u8]) -> DirectWriteResult {
 /// `content-type: text/plain; charset=utf-8`.
 #[must_use]
 pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
-    let mut headers = BTreeMap::new();
+    let mut headers = http::HeaderMap::with_capacity(1);
     headers.insert(
-        "content-type".to_owned(),
-        HeaderValue::Single("text/plain; charset=utf-8".to_owned()),
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("text/plain; charset=utf-8"),
     );
     let metadata = ResponseMetadata::current();
     let parts = (
@@ -753,7 +1080,12 @@ pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
 
 // ── Internal Helpers ─────────────────────────────────────────────────
 
-type ResponseParts = (u16, BTreeMap<String, HeaderValue>, Bytes, ResponseMetadata);
+/// Raw response parts on the wire path.  Headers stay as the owned
+/// [`http::HeaderMap`] taken from `Response::into_parts` — zero
+/// per-header allocation; conversion to the public
+/// `BTreeMap<String, HeaderValue>` shape happens only on the text
+/// envelope path ([`to_response_envelope_text`]).
+type ResponseParts = (u16, http::HeaderMap, Bytes, ResponseMetadata);
 
 /// Drive a [`Router`] with the supplied envelope fields and return
 /// raw response parts.
@@ -762,12 +1094,12 @@ type ResponseParts = (u16, BTreeMap<String, HeaderValue>, Bytes, ResponseMetadat
 /// (currently only "invalid HTTP method" → 405).  Router/handler
 /// errors cannot occur because axum routers are
 /// `Service<_, Error = Infallible>`.
-async fn dispatch_parts(
+async fn dispatch_parts<'h>(
     router: Router,
     method_str: &str,
-    path: String,
-    query: String,
-    headers: HashMap<String, String>,
+    path: &str,
+    query: &str,
+    headers: impl Iterator<Item = (&'h str, &'h str)>,
     body_bytes: Bytes,
 ) -> Result<ResponseParts, (u16, String)> {
     let Ok(http_method) = method_str.parse::<Method>() else {
@@ -777,20 +1109,13 @@ async fn dispatch_parts(
         ));
     };
 
-    let uri = if query.is_empty() {
-        path
-    } else {
-        format!("{path}?{query}")
-    };
-
-    // Case-insensitive Content-Type detection (RFC 7230 §3.2).
-    let has_content_type = headers
-        .keys()
-        .any(|k| k.eq_ignore_ascii_case("content-type"));
-
-    let mut builder = Request::builder().method(http_method).uri(&uri);
-    for (name, value) in &headers {
-        builder = builder.header(name.as_str(), value.as_str());
+    let mut builder = request_builder(http_method, path, query);
+    // Case-insensitive Content-Type detection (RFC 7230 §3.2),
+    // tracked inside the single header pass.
+    let mut has_content_type = false;
+    for (name, value) in headers {
+        has_content_type = has_content_type || name.eq_ignore_ascii_case("content-type");
+        builder = builder.header(name, value);
     }
     if !body_bytes.is_empty() && !has_content_type {
         builder = builder.header("content-type", "application/json");
@@ -808,6 +1133,22 @@ async fn dispatch_parts(
     Ok(collect_response_parts(response).await)
 }
 
+/// Start a request builder with method + URI.  When `query` is empty
+/// the borrowed `path` feeds `Uri` parsing directly — no intermediate
+/// `String`; otherwise a single exact-capacity join is allocated.
+fn request_builder(method: Method, path: &str, query: &str) -> http::request::Builder {
+    let builder = Request::builder().method(method);
+    if query.is_empty() {
+        builder.uri(path)
+    } else {
+        let mut uri = String::with_capacity(path.len() + 1 + query.len());
+        uri.push_str(path);
+        uri.push('?');
+        uri.push_str(query);
+        builder.uri(uri)
+    }
+}
+
 /// Drive a [`Router`] and stream response body chunks through
 /// `on_chunk`, returning the status/headers/metadata once the body
 /// stream finishes.
@@ -817,15 +1158,15 @@ async fn dispatch_parts(
 /// ended (the consumer sees a truncated response) because they
 /// indicate the upstream handler aborted; the headers/status that
 /// were already collected remain accurate.
-async fn dispatch_response_streaming<F>(
+async fn dispatch_response_streaming<'h, F>(
     router: Router,
     method_str: &str,
-    path: String,
-    query: String,
-    headers: HashMap<String, String>,
+    path: &str,
+    query: &str,
+    headers: impl Iterator<Item = (&'h str, &'h str)>,
     body_bytes: Bytes,
     on_chunk: &mut F,
-) -> Result<(u16, BTreeMap<String, HeaderValue>, ResponseMetadata), (u16, String)>
+) -> Result<(u16, http::HeaderMap, ResponseMetadata), (u16, String)>
 where
     F: FnMut(&[u8]),
 {
@@ -836,19 +1177,11 @@ where
         ));
     };
 
-    let uri = if query.is_empty() {
-        path
-    } else {
-        format!("{path}?{query}")
-    };
-
-    let has_content_type = headers
-        .keys()
-        .any(|k| k.eq_ignore_ascii_case("content-type"));
-
-    let mut builder = Request::builder().method(http_method).uri(&uri);
-    for (name, value) in &headers {
-        builder = builder.header(name.as_str(), value.as_str());
+    let mut builder = request_builder(http_method, path, query);
+    let mut has_content_type = false;
+    for (name, value) in headers {
+        has_content_type = has_content_type || name.eq_ignore_ascii_case("content-type");
+        builder = builder.header(name, value);
     }
     if !body_bytes.is_empty() && !has_content_type {
         builder = builder.header("content-type", "application/json");
@@ -863,14 +1196,11 @@ where
         .await
         .expect("router error is Infallible");
 
-    let status = response.status().as_u16();
-
-    let resp_headers = collect_header_map(response.headers());
+    let (parts, mut body) = response.into_parts();
 
     // Stream body chunks: pull frames one at a time and surface only
     // data frames (trailers are dropped — wire format does not carry
     // them).  Frame errors or end-of-stream both terminate cleanly.
-    let mut body = response.into_body();
     while let Some(Ok(frame)) = body.frame().await {
         if let Some(data) = frame.data_ref()
             && !data.is_empty()
@@ -879,7 +1209,11 @@ where
         }
     }
 
-    Ok((status, resp_headers, ResponseMetadata::current()))
+    Ok((
+        parts.status.as_u16(),
+        parts.headers,
+        ResponseMetadata::current(),
+    ))
 }
 
 /// Collapse an [`http::HeaderMap`] into the wire's name → value map.
@@ -914,33 +1248,32 @@ fn collect_header_map(headers: &http::HeaderMap) -> BTreeMap<String, HeaderValue
 /// [`HeaderValue::Multi`] so semantics (e.g. `set-cookie`) are
 /// preserved.
 async fn collect_response_parts(response: axum::response::Response) -> ResponseParts {
-    let status = response.status().as_u16();
+    let (parts, body) = response.into_parts();
 
-    let resp_headers = collect_header_map(response.headers());
-
-    let body_bytes = response
-        .into_body()
+    let body_bytes = body
         .collect()
         .await
         .map(http_body_util::Collected::to_bytes)
         .unwrap_or_default();
 
     (
-        status,
-        resp_headers,
+        parts.status.as_u16(),
+        parts.headers,
         body_bytes,
         ResponseMetadata::current(),
     )
 }
 
 /// Adapter: response parts → text envelope.  Non-UTF-8 bodies become
-/// the empty string.
+/// the empty string.  The owned-`String` header conversion happens
+/// only here — the wire path serializes straight from the
+/// [`http::HeaderMap`].
 fn to_response_envelope_text(parts: ResponseParts) -> ResponseEnvelope {
     let (status, headers, body_bytes, metadata) = parts;
     let body = String::from_utf8(body_bytes.to_vec()).unwrap_or_default();
     ResponseEnvelope {
         status,
-        headers,
+        headers: collect_header_map(&headers),
         body,
         metadata,
     }
@@ -964,17 +1297,12 @@ fn to_wire_bytes(parts: ResponseParts) -> Vec<u8> {
     let header = WireResponseHeader {
         v: WIRE_VERSION,
         status,
-        headers: &headers,
+        headers: &WireHeaders(&headers),
         metadata: &metadata,
         validation_errors,
     };
-    let header_json =
-        serde_json::to_vec(&header).expect("WireResponseHeader serialization is infallible");
-    let header_len =
-        u32::try_from(header_json.len()).expect("response header JSON exceeds u32::MAX bytes");
-    let mut out = Vec::with_capacity(4 + header_json.len() + body_bytes.len());
-    out.extend_from_slice(&header_len.to_be_bytes());
-    out.extend_from_slice(&header_json);
+    let mut out = Vec::with_capacity(4 + WIRE_HEADER_RESERVE + body_bytes.len());
+    write_wire_header_into(&mut out, &header);
     out.extend_from_slice(&body_bytes);
     out
 }
@@ -985,14 +1313,21 @@ fn to_wire_bytes(parts: ResponseParts) -> Vec<u8> {
 ///
 /// Used by the `*_with_header` streaming variants which need to emit
 /// the wire-format header **before** body bytes start flowing.
-async fn dispatch_and_split(
+///
+/// `default_json_content_type` adds `content-type: application/json`
+/// to the outgoing request (mirroring [`dispatch_parts`]'s defaulting)
+/// — only [`dispatch_into_async`] sets it, because streaming callers
+/// hand this function an opaque [`Body`] whose emptiness is
+/// unknowable up front.
+async fn dispatch_and_split<'h>(
     router: Router,
     method_str: &str,
-    path: String,
-    query: String,
-    headers: HashMap<String, String>,
+    path: &str,
+    query: &str,
+    headers: impl Iterator<Item = (&'h str, &'h str)>,
     body: Body,
-) -> Result<(u16, BTreeMap<String, HeaderValue>, ResponseMetadata, Body), (u16, String)> {
+    default_json_content_type: bool,
+) -> Result<(u16, http::HeaderMap, ResponseMetadata, Body), (u16, String)> {
     let Ok(http_method) = method_str.parse::<Method>() else {
         return Err((
             405,
@@ -1000,15 +1335,12 @@ async fn dispatch_and_split(
         ));
     };
 
-    let uri = if query.is_empty() {
-        path
-    } else {
-        format!("{path}?{query}")
-    };
-
-    let mut builder = Request::builder().method(http_method).uri(&uri);
-    for (name, value) in &headers {
-        builder = builder.header(name.as_str(), value.as_str());
+    let mut builder = request_builder(http_method, path, query);
+    for (name, value) in headers {
+        builder = builder.header(name, value);
+    }
+    if default_json_content_type {
+        builder = builder.header("content-type", "application/json");
     }
 
     let request = builder
@@ -1020,35 +1352,31 @@ async fn dispatch_and_split(
         .await
         .expect("router error is Infallible");
 
-    let status = response.status().as_u16();
-
-    let resp_headers = collect_header_map(response.headers());
-
-    let body = response.into_body();
-    Ok((status, resp_headers, ResponseMetadata::current(), body))
+    let (parts, body) = response.into_parts();
+    Ok((
+        parts.status.as_u16(),
+        parts.headers,
+        ResponseMetadata::current(),
+        body,
+    ))
 }
 
 /// Build wire-format header bytes (`[u32 BE header_len | JSON header]`)
 /// without a body — used by the `*_with_header` callback variants.
 fn build_wire_header_bytes(
     status: u16,
-    headers: &BTreeMap<String, HeaderValue>,
+    headers: &http::HeaderMap,
     metadata: &ResponseMetadata,
 ) -> Vec<u8> {
     let view = WireResponseHeader {
         v: WIRE_VERSION,
         status,
-        headers,
+        headers: &WireHeaders(headers),
         metadata,
         validation_errors: None,
     };
-    let header_json =
-        serde_json::to_vec(&view).expect("WireResponseHeader serialization is infallible");
-    let header_len =
-        u32::try_from(header_json.len()).expect("response header JSON exceeds u32::MAX bytes");
-    let mut out = Vec::with_capacity(4 + header_json.len());
-    out.extend_from_slice(&header_len.to_be_bytes());
-    out.extend_from_slice(&header_json);
+    let mut out = Vec::with_capacity(4 + WIRE_HEADER_RESERVE);
+    write_wire_header_into(&mut out, &view);
     out
 }
 
@@ -1074,8 +1402,15 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
     H: FnMut(&[u8]),
     F: FnMut(&[u8]),
 {
-    let (header, body_bytes) = match parse_wire_request(input) {
+    let (header_bytes, body_bytes) = match split_wire_request(input) {
         Ok(parts) => parts,
+        Err(msg) => {
+            on_header(&error_wire(400, &msg));
+            return;
+        }
+    };
+    let header = match parse_wire_header(&header_bytes) {
+        Ok(h) => h,
         Err(msg) => {
             on_header(&error_wire(400, &msg));
             return;
@@ -1102,10 +1437,11 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
     let (status, headers, metadata, mut body) = match dispatch_and_split(
         router,
         &header.method,
-        header.path,
-        header.query,
-        header.headers,
+        &header.path,
+        &header.query,
+        header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         Body::from(body_bytes),
+        false,
     )
     .await
     {
@@ -1138,25 +1474,20 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
 /// This is intentionally lenient — a malformed 422 body must never
 /// degrade to a 5xx; the original body is still surfaced verbatim.
 fn try_hoist_validation_errors(
-    headers: &BTreeMap<String, HeaderValue>,
+    headers: &http::HeaderMap,
     body_bytes: &Bytes,
 ) -> Option<Vec<ValidationErrorItem>> {
-    let is_json = headers.iter().any(|(k, v)| {
-        if !k.eq_ignore_ascii_case("content-type") {
-            return false;
-        }
-        let s = match v {
-            HeaderValue::Single(s) => s.as_str(),
-            HeaderValue::Multi(vs) => vs.first().map_or("", String::as_str),
-        };
-        let mime = s
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase();
-        mime == "application/json" || mime.ends_with("+json")
-    });
+    // First content-type value decides (matches the previous
+    // first-of-Multi behaviour).  Comparisons are case-insensitive
+    // in place — no lowercased copy.
+    let is_json = headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|s| {
+            let mime = s.split(';').next().unwrap_or("").trim();
+            mime.eq_ignore_ascii_case("application/json")
+                || (mime.len() >= 5 && mime[mime.len() - 5..].eq_ignore_ascii_case("+json"))
+        });
     if !is_json {
         return None;
     }
@@ -1205,8 +1536,9 @@ fn try_hoist_validation_errors(
 /// `pull_chunk` runs on a Tokio blocking thread (`spawn_blocking`)
 /// because the JNI implementation reads from a Java `InputStream`,
 /// which is inherently blocking.  Backpressure is enforced by a
-/// bounded 16-slot mpsc channel: if axum reads slowly, the
-/// `pull_chunk` call blocks naturally.
+/// bounded mpsc channel ([`streaming_channel_capacity`] slots,
+/// default 16): if axum reads slowly, the `pull_chunk` call blocks
+/// naturally.
 ///
 /// Failure modes match [`dispatch_streaming_async`]: malformed
 /// header / unknown version / no app / handler error → normal
@@ -1221,7 +1553,7 @@ where
     P: FnMut() -> Option<Vec<u8>> + Send + 'static,
     F: FnMut(&[u8]),
 {
-    let mut header_bytes: Vec<u8> = Vec::new();
+    let mut header_bytes: Vec<u8> = Vec::with_capacity(4 + WIRE_HEADER_RESERVE);
     {
         let on_header = |h: &[u8]| header_bytes.extend_from_slice(h);
         bidirectional_streaming_inner(input_header, pull_chunk, on_chunk, on_header).await;
@@ -1263,8 +1595,15 @@ async fn bidirectional_streaming_inner<P, F, H>(
     F: FnMut(&[u8]),
     H: FnMut(&[u8]),
 {
-    let (header, _ignored_body) = match parse_wire_request(input_header) {
+    let (header_bytes, _ignored_body) = match split_wire_request(input_header) {
         Ok(parts) => parts,
+        Err(msg) => {
+            on_header(&error_wire(400, &msg));
+            return;
+        }
+    };
+    let header = match parse_wire_header(&header_bytes) {
+        Ok(h) => h,
         Err(msg) => {
             on_header(&error_wire(400, &msg));
             return;
@@ -1288,9 +1627,10 @@ async fn bidirectional_streaming_inner<P, F, H>(
         }
     };
 
-    // Bounded 16-slot mpsc — gives natural backpressure between the
-    // pull_chunk producer thread and the axum handler consumer.
-    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(16);
+    // Bounded mpsc (default 16 slots, see streaming_channel_capacity)
+    // — gives natural backpressure between the pull_chunk producer
+    // thread and the axum handler consumer.
+    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(streaming_channel_capacity());
 
     let producer_handle = tokio::task::spawn_blocking(move || {
         let mut pull = pull_chunk;
@@ -1313,10 +1653,11 @@ async fn bidirectional_streaming_inner<P, F, H>(
     let (status, headers, metadata, mut response_body) = match dispatch_and_split(
         router,
         &header.method,
-        header.path,
-        header.query,
-        header.headers,
+        &header.path,
+        &header.query,
+        header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         body,
+        false,
     )
     .await
     {
@@ -1364,13 +1705,15 @@ impl HttpBody for ChannelBody {
     }
 }
 
-/// Parse a wire-format request.  On success returns the deserialised
-/// header and the owned body bytes.
+/// Split a wire-format request into its header-JSON region and body —
+/// both true zero-copy O(1) refcount views of the input allocation
+/// (unlike `Vec::split_off`, which allocates a new vector and memcpys
+/// the tail).
 ///
-/// The body is split off as [`Bytes`] — a true zero-copy O(1)
-/// refcount split of the input buffer (unlike `Vec::split_off`,
-/// which allocates a new vector and memcpys the tail).
-fn parse_wire_request(input: Vec<u8>) -> Result<(WireRequestHeader, Bytes), String> {
+/// Two-phase with [`parse_wire_header`] so the deserialized header
+/// can **borrow** its strings from the returned header bytes (the
+/// caller keeps them alive on its stack frame).
+fn split_wire_request(input: Vec<u8>) -> Result<(Bytes, Bytes), String> {
     if input.len() < 4 {
         return Err(format!(
             "wire input too short: {} bytes, need at least 4",
@@ -1388,22 +1731,72 @@ fn parse_wire_request(input: Vec<u8>) -> Result<(WireRequestHeader, Bytes), Stri
             input.len() - 4
         ));
     }
-    // O(1) split: both halves share the original allocation.
+    // O(1) splits: all views share the original allocation.
     let body = input.split_off(total_header_end);
-    let header_json = &input[4..total_header_end];
-    let header: WireRequestHeader = serde_json::from_slice(header_json)
-        .map_err(|e| format!("wire header JSON parse error: {e}"))?;
-    Ok((header, body))
+    let header_json = input.slice(4..);
+    Ok((header_json, body))
+}
+
+/// Deserialize the wire request header, borrowing every string from
+/// `header_json` where possible (see [`WireRequestHeader`]).
+fn parse_wire_header(header_json: &[u8]) -> Result<WireRequestHeader<'_>, String> {
+    serde_json::from_slice(header_json).map_err(|e| format!("wire header JSON parse error: {e}"))
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::{
+        DEFAULT_STREAMING_CHANNEL_CAPACITY, DEFAULT_STREAMING_CHUNK_BYTES, parse_config_value,
+    };
+
+    #[test]
+    fn absent_value_yields_default() {
+        assert_eq!(
+            parse_config_value(None, DEFAULT_STREAMING_CHUNK_BYTES, 4096, 8 << 20),
+            DEFAULT_STREAMING_CHUNK_BYTES
+        );
+    }
+
+    #[test]
+    fn unparseable_value_yields_default() {
+        for raw in ["", "abc", "-1", "64KiB", "1.5"] {
+            assert_eq!(
+                parse_config_value(Some(raw), DEFAULT_STREAMING_CHANNEL_CAPACITY, 1, 1024),
+                DEFAULT_STREAMING_CHANNEL_CAPACITY,
+                "raw = {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_value_is_used_and_whitespace_tolerated() {
+        assert_eq!(
+            parse_config_value(Some("131072"), 65536, 4096, 8 << 20),
+            131_072
+        );
+        assert_eq!(parse_config_value(Some("  64  "), 16, 1, 1024), 64);
+    }
+
+    #[test]
+    fn out_of_range_values_are_clamped() {
+        assert_eq!(parse_config_value(Some("1"), 65536, 4096, 8 << 20), 4096);
+        assert_eq!(
+            parse_config_value(Some("999999999"), 65536, 4096, 8 << 20),
+            8 << 20
+        );
+    }
 }
 
 #[cfg(test)]
 mod wire_parse_tests {
-    use super::parse_wire_request;
+    use std::borrow::Cow;
+
+    use super::{parse_wire_header, split_wire_request};
 
     /// Pins the zero-copy contract: the returned body must point into
     /// the original input allocation (no memcpy of the tail).
     #[test]
-    fn parse_wire_request_body_is_zero_copy() {
+    fn split_wire_request_body_is_zero_copy() {
         let header = br#"{"v":1,"method":"POST","path":"/x"}"#;
         let body = vec![0xABu8; 1024];
         let mut wire = Vec::new();
@@ -1413,13 +1806,43 @@ mod wire_parse_tests {
 
         let input_ptr = wire.as_ptr() as usize;
         let body_offset = 4 + header.len();
-        let (_, parsed_body) = parse_wire_request(wire).expect("valid wire request");
+        let (_, parsed_body) = split_wire_request(wire).expect("valid wire request");
 
         assert_eq!(parsed_body.len(), 1024);
         assert_eq!(
             parsed_body.as_ptr() as usize,
             input_ptr + body_offset,
             "body must alias the original input buffer (zero-copy)"
+        );
+    }
+
+    /// Pins the borrowed-deserialization contract: header strings
+    /// without JSON escapes must borrow straight from the wire bytes
+    /// (no per-string allocation), with `Cow::Owned` reserved for
+    /// escaped values.
+    #[test]
+    fn parse_wire_header_borrows_plain_strings() {
+        let header_json =
+            br#"{"v":1,"method":"POST","path":"/users","query":"a=1","headers":{"x-a":"plain","x-b":"esc\"aped"},"app":"admin"}"#;
+        let header = parse_wire_header(header_json).expect("valid header");
+
+        let header_value = |name: &str| {
+            header
+                .headers
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v)
+        };
+
+        assert!(matches!(header.method, Cow::Borrowed("POST")));
+        assert!(matches!(header.path, Cow::Borrowed("/users")));
+        assert!(matches!(header.query, Cow::Borrowed("a=1")));
+        assert!(matches!(header.app.as_ref(), Some(Cow::Borrowed("admin"))));
+        assert!(matches!(header_value("x-a"), Some(Cow::Borrowed("plain"))));
+        // Escaped value falls back to owned — correctness over borrow.
+        assert_eq!(
+            header_value("x-b").map(std::convert::AsRef::as_ref),
+            Some("esc\"aped")
         );
     }
 }

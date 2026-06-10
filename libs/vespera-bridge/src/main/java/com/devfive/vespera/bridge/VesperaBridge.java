@@ -83,6 +83,21 @@ public class VesperaBridge {
      * Initialize the Rust engine.  Tries bundled (JAR-embedded) first,
      * falls back to {@code java.library.path}.
      *
+     * <p>Streaming configuration is seeded from system properties
+     * <strong>before the first dispatch</strong> (values fixed for
+     * the process lifetime once read):
+     * <ul>
+     *   <li>{@code vespera.streaming.chunkBytes} — per-chunk buffer
+     *       size for streaming dispatches (default 64 KiB, clamped to
+     *       4 KiB – 8 MiB on the Rust side)</li>
+     *   <li>{@code vespera.streaming.channelCapacity} — bound of the
+     *       bidirectional request-body channel in slots (default 16,
+     *       clamped to 1 – 1024)</li>
+     * </ul>
+     * The {@code VESPERA_STREAMING_CHUNK_BYTES} /
+     * {@code VESPERA_STREAMING_CHANNEL_CAPACITY} environment
+     * variables apply when no system property is set.
+     *
      * @param libraryName Cargo crate name (e.g. {@code "rust_jni_demo"})
      */
     public static synchronized void init(String libraryName) {
@@ -92,8 +107,25 @@ public class VesperaBridge {
         } catch (UnsatisfiedLinkError e) {
             System.loadLibrary(libraryName);
         }
+        try {
+            configureStreaming0(
+                    Integer.getInteger("vespera.streaming.chunkBytes", 0),
+                    Integer.getInteger("vespera.streaming.channelCapacity", 0));
+        } catch (UnsatisfiedLinkError olderNativeLibrary) {
+            // Pre-0.2 native libraries don't export configureStreaming0.
+            // Streaming config then falls back to env vars / defaults —
+            // never block init over an optional tuning hook.
+        }
         loaded = true;
     }
+
+    /**
+     * Seed the Rust-side streaming configuration.  Values {@code <= 0}
+     * leave the corresponding setting untouched (environment variable
+     * or built-in default applies).  Calls after the configuration is
+     * fixed are silently ignored.
+     */
+    private static native void configureStreaming0(int chunkBytes, int channelCapacity);
 
     /**
      * Dispatch a wire-format HTTP-like request through the Rust axum
@@ -184,7 +216,8 @@ public class VesperaBridge {
      *       with an empty {@code body} array.</li>
      *   <li>The request body bytes flow through {@code inputStream}
      *       — Rust calls {@code inputStream.read(byte[])} repeatedly
-     *       (16 KiB at a time) until EOF.</li>
+     *       (64 KiB at a time by default; see
+     *       {@code vespera.streaming.chunkBytes}) until EOF.</li>
      *   <li>The response body bytes flow through {@code outputStream}
      *       — Rust calls {@code outputStream.write(byte[])} for each
      *       axum body frame.</li>

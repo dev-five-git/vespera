@@ -111,10 +111,47 @@ mod jni_impl {
             .expect("failed to create Tokio runtime")
     });
 
-    /// Per-chunk buffer size for streaming dispatches (16 KiB — large
-    /// enough to amortise JNI call overhead, small enough to keep
-    /// memory bounded for multi-GB streams).
-    const STREAMING_CHUNK_SIZE: usize = 16 * 1024;
+    /// Per-chunk buffer size for streaming dispatches.
+    ///
+    /// Resolved once per process by
+    /// [`vespera_inprocess::streaming_chunk_bytes`] (default 64 KiB;
+    /// override via the `VESPERA_STREAMING_CHUNK_BYTES` env var or the
+    /// `configureStreaming0` JNI setter called from
+    /// `VesperaBridge.init()`).  Large enough to amortise JNI call
+    /// overhead, small enough to keep memory bounded for multi-GB
+    /// streams.  Subsequent calls are a single atomic load.
+    fn streaming_chunk_size() -> usize {
+        vespera_inprocess::streaming_chunk_bytes()
+    }
+
+    /// `com.devfive.vespera.bridge.VesperaBridge.configureStreaming0(int, int) -> void`
+    ///
+    /// Seeds the process-wide streaming configuration **before the
+    /// first dispatch**.  Values `<= 0` leave the corresponding
+    /// setting untouched (env var / default applies).  Calls after
+    /// the configuration is fixed (first dispatch already ran, or a
+    /// previous call set it) are silently ignored — the JNI side has
+    /// no use for the failure signal beyond logging, which Java owns.
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_configureStreaming0<
+        'local,
+    >(
+        _unowned_env: EnvUnowned<'local>,
+        _class: JClass<'local>,
+        chunk_bytes: jint,
+        channel_capacity: jint,
+    ) {
+        if let Ok(bytes) = usize::try_from(chunk_bytes)
+            && bytes > 0
+        {
+            let _ = vespera_inprocess::set_streaming_chunk_bytes(bytes);
+        }
+        if let Ok(slots) = usize::try_from(channel_capacity)
+            && slots > 0
+        {
+            let _ = vespera_inprocess::set_streaming_channel_capacity(slots);
+        }
+    }
 
     /// `com.devfive.vespera.bridge.VesperaBridge.dispatchBytes(byte[]) -> byte[]`
     ///
@@ -421,7 +458,7 @@ mod jni_impl {
                 let jvm = env.get_java_vm()?;
 
                 // One reusable Java chunk buffer for the whole stream.
-                let push_buf_local = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
+                let push_buf_local = env.new_byte_array(streaming_chunk_size())?;
                 let push_buf: Global<jni::objects::JByteArray<'static>> =
                     env.new_global_ref(&push_buf_local)?;
 
@@ -490,10 +527,10 @@ mod jni_impl {
                 // One reusable Java chunk buffer PER SIDE — pull and
                 // push run concurrently on different threads, so each
                 // direction owns its own global-ref'd buffer.
-                let pull_buf_local = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
+                let pull_buf_local = env.new_byte_array(streaming_chunk_size())?;
                 let pull_buf: Global<jni::objects::JByteArray<'static>> =
                     env.new_global_ref(&pull_buf_local)?;
-                let push_buf_local = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
+                let push_buf_local = env.new_byte_array(streaming_chunk_size())?;
                 let push_buf: Global<jni::objects::JByteArray<'static>> =
                     env.new_global_ref(&push_buf_local)?;
 
@@ -562,7 +599,7 @@ mod jni_impl {
             let jvm = env.get_java_vm()?;
 
             // One reusable Java chunk buffer for the whole stream.
-            let push_buf_local = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
+            let push_buf_local = env.new_byte_array(streaming_chunk_size())?;
             let push_buf: Global<jni::objects::JByteArray<'static>> =
                 env.new_global_ref(&push_buf_local)?;
 
@@ -632,10 +669,10 @@ mod jni_impl {
 
             // One reusable Java chunk buffer PER SIDE — pull and push
             // run concurrently on different threads.
-            let pull_buf_local = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
+            let pull_buf_local = env.new_byte_array(streaming_chunk_size())?;
             let pull_buf: Global<jni::objects::JByteArray<'static>> =
                 env.new_global_ref(&pull_buf_local)?;
-            let push_buf_local = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
+            let push_buf_local = env.new_byte_array(streaming_chunk_size())?;
             let push_buf: Global<jni::objects::JByteArray<'static>> =
                 env.new_global_ref(&push_buf_local)?;
 
@@ -685,6 +722,10 @@ mod jni_impl {
         stream: Global<JObject<'static>>,
         buf: Global<jni::objects::JByteArray<'static>>,
     ) -> impl FnMut() -> Option<Vec<u8>> + Send + 'static {
+        // Resolved once at closure-build time — zero per-chunk cost.
+        // Identical to the buffer's allocation size by OnceLock
+        // construction (the config is process-fixed after first read).
+        let chunk_size = streaming_chunk_size();
         move || -> Option<Vec<u8>> {
             let result: jni::errors::Result<Option<Vec<u8>>> = jvm.attach_current_thread(|env| {
                 env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
@@ -710,7 +751,7 @@ mod jni_impl {
                     if n == 0 {
                         return Ok(Some(Vec::new()));
                     }
-                    let n = usize::try_from(n).unwrap_or(0).min(STREAMING_CHUNK_SIZE);
+                    let n = usize::try_from(n).unwrap_or(0).min(chunk_size);
                     let mut data = vec![0u8; n];
                     // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
                     // identical size/alignment; this views the
@@ -731,7 +772,7 @@ mod jni_impl {
     /// Build the response-body push closure shared by all four
     /// streaming JNI entry points.
     ///
-    /// The Java-side buffer (`buf`, [`STREAMING_CHUNK_SIZE`] bytes) is
+    /// The Java-side buffer (`buf`, [`streaming_chunk_size`] bytes) is
     /// allocated **once** by the caller and reused for every chunk via
     /// `JByteArray::set_region` + `OutputStream.write(byte[], int, int)`
     /// — the previous implementation allocated a fresh exact-size Java
@@ -747,23 +788,26 @@ mod jni_impl {
         stream: Global<JObject<'static>>,
         buf: Global<jni::objects::JByteArray<'static>>,
     ) -> impl FnMut(&[u8]) + Send + 'static {
+        // Resolved once at closure-build time — zero per-chunk cost.
+        let chunk_size = streaming_chunk_size();
         move |chunk: &[u8]| {
             let _ =
                 jvm.attach_current_thread(|env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
                     env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
                         let arr: &jni::objects::JByteArray<'_> = buf.as_ref();
-                        for seg in chunk.chunks(STREAMING_CHUNK_SIZE) {
+                        for seg in chunk.chunks(chunk_size) {
                             // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
                             // identical size/alignment; this views the
                             // segment as the signed slice `set_region`
-                            // expects.  `seg.len() <= STREAMING_CHUNK_SIZE`
-                            // so it always fits both the buffer and `i32`.
+                            // expects.  `seg.len() <= chunk_size` (max
+                            // 8 MiB) so it always fits both the buffer
+                            // and `i32`.
                             let seg_i8 = unsafe {
                                 std::slice::from_raw_parts(seg.as_ptr().cast::<i8>(), seg.len())
                             };
                             arr.set_region(env, 0, seg_i8)?;
                             let len = i32::try_from(seg.len())
-                                .expect("segment length bounded by STREAMING_CHUNK_SIZE");
+                                .expect("segment length bounded by streaming_chunk_size");
                             env.call_method(
                                 &stream,
                                 jni_str!("write"),

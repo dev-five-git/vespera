@@ -34,4 +34,16 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    // Propagate streaming bench knobs from the Gradle CLI into the
+    // forked test JVM (chunk size is process-fixed, so each value
+    // needs its own `gradlew test -D...` run).
+    listOf(
+        "vespera.bench",
+        "vespera.streaming.chunkBytes",
+        "vespera.streaming.channelCapacity",
+    ).forEach { key ->
+        System.getProperty(key)?.let { systemProperty(key, it) }
+    }
+    // Bench output is read from stdout.
+    testLogging.showStandardStreams = true
 }

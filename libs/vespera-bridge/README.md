@@ -389,11 +389,27 @@ try (InputStream upload = Files.newInputStream(Path.of("huge.mp4"));
 }
 ```
 
-Memory characteristics: **roughly 16 KiB chunk buffer + a 16-slot
-mpsc channel buffer** in Rust, plus normal JVM `byte[]` chunks. A
-1 GiB upload paired with a 1 GiB download runs in ~500 KiB resident
-memory on each side. Backpressure is enforced naturally — if axum
-reads slowly, `InputStream.read()` blocks on the bounded channel.
+Memory characteristics: **roughly a 64 KiB chunk buffer + a 16-slot
+mpsc channel buffer** in Rust (both configurable, see below), plus
+normal JVM `byte[]` chunks. A 1 GiB upload paired with a 1 GiB
+download runs in low-single-digit MiB resident memory on each side.
+Backpressure is enforced naturally — if axum reads slowly,
+`InputStream.read()` blocks on the bounded channel.
+
+#### Streaming tuning
+
+Both knobs are fixed for the process lifetime once the first dispatch
+runs; set them before `VesperaBridge.init(...)`:
+
+| Setting | System property | Env var (fallback) | Default | Range |
+|---|---|---|---|---|
+| Chunk buffer size | `vespera.streaming.chunkBytes` | `VESPERA_STREAMING_CHUNK_BYTES` | 64 KiB | 4 KiB – 8 MiB |
+| Request channel slots | `vespera.streaming.channelCapacity` | `VESPERA_STREAMING_CHANNEL_CAPACITY` | 16 | 1 – 1024 |
+
+Larger chunks reduce the per-chunk JNI crossing cost (one
+`SetByteArrayRegion` + one `OutputStream.write` per chunk) at the
+price of per-stream memory — 256 KiB is a reasonable ceiling for
+throughput-oriented deployments.
 
 ### Server-side response streaming (Spring `StreamingResponseBody`)
 
