@@ -56,6 +56,7 @@
 //! [`Router::clone`], which is cheap because axum's router is
 //! internally `Arc`-shared.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::convert::Infallible;
@@ -111,9 +112,25 @@ pub enum HeaderValue {
 }
 
 /// Metadata included in every response envelope.
+///
+/// `version` is a [`Cow`] so the engine can attach its own version
+/// (`CARGO_PKG_VERSION`, a `&'static str`) without a per-response heap
+/// allocation, while callers constructing envelopes manually can still
+/// supply owned strings.
 #[derive(Debug, Clone, Serialize)]
 pub struct ResponseMetadata {
-    pub version: String,
+    pub version: Cow<'static, str>,
+}
+
+impl ResponseMetadata {
+    /// Metadata carrying this crate's compile-time version — zero
+    /// allocation (borrows the `'static` version string).
+    #[must_use]
+    pub const fn current() -> Self {
+        Self {
+            version: Cow::Borrowed(env!("CARGO_PKG_VERSION")),
+        }
+    }
 }
 
 /// Outbound response envelope.
@@ -223,9 +240,7 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
                 status,
                 headers: HashMap::new(),
                 body: msg,
-                metadata: ResponseMetadata {
-                    version: env!("CARGO_PKG_VERSION").to_owned(),
-                },
+                metadata: ResponseMetadata::current(),
             };
         }
     };
@@ -239,9 +254,7 @@ pub fn error_envelope(message: &str) -> ResponseEnvelope {
         status: 500,
         headers: HashMap::new(),
         body: message.to_owned(),
-        metadata: ResponseMetadata {
-            version: env!("CARGO_PKG_VERSION").to_owned(),
-        },
+        metadata: ResponseMetadata::current(),
     }
 }
 
@@ -576,9 +589,7 @@ pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
         "content-type".to_owned(),
         HeaderValue::Single("text/plain; charset=utf-8".to_owned()),
     );
-    let metadata = ResponseMetadata {
-        version: env!("CARGO_PKG_VERSION").to_owned(),
-    };
+    let metadata = ResponseMetadata::current();
     let parts = (
         status,
         headers,
@@ -700,7 +711,6 @@ where
         .await
         .expect("router error is Infallible");
 
-    let version = env!("CARGO_PKG_VERSION").to_owned();
     let status = response.status().as_u16();
 
     let resp_headers = collect_header_map(response.headers());
@@ -717,7 +727,7 @@ where
         }
     }
 
-    Ok((status, resp_headers, ResponseMetadata { version }))
+    Ok((status, resp_headers, ResponseMetadata::current()))
 }
 
 /// Collapse an [`http::HeaderMap`] into the wire's name → value map.
@@ -752,7 +762,6 @@ fn collect_header_map(headers: &http::HeaderMap) -> HashMap<String, HeaderValue>
 /// [`HeaderValue::Multi`] so semantics (e.g. `set-cookie`) are
 /// preserved.
 async fn collect_response_parts(response: axum::response::Response) -> ResponseParts {
-    let version = env!("CARGO_PKG_VERSION").to_owned();
     let status = response.status().as_u16();
 
     let resp_headers = collect_header_map(response.headers());
@@ -768,7 +777,7 @@ async fn collect_response_parts(response: axum::response::Response) -> ResponseP
         status,
         resp_headers,
         body_bytes,
-        ResponseMetadata { version },
+        ResponseMetadata::current(),
     )
 }
 
@@ -859,13 +868,12 @@ async fn dispatch_and_split(
         .await
         .expect("router error is Infallible");
 
-    let version = env!("CARGO_PKG_VERSION").to_owned();
     let status = response.status().as_u16();
 
     let resp_headers = collect_header_map(response.headers());
 
     let body = response.into_body();
-    Ok((status, resp_headers, ResponseMetadata { version }, body))
+    Ok((status, resp_headers, ResponseMetadata::current(), body))
 }
 
 /// Build wire-format header bytes (`[u32 BE header_len | JSON header]`)
