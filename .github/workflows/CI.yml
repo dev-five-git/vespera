@@ -39,6 +39,11 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test Deploy
         run: cargo publish --dry-run
+      - name: Doctest
+        # tarpaulin's --all-targets / default run never compiles doc
+        # tests, which let a never-passing doctest land unnoticed —
+        # run them explicitly before the (slow) coverage step.
+        run: cargo test --workspace --doc
       - name: Test
         run: |
           # rust coverage issue

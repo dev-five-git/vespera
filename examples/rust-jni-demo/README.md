@@ -191,6 +191,6 @@ repositories {
     maven { url = uri("https://maven.pkg.github.com/dev-five-git/vespera") }
 }
 dependencies {
-    implementation("com.devfive.vespera:vespera-bridge:0.1.0")
+    implementation("kr.devfive:vespera-bridge:0.1.1")
 }
 ```

@@ -6,13 +6,13 @@ JNI bridge that lets a Java/Spring application embed a Rust [`vespera`](../../) 
 <dependency>
   <groupId>kr.devfive</groupId>
   <artifactId>vespera-bridge</artifactId>
-  <version>0.0.15</version>
+  <version>0.1.1</version>
 </dependency>
 ```
 
 ```kotlin
 dependencies {
-    implementation("kr.devfive:vespera-bridge:0.0.15")
+    implementation("kr.devfive:vespera-bridge:0.1.1")
 }
 ```
 
@@ -28,7 +28,7 @@ plugins {
 vespera {
     crateName.set("my_rust_lib")
     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
-    bridgeVersion.set("0.0.15")
+    bridgeVersion.set("0.1.1")
 }
 ```
 
@@ -200,11 +200,11 @@ bytes 4+N..   : raw body bytes (UTF-8 text or binary —
 - Multi-valued response headers (e.g. `set-cookie`) render as JSON arrays so semantics are preserved — they're never comma-joined.
 - All failure paths (malformed wire, Rust panic, no app registered) return a valid length-prefixed response with status `4xx` / `5xx`, so the decoder never has to special-case errors.
 
-## Four dispatch modes
+## Dispatch modes
 
-`VesperaBridge` exposes four native methods that all share the same
-wire format, same registered router, and same panic-safe
-`catch_unwind` discipline:
+`VesperaBridge` exposes six `byte[]`-based native methods plus a
+direct-buffer path — all sharing the same wire format, same registered
+router, and same panic-safe `catch_unwind` discipline:
 
 | Method | Mode | Java side return | Memory footprint |
 |---|---|---|---|
@@ -212,12 +212,66 @@ wire format, same registered router, and same panic-safe
 | `dispatchAsync(CompletableFuture<byte[]>, byte[])` | async (`CompletableFuture`) | `void` (future completes) | full body in memory |
 | `dispatchStreaming(byte[], OutputStream)` | sync, response-streaming | `byte[]` (header only) | chunk-bounded response |
 | `dispatchFullStreaming(byte[], InputStream, OutputStream)` | sync, **bidirectional streaming** | `byte[]` (header only) | chunk-bounded both ways |
+| `dispatchStreamingWithHeader(byte[], Consumer<byte[]>, OutputStream)` | sync, response-streaming | `void` (header via callback, fires before first body byte) | chunk-bounded response |
+| `dispatchFullStreamingWithHeader(byte[], Consumer<byte[]>, InputStream, OutputStream)` | sync, bidirectional streaming | `void` (header via callback) | chunk-bounded both ways |
+| `dispatchDirect(ByteBuffer, int, ByteBuffer)` | sync, **direct buffers** | `int` (response length / overflow code) | full body, but no Java heap arrays |
 
 Pick the mode that matches your workload:
 - Small JSON RPC, single request/response → `dispatchBytes`
+- Hot small/bounded payloads where JNI copy overhead matters → `dispatchDirect` / `dispatchDirectPooled`
 - Async I/O coordination (parallel Java requests, non-blocking) → `dispatchAsync` + `CompletableFuture`
 - Large download / streaming response (video, PDF, server-sent events) → `dispatchStreaming` + `OutputStream`
 - **Large upload + large download** (file transfer proxy, video transcoding, 1 GB ↔ 1 GB) → `dispatchFullStreaming` + `InputStream` + `OutputStream`
+- The `*WithHeader` variants let Spring-style controllers commit status/headers from the callback **before** the first body byte is written
+
+## Direct buffer dispatch (no JNI region copies)
+
+`dispatchDirect(ByteBuffer in, int inLen, ByteBuffer out)` reads the
+wire request from a **direct** `ByteBuffer` and writes the wire
+response into another, eliminating the two JNI
+`GetByteArrayRegion`/`SetByteArrayRegion` copies and the per-call Java
+heap array allocations that `dispatchBytes` pays.  To be precise about
+what remains: one plain native memcpy per side still happens (axum
+requires owned request bytes; the response is built in Rust before
+being written out) — the saving is the managed↔unmanaged region
+transitions and the heap array churn, measured at **1.4–2× per
+round-trip** depending on payload size.
+
+Contract:
+- Both buffers MUST be direct (`ByteBuffer.allocateDirect`); heap
+  buffers are rejected with `IllegalArgumentException` before crossing
+  JNI.
+- The request is read from absolute offsets `in[0..inLen]` — the
+  buffer's position/limit are **ignored**; `inLen` is authoritative.
+- Return `>= 0`: a complete wire response occupies `out[0..n]`.
+- Return `< 0`: `-(requiredSize)` — the response did not fit, nothing
+  was written.  **Retrying re-runs the Rust handler**, so only retry
+  idempotent requests.
+- `Integer.MIN_VALUE`: response exceeds 2 GiB (unrepresentable).
+
+`dispatchDirectPooled(byte[] wireRequest, boolean retryOnOverflow)`
+wraps the raw call with per-thread reusable direct buffers (64 KiB
+initial, doubling up to the `vespera.direct.maxBufferBytes` system
+property, default 4 MiB) and returns a read-only view of the response
+valid until the next dispatch on the same thread.  On response
+overflow it throws `BufferTooSmallException(requiredSize)` unless
+`retryOnOverflow` is `true` — pass `true` only for idempotent
+requests, because the retry dispatches again.
+
+For the Spring proxy, `DispatchMode.DIRECT` is **opt-in**: the default
+resolver stays `BIDIRECTIONAL_STREAMING` for every request.  Register
+a `SmartDispatchModeResolver` bean to route small bounded idempotent
+requests through DIRECT:
+
+```java
+@Bean
+public DispatchModeResolver dispatchModeResolver() {
+    // DIRECT only when Content-Length is known, <= 256 KiB, and the
+    // method is idempotent (GET/HEAD/PUT/DELETE/OPTIONS); everything
+    // else falls back to BIDIRECTIONAL_STREAMING.
+    return new SmartDispatchModeResolver();
+}
+```
 
 ## Direct API (without the proxy controller)
 
@@ -375,11 +429,9 @@ A Rust handler returning a binary response (e.g. `image/png`) flows the same way
 `@RequestMapping("/**")` catches every HTTP request, regardless of method or content type, and:
 
 1. Collects all incoming headers (lowercased keys).
-2. Reads the body as `byte[]` (Spring's `@RequestBody byte[]`, `consumes = MediaType.ALL_VALUE`).
-3. Encodes via `VesperaBridge.encodeRequest(...)` → `dispatchBytes(byte[])`.
-4. Decodes via `VesperaBridge.decodeResponse(byte[])`.
-5. Returns `ResponseEntity<String>` for text-like `Content-Type` (e.g. `text/*`, `application/json`, `+json`, `+xml`, `application/xml`, `application/javascript`, `application/yaml`, `application/x-www-form-urlencoded`, `application/graphql`).
-6. Returns `ResponseEntity<byte[]>` for everything else.
+2. Asks the configured `DispatchModeResolver` which mode serves this request (default: `BIDIRECTIONAL_STREAMING` for everything — servlet input/output streams pass straight through, no body materialisation).
+3. For `SYNC` / `ASYNC` / `STREAMING` / `DIRECT` modes the body is read into `byte[]` first, then encoded via `VesperaBridge.encodeRequest(...)` and dispatched through the matching native method.
+4. Sync/async responses are decoded via `VesperaBridge.decodeResponse(byte[])` and returned as `ResponseEntity<String>` for text-like `Content-Type` (e.g. `text/*`, `application/json`, `+json`, `+xml`, `application/xml`, `application/javascript`, `application/yaml`, `application/x-www-form-urlencoded`, `application/graphql`), `ResponseEntity<byte[]>` otherwise.  Streaming and DIRECT modes write status/headers and body straight to the servlet response.
 
 Missing `Content-Type` defaults to "text" — matching the long-standing Vespera convention of treating unspecified content as JSON-shaped.
 

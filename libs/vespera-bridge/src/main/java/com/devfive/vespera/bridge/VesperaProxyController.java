@@ -212,13 +212,12 @@ public class VesperaProxyController {
             HttpServletResponse response,
             String appName, String method, String path, String query,
             Map<String, String> headers, byte[] body) throws IOException {
-        byte[] bodyBytes = body != null ? body : new byte[0];
-        byte[] wireReq = VesperaBridge.encodeRequest(
-                appName, method, path, query, headers, bodyBytes);
-
         ByteBuffer wireResp;
         try {
-            wireResp = VesperaBridge.dispatchDirectPooled(wireReq, isIdempotent(method));
+            // Encodes straight into the pooled direct buffer — no
+            // intermediate wire-sized byte[].
+            wireResp = VesperaBridge.dispatchDirectPooled(
+                    appName, method, path, query, headers, body, isIdempotent(method));
         } catch (VesperaBridge.BufferTooSmallException overflow) {
             // Non-idempotent + response larger than the pool: the first
             // dispatch already ran; its result was discarded.  Serving

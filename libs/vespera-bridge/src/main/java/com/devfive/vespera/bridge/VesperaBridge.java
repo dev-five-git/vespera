@@ -430,7 +430,75 @@ public class VesperaBridge {
         in.clear();
         in.put(wireRequest);
 
-        int n = dispatchDirect(in, wireRequest.length, pool[1]);
+        return dispatchViaPool(wireRequest.length, retryOnOverflow, () -> wireRequest);
+    }
+
+    /**
+     * Encode-and-dispatch convenience that skips the intermediate
+     * wire-sized {@code byte[]} entirely: the wire request is encoded
+     * <strong>straight into the pooled direct in-buffer</strong> via
+     * {@link #encodeRequestInto}, so the body bytes are copied
+     * heap→direct exactly once (the {@code byte[]}-based overload
+     * assembles a full wire array first and then copies it again).
+     *
+     * <p>Same pooling, fallback, overflow, and view-validity semantics
+     * as {@link #dispatchDirectPooled(byte[], boolean)}.  Note the two
+     * distinct retry concepts: <em>encoding</em> growth (request bigger
+     * than the pooled buffer) happens before any dispatch and is always
+     * safe; <em>response-overflow</em> retry re-runs the Rust handler
+     * and is gated by {@code retryOnOverflow}.
+     *
+     * @param appName target app name (may be {@code null} for default)
+     * @param method  HTTP method (uppercase)
+     * @param path    URL path
+     * @param query   raw query string (may be {@code null})
+     * @param headers request headers
+     * @param body    request body bytes (may be empty or {@code null})
+     * @param retryOnOverflow whether a response overflow may re-run the
+     *                        dispatch (idempotent requests only)
+     * @return read-only buffer view of the wire response, valid until
+     *         the next {@code dispatchDirect*} call on this thread
+     */
+    public static ByteBuffer dispatchDirectPooled(
+            String appName,
+            String method,
+            String path,
+            String query,
+            Map<String, String> headers,
+            byte[] body,
+            boolean retryOnOverflow) {
+        byte[] headerJson = serializeHeaderJson(appName, method, path, query, headers);
+        byte[] bodyBytes = body != null ? body : new byte[0];
+        int total = 4 + headerJson.length + bodyBytes.length;
+        if (total > DIRECT_MAX_CAPACITY) {
+            // No dispatch has run yet — byte[] fallback is safe for any method.
+            return ByteBuffer.wrap(dispatchBytes(assembleWire(headerJson, bodyBytes)))
+                    .asReadOnlyBuffer();
+        }
+        ByteBuffer[] pool = DIRECT_POOL.get();
+        if (pool[0].capacity() < total) {
+            pool[0] = ByteBuffer.allocateDirect(grownCapacity(total));
+        }
+        int written = encodeRequestInto(headerJson, bodyBytes, pool[0]);
+        if (written != total) {
+            throw new IllegalStateException(
+                    "encodeRequestInto wrote " + written + ", expected " + total);
+        }
+        return dispatchViaPool(total, retryOnOverflow,
+                () -> assembleWire(headerJson, bodyBytes));
+    }
+
+    /**
+     * Dispatch the request already prepared in the pooled in-buffer
+     * ({@code pool[0][0..reqLen]}) and apply the response-overflow
+     * policy.  {@code wireFallback} supplies the equivalent wire bytes
+     * lazily — only materialised when a permitted retry exceeds the
+     * pool cap and must take the {@code dispatchBytes} path.
+     */
+    private static ByteBuffer dispatchViaPool(
+            int reqLen, boolean retryOnOverflow, java.util.function.Supplier<byte[]> wireFallback) {
+        ByteBuffer[] pool = DIRECT_POOL.get();
+        int n = dispatchDirect(pool[0], reqLen, pool[1]);
         if (n < 0 && n != Integer.MIN_VALUE) {
             int required = -n;
             if (!retryOnOverflow) {
@@ -438,10 +506,10 @@ public class VesperaBridge {
             }
             if (required > DIRECT_MAX_CAPACITY) {
                 // Retry permitted; beyond the pool cap use the byte[] path.
-                return ByteBuffer.wrap(dispatchBytes(wireRequest)).asReadOnlyBuffer();
+                return ByteBuffer.wrap(dispatchBytes(wireFallback.get())).asReadOnlyBuffer();
             }
             pool[1] = ByteBuffer.allocateDirect(grownCapacity(required));
-            n = dispatchDirect(in, wireRequest.length, pool[1]);
+            n = dispatchDirect(pool[0], reqLen, pool[1]);
         }
         if (n < 0) {
             throw new IllegalStateException(
@@ -450,6 +518,68 @@ public class VesperaBridge {
         ByteBuffer view = pool[1].asReadOnlyBuffer();
         view.position(0).limit(n);
         return view;
+    }
+
+    /**
+     * Encode a wire request <strong>directly into</strong> {@code target}
+     * starting at position 0 — no intermediate wire-sized {@code byte[]}.
+     *
+     * <p>On success the wire bytes occupy {@code target[0..returned]}
+     * and {@code target}'s position is left at the end of the written
+     * region.  If {@code target} is too small, returns
+     * {@code -(requiredSize)} and writes nothing.  This is an
+     * <em>encoding-side</em> size signal: no dispatch has happened, so
+     * growing the buffer and retrying is always safe (unlike the
+     * response-overflow retry, which re-runs the handler).
+     *
+     * @param appName target app name (may be {@code null} for default)
+     * @param method  HTTP method (uppercase)
+     * @param path    URL path
+     * @param query   raw query string (may be {@code null})
+     * @param headers request headers
+     * @param body    request body bytes (may be empty or {@code null})
+     * @param target  destination buffer (any kind; for the JNI direct
+     *                path use {@code ByteBuffer.allocateDirect})
+     * @return total bytes written ({@code >= 4}), or {@code -(required)}
+     */
+    public static int encodeRequestInto(
+            String appName,
+            String method,
+            String path,
+            String query,
+            Map<String, String> headers,
+            byte[] body,
+            ByteBuffer target) {
+        Objects.requireNonNull(target, "target");
+        byte[] headerJson = serializeHeaderJson(appName, method, path, query, headers);
+        return encodeRequestInto(headerJson, body != null ? body : new byte[0], target);
+    }
+
+    /** Internal: write {@code [u32 BE len | headerJson | body]} at position 0. */
+    private static int encodeRequestInto(byte[] headerJson, byte[] body, ByteBuffer target) {
+        int total = 4 + headerJson.length + body.length;
+        if (target.capacity() < total) {
+            return -total;
+        }
+        target.clear();
+        target.order(ByteOrder.BIG_ENDIAN);
+        target.putInt(headerJson.length);
+        target.put(headerJson);
+        if (body.length > 0) {
+            target.put(body);
+        }
+        return total;
+    }
+
+    /** Internal: assemble a heap wire array from pre-serialised parts. */
+    private static byte[] assembleWire(byte[] headerJson, byte[] body) {
+        ByteBuffer buf = ByteBuffer
+                .allocate(4 + headerJson.length + body.length)
+                .order(ByteOrder.BIG_ENDIAN);
+        buf.putInt(headerJson.length);
+        buf.put(headerJson);
+        buf.put(body);
+        return buf.array();
     }
 
     /** Smallest power-of-two-ish growth ≥ {@code needed}, capped. */
@@ -507,6 +637,17 @@ public class VesperaBridge {
             String query,
             Map<String, String> headers,
             byte[] body) {
+        byte[] headerJson = serializeHeaderJson(appName, method, path, query, headers);
+        return assembleWire(headerJson, body != null ? body : new byte[0]);
+    }
+
+    /** Internal: build and serialise the wire request header JSON. */
+    private static byte[] serializeHeaderJson(
+            String appName,
+            String method,
+            String path,
+            String query,
+            Map<String, String> headers) {
         try {
             ObjectNode header = MAPPER.createObjectNode();
             header.put("v", WIRE_VERSION);
@@ -525,15 +666,7 @@ public class VesperaBridge {
             if (appName != null && !appName.isBlank()) {
                 header.put("app", appName.trim());
             }
-            byte[] headerJson = MAPPER.writeValueAsBytes(header);
-            byte[] bodyBytes = body != null ? body : new byte[0];
-            ByteBuffer buf = ByteBuffer
-                    .allocate(4 + headerJson.length + bodyBytes.length)
-                    .order(ByteOrder.BIG_ENDIAN);
-            buf.putInt(headerJson.length);
-            buf.put(headerJson);
-            buf.put(bodyBytes);
-            return buf.array();
+            return MAPPER.writeValueAsBytes(header);
         } catch (IOException e) {
             throw new IllegalStateException("encodeRequest serialisation failed", e);
         }

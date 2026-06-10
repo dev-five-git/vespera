@@ -79,8 +79,8 @@ vespera/
 | `vespera_macro/src/parser/parameters.rs` | ~845 | Extract path/query params from handlers |
 | `vespera_macro/src/openapi_generator.rs` | ~808 | OpenAPI doc assembly |
 | `vespera_macro/src/collector.rs` | ~707 | Filesystem route scanning |
-| `vespera_inprocess/src/lib.rs` | ~175 | In-process dispatch + app factory |
-| `vespera_jni/src/lib.rs` | ~95 | JNI RUNTIME + jni_app! macro + JNI symbol |
+| `vespera_inprocess/src/lib.rs` | ~1184 | In-process dispatch + app factory + streaming + binary wire |
+| `vespera_jni/src/lib.rs` | ~795 | JNI RUNTIME + jni_app! macro + 7 JNI symbols (incl. direct-buffer path) |
 
 ## CRATE DEPENDENCY GRAPH
 
@@ -170,7 +170,7 @@ bytes 4+N..   : raw body bytes (UTF-8 text or binary —
 - All failure modes (malformed wire, panic in Rust, no app registered) return a valid length-prefixed wire response, so the Java decoder never has to special-case errors.
 - `validation_errors` is an optional array hoisted from 422 JSON bodies (`{"errors":[...]}`) — original body preserved verbatim alongside.
 
-### JNI Dispatch Modes (four symbols)
+### JNI Dispatch Modes (seven symbols)
 
 | Symbol | Java native | Mode | Memory |
 |---|---|---|---|
@@ -178,8 +178,11 @@ bytes 4+N..   : raw body bytes (UTF-8 text or binary —
 | `Java_...dispatchAsync` | `void dispatchAsync(CompletableFuture<byte[]>, byte[])` | async | full body |
 | `Java_...dispatchStreaming` | `byte[] dispatchStreaming(byte[], OutputStream)` | sync response-streaming | chunk-bounded response |
 | `Java_...dispatchFullStreaming` | `byte[] dispatchFullStreaming(byte[], InputStream, OutputStream)` | sync bidirectional streaming | chunk-bounded both directions |
+| `Java_...dispatchStreamingWithHeader` | `void dispatchStreamingWithHeader(byte[], Consumer<byte[]>, OutputStream)` | sync response-streaming, header callback before first body byte | chunk-bounded response |
+| `Java_...dispatchFullStreamingWithHeader` | `void dispatchFullStreamingWithHeader(byte[], Consumer<byte[]>, InputStream, OutputStream)` | sync bidirectional streaming, header callback | chunk-bounded both directions |
+| `Java_...dispatchDirect0` | `int dispatchDirect(ByteBuffer, int, ByteBuffer)` (public validated wrapper over the private native) | sync, direct buffers | full body, zero Java heap arrays |
 
-All four share the same wire format, registered router, and panic-safe `catch_unwind` discipline. `dispatchAsync` spawns the dispatch on Rust's shared Tokio runtime via `tokio::spawn` (panic → `JoinError` → `error_wire(500)`) and completes the `CompletableFuture` from a worker thread via `attach_current_thread`. `dispatchStreaming` drains the response body chunk-by-chunk via `http_body::Body::frame()` and writes each chunk to the Java `OutputStream`. `dispatchFullStreaming` adds request-side streaming: a `tokio::task::spawn_blocking` thread pulls 16 KiB chunks from `InputStream.read(byte[])` and feeds them into axum via an `mpsc::channel`-backed `http_body::Body`, giving natural backpressure (bounded 16-slot channel) so 1 GiB uploads run in `O(chunk_size)` RAM.
+All share the same wire format, registered router, and panic-safe `catch_unwind` discipline. The direct-buffer path (`dispatchDirect` + pooled `dispatchDirectPooled`, per-thread 64 KiB→4 MiB buffers via `vespera.direct.maxBufferBytes`) removes the two JNI region copies of `dispatchBytes`; on response overflow it returns `-(requiredSize)` and a retry **re-runs the handler**, so the Java side only auto-retries idempotent requests (`BufferTooSmallException` otherwise). Spring opt-in via `SmartDispatchModeResolver` → `DispatchMode.DIRECT`; the autoconfigured default remains `BIDIRECTIONAL_STREAMING`. `dispatchAsync` spawns the dispatch on Rust's shared Tokio runtime via `tokio::spawn` (panic → `JoinError` → `error_wire(500)`) and completes the `CompletableFuture` from a worker thread via `attach_current_thread`. `dispatchStreaming` drains the response body chunk-by-chunk via `http_body::Body::frame()` and writes each chunk to the Java `OutputStream`. `dispatchFullStreaming` adds request-side streaming: a `tokio::task::spawn_blocking` thread pulls 16 KiB chunks from `InputStream.read(byte[])` and feeds them into axum via an `mpsc::channel`-backed `http_body::Body`, giving natural backpressure (bounded 16-slot channel) so 1 GiB uploads run in `O(chunk_size)` RAM.
 
 ### Rust Public API (vespera_inprocess)
 

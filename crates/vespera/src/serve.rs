@@ -2,12 +2,20 @@
 //! with a one-liner.
 //!
 //! ```no_run
-//! use vespera::{vespera, Serve};
+//! use vespera::Serve;
 //!
 //! #[tokio::main]
 //! async fn main() -> std::io::Result<()> {
-//!     vespera!(title = "My API").serve("0.0.0.0:3000").await
+//!     vespera::axum::Router::new().serve("0.0.0.0:3000").await
 //! }
+//! ```
+//!
+//! Pairs naturally with the [`vespera!`](vespera_macro::vespera) macro
+//! (marked `ignore` because the macro scans the caller's `src/routes/`
+//! at compile time, which doesn't exist in a doctest sandbox):
+//!
+//! ```ignore
+//! vespera!(title = "My API").serve("0.0.0.0:3000").await
 //! ```
 //!
 //! Equivalent to:

@@ -151,32 +151,69 @@ class DispatchDirectE2ETest {
 
     @Test
     @Order(6)
+    void encodeIntoOverloadMatchesByteArrayOverload() throws Exception {
+        // The encode-into overload must produce a semantically identical
+        // response to the byte[]-wire overload for the same request.
+        byte[] body = randomBody(100 * 1024, 6);
+        Map<String, String> headers = Map.of("content-type", "application/octet-stream");
+
+        VesperaBridge.DecodedResponse viaWire = VesperaBridge.decodeResponse(
+                toArray(VesperaBridge.dispatchDirectPooled(echoWire(body), true)));
+        VesperaBridge.DecodedResponse viaEncodeInto = VesperaBridge.decodeResponse(
+                toArray(VesperaBridge.dispatchDirectPooled(
+                        null, "POST", "/echo", null, headers, body, true)));
+
+        assertEquals(viaWire.status(), viaEncodeInto.status(), "status");
+        assertEquals(viaWire.headers(), viaEncodeInto.headers(), "headers");
+        assertArrayEquals(sha256(viaWire.body()), sha256(viaEncodeInto.body()), "body");
+    }
+
+    @Test
+    @Order(7)
     void microBenchmarkDirectVsBytes() throws Exception {
-        System.out.println("== dispatchBytes vs dispatchDirectPooled (lower is better) ==");
+        System.out.println(
+                "== dispatchBytes vs dispatchDirectPooled(wire) vs dispatchDirectPooled(encode-into) ==");
+        Map<String, String> headers = Map.of("content-type", "application/octet-stream");
         for (int size : new int[] {1024, 64 * 1024, 1536 * 1024}) {
-            byte[] wire = echoWire(randomBody(size, size));
+            byte[] body = randomBody(size, size);
+            byte[] wire = echoWire(body);
             int iterations = size >= 1024 * 1024 ? 200 : 1000;
 
-            // Warm-up both paths (JIT + pool growth).
+            // Warm-up all paths (JIT + pool growth).
             for (int i = 0; i < 50; i++) {
                 VesperaBridge.dispatchBytes(wire);
                 VesperaBridge.dispatchDirectPooled(wire, true);
+                VesperaBridge.dispatchDirectPooled(null, "POST", "/echo", null, headers, body, true);
             }
 
+            // FAIR comparison: real callers encode per request, so the
+            // byte[]-based paths pay encodeRequest inside the loop too.
             long t0 = System.nanoTime();
             for (int i = 0; i < iterations; i++) {
-                VesperaBridge.dispatchBytes(wire);
+                VesperaBridge.dispatchBytes(
+                        VesperaBridge.encodeRequest(null, "POST", "/echo", null, headers, body));
             }
             long bytesNs = (System.nanoTime() - t0) / iterations;
 
             t0 = System.nanoTime();
             for (int i = 0; i < iterations; i++) {
-                VesperaBridge.dispatchDirectPooled(wire, true);
+                VesperaBridge.dispatchDirectPooled(
+                        VesperaBridge.encodeRequest(null, "POST", "/echo", null, headers, body),
+                        true);
             }
             long directNs = (System.nanoTime() - t0) / iterations;
 
-            System.out.printf("body=%8d B  dispatchBytes=%9d ns  dispatchDirect=%9d ns  ratio=%.2fx%n",
-                    size, bytesNs, directNs, (double) bytesNs / directNs);
+            t0 = System.nanoTime();
+            for (int i = 0; i < iterations; i++) {
+                VesperaBridge.dispatchDirectPooled(null, "POST", "/echo", null, headers, body, true);
+            }
+            long encodeIntoNs = (System.nanoTime() - t0) / iterations;
+
+            System.out.printf(
+                    "body=%8d B  bytes=%9d ns  direct(wire)=%9d ns  direct(encodeInto)=%9d ns  "
+                            + "vsBytes=%.2fx  vsWire=%.2fx%n",
+                    size, bytesNs, directNs, encodeIntoNs,
+                    (double) bytesNs / encodeIntoNs, (double) directNs / encodeIntoNs);
         }
     }
 
