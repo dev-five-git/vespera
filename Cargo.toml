@@ -10,6 +10,17 @@ license = "Apache-2.0"
 repository = "https://github.com/dev-five-git/vespera"
 readme = "README.md"
 
+# Release profile tuned for the shipped artifacts (JNI cdylibs, server
+# binaries): thin LTO + single codegen unit trade longer release-build
+# time for faster/smaller production code.
+#
+# NEVER switch the panic strategy away from unwinding here — the JNI
+# bridge relies on `catch_unwind` to convert handler panics into `500`
+# wire responses; aborting would take down the host JVM instead.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
 [workspace.dependencies]
 vespera_core = { path = "crates/vespera_core", version = "0.2.0" }
 vespera_macro = { path = "crates/vespera_macro", version = "0.2.0" }

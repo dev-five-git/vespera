@@ -337,15 +337,19 @@ async fn read_field_data(
     let field_name = field.name().unwrap_or_default().to_string();
 
     let data = if let Some(limit) = limit {
-        let mut buf = Vec::new();
+        // Pre-size up to 64 KiB: avoids repeated doubling reallocations for
+        // typical fields without reserving huge buffers for large limits.
+        let mut buf = Vec::with_capacity(limit.min(64 * 1024));
         while let Some(chunk) = field.chunk().await? {
-            buf.extend_from_slice(&chunk);
-            if buf.len() > limit {
+            // Reject BEFORE copying the over-limit chunk into the buffer —
+            // same acceptance condition (total <= limit), no wasted copy.
+            if buf.len().saturating_add(chunk.len()) > limit {
                 return Err(TypedMultipartError::FieldTooLarge {
                     field_name,
                     limit_bytes: limit,
                 });
             }
+            buf.extend_from_slice(&chunk);
         }
         buf
     } else {
@@ -360,10 +364,14 @@ async fn read_field_data(
 /// Accepted truthy values: `true`, `yes`, `y`, `1`, `on`
 /// Accepted falsy  values: `false`, `no`, `n`, `0`, `off`
 fn str_to_bool(s: &str) -> Option<bool> {
-    match s.to_ascii_lowercase().as_str() {
-        "true" | "yes" | "y" | "1" | "on" => Some(true),
-        "false" | "no" | "n" | "0" | "off" => Some(false),
-        _ => None,
+    const TRUTHY: [&str; 5] = ["true", "yes", "y", "1", "on"];
+    const FALSY: [&str; 5] = ["false", "no", "n", "0", "off"];
+    if TRUTHY.iter().any(|t| s.eq_ignore_ascii_case(t)) {
+        Some(true)
+    } else if FALSY.iter().any(|f| s.eq_ignore_ascii_case(f)) {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -477,9 +485,27 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for tempfile::NamedTempFile {
         _state: &S,
     ) -> Result<Self, TypedMultipartError> {
         let field_name = field.name().unwrap_or_default().to_string();
-        let mut temp = Self::new().map_err(|e| TypedMultipartError::Other {
+
+        // Temp-file creation is a blocking syscall — keep it off the
+        // async worker.  `NamedTempFile` (not `tokio::fs::File`) is
+        // retained so cleanup-on-drop semantics survive.
+        let temp = tokio::task::spawn_blocking(Self::new)
+            .await
+            .map_err(|e| TypedMultipartError::Other {
+                source: e.to_string(),
+            })?
+            .map_err(|e| TypedMultipartError::Other {
+                source: e.to_string(),
+            })?;
+
+        // Write through an independent async handle to the same file
+        // (tokio::fs routes writes to the blocking pool) so large
+        // uploads never stall the async executor.  `temp` keeps
+        // ownership of the path + delete-on-drop guard.
+        let std_file = temp.reopen().map_err(|e| TypedMultipartError::Other {
             source: e.to_string(),
         })?;
+        let mut file = tokio::fs::File::from_std(std_file);
 
         let mut total = 0usize;
         while let Some(chunk) = field.chunk().await? {
@@ -492,12 +518,17 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for tempfile::NamedTempFile {
                     limit_bytes: limit,
                 });
             }
-            std::io::Write::write_all(&mut temp, &chunk).map_err(|e| {
-                TypedMultipartError::Other {
+            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+                .await
+                .map_err(|e| TypedMultipartError::Other {
                     source: e.to_string(),
-                }
-            })?;
+                })?;
         }
+        tokio::io::AsyncWriteExt::flush(&mut file)
+            .await
+            .map_err(|e| TypedMultipartError::Other {
+                source: e.to_string(),
+            })?;
 
         Ok(temp)
     }

@@ -168,11 +168,13 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
     let mut cg = process_fields(fields.iter(), rename_all.as_deref(), strict, struct_default);
 
     if strict {
+        // Cold path: allocate the owned name only when the request is
+        // about to be rejected.
         cg.assignments.push(quote! {
             {
                 return std::result::Result::Err(
                     vespera::multipart::TypedMultipartError::UnknownField {
-                        field_name: __field_name__
+                        field_name: std::string::String::from(__field_name__)
                     }
                 );
             }
@@ -208,10 +210,13 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
                 while let std::option::Option::Some(__field__) = __multipart__
                     .next_field().await
                     .map_err(vespera::multipart::TypedMultipartError::from)? {
+                    // Borrowed `&str` — NLL ends the borrow on each match
+                    // arm before `__field__` is consumed by the parser, so
+                    // no per-field `String` allocation is needed.
                     let __field_name__ = match __field__.name() {
                         | std::option::Option::Some("")
                         | std::option::Option::None => #missing_name_fallback,
-                        | std::option::Option::Some(__name__) => __name__.to_string(),
+                        | std::option::Option::Some(__name__) => __name__,
                     };
 
                     #(#assignments) else *

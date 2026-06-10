@@ -39,9 +39,11 @@ tower-layer = "0.3"
 tower-service = "0.3"
 tokio-cron-scheduler = { version = "0.15", optional = true }
 # Used by the `Serve` extension trait to bind a TcpListener and drive
-# axum::serve.  Default-on because virtually every axum user already
-# has tokio in their dependency graph.
-tokio = { version = "1", features = ["net", "rt"] }
+# axum::serve, and by the multipart extractor to keep temp-file I/O
+# off the async workers (`fs` + `io-util` for tokio::fs writes,
+# `rt` for spawn_blocking).  Default-on because virtually every axum
+# user already has tokio in their dependency graph.
+tokio = { version = "1", features = ["net", "rt", "fs", "io-util"] }
 vespera_inprocess = { workspace = true, optional = true }
 vespera_jni = { workspace = true, optional = true }
 # Hidden behind `validation` feature; re-exported via the private

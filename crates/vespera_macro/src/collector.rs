@@ -85,12 +85,12 @@ pub fn collect_metadata(
                 };
                 let route_path = route_path.replace('_', "-");
 
-                // Extract doc comment from fn_item_str if no explicit description
-                let description = stored.description.clone().or_else(|| {
-                    syn::parse_str::<syn::ItemFn>(&stored.fn_item_str)
-                        .ok()
-                        .and_then(|fn_item| extract_doc_comment(&fn_item.attrs))
-                });
+                // `#[route]` already resolved the description at expansion
+                // time (explicit attribute OR doc comment — see
+                // `process_route_attribute`), so `stored.description` is
+                // authoritative.  Re-parsing `fn_item_str` here could never
+                // find a doc comment the attribute macro didn't.
+                let description = stored.description.clone();
 
                 metadata.routes.push(RouteMetadata {
                     method: stored.method.clone().unwrap_or_default(),
@@ -1047,7 +1047,7 @@ pub async fn list_users() -> String {
     }
 
     #[test]
-    fn test_collect_metadata_fast_path_doc_comment_extraction() {
+    fn test_collect_metadata_fast_path_uses_stored_description() {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let folder_name = "routes";
 
@@ -1055,27 +1055,46 @@ pub async fn list_users() -> String {
 
         let file_path_str = file_path.display().to_string();
 
-        // fn_item_str includes a doc comment, description is None
-        // so the fast path should extract the doc comment
+        // `#[route]` resolves the description (explicit attribute OR doc
+        // comment) at expansion time — see `process_route_attribute`.
+        // The collector fast path must pass it through verbatim WITHOUT
+        // re-parsing `fn_item_str`.
         let route_storage = vec![StoredRouteInfo {
             fn_name: "get_items".to_string(),
             method: Some("get".to_string()),
             custom_path: None,
             error_status: None,
             tags: None,
-            description: None, // No explicit description -> should extract from doc comment
+            description: Some("List all items".to_string()),
             fn_item_str:
                 "/// List all items\npub async fn get_items() -> String { \"items\".to_string() }"
                     .to_string(),
-            file_path: Some(file_path_str),
+            file_path: Some(file_path_str.clone()),
         }];
 
         let (metadata, _) = collect_metadata(temp_dir.path(), folder_name, &route_storage).unwrap();
 
         assert_eq!(metadata.routes.len(), 1);
-        let route = &metadata.routes[0];
-        // Description should be extracted from the doc comment in fn_item_str
-        assert_eq!(route.description, Some("List all items".to_string()));
+        assert_eq!(
+            metadata.routes[0].description,
+            Some("List all items".to_string())
+        );
+
+        // A storage entry with no description stays None — the fast path
+        // does NOT re-extract from fn_item_str (expansion already did).
+        let route_storage_none = vec![StoredRouteInfo {
+            fn_name: "get_items".to_string(),
+            method: Some("get".to_string()),
+            custom_path: None,
+            error_status: None,
+            tags: None,
+            description: None,
+            fn_item_str: "pub async fn get_items() -> String { \"items\".to_string() }".to_string(),
+            file_path: Some(file_path_str),
+        }];
+        let (metadata, _) =
+            collect_metadata(temp_dir.path(), folder_name, &route_storage_none).unwrap();
+        assert_eq!(metadata.routes[0].description, None);
 
         drop(temp_dir);
     }

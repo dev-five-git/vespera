@@ -24,7 +24,10 @@ use crate::metadata::StructMetadata;
 /// Internal cache state.
 struct FileCache {
     /// Cached `.rs` file lists per source directory.
-    file_lists: HashMap<PathBuf, Vec<PathBuf>>,
+    ///
+    /// `Arc<[PathBuf]>` so cache hits hand out an O(1) pointer clone
+    /// instead of cloning every path in the list.
+    file_lists: HashMap<PathBuf, Arc<[PathBuf]>>,
 
     /// Cached file contents: file path → (mtime, content string).
     /// Mtime is checked to invalidate stale entries in long-lived processes.
@@ -37,7 +40,8 @@ struct FileCache {
 
     /// Struct name candidate index: (src_dir, struct_name) → files containing that name.
     /// Built from cheap `String::contains` search, not full parsing.
-    struct_candidates: HashMap<(PathBuf, String), Vec<PathBuf>>,
+    /// `Arc<[PathBuf]>` for O(1) cache-hit clones.
+    struct_candidates: HashMap<(PathBuf, String), Arc<[PathBuf]>>,
 
     // NOTE: We CANNOT cache `syn::File` or `syn::ItemStruct` across proc-macro
     // invocations. Both `syn` and `proc_macro2` types contain `proc_macro::Span`
@@ -63,9 +67,11 @@ struct FileCache {
     // --- Phase 4 caches ---
     /// Cached circular reference analysis results: (module_path, definition) → analysis.
     circular_analysis: HashMap<(String, String), CircularAnalysis>,
-    /// Cached struct lookups by schema path: path_str → Option<StructMetadata>.
+    /// Cached struct lookups by schema path: path_str → Option<Arc<StructMetadata>>.
     /// `None` values are cached (negative cache) to avoid repeated failed lookups.
-    struct_lookup: HashMap<String, Option<StructMetadata>>,
+    /// `Arc` because `StructMetadata.definition` holds the full struct
+    /// source text — cloning it per hit copied kilobytes.
+    struct_lookup: HashMap<String, Option<Arc<StructMetadata>>>,
     /// Cached FK column lookups: (schema_path, via_rel) → Option<column_name>.
     fk_column_lookup: HashMap<(String, String), Option<String>>,
     /// Cached module path extraction from schema paths: path_str → Vec<module segments>.
@@ -153,37 +159,39 @@ fn parse_file_cached(cache: &mut FileCache, path: &Path) -> Option<syn::File> {
 /// Performs a cheap text-based search (`String::contains`) on file contents.
 /// False positives are acceptable (struct name in comments/strings), but false
 /// negatives are not. Results are cached per `(src_dir, struct_name)` pair.
-pub fn get_struct_candidates(src_dir: &Path, struct_name: &str) -> Vec<PathBuf> {
+pub fn get_struct_candidates(src_dir: &Path, struct_name: &str) -> Arc<[PathBuf]> {
     FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let key = (src_dir.to_path_buf(), struct_name.to_string());
 
         if let Some(candidates) = cache.struct_candidates.get(&key) {
-            return candidates.clone();
+            return Arc::clone(candidates);
         }
 
         // Ensure file list is cached
-        let files = if let Some(files) = cache.file_lists.get(src_dir) {
-            files.clone()
+        let files: Arc<[PathBuf]> = if let Some(files) = cache.file_lists.get(src_dir) {
+            Arc::clone(files)
         } else {
             let mut files = Vec::new();
             collect_rs_files_recursive(src_dir, &mut files);
+            let files: Arc<[PathBuf]> = files.into();
             cache
                 .file_lists
-                .insert(src_dir.to_path_buf(), files.clone());
+                .insert(src_dir.to_path_buf(), Arc::clone(&files));
             files
         };
 
         // Filter using cheap text search, caching file contents along the way
-        let candidates: Vec<PathBuf> = files
-            .into_iter()
+        let candidates: Arc<[PathBuf]> = files
+            .iter()
             .filter(|path| {
                 let content = get_file_content_inner(&mut cache, path);
                 content.is_some_and(|c| c.contains(struct_name))
             })
+            .cloned()
             .collect();
 
-        cache.struct_candidates.insert(key, candidates.clone());
+        cache.struct_candidates.insert(key, Arc::clone(&candidates));
         candidates
     })
 }
@@ -323,9 +331,12 @@ pub fn get_circular_analysis(source_module_path: &[String], definition: &str) ->
 
 /// Get or compute struct lookup by schema path, with caching.
 ///
-/// Wraps `find_struct_from_schema_path` with a `HashMap<String, Option<StructMetadata>>`
-/// cache. `None` values are cached too (negative cache) to avoid repeated failed lookups.
-pub fn get_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
+/// Wraps `find_struct_from_schema_path` with a
+/// `HashMap<String, Option<Arc<StructMetadata>>>` cache. `None` values
+/// are cached too (negative cache) to avoid repeated failed lookups.
+/// The `Arc` makes cache hits O(1) instead of cloning the full struct
+/// definition text per lookup.
+pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>> {
     // 1. Check cache — borrow dropped at end of closure
     let cached = FILE_CACHE.with(|cache| cache.borrow().struct_lookup.get(path_str).cloned());
     if let Some(result) = cached {
@@ -334,9 +345,9 @@ pub fn get_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
     }
 
     // 2. Compute — this re-enters FILE_CACHE via get_struct_definition (safe: our borrow is dropped)
-    let result = super::file_lookup::find_struct_from_schema_path(path_str);
+    let result = super::file_lookup::find_struct_from_schema_path(path_str).map(Arc::new);
 
-    // 3. Store — new borrow
+    // 3. Store — new borrow (Arc clone is O(1))
     FILE_CACHE.with(|cache| {
         cache
             .borrow_mut()

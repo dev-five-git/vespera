@@ -353,6 +353,49 @@ async fn dispatch_bidirectional_streaming_roundtrips_small_body() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dispatch_bidirectional_streaming_empty_chunk_is_retry_not_eof() {
+    // Pins the pull contract relied on by the JNI bridge:
+    // `Some(vec![])` means "no data right now, keep pulling" (mirrors
+    // Java `InputStream.read(byte[]) == 0`), NOT end-of-stream.  Data
+    // arriving AFTER an empty chunk must still reach the handler.
+    install_router();
+
+    let header_only_wire = encode_wire(
+        "POST",
+        "/echo/bytes",
+        None,
+        HashMap::from([("content-type", "application/octet-stream")]),
+        &[],
+    );
+
+    let chunks: Vec<Vec<u8>> = vec![
+        b"before".to_vec(),
+        Vec::new(), // empty read — must be skipped, not treated as EOF
+        b" after".to_vec(),
+    ];
+    let chunks_iter = Mutex::new(chunks.into_iter());
+    let pull_chunk = move || -> Option<Vec<u8>> { chunks_iter.lock().unwrap().next() };
+
+    let received: std::sync::Arc<Mutex<Vec<u8>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let received_clone = std::sync::Arc::clone(&received);
+    let on_chunk = move |chunk: &[u8]| {
+        received_clone.lock().unwrap().extend_from_slice(chunk);
+    };
+
+    let header_bytes =
+        vespera_inprocess::dispatch_bidirectional_streaming(header_only_wire, pull_chunk, on_chunk)
+            .await;
+
+    let (header, _body) = decode_wire(&header_bytes);
+    assert_eq!(header["status"].as_u64(), Some(200));
+    assert_eq!(
+        String::from_utf8_lossy(&received.lock().unwrap()),
+        "before after",
+        "data after an empty pull chunk must still reach the handler"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dispatch_bidirectional_streaming_large_request_body() {
     install_router();
 

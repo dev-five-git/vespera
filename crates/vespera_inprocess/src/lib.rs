@@ -213,7 +213,7 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
         envelope.path,
         envelope.query,
         envelope.headers,
-        envelope.body.into_bytes(),
+        Bytes::from(envelope.body),
     )
     .await
     {
@@ -373,30 +373,39 @@ where
 /// fallback and name validation.  Returns the cloned router (cheap —
 /// axum's router is `Arc`-backed) on success, or a wire error response
 /// (`400` for invalid name, `404` for unregistered name) on failure.
+///
+/// Lookup-first: registered names are validated at registration time
+/// ([`register_app_named`] discards invalid names), so a map hit is
+/// valid by construction.  Validation runs only on a miss, purely to
+/// pick the right error status (`400` invalid vs `404` unregistered)
+/// — keeping the per-request hot path to trim + hash lookup.
 fn resolve_app_router(header: &WireRequestHeader) -> Result<Router, Vec<u8>> {
-    let raw = header
+    let name = header
         .app
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(DEFAULT_APP_NAME);
-    let name = match validate_app_name(raw) {
-        Ok(n) => n,
-        Err(msg) => return Err(error_wire(400, &format!("invalid app name: {msg}"))),
-    };
-    let map = APP_ROUTERS
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    map.get(name).cloned().ok_or_else(|| {
-        error_wire(
+    {
+        let map = APP_ROUTERS
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(router) = map.get(name) {
+            return Ok(router.clone());
+        }
+    }
+    // Miss: decide between 400 (invalid name) and 404 (unregistered).
+    match validate_app_name(name) {
+        Err(msg) => Err(error_wire(400, &format!("invalid app name: {msg}"))),
+        Ok(name) => Err(error_wire(
             404,
             &format!(
                 "no app registered with name '{name}' — \
                  use register_app() for the default app or \
                  register_app_named(name, factory) for additional apps"
             ),
-        )
-    })
+        )),
+    }
 }
 
 // ── Binary Wire API ──────────────────────────────────────────────────
@@ -424,8 +433,9 @@ fn resolve_app_router(header: &WireRequestHeader) -> Result<Router, Vec<u8>> {
 /// * `header_len` exceeds input → 400
 /// * header JSON parse failure → 400
 /// * wire version mismatch → 400
+/// * invalid app name → 400
 /// * unknown HTTP method → 405
-/// * no app registered → 500
+/// * no app registered under the requested name → 404
 /// * router/handler errors → surfaced verbatim as response wire
 pub fn dispatch_from_bytes(input: Vec<u8>, runtime: &tokio::runtime::Runtime) -> Vec<u8> {
     runtime.block_on(dispatch_from_bytes_async(input))
@@ -516,8 +526,8 @@ where
 /// async dispatch path).
 ///
 /// All failure modes return a valid wire-format response (same
-/// guarantees as [`dispatch_from_bytes`]), including `500` when no app
-/// is registered.
+/// guarantees as [`dispatch_from_bytes`]), including `404` when no app
+/// is registered under the requested name.
 pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
     // Wire-level checks first: malformed input must report parse
     // errors regardless of whether an app is registered.
@@ -572,7 +582,7 @@ pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
     let parts = (
         status,
         headers,
-        Bytes::from(msg.as_bytes().to_vec()),
+        Bytes::copy_from_slice(msg.as_bytes()),
         metadata,
     );
     to_wire_bytes(parts)
@@ -595,7 +605,7 @@ async fn dispatch_parts(
     path: String,
     query: String,
     headers: HashMap<String, String>,
-    body_bytes: Vec<u8>,
+    body_bytes: Bytes,
 ) -> Result<ResponseParts, (u16, String)> {
     let Ok(http_method) = method_str.parse::<Method>() else {
         return Err((
@@ -650,7 +660,7 @@ async fn dispatch_response_streaming<F>(
     path: String,
     query: String,
     headers: HashMap<String, String>,
-    body_bytes: Vec<u8>,
+    body_bytes: Bytes,
     on_chunk: &mut F,
 ) -> Result<(u16, HashMap<String, HeaderValue>, ResponseMetadata), (u16, String)>
 where
@@ -693,27 +703,7 @@ where
     let version = env!("CARGO_PKG_VERSION").to_owned();
     let status = response.status().as_u16();
 
-    let mut resp_headers: HashMap<String, HeaderValue> =
-        HashMap::with_capacity(response.headers().len());
-    for (name, value) in response.headers() {
-        let val_str = value.to_str().unwrap_or("").to_owned();
-        match resp_headers.entry(name.as_str().to_owned()) {
-            Entry::Vacant(e) => {
-                e.insert(HeaderValue::Single(val_str));
-            }
-            Entry::Occupied(mut e) => {
-                let slot = e.get_mut();
-                let new_slot = match std::mem::replace(slot, HeaderValue::Single(String::new())) {
-                    HeaderValue::Single(prev) => HeaderValue::Multi(vec![prev, val_str]),
-                    HeaderValue::Multi(mut v) => {
-                        v.push(val_str);
-                        HeaderValue::Multi(v)
-                    }
-                };
-                *slot = new_slot;
-            }
-        }
-    }
+    let resp_headers = collect_header_map(response.headers());
 
     // Stream body chunks: pull frames one at a time and surface only
     // data frames (trailers are dropped — wire format does not carry
@@ -730,17 +720,12 @@ where
     Ok((status, resp_headers, ResponseMetadata { version }))
 }
 
-/// Collect status, headers, body bytes, and metadata from an axum
-/// response.  Headers with repeated names are collapsed into
-/// [`HeaderValue::Multi`] so semantics (e.g. `set-cookie`) are
-/// preserved.
-async fn collect_response_parts(response: axum::response::Response) -> ResponseParts {
-    let version = env!("CARGO_PKG_VERSION").to_owned();
-    let status = response.status().as_u16();
-
-    let mut resp_headers: HashMap<String, HeaderValue> =
-        HashMap::with_capacity(response.headers().len());
-    for (name, value) in response.headers() {
+/// Collapse an [`http::HeaderMap`] into the wire's name → value map.
+/// Headers with repeated names (e.g. `set-cookie`) are preserved as
+/// [`HeaderValue::Multi`] so their semantics survive the conversion.
+fn collect_header_map(headers: &http::HeaderMap) -> HashMap<String, HeaderValue> {
+    let mut resp_headers: HashMap<String, HeaderValue> = HashMap::with_capacity(headers.len());
+    for (name, value) in headers {
         let val_str = value.to_str().unwrap_or("").to_owned();
         match resp_headers.entry(name.as_str().to_owned()) {
             Entry::Vacant(e) => {
@@ -759,6 +744,18 @@ async fn collect_response_parts(response: axum::response::Response) -> ResponseP
             }
         }
     }
+    resp_headers
+}
+
+/// Collect status, headers, body bytes, and metadata from an axum
+/// response.  Headers with repeated names are collapsed into
+/// [`HeaderValue::Multi`] so semantics (e.g. `set-cookie`) are
+/// preserved.
+async fn collect_response_parts(response: axum::response::Response) -> ResponseParts {
+    let version = env!("CARGO_PKG_VERSION").to_owned();
+    let status = response.status().as_u16();
+
+    let resp_headers = collect_header_map(response.headers());
 
     let body_bytes = response
         .into_body()
@@ -865,27 +862,7 @@ async fn dispatch_and_split(
     let version = env!("CARGO_PKG_VERSION").to_owned();
     let status = response.status().as_u16();
 
-    let mut resp_headers: HashMap<String, HeaderValue> =
-        HashMap::with_capacity(response.headers().len());
-    for (name, value) in response.headers() {
-        let val_str = value.to_str().unwrap_or("").to_owned();
-        match resp_headers.entry(name.as_str().to_owned()) {
-            Entry::Vacant(e) => {
-                e.insert(HeaderValue::Single(val_str));
-            }
-            Entry::Occupied(mut e) => {
-                let slot = e.get_mut();
-                let new_slot = match std::mem::replace(slot, HeaderValue::Single(String::new())) {
-                    HeaderValue::Single(prev) => HeaderValue::Multi(vec![prev, val_str]),
-                    HeaderValue::Multi(mut v) => {
-                        v.push(val_str);
-                        HeaderValue::Multi(v)
-                    }
-                };
-                *slot = new_slot;
-            }
-        }
-    }
+    let resp_headers = collect_header_map(response.headers());
 
     let body = response.into_body();
     Ok((status, resp_headers, ResponseMetadata { version }, body))
@@ -1174,7 +1151,7 @@ async fn bidirectional_streaming_inner<P, F, H>(
 
     let body = Body::new(ChannelBody { rx });
     let (status, headers, metadata, mut response_body) = match dispatch_and_split(
-        router.clone(),
+        router,
         &header.method,
         header.path,
         header.query,
@@ -1228,14 +1205,19 @@ impl HttpBody for ChannelBody {
 }
 
 /// Parse a wire-format request.  On success returns the deserialised
-/// header and the owned body bytes (zero-copy via `Vec::split_off`).
-fn parse_wire_request(mut input: Vec<u8>) -> Result<(WireRequestHeader, Vec<u8>), String> {
+/// header and the owned body bytes.
+///
+/// The body is split off as [`Bytes`] — a true zero-copy O(1)
+/// refcount split of the input buffer (unlike `Vec::split_off`,
+/// which allocates a new vector and memcpys the tail).
+fn parse_wire_request(input: Vec<u8>) -> Result<(WireRequestHeader, Bytes), String> {
     if input.len() < 4 {
         return Err(format!(
             "wire input too short: {} bytes, need at least 4",
             input.len()
         ));
     }
+    let mut input = Bytes::from(input);
     let mut len_bytes = [0u8; 4];
     len_bytes.copy_from_slice(&input[..4]);
     let header_len = u32::from_be_bytes(len_bytes) as usize;
@@ -1246,10 +1228,38 @@ fn parse_wire_request(mut input: Vec<u8>) -> Result<(WireRequestHeader, Vec<u8>)
             input.len() - 4
         ));
     }
-    // Take ownership of the body without copy.
+    // O(1) split: both halves share the original allocation.
     let body = input.split_off(total_header_end);
     let header_json = &input[4..total_header_end];
     let header: WireRequestHeader = serde_json::from_slice(header_json)
         .map_err(|e| format!("wire header JSON parse error: {e}"))?;
     Ok((header, body))
+}
+
+#[cfg(test)]
+mod wire_parse_tests {
+    use super::parse_wire_request;
+
+    /// Pins the zero-copy contract: the returned body must point into
+    /// the original input allocation (no memcpy of the tail).
+    #[test]
+    fn parse_wire_request_body_is_zero_copy() {
+        let header = br#"{"v":1,"method":"POST","path":"/x"}"#;
+        let body = vec![0xABu8; 1024];
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&u32::try_from(header.len()).unwrap().to_be_bytes());
+        wire.extend_from_slice(header);
+        wire.extend_from_slice(&body);
+
+        let input_ptr = wire.as_ptr() as usize;
+        let body_offset = 4 + header.len();
+        let (_, parsed_body) = parse_wire_request(wire).expect("valid wire request");
+
+        assert_eq!(parsed_body.len(), 1024);
+        assert_eq!(
+            parsed_body.as_ptr() as usize,
+            input_ptr + body_offset,
+            "body must alias the original input buffer (zero-copy)"
+        );
+    }
 }

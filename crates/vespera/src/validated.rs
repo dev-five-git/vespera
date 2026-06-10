@@ -137,7 +137,7 @@ fn build_validation_response(report: &::garde::Report) -> Response {
     let mut response = (StatusCode::UNPROCESSABLE_ENTITY, body).into_response();
     response.headers_mut().insert(
         CONTENT_TYPE,
-        "application/json".parse().expect("static value parses"),
+        ::axum::http::HeaderValue::from_static("application/json"),
     );
     response
 }

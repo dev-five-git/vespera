@@ -384,8 +384,7 @@ public class VesperaBridge {
                             + " overflows response (" + wire.length + " bytes)");
         }
         try {
-            JsonNode header = MAPPER.readTree(
-                    new java.io.ByteArrayInputStream(wire, 4, headerLen));
+            JsonNode header = MAPPER.readTree(wire, 4, headerLen);
             int status = header.path("status").asInt(500);
 
             Map<String, Object> headers = new LinkedHashMap<>();

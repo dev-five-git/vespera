@@ -263,36 +263,15 @@ mod jni_impl {
                 let stream_global: Global<JObject<'static>> = env.new_global_ref(&output_stream)?;
                 let jvm = env.get_java_vm()?;
 
+                // One reusable Java chunk buffer for the whole stream.
+                let push_buf_local = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
+                let push_buf: Global<jni::objects::JByteArray<'static>> =
+                    env.new_global_ref(&push_buf_local)?;
+
                 let header_bytes = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     RUNTIME.block_on(vespera_inprocess::dispatch_streaming_async(
                         input,
-                        |chunk: &[u8]| {
-                            // Per-chunk: attach (cheap on subsequent
-                            // calls — TLS fast path) + push a local
-                            // frame to keep the local-ref table bounded
-                            // even for streams with thousands of chunks.
-                            let _ = jvm.attach_current_thread(
-                                |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
-                                    env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
-                                        let arr = env.byte_array_from_slice(chunk)?;
-                                        let arr_obj: JObject = arr.into();
-                                        env.call_method(
-                                            &stream_global,
-                                            jni_str!("write"),
-                                            jni_sig!("([B)V"),
-                                            &[JValue::Object(&arr_obj)],
-                                        )?;
-                                        // Any IOException thrown by write() is left
-                                        // pending on the env; clear it so subsequent
-                                        // chunks on the same thread aren't poisoned.
-                                        if env.exception_check() {
-                                            env.exception_clear();
-                                        }
-                                        Ok(())
-                                    })
-                                },
-                            );
-                        },
+                        make_push_closure(jvm, stream_global, push_buf),
                     ))
                 }))
                 .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
@@ -351,6 +330,16 @@ mod jni_impl {
                 let output_global: Global<JObject<'static>> = env.new_global_ref(&output_stream)?;
                 let jvm = env.get_java_vm()?;
 
+                // One reusable Java chunk buffer PER SIDE — pull and
+                // push run concurrently on different threads, so each
+                // direction owns its own global-ref'd buffer.
+                let pull_buf_local = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
+                let pull_buf: Global<jni::objects::JByteArray<'static>> =
+                    env.new_global_ref(&pull_buf_local)?;
+                let push_buf_local = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
+                let push_buf: Global<jni::objects::JByteArray<'static>> =
+                    env.new_global_ref(&push_buf_local)?;
+
                 // Closures capture clones of the JavaVM and Globals;
                 // both types are Send+Sync.
                 let pull_jvm = jvm.clone();
@@ -365,54 +354,10 @@ mod jni_impl {
                             // Pull request body chunks from Java InputStream.
                             // Runs on a tokio blocking thread (spawn_blocking
                             // inside dispatch_bidirectional_streaming).
-                            move || -> Option<Vec<u8>> {
-                                let result: jni::errors::Result<Option<Vec<u8>>> = pull_jvm
-                                    .attach_current_thread(|env| {
-                                        env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
-                                            let arr = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
-                                            let n = env
-                                                .call_method(
-                                                    &pull_global,
-                                                    jni_str!("read"),
-                                                    jni_sig!("([B)I"),
-                                                    &[JValue::Object(arr.as_ref())],
-                                                )?
-                                                .i()?;
-                                            if env.exception_check() {
-                                                env.exception_clear();
-                                            }
-                                            if n <= 0 {
-                                                return Ok(None);
-                                            }
-                                            let mut data = env.convert_byte_array(&arr)?;
-                                            data.truncate(usize::try_from(n).unwrap_or(0));
-                                            Ok(Some(data))
-                                        })
-                                    });
-                                result.ok().flatten()
-                            },
+                            make_pull_closure(pull_jvm, pull_global, pull_buf),
                             // Push response body chunks to Java OutputStream.
                             // Runs on the tokio worker driving the dispatch.
-                            |chunk: &[u8]| {
-                                let _ = push_jvm.attach_current_thread(
-                                    |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
-                                        env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
-                                            let arr = env.byte_array_from_slice(chunk)?;
-                                            let arr_obj: JObject = arr.into();
-                                            env.call_method(
-                                                &push_global,
-                                                jni_str!("write"),
-                                                jni_sig!("([B)V"),
-                                                &[JValue::Object(&arr_obj)],
-                                            )?;
-                                            if env.exception_check() {
-                                                env.exception_clear();
-                                            }
-                                            Ok(())
-                                        })
-                                    },
-                                );
-                            },
+                            make_push_closure(push_jvm, push_global, push_buf),
                         ))
                     }))
                     .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
@@ -459,6 +404,11 @@ mod jni_impl {
             let stream_global: Global<JObject<'static>> = env.new_global_ref(&output_stream)?;
             let jvm = env.get_java_vm()?;
 
+            // One reusable Java chunk buffer for the whole stream.
+            let push_buf_local = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
+            let push_buf: Global<jni::objects::JByteArray<'static>> =
+                env.new_global_ref(&push_buf_local)?;
+
             // Panic safety: catch_unwind absorbs Rust panics so the
             // JVM never sees an unwinding stack across the FFI
             // boundary.  If the panic happens AFTER the header
@@ -471,8 +421,8 @@ mod jni_impl {
             // should set a timeout.
             let _panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let header_for_cb = header_global;
-                let stream_for_cb = stream_global;
-                let jvm_for_cb = jvm;
+                let jvm_for_cb = jvm.clone();
+                let push = make_push_closure(jvm, stream_global, push_buf);
                 RUNTIME.block_on(vespera_inprocess::dispatch_streaming_with_header_async(
                     input,
                     |header_bytes: &[u8]| {
@@ -482,15 +432,7 @@ mod jni_impl {
                             },
                         );
                     },
-                    |chunk: &[u8]| {
-                        let _ = jvm_for_cb.attach_current_thread(
-                            |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
-                                env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
-                                    write_chunk_to_stream(env, &stream_for_cb, chunk)
-                                })
-                            },
-                        );
-                    },
+                    push,
                 ));
             }));
 
@@ -531,6 +473,15 @@ mod jni_impl {
             let output_global: Global<JObject<'static>> = env.new_global_ref(&output_stream)?;
             let jvm = env.get_java_vm()?;
 
+            // One reusable Java chunk buffer PER SIDE — pull and push
+            // run concurrently on different threads.
+            let pull_buf_local = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
+            let pull_buf: Global<jni::objects::JByteArray<'static>> =
+                env.new_global_ref(&pull_buf_local)?;
+            let push_buf_local = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
+            let push_buf: Global<jni::objects::JByteArray<'static>> =
+                env.new_global_ref(&push_buf_local)?;
+
             let pull_jvm = jvm.clone();
             let pull_global = input_global;
             let push_jvm = jvm.clone();
@@ -545,41 +496,8 @@ mod jni_impl {
                 RUNTIME.block_on(
                     vespera_inprocess::dispatch_bidirectional_streaming_with_header(
                         header_input,
-                        move || -> Option<Vec<u8>> {
-                            let result: jni::errors::Result<Option<Vec<u8>>> = pull_jvm
-                                .attach_current_thread(|env| {
-                                    env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
-                                        let arr = env.new_byte_array(STREAMING_CHUNK_SIZE)?;
-                                        let n = env
-                                            .call_method(
-                                                &pull_global,
-                                                jni_str!("read"),
-                                                jni_sig!("([B)I"),
-                                                &[JValue::Object(arr.as_ref())],
-                                            )?
-                                            .i()?;
-                                        if env.exception_check() {
-                                            env.exception_clear();
-                                        }
-                                        if n <= 0 {
-                                            return Ok(None);
-                                        }
-                                        let mut data = env.convert_byte_array(&arr)?;
-                                        data.truncate(usize::try_from(n).unwrap_or(0));
-                                        Ok(Some(data))
-                                    })
-                                });
-                            result.ok().flatten()
-                        },
-                        |chunk: &[u8]| {
-                            let _ = push_jvm.attach_current_thread(
-                                |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
-                                    env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
-                                        write_chunk_to_stream(env, &push_global, chunk)
-                                    })
-                                },
-                            );
-                        },
+                        make_pull_closure(pull_jvm, pull_global, pull_buf),
+                        make_push_closure(push_jvm, push_global, push_buf),
                         |header_bytes: &[u8]| {
                             let _ = header_jvm.attach_current_thread(
                                 |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
@@ -593,6 +511,123 @@ mod jni_impl {
 
             Ok(())
         });
+    }
+
+    /// Build the request-body pull closure shared by the two
+    /// full-streaming JNI entry points.
+    ///
+    /// The Java-side chunk buffer (`buf`) is allocated **once** by the
+    /// caller and promoted to a global ref — reused across every
+    /// chunk instead of `new_byte_array` per chunk.  Bytes are copied
+    /// out via `get_byte_array_region`, which copies **only the `n`
+    /// bytes actually read** (the previous `convert_byte_array`
+    /// approach copied the full 16 KiB buffer regardless and then
+    /// truncated).
+    fn make_pull_closure(
+        jvm: jni::JavaVM,
+        stream: Global<JObject<'static>>,
+        buf: Global<jni::objects::JByteArray<'static>>,
+    ) -> impl FnMut() -> Option<Vec<u8>> + Send + 'static {
+        move || -> Option<Vec<u8>> {
+            let result: jni::errors::Result<Option<Vec<u8>>> = jvm.attach_current_thread(|env| {
+                env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
+                    let n = env
+                        .call_method(
+                            &stream,
+                            jni_str!("read"),
+                            jni_sig!("([B)I"),
+                            &[JValue::Object(buf.as_ref())],
+                        )?
+                        .i()?;
+                    if env.exception_check() {
+                        env.exception_clear();
+                    }
+                    // InputStream.read(byte[]) contract (mirrored in the
+                    // VesperaBridge javadoc): -1 = EOF, 0 = empty read that
+                    // MUST be retried.  The inprocess producer skips empty
+                    // chunks and keeps pulling, so report `0` as an empty
+                    // chunk rather than end-of-stream.
+                    if n < 0 {
+                        return Ok(None);
+                    }
+                    if n == 0 {
+                        return Ok(Some(Vec::new()));
+                    }
+                    let n = usize::try_from(n).unwrap_or(0).min(STREAMING_CHUNK_SIZE);
+                    let mut data = vec![0u8; n];
+                    // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
+                    // identical size/alignment; this views the
+                    // freshly allocated buffer as the signed slice
+                    // `get_byte_array_region` expects.
+                    let data_i8 = unsafe {
+                        std::slice::from_raw_parts_mut(data.as_mut_ptr().cast::<i8>(), n)
+                    };
+                    let arr: &jni::objects::JByteArray<'_> = buf.as_ref();
+                    arr.get_region(env, 0, data_i8)?;
+                    Ok(Some(data))
+                })
+            });
+            result.ok().flatten()
+        }
+    }
+
+    /// Build the response-body push closure shared by all four
+    /// streaming JNI entry points.
+    ///
+    /// The Java-side buffer (`buf`, [`STREAMING_CHUNK_SIZE`] bytes) is
+    /// allocated **once** by the caller and reused for every chunk via
+    /// `JByteArray::set_region` + `OutputStream.write(byte[], int, int)`
+    /// — the previous implementation allocated a fresh exact-size Java
+    /// array per chunk (`byte_array_from_slice`).  Axum body frames are
+    /// unbounded in size, so frames larger than the buffer are written
+    /// in buffer-sized segments.
+    ///
+    /// NOTE: when request pull and response push run concurrently
+    /// (bidirectional streaming), each side MUST own a **separate**
+    /// buffer — they execute on different threads.
+    fn make_push_closure(
+        jvm: jni::JavaVM,
+        stream: Global<JObject<'static>>,
+        buf: Global<jni::objects::JByteArray<'static>>,
+    ) -> impl FnMut(&[u8]) + Send + 'static {
+        move |chunk: &[u8]| {
+            let _ =
+                jvm.attach_current_thread(|env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
+                    env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
+                        let arr: &jni::objects::JByteArray<'_> = buf.as_ref();
+                        for seg in chunk.chunks(STREAMING_CHUNK_SIZE) {
+                            // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
+                            // identical size/alignment; this views the
+                            // segment as the signed slice `set_region`
+                            // expects.  `seg.len() <= STREAMING_CHUNK_SIZE`
+                            // so it always fits both the buffer and `i32`.
+                            let seg_i8 = unsafe {
+                                std::slice::from_raw_parts(seg.as_ptr().cast::<i8>(), seg.len())
+                            };
+                            arr.set_region(env, 0, seg_i8)?;
+                            let len = i32::try_from(seg.len())
+                                .expect("segment length bounded by STREAMING_CHUNK_SIZE");
+                            env.call_method(
+                                &stream,
+                                jni_str!("write"),
+                                jni_sig!("([BII)V"),
+                                &[
+                                    JValue::Object(buf.as_ref()),
+                                    JValue::Int(0),
+                                    JValue::Int(len),
+                                ],
+                            )?;
+                            // Any IOException thrown by write() is left
+                            // pending on the env; clear it so subsequent
+                            // chunks on the same thread aren't poisoned.
+                            if env.exception_check() {
+                                env.exception_clear();
+                            }
+                        }
+                        Ok(())
+                    })
+                });
+        }
     }
 
     fn call_header_consumer(
@@ -614,25 +649,6 @@ mod jni_impl {
             }
             Ok(())
         })
-    }
-
-    fn write_chunk_to_stream(
-        env: &mut jni::Env<'_>,
-        stream: &Global<JObject<'static>>,
-        chunk: &[u8],
-    ) -> jni::errors::Result<()> {
-        let arr = env.byte_array_from_slice(chunk)?;
-        let arr_obj: JObject = arr.into();
-        env.call_method(
-            stream,
-            jni_str!("write"),
-            jni_sig!("([B)V"),
-            &[JValue::Object(&arr_obj)],
-        )?;
-        if env.exception_check() {
-            env.exception_clear();
-        }
-        Ok(())
     }
 
     /// Call `CompletableFuture.complete(byte[])` and clear any pending

@@ -134,8 +134,11 @@ pub fn find_struct_by_name_in_all_files(
     struct_name: &str,
     schema_name_hint: Option<&str>,
 ) -> Option<(StructMetadata, Vec<String>)> {
-    // Use cached struct-candidate index: files already filtered by text search
-    let mut rs_files = super::file_cache::get_struct_candidates(src_dir, struct_name);
+    // Use cached struct-candidate index: files already filtered by text
+    // search.  `Arc<[PathBuf]>` — iterate by reference; only matched
+    // paths are cloned.
+    let all_files = super::file_cache::get_struct_candidates(src_dir, struct_name);
+    let mut rs_files: Vec<&std::path::PathBuf> = all_files.iter().collect();
 
     // Pre-compute hint prefix once (used in fast path and fallback disambiguation)
     let prefix_normalized = schema_name_hint.map(derive_hint_prefix);
@@ -161,7 +164,7 @@ pub fn find_struct_by_name_in_all_files(
                 super::file_cache::get_struct_definition(file_path, struct_name)
             {
                 found_in_candidates.push((
-                    file_path.clone(),
+                    (*file_path).clone(),
                     StructMetadata::new_model(struct_name.to_string(), definition),
                 ));
             }
@@ -203,8 +206,7 @@ pub fn find_struct_by_name_in_all_files(
     let mut found_structs: Vec<(std::path::PathBuf, StructMetadata)> = Vec::new();
 
     for file_path in rs_files {
-        if let Some(definition) = super::file_cache::get_struct_definition(&file_path, struct_name)
-        {
+        if let Some(definition) = super::file_cache::get_struct_definition(file_path, struct_name) {
             found_structs.push((
                 file_path.clone(),
                 StructMetadata::new_model(struct_name.to_string(), definition),

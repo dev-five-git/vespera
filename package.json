@@ -6,7 +6,7 @@
   "author": "devfive",
   "devDependencies": {
     "eslint-plugin-devup": "^2.0.19",
-    "oxlint": "^1.66.0",
+    "oxlint": "^1.69.0",
     "husky": "^9.1",
     "bun-test-env-dom": "^1.0",
     "@devup-ui/bun-plugin": "^1.0",
