@@ -978,6 +978,144 @@ pub struct User {
         drop(temp_dir);
     }
 
+    // ── normalize_path_key regression locks ─────────────────────────
+    //
+    // The fast path matches `#[route]`'s `Span::local_file()` strings
+    // (cwd-relative) against the collector's absolute walk paths.
+    // Before normalization existed the keys NEVER matched and the
+    // fast path was silently dead — every route file was re-parsed on
+    // every cache miss with zero test failures.  These tests pin the
+    // matching semantics so a regression is loud.
+
+    #[rstest]
+    // Relative path resolves against cwd → equals the absolute form.
+    #[case("src/routes/users.rs", "/work/src/routes/users.rs", "/work")]
+    // Separator style must not matter.
+    #[case("src\\routes\\users.rs", "/work/src/routes/users.rs", "/work")]
+    // `.` and `..` components fold on either side.
+    #[case(
+        "src/./routes/../routes/users.rs",
+        "/work/src/routes/users.rs",
+        "/work"
+    )]
+    #[case("src/routes/users.rs", "/work/extra/../src/routes/users.rs", "/work")]
+    fn normalize_path_key_matches_equivalent_paths(
+        #[case] stored: &str,
+        #[case] walked: &str,
+        #[case] cwd: &str,
+    ) {
+        let cwd = Path::new(cwd);
+        assert_eq!(
+            normalize_path_key(stored, cwd),
+            normalize_path_key(walked, cwd),
+            "stored={stored:?} and walked={walked:?} must produce the same key"
+        );
+    }
+
+    #[test]
+    fn normalize_path_key_distinguishes_different_files() {
+        let cwd = Path::new("/work");
+        assert_ne!(
+            normalize_path_key("src/routes/users.rs", cwd),
+            normalize_path_key("src/routes/posts.rs", cwd),
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalize_path_key_windows_verbatim_prefix_and_case() {
+        let cwd = Path::new("C:\\work");
+        // `fs::canonicalize` output style (\\?\ verbatim prefix) must
+        // match plain absolute paths, and drive/file case must fold.
+        assert_eq!(
+            normalize_path_key("\\\\?\\C:\\Work\\Src\\Users.RS", cwd),
+            normalize_path_key("c:/work/src/users.rs", cwd),
+        );
+    }
+
+    /// END-TO-END lock for the fast-path activation bug: storage
+    /// carries a **cwd-relative** path (exactly what
+    /// `Span::local_file()` yields) while the collector walks an
+    /// absolute folder.  The route file is deliberately INVALID Rust —
+    /// the slow path would fail with a parse error, so a successful
+    /// collect proves the fast path matched without parsing.
+    #[test]
+    fn fast_path_matches_cwd_relative_storage_paths_without_parsing() {
+        // cargo runs tests with cwd = this crate's manifest dir, so a
+        // path under the workspace `target/` dir has a stable relative
+        // form mirroring rustc's span paths.
+        let unique = format!("vespera_fastpath_lock_{}", std::process::id());
+        let abs_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join(&unique);
+        fs::create_dir_all(&abs_dir).expect("create test route dir");
+        fs::write(
+            abs_dir.join("users.rs"),
+            "this is deliberately not rust {{{",
+        )
+        .expect("write route file");
+
+        let relative_stored_path = format!("../../target/{unique}/users.rs");
+        let route_storage = vec![StoredRouteInfo {
+            fn_name: "get_users".to_string(),
+            method: None,
+            custom_path: None,
+            error_status: None,
+            tags: None,
+            description: None,
+            fn_item_str: "pub async fn get_users() -> String { String::new() }".to_string(),
+            file_path: Some(relative_stored_path),
+        }];
+
+        let result = collect_metadata(&abs_dir, "routes", &route_storage);
+        fs::remove_dir_all(&abs_dir).ok();
+
+        let (metadata, file_asts) = result.expect(
+            "fast path must match the relative storage path WITHOUT parsing — \
+             a parse error here means key normalization regressed and the \
+             slow path ran against the invalid file",
+        );
+        assert_eq!(metadata.routes.len(), 1, "route must come from storage");
+        assert!(
+            file_asts.is_empty(),
+            "fast path must not parse any file ASTs"
+        );
+    }
+
+    /// Lock for the method-default bug: `#[route]` without a method
+    /// stores `method: None`; the fast path must resolve it to "get"
+    /// like the slow path does.  The original `unwrap_or_default()`
+    /// produced "" — silently dropping such routes from the OpenAPI
+    /// doc AND the generated router.
+    #[test]
+    fn fast_path_defaults_missing_method_to_get() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let file_path = create_temp_file(&temp_dir, "items.rs", "// placeholder\n");
+
+        let route_storage = vec![StoredRouteInfo {
+            fn_name: "list_items".to_string(),
+            method: None, // bare `#[route]` / `#[route(path = ...)]`
+            custom_path: None,
+            error_status: None,
+            tags: None,
+            description: None,
+            fn_item_str: "pub async fn list_items() -> String { String::new() }".to_string(),
+            file_path: Some(file_path.display().to_string()),
+        }];
+
+        let (metadata, _) = collect_metadata(temp_dir.path(), "routes", &route_storage).unwrap();
+
+        assert_eq!(metadata.routes.len(), 1);
+        assert_eq!(
+            metadata.routes[0].method, "get",
+            "missing method must default to GET — \"\" silently drops the route"
+        );
+
+        drop(temp_dir);
+    }
+
     #[test]
     fn test_collect_metadata_fast_path_with_route_storage() {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
