@@ -104,12 +104,78 @@ mod jni_impl {
     use jni::{jni_sig, jni_str};
 
     /// Multi-threaded Tokio runtime shared across all JNI calls.
+    ///
+    /// Worker thread count defaults to Tokio's heuristic (number of
+    /// logical CPUs) and can be capped for embeddings where the JVM's
+    /// own thread pools (e.g. Tomcat) compete for the same cores —
+    /// see [`runtime_worker_threads`].
     pub static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
-        tokio::runtime::Builder::new_multi_thread()
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        if let Some(workers) = runtime_worker_threads() {
+            builder.worker_threads(workers);
+        }
+        builder
             .enable_all()
             .build()
             .expect("failed to create Tokio runtime")
     });
+
+    const MIN_RUNTIME_WORKERS: usize = 1;
+    const MAX_RUNTIME_WORKERS: usize = 1024;
+
+    static RUNTIME_WORKER_THREADS: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+
+    /// Worker thread count for the shared [`RUNTIME`], resolved once
+    /// (first hit wins, then fixed for the process lifetime):
+    ///
+    /// 1. [`set_runtime_worker_threads`] called before the runtime is
+    ///    first used (the `configureRuntime0` JNI hook from
+    ///    `VesperaBridge.init()` lands here)
+    /// 2. `VESPERA_RUNTIME_WORKERS` environment variable
+    /// 3. `None` — Tokio's default (number of logical CPUs)
+    ///
+    /// Values are clamped to `[1, 1024]`.
+    #[must_use]
+    pub fn runtime_worker_threads() -> Option<usize> {
+        *RUNTIME_WORKER_THREADS.get_or_init(|| {
+            std::env::var("VESPERA_RUNTIME_WORKERS")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<usize>().ok())
+                .map(|v| v.clamp(MIN_RUNTIME_WORKERS, MAX_RUNTIME_WORKERS))
+        })
+    }
+
+    /// Override the shared runtime's worker thread count **before the
+    /// first dispatch**.  Returns `false` when the value was already
+    /// fixed.  Clamped to `[1, 1024]`.
+    pub fn set_runtime_worker_threads(workers: usize) -> bool {
+        RUNTIME_WORKER_THREADS
+            .set(Some(
+                workers.clamp(MIN_RUNTIME_WORKERS, MAX_RUNTIME_WORKERS),
+            ))
+            .is_ok()
+    }
+
+    /// `com.devfive.vespera.bridge.VesperaBridge.configureRuntime0(int) -> void`
+    ///
+    /// Seeds the shared Tokio runtime's worker thread count **before
+    /// the first dispatch**.  Values `<= 0` leave the setting
+    /// untouched (env var / Tokio default applies).  Calls after the
+    /// configuration is fixed are silently ignored.
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_configureRuntime0<
+        'local,
+    >(
+        _unowned_env: EnvUnowned<'local>,
+        _class: JClass<'local>,
+        worker_threads: jint,
+    ) {
+        if let Ok(workers) = usize::try_from(worker_threads)
+            && workers > 0
+        {
+            let _ = set_runtime_worker_threads(workers);
+        }
+    }
 
     /// Per-chunk buffer size for streaming dispatches.
     ///
@@ -876,6 +942,28 @@ mod jni_impl {
             env.exception_clear();
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod runtime_config_tests {
+        use super::{runtime_worker_threads, set_runtime_worker_threads};
+
+        /// One test owns the process-global `OnceLock`: setter wins,
+        /// clamping applies, and later writes are rejected.
+        #[test]
+        fn setter_fixes_clamped_value_first_wins() {
+            assert!(set_runtime_worker_threads(99_999), "first set must win");
+            assert_eq!(
+                runtime_worker_threads(),
+                Some(1024),
+                "value must clamp to the upper bound"
+            );
+            assert!(
+                !set_runtime_worker_threads(4),
+                "second set must be rejected once fixed"
+            );
+            assert_eq!(runtime_worker_threads(), Some(1024));
+        }
     }
 
     #[cfg(test)]

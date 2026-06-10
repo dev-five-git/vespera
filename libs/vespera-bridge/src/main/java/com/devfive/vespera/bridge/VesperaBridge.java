@@ -93,10 +93,14 @@ public class VesperaBridge {
      *   <li>{@code vespera.streaming.channelCapacity} — bound of the
      *       bidirectional request-body channel in slots (default 16,
      *       clamped to 1 – 1024)</li>
+     *   <li>{@code vespera.runtime.workerThreads} — worker threads of
+     *       the shared Tokio runtime (default: number of logical
+     *       CPUs, clamped to 1 – 1024)</li>
      * </ul>
      * The {@code VESPERA_STREAMING_CHUNK_BYTES} /
-     * {@code VESPERA_STREAMING_CHANNEL_CAPACITY} environment
-     * variables apply when no system property is set.
+     * {@code VESPERA_STREAMING_CHANNEL_CAPACITY} /
+     * {@code VESPERA_RUNTIME_WORKERS} environment variables apply
+     * when no system property is set.
      *
      * @param libraryName Cargo crate name (e.g. {@code "rust_jni_demo"})
      */
@@ -116,6 +120,12 @@ public class VesperaBridge {
             // Streaming config then falls back to env vars / defaults —
             // never block init over an optional tuning hook.
         }
+        try {
+            configureRuntime0(Integer.getInteger("vespera.runtime.workerThreads", 0));
+        } catch (UnsatisfiedLinkError olderNativeLibrary) {
+            // Same guard as above — older native libraries fall back to
+            // the VESPERA_RUNTIME_WORKERS env var / Tokio's default.
+        }
         loaded = true;
     }
 
@@ -126,6 +136,17 @@ public class VesperaBridge {
      * fixed are silently ignored.
      */
     private static native void configureStreaming0(int chunkBytes, int channelCapacity);
+
+    /**
+     * Seed the shared Tokio runtime's worker thread count (system
+     * property {@code vespera.runtime.workerThreads}, env fallback
+     * {@code VESPERA_RUNTIME_WORKERS}; clamped to 1–1024 on the Rust
+     * side).  Defaults to Tokio's heuristic (number of logical CPUs)
+     * — cap it when the JVM's own thread pools compete for the same
+     * cores.  Values {@code <= 0} leave the setting untouched; calls
+     * after the runtime started are silently ignored.
+     */
+    private static native void configureRuntime0(int workerThreads);
 
     /**
      * Dispatch a wire-format HTTP-like request through the Rust axum

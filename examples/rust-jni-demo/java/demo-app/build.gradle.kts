@@ -41,6 +41,7 @@ tasks.test {
         "vespera.bench",
         "vespera.streaming.chunkBytes",
         "vespera.streaming.channelCapacity",
+        "vespera.runtime.workerThreads",
     ).forEach { key ->
         System.getProperty(key)?.let { systemProperty(key, it) }
     }

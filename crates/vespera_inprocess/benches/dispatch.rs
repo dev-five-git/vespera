@@ -293,6 +293,60 @@ fn bench_resolve_path(c: &mut Criterion) {
     drop(runtime);
 }
 
+/// P2 contention measurement: concurrent `dispatch_from_bytes` from
+/// many OS threads against one shared multi-thread runtime.
+///
+/// `default` resolves through the lock-free `OnceLock` fast path;
+/// `named` goes through the `RwLock<HashMap>`.  Under reader pressure
+/// the RwLock path can park threads — the delta between the two
+/// captures exactly what the single-threaded `resolve_path` group
+/// cannot.  Excluded from the CI regression gate (heavily
+/// scheduler-dependent); run locally for the numbers.
+fn bench_contended_path(c: &mut Criterion) {
+    static INIT_NAMED: std::sync::Once = std::sync::Once::new();
+
+    install_bench_app();
+    INIT_NAMED
+        .call_once(|| vespera_inprocess::register_app_named("bench-named", || build_router(100)));
+
+    let runtime = std::sync::Arc::new(Runtime::new().expect("tokio runtime"));
+    let mut group = c.benchmark_group("contended_path");
+
+    for &threads in &[8_usize, 32] {
+        for (label, app) in [
+            ("default_oncelock", None),
+            ("named_rwlock", Some("bench-named")),
+        ] {
+            let wire = assemble_wire_for_app("GET", "/r0", None, app, &[]);
+            group.bench_with_input(BenchmarkId::new(label, threads), &threads, |b, &threads| {
+                b.iter_custom(|iters| {
+                    let per_thread = usize::try_from(iters)
+                        .unwrap_or(usize::MAX)
+                        .div_ceil(threads);
+                    let start = std::time::Instant::now();
+                    std::thread::scope(|scope| {
+                        for _ in 0..threads {
+                            let wire = wire.clone();
+                            let runtime = std::sync::Arc::clone(&runtime);
+                            scope.spawn(move || {
+                                for _ in 0..per_thread {
+                                    std::hint::black_box(dispatch_from_bytes(
+                                        wire.clone(),
+                                        &runtime,
+                                    ));
+                                }
+                            });
+                        }
+                    });
+                    start.elapsed()
+                });
+            });
+        }
+    }
+
+    group.finish();
+}
+
 /// P4 isolation: response with 10 single-value headers + 3-value
 /// `set-cookie` — dominated by `collect_header_map` allocations and
 /// wire header JSON serialisation rather than body handling.
@@ -388,6 +442,7 @@ criterion_group!(
     bench_dispatch_path,
     bench_wire_path,
     bench_resolve_path,
+    bench_contended_path,
     bench_headers_path,
     bench_streaming_path
 );

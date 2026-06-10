@@ -405,6 +405,12 @@ runs; set them before `VesperaBridge.init(...)`:
 |---|---|---|---|---|
 | Chunk buffer size | `vespera.streaming.chunkBytes` | `VESPERA_STREAMING_CHUNK_BYTES` | 64 KiB | 4 KiB – 8 MiB |
 | Request channel slots | `vespera.streaming.channelCapacity` | `VESPERA_STREAMING_CHANNEL_CAPACITY` | 16 | 1 – 1024 |
+| Tokio worker threads | `vespera.runtime.workerThreads` | `VESPERA_RUNTIME_WORKERS` | logical CPUs | 1 – 1024 |
+
+The worker-thread knob caps Rust's shared Tokio runtime — useful when
+the JVM's own pools (Tomcat request threads, virtual-thread carriers)
+compete with Tokio for the same cores, or when a container CPU limit
+is lower than the host's logical CPU count.
 
 Larger chunks reduce the per-chunk JNI crossing cost (one
 `SetByteArrayRegion` + one `OutputStream.write` per chunk) at the
