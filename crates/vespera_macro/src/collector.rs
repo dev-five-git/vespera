@@ -28,18 +28,41 @@ pub fn collect_metadata(
     folder_name: &str,
     route_storage: &[StoredRouteInfo],
 ) -> MacroResult<(CollectedMetadata, HashMap<String, syn::File>)> {
-    let mut metadata = CollectedMetadata::new();
-
     let files = collect_files(folder_path).map_err(|e| err_call_site(format!("vespera! macro: failed to scan route folder '{}': {}. Verify the folder exists and is readable.", folder_path.display(), e)))?;
+    collect_metadata_from_files(&files, folder_path, folder_name, route_storage)
+}
+
+/// [`collect_metadata`] over a **pre-scanned** file list — lets
+/// `vespera!` reuse the single directory walk it already performed
+/// for cache fingerprinting instead of walking the folder twice.
+#[allow(clippy::option_if_let_else, clippy::too_many_lines)]
+pub fn collect_metadata_from_files(
+    files: &[std::path::PathBuf],
+    folder_path: &Path,
+    folder_name: &str,
+    route_storage: &[StoredRouteInfo],
+) -> MacroResult<(CollectedMetadata, HashMap<String, syn::File>)> {
+    let mut metadata = CollectedMetadata::new();
 
     let mut file_asts = HashMap::with_capacity(files.len());
 
-    // Index ROUTE_STORAGE entries by file path for O(1) lookup
-    let storage_by_file: HashMap<&str, Vec<&StoredRouteInfo>> = {
-        let mut map: HashMap<&str, Vec<&StoredRouteInfo>> = HashMap::new();
+    // Index ROUTE_STORAGE entries by **canonicalized** file path for O(1)
+    // lookup.  `#[route]` records `Span::local_file()`, which rustc
+    // reports relative to its invocation directory (e.g.
+    // `src\routes\users.rs`), while the collector walks
+    // `{CARGO_MANIFEST_DIR}/src/{folder}` producing absolute paths with
+    // platform separators.  Comparing the raw strings never matches —
+    // silently disabling the fast path and re-parsing every route file
+    // on each cache miss.  Canonicalizing both sides makes the keys
+    // comparable regardless of cwd-relativity or separator style.
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let storage_by_file: HashMap<String, Vec<&StoredRouteInfo>> = {
+        let mut map: HashMap<String, Vec<&StoredRouteInfo>> = HashMap::new();
         for stored in route_storage {
             if let Some(ref fp) = stored.file_path {
-                map.entry(fp.as_str()).or_default().push(stored);
+                map.entry(normalize_path_key(fp, &cwd))
+                    .or_default()
+                    .push(stored);
             }
         }
         map
@@ -75,7 +98,7 @@ pub fn collect_metadata(
         let base_path = format!("/{}", segments.join("/"));
 
         // Fast path: ROUTE_STORAGE has entries for this file — skip syn::parse_file()
-        if let Some(stored_routes) = storage_by_file.get(file_path.as_str()) {
+        if let Some(stored_routes) = storage_by_file.get(&normalize_path_key(&file_path, &cwd)) {
             for stored in stored_routes {
                 let route_path = if let Some(ref custom_path) = stored.custom_path {
                     let trimmed_base = base_path.trim_end_matches('/');
@@ -93,12 +116,16 @@ pub fn collect_metadata(
                 let description = stored.description.clone();
 
                 metadata.routes.push(RouteMetadata {
-                    method: stored.method.clone().unwrap_or_default(),
+                    // `#[route]` bare form defaults to GET — mirror the
+                    // slow path (`route::utils`), which resolves a
+                    // missing method to "get".  `unwrap_or_default()`
+                    // produced "" here, silently dropping such routes
+                    // from the OpenAPI doc when the fast path is active.
+                    method: stored.method.clone().unwrap_or_else(|| "get".to_string()),
                     path: route_path,
                     function_name: stored.fn_name.clone(),
                     module_path: module_path.clone(),
                     file_path: file_path.clone(),
-                    signature: stored.fn_item_str.clone(),
                     error_status: stored.error_status.clone(),
                     tags: stored.tags.clone(),
                     description,
@@ -111,7 +138,7 @@ pub fn collect_metadata(
         } else {
             // Slow path: full parsing (fallback for files not in ROUTE_STORAGE)
             // Uses get_parsed_file: single syn::parse_file entry point + content cache
-            let file_ast = crate::schema_macro::file_cache::get_parsed_file(&file).ok_or_else(|| err_call_site(format!("vespera! macro: cannot read or parse '{}'. Fix the Rust syntax errors in this file.", file.display())))?;
+            let file_ast = crate::schema_macro::file_cache::get_parsed_file(file).ok_or_else(|| err_call_site(format!("vespera! macro: cannot read or parse '{}'. Fix the Rust syntax errors in this file.", file.display())))?;
 
             // Store file AST for downstream reuse
             file_asts.insert(file_path.clone(), file_ast);
@@ -142,7 +169,6 @@ pub fn collect_metadata(
                         function_name: fn_item.sig.ident.to_string(),
                         module_path: module_path.clone(),
                         file_path: file_path.clone(),
-                        signature: quote::quote!(#fn_item).to_string(),
                         error_status: route_info.error_status.clone(),
                         tags: route_info.tags.clone(),
                         description,
@@ -155,32 +181,67 @@ pub fn collect_metadata(
     Ok((metadata, file_asts))
 }
 
-/// Collect file modification times without reading content.
-/// Used for cache invalidation — much cheaper than full `collect_metadata()`.
-pub fn collect_file_fingerprints(folder_path: &Path) -> MacroResult<HashMap<String, u64>> {
-    let files = collect_files(folder_path).map_err(|e| {
+/// Normalize a path string into a comparison key **without touching
+/// the filesystem** (an earlier `fs::canonicalize` version cost one
+/// syscall per lookup — ~130ms for a 300-file project on Windows).
+///
+/// `#[route]` records `Span::local_file()`, which rustc reports
+/// relative to its invocation directory, while the collector walks
+/// `{CARGO_MANIFEST_DIR}/src/{folder}` producing absolute paths with
+/// platform separators.  This key makes both comparable:
+/// - relative paths are absolutized against `cwd` (the same process
+///   working directory rustc resolved the span path from)
+/// - `.`/`..` components are folded
+/// - separators normalize to `/`, the Windows `\\?\` verbatim prefix
+///   is stripped, and (Windows only) the drive letter case is folded
+fn normalize_path_key(path: &str, cwd: &Path) -> String {
+    use std::path::Component;
+
+    let p = Path::new(path);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        cwd.join(p)
+    };
+    let mut folded = std::path::PathBuf::new();
+    for comp in abs.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                folded.pop();
+            }
+            other => folded.push(other),
+        }
+    }
+    let mut key = folded.display().to_string().replace('\\', "/");
+    if let Some(stripped) = key.strip_prefix("//?/") {
+        key = stripped.to_owned();
+    }
+    if cfg!(windows) {
+        key.make_ascii_lowercase();
+    }
+    key
+}
+
+/// Single directory walk returning `(path, mtime)` pairs — the shared
+/// scan that both cache fingerprinting and route collection consume.
+pub fn scan_route_folder(folder_path: &Path) -> MacroResult<Vec<(std::path::PathBuf, u64)>> {
+    crate::file_utils::collect_files_with_mtimes(folder_path).map_err(|e| {
         err_call_site(format!(
-            "vespera! macro: failed to scan route folder '{}': {}",
+            "vespera! macro: failed to scan route folder '{}': {}. Verify the folder exists and is readable.",
             folder_path.display(),
             e
         ))
-    })?;
+    })
+}
 
-    let mut fingerprints = HashMap::with_capacity(files.len());
-    for file in files {
-        if file.extension().is_none_or(|e| e != "rs") {
-            continue;
-        }
-        let mtime = std::fs::metadata(&file)
-            .and_then(|m| m.modified())
-            .map_or(0, |t| {
-                t.duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-            });
-        fingerprints.insert(file.display().to_string(), mtime);
-    }
-    Ok(fingerprints)
+/// Build the cache fingerprint map (`.rs` files only) from a scan.
+pub fn fingerprints_from_scan(scanned: &[(std::path::PathBuf, u64)]) -> HashMap<String, u64> {
+    scanned
+        .iter()
+        .filter(|(file, _)| file.extension().is_some_and(|e| e == "rs"))
+        .map(|(file, mtime)| (file.display().to_string(), *mtime))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1110,7 +1171,7 @@ pub async fn list_users() -> String {
         create_temp_file(&temp_dir, "data.json", "{}");
         create_temp_file(&temp_dir, "script.py", "print('hello')");
 
-        let fingerprints = collect_file_fingerprints(temp_dir.path()).unwrap();
+        let fingerprints = fingerprints_from_scan(&scan_route_folder(temp_dir.path()).unwrap());
 
         // Only .rs files should be in fingerprints
         assert_eq!(

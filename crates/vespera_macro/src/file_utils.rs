@@ -4,17 +4,46 @@ use std::{
 };
 
 pub fn collect_files(folder_path: &Path) -> io::Result<Vec<PathBuf>> {
+    Ok(collect_files_with_mtimes(folder_path)?
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect())
+}
+
+/// Recursively collect files together with their mtimes (secs since
+/// `UNIX_EPOCH`; `0` when unavailable).
+///
+/// One walk serves both route discovery and cache fingerprinting —
+/// previously the folder was walked twice and every file paid an
+/// extra `fs::metadata` syscall on top of the directory-entry data
+/// the OS already returned.
+pub fn collect_files_with_mtimes(folder_path: &Path) -> io::Result<Vec<(PathBuf, u64)>> {
     let mut files = Vec::new();
+    collect_with_mtimes_into(folder_path, &mut files)?;
+    Ok(files)
+}
+
+fn collect_with_mtimes_into(folder_path: &Path, out: &mut Vec<(PathBuf, u64)>) -> io::Result<()> {
     for entry in std::fs::read_dir(folder_path)? {
         let entry = entry?;
+        let file_type = entry.file_type()?;
         let path = entry.path();
-        if path.is_file() {
-            files.push(folder_path.join(path));
-        } else if path.is_dir() {
-            files.extend(collect_files(&folder_path.join(&path))?);
+        if file_type.is_file() {
+            let mtime = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map_or(0, |t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                });
+            out.push((path, mtime));
+        } else if file_type.is_dir() {
+            collect_with_mtimes_into(&path, out)?;
         }
     }
-    Ok(files)
+    Ok(())
 }
 
 pub fn file_to_segments(file: &Path, base_path: &Path) -> Vec<String> {

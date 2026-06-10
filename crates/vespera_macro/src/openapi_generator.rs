@@ -31,18 +31,30 @@ pub fn generate_openapi_doc_with_metadata(
     file_cache: Option<HashMap<String, syn::File>>,
     route_storage: &[StoredRouteInfo],
 ) -> OpenApi {
+    let profiling = std::env::var("VESPERA_PROFILE").is_ok();
+    let mut stage_start = std::time::Instant::now();
+    let mut stage = |name: &str| {
+        if profiling {
+            eprintln!(
+                "[vespera-profile]     openapi {name}: {:?}",
+                stage_start.elapsed()
+            );
+            stage_start = std::time::Instant::now();
+        }
+    };
+
     let (known_schema_names, struct_definitions) = build_schema_lookups(metadata);
     let file_cache = file_cache.unwrap_or_else(|| build_file_cache(metadata));
     let struct_file_index = build_struct_file_index(&file_cache);
-    let parsed_definitions = build_parsed_definitions(metadata);
+    stage("lookups + file index");
     let schemas = parse_component_schemas(
         metadata,
         &known_schema_names,
         &struct_definitions,
-        &parsed_definitions,
         &file_cache,
         &struct_file_index,
     );
+    stage("component schemas");
     let (paths, all_tags) = build_path_items(
         metadata,
         &known_schema_names,
@@ -50,6 +62,7 @@ pub fn generate_openapi_doc_with_metadata(
         &file_cache,
         route_storage,
     );
+    stage("path items");
 
     OpenApi {
         openapi: OpenApiVersion::V3_1_0,
@@ -151,20 +164,6 @@ fn build_struct_file_index(file_cache: &HashMap<String, syn::File>) -> HashMap<S
     index
 }
 
-/// Pre-parse all struct/enum definitions into `syn::Item` for reuse.
-///
-/// Avoids calling `syn::parse_str` per-struct inside `parse_component_schemas()`
-/// and other consumers that need the parsed AST.
-fn build_parsed_definitions(metadata: &CollectedMetadata) -> HashMap<String, syn::Item> {
-    let mut parsed = HashMap::with_capacity(metadata.structs.len());
-    for struct_meta in &metadata.structs {
-        if let Ok(item) = syn::parse_str::<syn::Item>(&struct_meta.definition) {
-            parsed.insert(struct_meta.name.clone(), item);
-        }
-    }
-    parsed
-}
-
 /// Parse struct and enum definitions into `OpenAPI` component schemas.
 ///
 /// Only includes structs where `include_in_openapi` is true
@@ -177,49 +176,72 @@ fn parse_component_schemas(
     metadata: &CollectedMetadata,
     known_schema_names: &HashSet<String>,
     struct_definitions: &HashMap<String, String>,
-    parsed_definitions: &HashMap<String, syn::Item>,
     file_cache: &HashMap<String, syn::File>,
     struct_file_index: &HashMap<String, &str>,
 ) -> BTreeMap<String, vespera_core::schema::Schema> {
-    let mut schemas = BTreeMap::new();
-
-    for struct_meta in metadata.structs.iter().filter(|s| s.include_in_openapi) {
-        let Some(parsed) = parsed_definitions.get(&struct_meta.name) else {
-            continue;
-        };
-        let mut schema = match parsed {
+    // Parse a definition string and build its schema, applying the
+    // default-value pipeline.  `file_ast` is only needed for the
+    // `#[serde(default = "fn_name")]` fallback (Priority 2) — the
+    // pre-extracted SCHEMA_STORAGE defaults, `#[schema(default)]`
+    // attributes, and type defaults apply even without an AST (the
+    // collector fast path skips parsing, leaving `file_cache` empty).
+    let build_one = |struct_meta: &crate::metadata::StructMetadata,
+                     file_ast: Option<&syn::File>|
+     -> Option<(String, vespera_core::schema::Schema)> {
+        let parsed = syn::parse_str::<syn::Item>(&struct_meta.definition).ok()?;
+        let mut schema = match &parsed {
             syn::Item::Struct(struct_item) => {
                 parse_struct_to_schema(struct_item, known_schema_names, struct_definitions)
             }
             syn::Item::Enum(enum_item) => {
                 parse_enum_to_schema(enum_item, known_schema_names, struct_definitions)
             }
-            _ => continue,
+            _ => return None,
         };
-
-        // Process default values using cached file ASTs (O(1) lookup)
-        if let syn::Item::Struct(struct_item) = parsed {
-            let file_ast = struct_file_index
-                .get(&struct_meta.name)
-                .and_then(|path| file_cache.get(*path))
-                .or_else(|| {
-                    metadata
-                        .routes
-                        .first()
-                        .and_then(|r| file_cache.get(&r.file_path))
-                });
-
-            if let Some(ast) = file_ast {
-                process_default_functions(
-                    struct_item,
-                    ast,
-                    &mut schema,
-                    &struct_meta.field_defaults,
-                );
-            }
+        if let syn::Item::Struct(struct_item) = &parsed {
+            process_default_functions(
+                struct_item,
+                file_ast,
+                &mut schema,
+                &struct_meta.field_defaults,
+            );
         }
+        Some((struct_meta.name.clone(), schema))
+    };
 
-        schemas.insert(struct_meta.name.clone(), schema);
+    // Partition: structs whose file AST is reachable need the
+    // (non-`Send`) AST for Priority-2 default extraction and run on
+    // this thread; everything else parses + builds on workers
+    // returning plain `Schema` data.
+    let mut ast_backed: Vec<(&crate::metadata::StructMetadata, &syn::File)> = Vec::new();
+    let mut parallel_jobs: Vec<&crate::metadata::StructMetadata> = Vec::new();
+    for struct_meta in metadata.structs.iter().filter(|s| s.include_in_openapi) {
+        let file_ast = struct_file_index
+            .get(&struct_meta.name)
+            .and_then(|path| file_cache.get(*path))
+            .or_else(|| {
+                metadata
+                    .routes
+                    .first()
+                    .and_then(|r| file_cache.get(&r.file_path))
+            });
+        match file_ast {
+            Some(ast) => ast_backed.push((struct_meta, ast)),
+            None => parallel_jobs.push(struct_meta),
+        }
+    }
+
+    let mut schemas = BTreeMap::new();
+    for (name, schema) in parallel_filter_map(
+        &parallel_jobs,
+        &|meta: &&crate::metadata::StructMetadata| build_one(meta, None),
+    ) {
+        schemas.insert(name, schema);
+    }
+    for (struct_meta, ast) in ast_backed {
+        if let Some((name, schema)) = build_one(struct_meta, Some(ast)) {
+            schemas.insert(name, schema);
+        }
     }
 
     schemas
@@ -240,7 +262,7 @@ fn build_path_items(
     let mut paths = BTreeMap::new();
     let mut all_tags = BTreeSet::new();
 
-    // Build the file-AST function index FIRST so the storage-parse step
+    // Build the file-AST function index FIRST so the storage path
     // below can skip any function whose AST is already reachable through
     // `file_cache`.  `collector::collect_metadata` has already walked
     // these files via `syn::parse_file`, so re-parsing `fn_item_str`
@@ -263,14 +285,13 @@ fn build_path_items(
         })
         .collect();
 
-    // Primary source: parse function items from ROUTE_STORAGE only when
-    // the function is *not* already covered by `fn_index`.  Routes whose
-    // owning file is in `file_cache` short-circuit through `fn_index` in
-    // the loop below, so the parse is wasted work.  The lookup order in
-    // the loop preserves the original ROUTE_STORAGE-first priority for
-    // any route that does end up in this cache (e.g. routes registered
-    // via `#[route]` from files outside the scanned routes folder).
-    let route_fn_cache: HashMap<&str, syn::ItemFn> = route_storage
+    // ROUTE_STORAGE-backed function sources (skipped when the same
+    // function is already covered by `fn_index` — re-parsing would be
+    // duplicated work).  These are plain *strings*, so the expensive
+    // `syn::parse_str` + operation build runs on worker threads below;
+    // `syn` ASTs are not `Send`, which is also why fn_index-backed
+    // routes stay on this thread.
+    let storage_fn_strs: HashMap<&str, &str> = route_storage
         .iter()
         .filter_map(|s| {
             let already_in_ast = s
@@ -281,39 +302,37 @@ fn build_path_items(
             if already_in_ast {
                 return None;
             }
-            syn::parse_str::<syn::ItemFn>(&s.fn_item_str)
-                .ok()
-                .map(|item| (s.fn_name.as_str(), item))
+            Some((s.fn_name.as_str(), s.fn_item_str.as_str()))
         })
         .collect();
 
-    for route_meta in &metadata.routes {
-        // Try ROUTE_STORAGE first (avoids file_cache dependency for known routes)
-        let fn_sig = if let Some(cached_fn) = route_fn_cache.get(route_meta.function_name.as_str())
-        {
-            &cached_fn.sig
+    // Split routes by signature source. `idx` preserves the original
+    // route order so PathItem operations are applied deterministically
+    // regardless of which thread produced them.
+    let mut parallel_jobs: Vec<(usize, &crate::metadata::RouteMetadata, &str)> = Vec::new();
+    let mut ast_jobs: Vec<(usize, &crate::metadata::RouteMetadata, &syn::Signature)> = Vec::new();
+    for (idx, route_meta) in metadata.routes.iter().enumerate() {
+        // ROUTE_STORAGE first (avoids file_cache dependency for known
+        // routes) — same priority order as the previous sequential code.
+        if let Some(fn_str) = storage_fn_strs.get(route_meta.function_name.as_str()) {
+            parallel_jobs.push((idx, route_meta, fn_str));
         } else if let Some(fns) = fn_index.get(route_meta.file_path.as_str())
             && let Some(fn_item) = fns.get(&route_meta.function_name)
         {
-            &fn_item.sig
-        } else {
-            continue;
-        };
+            ast_jobs.push((idx, route_meta, &fn_item.sig));
+        }
+    }
 
+    let build_one = |route_meta: &crate::metadata::RouteMetadata,
+                     fn_sig: &syn::Signature|
+     -> Option<(HttpMethod, vespera_core::route::Operation)> {
         let Ok(method) = HttpMethod::try_from(route_meta.method.as_str()) else {
             eprintln!(
                 "vespera: skipping route '{}' \u{2014} unknown HTTP method '{}'",
                 route_meta.path, route_meta.method
             );
-            continue;
+            return None;
         };
-
-        if let Some(tags) = &route_meta.tags {
-            for tag in tags {
-                all_tags.insert(tag.clone());
-            }
-        }
-
         let mut operation = build_operation_from_function(
             fn_sig,
             &route_meta.path,
@@ -323,15 +342,122 @@ fn build_path_items(
             route_meta.tags.as_deref(),
         );
         operation.description.clone_from(&route_meta.description);
+        Some((method, operation))
+    };
 
+    // Parse + build string-backed routes on worker threads.  Workers
+    // produce only `Send` data (`Operation` is plain `vespera_core`
+    // data); `syn` parsing inside a worker uses proc-macro2's fallback
+    // implementation, which is thread-safe.
+    let mut results: Vec<(usize, HttpMethod, vespera_core::route::Operation)> =
+        run_route_jobs_parallel(&parallel_jobs, &build_one);
+
+    for (idx, route_meta, fn_sig) in ast_jobs {
+        if let Some((method, operation)) = build_one(route_meta, fn_sig) {
+            results.push((idx, method, operation));
+        }
+    }
+
+    // Deterministic assembly in original route order.
+    results.sort_unstable_by_key(|(idx, _, _)| *idx);
+    for (idx, method, operation) in results {
+        let route_meta = &metadata.routes[idx];
+        if let Some(tags) = &route_meta.tags {
+            for tag in tags {
+                all_tags.insert(tag.clone());
+            }
+        }
         let path_item = paths
             .entry(route_meta.path.clone())
             .or_insert_with(PathItem::default);
-
         path_item.set_operation(method, operation);
     }
 
     (paths, all_tags)
+}
+
+/// Run string-backed route-operation builds across worker threads.
+///
+/// Sequential below [`PARALLEL_THRESHOLD`] jobs — thread spawn overhead
+/// dominates tiny projects.  Chunked `std::thread::scope` otherwise
+/// (zero new dependencies).
+const PARALLEL_THRESHOLD: usize = 16;
+
+/// `(original route index, route metadata, fn item source)` job input.
+type RouteJob<'a> = (usize, &'a crate::metadata::RouteMetadata, &'a str);
+
+/// `(original route index, resolved method, built operation)` result.
+type BuiltOperation = (usize, HttpMethod, vespera_core::route::Operation);
+
+/// Builds one operation from a route's resolved fn signature.
+type OperationBuilder<'a> = dyn Fn(
+        &crate::metadata::RouteMetadata,
+        &syn::Signature,
+    ) -> Option<(HttpMethod, vespera_core::route::Operation)>
+    + Sync
+    + 'a;
+
+/// RAII restore for [`proc_macro2::fallback::force`] — releases the
+/// forced fallback mode even when a worker panics.
+struct FallbackGuard;
+
+impl Drop for FallbackGuard {
+    fn drop(&mut self) {
+        proc_macro2::fallback::unforce();
+    }
+}
+
+fn run_route_jobs_parallel(
+    jobs: &[RouteJob<'_>],
+    build_one: &OperationBuilder<'_>,
+) -> Vec<BuiltOperation> {
+    parallel_filter_map(jobs, &|&(idx, route_meta, fn_str): &RouteJob<'_>| {
+        let fn_item = syn::parse_str::<syn::ItemFn>(fn_str).ok()?;
+        build_one(route_meta, &fn_item.sig).map(|(m, op)| (idx, m, op))
+    })
+}
+
+/// `filter_map` across worker threads for compile-time job fan-out.
+///
+/// Sequential below [`PARALLEL_THRESHOLD`] jobs (thread spawn overhead
+/// dominates tiny projects); chunked `std::thread::scope` otherwise —
+/// zero new dependencies.  `f` typically parses source *strings* with
+/// `syn` and must return only plain `Send` data: proc-macro2 caches
+/// "the compiler bridge works" in a global once it has been used on
+/// the macro thread, and worker threads would then take the
+/// real-bridge path and panic ("procedural macro API is used outside
+/// of a procedural macro") — so the thread-safe fallback
+/// implementation is forced for the duration of the parallel section.
+/// Workers only ever create fallback tokens, so no compiler/fallback
+/// token mixing can occur; the guard restores normal mode even if a
+/// worker panics.
+fn parallel_filter_map<T: Sync, R: Send>(
+    jobs: &[T],
+    f: &(dyn Fn(&T) -> Option<R> + Sync),
+) -> Vec<R> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(jobs.len().div_ceil(PARALLEL_THRESHOLD));
+    if workers <= 1 || jobs.len() < PARALLEL_THRESHOLD {
+        return jobs.iter().filter_map(f).collect();
+    }
+
+    proc_macro2::fallback::force();
+    let _guard = FallbackGuard;
+
+    let chunk_size = jobs.len().div_ceil(workers);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = jobs
+            .chunks(chunk_size)
+            .map(|chunk| scope.spawn(move || chunk.iter().filter_map(f).collect()))
+            .collect();
+        let mut results: Vec<R> = Vec::with_capacity(jobs.len());
+        for handle in handles {
+            let chunk_results: Vec<R> = handle.join().expect("parallel macro worker panicked");
+            results.extend(chunk_results);
+        }
+        results
+    })
 }
 
 /// Set the default value on an inline property schema, if not already set.
@@ -359,7 +485,7 @@ fn set_property_default(
 /// 3. `#[serde(default)]` by using type-specific defaults
 fn process_default_functions(
     struct_item: &syn::ItemStruct,
-    file_ast: &syn::File,
+    file_ast: Option<&syn::File>,
     schema: &mut vespera_core::schema::Schema,
     stored_defaults: &BTreeMap<String, serde_json::Value>,
 ) {
@@ -409,8 +535,11 @@ fn process_default_functions(
                 None => continue, // No default attribute
             };
 
-            // Find the function in the file AST and extract default value
-            if let Some(func_item) = find_function_in_file(file_ast, &default_info)
+            // Find the function in the file AST and extract default
+            // value — Priority 2 is the only step that needs the AST,
+            // so it degrades gracefully when none is available.
+            if let Some(func_item) =
+                file_ast.and_then(|ast| find_function_in_file(ast, &default_info))
                 && let Some(default_value) = extract_default_value_from_function(func_item)
             {
                 set_property_default(properties, &field_name, default_value);
@@ -623,7 +752,6 @@ pub fn get_users() -> String {
             function_name: "get_users".to_string(),
             module_path: "test::users".to_string(),
             file_path: route_file.to_string_lossy().to_string(),
-            signature: "fn get_users() -> String".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -659,7 +787,6 @@ pub fn get_users() -> String {
             function_name: "get_users".to_string(),
             module_path: "test::users".to_string(),
             file_path: route_file_path.clone(),
-            signature: "fn get_users() -> String".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -772,7 +899,6 @@ pub fn get_status() -> Status {
             function_name: "get_status".to_string(),
             module_path: "test::status_route".to_string(),
             file_path: route_file.to_string_lossy().to_string(),
-            signature: "fn get_status() -> Status".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -835,7 +961,6 @@ pub fn get_user() -> User {
             function_name: "get_user".to_string(),
             module_path: "test::user_route".to_string(),
             file_path: route_file.to_string_lossy().to_string(),
-            signature: "fn get_user() -> User".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -886,7 +1011,6 @@ pub fn create_user() -> String {
             function_name: "get_users".to_string(),
             module_path: "test::users".to_string(),
             file_path: route1_file.to_string_lossy().to_string(),
-            signature: "fn get_users() -> String".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -897,7 +1021,6 @@ pub fn create_user() -> String {
             function_name: "create_user".to_string(),
             module_path: "test::create_user".to_string(),
             file_path: route2_file.to_string_lossy().to_string(),
-            signature: "fn create_user() -> String".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -921,7 +1044,6 @@ pub fn create_user() -> String {
             function_name: "get_users".to_string(),
             module_path: "test::users".to_string(),
             file_path: "/nonexistent/route.rs".to_string(),
-            signature: "fn get_users() -> String".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -937,7 +1059,6 @@ pub fn create_user() -> String {
             function_name: "get_users".to_string(),
             module_path: "test::users".to_string(),
             file_path: String::new(), // Will be set to temp file with invalid syntax
-            signature: "fn get_users() -> String".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -1011,7 +1132,6 @@ pub fn get_users() -> String {
             function_name: "get_users".to_string(),
             module_path: "test::users".to_string(),
             file_path: route_file.to_string_lossy().to_string(),
-            signature: "fn get_users() -> String".to_string(),
             error_status: Some(vec![404]),
             tags: Some(vec!["users".to_string(), "admin".to_string()]),
             description: Some("Get all users".to_string()),
@@ -1286,7 +1406,6 @@ pub fn get_user() -> User {
             function_name: "get_user".to_string(),
             module_path: "test::user".to_string(),
             file_path: route_file.to_string_lossy().to_string(),
-            signature: "fn get_user() -> User".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -1332,7 +1451,6 @@ pub fn get_config() -> Config {
             function_name: "get_config".to_string(),
             module_path: "test::config".to_string(),
             file_path: route_file.to_string_lossy().to_string(),
-            signature: "fn get_config() -> Config".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -1392,7 +1510,6 @@ pub fn get_user() -> User {
             function_name: "get_users".to_string(),
             module_path: "test::users".to_string(),
             file_path: route1_file.to_string_lossy().to_string(),
-            signature: "fn get_users() -> Vec<User>".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -1403,7 +1520,6 @@ pub fn get_user() -> User {
             function_name: "get_user".to_string(),
             module_path: "test::user".to_string(),
             file_path: route2_file.to_string_lossy().to_string(),
-            signature: "fn get_user() -> User".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -1429,7 +1545,7 @@ pub fn get_user() -> User {
         schema.properties = None; // Explicitly set to None
 
         // This should return early without panic
-        process_default_functions(&struct_item, &file_ast, &mut schema, &BTreeMap::new());
+        process_default_functions(&struct_item, Some(&file_ast), &mut schema, &BTreeMap::new());
 
         // Schema should remain unchanged
         assert!(schema.properties.is_none());
@@ -1542,7 +1658,6 @@ pub fn get_users() -> String {
             function_name: "get_users".to_string(),
             module_path: "test::users".to_string(),
             file_path: route_file.to_string_lossy().to_string(),
-            signature: "fn get_users() -> String".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -1582,7 +1697,6 @@ pub fn create_users() -> String {
             function_name: "get_users".to_string(),
             module_path: "test::users".to_string(),
             file_path: file_path.clone(),
-            signature: "fn get_users() -> String".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -1594,7 +1708,6 @@ pub fn create_users() -> String {
             function_name: "create_users".to_string(),
             module_path: "test::users".to_string(),
             file_path,
-            signature: "fn create_users() -> String".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -1783,7 +1896,7 @@ pub fn create_users() -> String {
             "count".to_string(),
             SchemaRef::Inline(Box::new(Schema::integer())),
         );
-        process_default_functions(&struct_item, &file_ast, &mut schema, &BTreeMap::new());
+        process_default_functions(&struct_item, Some(&file_ast), &mut schema, &BTreeMap::new());
         if let Some(SchemaRef::Inline(prop_schema)) =
             schema.properties.as_ref().unwrap().get("count")
         {
@@ -1806,7 +1919,6 @@ pub fn create_users() -> String {
             function_name: "get_users".to_string(),
             module_path: "test::users".to_string(),
             file_path: route_file.to_string_lossy().to_string(),
-            signature: "fn get_users() -> String".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -1836,7 +1948,6 @@ pub fn get_users() -> String {
             function_name: "get_users".to_string(),
             module_path: "test::users".to_string(),
             file_path: route_file.to_string_lossy().to_string(),
-            signature: "fn get_users() -> String".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -1890,7 +2001,6 @@ pub fn get_config() -> Config { Config { count: 0, name: String::new() } }
             function_name: "get_config".to_string(),
             module_path: "test::config".to_string(),
             file_path: route_file.to_string_lossy().to_string(),
-            signature: "fn get_config() -> Config".to_string(),
             error_status: None,
             tags: None,
             description: None,

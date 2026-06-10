@@ -17,8 +17,7 @@ pub struct RouteMetadata {
     pub module_path: String,
     /// File path
     pub file_path: String,
-    /// Function signature (as string for serialization)
-    pub signature: String,
+
     /// Additional error status codes from `error_status` attribute
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_status: Option<Vec<u16>>,

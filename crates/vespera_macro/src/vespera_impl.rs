@@ -37,7 +37,7 @@ use quote::quote;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    collector::{collect_file_fingerprints, collect_metadata},
+    collector::collect_metadata,
     error::{MacroResult, err_call_site},
     metadata::{CollectedMetadata, StructMetadata},
     openapi_generator::generate_openapi_doc_with_metadata,
@@ -55,6 +55,12 @@ struct VesperaCache {
     /// Macro crate version — invalidates cache when macro code changes
     #[serde(default)]
     macro_version: String,
+    /// In-repo macro source fingerprint — invalidates cache when the
+    /// macro source itself changes during vespera development (the
+    /// version alone only changes per release).  `0` for downstream
+    /// users.  See [`compute_macro_dev_fingerprint`].
+    #[serde(default)]
+    macro_dev_fingerprint: u64,
     /// File path → modification time (secs since UNIX_EPOCH)
     file_fingerprints: HashMap<String, u64>,
     /// Hash of SCHEMA_STORAGE contents
@@ -103,13 +109,77 @@ fn compute_config_hash(processed: &ProcessedVesperaInput) -> u64 {
     hasher.finish()
 }
 
-/// Get the path to the routes cache file.
+/// Name of the crate currently being expanded, for namespacing files
+/// under the (workspace-shared) `target/vespera/` directory.  Two
+/// workspace members both using `vespera!` would otherwise overwrite
+/// each other's cache (permanent miss ping-pong) and — worse — race on
+/// the shared spec file that the generated code `include_str!`s.
+fn current_crate_tag() -> String {
+    std::env::var("CARGO_PKG_NAME").unwrap_or_else(|_| "default".to_string())
+}
+
+/// Get the path to this crate's routes cache file.
 fn get_cache_path() -> std::path::PathBuf {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let manifest_path = Path::new(&manifest_dir);
     find_target_dir(manifest_path)
         .join("vespera")
-        .join("routes.cache")
+        .join(format!("routes-{}.cache", current_crate_tag()))
+}
+
+/// Fingerprint of the vespera_macro **source tree itself**, for cache
+/// invalidation while developing the macro in this repository.
+///
+/// `macro_version` only changes per release, so editing macro code
+/// in-repo would otherwise keep serving the previous build's cached
+/// spec.  When `{workspace_root}/crates/vespera_macro/src` exists
+/// (i.e. the consuming crate lives inside the vespera repo), hash
+/// every `.rs` mtime in it; for downstream users the directory is
+/// absent and this is a single failed `stat` (returns 0).
+fn compute_macro_dev_fingerprint() -> u64 {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let target_dir = find_target_dir(Path::new(&manifest_dir));
+    let Some(workspace_root) = target_dir.parent() else {
+        return 0;
+    };
+    let macro_src = workspace_root
+        .join("crates")
+        .join("vespera_macro")
+        .join("src");
+    if !macro_src.is_dir() {
+        return 0;
+    }
+    let mut entries: Vec<(String, u64)> = Vec::new();
+    collect_rs_mtimes(&macro_src, &mut entries);
+    entries.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (path, mtime) in &entries {
+        path.hash(&mut hasher);
+        mtime.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Recursively collect `(path, mtime)` pairs for `.rs` files.
+fn collect_rs_mtimes(dir: &Path, out: &mut Vec<(String, u64)>) {
+    let Ok(read_dir) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs_mtimes(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let mtime = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .map_or(0, |t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                });
+            out.push((path.display().to_string(), mtime));
+        }
+    }
 }
 
 /// Try to read and deserialize a cache file. Returns None on any failure.
@@ -343,6 +413,11 @@ pub fn ensure_openapi_files_from_cache(
 }
 
 /// Write compact spec JSON to target dir for `include_str!` embedding.
+///
+/// The file name is **namespaced per crate**: two workspace members
+/// both using `vespera!` compile in parallel under the same shared
+/// `target/vespera/` directory — with a single shared file name, crate
+/// A's `include_str!` could read the spec crate B just wrote.
 fn write_spec_for_embedding(
     spec_json: Option<String>,
 ) -> syn::Result<Option<proc_macro2::TokenStream>> {
@@ -363,7 +438,7 @@ fn write_spec_for_embedding(
             ),
         )
     })?;
-    let spec_file = vespera_dir.join("vespera_spec.json");
+    let spec_file = vespera_dir.join(format!("vespera_spec-{}.json", current_crate_tag()));
     let should_write =
         std::fs::read_to_string(&spec_file).map_or(true, |existing| existing != json);
     if should_write {
@@ -390,9 +465,25 @@ pub fn process_vespera_macro(
     route_storage: &[StoredRouteInfo],
 ) -> syn::Result<proc_macro2::TokenStream> {
     let profile_start = if std::env::var("VESPERA_PROFILE").is_ok() {
+        eprintln!(
+            "[vespera-profile] storage at expansion: {} routes, {} schemas",
+            route_storage.len(),
+            schema_storage.len()
+        );
         Some(std::time::Instant::now())
     } else {
         None
+    };
+
+    // Stage timer for `VESPERA_PROFILE=1` — prints per-stage elapsed
+    // times so regressions can be attributed (scan vs openapi vs
+    // serialization vs codegen).
+    let mut stage_start = std::time::Instant::now();
+    let mut stage = |name: &str| {
+        if profile_start.is_some() {
+            eprintln!("[vespera-profile]   {name}: {:?}", stage_start.elapsed());
+            stage_start = std::time::Instant::now();
+        }
     };
 
     let folder_path = find_folder_path(&processed.folder_name)?;
@@ -407,16 +498,22 @@ pub fn process_vespera_macro(
     }
 
     // --- Incremental cache check ---
+    // One directory walk serves both the fingerprint map and (on a
+    // cache miss) route collection below.
     let cache_path = get_cache_path();
-    let fingerprints = collect_file_fingerprints(&folder_path)
+    let scanned = crate::collector::scan_route_folder(&folder_path)
         .map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: {e}")))?;
+    let fingerprints = crate::collector::fingerprints_from_scan(&scanned);
     let schema_hash = compute_schema_hash(schema_storage);
     let config_hash = compute_config_hash(processed);
+    stage("fingerprints + hashes");
 
     let macro_version = env!("CARGO_PKG_VERSION").to_string();
+    let macro_dev_fingerprint = compute_macro_dev_fingerprint();
     let cached = read_cache(&cache_path);
     let cache_hit = cached.as_ref().is_some_and(|c| {
         c.macro_version == macro_version
+            && c.macro_dev_fingerprint == macro_dev_fingerprint
             && c.file_fingerprints == fingerprints
             && c.schema_hash == schema_hash
             && c.config_hash == config_hash
@@ -439,7 +536,10 @@ pub fn process_vespera_macro(
 
         (metadata, cache.spec_json)
     } else {
-        let (mut metadata, file_asts) = collect_metadata(&folder_path, &processed.folder_name, route_storage).map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", processed.folder_name, e)))?;
+        let scanned_files: Vec<std::path::PathBuf> =
+            scanned.iter().map(|(path, _)| path.clone()).collect();
+        let (mut metadata, file_asts) = crate::collector::collect_metadata_from_files(&scanned_files, &folder_path, &processed.folder_name, route_storage).map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", processed.folder_name, e)))?;
+        stage("collect_metadata");
 
         // Clone metadata before extending (cache stores file-only structs)
         let cache_metadata = metadata.clone();
@@ -448,9 +548,11 @@ pub fn process_vespera_macro(
         metadata
             .check_duplicate_schema_names()
             .map_err(|msg| syn::Error::new(Span::call_site(), format!("vespera! macro: {msg}")))?;
+        stage("metadata merge");
 
         let (_, _, spec_json) =
             generate_and_write_openapi(processed, &metadata, file_asts, route_storage)?;
+        stage("generate_and_write_openapi");
 
         // Read back spec_pretty from first openapi file for caching
         let spec_pretty = processed
@@ -463,6 +565,7 @@ pub fn process_vespera_macro(
             &cache_path,
             &VesperaCache {
                 macro_version: macro_version.clone(),
+                macro_dev_fingerprint,
                 file_fingerprints: fingerprints,
                 schema_hash,
                 config_hash,
@@ -471,12 +574,14 @@ pub fn process_vespera_macro(
                 spec_pretty,
             },
         );
+        stage("write_cache");
 
         (metadata, spec_json)
     };
 
     // Write compact spec for include_str! embedding
     let spec_tokens = write_spec_for_embedding(spec_json)?;
+    stage("write_spec_for_embedding");
 
     // --- Cron job discovery from CRON_STORAGE ---
     // #[cron("...")] attribute already registers metadata at expansion time.
@@ -536,6 +641,7 @@ pub fn process_vespera_macro(
         &processed.merge,
         &cron_jobs,
     ));
+    stage("generate_router_code");
 
     if let Some(start) = profile_start {
         eprintln!(
@@ -1433,7 +1539,6 @@ mod tests {
             function_name: "get_users".to_string(),
             module_path: "routes".to_string(),
             file_path: "routes/users.rs".to_string(),
-            signature: "pub async fn get_users() -> Json<Vec<User>>".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -1455,7 +1560,6 @@ mod tests {
             function_name: "get_users".to_string(),
             module_path: "routes".to_string(),
             file_path: "routes/users.rs".to_string(),
-            signature: "pub async fn get_users() -> Json<Vec<User>>".to_string(),
             error_status: None,
             tags: None,
             description: None,
@@ -1490,7 +1594,6 @@ mod tests {
             function_name: "get_users".to_string(),
             module_path: "routes".to_string(),
             file_path: "routes/users.rs".to_string(),
-            signature: String::new(),
             error_status: None,
             tags: None,
             description: None,
@@ -1522,7 +1625,6 @@ mod tests {
             function_name: "handler".to_string(),
             module_path: "routes".to_string(),
             file_path: "routes/users.rs".to_string(),
-            signature: String::new(),
             error_status: None,
             tags: None,
             description: None,
@@ -1566,7 +1668,6 @@ mod tests {
             function_name: "get_users".to_string(),
             module_path: "routes".to_string(),
             file_path: "routes/users.rs".to_string(),
-            signature: String::new(),
             error_status: Some(vec![500]),
             tags: Some(vec!["existing-tag".to_string()]),
             description: Some("Existing description".to_string()),
@@ -1602,7 +1703,6 @@ mod tests {
             function_name: "get_users".to_string(),
             module_path: "routes".to_string(),
             file_path: "routes/users.rs".to_string(),
-            signature: String::new(),
             error_status: None,
             tags: Some(vec!["from-collector".to_string()]),
             description: Some("From doc comment".to_string()),
