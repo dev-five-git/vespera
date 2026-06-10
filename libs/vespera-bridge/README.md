@@ -230,12 +230,15 @@ Pick the mode that matches your workload:
 wire request from a **direct** `ByteBuffer` and writes the wire
 response into another, eliminating the two JNI
 `GetByteArrayRegion`/`SetByteArrayRegion` copies and the per-call Java
-heap array allocations that `dispatchBytes` pays.  To be precise about
-what remains: one plain native memcpy per side still happens (axum
-requires owned request bytes; the response is built in Rust before
-being written out) — the saving is the managed↔unmanaged region
-transitions and the heap array churn, measured at **1.4–2× per
-round-trip** depending on payload size.
+heap array allocations that `dispatchBytes` pays.  On the success path
+the response is **streamed straight into the out buffer** (wire header
+first, then each body frame at its final offset) — no intermediate
+response `Vec`.  To be precise about what remains: one plain native
+memcpy on the request side (axum requires owned request bytes) plus
+the per-frame body copies; `422` responses are materialised internally
+to keep `validation_errors` hoisted in the wire header.  Measured at
+**1.4–3.4× per round-trip** versus `dispatchBytes` depending on
+payload size.
 
 Contract:
 - Both buffers MUST be direct (`ByteBuffer.allocateDirect`); heap
@@ -244,9 +247,10 @@ Contract:
 - The request is read from absolute offsets `in[0..inLen]` — the
   buffer's position/limit are **ignored**; `inLen` is authoritative.
 - Return `>= 0`: a complete wire response occupies `out[0..n]`.
-- Return `< 0`: `-(requiredSize)` — the response did not fit, nothing
-  was written.  **Retrying re-runs the Rust handler**, so only retry
-  idempotent requests.
+- Return `< 0`: `-(requiredSize)` — the response did not fit; buffer
+  contents are undefined (a prefix may have been written).
+  `requiredSize` is exact, but **retrying re-runs the Rust handler**,
+  so only retry idempotent requests.
 - `Integer.MIN_VALUE`: response exceeds 2 GiB (unrepresentable).
 
 `dispatchDirectPooled(byte[] wireRequest, boolean retryOnOverflow)`
@@ -257,6 +261,16 @@ valid until the next dispatch on the same thread.  On response
 overflow it throws `BufferTooSmallException(requiredSize)` unless
 `retryOnOverflow` is `true` — pass `true` only for idempotent
 requests, because the retry dispatches again.
+
+The fastest variant skips the intermediate wire `byte[]` entirely —
+`dispatchDirectPooled(appName, method, path, query, headers, body,
+retryOnOverflow)` encodes straight into the pooled direct buffer via
+`encodeRequestInto(...)`, so the body is copied heap→direct exactly
+once.  `encodeRequestInto(..., ByteBuffer target)` is also public for
+callers managing their own buffers; it returns the bytes written or
+`-(required)` without touching the buffer when `target` is too small
+(an encoding-side signal — no dispatch has run, growing and retrying
+is always safe, unlike the response-overflow retry).
 
 For the Spring proxy, `DispatchMode.DIRECT` is **opt-in**: the default
 resolver stays `BIDIRECTIONAL_STREAMING` for every request.  Register

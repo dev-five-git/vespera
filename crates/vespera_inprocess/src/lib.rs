@@ -57,8 +57,9 @@
 //! internally `Arc`-shared.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
+use std::collections::btree_map::Entry;
 use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::{LazyLock, RwLock};
@@ -143,7 +144,7 @@ impl ResponseMetadata {
 #[derive(Debug, Serialize)]
 pub struct ResponseEnvelope {
     pub status: u16,
-    pub headers: HashMap<String, HeaderValue>,
+    pub headers: BTreeMap<String, HeaderValue>,
     /// UTF-8 text body. Empty when the upstream response body is not
     /// valid UTF-8 (binary responses).  Use the binary wire path for
     /// faithful byte round-trips.
@@ -176,7 +177,7 @@ struct WireRequestHeader {
 struct WireResponseHeader<'a> {
     v: u8,
     status: u16,
-    headers: &'a HashMap<String, HeaderValue>,
+    headers: &'a BTreeMap<String, HeaderValue>,
     metadata: &'a ResponseMetadata,
     /// Validation errors hoisted from a 422 JSON body so Java decoders
     /// can read them with a single header parse.  `None` for any other
@@ -238,7 +239,7 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
         Err((status, msg)) => {
             return ResponseEnvelope {
                 status,
-                headers: HashMap::new(),
+                headers: BTreeMap::new(),
                 body: msg,
                 metadata: ResponseMetadata::current(),
             };
@@ -252,7 +253,7 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
 pub fn error_envelope(message: &str) -> ResponseEnvelope {
     ResponseEnvelope {
         status: 500,
-        headers: HashMap::new(),
+        headers: BTreeMap::new(),
         body: message.to_owned(),
         metadata: ResponseMetadata::current(),
     }
@@ -577,6 +578,143 @@ pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
     to_wire_bytes(parts)
 }
 
+/// Outcome of [`dispatch_into_async`] / [`dispatch_into`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectWriteResult {
+    /// A complete wire response occupies `out[0..n]`.
+    Complete(usize),
+    /// The response needs `required` bytes and `out` was too small.
+    /// `out` contents are **undefined** (a prefix may have been
+    /// written).  `required` is exact — a retry with a buffer of at
+    /// least this size succeeds, but **re-runs the handler**.
+    Overflow(usize),
+}
+
+/// Sync wrapper around [`dispatch_into_async`] for FFI callers that
+/// own a [`tokio::runtime::Runtime`].
+pub fn dispatch_into(
+    input: Vec<u8>,
+    out: &mut [u8],
+    runtime: &tokio::runtime::Runtime,
+) -> DirectWriteResult {
+    runtime.block_on(dispatch_into_async(input, out))
+}
+
+/// Dispatch a wire-format request and write the wire response
+/// **directly into `out`** — the zero-materialisation sibling of
+/// [`dispatch_from_bytes_async`].
+///
+/// On the success path the response is never assembled in an
+/// intermediate `Vec`: the wire header is written to `out[0..h]` as
+/// soon as axum produces status + headers, then each body frame is
+/// copied straight to its final offset.  Compared with
+/// `dispatch_from_bytes_async` + caller-side copy, this removes one
+/// full response memcpy and the response-sized allocation.
+///
+/// # Exceptions to direct writing
+///
+/// * **`422` responses** are materialised first so the
+///   `validation_errors` hoisting into the wire header (see
+///   [`dispatch_from_bytes`]) is preserved byte-for-byte — validation
+///   failures are tiny and cold, correctness wins.
+/// * **Pre-dispatch errors** (malformed wire, bad version, unknown
+///   app, invalid method) write the small `error_wire` response.
+///
+/// # Overflow semantics
+///
+/// If `out` is too small the body stream is still drained (counting,
+/// not writing) so [`DirectWriteResult::Overflow`] reports the
+/// **exact** required size.  The handler has already run; retrying
+/// runs it again — callers must gate retries on idempotency.
+pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResult {
+    let (header, body_bytes) = match parse_wire_request(input) {
+        Ok(parts) => parts,
+        Err(msg) => return write_wire_into(out, &error_wire(400, &msg)),
+    };
+    if header.v != WIRE_VERSION {
+        return write_wire_into(
+            out,
+            &error_wire(
+                400,
+                &format!(
+                    "unsupported wire version: got {}, expected {WIRE_VERSION}",
+                    header.v
+                ),
+            ),
+        );
+    }
+    let router = match resolve_app_router(&header) {
+        Ok(r) => r,
+        Err(wire) => return write_wire_into(out, &wire),
+    };
+
+    let (status, headers, metadata, mut body) = match dispatch_and_split(
+        router,
+        &header.method,
+        header.path,
+        header.query,
+        header.headers,
+        Body::from(body_bytes),
+    )
+    .await
+    {
+        Ok(parts) => parts,
+        Err((status, msg)) => return write_wire_into(out, &error_wire(status, &msg)),
+    };
+
+    if status == 422 {
+        // Materialise to preserve validation_errors hoisting in the
+        // wire header — identical bytes to dispatch_from_bytes.
+        let body_bytes = body
+            .collect()
+            .await
+            .map(http_body_util::Collected::to_bytes)
+            .unwrap_or_default();
+        let wire = to_wire_bytes((status, headers, body_bytes, metadata));
+        return write_wire_into(out, &wire);
+    }
+
+    let header_bytes = build_wire_header_bytes(status, &headers, &metadata);
+    let mut written = 0usize;
+    if header_bytes.len() <= out.len() {
+        out[..header_bytes.len()].copy_from_slice(&header_bytes);
+        written = header_bytes.len();
+    }
+    let mut required = header_bytes.len();
+
+    while let Some(Ok(frame)) = body.frame().await {
+        if let Some(data) = frame.data_ref()
+            && !data.is_empty()
+        {
+            let len = data.len();
+            // Write only while the output is still contiguous
+            // (`written == required` ⇒ nothing has been skipped yet).
+            if written == required && written + len <= out.len() {
+                out[written..written + len].copy_from_slice(data);
+                written += len;
+            }
+            required += len;
+        }
+    }
+
+    if written == required {
+        DirectWriteResult::Complete(written)
+    } else {
+        DirectWriteResult::Overflow(required)
+    }
+}
+
+/// Copy a fully-assembled wire response into `out`, or report the
+/// exact required size.
+fn write_wire_into(out: &mut [u8], wire: &[u8]) -> DirectWriteResult {
+    if wire.len() <= out.len() {
+        out[..wire.len()].copy_from_slice(wire);
+        DirectWriteResult::Complete(wire.len())
+    } else {
+        DirectWriteResult::Overflow(wire.len())
+    }
+}
+
 /// Build a wire-format error response with a plain-text body.
 ///
 /// Used by [`dispatch_from_bytes`] for malformed input and by the
@@ -584,7 +722,7 @@ pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
 /// `content-type: text/plain; charset=utf-8`.
 #[must_use]
 pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
-    let mut headers = HashMap::new();
+    let mut headers = BTreeMap::new();
     headers.insert(
         "content-type".to_owned(),
         HeaderValue::Single("text/plain; charset=utf-8".to_owned()),
@@ -601,7 +739,7 @@ pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
 
 // ── Internal Helpers ─────────────────────────────────────────────────
 
-type ResponseParts = (u16, HashMap<String, HeaderValue>, Bytes, ResponseMetadata);
+type ResponseParts = (u16, BTreeMap<String, HeaderValue>, Bytes, ResponseMetadata);
 
 /// Drive a [`Router`] with the supplied envelope fields and return
 /// raw response parts.
@@ -673,7 +811,7 @@ async fn dispatch_response_streaming<F>(
     headers: HashMap<String, String>,
     body_bytes: Bytes,
     on_chunk: &mut F,
-) -> Result<(u16, HashMap<String, HeaderValue>, ResponseMetadata), (u16, String)>
+) -> Result<(u16, BTreeMap<String, HeaderValue>, ResponseMetadata), (u16, String)>
 where
     F: FnMut(&[u8]),
 {
@@ -733,8 +871,8 @@ where
 /// Collapse an [`http::HeaderMap`] into the wire's name → value map.
 /// Headers with repeated names (e.g. `set-cookie`) are preserved as
 /// [`HeaderValue::Multi`] so their semantics survive the conversion.
-fn collect_header_map(headers: &http::HeaderMap) -> HashMap<String, HeaderValue> {
-    let mut resp_headers: HashMap<String, HeaderValue> = HashMap::with_capacity(headers.len());
+fn collect_header_map(headers: &http::HeaderMap) -> BTreeMap<String, HeaderValue> {
+    let mut resp_headers: BTreeMap<String, HeaderValue> = BTreeMap::new();
     for (name, value) in headers {
         let val_str = value.to_str().unwrap_or("").to_owned();
         match resp_headers.entry(name.as_str().to_owned()) {
@@ -840,7 +978,7 @@ async fn dispatch_and_split(
     query: String,
     headers: HashMap<String, String>,
     body: Body,
-) -> Result<(u16, HashMap<String, HeaderValue>, ResponseMetadata, Body), (u16, String)> {
+) -> Result<(u16, BTreeMap<String, HeaderValue>, ResponseMetadata, Body), (u16, String)> {
     let Ok(http_method) = method_str.parse::<Method>() else {
         return Err((
             405,
@@ -880,7 +1018,7 @@ async fn dispatch_and_split(
 /// without a body — used by the `*_with_header` callback variants.
 fn build_wire_header_bytes(
     status: u16,
-    headers: &HashMap<String, HeaderValue>,
+    headers: &BTreeMap<String, HeaderValue>,
     metadata: &ResponseMetadata,
 ) -> Vec<u8> {
     let view = WireResponseHeader {
@@ -986,7 +1124,7 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
 /// This is intentionally lenient — a malformed 422 body must never
 /// degrade to a 5xx; the original body is still surfaced verbatim.
 fn try_hoist_validation_errors(
-    headers: &HashMap<String, HeaderValue>,
+    headers: &BTreeMap<String, HeaderValue>,
     body_bytes: &Bytes,
 ) -> Option<Vec<ValidationErrorItem>> {
     let is_json = headers.iter().any(|(k, v)| {

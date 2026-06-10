@@ -193,7 +193,11 @@ All share the same wire format, registered router, and panic-safe `catch_unwind`
 | `dispatch_from_bytes(Vec<u8>, &Runtime) -> Vec<u8>` | sync | FFI entry, blocks on runtime |
 | `dispatch_from_bytes_async(Vec<u8>) -> Vec<u8>` (async) | async | inside an existing runtime |
 | `dispatch_streaming_async<F>(Vec<u8>, F) -> Vec<u8>` (async) | response streaming async | `F: FnMut(&[u8])` body chunks |
+| `dispatch_streaming_with_header_async<H,F>(Vec<u8>, H, F)` (async) | response streaming, header callback first | `H: FnMut(&[u8])` fires before first body chunk |
 | `dispatch_bidirectional_streaming<P,F>(Vec<u8>, P, F) -> Vec<u8>` (async) | bidirectional streaming | `P: FnMut() -> Option<Vec<u8>> + Send + 'static`, `F: FnMut(&[u8])` |
+| `dispatch_bidirectional_streaming_with_header<P,F,H>(Vec<u8>, P, F, H)` (async) | bidirectional streaming, header callback | header before first body chunk |
+| `dispatch_into(Vec<u8>, &mut [u8], &Runtime) -> DirectWriteResult` | sync | direct-write FFI entry — wire response streamed straight into the caller's buffer (no response `Vec`); `Complete(n)` / `Overflow(exact_required)`; 422 materialised internally to keep `validation_errors` hoisting |
+| `dispatch_into_async(Vec<u8>, &mut [u8]) -> DirectWriteResult` (async) | async | same, inside an existing runtime |
 | `error_wire(u16, &str) -> Vec<u8>` | sync | wire-format error builder |
 | `dispatch_typed(Router, &RequestEnvelope) -> ResponseEnvelope` | async | direct axum API (BC) |
 

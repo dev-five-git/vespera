@@ -355,8 +355,11 @@ public class VesperaBridge {
      *   <li>Return {@code >= 0}: a complete wire response occupies
      *       {@code out[0..n]}.</li>
      *   <li>Return {@code < 0}: {@code -(requiredSize)} — the response
-     *       did not fit and <em>nothing was written</em>.  Retrying
-     *       re-runs the dispatch (see {@link BufferTooSmallException}).</li>
+     *       did not fit.  {@code out} contents are <em>undefined</em>
+     *       (the response streams directly into the buffer, so a
+     *       prefix may have been written).  {@code requiredSize} is
+     *       exact; retrying re-runs the dispatch (see
+     *       {@link BufferTooSmallException}).</li>
      *   <li>{@code Integer.MIN_VALUE}: response exceeds 2 GiB and is
      *       unrepresentable in this protocol.</li>
      * </ul>

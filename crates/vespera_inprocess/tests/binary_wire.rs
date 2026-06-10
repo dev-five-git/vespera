@@ -311,6 +311,37 @@ async fn dispatch_streaming_async_large_binary_body() {
     );
 }
 
+#[test]
+fn wire_response_bytes_are_deterministic_across_dispatches() {
+    // Response headers serialise from a BTreeMap — identical requests
+    // MUST produce byte-identical wire responses (golden-file /
+    // SHA-comparison safety).  This pins the V2-C determinism
+    // guarantee; with the previous HashMap the JSON key order varied
+    // per response.
+    install_router();
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    // /echo/bytes responds with content-type + content-length —
+    // multiple headers, which is what exposed the ordering issue.
+    let wire = encode_wire(
+        "POST",
+        "/echo/bytes",
+        None,
+        HashMap::from([("content-type", "application/octet-stream")]),
+        b"determinism-probe",
+    );
+    let first = dispatch_from_bytes(wire.clone(), &runtime);
+    for run in 0..4 {
+        let again = dispatch_from_bytes(wire.clone(), &runtime);
+        assert_eq!(
+            first, again,
+            "wire response bytes must be identical on repeat dispatch (run {run})"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dispatch_bidirectional_streaming_roundtrips_small_body() {
     install_router();

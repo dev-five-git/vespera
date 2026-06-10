@@ -212,16 +212,23 @@ mod jni_impl {
     ///   the classic "forgot to flip()" corruption).
     /// * Return `>= 0`: a complete wire response was written to
     ///   `out_buf[0..n]`.
-    /// * Return `< 0`: `-(required_size)` — response did not fit;
-    ///   nothing was written.  Retrying re-runs the dispatch, so the
-    ///   Java side only auto-retries idempotent methods.
-    /// * `Integer.MIN_VALUE + 1`: response size exceeds `i32::MAX`.
+    /// * Return `< 0`: `-(required_size)` — the response did not fit.
+    ///   `out_buf` contents are **undefined** (a prefix may have been
+    ///   written).  `required_size` is exact, but retrying re-runs the
+    ///   dispatch, so the Java side only auto-retries idempotent
+    ///   methods.
+    /// * `Integer.MIN_VALUE`: response size exceeds `i32::MAX`.
     ///
     /// Compared with `dispatchBytes`, this path removes BOTH JNI
-    /// region copies (Java `byte[]` ↔ Rust) and the per-call Java heap
-    /// array allocations.  One plain native memcpy remains on each
-    /// side: request → Rust-owned `Vec` (axum's `Body` requires
-    /// `'static` ownership) and response `Vec` → out buffer.
+    /// region copies (Java `byte[]` ↔ Rust), the per-call Java heap
+    /// array allocations, AND — via
+    /// [`vespera_inprocess::dispatch_into_async`] — the intermediate
+    /// response `Vec`: on the success path the wire header and each
+    /// body frame are written straight into `out_buf`.  One plain
+    /// native memcpy remains on the request side (axum's `Body`
+    /// requires `'static` ownership), plus the per-frame copies of the
+    /// response body.  `422` responses are materialised internally to
+    /// preserve `validation_errors` hoisting.
     ///
     /// # Safety invariants (comment-locked)
     ///
@@ -270,12 +277,32 @@ mod jni_impl {
                     }
                 };
 
-                let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    vespera_inprocess::dispatch_from_bytes(input, &RUNTIME)
-                }))
-                .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
+                let dispatched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // SAFETY: invariants 1–2 above — `out_addr` points
+                    // to `out_cap` writable bytes of a direct buffer
+                    // pinned by the live `out_buf` local ref; the Java
+                    // caller is blocked for the whole call, so the
+                    // region is exclusively ours; the slice never
+                    // escapes this closure.
+                    let out = unsafe { std::slice::from_raw_parts_mut(out_addr, out_cap) };
+                    RUNTIME.block_on(vespera_inprocess::dispatch_into_async(input, out))
+                }));
 
-                Ok(write_response_to_out(out_addr, out_cap, &response))
+                let code = match dispatched {
+                    Ok(vespera_inprocess::DirectWriteResult::Complete(n)) => {
+                        // n <= out_cap, and Java buffer capacities are
+                        // jint-bounded, so this always fits i32.
+                        jint::try_from(n).unwrap_or(DIRECT_UNREPRESENTABLE)
+                    }
+                    Ok(vespera_inprocess::DirectWriteResult::Overflow(required)) => {
+                        jint::try_from(required).map_or(DIRECT_UNREPRESENTABLE, |r| -r)
+                    }
+                    Err(_) => {
+                        let err = vespera_inprocess::error_wire(500, "panic in Rust engine");
+                        write_response_to_out(out_addr, out_cap, &err)
+                    }
+                };
+                Ok(code)
             })
             .resolve::<ThrowRuntimeExAndDefault>()
     }
