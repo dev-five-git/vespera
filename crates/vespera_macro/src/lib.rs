@@ -120,6 +120,12 @@ pub fn cron(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[cfg(not(tarpaulin_include))]
 #[proc_macro_derive(Schema, attributes(schema, serde))]
 pub fn derive_schema(input: TokenStream) -> TokenStream {
+    // Advance the epoch: process_derive_schema → extract_field_defaults_from_path
+    // → file_cache::get_parsed_file, so this entry point reaches file_cache.
+    // Each derive invocation is a distinct macro expansion; bump ensures the
+    // mtime for the source file is re-checked at most once per invocation.
+    schema_macro::file_cache::bump_epoch();
+
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     let (metadata, expanded) = schema_impl::process_derive_schema(&input);
     let name = metadata.name.clone();
@@ -226,6 +232,10 @@ pub fn derive_multipart(input: TokenStream) -> TokenStream {
 #[cfg(not(tarpaulin_include))]
 #[proc_macro]
 pub fn schema(input: TokenStream) -> TokenStream {
+    // Advance the epoch: generate_schema_code → file_cache::parse_struct_cached,
+    // so this entry point reaches file_cache.
+    schema_macro::file_cache::bump_epoch();
+
     let input = syn::parse_macro_input!(input as schema_macro::SchemaInput);
 
     // Get stored schemas
@@ -296,6 +306,11 @@ pub fn schema(input: TokenStream) -> TokenStream {
 #[cfg(not(tarpaulin_include))]
 #[proc_macro]
 pub fn schema_type(input: TokenStream) -> TokenStream {
+    // Advance the epoch so that within this invocation each file's mtime is
+    // fetched via fs::metadata at most once (epoch-cache hit on subsequent
+    // lookups for the same path).
+    schema_macro::file_cache::bump_epoch();
+
     let input = syn::parse_macro_input!(input as schema_macro::SchemaTypeInput);
     let ignore_schema = input.ignore_schema;
 
@@ -337,6 +352,11 @@ pub fn schema_type(input: TokenStream) -> TokenStream {
 #[cfg(not(tarpaulin_include))]
 #[proc_macro]
 pub fn vespera(input: TokenStream) -> TokenStream {
+    // Advance the epoch so that within this invocation each file's mtime is
+    // fetched via fs::metadata at most once (epoch-cache hit on subsequent
+    // lookups for the same path).
+    schema_macro::file_cache::bump_epoch();
+
     let input = syn::parse_macro_input!(input as AutoRouterInput);
     let processed = process_vespera_input(input);
     let schema_storage = SCHEMA_STORAGE
@@ -377,6 +397,10 @@ pub fn vespera(input: TokenStream) -> TokenStream {
 #[cfg(not(tarpaulin_include))]
 #[proc_macro]
 pub fn export_app(input: TokenStream) -> TokenStream {
+    // Advance the epoch: process_export_app → collect_metadata →
+    // file_cache::get_parsed_file, so this entry point reaches file_cache.
+    schema_macro::file_cache::bump_epoch();
+
     let ExportAppInput { name, dir } = syn::parse_macro_input!(input as ExportAppInput);
     let folder_name = dir
         .map(|d| d.value())

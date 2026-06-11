@@ -6,13 +6,13 @@ JNI bridge that lets a Java/Spring application embed a Rust [`vespera`](../../) 
 <dependency>
   <groupId>kr.devfive</groupId>
   <artifactId>vespera-bridge</artifactId>
-  <version>0.1.1</version>
+  <version>1.0.0</version>
 </dependency>
 ```
 
 ```kotlin
 dependencies {
-    implementation("kr.devfive:vespera-bridge:0.1.1")
+    implementation("kr.devfive:vespera-bridge:1.0.0")
 }
 ```
 
@@ -28,7 +28,7 @@ plugins {
 vespera {
     crateName.set("my_rust_lib")
     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
-    bridgeVersion.set("0.1.1")
+    bridgeVersion.set("1.0.0")
 }
 ```
 
@@ -142,7 +142,7 @@ public class MyController {
             body);
         byte[] resp = VesperaBridge.dispatchBytes(wire);
         DecodedResponse d = VesperaBridge.decodeResponse(resp);
-        return ResponseEntity.status(d.status()).body(d.body());
+        return ResponseEntity.status(d.status()).body(d.bodyBytes());
     }
 }
 ```
@@ -308,6 +308,29 @@ public DispatchModeResolver dispatchModeResolver() {
 }
 ```
 
+### Virtual thread (Project Loom) limitation
+
+The pooled direct-buffer methods (`dispatchDirectPooled`) use
+`ThreadLocal<ByteBuffer[]>` to maintain per-thread reusable buffers
+(64 KiB initial, growing to `vespera.direct.maxBufferBytes`, default
+4 MiB).  In Java 21+, `ThreadLocal` binds to the **virtual thread**
+(not the carrier thread) — so in a virtual-thread-per-request server,
+each virtual thread allocates a fresh direct buffer and loses all
+pooling benefit.  Direct memory accumulates until the virtual thread is
+garbage-collected, potentially causing memory pressure under high
+concurrency.
+
+**Recommendation for virtual-thread deployments:**
+- Use `dispatchBytes`, `dispatchStreaming`, or `dispatchFullStreaming`
+  instead of the pooled direct variants.
+- Or run dispatch on a bounded platform-thread executor (e.g. a
+  `ForkJoinPool` with a fixed parallelism cap).
+- Or lower `vespera.direct.maxBufferBytes` to reduce per-thread
+  allocation size.
+
+The default `DispatchMode.BIDIRECTIONAL_STREAMING` is safe for virtual
+threads and handles all payload sizes without pooling.
+
 ## Direct API (without the proxy controller)
 
 For custom integrations bypassing Spring:
@@ -334,7 +357,7 @@ byte[] wireResponse = VesperaBridge.dispatchBytes(wireRequest);
 DecodedResponse resp = VesperaBridge.decodeResponse(wireResponse);
 System.out.println(resp.status());           // 200
 System.out.println(resp.headers());          // { "content-type": "application/json", … }
-System.out.println(new String(resp.body())); // the raw response body
+System.out.println(new String(resp.bodyBytes())); // copies the raw response body
 ```
 
 ### Async dispatch (`CompletableFuture`)
@@ -420,13 +443,57 @@ Backpressure is enforced naturally — if axum reads slowly,
 #### Streaming tuning
 
 Both knobs are fixed for the process lifetime once the first dispatch
-runs; set them before `VesperaBridge.init(...)`:
+runs. Configuration precedence (first hit wins, then cached):
+
+1. **Programmatic setter** — `VesperaBridge.configureStreaming(chunkBytes, channelCapacity)` (Java API, call before or after init)
+2. **System properties** — `vespera.streaming.chunkBytes`, `vespera.streaming.channelCapacity`
+3. **Environment variables** — `VESPERA_STREAMING_CHUNK_BYTES`, `VESPERA_STREAMING_CHANNEL_CAPACITY`
+4. **Built-in defaults** — 64 KiB chunk size, 16 channel slots
 
 | Setting | System property | Env var (fallback) | Default | Range |
 |---|---|---|---|---|
 | Chunk buffer size | `vespera.streaming.chunkBytes` | `VESPERA_STREAMING_CHUNK_BYTES` | 64 KiB | 4 KiB – 8 MiB |
 | Request channel slots | `vespera.streaming.channelCapacity` | `VESPERA_STREAMING_CHANNEL_CAPACITY` | 16 | 1 – 1024 |
 | Tokio worker threads | `vespera.runtime.workerThreads` | `VESPERA_RUNTIME_WORKERS` | logical CPUs | 1 – 1024 |
+
+**Java API** — call before `VesperaBridge.init(...)` for guaranteed precedence:
+
+```java
+// Configure streaming parameters before init
+VesperaBridge.configureStreaming(
+    131072,  // chunkBytes: 128 KiB (clamped to 4 KiB – 8 MiB)
+    32       // channelCapacity: 32 slots (clamped to 1 – 1024)
+);
+VesperaBridge.init("my_rust_lib");
+```
+
+When called before `init()`, values are stored as pending and applied
+immediately after the native library loads, **before any dispatch can
+occur**. This ensures the programmatic setter beats system properties
+and environment variables (Rust-side precedence: setter > env > default).
+
+When called after `init()`, the native library is already loaded and
+values are applied immediately (still beats env vars, but system
+properties may have already been read during init).
+
+Throws `IllegalArgumentException` if `chunkBytes` is outside [4096, 8388608] or
+`channelCapacity` is outside [1, 1024].
+
+**System properties** — set before `VesperaBridge.init(...)`:
+
+```bash
+java -Dvespera.streaming.chunkBytes=131072 \
+     -Dvespera.streaming.channelCapacity=32 \
+     -jar app.jar
+```
+
+**Environment variables** — fallback when no system property is set:
+
+```bash
+export VESPERA_STREAMING_CHUNK_BYTES=131072
+export VESPERA_STREAMING_CHANNEL_CAPACITY=32
+java -jar app.jar
+```
 
 The worker-thread knob caps Rust's shared Tokio runtime — useful when
 the JVM's own pools (Tomcat request threads, virtual-thread carriers)
@@ -476,7 +543,7 @@ byte[] wire = VesperaBridge.encodeRequest(
     pdf);
 DecodedResponse resp = VesperaBridge.decodeResponse(
     VesperaBridge.dispatchBytes(wire));
-assert Arrays.equals(pdf, resp.body());      // exact round-trip
+assert Arrays.equals(pdf, resp.bodyBytes()); // exact round-trip (copy on demand)
 ```
 
 A Rust handler returning a binary response (e.g. `image/png`) flows the same way: `VesperaProxyController` inspects the response `Content-Type` and returns `ResponseEntity<byte[]>` for binary content, `ResponseEntity<String>` for text-like content.

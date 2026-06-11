@@ -77,8 +77,8 @@ class DispatchDirectE2ETest {
         assertEquals(200, viaDirect.status());
         assertEquals(viaBytes.status(), viaDirect.status(), "status");
         assertEquals(viaBytes.headers(), viaDirect.headers(), "headers");
-        assertEquals(bodySize, viaDirect.body().length, "body length");
-        assertArrayEquals(sha256(viaBytes.body()), sha256(viaDirect.body()),
+        assertEquals(bodySize, viaDirect.body().remaining(), "body length");
+        assertArrayEquals(sha256(viaBytes.bodyBytes()), sha256(viaDirect.bodyBytes()),
                 "body must be byte-identical for size " + bodySize);
     }
 
@@ -142,9 +142,9 @@ class DispatchDirectE2ETest {
         VesperaBridge.DecodedResponse viaBytes =
                 VesperaBridge.decodeResponse(VesperaBridge.dispatchBytes(wire));
         assertEquals(viaBytes.status(), viaDirect.status(), "status");
-        assertEquals(viaBytes.body().length, viaDirect.body().length,
+        assertEquals(viaBytes.body().remaining(), viaDirect.body().remaining(),
                 "body length — a mismatch means the garbage tail leaked past inLen");
-        assertArrayEquals(viaBytes.body(), viaDirect.body(), "body bytes");
+        assertArrayEquals(viaBytes.bodyBytes(), viaDirect.bodyBytes(), "body bytes");
         // Map equality — wire JSON key order is unspecified.
         assertEquals(viaBytes.headers(), viaDirect.headers(), "headers");
     }
@@ -165,7 +165,7 @@ class DispatchDirectE2ETest {
 
         assertEquals(viaWire.status(), viaEncodeInto.status(), "status");
         assertEquals(viaWire.headers(), viaEncodeInto.headers(), "headers");
-        assertArrayEquals(sha256(viaWire.body()), sha256(viaEncodeInto.body()), "body");
+        assertArrayEquals(sha256(viaWire.bodyBytes()), sha256(viaEncodeInto.bodyBytes()), "body");
     }
 
     @Test

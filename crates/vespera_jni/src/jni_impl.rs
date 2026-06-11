@@ -2,9 +2,12 @@ use std::sync::LazyLock;
 
 use jni::EnvUnowned;
 use jni::errors::ThrowRuntimeExAndDefault;
-use jni::objects::{Global, JByteArray, JByteBuffer, JClass, JObject, JValue};
+use jni::objects::{Global, JByteArray, JByteBuffer, JClass, JObject};
 use jni::sys::{jbyteArray, jint};
-use jni::{jni_sig, jni_str};
+
+use crate::streaming_closures::{
+    call_header_consumer, complete_future, make_pull_closure, make_push_closure,
+};
 
 /// Multi-threaded Tokio runtime shared across all JNI calls.
 ///
@@ -87,7 +90,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_configureRu
 /// `VesperaBridge.init()`).  Large enough to amortise JNI call
 /// overhead, small enough to keep memory bounded for multi-GB
 /// streams.  Subsequent calls are a single atomic load.
-fn streaming_chunk_size() -> usize {
+pub fn streaming_chunk_size() -> usize {
     vespera_inprocess::streaming_chunk_bytes()
 }
 
@@ -133,12 +136,23 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchByt
 ) -> jbyteArray {
     unowned_env
         .with_env(|env| -> jni::errors::Result<JObject<'local>> {
-            let Ok(input) = env.convert_byte_array(&request_bytes) else {
-                let err = vespera_inprocess::error_wire(
-                    400,
-                    "invalid input byte array (JNI conversion failed)",
-                );
-                return Ok(env.byte_array_from_slice(&err)?.into());
+            let input = {
+                let len = request_bytes.len(env).unwrap_or(0);
+                let mut buf = vec![0u8; len];
+                // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
+                // identical size/alignment; this views the
+                // freshly allocated buffer as the signed slice
+                // `get_region` expects.
+                let buf_i8 =
+                    unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<i8>(), len) };
+                if request_bytes.get_region(env, 0, buf_i8).is_err() {
+                    let err = vespera_inprocess::error_wire(
+                        400,
+                        "invalid input byte array (JNI conversion failed)",
+                    );
+                    return Ok(env.byte_array_from_slice(&err)?.into());
+                }
+                buf
             };
 
             let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -342,16 +356,27 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
         //    across the tokio task boundary.
         let future_global: Global<JObject<'static>> = env.new_global_ref(&future_obj)?;
 
-        // 2. Try to convert the input byte array.  On failure,
+        // 2. Try to read the input byte array.  On failure,
         //    complete the future synchronously with the error wire
         //    and return early — no async work needed.
-        let Ok(input) = env.convert_byte_array(&request_bytes) else {
-            let err = vespera_inprocess::error_wire(
-                400,
-                "invalid input byte array (JNI conversion failed)",
-            );
-            let _ = complete_future(env, &future_global, &err);
-            return Ok(());
+        let input = {
+            let len = request_bytes.len(env).unwrap_or(0);
+            let mut buf = vec![0u8; len];
+            // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
+            // identical size/alignment; this views the
+            // freshly allocated buffer as the signed slice
+            // `get_region` expects.
+            let buf_i8 =
+                unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<i8>(), len) };
+            if request_bytes.get_region(env, 0, buf_i8).is_err() {
+                let err = vespera_inprocess::error_wire(
+                    400,
+                    "invalid input byte array (JNI conversion failed)",
+                );
+                let _ = complete_future(env, &future_global, &err);
+                return Ok(());
+            }
+            buf
         };
 
         // 3. Snapshot the JavaVM (Send + Sync) so we can re-attach
@@ -667,174 +692,6 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
 
         Ok(())
     });
-}
-
-/// Build the request-body pull closure shared by the two
-/// full-streaming JNI entry points.
-///
-/// The Java-side chunk buffer (`buf`) is allocated **once** by the
-/// caller and promoted to a global ref — reused across every
-/// chunk instead of `new_byte_array` per chunk.  Bytes are copied
-/// out via `get_byte_array_region`, which copies **only the `n`
-/// bytes actually read** (the previous `convert_byte_array`
-/// approach copied the full 16 KiB buffer regardless and then
-/// truncated).
-fn make_pull_closure(
-    jvm: jni::JavaVM,
-    stream: Global<JObject<'static>>,
-    buf: Global<jni::objects::JByteArray<'static>>,
-) -> impl FnMut() -> Option<Vec<u8>> + Send + 'static {
-    // Resolved once at closure-build time — zero per-chunk cost.
-    // Identical to the buffer's allocation size by OnceLock
-    // construction (the config is process-fixed after first read).
-    let chunk_size = streaming_chunk_size();
-    move || -> Option<Vec<u8>> {
-        let result: jni::errors::Result<Option<Vec<u8>>> = jvm.attach_current_thread(|env| {
-            env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
-                let n = env
-                    .call_method(
-                        &stream,
-                        jni_str!("read"),
-                        jni_sig!("([B)I"),
-                        &[JValue::Object(buf.as_ref())],
-                    )?
-                    .i()?;
-                if env.exception_check() {
-                    env.exception_clear();
-                }
-                // InputStream.read(byte[]) contract (mirrored in the
-                // VesperaBridge javadoc): -1 = EOF, 0 = empty read that
-                // MUST be retried.  The inprocess producer skips empty
-                // chunks and keeps pulling, so report `0` as an empty
-                // chunk rather than end-of-stream.
-                if n < 0 {
-                    return Ok(None);
-                }
-                if n == 0 {
-                    return Ok(Some(Vec::new()));
-                }
-                let n = usize::try_from(n).unwrap_or(0).min(chunk_size);
-                let mut data = vec![0u8; n];
-                // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
-                // identical size/alignment; this views the
-                // freshly allocated buffer as the signed slice
-                // `get_byte_array_region` expects.
-                let data_i8 =
-                    unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast::<i8>(), n) };
-                let arr: &jni::objects::JByteArray<'_> = buf.as_ref();
-                arr.get_region(env, 0, data_i8)?;
-                Ok(Some(data))
-            })
-        });
-        result.ok().flatten()
-    }
-}
-
-/// Build the response-body push closure shared by all four
-/// streaming JNI entry points.
-///
-/// The Java-side buffer (`buf`, [`streaming_chunk_size`] bytes) is
-/// allocated **once** by the caller and reused for every chunk via
-/// `JByteArray::set_region` + `OutputStream.write(byte[], int, int)`
-/// — the previous implementation allocated a fresh exact-size Java
-/// array per chunk (`byte_array_from_slice`).  Axum body frames are
-/// unbounded in size, so frames larger than the buffer are written
-/// in buffer-sized segments.
-///
-/// NOTE: when request pull and response push run concurrently
-/// (bidirectional streaming), each side MUST own a **separate**
-/// buffer — they execute on different threads.
-fn make_push_closure(
-    jvm: jni::JavaVM,
-    stream: Global<JObject<'static>>,
-    buf: Global<jni::objects::JByteArray<'static>>,
-) -> impl FnMut(&[u8]) + Send + 'static {
-    // Resolved once at closure-build time — zero per-chunk cost.
-    let chunk_size = streaming_chunk_size();
-    move |chunk: &[u8]| {
-        let _ = jvm.attach_current_thread(|env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
-            env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
-                let arr: &jni::objects::JByteArray<'_> = buf.as_ref();
-                for seg in chunk.chunks(chunk_size) {
-                    // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
-                    // identical size/alignment; this views the
-                    // segment as the signed slice `set_region`
-                    // expects.  `seg.len() <= chunk_size` (max
-                    // 8 MiB) so it always fits both the buffer
-                    // and `i32`.
-                    let seg_i8 =
-                        unsafe { std::slice::from_raw_parts(seg.as_ptr().cast::<i8>(), seg.len()) };
-                    arr.set_region(env, 0, seg_i8)?;
-                    let len = i32::try_from(seg.len())
-                        .expect("segment length bounded by streaming_chunk_size");
-                    env.call_method(
-                        &stream,
-                        jni_str!("write"),
-                        jni_sig!("([BII)V"),
-                        &[
-                            JValue::Object(buf.as_ref()),
-                            JValue::Int(0),
-                            JValue::Int(len),
-                        ],
-                    )?;
-                    // Any IOException thrown by write() is left
-                    // pending on the env; clear it so subsequent
-                    // chunks on the same thread aren't poisoned.
-                    if env.exception_check() {
-                        env.exception_clear();
-                    }
-                }
-                Ok(())
-            })
-        });
-    }
-}
-
-fn call_header_consumer(
-    env: &mut jni::Env<'_>,
-    consumer: &Global<JObject<'static>>,
-    header_bytes: &[u8],
-) -> jni::errors::Result<()> {
-    env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
-        let arr = env.byte_array_from_slice(header_bytes)?;
-        let arr_obj: JObject = arr.into();
-        env.call_method(
-            consumer,
-            jni_str!("accept"),
-            jni_sig!("(Ljava/lang/Object;)V"),
-            &[JValue::Object(&arr_obj)],
-        )?;
-        if env.exception_check() {
-            env.exception_clear();
-        }
-        Ok(())
-    })
-}
-
-/// Call `CompletableFuture.complete(byte[])` and clear any pending
-/// JNI exception so the worker thread is left clean for subsequent
-/// dispatches.
-fn complete_future(
-    env: &mut jni::Env<'_>,
-    future: &Global<JObject<'static>>,
-    bytes: &[u8],
-) -> jni::errors::Result<()> {
-    let arr = env.byte_array_from_slice(bytes)?;
-    let arr_obj: JObject = arr.into();
-    env.call_method(
-        future,
-        jni_str!("complete"),
-        jni_sig!("(Ljava/lang/Object;)Z"),
-        &[JValue::Object(&arr_obj)],
-    )?;
-    // Always clear any leftover exception (e.g. if Java's
-    // complete() threw via a buggy whenComplete handler): we MUST
-    // NOT leave the attached thread in a faulted state because
-    // subsequent JNI calls will misbehave silently.
-    if env.exception_check() {
-        env.exception_clear();
-    }
-    Ok(())
 }
 
 #[cfg(test)]

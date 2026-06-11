@@ -23,7 +23,7 @@ vespera {
     cargoRoot.set(rootProject.layout.projectDirectory.dir("../../.."))
     // Dogfoods the locally published bridge (./gradlew publishToMavenLocal
     // in libs/vespera-bridge) — required for the dispatchDirect E2E tests.
-    bridgeVersion.set("0.1.1")
+    bridgeVersion.set("1.0.0")
 }
 
 dependencies {

@@ -95,3 +95,5 @@ macro_rules! jni_apps {
 // Everything below requires a JVM — excluded from coverage.
 #[cfg(not(tarpaulin_include))]
 mod jni_impl;
+#[cfg(not(tarpaulin_include))]
+mod streaming_closures;

@@ -34,6 +34,7 @@ axum = { version = "0.8", features = ["multipart"] }
 axum-extra = { version = "0.12" }
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tower-layer = "0.3"
 tower-service = "0.3"
@@ -62,6 +63,8 @@ tower = { version = "0.5", features = ["util"] }
 # `vespera_inprocess::{register_app, dispatch_from_json}` directly so
 # they don't need the `inprocess` cargo feature to be enabled.
 vespera_inprocess = { workspace = true }
+# Byte-snapshot testing for 422 validation envelope contract
+insta = "1.47"
 
 [lints]
 workspace = true

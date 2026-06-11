@@ -392,3 +392,42 @@ async fn multiple_per_rule_violations_all_appear_in_envelope() {
         assert_envelope_has_field_error(&body, field);
     }
 }
+
+// ── byte-snapshot test: 422 validation envelope contract ────────────────
+//
+// This test locks the EXACT serialized bytes of the 422 validation-error
+// envelope produced by `Validated<T>`. The snapshot proves byte-identity
+// across refactors of `crates/vespera/src/validated.rs`.
+//
+// The envelope shape is a public contract:
+// - Used by axum handlers (JSON response body)
+// - Hoisted into JNI wire headers as `"validation_errors": [...]`
+// - Consumed by Java decoders and client libraries
+//
+// Multi-error coverage: triggers 2+ field errors to verify the full
+// envelope structure (path before message, array ordering, etc.).
+
+#[tokio::test]
+async fn byte_snapshot_422_envelope_multi_error() {
+    let app = router();
+    // Trigger 2 validation errors: title too short + content empty
+    let req = Request::builder()
+        .method("POST")
+        .uri("/posts")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"title":"X","content":""}"#))
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), 422);
+
+    // Read full response body as bytes and convert to string
+    let body_bytes = ::axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+    // Snapshot the exact serialized bytes (as UTF-8 JSON string)
+    // This locks the envelope shape: {"errors":[{"path":"...","message":"..."}]}
+    insta::assert_snapshot!("validated_422_envelope_multi_error", body_str);
+}

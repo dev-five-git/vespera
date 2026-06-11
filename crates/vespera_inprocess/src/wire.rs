@@ -463,6 +463,7 @@ pub fn split_wire_request(input: Vec<u8>) -> Result<(Bytes, Bytes), String> {
 
 /// Deserialize the wire request header, borrowing every string from
 /// `header_json` where possible (see [`WireRequestHeader`]).
+#[inline]
 pub fn parse_wire_header(header_json: &[u8]) -> Result<WireRequestHeader<'_>, String> {
     serde_json::from_slice(header_json).map_err(|e| format!("wire header JSON parse error: {e}"))
 }

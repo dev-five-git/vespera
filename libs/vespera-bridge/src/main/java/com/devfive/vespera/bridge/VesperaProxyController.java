@@ -312,10 +312,10 @@ public class VesperaProxyController {
         HttpStatus status = HttpStatus.valueOf(decoded.status());
         String contentType = httpHeaders.getFirst(HttpHeaders.CONTENT_TYPE);
         if (isTextContentType(contentType)) {
-            String bodyStr = new String(decoded.body(), StandardCharsets.UTF_8);
+            String bodyStr = new String(decoded.bodyBytes(), StandardCharsets.UTF_8);
             return new ResponseEntity<>(bodyStr, httpHeaders, status);
         }
-        return new ResponseEntity<>(decoded.body(), httpHeaders, status);
+        return new ResponseEntity<>(decoded.bodyBytes(), httpHeaders, status);
     }
 
     private static boolean isTextContentType(String ct) {

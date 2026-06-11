@@ -42,6 +42,7 @@ fn parse_config_value(raw: Option<&str>, default: usize, min: usize, max: usize)
 ///
 /// Values are clamped to `[4 KiB, 8 MiB]`.
 #[must_use]
+#[inline]
 pub fn streaming_chunk_bytes() -> usize {
     *STREAMING_CHUNK_BYTES.get_or_init(|| {
         parse_config_value(
@@ -75,6 +76,7 @@ pub fn set_streaming_chunk_bytes(bytes: usize) -> bool {
 /// [`DEFAULT_STREAMING_CHANNEL_CAPACITY`] (16).  Clamped to
 /// `[1, 1024]`.
 #[must_use]
+#[inline]
 pub fn streaming_channel_capacity() -> usize {
     *STREAMING_CHANNEL_CAPACITY.get_or_init(|| {
         parse_config_value(

@@ -78,7 +78,7 @@ pub fn collect_metadata_from_files(
             continue;
         }
 
-        let file_path = file.display().to_string();
+        let mut file_path = file.display().to_string();
 
         // Get module path (cheap — no parsing needed)
         let segments = file
@@ -93,7 +93,7 @@ pub fn collect_metadata_from_files(
                 ))
             })?;
 
-        let module_path = if folder_name.is_empty() {
+        let mut module_path = if folder_name.is_empty() {
             segments.join("::")
         } else {
             format!("{}::{}", folder_name, segments.join("::"))
@@ -103,8 +103,13 @@ pub fn collect_metadata_from_files(
         let base_path = format!("/{}", segments.join("/"));
 
         // Fast path: ROUTE_STORAGE has entries for this file — skip syn::parse_file()
+        //
+        // Per-file invariants (`module_path`, `file_path`) are CLONED for
+        // every non-last route but MOVED into the last route's push —
+        // refcount-free amortization of two String allocations per file.
         if let Some(stored_routes) = storage_by_file.get(&normalize_path_key(&file_path, &cwd)) {
-            for stored in stored_routes {
+            let n = stored_routes.len();
+            for (i, stored) in stored_routes.iter().enumerate() {
                 let route_path = if let Some(ref custom_path) = stored.custom_path {
                     let trimmed_base = base_path.trim_end_matches('/');
                     format!("{trimmed_base}/{}", custom_path.trim_start_matches('/'))
@@ -120,6 +125,15 @@ pub fn collect_metadata_from_files(
                 // find a doc comment the attribute macro didn't.
                 let description = stored.description.clone();
 
+                let (mp, fp) = if i + 1 == n {
+                    (
+                        std::mem::take(&mut module_path),
+                        std::mem::take(&mut file_path),
+                    )
+                } else {
+                    (module_path.clone(), file_path.clone())
+                };
+
                 metadata.routes.push(RouteMetadata {
                     // `#[route]` bare form defaults to GET — mirror the
                     // slow path (`route::utils`), which resolves a
@@ -129,8 +143,8 @@ pub fn collect_metadata_from_files(
                     method: stored.method.clone().unwrap_or_else(|| "get".to_string()),
                     path: route_path,
                     function_name: stored.fn_name.clone(),
-                    module_path: module_path.clone(),
-                    file_path: file_path.clone(),
+                    module_path: mp,
+                    file_path: fp,
                     error_status: stored.error_status.clone(),
                     tags: stored.tags.clone(),
                     description,
@@ -145,40 +159,58 @@ pub fn collect_metadata_from_files(
             // Uses get_parsed_file: single syn::parse_file entry point + content cache
             let file_ast = crate::schema_macro::file_cache::get_parsed_file(file).ok_or_else(|| err_call_site(format!("vespera! macro: cannot read or parse '{}'. Fix the Rust syntax errors in this file.", file.display())))?;
 
-            // Store file AST for downstream reuse
+            // Store file AST for downstream reuse (HashMap key needs its own copy)
             file_asts.insert(file_path.clone(), file_ast);
             let file_ast = &file_asts[&file_path];
 
-            // Collect routes from AST
+            // Pre-collect (fn_item, owned RouteInfo) pairs so we can
+            //   1. detect the last route up-front (symmetric with fast path),
+            //   2. MOVE owned RouteInfo fields (method / error_status / tags /
+            //      description) into RouteMetadata instead of re-cloning them.
+            let mut route_entries: Vec<(&syn::ItemFn, crate::route::RouteInfo)> = Vec::new();
             for item in &file_ast.items {
                 if let Item::Fn(fn_item) = item
                     && let Some(route_info) = extract_route_info(&fn_item.attrs)
                 {
-                    let route_path = if let Some(custom_path) = &route_info.path {
-                        let trimmed_base = base_path.trim_end_matches('/');
-                        format!("{trimmed_base}/{}", custom_path.trim_start_matches('/'))
-                    } else {
-                        base_path.clone()
-                    };
-                    let route_path = route_path.replace('_', "-");
-
-                    // Description priority: route attribute > doc comment
-                    let description = route_info
-                        .description
-                        .clone()
-                        .or_else(|| extract_doc_comment(&fn_item.attrs));
-
-                    metadata.routes.push(RouteMetadata {
-                        method: route_info.method,
-                        path: route_path,
-                        function_name: fn_item.sig.ident.to_string(),
-                        module_path: module_path.clone(),
-                        file_path: file_path.clone(),
-                        error_status: route_info.error_status.clone(),
-                        tags: route_info.tags.clone(),
-                        description,
-                    });
+                    route_entries.push((fn_item, route_info));
                 }
+            }
+
+            let n = route_entries.len();
+            for (i, (fn_item, route_info)) in route_entries.into_iter().enumerate() {
+                let route_path = if let Some(custom_path) = &route_info.path {
+                    let trimmed_base = base_path.trim_end_matches('/');
+                    format!("{trimmed_base}/{}", custom_path.trim_start_matches('/'))
+                } else {
+                    base_path.clone()
+                };
+                let route_path = route_path.replace('_', "-");
+
+                // Description priority: route attribute > doc comment
+                // (move the owned Option instead of cloning + dropping it)
+                let description = route_info
+                    .description
+                    .or_else(|| extract_doc_comment(&fn_item.attrs));
+
+                let (mp, fp) = if i + 1 == n {
+                    (
+                        std::mem::take(&mut module_path),
+                        std::mem::take(&mut file_path),
+                    )
+                } else {
+                    (module_path.clone(), file_path.clone())
+                };
+
+                metadata.routes.push(RouteMetadata {
+                    method: route_info.method,
+                    path: route_path,
+                    function_name: fn_item.sig.ident.to_string(),
+                    module_path: mp,
+                    file_path: fp,
+                    error_status: route_info.error_status,
+                    tags: route_info.tags,
+                    description,
+                });
             }
         }
     }

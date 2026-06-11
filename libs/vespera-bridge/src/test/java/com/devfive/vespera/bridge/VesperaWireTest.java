@@ -133,7 +133,11 @@ class VesperaWireTest {
         assertEquals("text/plain; charset=utf-8", decoded.headers().get("content-type"));
         assertEquals("0.1.51", decoded.metadata().get("version"));
         assertEquals("I'm a teapot",
-                new String(decoded.body(), StandardCharsets.UTF_8));
+                new String(decoded.bodyBytes(), StandardCharsets.UTF_8));
+        assertTrue(decoded.body().isReadOnly(), "body view must be read-only");
+        assertEquals(0, decoded.body().position(), "body view position must start at 0");
+        assertEquals("I'm a teapot".length(), decoded.body().limit(),
+                "body view limit must equal body length");
     }
 
     @Test
@@ -167,7 +171,7 @@ class VesperaWireTest {
         DecodedResponse decoded = VesperaBridge.decodeResponse(wire);
 
         assertEquals(200, decoded.status());
-        assertArrayEquals(payload, decoded.body(),
+        assertArrayEquals(payload, decoded.bodyBytes(),
                 "binary body must round-trip byte-for-byte");
     }
 
@@ -202,7 +206,7 @@ class VesperaWireTest {
         // Body still preserved alongside the hoisted header field:
         assertArrayEquals(
                 "{\"errors\":[...]}".getBytes(StandardCharsets.UTF_8),
-                decoded.body(),
+                decoded.bodyBytes(),
                 "body must be preserved verbatim even when errors are hoisted");
     }
 
@@ -233,6 +237,6 @@ class VesperaWireTest {
         byte[] respWire = buildWireResponse(200, "text/plain", echoedBody);
         DecodedResponse decoded = VesperaBridge.decodeResponse(respWire);
 
-        assertArrayEquals(reqBody, decoded.body());
+        assertArrayEquals(reqBody, decoded.bodyBytes());
     }
 }

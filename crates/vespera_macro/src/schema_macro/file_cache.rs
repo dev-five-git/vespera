@@ -10,12 +10,46 @@
 //! are not `Send`/`Sync`, and proc-macros run single-threaded anyway.
 //! The mtime check handles rust-analyzer's proc-macro server, which may persist
 //! across file edits.
+//!
+//! ## Epoch caching
+//!
+//! `fs::metadata` costs ~1–10 µs per call. Projects with 100+ source files
+//! previously paid that cost on every cache lookup, even on hits.
+//!
+//! The epoch mechanism amortises this: each top-level macro invocation
+//! (`vespera!`, `schema_type!`) calls [`bump_epoch`] once at entry. Within
+//! that epoch, a given path's mtime is fetched from `fs::metadata` **at most
+//! once** and stored in `mtime_epoch_cache`. Subsequent lookups for the same
+//! path in the same epoch reuse the cached mtime without a syscall.
+//!
+//! Across epochs the full mtime check still runs, preserving the existing
+//! invalidation semantics (important for rust-analyzer's long-lived server).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
+
+// Test-only thread-local counter: number of `fs::metadata` calls made on
+// this thread. Thread-local so parallel test threads don't interfere with
+// each other's counts.
+#[cfg(test)]
+thread_local! {
+    static METADATA_CALL_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Reset the test-only metadata call counter to zero for this thread.
+#[cfg(test)]
+pub fn reset_metadata_call_count() {
+    METADATA_CALL_COUNT.with(|c| c.set(0));
+}
+
+/// Return the current value of the test-only metadata call counter for this thread.
+#[cfg(test)]
+pub fn metadata_call_count() -> usize {
+    METADATA_CALL_COUNT.with(std::cell::Cell::get)
+}
 
 use super::circular::CircularAnalysis;
 use super::file_lookup::collect_rs_files_recursive;
@@ -89,6 +123,17 @@ struct FileCache {
     fk_column_cache_hits: usize,
     module_path_cache_hits: usize,
     struct_def_cache_hits: usize,
+
+    // --- Epoch caching ---
+    /// Monotonically increasing counter. Bumped once at the start of each
+    /// top-level macro invocation (`vespera!`, `schema_type!`).
+    epoch: u64,
+    /// Per-epoch mtime cache: path → (epoch_when_checked, mtime_result).
+    ///
+    /// When the stored epoch equals `self.epoch`, the mtime was already
+    /// fetched during this invocation and `fs::metadata` is skipped.
+    /// When the epoch differs the entry is stale and the syscall runs again.
+    mtime_epoch_cache: HashMap<PathBuf, (u64, Option<SystemTime>)>,
 }
 
 thread_local! {
@@ -111,7 +156,46 @@ thread_local! {
         module_path_cache_hits: 0,
         struct_definitions: HashMap::with_capacity(32),
         struct_def_cache_hits: 0,
+        epoch: 0,
+        mtime_epoch_cache: HashMap::with_capacity(32),
     });
+}
+
+/// Advance the per-invocation epoch counter.
+///
+/// Call this **once** at the start of each top-level macro invocation
+/// (`vespera!`, `schema_type!`). Within a single epoch, `fs::metadata` is
+/// called at most once per path; subsequent lookups for the same path reuse
+/// the cached mtime without a syscall.
+///
+/// Across epochs the full mtime check still runs, preserving the existing
+/// invalidation semantics for long-lived processes (e.g. rust-analyzer).
+pub fn bump_epoch() {
+    FILE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        cache.epoch = cache.epoch.wrapping_add(1);
+    });
+}
+
+/// Fetch the mtime for `path`, using the epoch cache to avoid redundant
+/// `fs::metadata` syscalls within a single macro invocation.
+///
+/// Returns `None` if the file does not exist or its mtime is unavailable.
+fn get_mtime_cached(cache: &mut FileCache, path: &Path) -> Option<SystemTime> {
+    let current_epoch = cache.epoch;
+    if let Some(&(entry_epoch, mtime)) = cache.mtime_epoch_cache.get(path)
+        && entry_epoch == current_epoch
+    {
+        return mtime;
+    }
+    // Epoch miss — call fs::metadata and cache the result.
+    #[cfg(test)]
+    METADATA_CALL_COUNT.with(|c| c.set(c.get() + 1));
+    let mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
+    cache
+        .mtime_epoch_cache
+        .insert(path.to_path_buf(), (current_epoch, mtime));
+    mtime
 }
 
 /// Get `CARGO_MANIFEST_DIR` from cache, or read from env and cache.
@@ -199,7 +283,7 @@ pub fn get_struct_candidates(src_dir: &Path, struct_name: &str) -> Arc<[PathBuf]
 /// On first call, parses the file and caches all struct definitions as strings.
 /// On subsequent calls, checks mtime to validate cache.
 fn ensure_struct_definitions(cache: &mut FileCache, path: &Path) -> bool {
-    let current_mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
+    let current_mtime = get_mtime_cached(cache, path);
 
     if let Some(mtime) = current_mtime
         && let Some((cached_mtime, _)) = cache.struct_definitions.get(path)
@@ -262,7 +346,7 @@ pub fn get_struct_definition(path: &Path, struct_name: &str) -> Option<String> {
 /// Returns `Arc<String>` so callers share a single allocation instead of
 /// cloning the whole file body per lookup.
 fn get_file_content_inner(cache: &mut FileCache, path: &Path) -> Option<Arc<String>> {
-    let current_mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
+    let current_mtime = get_mtime_cached(cache, path);
 
     if let Some(mtime) = current_mtime
         && let Some((cached_mtime, content)) = cache.file_contents.get(path)
@@ -594,5 +678,135 @@ mod tests {
 
         // Should early-return at line 308 without printing anything
         print_profile_summary();
+    }
+
+    /// Verify that within one epoch a path's mtime is checked via `fs::metadata`
+    /// exactly once, and that bumping the epoch causes a re-check.
+    ///
+    /// Layout:
+    ///   epoch N  → read path twice → 1 metadata call (second read hits epoch cache)
+    ///   bump     → epoch N+1
+    ///   epoch N+1 → read path once → 1 more metadata call (epoch cache stale)
+    ///
+    /// Total expected: 2 metadata calls for 3 reads across 2 epochs.
+    #[serial_test::serial]
+    #[test]
+    fn test_epoch_skips_metadata_syscall() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("target.rs");
+        std::fs::write(&file_path, "pub struct Foo { pub x: i32 }").unwrap();
+
+        // Reset the global counter and start a fresh epoch so this test is
+        // independent of whatever other tests ran on this thread before.
+        reset_metadata_call_count();
+        bump_epoch();
+
+        let before = metadata_call_count();
+
+        // First read in epoch N — must call fs::metadata (epoch cache miss).
+        let c1 = get_struct_definition(&file_path, "Foo");
+        assert!(c1.is_some(), "struct should be found");
+        assert_eq!(
+            metadata_call_count() - before,
+            1,
+            "first read should trigger exactly 1 metadata call"
+        );
+
+        // Second read in epoch N — epoch cache hit, no additional metadata call.
+        let c2 = get_struct_definition(&file_path, "Foo");
+        assert_eq!(c1, c2);
+        assert_eq!(
+            metadata_call_count() - before,
+            1,
+            "second read in same epoch must NOT call metadata again"
+        );
+
+        // Advance to epoch N+1.
+        bump_epoch();
+
+        // First read in epoch N+1 — epoch cache is stale, must re-check metadata.
+        let c3 = get_struct_definition(&file_path, "Foo");
+        assert_eq!(c1, c3);
+        assert_eq!(
+            metadata_call_count() - before,
+            2,
+            "read after epoch bump must call metadata exactly once more"
+        );
+    }
+
+    /// Verify cross-entry invalidation semantics.
+    ///
+    /// In a long-lived rust-analyzer proc-macro server the same thread handles
+    /// multiple successive macro invocations.  Each entry point (`derive_schema`,
+    /// `schema_type!`, `schema!`, `export_app!`, `vespera!`) calls `bump_epoch()`
+    /// as its first statement.  This test simulates two successive invocations
+    /// from *different* entry points and confirms that:
+    ///
+    /// 1. Within invocation A (epoch N): path checked once, second access free.
+    /// 2. Invocation B starts (epoch N+1 via bump): path re-checked exactly once.
+    /// 3. Within invocation B: second access still free.
+    ///
+    /// The test uses `bump_epoch()` directly (the same call each entry point
+    /// makes) so it exercises the exact mechanism without needing a real
+    /// proc-macro expansion.
+    ///
+    /// NOTE: `bump_epoch()` is the *only* mechanism that separates invocations;
+    /// the call sites in lib.rs are the authoritative hook locations:
+    ///   - `derive_schema`  → reaches file_cache via extract_field_defaults_from_path
+    ///   - `schema`         → reaches file_cache via parse_struct_cached
+    ///   - `schema_type!`   → reaches file_cache via generate_schema_type_code
+    ///   - `export_app!`    → reaches file_cache via collect_metadata
+    ///   - `vespera!`       → reaches file_cache via collect_metadata
+    #[serial_test::serial]
+    #[test]
+    fn test_epoch_cross_entry_invalidation() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("cross.rs");
+        std::fs::write(&file_path, "pub struct Bar { pub y: u64 }").unwrap();
+
+        reset_metadata_call_count();
+
+        // ── Invocation A (simulates e.g. derive_schema entry) ──────────────
+        bump_epoch(); // what every entry point does first
+        let before_a = metadata_call_count();
+
+        let r1 = get_struct_definition(&file_path, "Bar");
+        assert!(r1.is_some());
+        assert_eq!(
+            metadata_call_count() - before_a,
+            1,
+            "invocation A: first access must call metadata once"
+        );
+
+        // Second access within the same invocation — epoch cache hit.
+        let r2 = get_struct_definition(&file_path, "Bar");
+        assert_eq!(r1, r2);
+        assert_eq!(
+            metadata_call_count() - before_a,
+            1,
+            "invocation A: second access must NOT call metadata again"
+        );
+
+        // ── Invocation B (simulates e.g. schema_type! entry) ───────────────
+        bump_epoch(); // new invocation → new epoch
+        let before_b = metadata_call_count();
+
+        // First access in invocation B — epoch cache stale, must re-check.
+        let r3 = get_struct_definition(&file_path, "Bar");
+        assert_eq!(r1, r3);
+        assert_eq!(
+            metadata_call_count() - before_b,
+            1,
+            "invocation B: first access must re-check metadata (cross-entry invalidation)"
+        );
+
+        // Second access within invocation B — epoch cache hit again.
+        let r4 = get_struct_definition(&file_path, "Bar");
+        assert_eq!(r1, r4);
+        assert_eq!(
+            metadata_call_count() - before_b,
+            1,
+            "invocation B: second access must NOT call metadata again"
+        );
     }
 }

@@ -173,6 +173,7 @@ where
 /// valid by construction.  Validation runs only on a miss, purely to
 /// pick the right error status (`400` invalid vs `404` unregistered)
 /// — keeping the per-request hot path to trim + hash lookup.
+#[inline]
 pub fn resolve_app_router(header: &WireRequestHeader) -> Result<Router, Vec<u8>> {
     let name = header
         .app

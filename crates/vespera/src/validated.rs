@@ -115,24 +115,36 @@ where
 ///
 /// Body shape:
 /// ```json
-/// { "errors": [ { "path": "field.name", "message": "..." } ] }
+/// { "errors": [ { "message": "...", "path": "field.name" } ] }
 /// ```
 ///
-/// We build the JSON via `serde_json::json!` (no extra `serde` derive
-/// dep needed) so this module compiles with the bare `serde_json`
-/// re-export already present on the `vespera` crate.
+/// Field order inside each error object is `message` then `path` —
+/// matching the alphabetical order produced by the previous
+/// `serde_json::json!` implementation (which used a `BTreeMap` backend).
+/// The envelope shape is a public contract locked by snapshot tests and
+/// the JNI wire header hoisting logic in `vespera_inprocess`.
 fn build_validation_response(report: &::garde::Report) -> Response {
-    let errors: Vec<::serde_json::Value> = report
+    #[derive(serde::Serialize)]
+    struct ValidationErrorOut {
+        message: String,
+        path: String,
+    }
+
+    #[derive(serde::Serialize)]
+    struct ValidationEnvelope {
+        errors: Vec<ValidationErrorOut>,
+    }
+
+    let errors: Vec<ValidationErrorOut> = report
         .iter()
-        .map(|(path, err)| {
-            ::serde_json::json!({
-                "path": path.to_string(),
-                "message": err.message(),
-            })
+        .map(|(path, err)| ValidationErrorOut {
+            message: err.message().to_string(),
+            path: path.to_string(),
         })
         .collect();
-    let envelope = ::serde_json::json!({ "errors": errors });
-    let body = envelope.to_string();
+
+    let body = ::serde_json::to_string(&ValidationEnvelope { errors })
+        .unwrap_or_else(|_| r#"{"errors":[]}"#.to_owned());
 
     let mut response = (StatusCode::UNPROCESSABLE_ENTITY, body).into_response();
     response.headers_mut().insert(

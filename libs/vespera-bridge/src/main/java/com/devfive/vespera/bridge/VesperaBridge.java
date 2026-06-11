@@ -14,7 +14,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -53,8 +52,19 @@ public class VesperaBridge {
     private static final int WIRE_VERSION = 1;
     private static volatile boolean loaded = false;
 
+    // ── Pending streaming configuration (before native library loads) ──
+    private static volatile Integer pendingChunkBytes = null;
+    private static volatile Integer pendingChannelCapacity = null;
+
     /**
      * Decoded wire-format response.
+     *
+     * <p>The {@code body} component is a zero-copy, read-only
+     * {@link ByteBuffer} view over the original wire response array.
+     * Its position is {@code 0} and its limit is the body length.  The
+     * view does not expose {@link ByteBuffer#array()} access, so callers
+     * that genuinely need an owned {@code byte[]} should use
+     * {@link #bodyBytes()}, which materialises a copy on demand.
      *
      * @param status            HTTP status code from the upstream router
      * @param headers           response headers; each value is either a
@@ -62,7 +72,7 @@ public class VesperaBridge {
      *                          {@link List List&lt;String&gt;}
      *                          (multi-valued, e.g. {@code set-cookie})
      * @param metadata          vespera metadata (e.g. {@code version})
-     * @param body              raw response body bytes
+     * @param body              read-only raw response body view
      * @param validationErrors  Vespera-validation failures hoisted from
      *                          a {@code 422} JSON body so callers can
      *                          read them without a second JSON parse.
@@ -76,8 +86,37 @@ public class VesperaBridge {
             int status,
             Map<String, Object> headers,
             Map<String, String> metadata,
-            byte[] body,
-            List<Map<String, Object>> validationErrors) {}
+            ByteBuffer body,
+            List<Map<String, Object>> validationErrors) {
+
+        public DecodedResponse {
+            Objects.requireNonNull(body, "body");
+            body = body.slice().asReadOnlyBuffer();
+        }
+
+        /**
+         * Return a fresh read-only duplicate of the response body view.
+         * The returned buffer is positioned at {@code 0} with
+         * {@code limit()} equal to the body length.
+         */
+        @Override
+        public ByteBuffer body() {
+            return body.asReadOnlyBuffer();
+        }
+
+        /**
+         * Materialise the response body as an owned byte array.
+         *
+         * <p>This method copies the bytes from the zero-copy body view;
+         * use it at API boundaries that require {@code byte[]}.
+         */
+        public byte[] bodyBytes() {
+            ByteBuffer view = body.asReadOnlyBuffer();
+            byte[] bytes = new byte[view.remaining()];
+            view.get(bytes);
+            return bytes;
+        }
+    }
 
     /**
      * Initialize the Rust engine.  Tries bundled (JAR-embedded) first,
@@ -111,10 +150,16 @@ public class VesperaBridge {
         } catch (UnsatisfiedLinkError e) {
             System.loadLibrary(libraryName);
         }
+        // Apply pending streaming config (set via configureStreaming before init).
+        // Pending values beat system properties (Rust-side setter > env > default).
         try {
-            configureStreaming0(
-                    Integer.getInteger("vespera.streaming.chunkBytes", 0),
-                    Integer.getInteger("vespera.streaming.channelCapacity", 0));
+            int chunkBytes = pendingChunkBytes != null
+                    ? pendingChunkBytes
+                    : Integer.getInteger("vespera.streaming.chunkBytes", 0);
+            int channelCapacity = pendingChannelCapacity != null
+                    ? pendingChannelCapacity
+                    : Integer.getInteger("vespera.streaming.channelCapacity", 0);
+            configureStreaming0(chunkBytes, channelCapacity);
         } catch (UnsatisfiedLinkError olderNativeLibrary) {
             // Pre-0.2 native libraries don't export configureStreaming0.
             // Streaming config then falls back to env vars / defaults —
@@ -127,6 +172,48 @@ public class VesperaBridge {
             // the VESPERA_RUNTIME_WORKERS env var / Tokio's default.
         }
         loaded = true;
+    }
+
+    /**
+     * Configure streaming tuning parameters for the Rust-side dispatch
+     * engine.  <strong>Call before {@link #init(String)}</strong> for
+     * guaranteed precedence (values are stored pending and applied right
+     * after the native library loads, before any dispatch); calling after
+     * init applies immediately.
+     *
+     * <p>Precedence (first hit wins, then process-fixed): this method &gt;
+     * system properties ({@code vespera.streaming.chunkBytes} /
+     * {@code vespera.streaming.channelCapacity}) &gt; environment variables
+     * ({@code VESPERA_STREAMING_CHUNK_BYTES} /
+     * {@code VESPERA_STREAMING_CHANNEL_CAPACITY}) &gt; defaults
+     * (64 KiB chunk, 16 channel slots).
+     *
+     * @param chunkBytes per-chunk buffer size for streaming dispatches
+     * @param channelCapacity bound of the bidirectional request-body
+     *                        channel in slots
+     * @throws IllegalArgumentException if {@code chunkBytes} is outside
+     *         [4096, 8388608] (4 KiB – 8 MiB) or {@code channelCapacity}
+     *         is outside [1, 1024]
+     */
+    public static synchronized void configureStreaming(int chunkBytes, int channelCapacity) {
+        if (chunkBytes < 4096 || chunkBytes > 8388608) {
+            throw new IllegalArgumentException(
+                    "chunkBytes " + chunkBytes
+                            + " out of range [4096, 8388608] (4 KiB – 8 MiB)");
+        }
+        if (channelCapacity < 1 || channelCapacity > 1024) {
+            throw new IllegalArgumentException(
+                    "channelCapacity " + channelCapacity + " out of range [1, 1024]");
+        }
+        if (loaded) {
+            // Native library already loaded — apply immediately.
+            configureStreaming0(chunkBytes, channelCapacity);
+        } else {
+            // Native library not yet loaded — store pending values.
+            // These will be applied in init() before any dispatch.
+            pendingChunkBytes = chunkBytes;
+            pendingChannelCapacity = channelCapacity;
+        }
     }
 
     /**
@@ -382,7 +469,15 @@ public class VesperaBridge {
     private static final int DIRECT_MAX_CAPACITY = Integer.getInteger(
             "vespera.direct.maxBufferBytes", 4 * 1024 * 1024);
 
-    /** Index 0 = request buffer, index 1 = response buffer. */
+    /**
+     * Index 0 = request buffer, index 1 = response buffer.
+     *
+     * <p><strong>Virtual thread limitation:</strong> {@link ThreadLocal}
+     * binds to the virtual thread (not the carrier) in Java 21+.  Each
+     * virtual thread gets its own pool, losing the pooling benefit in
+     * virtual-thread-per-request servers.  See
+     * {@link #dispatchDirectPooled(byte[], boolean)} for mitigation.
+     */
     private static final ThreadLocal<ByteBuffer[]> DIRECT_POOL =
             ThreadLocal.withInitial(() -> new ByteBuffer[] {
                     ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY),
@@ -453,6 +548,17 @@ public class VesperaBridge {
      * view is valid only until the next {@code dispatchDirect*} call on
      * the same thread — consume (or copy) it before dispatching again.
      *
+     * <p><strong>Virtual thread (Project Loom) limitation:</strong> The
+     * per-thread buffer pool is backed by {@link ThreadLocal}, which
+     * binds to the <em>virtual thread</em> (not the carrier thread) in
+     * Java 21+ semantics.  In a virtual-thread-per-request server, each
+     * virtual thread allocates a fresh direct buffer and loses all
+     * pooling benefit; direct memory accumulates until the virtual thread
+     * is garbage-collected.  For virtual-thread deployments, prefer
+     * {@link #dispatchBytes(byte[])}, {@link #dispatchStreaming}, or
+     * {@link #dispatchFullStreaming}, or run dispatch on a bounded
+     * platform-thread executor, or lower {@code vespera.direct.maxBufferBytes}.
+     *
      * <p>Fallback / overflow policy:
      * <ul>
      *   <li>Request larger than the cap → falls back to
@@ -504,6 +610,17 @@ public class VesperaBridge {
      * than the pooled buffer) happens before any dispatch and is always
      * safe; <em>response-overflow</em> retry re-runs the Rust handler
      * and is gated by {@code retryOnOverflow}.
+     *
+     * <p><strong>Virtual thread (Project Loom) limitation:</strong> The
+     * per-thread buffer pool is backed by {@link ThreadLocal}, which
+     * binds to the <em>virtual thread</em> (not the carrier thread) in
+     * Java 21+ semantics.  In a virtual-thread-per-request server, each
+     * virtual thread allocates a fresh direct buffer and loses all
+     * pooling benefit; direct memory accumulates until the virtual thread
+     * is garbage-collected.  For virtual-thread deployments, prefer
+     * {@link #dispatchBytes(byte[])}, {@link #dispatchStreaming}, or
+     * {@link #dispatchFullStreaming}, or run dispatch on a bounded
+     * platform-thread executor, or lower {@code vespera.direct.maxBufferBytes}.
      *
      * @param appName target app name (may be {@code null} for default)
      * @param method  HTTP method (uppercase)
@@ -813,7 +930,9 @@ public class VesperaBridge {
             }
 
             int bodyStart = 4 + headerLen;
-            byte[] body = Arrays.copyOfRange(wire, bodyStart, wire.length);
+            ByteBuffer body = ByteBuffer.wrap(wire, bodyStart, wire.length - bodyStart)
+                    .slice()
+                    .asReadOnlyBuffer();
             return new DecodedResponse(status, headers, metadata, body, validationErrors);
         } catch (IOException e) {
             throw new IllegalArgumentException("wire header JSON parse failed", e);
