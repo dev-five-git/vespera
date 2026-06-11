@@ -42,6 +42,24 @@ public class VesperaBridgeProperties {
      */
     private boolean controllerEnabled = true;
 
+    /**
+     * Dispatch-mode policy for the autoconfigured proxy.
+     *
+     * <ul>
+     *   <li>{@code bidirectional-streaming} (default) — every request
+     *       streams both ways; safe for any payload size.</li>
+     *   <li>{@code smart} — small bounded idempotent requests
+     *       (Content-Length known and &le; 256 KiB; GET/HEAD/PUT/
+     *       DELETE/OPTIONS) take the pooled direct-buffer path,
+     *       skipping JNI array copies and per-request stream setup.
+     *       Responses larger than {@code vespera.direct.maxBufferBytes}
+     *       (default 4 MiB) re-run the handler once — acceptable for
+     *       idempotent requests only, which is why non-idempotent
+     *       methods always stream.</li>
+     * </ul>
+     */
+    private String dispatchMode = "bidirectional-streaming";
+
     public String getAppHeader() {
         return appHeader;
     }
@@ -56,5 +74,13 @@ public class VesperaBridgeProperties {
 
     public void setControllerEnabled(boolean controllerEnabled) {
         this.controllerEnabled = controllerEnabled;
+    }
+
+    public String getDispatchMode() {
+        return dispatchMode;
+    }
+
+    public void setDispatchMode(String dispatchMode) {
+        this.dispatchMode = dispatchMode;
     }
 }

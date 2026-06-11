@@ -131,33 +131,117 @@ pub fn ensure_openapi_files_from_cache(
     Ok(())
 }
 
-/// Write compact spec JSON to target dir for `include_str!` embedding.
+/// Path of the compact-spec embed sidecar (`include_str!` target).
 ///
 /// The file name is **namespaced per crate**: two workspace members
 /// both using `vespera!` compile in parallel under the same shared
 /// `target/vespera/` directory — with a single shared file name, crate
 /// A's `include_str!` could read the spec crate B just wrote.
+pub(super) fn embed_spec_path() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    find_target_dir(Path::new(&manifest_dir))
+        .join("vespera")
+        .join(format!("vespera_spec-{}.json", current_crate_tag()))
+}
+
+/// Path of the pretty-spec sidecar (warm-rebuild source for
+/// `openapi.json` recovery — see `ensure_openapi_files_from_cache`).
+pub(super) fn pretty_sidecar_path() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    find_target_dir(Path::new(&manifest_dir))
+        .join("vespera")
+        .join(format!("openapi_pretty-{}.json", current_crate_tag()))
+}
+
+/// Build the `include_str!` tokens pointing at the embed sidecar.
+fn embed_tokens(spec_file: &Path) -> proc_macro2::TokenStream {
+    let path_str = spec_file.display().to_string().replace('\\', "/");
+    quote::quote! { include_str!(#path_str) }
+}
+
+/// Hash-validated sidecar specs loaded on a warm cache hit.
+pub(super) struct SidecarSpecs {
+    /// Pretty spec content (for `openapi.json` recovery); `None` when
+    /// no openapi file is configured.
+    pub(super) pretty: Option<String>,
+    /// `include_str!` tokens for the embed sidecar; `None` when docs
+    /// are disabled.
+    pub(super) spec_tokens: Option<proc_macro2::TokenStream>,
+}
+
+/// Load and hash-validate the sidecar spec files on a warm cache hit.
+///
+/// Returns `None` when any expected sidecar is missing or fails its
+/// content-hash check — the caller must then treat the cache as a miss
+/// (a full regeneration rewrites both sidecars, so corruption
+/// self-heals on the next build).
+pub(super) fn load_validated_sidecar_specs(
+    spec_json_hash: Option<u64>,
+    spec_pretty_hash: Option<u64>,
+) -> Option<SidecarSpecs> {
+    let spec_tokens = match spec_json_hash {
+        None => None,
+        Some(expected) => {
+            let path = embed_spec_path();
+            let content = std::fs::read_to_string(&path).ok()?;
+            if super::cache::hash_str(&content) != expected {
+                return None;
+            }
+            Some(embed_tokens(&path))
+        }
+    };
+    let pretty = match spec_pretty_hash {
+        None => None,
+        Some(expected) => {
+            let content = std::fs::read_to_string(pretty_sidecar_path()).ok()?;
+            if super::cache::hash_str(&content) != expected {
+                return None;
+            }
+            Some(content)
+        }
+    };
+    Some(SidecarSpecs {
+        pretty,
+        spec_tokens,
+    })
+}
+
+/// Write the pretty-spec sidecar (write-if-differs).  Best-effort like
+/// the cache itself: failures only cost a future cache miss.
+pub(super) fn write_pretty_sidecar(spec_pretty: Option<&str>) {
+    let Some(pretty) = spec_pretty else {
+        return;
+    };
+    let path = pretty_sidecar_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let should_write = std::fs::read_to_string(&path).map_or(true, |existing| existing != pretty);
+    if should_write {
+        let _ = std::fs::write(&path, pretty);
+    }
+}
+
+/// Write compact spec JSON to target dir for `include_str!` embedding.
 pub(super) fn write_spec_for_embedding(
     spec_json: Option<String>,
 ) -> syn::Result<Option<proc_macro2::TokenStream>> {
     let Some(json) = spec_json else {
         return Ok(None);
     };
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    let manifest_path = Path::new(&manifest_dir);
-    let target_dir = find_target_dir(manifest_path);
-    let vespera_dir = target_dir.join("vespera");
-    std::fs::create_dir_all(&vespera_dir).map_err(|e| {
-        syn::Error::new(
-            Span::call_site(),
-            format!(
-                "vespera! macro: failed to create directory '{}': {}",
-                vespera_dir.display(),
-                e
-            ),
-        )
-    })?;
-    let spec_file = vespera_dir.join(format!("vespera_spec-{}.json", current_crate_tag()));
+    let spec_file = embed_spec_path();
+    if let Some(parent) = spec_file.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            syn::Error::new(
+                Span::call_site(),
+                format!(
+                    "vespera! macro: failed to create directory '{}': {}",
+                    parent.display(),
+                    e
+                ),
+            )
+        })?;
+    }
     let should_write =
         std::fs::read_to_string(&spec_file).map_or(true, |existing| existing != json);
     if should_write {
@@ -172,8 +256,7 @@ pub(super) fn write_spec_for_embedding(
             )
         })?;
     }
-    let path_str = spec_file.display().to_string().replace('\\', "/");
-    Ok(Some(quote::quote! { include_str!(#path_str) }))
+    Ok(Some(embed_tokens(&spec_file)))
 }
 
 #[cfg(test)]

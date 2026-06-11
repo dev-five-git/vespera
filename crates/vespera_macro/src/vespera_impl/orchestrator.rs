@@ -13,11 +13,12 @@ use crate::{
 
 use super::{
     cache::{
-        VesperaCache, compute_config_hash, compute_macro_dev_fingerprint, compute_schema_hash,
-        get_cache_path, read_cache, write_cache,
+        CACHE_FORMAT, VesperaCache, compute_config_hash, compute_macro_dev_fingerprint,
+        compute_schema_hash, get_cache_path, hash_str, read_cache, write_cache,
     },
     openapi_io::{
-        ensure_openapi_files_from_cache, generate_and_write_openapi, write_spec_for_embedding,
+        ensure_openapi_files_from_cache, generate_and_write_openapi, load_validated_sidecar_specs,
+        write_pretty_sidecar, write_spec_for_embedding,
     },
     path_utils::{find_folder_path, find_target_dir},
     route_merge::merge_route_storage_data,
@@ -76,16 +77,30 @@ pub fn process_vespera_macro(
 
     let macro_version = env!("CARGO_PKG_VERSION").to_string();
     let macro_dev_fingerprint = compute_macro_dev_fingerprint();
+    stage("macro_dev_fingerprint");
     let cached = read_cache(&cache_path);
+    stage("read_cache");
     let cache_hit = cached.as_ref().is_some_and(|c| {
-        c.macro_version == macro_version
+        c.cache_format == CACHE_FORMAT
+            && c.macro_version == macro_version
             && c.macro_dev_fingerprint == macro_dev_fingerprint
             && c.file_fingerprints == fingerprints
             && c.schema_hash == schema_hash
             && c.config_hash == config_hash
     });
+    // Hash-validate the sidecar spec files (the cache only stores
+    // hashes — content lives in `target/vespera/`).  Validation
+    // failure downgrades to a full regeneration, which rewrites the
+    // sidecars: corruption self-heals on the next build.
+    let sidecars = if cache_hit {
+        let c = cached.as_ref().unwrap();
+        load_validated_sidecar_specs(c.spec_json_hash, c.spec_pretty_hash)
+    } else {
+        None
+    };
+    stage("validate_sidecar_specs");
 
-    let (metadata, spec_json) = if cache_hit {
+    let (metadata, spec_tokens) = if let Some(sidecars) = sidecars {
         let cache = cached.unwrap();
         let mut metadata = cache.metadata;
         metadata.structs.extend(schema_storage.values().cloned());
@@ -93,14 +108,13 @@ pub fn process_vespera_macro(
         metadata
             .check_duplicate_schema_names()
             .map_err(|msg| syn::Error::new(Span::call_site(), format!("vespera! macro: {msg}")))?;
+        stage("cache_branch_metadata_merge");
 
         // Ensure openapi.json files exist and are up-to-date from cache
-        ensure_openapi_files_from_cache(
-            &processed.openapi_file_names,
-            cache.spec_pretty.as_deref(),
-        )?;
+        ensure_openapi_files_from_cache(&processed.openapi_file_names, sidecars.pretty.as_deref())?;
+        stage("ensure_openapi_files_from_cache");
 
-        (metadata, cache.spec_json)
+        (metadata, sidecars.spec_tokens)
     } else {
         let scanned_files: Vec<std::path::PathBuf> =
             scanned.iter().map(|(path, _)| path.clone()).collect();
@@ -120,34 +134,38 @@ pub fn process_vespera_macro(
             generate_and_write_openapi(processed, &metadata, file_asts, route_storage)?;
         stage("generate_and_write_openapi");
 
-        // Read back spec_pretty from first openapi file for caching
+        // Read back spec_pretty from first openapi file for the pretty
+        // sidecar (warm-rebuild recovery source for openapi.json)
         let spec_pretty = processed
             .openapi_file_names
             .first()
             .and_then(|f| std::fs::read_to_string(f).ok());
+        write_pretty_sidecar(spec_pretty.as_deref());
 
-        // Persist cache (best-effort, failures are silent)
+        // Persist cache (best-effort, failures are silent) — spec
+        // contents live in the sidecar files; only hashes are cached.
         write_cache(
             &cache_path,
             &VesperaCache {
+                cache_format: CACHE_FORMAT,
                 macro_version: macro_version.clone(),
                 macro_dev_fingerprint,
                 file_fingerprints: fingerprints,
                 schema_hash,
                 config_hash,
                 metadata: cache_metadata,
-                spec_json: spec_json.clone(),
-                spec_pretty,
+                spec_json_hash: spec_json.as_deref().map(hash_str),
+                spec_pretty_hash: spec_pretty.as_deref().map(hash_str),
             },
         );
         stage("write_cache");
 
-        (metadata, spec_json)
-    };
+        // Write compact spec for include_str! embedding
+        let spec_tokens = write_spec_for_embedding(spec_json)?;
+        stage("write_spec_for_embedding");
 
-    // Write compact spec for include_str! embedding
-    let spec_tokens = write_spec_for_embedding(spec_json)?;
-    stage("write_spec_for_embedding");
+        (metadata, spec_tokens)
+    };
 
     // --- Cron job discovery from CRON_STORAGE ---
     // #[cron("...")] attribute already registers metadata at expansion time.

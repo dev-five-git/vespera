@@ -25,6 +25,11 @@ import org.springframework.context.annotation.Configuration;
  *       register a {@code @Bean AppNameResolver} —
  *       the default {@link HeaderAppNameResolver} is automatically
  *       disabled.</li>
+ *   <li><strong>Smart dispatch mode</strong>:
+ *       set {@code vespera.bridge.dispatch-mode=smart} to route
+ *       small bounded idempotent requests through the pooled
+ *       direct-buffer path ({@link SmartDispatchModeResolver})
+ *       instead of streaming everything.</li>
  *   <li><strong>Custom dispatch mode policy</strong>:
  *       register a {@code @Bean DispatchModeResolver} —
  *       the default
@@ -45,6 +50,25 @@ public class VesperaBridgeAutoConfiguration {
     @ConditionalOnMissingBean
     public AppNameResolver vesperaBridgeAppNameResolver(VesperaBridgeProperties props) {
         return new HeaderAppNameResolver(props.getAppHeader());
+    }
+
+    /**
+     * Opt-in smart dispatch mode: DIRECT (pooled direct buffers, no
+     * JNI array copies) for small bounded idempotent requests,
+     * BIDIRECTIONAL_STREAMING for everything else.
+     *
+     * <p>Declared <em>before</em> the default resolver bean so that
+     * {@code @ConditionalOnMissingBean} on the default sees this one
+     * when the property is set.  Opt-in only — the autoconfigured
+     * default stays {@link BidirectionalStreamingDispatchModeResolver}
+     * ("safe for any payload size"), because DIRECT re-runs the
+     * handler when a response overflows the pooled buffer.
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "vespera.bridge", name = "dispatch-mode", havingValue = "smart")
+    @ConditionalOnMissingBean
+    public DispatchModeResolver vesperaBridgeSmartDispatchModeResolver() {
+        return new SmartDispatchModeResolver();
     }
 
     @Bean

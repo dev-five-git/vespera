@@ -33,6 +33,11 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     // MockHttpServletRequest for resolver unit tests (no servlet container).
     testImplementation("org.springframework:spring-test:6.1.6")
+    // WebApplicationContextRunner for autoconfigure branch tests
+    // (its AssertableWebApplicationContext implements AssertJ's
+    // AssertProvider, so assertj-core must be on the test classpath).
+    testImplementation("org.springframework.boot:spring-boot-test:3.2.5")
+    testImplementation("org.assertj:assertj-core:3.25.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.10.2")
 }
 

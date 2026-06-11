@@ -56,7 +56,7 @@ Out of the box the autoconfigure module wires up:
 | Concern | Default | Override |
 |---|---|---|
 | **App selection** | Read `X-Vespera-App` request header; absent → default app | Property `vespera.bridge.app-header`, or custom [`AppNameResolver`](src/main/java/com/devfive/vespera/bridge/AppNameResolver.java) bean |
-| **Dispatch mode** | [`BIDIRECTIONAL_STREAMING`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) for every request — safe for any payload size, transparent for the Rust router | Custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
+| **Dispatch mode** | [`BIDIRECTIONAL_STREAMING`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) for every request — safe for any payload size, transparent for the Rust router | Property `vespera.bridge.dispatch-mode: smart` (DIRECT fast path for small idempotent requests), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
 | **URL pattern** | Single `@RequestMapping("/**")` catch-all — every vespera router URL exactly mirrors the published OpenAPI path | Set `vespera.bridge.controller-enabled: false` and supply your own controller |
 | **Body handling** | Servlet `InputStream` straight through to Rust (no buffering) for streaming modes; full read for sync/async | (encoded by the chosen `DispatchMode`) |
 
@@ -273,16 +273,29 @@ callers managing their own buffers; it returns the bytes written or
 is always safe, unlike the response-overflow retry).
 
 For the Spring proxy, `DispatchMode.DIRECT` is **opt-in**: the default
-resolver stays `BIDIRECTIONAL_STREAMING` for every request.  Register
-a `SmartDispatchModeResolver` bean to route small bounded idempotent
-requests through DIRECT:
+resolver stays `BIDIRECTIONAL_STREAMING` for every request.  Opt in
+with a single property:
+
+```yaml
+vespera:
+  bridge:
+    dispatch-mode: smart   # default: bidirectional-streaming
+```
+
+`smart` routes a request through DIRECT only when its Content-Length
+is known and ≤ 256 KiB **and** the method is idempotent
+(GET/HEAD/PUT/DELETE/OPTIONS); everything else falls back to
+BIDIRECTIONAL_STREAMING.  The idempotency gate matters because a
+response that overflows the pooled buffer
+(`vespera.direct.maxBufferBytes`, default 4 MiB) is retried — which
+re-runs the Rust handler once.
+
+Custom policies can still register the bean directly (the property is
+ignored when a user `DispatchModeResolver` bean exists):
 
 ```java
 @Bean
 public DispatchModeResolver dispatchModeResolver() {
-    // DIRECT only when Content-Length is known, <= 256 KiB, and the
-    // method is idempotent (GET/HEAD/PUT/DELETE/OPTIONS); everything
-    // else falls back to BIDIRECTIONAL_STREAMING.
     return new SmartDispatchModeResolver();
 }
 ```
