@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/schema_macro/from_model/tests.rs
+expression: "build_entity_path_from_schema_path(&schema_path, &[]).to_string()"
+---
+crate :: api :: models :: entities :: user :: Entity

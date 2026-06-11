@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/schema_macro/inline_types/tests.rs
+expression: "format!(\"created_at: {}\\nupdated_at: {}\", ty_of(\"created_at\"),\nty_of(\"updated_at\"),)"
+---
+created_at: vespera :: chrono :: DateTime < vespera :: chrono :: FixedOffset >
+updated_at: Option < vespera :: chrono :: DateTime < vespera :: chrono :: FixedOffset > >

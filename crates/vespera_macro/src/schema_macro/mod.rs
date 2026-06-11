@@ -6,361 +6,30 @@
 
 mod circular;
 mod codegen;
+mod defaults;
 pub mod file_cache;
 mod file_lookup;
 mod from_model;
+mod generate_type;
 mod inline_types;
 mod input;
+mod same_file_override;
 mod seaorm;
 mod transformation;
 pub mod type_utils;
 mod validation;
 
 pub use file_cache::print_profile_summary;
+pub use generate_type::generate_schema_type_code;
+pub use input::{SchemaInput, SchemaTypeInput};
 
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use codegen::generate_filtered_schema;
-use file_lookup::find_struct_from_path;
-use from_model::generate_from_model_with_relations;
-use inline_types::{
-    generate_inline_relation_type, generate_inline_relation_type_no_relations,
-    generate_inline_type_definition,
-};
-pub use input::{PartialMode, SchemaInput, SchemaTypeInput};
 use proc_macro2::TokenStream;
-use quote::quote;
-use seaorm::{
-    RelationFieldInfo, convert_relation_type_to_schema_with_info, convert_type_with_chrono,
-    extract_sea_orm_default_value, has_sea_orm_primary_key, is_sql_function_default,
-};
-use transformation::{
-    build_omit_set, build_partial_config, build_pick_set, build_rename_map, determine_rename_all,
-    extract_doc_attrs, extract_field_serde_attrs, extract_form_data_attrs,
-    extract_serde_attrs_without_rename_all, filter_out_serde_rename, should_skip_field,
-    should_wrap_in_option,
-};
-use type_utils::{
-    capitalize_first, extract_module_path, extract_type_name, is_option_type, is_qualified_path,
-    is_seaorm_model, is_seaorm_relation_type, snake_to_pascal_case,
-};
-use validation::{
-    extract_source_field_names, validate_omit_fields, validate_partial_fields,
-    validate_pick_fields, validate_rename_fields,
-};
+use type_utils::extract_type_name;
 
-use crate::{
-    metadata::StructMetadata,
-    parser::{extract_default, extract_field_rename, strip_raw_prefix_owned},
-};
-
-#[cfg(test)]
-struct __VesperaSameFileLookupFixture {
-    value: i32,
-}
-
-fn derive_response_base_name(name: &str) -> String {
-    for suffix in ["Response", "Request", "Schema"] {
-        if let Some(stripped) = name.strip_suffix(suffix)
-            && !stripped.is_empty()
-        {
-            return stripped.to_string();
-        }
-    }
-    name.to_string()
-}
-
-fn find_same_file_struct_metadata<'a>(
-    struct_name: &str,
-    schema_storage: &'a HashMap<String, StructMetadata>,
-) -> Option<Cow<'a, StructMetadata>> {
-    // Cache hit: hand back a borrow so the (potentially large) struct
-    // definition string is not cloned per lookup.  The fallback path
-    // produces an owned `StructMetadata` from disk, so the unified return
-    // type is `Cow<'_, StructMetadata>`.
-    if let Some(metadata) = schema_storage.get(struct_name) {
-        return Some(Cow::Borrowed(metadata));
-    }
-
-    let file_path = proc_macro2::Span::call_site().local_file();
-    #[cfg(test)]
-    let file_path = file_path.or_else(|| {
-        Some(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("src")
-                .join("schema_macro")
-                .join("mod.rs"),
-        )
-    });
-    let file_path = file_path?;
-    let definition = file_cache::get_struct_definition(&file_path, struct_name)?;
-    Some(Cow::Owned(StructMetadata::new(
-        struct_name.to_string(),
-        definition,
-    )))
-}
-
-fn related_model_type_from_schema_path(schema_path: &TokenStream) -> Option<syn::Type> {
-    let schema_path_str = schema_path.to_string().replace("Schema", "Model");
-    syn::parse_str(&schema_path_str).ok()
-}
-
-fn schema_component_name_from_path(schema_path: &TokenStream) -> String {
-    // Keep the stringified path alive in this scope so the `&str`
-    // segments borrow from it.  The previous implementation collected
-    // owned `String`s — one allocation per path segment — even though
-    // each segment is only ever inspected as `&str`.
-    let path_str = schema_path.to_string();
-    let segments: Vec<&str> = path_str.split("::").map(str::trim).collect();
-
-    if segments.last().is_some_and(|s| *s == "Schema") && segments.len() > 1 {
-        format!("{}Schema", capitalize_first(segments[segments.len() - 2]))
-    } else {
-        segments
-            .last()
-            .map_or_else(|| "Schema".to_string(), |s| (*s).to_string())
-    }
-}
-
-fn has_derive(struct_item: &syn::ItemStruct, derive_name: &str) -> bool {
-    struct_item.attrs.iter().any(|attr| {
-        if !attr.path().is_ident("derive") {
-            return false;
-        }
-
-        let mut found = false;
-        let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident(derive_name) {
-                found = true;
-            }
-            Ok(())
-        });
-        found
-    })
-}
-
-fn build_named_struct_field_assignments(
-    struct_item: &syn::ItemStruct,
-    source_expr: &TokenStream,
-) -> syn::Result<Vec<TokenStream>> {
-    let syn::Fields::Named(fields_named) = &struct_item.fields else {
-        return Err(syn::Error::new_spanned(
-            struct_item,
-            "same-file relation override DTO must be a named-field struct",
-        ));
-    };
-
-    let assignments = fields_named
-        .named
-        .iter()
-        .filter_map(|field| {
-            field.ident.as_ref().map(|ident| {
-                quote! { #ident: #source_expr . #ident.clone() }
-            })
-        })
-        .collect();
-
-    Ok(assignments)
-}
-
-fn build_proxy_fields(struct_item: &syn::ItemStruct) -> syn::Result<Vec<TokenStream>> {
-    let syn::Fields::Named(fields_named) = &struct_item.fields else {
-        return Err(syn::Error::new_spanned(
-            struct_item,
-            "same-file relation override DTO must be a named-field struct",
-        ));
-    };
-
-    let fields = fields_named
-        .named
-        .iter()
-        .filter_map(|field| {
-            field.ident.as_ref().map(|ident| {
-                let ty = &field.ty;
-                let attrs: Vec<_> = field
-                    .attrs
-                    .iter()
-                    .filter(|attr| attr.path().is_ident("serde") || attr.path().is_ident("doc"))
-                    .collect();
-                quote! {
-                    #(#attrs)*
-                    #ident: #ty
-                }
-            })
-        })
-        .collect();
-
-    Ok(fields)
-}
-
-fn build_proxy_to_dto_assignments(struct_item: &syn::ItemStruct) -> syn::Result<Vec<TokenStream>> {
-    let syn::Fields::Named(fields_named) = &struct_item.fields else {
-        return Err(syn::Error::new_spanned(
-            struct_item,
-            "same-file relation override DTO must be a named-field struct",
-        ));
-    };
-
-    let assignments = fields_named
-        .named
-        .iter()
-        .filter_map(|field| {
-            field
-                .ident
-                .as_ref()
-                .map(|ident| quote! { #ident: proxy.#ident })
-        })
-        .collect();
-
-    Ok(assignments)
-}
-
-fn build_clone_assignments(struct_item: &syn::ItemStruct) -> syn::Result<Vec<TokenStream>> {
-    let syn::Fields::Named(fields_named) = &struct_item.fields else {
-        return Err(syn::Error::new_spanned(
-            struct_item,
-            "same-file relation override DTO must be a named-field struct",
-        ));
-    };
-
-    let assignments = fields_named
-        .named
-        .iter()
-        .filter_map(|field| {
-            field.ident.as_ref().map(|ident| {
-                quote! { #ident: self.#ident.clone() }
-            })
-        })
-        .collect();
-
-    Ok(assignments)
-}
-
-fn maybe_generate_same_file_relation_override(
-    new_type_name: &syn::Ident,
-    field_name: &str,
-    rel_info: &RelationFieldInfo,
-    schema_storage: &HashMap<String, StructMetadata>,
-) -> syn::Result<Option<(TokenStream, TokenStream)>> {
-    let response_base = derive_response_base_name(&new_type_name.to_string());
-    let dto_name = format!("{}In{}", snake_to_pascal_case(field_name), response_base);
-    let Some(dto_meta) = find_same_file_struct_metadata(&dto_name, schema_storage) else {
-        return Ok(None);
-    };
-
-    let dto_struct: syn::ItemStruct = file_cache::parse_struct_cached(&dto_meta.definition)
-        .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e.to_string()))?;
-    let dto_ident = syn::Ident::new(&dto_name, proc_macro2::Span::call_site());
-    let wrapper_ident = syn::Ident::new(
-        &format!(
-            "__Vespera{}{}Relation",
-            new_type_name,
-            snake_to_pascal_case(field_name)
-        ),
-        proc_macro2::Span::call_site(),
-    );
-    let proxy_ident = syn::Ident::new(
-        &format!(
-            "__Vespera{}{}Proxy",
-            new_type_name,
-            snake_to_pascal_case(field_name)
-        ),
-        proc_macro2::Span::call_site(),
-    );
-    let schema_ref_name = schema_component_name_from_path(&rel_info.schema_path);
-
-    let dto_serde_attrs: Vec<_> = dto_struct
-        .attrs
-        .iter()
-        .filter(|attr| attr.path().is_ident("serde"))
-        .collect();
-    let dto_doc_attrs: Vec<_> = dto_struct
-        .attrs
-        .iter()
-        .filter(|attr| attr.path().is_ident("doc"))
-        .collect();
-
-    let proxy_fields = build_proxy_fields(&dto_struct)?;
-    let proxy_to_dto = build_proxy_to_dto_assignments(&dto_struct)?;
-    let clone_assignments = build_clone_assignments(&dto_struct)?;
-    let Some(model_ty) = related_model_type_from_schema_path(&rel_info.schema_path) else {
-        return Ok(None);
-    };
-    let source_expr = quote! { source };
-    let from_model_assignments = build_named_struct_field_assignments(&dto_struct, &source_expr)?;
-
-    // Coalesced helpers: previously three separate `quote!` invocations
-    // and a `Vec<TokenStream>` accumulator were stitched together with
-    // `#(#helper_tokens)*`.  We instead build the conditional Clone /
-    // Deserialize sub-blocks as their own `TokenStream`s and splice
-    // them into a single `quote!`, producing the same emitted Rust code
-    // with one accumulator allocation removed.
-    let clone_impl = if has_derive(&dto_struct, "Clone") {
-        quote! {}
-    } else {
-        quote! {
-            impl Clone for #dto_ident {
-                fn clone(&self) -> Self {
-                    Self {
-                        #(#clone_assignments),*
-                    }
-                }
-            }
-        }
-    };
-
-    let deserialize_impl = if has_derive(&dto_struct, "Deserialize") {
-        quote! {}
-    } else {
-        quote! {
-            #[derive(serde::Deserialize)]
-            #(#dto_serde_attrs)*
-            struct #proxy_ident {
-                #(#proxy_fields),*
-            }
-
-            impl<'de> serde::Deserialize<'de> for #dto_ident {
-                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-                where
-                    D: serde::Deserializer<'de>,
-                {
-                    let proxy = #proxy_ident::deserialize(deserializer)?;
-                    Ok(Self {
-                        #(#proxy_to_dto),*
-                    })
-                }
-            }
-        }
-    };
-
-    let helpers = quote! {
-        #clone_impl
-        #deserialize_impl
-
-        impl From<#model_ty> for #dto_ident {
-            fn from(source: #model_ty) -> Self {
-                Self {
-                    #(#from_model_assignments),*
-                }
-            }
-        }
-
-        #(#dto_doc_attrs)*
-        #[derive(serde::Serialize, serde::Deserialize, Clone, vespera::Schema)]
-        #[serde(transparent)]
-        #[schema(ref = #schema_ref_name, nullable)]
-        struct #wrapper_ident(pub Option<#dto_ident>);
-
-        impl From<Option<#model_ty>> for #wrapper_ident {
-            fn from(source: Option<#model_ty>) -> Self {
-                Self(source.map(Into::into))
-            }
-        }
-    };
-
-    Ok(Some((quote! { #wrapper_ident }, helpers)))
-}
+use crate::metadata::StructMetadata;
 
 /// Generate schema code from a struct with optional field filtering
 pub fn generate_schema_code(
@@ -395,739 +64,423 @@ pub fn generate_schema_code(
     Ok(schema_tokens)
 }
 
-/// Generate a new struct type from an existing type with field filtering
-///
-/// Returns (`TokenStream`, Option<StructMetadata>) where the metadata is returned
-/// when a custom `name` is provided (for direct registration in `SCHEMA_STORAGE`).
-#[allow(clippy::too_many_lines)]
-pub fn generate_schema_type_code(
-    input: &SchemaTypeInput,
-    schema_storage: &HashMap<String, StructMetadata>,
-) -> Result<(TokenStream, Option<StructMetadata>), syn::Error> {
-    // Extract type name from the source Type
-    let source_type_name = extract_type_name(&input.source_type)?;
-
-    // Extract the module path for resolving relative paths in relation types
-    // This may be empty for simple names like `Model` - will be overridden below if found from file
-    let mut source_module_path = extract_module_path(&input.source_type);
-
-    // Find struct definition - check SCHEMA_STORAGE first (no file I/O),
-    // fall back to file lookup for types not registered (e.g., SeaORM Model).
-    let struct_def_owned: StructMetadata;
-    let schema_name_hint = input.schema_name.as_deref();
-    let struct_def = if is_qualified_path(&input.source_type) {
-        // Qualified path: try storage first (avoids parse_file for Schema-derived types),
-        // then file lookup for non-Schema types (e.g., SeaORM Model)
-        if let Some(found) = schema_storage.get(&source_type_name) {
-            found
-        } else if let Some((found, module_path)) =
-            find_struct_from_path(&input.source_type, schema_name_hint)
-        {
-            struct_def_owned = found;
-            // Use the module path from file lookup for qualified paths
-            // The file lookup derives module path from actual file location, which is more accurate
-            // for resolving relative paths like `super::user::Entity`
-            source_module_path = module_path;
-            &struct_def_owned
-        } else {
-            return Err(syn::Error::new_spanned(
-                &input.source_type,
-                format!(
-                    "type `{source_type_name}` not found. Either:\n\
-                     1. Use #[derive(Schema)] in the same file\n\
-                     2. Use full module path like `crate::models::memo::Model` to reference a struct from another file"
-                ),
-            ));
-        }
-    } else {
-        // Simple name: try storage first (for same-file structs), then file lookup with schema name hint
-        if let Some(found) = schema_storage.get(&source_type_name) {
-            found
-        } else if let Some((found, module_path)) =
-            find_struct_from_path(&input.source_type, schema_name_hint)
-        {
-            struct_def_owned = found;
-            // For simple names, we MUST use the inferred module path from the file location
-            // This is crucial for resolving relative paths like `super::user::Entity`
-            source_module_path = module_path;
-            &struct_def_owned
-        } else {
-            return Err(syn::Error::new_spanned(
-                &input.source_type,
-                format!(
-                    "type `{source_type_name}` not found. Either:\n\
-                     1. Use #[derive(Schema)] in the same file\n\
-                     2. Use full module path like `crate::models::memo::Model` to reference a struct from another file\n\
-                     3. If using `name = \"XxxSchema\"`, ensure the file name matches (e.g., xxx.rs)"
-                ),
-            ));
-        }
-    };
-
-    // Parse the struct definition
-    let parsed_struct: syn::ItemStruct = file_cache::parse_struct_cached(&struct_def.definition)
-        .map_err(|e| {
-            syn::Error::new_spanned(
-                &input.source_type,
-                format!("failed to parse struct definition for `{source_type_name}`: {e}"),
-            )
-        })?;
-
-    // Extract all field names from source struct for validation
-    // Include relation fields since they can be converted to Schema types
-    let source_field_names = extract_source_field_names(&parsed_struct);
-
-    // Validate all field references exist in source struct
-    validate_pick_fields(
-        input.pick.as_ref(),
-        &source_field_names,
-        &input.source_type,
-        &source_type_name,
-    )?;
-    validate_omit_fields(
-        input.omit.as_ref(),
-        &source_field_names,
-        &input.source_type,
-        &source_type_name,
-    )?;
-    validate_rename_fields(
-        input.rename.as_ref(),
-        &source_field_names,
-        &input.source_type,
-        &source_type_name,
-    )?;
-    let partial_fields_to_validate = match &input.partial {
-        Some(PartialMode::Fields(fields)) => Some(fields),
-        _ => None,
-    };
-    validate_partial_fields(
-        partial_fields_to_validate,
-        &source_field_names,
-        &input.source_type,
-        &source_type_name,
-    )?;
-
-    // Build filter sets and rename map
-    let omit_set = build_omit_set(input.omit.as_ref());
-    let pick_set = build_pick_set(input.pick.as_ref());
-    let (partial_all, partial_set) = build_partial_config(&input.partial);
-    let rename_map = build_rename_map(input.rename.as_ref());
-
-    // Extract serde attributes from source struct, excluding rename_all (we'll handle it separately)
-    let serde_attrs_without_rename_all =
-        extract_serde_attrs_without_rename_all(&parsed_struct.attrs);
-
-    // Extract doc comments from source struct to carry over to generated struct
-    let struct_doc_attrs = extract_doc_attrs(&parsed_struct.attrs);
-
-    // Determine the effective rename_all strategy
-    let effective_rename_all =
-        determine_rename_all(input.rename_all.as_ref(), &parsed_struct.attrs);
-
-    // Check if source is a SeaORM Model
-    let is_source_seaorm_model = is_seaorm_model(&parsed_struct);
-
-    // Generate new struct with filtered fields
-    let new_type_name = &input.new_type;
-    let mut field_tokens = Vec::new();
-    // Track field mappings for From impl: (new_field_ident, source_field_ident, wrapped_in_option, is_relation)
-    let mut field_mappings: Vec<(syn::Ident, syn::Ident, bool, bool)> = Vec::new();
-    // Track relation field info for from_model generation
-    let mut relation_fields: Vec<RelationFieldInfo> = Vec::new();
-    // Track inline types that need to be generated for circular relations
-    let mut inline_type_definitions: Vec<TokenStream> = Vec::new();
-    // Track default value functions generated from sea_orm(default_value)
-    let mut default_functions: Vec<TokenStream> = Vec::new();
-    // Track same-file relation override helpers
-    let mut relation_override_helpers: Vec<TokenStream> = Vec::new();
-
-    if let syn::Fields::Named(fields_named) = &parsed_struct.fields {
-        for field in &fields_named.named {
-            let rust_field_name = field.ident.as_ref().map_or_else(
-                || "unknown".to_string(),
-                |i| strip_raw_prefix_owned(i.to_string()),
-            );
-
-            // Apply omit/pick filters
-            if should_skip_field(&rust_field_name, &omit_set, &pick_set) {
-                continue;
-            }
-
-            // Apply omit_default: skip fields with sea_orm(default_value) or sea_orm(primary_key)
-            if input.omit_default
-                && (extract_sea_orm_default_value(&field.attrs).is_some()
-                    || has_sea_orm_primary_key(&field.attrs))
-            {
-                continue;
-            }
-
-            // Check if this is a SeaORM relation type
-            let is_relation = is_seaorm_relation_type(&field.ty);
-
-            // In multipart mode, skip ALL relation fields (multipart forms can't represent nested objects)
-            if input.multipart && is_relation {
-                continue;
-            }
-
-            // Get field components, applying partial wrapping if needed
-            let original_ty = &field.ty;
-            let should_wrap_option = should_wrap_in_option(
-                &rust_field_name,
-                partial_all,
-                &partial_set,
-                is_option_type(original_ty),
-                is_relation,
-            );
-
-            // Determine field type: convert relation types to Schema types
-            let (field_ty, relation_info): (Box<dyn quote::ToTokens>, Option<RelationFieldInfo>) =
-                if is_relation {
-                    // Convert HasOne/HasMany/BelongsTo to Schema type
-                    if let Some((converted, mut rel_info)) =
-                        convert_relation_type_to_schema_with_info(
-                            original_ty,
-                            &field.attrs,
-                            &parsed_struct,
-                            &source_module_path,
-                            field.ident.clone().unwrap(),
-                        )
-                    {
-                        // NEW RULE: HasMany (reverse references) are excluded by default
-                        // They can only be included via explicit `pick`
-                        if rel_info.relation_type == "HasMany" {
-                            // HasMany is only included if explicitly picked
-                            if !pick_set.contains(&rust_field_name) {
-                                continue;
-                            }
-                            // When HasMany IS picked, generate inline type with ALL relations stripped
-                            if let Some(inline_type) = generate_inline_relation_type_no_relations(
-                                new_type_name,
-                                &rel_info,
-                                &source_module_path,
-                                input.schema_name.as_deref(),
-                            ) {
-                                let inline_type_def = generate_inline_type_definition(&inline_type);
-                                inline_type_definitions.push(inline_type_def);
-
-                                let inline_type_name = &inline_type.type_name;
-                                let included_fields: Vec<String> = inline_type
-                                    .fields
-                                    .iter()
-                                    .map(|f| f.name.to_string())
-                                    .collect();
-
-                                rel_info.inline_type_info =
-                                    Some((inline_type.type_name.clone(), included_fields));
-
-                                let inline_field_ty = quote! { Vec<#inline_type_name> };
-                                (Box::new(inline_field_ty), Some(rel_info))
-                            } else {
-                                continue;
-                            }
-                        } else {
-                            // BelongsTo/HasOne: Include by default
-                            if input.add.is_some()
-                                && let Some((override_field_ty, helper_tokens)) =
-                                    maybe_generate_same_file_relation_override(
-                                        new_type_name,
-                                        &rust_field_name,
-                                        &rel_info,
-                                        schema_storage,
-                                    )?
-                            {
-                                relation_override_helpers.push(helper_tokens);
-                                (Box::new(override_field_ty), Some(rel_info))
-                            } else
-                            // Check for circular references and potentially use inline type
-                            if let Some(inline_type) = generate_inline_relation_type(
-                                new_type_name,
-                                &rel_info,
-                                &source_module_path,
-                                input.schema_name.as_deref(),
-                            ) {
-                                // Generate inline type definition
-                                let inline_type_def = generate_inline_type_definition(&inline_type);
-                                inline_type_definitions.push(inline_type_def);
-
-                                // Use inline type instead of direct schema reference
-                                let inline_type_name = &inline_type.type_name;
-                                let circular_fields: Vec<String> = inline_type
-                                    .fields
-                                    .iter()
-                                    .map(|f| f.name.to_string())
-                                    .collect();
-
-                                // Store inline type info
-                                rel_info.inline_type_info =
-                                    Some((inline_type.type_name.clone(), circular_fields));
-
-                                // Generate field type using inline type
-                                let inline_field_ty = if rel_info.is_optional {
-                                    quote! { Option<Box<#inline_type_name>> }
-                                } else {
-                                    quote! { Box<#inline_type_name> }
-                                };
-
-                                (Box::new(inline_field_ty), Some(rel_info))
-                            } else {
-                                // No circular refs, use original schema path
-                                (Box::new(converted), Some(rel_info))
-                            }
-                        }
-                    } else {
-                        // Fallback: skip if conversion fails
-                        continue;
-                    }
-                } else {
-                    // Convert SeaORM datetime types to chrono equivalents
-                    // Also resolves local types to absolute paths
-                    let converted_ty = convert_type_with_chrono(original_ty, &source_module_path);
-                    if should_wrap_option {
-                        (Box::new(quote! { Option<#converted_ty> }), None)
-                    } else {
-                        (Box::new(converted_ty), None)
-                    }
-                };
-
-            // Collect relation info — `.extend(...)` keeps the push site
-            // out of an explicit closure so the coverage tracker
-            // attributes the call to this source line.
-            relation_fields.extend(relation_info);
-            let vis: &syn::Visibility = &field.vis;
-            let source_field_ident: syn::Ident = field.ident.clone().unwrap();
-
-            // Extract doc attributes to carry over comments to the generated struct
-            let doc_attrs = extract_doc_attrs(&field.attrs);
-
-            if input.multipart {
-                // Multipart mode: emit form_data attrs, suppress serde attrs
-                let form_data_attrs = extract_form_data_attrs(&field.attrs);
-
-                // Check if field should be renamed (rename still applies to Rust field names)
-                if let Some(new_name) = rename_map.get(&rust_field_name) {
-                    let new_field_ident =
-                        syn::Ident::new(new_name, field.ident.as_ref().unwrap().span());
-
-                    field_tokens.push(quote! {
-                        #(#doc_attrs)*
-                        #(#form_data_attrs)*
-                        #vis #new_field_ident: #field_ty
-                    });
-
-                    field_mappings.push((
-                        new_field_ident,
-                        source_field_ident,
-                        should_wrap_option,
-                        is_relation,
-                    ));
-                } else {
-                    let field_ident = field.ident.clone().unwrap();
-
-                    field_tokens.push(quote! {
-                        #(#doc_attrs)*
-                        #(#form_data_attrs)*
-                        #vis #field_ident: #field_ty
-                    });
-
-                    field_mappings.push((
-                        field_ident.clone(),
-                        field_ident,
-                        should_wrap_option,
-                        is_relation,
-                    ));
-                }
-            } else {
-                // Normal (serde) mode: emit serde attrs
-                // Filter field attributes: keep serde and doc attributes, remove sea_orm and others
-                // This is important when using schema_type! with models from other files
-                // that may have ORM-specific attributes we don't want in the generated struct
-                let serde_field_attrs = extract_field_serde_attrs(&field.attrs);
-
-                // Generate serde default + schema(default) from sea_orm(default_value) or primary_key
-                // Handles literal defaults, SQL function defaults, and implicit auto-increment
-                let (serde_default_attr, schema_default_attr): (
-                    proc_macro2::TokenStream,
-                    proc_macro2::TokenStream,
-                ) = generate_sea_orm_default_attrs(
-                    &field.attrs,
-                    new_type_name,
-                    &rust_field_name,
-                    original_ty,
-                    &field_ty,
-                    should_wrap_option || is_option_type(original_ty),
-                    &mut default_functions,
-                );
-
-                // Check if field should be renamed
-                if let Some(new_name) = rename_map.get(&rust_field_name) {
-                    // Create new identifier for the field
-                    let new_field_ident: syn::Ident =
-                        syn::Ident::new(new_name, field.ident.as_ref().unwrap().span());
-
-                    // Filter out serde(rename) attributes from the serde attrs
-                    let filtered_attrs = filter_out_serde_rename(&serde_field_attrs);
-
-                    // Determine the JSON name: use existing serde(rename) if present, otherwise rust field name
-                    let json_name = extract_field_rename(&field.attrs)
-                        .unwrap_or_else(|| rust_field_name.clone());
-
-                    field_tokens.push(quote! {
-                        #(#doc_attrs)*
-                        #(#filtered_attrs)*
-                        #serde_default_attr
-                        #schema_default_attr
-                        #[serde(rename = #json_name)]
-                        #vis #new_field_ident: #field_ty
-                    });
-
-                    // Track mapping: new field name <- source field name
-                    field_mappings.push((
-                        new_field_ident,
-                        source_field_ident,
-                        should_wrap_option,
-                        is_relation,
-                    ));
-                } else {
-                    // No rename, keep field with serde and doc attrs
-                    let field_ident = field.ident.clone().unwrap();
-
-                    field_tokens.push(quote! {
-                        #(#doc_attrs)*
-                        #(#serde_field_attrs)*
-                        #serde_default_attr
-                        #schema_default_attr
-                        #vis #field_ident: #field_ty
-                    });
-
-                    // Track mapping: same name
-                    field_mappings.push((
-                        field_ident.clone(),
-                        field_ident,
-                        should_wrap_option,
-                        is_relation,
-                    ));
-                }
-            }
-        }
-    }
-
-    // Add new fields from `add` parameter
-    for (field_name, field_ty) in input.add.iter().flatten() {
-        let field_ident: syn::Ident = syn::Ident::new(field_name, proc_macro2::Span::call_site());
-        field_tokens.push(quote! {
-            pub #field_ident: #field_ty
-        });
-    }
-
-    // Build derive list
-    // In multipart mode, force clone = false (FieldData<NamedTempFile> doesn't implement Clone)
-    let derive_clone: bool = if input.multipart {
-        false
-    } else {
-        input.derive_clone
-    };
-    let clone_derive: proc_macro2::TokenStream = if derive_clone {
-        quote! { Clone, }
-    } else {
-        quote! {}
-    };
-
-    // Conditionally include Schema derive based on ignore_schema flag
-    // Also generate #[schema(name = "...")] attribute if custom name is provided AND Schema is derived
-    let schema_derive: proc_macro2::TokenStream;
-    let schema_name_attr: proc_macro2::TokenStream;
-    if input.ignore_schema {
-        schema_derive = quote! {};
-        schema_name_attr = quote! {};
-    } else if let Some(ref name) = input.schema_name {
-        schema_derive = quote! { vespera::Schema };
-        schema_name_attr = quote! { #[schema(name = #name)] };
-    } else {
-        schema_derive = quote! { vespera::Schema };
-        schema_name_attr = quote! {};
-    }
-
-    // Check if there are any relation fields
-    let has_relation_fields = field_mappings.iter().any(|(_, _, _, is_rel)| *is_rel);
-
-    // In multipart mode, skip From and from_model impls entirely
-    let source_type: &syn::Type = &input.source_type;
-    let (from_impl, from_model_impl) = if input.multipart {
-        (quote! {}, quote! {})
-    } else {
-        // Generate From impl only if:
-        // 1. `add` is not used (can't auto-populate added fields)
-        // 2. There are no relation fields (relation fields don't exist on source Model)
-        let from_impl = if input.add.is_none() && !has_relation_fields {
-            let field_assignments: Vec<_> = field_mappings
-                .iter()
-                .map(|(new_ident, source_ident, wrapped, _is_relation)| {
-                    if *wrapped {
-                        quote! { #new_ident: Some(source.#source_ident) }
-                    } else {
-                        quote! { #new_ident: source.#source_ident }
-                    }
-                })
-                .collect();
-
-            quote! {
-                impl From<#source_type> for #new_type_name {
-                    fn from(source: #source_type) -> Self {
-                        Self {
-                            #(#field_assignments),*
-                        }
-                    }
-                }
-            }
-        } else {
-            quote! {}
-        };
-
-        // Generate from_model impl for SeaORM Models WITH relations
-        // - No relations: Use `From` trait (generated above)
-        // - Has relations: async fn from_model(model: Model, db: &DatabaseConnection) -> Result<Self, DbErr>
-        let from_model_impl =
-            if is_source_seaorm_model && input.add.is_none() && has_relation_fields {
-                generate_from_model_with_relations(
-                    new_type_name,
-                    source_type,
-                    &field_mappings,
-                    &relation_fields,
-                    &source_module_path,
-                    schema_storage,
-                )
-            } else {
-                quote! {}
-            };
-
-        (from_impl, from_model_impl)
-    };
-
-    // Generate the new struct (with inline types for circular relations first)
-    let generated_tokens: proc_macro2::TokenStream = if input.multipart {
-        // Multipart mode: derive Multipart instead of serde
-        // Emit #[serde(rename_all = ...)] so Multipart applies the rename at runtime
-        // AND Schema derive reads it via extract_rename_all() fallback for OpenAPI field naming
-        quote! {
-            #(#inline_type_definitions)*
-
-            #(#struct_doc_attrs)*
-            #[derive(vespera::Multipart, #clone_derive #schema_derive)]
-            #schema_name_attr
-            #[serde(rename_all = #effective_rename_all)]
-            pub struct #new_type_name {
-                #(#field_tokens),*
-            }
-        }
-    } else {
-        // Normal serde mode
-        quote! {
-            // Inline types for circular relation references
-            #(#inline_type_definitions)*
-
-            // Same-file relation override helpers
-            #(#relation_override_helpers)*
-
-            // Default value functions for sea_orm(default_value) fields
-            #(#default_functions)*
-
-            #(#struct_doc_attrs)*
-            #[derive(serde::Serialize, serde::Deserialize, #clone_derive #schema_derive)]
-            #schema_name_attr
-            #[serde(rename_all = #effective_rename_all)]
-            #(#serde_attrs_without_rename_all)*
-            pub struct #new_type_name {
-                #(#field_tokens),*
-            }
-
-            #from_impl
-            #from_model_impl
-        }
-    };
-
-    // If custom name is provided, create metadata for direct registration
-    // This ensures the schema appears in OpenAPI even when `ignore` is set
-    let metadata = input.schema_name.as_ref().map(|custom_name| {
-        // Build struct definition string for metadata (without derives/attrs for parsing)
-        let struct_def = quote! {
-            #[serde(rename_all = #effective_rename_all)]
-            #(#serde_attrs_without_rename_all)*
-            pub struct #new_type_name {
-                #(#field_tokens),*
-            }
-        };
-        StructMetadata::new(custom_name.clone(), struct_def.to_string())
-    });
-
-    Ok((generated_tokens, metadata))
-}
-
-/// Generate `#[serde(default = "...")]` and `#[schema(default = "...")]` attributes
-/// from `#[sea_orm(default_value = ...)]` or `#[sea_orm(primary_key)]` on source fields.
-///
-/// Returns `(serde_default_attr, schema_default_attr)` as `TokenStream`s.
-/// - `serde_default_attr`: `#[serde(default = "default_structname_field")]` for deserialization
-/// - `schema_default_attr`: `#[schema(default = "value")]` for OpenAPI default value
-///
-/// Also generates a companion default function and appends it to `default_functions`.
-///
-/// Handles three categories of defaults:
-/// 1. **Literal defaults** (`default_value = "42"`, `"draft"`, `0.7`):
-///    Generates parse-based default function + schema default.
-/// 2. **SQL function defaults** (`default_value = "NOW()"`, `"gen_random_uuid()"`):
-///    Generates type-specific default function + schema default with type's zero value.
-/// 3. **Primary key** (implicit auto-increment):
-///    Treated as having an implicit default — generates type-specific default.
-///
-/// Skips serde default generation when:
-/// - The field is wrapped in `Option` (partial mode or already optional)
-/// - The field already has `#[serde(default)]`
-/// - For literal defaults: the field type doesn't implement `FromStr`
-fn generate_sea_orm_default_attrs(
-    original_attrs: &[syn::Attribute],
-    struct_name: &syn::Ident,
-    field_name: &str,
-    original_ty: &syn::Type,
-    field_ty: &dyn quote::ToTokens,
-    is_optional_or_partial: bool,
-    default_functions: &mut Vec<TokenStream>,
-) -> (TokenStream, TokenStream) {
-    // Don't generate defaults for optional/partial fields
-    if is_optional_or_partial {
-        return (quote! {}, quote! {});
-    }
-
-    // Check for sea_orm(default_value) and sea_orm(primary_key)
-    let default_value = extract_sea_orm_default_value(original_attrs);
-    let has_pk = has_sea_orm_primary_key(original_attrs);
-
-    // No default source found
-    if default_value.is_none() && !has_pk {
-        return (quote! {}, quote! {});
-    }
-
-    let has_existing_serde_default = extract_default(original_attrs).is_some();
-
-    match &default_value {
-        // Literal default (e.g., "42", "draft", "0.7")
-        Some(value) if !is_sql_function_default(value) => {
-            let schema_default_attr = quote! { #[schema(default = #value)] };
-
-            if has_existing_serde_default {
-                return (quote! {}, schema_default_attr);
-            }
-
-            if !is_parseable_type(original_ty) {
-                return (quote! {}, schema_default_attr);
-            }
-
-            let fn_name = format!("default_{struct_name}_{field_name}");
-            let fn_ident = syn::Ident::new(&fn_name, proc_macro2::Span::call_site());
-
-            default_functions.push(quote! {
-                #[allow(non_snake_case)]
-                fn #fn_ident() -> #field_ty {
-                    #value.parse().unwrap()
-                }
-            });
-
-            let serde_default_attr = quote! { #[serde(default = #fn_name)] };
-            (serde_default_attr, schema_default_attr)
-        }
-        // SQL function default (NOW(), gen_random_uuid(), etc.) or primary_key auto-increment
-        _ => {
-            let Some((default_expr, schema_default_str)) =
-                sql_function_default_for_type(original_ty)
-            else {
-                return (quote! {}, quote! {});
-            };
-
-            let schema_default_attr = quote! { #[schema(default = #schema_default_str)] };
-
-            if has_existing_serde_default {
-                return (quote! {}, schema_default_attr);
-            }
-
-            let fn_name = format!("default_{struct_name}_{field_name}");
-            let fn_ident = syn::Ident::new(&fn_name, proc_macro2::Span::call_site());
-
-            default_functions.push(quote! {
-                #[allow(non_snake_case)]
-                fn #fn_ident() -> #field_ty {
-                    #default_expr
-                }
-            });
-
-            let serde_default_attr = quote! { #[serde(default = #fn_name)] };
-            (serde_default_attr, schema_default_attr)
-        }
-    }
-}
-
-/// Return a type-appropriate (Rust default expression, OpenAPI default string) pair
-/// for fields with SQL function defaults or implicit auto-increment.
-///
-/// The Rust expression is used in the generated `#[serde(default = "fn")]` function body.
-/// The OpenAPI string is used in `#[schema(default = "value")]`.
-fn sql_function_default_for_type(original_ty: &syn::Type) -> Option<(TokenStream, String)> {
-    let syn::Type::Path(type_path) = original_ty else {
-        return None;
-    };
-    let segment = type_path.path.segments.last()?;
-    let type_name = segment.ident.to_string();
-
-    match type_name.as_str() {
-        "DateTimeWithTimeZone" | "DateTimeUtc" | "DateTime" => {
-            let expr = quote! {
-                vespera::chrono::DateTime::<vespera::chrono::Utc>::UNIX_EPOCH.fixed_offset()
-            };
-            Some((expr, "1970-01-01T00:00:00+00:00".to_string()))
-        }
-        "NaiveDateTime" => {
-            let expr = quote! {
-                vespera::chrono::NaiveDateTime::UNIX_EPOCH
-            };
-            Some((expr, "1970-01-01T00:00:00".to_string()))
-        }
-        "NaiveDate" => {
-            let expr = quote! {
-                vespera::chrono::NaiveDate::default()
-            };
-            Some((expr, "1970-01-01".to_string()))
-        }
-        "NaiveTime" | "Time" => {
-            let expr = quote! {
-                vespera::chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap()
-            };
-            Some((expr, "00:00:00".to_string()))
-        }
-        "Uuid" => Some((
-            quote! { Default::default() },
-            "00000000-0000-0000-0000-000000000000".to_string(),
-        )),
-        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
-        | "usize" | "f32" | "f64" | "Decimal" => {
-            Some((quote! { Default::default() }, "0".to_string()))
-        }
-        "bool" => Some((quote! { Default::default() }, "false".to_string())),
-        "String" => Some((quote! { Default::default() }, String::new())),
-        _ => None,
-    }
-}
-
-/// Check if a type is known to implement `FromStr` and can use `.parse().unwrap()`.
-///
-/// Returns true for primitive types, String, and Decimal.
-/// Returns false for enums and unknown custom types.
-fn is_parseable_type(ty: &syn::Type) -> bool {
-    let syn::Type::Path(type_path) = ty else {
-        return false;
-    };
-    let Some(segment) = type_path.path.segments.last() else {
-        return false;
-    };
-    type_utils::PRIMITIVE_TYPE_NAMES.contains(&segment.ident.to_string().as_str())
-}
-
 #[cfg(test)]
-mod tests;
+mod tests {
+    use std::collections::HashMap;
+
+    use quote::quote;
+
+    use super::defaults::is_parseable_type;
+    use super::same_file_override::maybe_generate_same_file_relation_override;
+    use super::seaorm::RelationFieldInfo;
+    use super::*;
+
+    fn create_test_struct_metadata(name: &str, definition: &str) -> StructMetadata {
+        StructMetadata::new(name.to_string(), definition.to_string())
+    }
+
+    fn to_storage(items: Vec<StructMetadata>) -> HashMap<String, StructMetadata> {
+        items.into_iter().map(|s| (s.name.clone(), s)).collect()
+    }
+
+    #[test]
+    fn test_generate_schema_code_simple_struct() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )]);
+
+        let tokens = quote!(User);
+        let input: SchemaInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let output = result.unwrap().to_string();
+        assert!(output.contains("properties"));
+        assert!(output.contains("Schema"));
+    }
+
+    #[test]
+    fn test_generate_schema_code_with_omit() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String, pub password: String }",
+        )]);
+
+        let tokens = quote!(User, omit = ["password"]);
+        let input: SchemaInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let output = result.unwrap().to_string();
+        assert!(output.contains("properties"));
+    }
+
+    #[test]
+    fn test_generate_schema_code_with_pick() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String, pub email: String }",
+        )]);
+
+        let tokens = quote!(User, pick = ["id", "name"]);
+        let input: SchemaInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let output = result.unwrap().to_string();
+        assert!(output.contains("properties"));
+    }
+
+    #[test]
+    fn test_generate_schema_code_type_not_found() {
+        let storage: HashMap<String, StructMetadata> = HashMap::new();
+
+        let tokens = quote!(NonExistent);
+        let input: SchemaInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_code(&input, &storage);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn test_generate_schema_code_malformed_definition() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "BadStruct",
+            "this is not valid rust code {{{",
+        )]);
+
+        let tokens = quote!(BadStruct);
+        let input: SchemaInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_code(&input, &storage);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("failed to parse"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_pick_nonexistent_field() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )]);
+
+        let tokens = quote!(NewUser from User, pick = ["nonexistent"]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("does not exist"));
+        assert!(err.contains("nonexistent"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_omit_nonexistent_field() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )]);
+
+        let tokens = quote!(NewUser from User, omit = ["nonexistent"]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("does not exist"));
+        assert!(err.contains("nonexistent"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_rename_nonexistent_field() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )]);
+
+        let tokens = quote!(NewUser from User, rename = [("nonexistent", "new_name")]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("does not exist"));
+        assert!(err.contains("nonexistent"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_type_not_found() {
+        let storage: HashMap<String, StructMetadata> = HashMap::new();
+
+        let tokens = quote!(NewUser from NonExistent);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_success() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )]);
+
+        let tokens = quote!(CreateUser from User, pick = ["name"]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("CreateUser"));
+        assert!(output.contains("name"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_with_omit() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String, pub password: String }",
+        )]);
+
+        let tokens = quote!(SafeUser from User, omit = ["password"]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("SafeUser"));
+        assert!(!output.contains("password"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_with_add() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )]);
+
+        let tokens = quote!(UserWithExtra from User, add = [("extra": String)]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("UserWithExtra"));
+        assert!(output.contains("extra"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_relation_fields_can_be_omitted_and_readded_with_custom_types()
+    {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "Model",
+            r#"#[sea_orm(table_name = "article")]
+            pub struct Model {
+                pub id: i64,
+                pub title: String,
+                pub user: HasOne<super::user::Entity>,
+                pub category: HasOne<super::category::Entity>,
+                pub article_review_users: HasMany<super::article_review_user::Entity>
+            }"#,
+        )]);
+
+        let tokens = quote!(
+            ArticleResponse from Model,
+            omit = ["user", "category", "article_review_users"],
+            add = [
+                ("user": Option<UserInArticle>),
+                ("category": Option<CategoryInArticle>),
+                ("article_review_users": Vec<ArticleReviewUserInArticle>)
+            ]
+        );
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("pub user : Option < UserInArticle >"));
+        assert!(output.contains("pub category : Option < CategoryInArticle >"));
+        assert!(output.contains("pub article_review_users : Vec < ArticleReviewUserInArticle >"));
+        assert!(!output.contains("Box < Schema >"));
+        assert!(!output.contains("impl From"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_same_file_relation_adapters_for_add_mode() {
+        let storage = to_storage(vec![
+            create_test_struct_metadata(
+                "Model",
+                r#"#[sea_orm(table_name = "article")]
+                pub struct Model {
+                    pub id: i64,
+                    pub title: String,
+                    pub user: HasOne<super::user::Entity>,
+                    pub category: HasOne<super::category::Entity>,
+                    pub article_review_users: HasMany<super::article_review_user::Entity>
+                }"#,
+            ),
+            create_test_struct_metadata(
+                "UserInArticle",
+                "struct UserInArticle { id: i32, name: String }",
+            ),
+            create_test_struct_metadata(
+                "CategoryInArticle",
+                "struct CategoryInArticle { id: i64, name: String }",
+            ),
+        ]);
+
+        let tokens = quote!(
+            ArticleResponse from Model,
+            add = [("article_review_users": Vec<ArticleReviewUserInArticle>)]
+        );
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("pub user : __VesperaArticleResponseUserRelation"));
+        assert!(output.contains("pub category : __VesperaArticleResponseCategoryRelation"));
+        assert!(output.contains("impl From < Option <"));
+        assert!(output.contains("for __VesperaArticleResponseUserRelation"));
+        assert!(output.contains("for __VesperaArticleResponseCategoryRelation"));
+        assert!(output.contains("impl Clone for UserInArticle"));
+        assert!(output.contains("impl Clone for CategoryInArticle"));
+    }
+
+    #[test]
+    fn test_maybe_generate_same_file_relation_override_skips_redundant_clone_and_deserialize_impls()
+    {
+        // Same-file relation override DTOs that ALREADY carry `Clone` and
+        // `Deserialize` derives must NOT have the macro re-emit those
+        // impls — otherwise the generated code would conflict with the
+        // user-provided derive.  Hits the "DTO already has derive" empty-
+        // quote branches inside `maybe_generate_same_file_relation_override`.
+        let rel_info = RelationFieldInfo {
+            field_name: syn::Ident::new("user", proc_macro2::Span::call_site()),
+            relation_type: "HasOne".to_string(),
+            schema_path: quote!(crate::models::user::Schema),
+            is_optional: true,
+            inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
+        };
+        // Bare `Clone` and `Deserialize` idents — has_derive matches the
+        // single-segment path, hitting the empty-quote branches at lines
+        // 208 (clone_impl) and 222 (deserialize_impl).
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "UserInArticle",
+            r"#[derive(Clone, Deserialize)]
+            struct UserInArticle { id: i32, name: String }",
+        )]);
+        let new_type_name = syn::Ident::new("ArticleResponse", proc_macro2::Span::call_site());
+
+        let (override_field_ty, helper_tokens) =
+            maybe_generate_same_file_relation_override(&new_type_name, "user", &rel_info, &storage)
+                .expect("override generation should succeed")
+                .expect("DTO is present in storage → override should be generated");
+
+        let output = helper_tokens.to_string();
+        let field_ty = override_field_ty.to_string();
+        assert!(
+            field_ty.contains("__VesperaArticleResponseUserRelation"),
+            "expected override field type to reference relation adapter, got: {field_ty}"
+        );
+        // No `impl Clone for UserInArticle` — DTO already derives Clone.
+        assert!(
+            !output.contains("impl Clone for UserInArticle"),
+            "macro should skip Clone impl when DTO already derives Clone, got: {output}"
+        );
+        // No proxy `Deserialize` derive struct — DTO already derives Deserialize.
+        assert!(
+            !output.contains("__VesperaArticleResponseUserProxy"),
+            "macro should skip Deserialize proxy when DTO already derives Deserialize, got: {output}"
+        );
+        // Relation wrapper struct still emitted regardless of derives.
+        assert!(
+            output.contains("__VesperaArticleResponseUserRelation"),
+            "relation wrapper missing: {output}"
+        );
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_generates_from_impl() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )]);
+
+        let tokens = quote!(UserResponse from User, pick = ["id", "name"]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("impl From"));
+        assert!(output.contains("for UserResponse"));
+    }
+
+    #[test]
+    fn test_generate_schema_type_code_no_from_impl_with_add() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub id: i32, pub name: String }",
+        )]);
+
+        let tokens = quote!(UserWithExtra from User, add = [("extra": String)]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+        let result = generate_schema_type_code(&input, &storage);
+
+        assert!(result.is_ok());
+        let (tokens, _metadata) = result.unwrap();
+        let output = tokens.to_string();
+        assert!(
+            output.contains("UserWithExtra"),
+            "expected struct UserWithExtra in output: {output}"
+        );
+        assert!(
+            !output.contains("impl From"),
+            "expected no From impl when `add` is used: {output}"
+        );
+    }
+
+    // ========================
+    // is_parseable_type tests
+    // ========================
+
+    #[test]
+    fn test_is_parseable_type_primitives() {
+        for ty_str in &[
+            "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize",
+            "f32", "f64", "bool", "String", "Decimal",
+        ] {
+            let ty: syn::Type = syn::parse_str(ty_str).unwrap();
+            assert!(is_parseable_type(&ty), "{ty_str} should be parseable");
+        }
+    }
+
+    #[test]
+    fn test_is_parseable_type_non_parseable() {
+        let ty: syn::Type = syn::parse_str("MyEnum").unwrap();
+        assert!(!is_parseable_type(&ty));
+    }
+
+    #[test]
+    fn test_is_parseable_type_non_path() {
+        let ty: syn::Type = syn::parse_str("&str").unwrap();
+        assert!(!is_parseable_type(&ty));
+    }
+}

@@ -1,0 +1,22 @@
+---
+source: crates/vespera_macro/src/schema_macro/from_model/generate.rs
+expression: "run_scenario(models, new_type, source_type, rows, relations, module)"
+---
+impl UserSchema {
+    pub async fn from_model(
+        model: crate::models::user::Model,
+        db: &sea_orm::DatabaseConnection,
+    ) -> Result<Self, sea_orm::DbErr> {
+        use sea_orm::ModelTrait;
+        let profile = model.find_related(crate::models::profile::Entity).one(db).await?;
+        Ok(Self {
+            id: model.id,
+            profile: profile
+                .map(|r| Box::new(crate::models::profile::Schema {
+                    id: r.id,
+                    bio: r.bio,
+                    user: None,
+                })),
+        })
+    }
+}

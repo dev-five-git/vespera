@@ -3925,6 +3925,7 @@ name = "vespera_macro"
 version = "0.2.0"
 dependencies = [
  "insta",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "rstest",

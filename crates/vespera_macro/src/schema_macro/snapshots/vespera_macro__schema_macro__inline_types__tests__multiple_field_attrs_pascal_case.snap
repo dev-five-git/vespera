@@ -1,0 +1,11 @@
+---
+source: crates/vespera_macro/src/schema_macro/inline_types/tests.rs
+expression: pretty(&generate_inline_type_definition(&inline_type))
+---
+#[derive(Clone, serde::Serialize, serde::Deserialize, vespera::Schema)]
+#[serde(rename_all = "PascalCase")]
+pub struct MultiAttrType {
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: String,
+}

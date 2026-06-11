@@ -1,0 +1,10 @@
+---
+source: crates/vespera_macro/src/schema_macro/inline_types/tests.rs
+expression: pretty(&generate_inline_type_definition(&inline_type))
+---
+#[derive(Clone, serde::Serialize, serde::Deserialize, vespera::Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInline {
+    pub id: i32,
+    pub name: String,
+}

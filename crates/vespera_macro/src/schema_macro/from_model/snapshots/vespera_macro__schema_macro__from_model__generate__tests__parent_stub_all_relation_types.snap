@@ -1,0 +1,52 @@
+---
+source: crates/vespera_macro/src/schema_macro/from_model/generate.rs
+expression: "run_scenario(models, new_type, source_type, rows, relations, module)"
+---
+impl UserSchema {
+    pub async fn from_model(
+        model: crate::models::user::Model,
+        db: &sea_orm::DatabaseConnection,
+    ) -> Result<Self, sea_orm::DbErr> {
+        use sea_orm::ModelTrait;
+        let memos = model.find_related(crate::models::memo::Entity).all(db).await?;
+        let profile = model.find_related(crate::models::profile::Entity).one(db).await?;
+        let settings = model
+            .find_related(crate::models::settings::Entity)
+            .one(db)
+            .await?;
+        let __parent_stub__ = Self {
+            id: model.id.clone(),
+            memos: vec![],
+            profile: None,
+            settings: None,
+            orphan_rel: Default::default(),
+        };
+        Ok(Self {
+            id: model.id,
+            memos: memos
+                .into_iter()
+                .map(|r| crate::models::memo::Schema {
+                    id: r.id,
+                    title: r.title,
+                    user_id: r.user_id,
+                    user: Box::new(__parent_stub__.clone()),
+                })
+                .collect(),
+            profile: profile
+                .map(|r| Box::new(<crate::models::profile::Schema as From<_>>::from(r))),
+            settings: Box::new(
+                <crate::models::settings::Schema as From<
+                    _,
+                >>::from(
+                    settings
+                        .ok_or_else(|| sea_orm::DbErr::RecordNotFound(
+                            format!(
+                                "Required relation '{}' not found", stringify!(settings)
+                            ),
+                        ))?,
+                ),
+            ),
+            orphan_rel: Default::default(),
+        })
+    }
+}

@@ -346,6 +346,7 @@ props only.
 
 ## CONVENTIONS
 
+- **File size cap**: every source file stays ≤ 1000 lines. Unit tests live **inline** (`#[cfg(test)] mod tests`) whenever code + tests fit the cap; only when they don't, tests move to sidecar child modules (`<module>/tests.rs`, `<module>/tests_<topic>.rs` — `use super::*` semantics preserved). Token-stream assertions use rstest cases + insta snapshots (explicit per-case snapshot names; `prettyplease` for item output) instead of `contains` probes.
 - **Rust 2024 edition** across all crates
 - **Workspace dependencies**: Internal crates use `{ workspace = true }`
 - **Test frameworks**: `rstest` for unit tests, `insta` for snapshots

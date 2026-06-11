@@ -292,113 +292,81 @@ pub fn generate_inline_type_construction(
 
 #[cfg(test)]
 mod tests {
+    use quote::quote;
     use rstest::rstest;
 
     use super::*;
 
+    fn ident(name: &str) -> syn::Ident {
+        syn::Ident::new(name, proc_macro2::Span::call_site())
+    }
+
+    fn fields(src: &str) -> syn::FieldsNamed {
+        syn::parse_str(src).unwrap()
+    }
+
+    fn required(def: &str, field: &str) -> bool {
+        analyze_circular_refs(&[], def)
+            .circular_field_required
+            .get(field)
+            .copied()
+            .unwrap_or(false)
+    }
+
     #[rstest]
-    #[case(
-        &["crate", "models", "memo"],
-        r"pub struct UserSchema {
-            pub id: i32,
-            pub memos: HasMany<memo::Entity>,
-        }",
-        vec![]  // HasMany is not considered circular
-    )]
-    #[case(
-        &["crate", "models", "user"],
-        r"pub struct MemoSchema {
-            pub id: i32,
-            pub user: BelongsTo<user::Entity>,
-        }",
-        vec!["user".to_string()]
-    )]
-    #[case(
-        &["crate", "models", "user"],
-        r"pub struct MemoSchema {
-            pub id: i32,
-            pub user: HasOne<user::Entity>,
-        }",
-        vec!["user".to_string()]
-    )]
-    #[case(
-        &["crate", "models", "user"],
-        r"pub struct MemoSchema {
-            pub id: i32,
-            pub user: Box<user::Schema>,
-        }",
-        vec!["user".to_string()]
-    )]
-    #[case(
-        &["crate", "models", "memo"],
-        r"pub struct UserSchema {
-            pub id: i32,
-            pub name: String,
-        }",
-        vec![]  // No circular fields
-    )]
+    #[case(&["crate", "models", "memo"], r"pub struct UserSchema { pub id: i32, pub memos: HasMany<memo::Entity>, }", vec![])]
+    #[case(&["crate", "models", "user"], r"pub struct MemoSchema { pub id: i32, pub user: BelongsTo<user::Entity>, }", vec!["user".to_string()])]
+    #[case(&["crate", "models", "user"], r"pub struct MemoSchema { pub id: i32, pub user: HasOne<user::Entity>, }", vec!["user".to_string()])]
+    #[case(&["crate", "models", "user"], r"pub struct MemoSchema { pub id: i32, pub user: Box<user::Schema>, }", vec!["user".to_string()])]
+    #[case(&["crate", "models", "memo"], r"pub struct UserSchema { pub id: i32, pub name: String, }", vec![])]
     fn test_detect_circular_fields(
         #[case] source_module_path: &[&str],
         #[case] related_schema_def: &str,
         #[case] expected: Vec<String>,
     ) {
-        let module_path: Vec<String> = source_module_path
-            .iter()
-            .map(std::string::ToString::to_string)
-            .collect();
-        let result = analyze_circular_refs(&module_path, related_schema_def).circular_fields;
-        assert_eq!(result, expected);
+        let module_path: Vec<String> = source_module_path.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            analyze_circular_refs(&module_path, related_schema_def).circular_fields,
+            expected
+        );
     }
 
     #[test]
     fn test_detect_circular_fields_invalid_struct() {
-        let result =
-            analyze_circular_refs(&["crate".to_string()], "not valid rust").circular_fields;
-        assert!(result.is_empty());
+        assert!(
+            analyze_circular_refs(&["crate".to_string()], "not valid rust")
+                .circular_fields
+                .is_empty()
+        );
     }
 
     #[test]
     fn test_detect_circular_fields_unnamed_fields() {
-        let result = analyze_circular_refs(
-            &[
-                "crate".to_string(),
-                "models".to_string(),
-                "test".to_string(),
-            ],
-            "pub struct TupleStruct(i32, String);",
-        )
-        .circular_fields;
-        assert!(result.is_empty());
+        let path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "test".to_string(),
+        ];
+        assert!(
+            analyze_circular_refs(&path, "pub struct TupleStruct(i32, String);")
+                .circular_fields
+                .is_empty()
+        );
     }
 
     #[rstest]
     #[case(
-        r"pub struct Model {
-            pub id: i32,
-            pub user: BelongsTo<user::Entity>,
-        }",
+        r"pub struct Model { pub id: i32, pub user: BelongsTo<user::Entity>, }",
         true
     )]
     #[case(
-        r"pub struct Model {
-            pub id: i32,
-            pub user: HasOne<user::Entity>,
-        }",
+        r"pub struct Model { pub id: i32, pub user: HasOne<user::Entity>, }",
         true
     )]
+    #[case(r"pub struct Model { pub id: i32, pub name: String, }", false)]
     #[case(
-        r"pub struct Model {
-            pub id: i32,
-            pub name: String,
-        }",
+        r"pub struct Model { pub id: i32, pub items: HasMany<item::Entity>, }",
         false
-    )]
-    #[case(
-        r"pub struct Model {
-            pub id: i32,
-            pub items: HasMany<item::Entity>,
-        }",
-        false  // HasMany alone doesn't count as FK relation
     )]
     fn test_has_fk_relations(#[case] model_def: &str, #[case] expected: bool) {
         assert_eq!(
@@ -421,106 +389,104 @@ mod tests {
 
     #[test]
     fn test_is_circular_relation_required_invalid_struct() {
-        assert!(
-            !analyze_circular_refs(&[], "not valid rust")
-                .circular_field_required
-                .get("user")
-                .copied()
-                .unwrap_or(false)
-        );
+        assert!(!required("not valid rust", "user"));
     }
 
     #[test]
     fn test_is_circular_relation_required_unnamed_fields() {
-        assert!(
-            !analyze_circular_refs(&[], "pub struct TupleStruct(i32, String);")
-                .circular_field_required
-                .get("user")
-                .copied()
-                .unwrap_or(false)
-        );
+        assert!(!required("pub struct TupleStruct(i32, String);", "user"));
     }
 
     #[test]
     fn test_is_circular_relation_required_field_not_found() {
-        let model_def = r"pub struct Model {
-            pub id: i32,
-            pub name: String,
-        }";
-        assert!(
-            !analyze_circular_refs(&[], model_def)
-                .circular_field_required
-                .get("nonexistent")
-                .copied()
-                .unwrap_or(false)
-        );
+        assert!(!required(
+            "pub struct Model { pub id: i32, pub name: String, }",
+            "nonexistent"
+        ));
     }
 
     #[test]
     fn test_generate_default_for_relation_field_has_many() {
         let ty: syn::Type = syn::parse_str("HasMany<user::Entity>").unwrap();
-        let field_ident = syn::Ident::new("users", proc_macro2::Span::call_site());
-        let all_fields: syn::FieldsNamed = syn::parse_str("{ pub id: i32 }").unwrap();
-        let tokens = generate_default_for_relation_field(&ty, &field_ident, &[], &all_fields);
-        let output = tokens.to_string();
-        assert!(output.contains("users : vec ! []"));
+        assert!(
+            generate_default_for_relation_field(
+                &ty,
+                &ident("users"),
+                &[],
+                &fields("{ pub id: i32 }")
+            )
+            .to_string()
+            .contains("users : vec ! []")
+        );
     }
 
     #[test]
     fn test_generate_default_for_relation_field_has_one_optional() {
         let ty: syn::Type = syn::parse_str("HasOne<user::Entity>").unwrap();
-        let field_ident = syn::Ident::new("user", proc_macro2::Span::call_site());
-        let all_fields: syn::FieldsNamed = syn::parse_str("{ pub user_id: Option<i32> }").unwrap();
-        let tokens = generate_default_for_relation_field(&ty, &field_ident, &[], &all_fields);
-        let output = tokens.to_string();
-        assert!(output.contains("user : None"));
+        assert!(
+            generate_default_for_relation_field(
+                &ty,
+                &ident("user"),
+                &[],
+                &fields("{ pub user_id: Option<i32> }")
+            )
+            .to_string()
+            .contains("user : None")
+        );
     }
 
     #[test]
     fn test_generate_default_for_relation_field_unknown_type() {
         let ty: syn::Type = syn::parse_str("SomeUnknownType<T>").unwrap();
-        let field_ident = syn::Ident::new("field", proc_macro2::Span::call_site());
-        let all_fields: syn::FieldsNamed = syn::parse_str("{ pub id: i32 }").unwrap();
-        let tokens = generate_default_for_relation_field(&ty, &field_ident, &[], &all_fields);
-        let output = tokens.to_string();
-        assert!(output.contains("Default :: default ()"));
+        assert!(
+            generate_default_for_relation_field(
+                &ty,
+                &ident("field"),
+                &[],
+                &fields("{ pub id: i32 }")
+            )
+            .to_string()
+            .contains("Default :: default ()")
+        );
     }
 
     #[test]
     fn test_generate_inline_struct_construction_invalid_struct() {
-        let schema_path = quote! { user::Schema };
-        let tokens =
-            generate_inline_struct_construction(&schema_path, "not valid rust", &[], "model");
-        let output = tokens.to_string();
-        assert!(output.contains("From"));
+        assert!(
+            generate_inline_struct_construction(
+                &quote! { user::Schema },
+                "not valid rust",
+                &[],
+                "model"
+            )
+            .to_string()
+            .contains("From")
+        );
     }
 
     #[test]
     fn test_generate_inline_struct_construction_tuple_struct() {
-        let schema_path = quote! { user::Schema };
-        let tokens = generate_inline_struct_construction(
-            &schema_path,
-            "pub struct TupleStruct(i32, String);",
-            &[],
-            "model",
+        assert!(
+            generate_inline_struct_construction(
+                &quote! { user::Schema },
+                "pub struct TupleStruct(i32, String);",
+                &[],
+                "model"
+            )
+            .to_string()
+            .contains("From")
         );
-        let output = tokens.to_string();
-        assert!(output.contains("From"));
     }
 
     #[test]
     fn test_generate_inline_struct_construction_with_fields() {
-        let schema_path = quote! { user::Schema };
-        let tokens = generate_inline_struct_construction(
-            &schema_path,
-            r"pub struct UserSchema {
-                pub id: i32,
-                pub name: String,
-            }",
+        let output = generate_inline_struct_construction(
+            &quote! { user::Schema },
+            r"pub struct UserSchema { pub id: i32, pub name: String, }",
             &[],
             "r",
-        );
-        let output = tokens.to_string();
+        )
+        .to_string();
         assert!(output.contains("user :: Schema"));
         assert!(output.contains("id : r . id"));
         assert!(output.contains("name : r . name"));
@@ -528,17 +494,13 @@ mod tests {
 
     #[test]
     fn test_generate_inline_struct_construction_with_circular_field() {
-        let schema_path = quote! { user::Schema };
-        let tokens = generate_inline_struct_construction(
-            &schema_path,
-            r"pub struct UserSchema {
-                pub id: i32,
-                pub memos: HasMany<memo::Entity>,
-            }",
+        let output = generate_inline_struct_construction(
+            &quote! { user::Schema },
+            r"pub struct UserSchema { pub id: i32, pub memos: HasMany<memo::Entity>, }",
             &["memos".to_string()],
             "r",
-        );
-        let output = tokens.to_string();
+        )
+        .to_string();
         assert!(output.contains("user :: Schema"));
         assert!(output.contains("id : r . id"));
         assert!(output.contains("memos : vec ! []"));
@@ -546,62 +508,54 @@ mod tests {
 
     #[test]
     fn test_generate_inline_struct_construction_skip_serde_skip_fields() {
-        let schema_path = quote! { user::Schema };
-        let tokens = generate_inline_struct_construction(
-            &schema_path,
-            r"pub struct UserSchema {
-                pub id: i32,
-                #[serde(skip)]
-                pub internal: String,
-            }",
+        let output = generate_inline_struct_construction(
+            &quote! { user::Schema },
+            r"pub struct UserSchema { pub id: i32, #[serde(skip)] pub internal: String, }",
             &[],
             "r",
-        );
-        let output = tokens.to_string();
+        )
+        .to_string();
         assert!(output.contains("id : r . id"));
         assert!(!output.contains("internal : r . internal"));
     }
 
     #[test]
     fn test_generate_inline_type_construction_invalid_struct() {
-        let inline_type_name = syn::Ident::new("TestInline", proc_macro2::Span::call_site());
-        let tokens = generate_inline_type_construction(
-            &inline_type_name,
-            &["id".to_string()],
-            "not valid rust",
-            "model",
+        assert!(
+            generate_inline_type_construction(
+                &ident("TestInline"),
+                &["id".to_string()],
+                "not valid rust",
+                "model"
+            )
+            .to_string()
+            .contains("Default :: default ()")
         );
-        let output = tokens.to_string();
-        assert!(output.contains("Default :: default ()"));
     }
 
     #[test]
     fn test_generate_inline_type_construction_tuple_struct() {
-        let inline_type_name = syn::Ident::new("TestInline", proc_macro2::Span::call_site());
-        let tokens = generate_inline_type_construction(
-            &inline_type_name,
-            &["id".to_string()],
-            "pub struct TupleStruct(i32, String);",
-            "model",
+        assert!(
+            generate_inline_type_construction(
+                &ident("TestInline"),
+                &["id".to_string()],
+                "pub struct TupleStruct(i32, String);",
+                "model"
+            )
+            .to_string()
+            .contains("Default :: default ()")
         );
-        let output = tokens.to_string();
-        assert!(output.contains("Default :: default ()"));
     }
 
     #[test]
     fn test_generate_inline_type_construction_with_fields() {
-        let inline_type_name = syn::Ident::new("UserInline", proc_macro2::Span::call_site());
-        let tokens = generate_inline_type_construction(
-            &inline_type_name,
+        let output = generate_inline_type_construction(
+            &ident("UserInline"),
             &["id".to_string(), "name".to_string()],
-            r"pub struct Model {
-                pub id: i32,
-                pub name: String,
-                pub email: String,
-            }",
+            r"pub struct Model { pub id: i32, pub name: String, pub email: String, }",
             "r",
-        );
-        let output = tokens.to_string();
+        )
+        .to_string();
         assert!(output.contains("UserInline"));
         assert!(output.contains("id : r . id"));
         assert!(output.contains("name : r . name"));
@@ -610,266 +564,192 @@ mod tests {
 
     #[test]
     fn test_generate_inline_type_construction_skips_relations() {
-        let inline_type_name = syn::Ident::new("UserInline", proc_macro2::Span::call_site());
-        let tokens = generate_inline_type_construction(
-            &inline_type_name,
+        let output = generate_inline_type_construction(
+            &ident("UserInline"),
             &["id".to_string(), "memos".to_string()],
-            r"pub struct Model {
-                pub id: i32,
-                pub memos: HasMany<memo::Entity>,
-            }",
+            r"pub struct Model { pub id: i32, pub memos: HasMany<memo::Entity>, }",
             "r",
-        );
-        let output = tokens.to_string();
+        )
+        .to_string();
         assert!(output.contains("id : r . id"));
         assert!(!output.contains("memos : r . memos"));
     }
 
-    // Additional coverage tests for circular_field_required via analyze_circular_refs
-
     #[test]
     fn test_circular_field_required_has_one_with_required_fk() {
-        // Model has HasOne relation with a required (non-Option) FK field
-        let model_def = r#"pub struct Model {
-            pub id: i32,
-            pub user_id: i32,
-            #[sea_orm(belongs_to = "super::user::Entity", from = "Column::UserId", to = "super::user::Column::Id")]
-            pub user: HasOne<user::Entity>,
-        }"#;
-        // The FK field 'user_id' is i32 (required), so circular relation IS required
-        let result = analyze_circular_refs(&[], model_def)
-            .circular_field_required
-            .get("user")
-            .copied()
-            .unwrap_or(false);
-        // Without proper BelongsTo attribute parsing, this returns false
-        // because extract_belongs_to_from_field won't find the FK
-        assert!(!result);
+        assert!(!required(
+            r#"pub struct Model { pub id: i32, pub user_id: i32, #[sea_orm(belongs_to = "super::user::Entity", from = "Column::UserId", to = "super::user::Column::Id")] pub user: HasOne<user::Entity>, }"#,
+            "user"
+        ));
     }
 
     #[test]
     fn test_circular_field_required_belongs_to_with_optional_fk() {
-        // Model has BelongsTo relation with optional FK field
-        let model_def = r#"pub struct Model {
-            pub id: i32,
-            pub user_id: Option<i32>,
-            #[sea_orm(belongs_to = "super::user::Entity", from = "Column::UserId", to = "super::user::Column::Id")]
-            pub user: BelongsTo<user::Entity>,
-        }"#;
-        // FK field is Option<i32>, so circular relation is NOT required
-        let result = analyze_circular_refs(&[], model_def)
-            .circular_field_required
-            .get("user")
-            .copied()
-            .unwrap_or(false);
-        assert!(!result);
+        assert!(!required(
+            r#"pub struct Model { pub id: i32, pub user_id: Option<i32>, #[sea_orm(belongs_to = "super::user::Entity", from = "Column::UserId", to = "super::user::Column::Id")] pub user: BelongsTo<user::Entity>, }"#,
+            "user"
+        ));
     }
 
     #[test]
     fn test_circular_field_required_non_relation_field() {
-        // Field exists but is not a relation type
-        let model_def = r"pub struct Model {
-            pub id: i32,
-            pub name: String,
-        }";
-        let result = analyze_circular_refs(&[], model_def)
-            .circular_field_required
-            .get("name")
-            .copied()
-            .unwrap_or(false);
-        assert!(!result);
+        assert!(!required(
+            r"pub struct Model { pub id: i32, pub name: String, }",
+            "name"
+        ));
     }
 
     #[test]
     fn test_circular_field_required_field_without_ident() {
-        // Struct with fields that have no ident (tuple-like, but in braces - edge case)
-        let model_def = r"pub struct Model {
-            pub id: i32,
-        }";
-        // Looking for a field that doesn't match
-        let result = analyze_circular_refs(&[], model_def)
-            .circular_field_required
-            .get("nonexistent_field")
-            .copied()
-            .unwrap_or(false);
-        assert!(!result);
+        assert!(!required(
+            r"pub struct Model { pub id: i32, }",
+            "nonexistent_field"
+        ));
     }
-
-    // Additional coverage tests for generate_default_for_relation_field
 
     #[test]
     fn test_generate_default_for_relation_field_belongs_to_optional() {
         let ty: syn::Type = syn::parse_str("BelongsTo<user::Entity>").unwrap();
-        let field_ident = syn::Ident::new("user", proc_macro2::Span::call_site());
-        // FK field is optional
-        let all_fields: syn::FieldsNamed = syn::parse_str("{ pub user_id: Option<i32> }").unwrap();
-        let tokens = generate_default_for_relation_field(&ty, &field_ident, &[], &all_fields);
-        let output = tokens.to_string();
-        // Should produce None for optional
-        assert!(output.contains("user : None"));
+        assert!(
+            generate_default_for_relation_field(
+                &ty,
+                &ident("user"),
+                &[],
+                &fields("{ pub user_id: Option<i32> }")
+            )
+            .to_string()
+            .contains("user : None")
+        );
     }
 
     #[test]
     fn test_generate_default_for_relation_field_belongs_to_required() {
         let ty: syn::Type = syn::parse_str("BelongsTo<user::Entity>").unwrap();
-        let field_ident = syn::Ident::new("user", proc_macro2::Span::call_site());
-        // FK field is required (not Option)
-        let all_fields: syn::FieldsNamed = syn::parse_str("{ pub user_id: i32 }").unwrap();
-        // Without FK attribute, it defaults to optional behavior
-        let tokens = generate_default_for_relation_field(&ty, &field_ident, &[], &all_fields);
-        let output = tokens.to_string();
-        // Without belongs_to attribute, defaults to None
-        assert!(output.contains("user : None"));
+        assert!(
+            generate_default_for_relation_field(
+                &ty,
+                &ident("user"),
+                &[],
+                &fields("{ pub user_id: i32 }")
+            )
+            .to_string()
+            .contains("user : None")
+        );
     }
 
     #[test]
     fn test_generate_default_for_relation_field_has_one_no_fk_found() {
         let ty: syn::Type = syn::parse_str("HasOne<user::Entity>").unwrap();
-        let field_ident = syn::Ident::new("user", proc_macro2::Span::call_site());
-        // No FK field in all_fields
-        let all_fields: syn::FieldsNamed = syn::parse_str("{ pub id: i32 }").unwrap();
-        let tokens = generate_default_for_relation_field(&ty, &field_ident, &[], &all_fields);
-        let output = tokens.to_string();
-        // Without FK field found, defaults to None (optional behavior)
-        assert!(output.contains("user : None"));
+        assert!(
+            generate_default_for_relation_field(
+                &ty,
+                &ident("user"),
+                &[],
+                &fields("{ pub id: i32 }")
+            )
+            .to_string()
+            .contains("user : None")
+        );
     }
-
-    // Additional coverage tests for circular_fields via analyze_circular_refs
 
     #[test]
     fn test_circular_fields_empty_module_path() {
-        // Edge case: empty module path
-        let result =
-            analyze_circular_refs(&[], "pub struct Schema { pub id: i32 }").circular_fields;
-        assert!(result.is_empty());
+        assert!(
+            analyze_circular_refs(&[], "pub struct Schema { pub id: i32 }")
+                .circular_fields
+                .is_empty()
+        );
     }
 
     #[test]
     fn test_circular_fields_option_box_pattern() {
-        // Test Option<Box<Schema>> pattern detection
-        let result = analyze_circular_refs(
-            &[
-                "crate".to_string(),
-                "models".to_string(),
-                "memo".to_string(),
-            ],
-            r"pub struct UserSchema {
-                pub id: i32,
-                pub memo: Option<Box<memo::Schema>>,
-            }",
-        )
-        .circular_fields;
-        assert_eq!(result, vec!["memo".to_string()]);
+        let path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+        assert_eq!(
+            analyze_circular_refs(
+                &path,
+                r"pub struct UserSchema { pub id: i32, pub memo: Option<Box<memo::Schema>>, }"
+            )
+            .circular_fields,
+            vec!["memo".to_string()]
+        );
     }
 
     #[test]
     fn test_circular_fields_schema_suffix_pattern() {
-        // Test MemoSchema suffix pattern detection
-        let result = analyze_circular_refs(
-            &[
-                "crate".to_string(),
-                "models".to_string(),
-                "memo".to_string(),
-            ],
-            r"pub struct UserSchema {
-                pub id: i32,
-                pub memo: Box<MemoSchema>,
-            }",
-        )
-        .circular_fields;
-        assert_eq!(result, vec!["memo".to_string()]);
+        let path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "memo".to_string(),
+        ];
+        assert_eq!(
+            analyze_circular_refs(
+                &path,
+                r"pub struct UserSchema { pub id: i32, pub memo: Box<MemoSchema>, }"
+            )
+            .circular_fields,
+            vec!["memo".to_string()]
+        );
     }
 
     #[test]
     fn test_circular_fields_field_without_ident() {
-        // Fields without identifiers (parsing edge case)
-        let result = analyze_circular_refs(
-            &["crate".to_string(), "test".to_string()],
-            r"pub struct Schema {
-                pub id: i32,
-            }",
-        )
-        .circular_fields;
-        assert!(result.is_empty());
+        let path = vec!["crate".to_string(), "test".to_string()];
+        assert!(
+            analyze_circular_refs(&path, r"pub struct Schema { pub id: i32, }")
+                .circular_fields
+                .is_empty()
+        );
     }
-
-    // Additional coverage for generate_inline_struct_construction
 
     #[test]
     fn test_generate_inline_struct_construction_with_belongs_to_relation() {
-        let schema_path = quote! { memo::Schema };
-        let tokens = generate_inline_struct_construction(
-            &schema_path,
-            r"pub struct MemoSchema {
-                pub id: i32,
-                pub user_id: i32,
-                pub user: BelongsTo<user::Entity>,
-            }",
-            &[],
-            "r",
-        );
-        let output = tokens.to_string();
+        let output = generate_inline_struct_construction(&quote! { memo::Schema }, r"pub struct MemoSchema { pub id: i32, pub user_id: i32, pub user: BelongsTo<user::Entity>, }", &[], "r").to_string();
         assert!(output.contains("memo :: Schema"));
         assert!(output.contains("id : r . id"));
         assert!(output.contains("user_id : r . user_id"));
-        // BelongsTo should get default value
         assert!(output.contains("user : None"));
     }
 
     #[test]
     fn test_generate_inline_struct_construction_with_has_one_relation() {
-        let schema_path = quote! { user::Schema };
-        let tokens = generate_inline_struct_construction(
-            &schema_path,
-            r"pub struct UserSchema {
-                pub id: i32,
-                pub profile: HasOne<profile::Entity>,
-            }",
+        let output = generate_inline_struct_construction(
+            &quote! { user::Schema },
+            r"pub struct UserSchema { pub id: i32, pub profile: HasOne<profile::Entity>, }",
             &[],
             "r",
-        );
-        let output = tokens.to_string();
+        )
+        .to_string();
         assert!(output.contains("user :: Schema"));
         assert!(output.contains("id : r . id"));
-        // HasOne should get default value
         assert!(output.contains("profile : None"));
     }
 
-    // Additional coverage for generate_inline_type_construction
-
     #[test]
     fn test_generate_inline_type_construction_skips_serde_skip() {
-        let inline_type_name = syn::Ident::new("TestInline", proc_macro2::Span::call_site());
-        let tokens = generate_inline_type_construction(
-            &inline_type_name,
+        let output = generate_inline_type_construction(
+            &ident("TestInline"),
             &["id".to_string(), "internal".to_string()],
-            r"pub struct Model {
-                pub id: i32,
-                #[serde(skip)]
-                pub internal: String,
-            }",
+            r"pub struct Model { pub id: i32, #[serde(skip)] pub internal: String, }",
             "r",
-        );
-        let output = tokens.to_string();
+        )
+        .to_string();
         assert!(output.contains("id : r . id"));
-        // serde(skip) field should be excluded
         assert!(!output.contains("internal : r . internal"));
     }
 
     #[test]
     fn test_generate_inline_type_construction_empty_included_fields() {
-        let inline_type_name = syn::Ident::new("EmptyInline", proc_macro2::Span::call_site());
-        let tokens = generate_inline_type_construction(
-            &inline_type_name,
-            &[], // No fields included
-            r"pub struct Model {
-                pub id: i32,
-                pub name: String,
-            }",
+        let output = generate_inline_type_construction(
+            &ident("EmptyInline"),
+            &[],
+            r"pub struct Model { pub id: i32, pub name: String, }",
             "r",
-        );
-        let output = tokens.to_string();
-        // Should produce empty struct construction
+        )
+        .to_string();
         assert!(output.contains("EmptyInline"));
         assert!(!output.contains("id : r . id"));
         assert!(!output.contains("name : r . name"));
@@ -877,110 +757,61 @@ mod tests {
 
     #[test]
     fn test_generate_inline_type_construction_field_not_in_included() {
-        let inline_type_name = syn::Ident::new("PartialInline", proc_macro2::Span::call_site());
-        let tokens = generate_inline_type_construction(
-            &inline_type_name,
-            &["id".to_string()], // Only id is included
-            r"pub struct Model {
-                pub id: i32,
-                pub name: String,
-                pub email: String,
-            }",
+        let output = generate_inline_type_construction(
+            &ident("PartialInline"),
+            &["id".to_string()],
+            r"pub struct Model { pub id: i32, pub name: String, pub email: String, }",
             "r",
-        );
-        let output = tokens.to_string();
+        )
+        .to_string();
         assert!(output.contains("id : r . id"));
-        // name and email should not be included
         assert!(!output.contains("name : r . name"));
         assert!(!output.contains("email : r . email"));
     }
 
-    // Tests for FK field lookup and required relation handling
-
     #[test]
     fn test_circular_field_required_belongs_to_with_from_attr_required_fk() {
-        // Model has BelongsTo with sea_orm(from = "user_id") attribute and required FK
-        let model_def = r#"pub struct Model {
-            pub id: i32,
-            pub user_id: i32,
-            #[sea_orm(from = "user_id")]
-            pub user: BelongsTo<user::Entity>,
-        }"#;
-        // FK field 'user_id' is i32 (required), so should return true
-        let result = analyze_circular_refs(&[], model_def)
-            .circular_field_required
-            .get("user")
-            .copied()
-            .unwrap_or(false);
-        assert!(result);
+        assert!(required(
+            r#"pub struct Model { pub id: i32, pub user_id: i32, #[sea_orm(from = "user_id")] pub user: BelongsTo<user::Entity>, }"#,
+            "user"
+        ));
     }
 
     #[test]
     fn test_circular_field_required_belongs_to_with_from_attr_optional_fk() {
-        // Model has BelongsTo with sea_orm(from = "user_id") attribute and optional FK
-        let model_def = r#"pub struct Model {
-            pub id: i32,
-            pub user_id: Option<i32>,
-            #[sea_orm(from = "user_id")]
-            pub user: BelongsTo<user::Entity>,
-        }"#;
-        // FK field 'user_id' is Option<i32>, so should return false
-        let result = analyze_circular_refs(&[], model_def)
-            .circular_field_required
-            .get("user")
-            .copied()
-            .unwrap_or(false);
-        assert!(!result);
+        assert!(!required(
+            r#"pub struct Model { pub id: i32, pub user_id: Option<i32>, #[sea_orm(from = "user_id")] pub user: BelongsTo<user::Entity>, }"#,
+            "user"
+        ));
     }
 
     #[test]
     fn test_circular_field_required_has_one_with_from_attr_required_fk() {
-        // Model has HasOne with sea_orm(from = "profile_id") attribute and required FK
-        let model_def = r#"pub struct Model {
-            pub id: i32,
-            pub profile_id: i64,
-            #[sea_orm(from = "profile_id")]
-            pub profile: HasOne<profile::Entity>,
-        }"#;
-        // FK field 'profile_id' is i64 (required), so should return true
-        let result = analyze_circular_refs(&[], model_def)
-            .circular_field_required
-            .get("profile")
-            .copied()
-            .unwrap_or(false);
-        assert!(result);
+        assert!(required(
+            r#"pub struct Model { pub id: i32, pub profile_id: i64, #[sea_orm(from = "profile_id")] pub profile: HasOne<profile::Entity>, }"#,
+            "profile"
+        ));
     }
 
     #[test]
     fn test_circular_field_required_from_attr_fk_field_not_found() {
-        // Model has from attribute but FK field doesn't exist
-        let model_def = r#"pub struct Model {
-            pub id: i32,
-            #[sea_orm(from = "nonexistent_field")]
-            pub user: BelongsTo<user::Entity>,
-        }"#;
-        // FK field doesn't exist, so should return false
-        let result = analyze_circular_refs(&[], model_def)
-            .circular_field_required
-            .get("user")
-            .copied()
-            .unwrap_or(false);
-        assert!(!result);
+        assert!(!required(
+            r#"pub struct Model { pub id: i32, #[sea_orm(from = "nonexistent_field")] pub user: BelongsTo<user::Entity>, }"#,
+            "user"
+        ));
     }
-
-    // Tests for generate_default_for_relation_field with required FK
 
     #[test]
     fn test_generate_default_for_relation_field_belongs_to_with_from_attr_required() {
         let ty: syn::Type = syn::parse_str("BelongsTo<user::Entity>").unwrap();
-        let field_ident = syn::Ident::new("user", proc_macro2::Span::call_site());
-        // FK field is required (not Option)
-        let all_fields: syn::FieldsNamed = syn::parse_str("{ pub user_id: i32 }").unwrap();
-        // Create proper sea_orm attribute with from
         let attr: syn::Attribute = syn::parse_quote!(#[sea_orm(from = "user_id")]);
-        let tokens = generate_default_for_relation_field(&ty, &field_ident, &[attr], &all_fields);
-        let output = tokens.to_string();
-        // Should produce Box::new(__parent_stub__.clone()) for required FK
+        let output = generate_default_for_relation_field(
+            &ty,
+            &ident("user"),
+            &[attr],
+            &fields("{ pub user_id: i32 }"),
+        )
+        .to_string();
         assert!(output.contains("__parent_stub__"));
         assert!(output.contains("Box :: new"));
     }
@@ -988,14 +819,14 @@ mod tests {
     #[test]
     fn test_generate_default_for_relation_field_has_one_with_from_attr_required() {
         let ty: syn::Type = syn::parse_str("HasOne<profile::Entity>").unwrap();
-        let field_ident = syn::Ident::new("profile", proc_macro2::Span::call_site());
-        // FK field is required (not Option)
-        let all_fields: syn::FieldsNamed = syn::parse_str("{ pub profile_id: i64 }").unwrap();
-        // Create proper sea_orm attribute with from
         let attr: syn::Attribute = syn::parse_quote!(#[sea_orm(from = "profile_id")]);
-        let tokens = generate_default_for_relation_field(&ty, &field_ident, &[attr], &all_fields);
-        let output = tokens.to_string();
-        // Should produce Box::new(__parent_stub__.clone()) for required FK
+        let output = generate_default_for_relation_field(
+            &ty,
+            &ident("profile"),
+            &[attr],
+            &fields("{ pub profile_id: i64 }"),
+        )
+        .to_string();
         assert!(output.contains("__parent_stub__"));
         assert!(output.contains("Box :: new"));
     }
@@ -1003,15 +834,14 @@ mod tests {
     #[test]
     fn test_generate_default_for_relation_field_has_one_with_from_attr_optional() {
         let ty: syn::Type = syn::parse_str("HasOne<profile::Entity>").unwrap();
-        let field_ident = syn::Ident::new("profile", proc_macro2::Span::call_site());
-        // FK field is optional
-        let all_fields: syn::FieldsNamed =
-            syn::parse_str("{ pub profile_id: Option<i64> }").unwrap();
-        // Create proper sea_orm attribute with from
         let attr: syn::Attribute = syn::parse_quote!(#[sea_orm(from = "profile_id")]);
-        let tokens = generate_default_for_relation_field(&ty, &field_ident, &[attr], &all_fields);
-        let output = tokens.to_string();
-        // Should produce None for optional FK
+        let output = generate_default_for_relation_field(
+            &ty,
+            &ident("profile"),
+            &[attr],
+            &fields("{ pub profile_id: Option<i64> }"),
+        )
+        .to_string();
         assert!(output.contains("profile : None"));
     }
 }
