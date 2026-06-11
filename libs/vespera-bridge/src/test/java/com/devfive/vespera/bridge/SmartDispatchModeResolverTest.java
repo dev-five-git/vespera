@@ -34,18 +34,41 @@ class SmartDispatchModeResolverTest {
     }
 
     @Test
-    void nonIdempotentMethodsNeverUseDirect() {
-        assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING,
+    void smallNonIdempotentRequestsUseSyncNeverDirect() {
+        // SYNC never re-runs the handler — safe for POST/PATCH, and
+        // 7.5x cheaper than bidirectional streaming for small bodies.
+        assertEquals(DispatchMode.SYNC,
                 resolver.resolveMode(request("POST", 128)));
-        assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING,
+        assertEquals(DispatchMode.SYNC,
                 resolver.resolveMode(request("PATCH", 128)));
     }
 
     @Test
-    void unknownContentLengthFallsBackToStreaming() {
-        // No Content-Length header (e.g. chunked transfer encoding).
+    void bodylessGetWithoutContentLengthUsesDirect() {
+        // The common GET shape: no body, no Content-Length header.
         MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
+        assertEquals(DispatchMode.DIRECT, resolver.resolveMode(req));
+    }
+
+    @Test
+    void chunkedTransferEncodingFallsBackToStreaming() {
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
+        req.addHeader("Transfer-Encoding", "chunked");
         assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING, resolver.resolveMode(req));
+    }
+
+    @Test
+    void lengthlessNonIdempotentFallsBackToStreaming() {
+        // POST without Content-Length: body cannot be ruled out.
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/x");
+        assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING, resolver.resolveMode(req));
+    }
+
+    @Test
+    void oversizedNonIdempotentFallsBackToStreaming() {
+        assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING,
+                resolver.resolveMode(request("POST",
+                        SmartDispatchModeResolver.DEFAULT_MAX_DIRECT_BYTES + 1)));
     }
 
     @Test

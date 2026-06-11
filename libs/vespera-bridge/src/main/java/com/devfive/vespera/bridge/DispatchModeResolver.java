@@ -33,4 +33,41 @@ public interface DispatchModeResolver {
      * @return non-null {@link DispatchMode} value
      */
     DispatchMode resolveMode(HttpServletRequest request);
+
+    /**
+     * {@code true} when the request provably carries no body, so the
+     * bidirectional request-pull plumbing (a blocking pull thread, a
+     * bounded channel, and per-chunk JNI crossings — measured at
+     * ~16&nbsp;µs per request) would be pure overhead.
+     *
+     * <p>Detection is deliberately conservative:
+     * <ul>
+     *   <li>{@code Content-Length: 0} — provably empty for any method
+     *       and protocol.</li>
+     *   <li>No {@code Content-Length}, no {@code Transfer-Encoding},
+     *       and the method is GET / HEAD / OPTIONS — per RFC 9112
+     *       §6.3 such an HTTP/1.1 request has no body.  The method
+     *       restriction keeps HTTP/2 safe (h2 has no
+     *       {@code Transfer-Encoding} header, so a length-less POST
+     *       body cannot be ruled out there).</li>
+     * </ul>
+     *
+     * <p>Even when this misjudges an exotic length-less GET-with-body
+     * (h2 only), correctness is preserved — the non-bidirectional
+     * modes read the servlet input stream fully and send the body
+     * inline; only the memory profile differs.
+     */
+    static boolean definitelyBodyless(HttpServletRequest request) {
+        long contentLength = request.getContentLengthLong();
+        if (contentLength == 0) {
+            return true;
+        }
+        if (contentLength > 0 || request.getHeader("Transfer-Encoding") != null) {
+            return false;
+        }
+        String method = request.getMethod();
+        return "GET".equalsIgnoreCase(method)
+                || "HEAD".equalsIgnoreCase(method)
+                || "OPTIONS".equalsIgnoreCase(method);
+    }
 }

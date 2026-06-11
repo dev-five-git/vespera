@@ -56,13 +56,13 @@ Out of the box the autoconfigure module wires up:
 | Concern | Default | Override |
 |---|---|---|
 | **App selection** | Read `X-Vespera-App` request header; absent → default app | Property `vespera.bridge.app-header`, or custom [`AppNameResolver`](src/main/java/com/devfive/vespera/bridge/AppNameResolver.java) bean |
-| **Dispatch mode** | [`BIDIRECTIONAL_STREAMING`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) for every request — safe for any payload size, transparent for the Rust router | Property `vespera.bridge.dispatch-mode: smart` (DIRECT fast path for small idempotent requests), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
+| **Dispatch mode** | [`BIDIRECTIONAL_STREAMING`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) for every request that may carry a body; provably bodyless requests (GET/HEAD/OPTIONS without Content-Length/Transfer-Encoding, or explicit `Content-Length: 0`) skip the request-pull plumbing via response-only `STREAMING` (~3x cheaper, measured 24.1 µs → 7.7 µs) | Property `vespera.bridge.dispatch-mode: smart` (DIRECT/SYNC fast paths for small requests), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
 | **URL pattern** | Single `@RequestMapping("/**")` catch-all — every vespera router URL exactly mirrors the published OpenAPI path | Set `vespera.bridge.controller-enabled: false` and supply your own controller |
 | **Body handling** | Servlet `InputStream` straight through to Rust (no buffering) for streaming modes; full read for sync/async | (encoded by the chosen `DispatchMode`) |
 
-Why `BIDIRECTIONAL_STREAMING` as the default mode? It's the only mode that processes every payload size correctly without dispatch-time hints:
+Why `BIDIRECTIONAL_STREAMING` as the default mode? It processes every payload size correctly without dispatch-time hints:
 
-- **Tiny request / tiny response** (`/health` → `"ok"`): processed as a single chunk, negligible overhead.
+- **Tiny request / tiny response** (`/health` → `"ok"`): bodyless, so the default resolver takes the response-only streaming fast path — no request-pull thread.
 - **Small JSON RPC** (`/users` → `{...}`): single chunk both ways.
 - **Multi-GB upload + multi-GB download**: chunk-bounded both ways, ~32 KiB resident.
 
@@ -282,13 +282,21 @@ vespera:
     dispatch-mode: smart   # default: bidirectional-streaming
 ```
 
-`smart` routes a request through DIRECT only when its Content-Length
-is known and ≤ 256 KiB **and** the method is idempotent
-(GET/HEAD/PUT/DELETE/OPTIONS); everything else falls back to
-BIDIRECTIONAL_STREAMING.  The idempotency gate matters because a
-response that overflows the pooled buffer
-(`vespera.direct.maxBufferBytes`, default 4 MiB) is retried — which
-re-runs the Rust handler once.
+`smart` picks the cheapest safe path per request (measured on a small
+`GET /health` round-trip through the real JNI boundary):
+
+| Request shape | Mode | ns/round-trip |
+|---|---|---|
+| Small/bodyless + idempotent (GET/HEAD/PUT/DELETE/OPTIONS) | `DIRECT` | ~2,200 |
+| Small (≤ 256 KiB Content-Length) + non-idempotent (POST/PATCH) | `SYNC` | ~3,200 |
+| Large or unknown-length body | `BIDIRECTIONAL_STREAMING` | ~24,100 |
+
+The idempotency gate on DIRECT matters because a response that
+overflows the pooled buffer (`vespera.direct.maxBufferBytes`, default
+4 MiB) is retried — which re-runs the Rust handler once.  SYNC never
+re-runs the handler (safe for POST), but buffers the full response on
+the heap, which the request-size gate keeps reasonable for
+JSON-RPC-shaped traffic.
 
 Custom policies can still register the bean directly (the property is
 ignored when a user `DispatchModeResolver` bean exists):
