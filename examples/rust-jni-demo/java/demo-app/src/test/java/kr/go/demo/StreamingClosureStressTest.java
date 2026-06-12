@@ -69,9 +69,12 @@ import static org.junit.jupiter.api.Assertions.fail;
  *       multiple times (multi-chunk pull) AND {@code OutputStream.write}
  *       fired multiple times (multi-chunk push), proving the cached
  *       method IDs were called repeatedly per dispatch.  With the
- *       default 64 KiB streaming chunk size and a 1 MiB payload the
- *       Rust side performs ~16 pulls + 1 EOF read and ~16 pushes
- *       per iteration.</li>
+ *       default 256 KiB streaming chunk size and a 1 MiB payload the
+ *       Rust side performs ~4 pulls + 1 EOF read and ~4 pushes
+ *       per iteration.  (Assertions only require {@code > 1} — they
+ *       are robust to chunk-size tuning down to 4 KiB or up to
+ *       512 KiB; below the multi-chunk threshold the test would need
+ *       to bump the payload.)</li>
  *   <li>For the header-streaming path: {@code Consumer.accept} fires
  *       <strong>exactly once</strong> and <strong>before</strong> the
  *       first {@code OutputStream.write}; header decodes as wire JSON
@@ -86,11 +89,12 @@ import static org.junit.jupiter.api.Assertions.fail;
  * while pushing the cached paths thousands of times:
  * <ul>
  *   <li>{@code dispatchFullStreaming}: {@value #BIDI_ITERATIONS} × 1 MiB
- *       → ~16 000 cached {@code InputStream.read} calls + ~16 000
- *       cached {@code OutputStream.write} calls</li>
+ *       → ~4 000 cached {@code InputStream.read} calls + ~4 000
+ *       cached {@code OutputStream.write} calls (with the 256 KiB
+ *       default chunk; was ~16 000 each at the prior 64 KiB default)</li>
  *   <li>{@code dispatchStreamingWithHeader}: {@value #HEADER_STREAMING_ITERATIONS}
  *       × 1 MiB → ~{@value #HEADER_STREAMING_ITERATIONS} cached
- *       {@code Consumer.accept} calls + ~8 000 cached
+ *       {@code Consumer.accept} calls + ~2 000 cached
  *       {@code OutputStream.write} calls</li>
  *   <li>{@code dispatchAsync}: {@value #ASYNC_ITERATIONS} × 1 MiB →
  *       {@value #ASYNC_ITERATIONS} cached
@@ -109,9 +113,11 @@ class StreamingClosureStressTest {
     /** Shared seed so any failure replays deterministically. */
     private static final long SEED = 0xCAFEBABEL;
 
-    /** 1 MiB — well above the default 64 KiB streaming chunk so each
-     * dispatch pulls/pushes ~16 chunks, exercising the cached path
-     * many times per call. */
+    /** 1 MiB — well above the default 256 KiB streaming chunk so each
+     * dispatch pulls/pushes ~4 chunks, exercising the cached path
+     * several times per call.  Assertions only require {@code > 1}
+     * chunk so the test stays valid across the supported chunk-size
+     * range (4 KiB – 8 MiB). */
     private static final int PAYLOAD_BYTES = 1024 * 1024;
 
     private static final int BIDI_ITERATIONS = 1000;

@@ -159,7 +159,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_configureRu
 /// Per-chunk buffer size for streaming dispatches.
 ///
 /// Resolved once per process by
-/// [`vespera_inprocess::streaming_chunk_bytes`] (default 64 KiB;
+/// [`vespera_inprocess::streaming_chunk_bytes`] (default 256 KiB;
 /// override via the `VESPERA_STREAMING_CHUNK_BYTES` env var or the
 /// `configureStreaming0` JNI setter called from
 /// `VesperaBridge.init()`).  Large enough to amortise JNI call

@@ -79,7 +79,7 @@ class StreamingThroughputBenchTest {
 
     @Test
     void bidirectionalStreamingThroughput() throws IOException {
-        String chunkProp = System.getProperty("vespera.streaming.chunkBytes", "default(65536)");
+        String chunkProp = System.getProperty("vespera.streaming.chunkBytes", "default(262144)");
 
         for (int i = 0; i < WARMUP_ITERATIONS; i++) {
             roundTripOnce();

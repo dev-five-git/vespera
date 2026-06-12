@@ -2,7 +2,8 @@ package com.devfive.vespera.bridge;
 
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.ByteArrayOutputStream;
@@ -16,7 +17,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -140,7 +140,7 @@ public class VesperaBridge {
      * the process lifetime once read):
      * <ul>
      *   <li>{@code vespera.streaming.chunkBytes} — per-chunk buffer
-     *       size for streaming dispatches (default 64 KiB, clamped to
+     *       size for streaming dispatches (default 256 KiB, clamped to
      *       4 KiB – 8 MiB on the Rust side)</li>
      *   <li>{@code vespera.streaming.channelCapacity} — bound of the
      *       bidirectional request-body channel in slots (default 16,
@@ -199,7 +199,7 @@ public class VesperaBridge {
      * {@code vespera.streaming.channelCapacity}) &gt; environment variables
      * ({@code VESPERA_STREAMING_CHUNK_BYTES} /
      * {@code VESPERA_STREAMING_CHANNEL_CAPACITY}) &gt; defaults
-     * (64 KiB chunk, 16 channel slots).
+     * (256 KiB chunk, 16 channel slots).
      *
      * @param chunkBytes per-chunk buffer size for streaming dispatches
      * @param channelCapacity bound of the bidirectional request-body
@@ -337,7 +337,7 @@ public class VesperaBridge {
      *       with an empty {@code body} array.</li>
      *   <li>The request body bytes flow through {@code inputStream}
      *       — Rust calls {@code inputStream.read(byte[])} repeatedly
-     *       (64 KiB at a time by default; see
+     *       (256 KiB at a time by default; see
      *       {@code vespera.streaming.chunkBytes}) until EOF.</li>
      *   <li>The response body bytes flow through {@code outputStream}
      *       — Rust calls {@code outputStream.write(byte[])} for each
@@ -893,64 +893,64 @@ public class VesperaBridge {
                     "wire header_len " + headerLen
                             + " overflows response (" + wire.length + " bytes)");
         }
-        try {
-            JsonNode header = MAPPER.readTree(wire, 4, headerLen);
-            int status = header.path("status").asInt(500);
-
-            Map<String, Object> headers = new LinkedHashMap<>();
-            JsonNode hdrs = header.path("headers");
-            if (hdrs.isObject()) {
-                Iterator<Map.Entry<String, JsonNode>> it = hdrs.fields();
-                while (it.hasNext()) {
-                    Map.Entry<String, JsonNode> e = it.next();
-                    JsonNode v = e.getValue();
-                    if (v.isArray()) {
-                        List<String> list = new ArrayList<>(v.size());
-                        for (JsonNode item : v) {
-                            list.add(item.asText());
+        // Streaming decode via JsonParser (no JsonNode tree); defaults match
+        // the readTree path, unknown fields (incl. "v") are skipChildren'd.
+        int status = 500;
+        Map<String, Object> headers = new LinkedHashMap<>();
+        Map<String, String> metadata = new LinkedHashMap<>();
+        List<Map<String, Object>> validationErrors = null;
+        try (JsonParser p = JSON_FACTORY.createParser(wire, 4, headerLen)) {
+            if (p.nextToken() == JsonToken.START_OBJECT) {
+                while (p.nextToken() == JsonToken.FIELD_NAME) {
+                    String name = p.currentName();
+                    JsonToken t = p.nextToken();
+                    switch (name) {
+                        case "status" -> status = p.getValueAsInt(500);
+                        case "headers" -> {
+                            if (t != JsonToken.START_OBJECT) { p.skipChildren(); break; }
+                            while (p.nextToken() == JsonToken.FIELD_NAME) {
+                                String k = p.currentName();
+                                if (p.nextToken() == JsonToken.START_ARRAY) {
+                                    List<String> list = new ArrayList<>();
+                                    while (p.nextToken() != JsonToken.END_ARRAY) list.add(p.getValueAsString());
+                                    headers.put(k, list);
+                                } else {
+                                    headers.put(k, p.getValueAsString());
+                                }
+                            }
                         }
-                        headers.put(e.getKey(), list);
-                    } else {
-                        headers.put(e.getKey(), v.asText());
+                        case "metadata" -> {
+                            if (t != JsonToken.START_OBJECT) { p.skipChildren(); break; }
+                            while (p.nextToken() == JsonToken.FIELD_NAME) {
+                                String k = p.currentName();
+                                p.nextToken();
+                                metadata.put(k, p.getValueAsString());
+                            }
+                        }
+                        case "validation_errors" -> {
+                            if (t != JsonToken.START_ARRAY) { p.skipChildren(); break; }
+                            validationErrors = new ArrayList<>();
+                            while (p.nextToken() == JsonToken.START_OBJECT) {
+                                Map<String, Object> entry = new LinkedHashMap<>();
+                                while (p.nextToken() == JsonToken.FIELD_NAME) {
+                                    String k = p.currentName();
+                                    p.nextToken();
+                                    entry.put(k, p.getValueAsString());
+                                }
+                                validationErrors.add(entry);
+                            }
+                        }
+                        default -> p.skipChildren();
                     }
                 }
             }
-
-            Map<String, String> metadata = new LinkedHashMap<>();
-            JsonNode mdNode = header.path("metadata");
-            if (mdNode.isObject()) {
-                Iterator<Map.Entry<String, JsonNode>> it = mdNode.fields();
-                while (it.hasNext()) {
-                    Map.Entry<String, JsonNode> e = it.next();
-                    metadata.put(e.getKey(), e.getValue().asText());
-                }
-            }
-
-            // Hoisted validation errors (Vespera Validated<T> 422 path).
-            // null when absent (any non-422 or non-Vespera 422).
-            List<Map<String, Object>> validationErrors = null;
-            JsonNode veNode = header.path("validation_errors");
-            if (veNode.isArray()) {
-                validationErrors = new ArrayList<>(veNode.size());
-                for (JsonNode item : veNode) {
-                    Map<String, Object> entry = new LinkedHashMap<>();
-                    Iterator<Map.Entry<String, JsonNode>> it = item.fields();
-                    while (it.hasNext()) {
-                        Map.Entry<String, JsonNode> e = it.next();
-                        entry.put(e.getKey(), e.getValue().asText());
-                    }
-                    validationErrors.add(entry);
-                }
-            }
-
-            int bodyStart = 4 + headerLen;
-            ByteBuffer body = ByteBuffer.wrap(wire, bodyStart, wire.length - bodyStart)
-                    .slice()
-                    .asReadOnlyBuffer();
-            return new DecodedResponse(status, headers, metadata, body, validationErrors);
         } catch (IOException e) {
             throw new IllegalArgumentException("wire header JSON parse failed", e);
         }
+        int bodyStart = 4 + headerLen;
+        ByteBuffer body = ByteBuffer.wrap(wire, bodyStart, wire.length - bodyStart)
+                .slice().asReadOnlyBuffer();
+        return new DecodedResponse(status, headers, metadata, body, validationErrors);
     }
 
     private static void loadBundled(String libraryName) {

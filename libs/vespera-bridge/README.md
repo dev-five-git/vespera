@@ -456,7 +456,7 @@ try (InputStream upload = Files.newInputStream(Path.of("huge.mp4"));
 }
 ```
 
-Memory characteristics: **roughly a 64 KiB chunk buffer + a 16-slot
+Memory characteristics: **roughly a 256 KiB chunk buffer + a 16-slot
 mpsc channel buffer** in Rust (both configurable, see below), plus
 normal JVM `byte[]` chunks. A 1 GiB upload paired with a 1 GiB
 download runs in low-single-digit MiB resident memory on each side.
@@ -471,11 +471,11 @@ runs. Configuration precedence (first hit wins, then cached):
 1. **Programmatic setter** — `VesperaBridge.configureStreaming(chunkBytes, channelCapacity)` (Java API, call before or after init)
 2. **System properties** — `vespera.streaming.chunkBytes`, `vespera.streaming.channelCapacity`
 3. **Environment variables** — `VESPERA_STREAMING_CHUNK_BYTES`, `VESPERA_STREAMING_CHANNEL_CAPACITY`
-4. **Built-in defaults** — 64 KiB chunk size, 16 channel slots
+4. **Built-in defaults** — 256 KiB chunk size, 16 channel slots
 
 | Setting | System property | Env var (fallback) | Default | Range |
 |---|---|---|---|---|
-| Chunk buffer size | `vespera.streaming.chunkBytes` | `VESPERA_STREAMING_CHUNK_BYTES` | 64 KiB | 4 KiB – 8 MiB |
+| Chunk buffer size | `vespera.streaming.chunkBytes` | `VESPERA_STREAMING_CHUNK_BYTES` | 256 KiB | 4 KiB – 8 MiB |
 | Request channel slots | `vespera.streaming.channelCapacity` | `VESPERA_STREAMING_CHANNEL_CAPACITY` | 16 | 1 – 1024 |
 | Tokio worker threads | `vespera.runtime.workerThreads` | `VESPERA_RUNTIME_WORKERS` | logical CPUs | 1 – 1024 |
 
