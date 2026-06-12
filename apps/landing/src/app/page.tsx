@@ -22,24 +22,24 @@ export const metadata: Metadata = {
 const EXAMPLES = [
   {
     id: '1',
-    title: 'How to Use',
+    title: '1. Drop in a route',
     description:
-      'Lorem ipsum dolor sit amet. Etiam sit amet feugiat turpis. Proin nec ante a sem vestibulum sodales non ut ex.',
-    imageUrl: '/images/hero.webp',
+      'Write a pub async fn in src/routes/ with #[vespera::route]. The file path becomes the URL — no router wiring, no manual registration.',
+    imageUrl: '/images/rust-code.png',
   },
   {
     id: '2',
-    title: 'How to Use',
+    title: '2. Serve with one macro',
     description:
-      'Lorem ipsum dolor sit amet. Etiam sit amet feugiat turpis. Proin nec ante a sem vestibulum sodales non ut ex.',
-    imageUrl: '/images/join-us-bg.webp',
+      'vespera!() discovers every route and cron job at compile time and generates your OpenAPI 3.1 spec. Chain .serve(addr) and Swagger UI is live at /docs.',
+    imageUrl: '/images/hero.webp',
   },
   {
     id: '3',
-    title: 'How to Use',
+    title: '3. Embed in Spring — optional',
     description:
-      'Lorem ipsum dolor sit amet. Etiam sit amet feugiat turpis. Proin nec ante a sem vestibulum sodales non ut ex.',
-    imageUrl: '/images/code.webp',
+      'Add vespera::jni_app! and call VesperaBridge.init() from Java. The same router runs inside the JVM over a binary wire — microsecond round-trips, no TCP.',
+    imageUrl: '/images/join-us-bg.webp',
   },
 ]
 
@@ -64,18 +64,20 @@ export default function HomePage() {
           >
             <VStack alignItems="center" gap="$spacingSpacing32" w="100%">
               <Text color="$title" textAlign="center" typography="displaySm">
-                Lorem ipsum dolor sit amet, <br />
-                consectetur adipiscing elit.
+                The fastest way to ship <br />
+                documented Rust APIs.
               </Text>
               <Text color="$title" textAlign="center" typography="title">
-                Etiam sit amet feugiat turpis. Proin nec ante a sem vestibulum
-                sodales non ut ex. <br />
-                Morbi diam turpis, fringilla vitae enim et, egestas consequat
-                nibh. <br />
-                Etiam auctor cursus urna sit amet elementum.
+                Vespera turns plain Axum handlers into a typed, validated API
+                with OpenAPI 3.1 generated at compile time. <br />
+                File-based routing, automatic Swagger UI, and a binary JNI
+                bridge that embeds your router <br />
+                inside Spring Boot with microsecond round-trips.
               </Text>
             </VStack>
-            <Button>Get started</Button>
+            <Link href="/documentation/installation">
+              <Button>Get started</Button>
+            </Link>
           </VStack>
         </Center>
 
@@ -165,11 +167,11 @@ export default function HomePage() {
             <VStack gap="40px" maxW={[null, null, null, '1280px']} w="100%">
               <VStack gap="16px">
                 <Text color="#FFF" typography="h3">
-                  Title
+                  Zero to documented API in three steps
                 </Text>
                 <Text color="#FFF" typography="body">
-                  Lorem ipsum dolor sit amet, consectetur adipiscing elit.
-                  Nullam venenatis ac egestas lacus est nec urna.{' '}
+                  No boilerplate, no YAML, no hand-written specs — the macro
+                  does the wiring, you write handlers.{' '}
                 </Text>
               </VStack>
               <VStack
@@ -197,7 +199,9 @@ export default function HomePage() {
                     pos="absolute"
                     transform="translateX(-50%)"
                   >
-                    <Button>Learn more</Button>
+                    <Link href="/documentation">
+                      <Button>Learn more</Button>
+                    </Link>
                   </Box>
                 </Flex>
                 <VStack gap="$spacingSpacing12" w="100%">
@@ -256,8 +260,8 @@ export default function HomePage() {
                   Join our community
                 </Text>
                 <Text color="#FFF" typography="body">
-                  Join our Discord and help build the future of frontend with
-                  CSS-in-JS!{' '}
+                  Join our Discord to talk Rust APIs, JNI embedding, and what
+                  Vespera should build next.{' '}
                 </Text>
               </VStack>
               <Flex alignItems="center" gap="16px">

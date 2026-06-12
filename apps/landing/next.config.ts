@@ -6,6 +6,9 @@ import type { NextConfig } from 'next'
 const withMDX = createMDX({
   extension: /\.mdx?$/,
   options: {
+    // remark-gfm enables GitHub-flavored markdown (pipe tables, strikethrough,
+    // task lists) — mdx-components.tsx already styles table/th/td elements.
+    remarkPlugins: ['remark-gfm'],
     rehypePlugins: ['rehype-slug', 'rehype-pretty-code'],
   },
 })

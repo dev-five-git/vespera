@@ -1,1 +1,216 @@
-empty
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeaderCell,
+  TableRow,
+} from '@/components/mdx/components/Table'
+
+# Schema & OpenAPI Generation
+
+Vespera generates a complete OpenAPI 3.1 spec from your Rust types at compile time. Derive `Schema` on any type used in a handler's input or output and it appears in the spec automatically.
+
+## Deriving Schema
+
+```rust
+#[derive(Serialize, Deserialize, vespera::Schema)]
+pub struct User {
+    pub id: u32,
+    pub name: String,
+    pub email: String,
+    pub bio: Option<String>, // optional — not in `required` array
+}
+```
+
+Vespera respects all standard serde attributes:
+
+```rust
+#[derive(Serialize, Deserialize, vespera::Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateUserRequest {
+    pub user_name: String,          // → "userName" in OpenAPI
+    pub email: String,
+
+    #[serde(rename = "fullName")]
+    pub name: String,               // → "fullName" in OpenAPI
+
+    #[serde(skip)]
+    pub internal_id: u64,           // excluded from schema
+
+    pub bio: Option<String>,        // optional field
+}
+```
+
+## Type Mapping
+
+<Table>
+  <TableHead>
+    <TableRow>
+      <TableHeaderCell>Rust Type</TableHeaderCell>
+      <TableHeaderCell>OpenAPI Schema</TableHeaderCell>
+    </TableRow>
+  </TableHead>
+  <TableBody>
+    <TableRow>
+      <TableCell>`String`, `&str`</TableCell>
+      <TableCell>`string`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`i8`–`i128`, `u8`–`u128`</TableCell>
+      <TableCell>`integer`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`f32`, `f64`</TableCell>
+      <TableCell>`number`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`bool`</TableCell>
+      <TableCell>`boolean`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`Vec<T>`</TableCell>
+      <TableCell>`array` with items</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`Option<T>`</TableCell>
+      <TableCell>T (parent marks field as optional)</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`HashMap<K, V>`</TableCell>
+      <TableCell>`object` with `additionalProperties`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`BTreeSet<T>`, `HashSet<T>`</TableCell>
+      <TableCell>`array` with `uniqueItems: true`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`Uuid`</TableCell>
+      <TableCell>`string` with `format: uuid`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`Decimal`</TableCell>
+      <TableCell>`string` with `format: decimal`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`NaiveDate`</TableCell>
+      <TableCell>`string` with `format: date`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`NaiveTime`</TableCell>
+      <TableCell>`string` with `format: time`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`DateTime`, `DateTimeWithTimeZone`</TableCell>
+      <TableCell>`string` with `format: date-time`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`FieldData<NamedTempFile>`</TableCell>
+      <TableCell>`string` with `format: binary`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`()`</TableCell>
+      <TableCell>empty response (204 No Content)</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>Custom struct</TableCell>
+      <TableCell>`$ref` to `components/schemas`</TableCell>
+    </TableRow>
+  </TableBody>
+</Table>
+
+## Generic Types
+
+All type parameters must also derive `Schema`:
+
+```rust
+#[derive(Schema)]
+struct Paginated<T: Schema> {
+    items: Vec<T>,
+    total: u32,
+    page: u32,
+}
+```
+
+## SeaORM Integration
+
+`schema_type!` has first-class support for SeaORM models. Relation fields are converted automatically:
+
+```rust
+#[derive(Clone, Debug, DeriveEntityModel)]
+#[sea_orm(table_name = "memos")]
+pub struct Model {
+    #[sea_orm(primary_key)]
+    pub id: i32,
+    pub title: String,
+    pub user_id: i32,
+    pub user: BelongsTo<super::user::Entity>,      // → Option<Box<UserSchema>>
+    pub comments: HasMany<super::comment::Entity>,  // → Vec<CommentSchema>
+    pub created_at: DateTimeWithTimeZone,           // → chrono::DateTime<FixedOffset>
+}
+
+vespera::schema_type!(Schema from Model, name = "MemoSchema");
+```
+
+<Table>
+  <TableHead>
+    <TableRow>
+      <TableHeaderCell>SeaORM Type</TableHeaderCell>
+      <TableHeaderCell>Generated Schema Type</TableHeaderCell>
+    </TableRow>
+  </TableHead>
+  <TableBody>
+    <TableRow>
+      <TableCell>`HasOne<Entity>`</TableCell>
+      <TableCell>`Box<Schema>` or `Option<Box<Schema>>`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`BelongsTo<Entity>`</TableCell>
+      <TableCell>`Option<Box<Schema>>`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`HasMany<Entity>`</TableCell>
+      <TableCell>`Vec<Schema>`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`DateTimeWithTimeZone`</TableCell>
+      <TableCell>`chrono::DateTime<FixedOffset>`</TableCell>
+    </TableRow>
+  </TableBody>
+</Table>
+
+Circular references (e.g. User ↔ Memo) are detected automatically and handled by inlining fields to prevent infinite recursion.
+
+## Database Defaults in OpenAPI
+
+Fields with SeaORM database defaults get `default` values in the generated schema:
+
+| SeaORM Attribute | OpenAPI Default |
+|-----------------|-----------------|
+| `primary_key` (Uuid) | `"00000000-0000-0000-0000-000000000000"` |
+| `primary_key` (i32/i64) | `0` |
+| `default_value = "NOW()"` | `"1970-01-01T00:00:00+00:00"` |
+| `default_value = "gen_random_uuid()"` | `"00000000-0000-0000-0000-000000000000"` |
+| `default_value = "true"` | `true` |
+
+> `required` is determined solely by nullability (`Option<T>`). Fields with defaults are still `required` unless they are `Option<T>`.
+
+## Configuring the OpenAPI Output
+
+Pass parameters to `vespera!()` to control the spec:
+
+```rust
+let app = vespera!(
+    openapi = "openapi.json",   // write spec to this file at compile time
+    title = "My API",
+    version = "1.0.0",
+    docs_url = "/docs",         // Swagger UI
+    redoc_url = "/redoc",       // ReDoc
+    servers = [
+        { url = "https://api.example.com", description = "Production" },
+        { url = "http://localhost:3000",   description = "Development" }
+    ]
+);
+```
+
+See [vespera! Macro](/documentation/api/api-1) for the full parameter reference.

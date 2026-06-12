@@ -1,1 +1,124 @@
-empty
+# Installation
+
+Get Vespera running in your Axum project in under five minutes.
+
+## 1. Add Dependencies
+
+```toml
+[dependencies]
+vespera = "0.1"
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+```
+
+> Vespera re-exports `axum` — use `vespera::axum` in your code instead of depending on `axum` directly. This keeps the version in sync automatically.
+
+## 2. Create Your First Route
+
+Create the routes folder and add a handler:
+
+```
+src/
+├── main.rs
+└── routes/
+    └── users.rs
+```
+
+**`src/routes/users.rs`**:
+
+```rust
+use vespera::axum::{Json, extract::Path};
+use serde::{Deserialize, Serialize};
+use vespera::Schema;
+
+#[derive(Serialize, Deserialize, Schema)]
+pub struct User {
+    pub id: u32,
+    pub name: String,
+}
+
+/// Get user by ID
+#[vespera::route(get, path = "/{id}", tags = ["users"])]
+pub async fn get_user(Path(id): Path<u32>) -> Json<User> {
+    Json(User { id, name: "Alice".into() })
+}
+
+/// Create a new user
+#[vespera::route(post, tags = ["users"])]
+pub async fn create_user(Json(user): Json<User>) -> Json<User> {
+    Json(user)
+}
+```
+
+## 3. Set Up `main.rs`
+
+```rust
+use vespera::{vespera, Serve};
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    println!("Swagger UI: http://localhost:3000/docs");
+    vespera!(
+        openapi = "openapi.json",
+        title = "My API",
+        docs_url = "/docs"
+    )
+    .serve("0.0.0.0:3000")
+    .await
+}
+```
+
+`.serve(addr)` is a Vespera extension trait on `axum::Router`. It replaces the usual `TcpListener::bind` + `axum::serve(...)` dance with a single chained call. `addr` accepts anything `tokio::net::ToSocketAddrs` takes — strings, tuples, or `SocketAddr`.
+
+## 4. Run
+
+```bash
+cargo run
+# Open http://localhost:3000/docs
+```
+
+Your Swagger UI is live. The `openapi.json` file is written to the project root at compile time.
+
+## Adding State and Middleware
+
+Chain standard Axum methods after `vespera!()`:
+
+```rust
+let app = vespera!(docs_url = "/docs")
+    .with_state(AppState { db: pool })
+    .layer(CorsLayer::permissive())
+    .layer(TraceLayer::new_for_http());
+```
+
+## JNI / Java Integration
+
+To embed Vespera inside a Java/Spring application, enable the `jni` feature:
+
+```toml
+[dependencies]
+vespera = { version = "0.1", features = ["jni"] }
+```
+
+Then add two lines to your Rust lib:
+
+```rust
+pub fn create_app() -> vespera::axum::Router {
+    vespera!(title = "My API")
+}
+
+vespera::jni_app!(create_app);
+```
+
+See the [JNI / Java Integration](/documentation/theme) section for the full setup guide.
+
+## Cron Jobs
+
+Enable the `cron` feature to schedule background tasks:
+
+```toml
+[dependencies]
+vespera = { version = "0.1", features = ["cron"] }
+```
+
+See [Features](/documentation/features) for usage details.

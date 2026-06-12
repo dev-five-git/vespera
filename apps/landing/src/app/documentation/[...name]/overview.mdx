@@ -7,209 +7,176 @@ import {
   TableRow,
 } from '@/components/mdx/components/Table'
 
-export const metadata = {
-  title: 'What is Devup UI?',
-  alternates: {
-    canonical: '/docs/overview',
-  },
-}
+# What is Vespera?
 
-## What is Devup UI?
+**FastAPI-like developer experience for Rust.** Zero-config OpenAPI 3.1 generation for Axum.
 
-**Devup UI is not just another CSS-in-JS library — it's the future of CSS-in-JS itself.**
+```rust
+// That's it. Swagger UI at /docs, OpenAPI at openapi.json
+let app = vespera!(openapi = "openapi.json", docs_url = "/docs");
+```
 
-Devup UI is a zero-runtime CSS-in-JS preprocessor powered by Rust and WebAssembly. It transforms all your styles at build time, completely eliminating runtime overhead while providing full CSS-in-JS syntax coverage.
+Vespera scans your `src/routes/` folder at compile time, extracts every `#[vespera::route]` handler and `#[derive(Schema)]` type, and assembles a complete OpenAPI 3.1 spec — no annotations to maintain, no runtime reflection, no hand-written JSON.
 
-### The Problem with Traditional CSS-in-JS
-
-Traditional CSS-in-JS solutions force you to choose between:
-
-- **Developer Experience**: Intuitive APIs, co-located styles, dynamic theming
-- **Performance**: No runtime overhead, fast page loads, optimal Core Web Vitals
-
-Libraries like styled-components and Emotion offer great DX but execute JavaScript at runtime to generate styles. Zero-runtime alternatives like Vanilla Extract sacrifice some flexibility for performance.
-
-### The Devup UI Solution
-
-Devup UI eliminates this trade-off entirely. Our Rust-powered preprocessor analyzes your code at build time and handles every CSS-in-JS pattern:
-
-- **Variables** — Dynamic values become CSS custom properties
-- **Conditionals** — Ternary expressions are statically analyzed
-- **Responsive Arrays** — Breakpoint-based styles are pre-generated
-- **Pseudo Selectors** — `_hover`, `_focus`, `_active` work seamlessly
-- **Themes** — Type-safe theme tokens with zero-cost switching
-
-### Key Advantages
+## Why Vespera?
 
 <Table>
   <TableHead>
     <TableRow>
       <TableHeaderCell>Feature</TableHeaderCell>
-      <TableHeaderCell>Devup UI</TableHeaderCell>
-      <TableHeaderCell>styled-components</TableHeaderCell>
-      <TableHeaderCell>Emotion</TableHeaderCell>
-      <TableHeaderCell>Vanilla Extract</TableHeaderCell>
+      <TableHeaderCell>Vespera</TableHeaderCell>
+      <TableHeaderCell>Manual Approach</TableHeaderCell>
     </TableRow>
   </TableHead>
   <TableBody>
     <TableRow>
-      <TableCell>Zero Runtime</TableCell>
-      <TableCell>Yes</TableCell>
-      <TableCell>No</TableCell>
-      <TableCell>No</TableCell>
-      <TableCell>Yes</TableCell>
+      <TableCell>Route registration</TableCell>
+      <TableCell>Automatic (file-based)</TableCell>
+      <TableCell>Manual `Router::new().route(...)`</TableCell>
     </TableRow>
     <TableRow>
-      <TableCell>Dynamic Values</TableCell>
-      <TableCell>Yes</TableCell>
-      <TableCell>Yes</TableCell>
-      <TableCell>Yes</TableCell>
-      <TableCell>Limited</TableCell>
+      <TableCell>OpenAPI spec</TableCell>
+      <TableCell>Generated at compile time</TableCell>
+      <TableCell>Hand-written or runtime generation</TableCell>
     </TableRow>
     <TableRow>
-      <TableCell>Full Syntax Coverage</TableCell>
-      <TableCell>Yes</TableCell>
-      <TableCell>Yes</TableCell>
-      <TableCell>Yes</TableCell>
-      <TableCell>No</TableCell>
+      <TableCell>Schema extraction</TableCell>
+      <TableCell>`#[derive(Schema)]` on Rust types</TableCell>
+      <TableCell>Manual JSON Schema</TableCell>
     </TableRow>
     <TableRow>
-      <TableCell>Type-Safe Themes</TableCell>
-      <TableCell>Yes</TableCell>
-      <TableCell>Limited</TableCell>
-      <TableCell>Limited</TableCell>
-      <TableCell>Yes</TableCell>
+      <TableCell>Request validation</TableCell>
+      <TableCell>`Validated<T>` extractor → auto `422`</TableCell>
+      <TableCell>Manual checks in every handler</TableCell>
     </TableRow>
     <TableRow>
-      <TableCell>Build Performance</TableCell>
-      <TableCell>Fastest</TableCell>
-      <TableCell>N/A</TableCell>
-      <TableCell>N/A</TableCell>
-      <TableCell>Fast</TableCell>
+      <TableCell>Server startup</TableCell>
+      <TableCell>`.serve("0.0.0.0:3000")` one-liner</TableCell>
+      <TableCell>`TcpListener::bind` + `axum::serve`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>Swagger UI</TableCell>
+      <TableCell>Built-in</TableCell>
+      <TableCell>Separate setup</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>Type safety</TableCell>
+      <TableCell>Compile-time verified</TableCell>
+      <TableCell>Runtime errors</TableCell>
     </TableRow>
   </TableBody>
 </Table>
 
-### How It Works
-
-```tsx
-// You write familiar CSS-in-JS syntax
-const example = <Box _hover={{ bg: 'blue' }} bg="red" p={4} />
-
-// Devup UI transforms it at build time
-const generated = <div className="a b c" />
-
-// With optimized atomic CSS
-// .a { background-color: red; }
-// .b { padding: 16px; }  /* 4 * 4 = 16px */
-// .c:hover { background-color: blue; }
-```
-
-> Numeric values are multiplied by 4. `p={4}` becomes `padding: 16px`.
-
-Class names use compact base-37 encoding (`a`, `b`, ... `z`, `_`, `aa`, `ab`, ...) for minimal CSS output.
-
-### Familiar API
-
-If you've used styled-components or Emotion, you'll feel right at home:
-
-```tsx
-import { styled } from '@devup-ui/react'
-
-const Card = styled('div', {
-  bg: 'white',
-  p: 4, // 4 * 4 = 16px
-  borderRadius: '8px',
-  boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
-  _hover: {
-    boxShadow: '0 10px 15px rgba(0, 0, 0, 0.1)',
-  },
-})
-```
-
-### Proven Performance
-
-Benchmarks on Next.js (GitHub Actions - ubuntu-latest):
+## Headline Capabilities
 
 <Table>
   <TableHead>
     <TableRow>
-      <TableHeaderCell>Library</TableHeaderCell>
-      <TableHeaderCell>Version</TableHeaderCell>
-      <TableHeaderCell>Build Time</TableHeaderCell>
-      <TableHeaderCell>Build Size</TableHeaderCell>
+      <TableHeaderCell>Capability</TableHeaderCell>
+      <TableHeaderCell>How</TableHeaderCell>
     </TableRow>
   </TableHead>
   <TableBody>
     <TableRow>
-      <TableCell>tailwindcss</TableCell>
-      <TableCell>4.1.13</TableCell>
-      <TableCell>19.31s</TableCell>
-      <TableCell>59,521,539 bytes</TableCell>
+      <TableCell>`#[derive(Schema)]` → OpenAPI 3.1</TableCell>
+      <TableCell>Rust types become JSON Schema at compile time, including serde renames, `Option<T>`, `Vec<T>`, SeaORM relations</TableCell>
     </TableRow>
     <TableRow>
-      <TableCell>styleX</TableCell>
-      <TableCell>0.15.4</TableCell>
-      <TableCell>41.78s</TableCell>
-      <TableCell>86,869,452 bytes</TableCell>
+      <TableCell>`Validated<T>` extractor + auto-`422`</TableCell>
+      <TableCell>Wraps `Json`/`Form`/`Query`/`Path` and runs `garde::Validate` before the handler — rejection is `422` with a canonical JSON envelope</TableCell>
     </TableRow>
     <TableRow>
-      <TableCell>vanilla-extract</TableCell>
-      <TableCell>1.17.4</TableCell>
-      <TableCell>19.50s</TableCell>
-      <TableCell>61,494,033 bytes</TableCell>
+      <TableCell>`schema_type! { ... }`</TableCell>
+      <TableCell>Derive request/response DTOs from existing structs (`pick` / `omit` / `partial` / `add` / `multipart` / `omit_default`) with first-class SeaORM relation support</TableCell>
     </TableRow>
     <TableRow>
-      <TableCell>kuma-ui</TableCell>
-      <TableCell>1.5.9</TableCell>
-      <TableCell>20.93s</TableCell>
-      <TableCell>69,924,179 bytes</TableCell>
+      <TableCell>One-liner `.serve(addr)`</TableCell>
+      <TableCell>Extension trait on `axum::Router` — replaces `TcpListener::bind` + `axum::serve` boilerplate</TableCell>
     </TableRow>
     <TableRow>
-      <TableCell>panda-css</TableCell>
-      <TableCell>1.3.1</TableCell>
-      <TableCell>20.64s</TableCell>
-      <TableCell>64,573,260 bytes</TableCell>
+      <TableCell>JNI / Spring integration</TableCell>
+      <TableCell>Embed your Axum router inside a Java/Spring app in-process — no TCP, no base64, raw bytes end to end</TableCell>
     </TableRow>
     <TableRow>
-      <TableCell>chakra-ui</TableCell>
-      <TableCell>3.27.0</TableCell>
-      <TableCell>28.81s</TableCell>
-      <TableCell>222,435,802 bytes</TableCell>
-    </TableRow>
-    <TableRow>
-      <TableCell>mui</TableCell>
-      <TableCell>7.3.2</TableCell>
-      <TableCell>20.86s</TableCell>
-      <TableCell>97,964,458 bytes</TableCell>
-    </TableRow>
-    <TableRow>
-      <TableCell>**devup-ui (per-file css)**</TableCell>
-      <TableCell>**1.0.18**</TableCell>
-      <TableCell>**16.90s**</TableCell>
-      <TableCell>59,540,459 bytes</TableCell>
-    </TableRow>
-    <TableRow>
-      <TableCell>**devup-ui (single css)**</TableCell>
-      <TableCell>**1.0.18**</TableCell>
-      <TableCell>**17.05s**</TableCell>
-      <TableCell>**59,520,196 bytes**</TableCell>
-    </TableRow>
-    <TableRow>
-      <TableCell>tailwindcss (turbopack)</TableCell>
-      <TableCell>4.1.13</TableCell>
-      <TableCell>6.72s</TableCell>
-      <TableCell>5,355,082 bytes</TableCell>
-    </TableRow>
-    <TableRow>
-      <TableCell>**devup-ui (single css + turbopack)**</TableCell>
-      <TableCell>**1.0.18**</TableCell>
-      <TableCell>10.34s</TableCell>
-      <TableCell>**4,772,050 bytes**</TableCell>
+      <TableCell>Cron jobs</TableCell>
+      <TableCell>`#[vespera::cron("...")]` — auto-discovered like routes, runs via `tokio-cron-scheduler`</TableCell>
     </TableRow>
   </TableBody>
 </Table>
 
-### Get Started
+## JNI Performance Numbers
 
-Ready to experience the future of CSS-in-JS? Head to the [Installation](/docs/installation) guide to get started in minutes.
+When embedding Vespera inside a Java/Spring application via JNI, the `SmartDispatchModeResolver` (default since vespera-bridge 1.0.0) picks the cheapest safe path per request. Measured on a `GET /health` round-trip through the real JNI boundary (AMD Ryzen 9 9950X, Java 21, Windows 11):
+
+<Table>
+  <TableHead>
+    <TableRow>
+      <TableHeaderCell>Request shape</TableHeaderCell>
+      <TableHeaderCell>Mode</TableHeaderCell>
+      <TableHeaderCell>ns / round-trip</TableHeaderCell>
+    </TableRow>
+  </TableHead>
+  <TableBody>
+    <TableRow>
+      <TableCell>Small/bodyless + idempotent (GET/HEAD/PUT/DELETE/OPTIONS, ≤ 256 KiB)</TableCell>
+      <TableCell>`DIRECT` (pooled direct buffers)</TableCell>
+      <TableCell>~2,200 ns</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>Small (≤ 256 KiB) + non-idempotent (POST/PATCH)</TableCell>
+      <TableCell>`SYNC` (heap-buffered)</TableCell>
+      <TableCell>~3,200 ns</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>Large or unknown-length body</TableCell>
+      <TableCell>`BIDIRECTIONAL_STREAMING`</TableCell>
+      <TableCell>~24,100 ns</TableCell>
+    </TableRow>
+  </TableBody>
+</Table>
+
+Binary streaming throughput (64 MiB payload, bidirectional):
+
+<Table>
+  <TableHead>
+    <TableRow>
+      <TableHeaderCell>Chunk size</TableHeaderCell>
+      <TableHeaderCell>Throughput</TableHeaderCell>
+    </TableRow>
+  </TableHead>
+  <TableBody>
+    <TableRow>
+      <TableCell>16 KiB</TableCell>
+      <TableCell>~10,408 MiB/s</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>64 KiB</TableCell>
+      <TableCell>~11,587 MiB/s</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>256 KiB</TableCell>
+      <TableCell>~14,458 MiB/s</TableCell>
+    </TableRow>
+  </TableBody>
+</Table>
+
+The `direct_pooled` path completes a tiny `/health` round-trip in **2,349 ns/op** — **1.55× faster** than the pre-1.0.0 sync baseline (3,643 ns/op).
+
+## How It Works
+
+```
+src/routes/
+├── mod.rs           → /
+├── users.rs         → /users
+└── admin/
+    └── stats.rs     → /admin/stats
+```
+
+1. You place `pub async fn` handlers in `src/routes/` and annotate them with `#[vespera::route]`.
+2. The `vespera!()` macro scans the folder at compile time, discovers every handler, and builds an `axum::Router`.
+3. Types annotated with `#[derive(Schema)]` are extracted into OpenAPI component schemas automatically.
+4. The generated `openapi.json` and Swagger UI are served at the URLs you configure.
+
+## Get Started
+
+Head to [Installation](/documentation/installation) to add Vespera to your project in under five minutes.

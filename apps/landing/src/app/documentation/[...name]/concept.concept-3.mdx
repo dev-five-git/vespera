@@ -1,1 +1,132 @@
-empty
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeaderCell,
+  TableRow,
+} from '@/components/mdx/components/Table'
+
+# `Validated<T>` and 422
+
+`Validated<T>` is a Vespera extractor wrapper that runs [`garde`](https://crates.io/crates/garde) validation **before** your handler is called. Invalid requests are rejected with `422 Unprocessable Entity` and a canonical JSON error envelope — no per-handler error mapping, no boilerplate.
+
+## Basic Usage
+
+Add `garde` to your dependencies:
+
+```toml
+[dependencies]
+vespera = "0.1"
+garde = { version = "0.20", features = ["derive"] }
+```
+
+Annotate your request type with `garde` constraints and derive `Validate`:
+
+```rust
+use vespera::{Validated, Schema, axum::Json};
+use garde::Validate;
+
+#[derive(serde::Deserialize, Schema, Validate)]
+pub struct CreateUser {
+    #[garde(length(min = 3, max = 32))]
+    pub username: String,
+    #[garde(email)]
+    pub email: String,
+    #[garde(range(min = 18, max = 120))]
+    pub age: u8,
+}
+
+#[vespera::route(post, tags = ["users"])]
+pub async fn create_user(
+    Validated(Json(req)): Validated<Json<CreateUser>>,
+) -> Json<&'static str> {
+    // `req` has already passed garde validation — no manual checks needed.
+    Json("ok")
+}
+```
+
+## 422 Response Envelope
+
+When validation fails, Vespera returns `HTTP 422 Unprocessable Entity` with this JSON body:
+
+```json
+{
+  "errors": [
+    { "path": "username", "message": "length is lower than 3" },
+    { "path": "email",    "message": "not a valid email" }
+  ]
+}
+```
+
+The envelope is identical regardless of which extractor failed — your API clients only need to handle one error shape.
+
+## Supported Extractors
+
+`Validated<T>` works with every common Axum extractor:
+
+<Table>
+  <TableHead>
+    <TableRow>
+      <TableHeaderCell>Extractor</TableHeaderCell>
+      <TableHeaderCell>Validates</TableHeaderCell>
+    </TableRow>
+  </TableHead>
+  <TableBody>
+    <TableRow>
+      <TableCell>`Validated<Json<T>>`</TableCell>
+      <TableCell>JSON request body</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`Validated<Form<T>>`</TableCell>
+      <TableCell>URL-encoded form body</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`Validated<Query<T>>`</TableCell>
+      <TableCell>URL query parameters</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`Validated<Path<T>>`</TableCell>
+      <TableCell>Path parameters</TableCell>
+    </TableRow>
+  </TableBody>
+</Table>
+
+## JNI Hoisting
+
+Under JNI, the same `422` body is **hoisted** into the binary wire header as `"validation_errors": [...]`. Java decoders can read validation errors directly from the header without parsing the response body — no special-casing needed on the Java side.
+
+```json
+{
+  "v": 1,
+  "status": 422,
+  "headers": { "content-type": "application/json" },
+  "validation_errors": [
+    { "path": "username", "message": "length is lower than 3" }
+  ]
+}
+```
+
+## Common garde Constraints
+
+```rust
+#[derive(Deserialize, Schema, Validate)]
+pub struct UpdateProfile {
+    #[garde(length(min = 1, max = 100))]
+    pub display_name: String,
+
+    #[garde(url)]
+    pub website: Option<String>,
+
+    #[garde(length(min = 8))]
+    pub password: String,
+
+    #[garde(range(min = 0.0, max = 5.0))]
+    pub rating: f64,
+
+    #[garde(inner(length(min = 1)))]
+    pub tags: Vec<String>,
+}
+```
+
+See the [garde documentation](https://docs.rs/garde) for the full list of available constraints.

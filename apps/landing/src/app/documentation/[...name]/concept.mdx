@@ -1,0 +1,50 @@
+# Core Concepts
+
+Vespera is built on three ideas: file-based routing, compile-time schema extraction, and automatic request validation.
+
+## File-Based Routing
+
+Your folder structure becomes your URL structure. Drop a `pub async fn` with `#[vespera::route]` anywhere in `src/routes/` and Vespera discovers it at compile time — no manual router registration.
+
+```
+src/routes/
+├── mod.rs           → /
+├── users.rs         → /users
+├── posts.rs         → /posts
+└── admin/
+    ├── mod.rs       → /admin
+    └── stats.rs     → /admin/stats
+```
+
+See [File-Based Routing](/documentation/concept/concept-1) for the full rules.
+
+## Schema & OpenAPI Generation
+
+Derive `Schema` on any Rust type and Vespera includes it in the generated OpenAPI 3.1 spec. Serde attributes (`rename_all`, `rename`, `skip`, `default`) are respected automatically.
+
+```rust
+#[derive(Serialize, Deserialize, vespera::Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateUserRequest {
+    pub user_name: String,   // → "userName" in OpenAPI
+    pub email: String,
+    pub bio: Option<String>, // optional field
+}
+```
+
+See [Schema & OpenAPI](/documentation/concept/concept-2) for type mapping and SeaORM integration.
+
+## `Validated<T>` and 422
+
+Wrap any extractor in `Validated<T>` to run `garde` validation before the handler runs. Invalid requests are rejected with `422 Unprocessable Entity` and a canonical JSON error envelope — no per-handler error mapping needed.
+
+```rust
+#[vespera::route(post)]
+pub async fn create_user(
+    Validated(Json(req)): Validated<Json<CreateUser>>,
+) -> Json<&'static str> {
+    Json("ok")
+}
+```
+
+See [Validated & 422](/documentation/concept/concept-3) for the full contract.
