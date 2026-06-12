@@ -27,10 +27,15 @@ import java.util.Set;
  *       else (large or unknown-length bodies).</li>
  * </ul>
  *
- * <p><strong>Not wired by default.</strong> The autoconfigured
- * resolver remains {@link BidirectionalStreamingDispatchModeResolver};
- * opt in via {@code vespera.bridge.dispatch-mode=smart} or register
- * this class as a {@code @Bean}:
+ * <p><strong>Autoconfigured default since vespera-bridge 1.0.0.</strong>
+ * No property required — the autoconfigure module wires this resolver
+ * when no user {@code @Bean DispatchModeResolver} exists.  Pin it
+ * explicitly with {@code vespera.bridge.dispatch-mode=smart}, or
+ * opt out to the pre-1.0.0 conservative default with
+ * {@code vespera.bridge.dispatch-mode=bidirectional-streaming} →
+ * {@link BidirectionalStreamingDispatchModeResolver}.  Or register a
+ * custom resolver — {@code @ConditionalOnMissingBean} guarantees it
+ * wins over both:
  *
  * <pre>{@code
  * @Bean

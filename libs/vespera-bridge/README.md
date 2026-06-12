@@ -56,17 +56,33 @@ Out of the box the autoconfigure module wires up:
 | Concern | Default | Override |
 |---|---|---|
 | **App selection** | Read `X-Vespera-App` request header; absent → default app | Property `vespera.bridge.app-header`, or custom [`AppNameResolver`](src/main/java/com/devfive/vespera/bridge/AppNameResolver.java) bean |
-| **Dispatch mode** | [`BIDIRECTIONAL_STREAMING`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) for every request that may carry a body; provably bodyless requests (GET/HEAD/OPTIONS without Content-Length/Transfer-Encoding, or explicit `Content-Length: 0`) skip the request-pull plumbing via response-only `STREAMING` (~3x cheaper, measured 24.1 µs → 7.7 µs) | Property `vespera.bridge.dispatch-mode: smart` (DIRECT/SYNC fast paths for small requests), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
+| **Dispatch mode** | [`SmartDispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/SmartDispatchModeResolver.java) since 1.0.0 — picks per request: [`DIRECT`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) (pooled direct buffers, no JNI array copies) for small/bodyless idempotent requests (GET/HEAD/PUT/DELETE/OPTIONS, Content-Length absent or ≤ 256 KiB) ~2.2 µs; `SYNC` (heap-buffered) for small non-idempotent (POST/PATCH ≤ 256 KiB) ~3.2 µs; `BIDIRECTIONAL_STREAMING` for the rest ~24.1 µs | Property `vespera.bridge.dispatch-mode: bidirectional-streaming` (opt out, restore pre-1.0.0 default), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
 | **URL pattern** | Single `@RequestMapping("/**")` catch-all — every vespera router URL exactly mirrors the published OpenAPI path | Set `vespera.bridge.controller-enabled: false` and supply your own controller |
 | **Body handling** | Servlet `InputStream` straight through to Rust (no buffering) for streaming modes; full read for sync/async | (encoded by the chosen `DispatchMode`) |
 
-Why `BIDIRECTIONAL_STREAMING` as the default mode? It processes every payload size correctly without dispatch-time hints:
+Why `smart` as the default mode (since 1.0.0)? Measured on a small `GET /health` round-trip through the real JNI boundary the cheapest safe path per request is 7–11× cheaper than unconditional streaming:
 
-- **Tiny request / tiny response** (`/health` → `"ok"`): bodyless, so the default resolver takes the response-only streaming fast path — no request-pull thread.
-- **Small JSON RPC** (`/users` → `{...}`): single chunk both ways.
-- **Multi-GB upload + multi-GB download**: chunk-bounded both ways, ~32 KiB resident.
+| Request shape | Mode | ns/round-trip |
+|---|---|---|
+| Small/bodyless + idempotent (GET/HEAD/PUT/DELETE/OPTIONS, Content-Length absent or ≤ 256 KiB) | `DIRECT` | ~2,200 |
+| Small (≤ 256 KiB Content-Length) + non-idempotent (POST/PATCH) | `SYNC` | ~3,200 |
+| Large or unknown-length body | `BIDIRECTIONAL_STREAMING` | ~24,100 |
 
-This means the Spring endpoints **always** mirror vespera's `openapi.json` — there is no URL prefix or mode-detection heuristic that could diverge from the Rust router's view of the world.
+Trade-offs the new default makes on your behalf:
+
+- **DIRECT** writes the wire response straight into a pooled direct `ByteBuffer` (per-thread, 64 KiB → `vespera.direct.maxBufferBytes` default 4 MiB). On responses larger than the pooled buffer the Java side **retries once with a bigger buffer**, which re-runs the Rust handler. This is why DIRECT is gated on idempotent methods only.
+- **SYNC** fully buffers the response on the JVM heap. The 256 KiB request-size gate keeps the response size reasonable for JSON-RPC-shaped traffic; large or unknown-length bodies still stream.
+- **`BIDIRECTIONAL_STREAMING`** is unchanged for large/unknown-length bodies — multi-GB upload + multi-GB download still runs chunk-bounded, ~32 KiB resident each side.
+
+The Spring endpoints **always** mirror vespera's `openapi.json` — `smart` picks the JNI path per request without any URL prefix or path-based heuristic that could diverge from the Rust router's view of the world.
+
+Restore the pre-1.0.0 default (every request that may carry a body streams both ways, ~24 µs per round-trip uniform) with:
+
+```yaml
+vespera:
+  bridge:
+    dispatch-mode: bidirectional-streaming
+```
 
 ## Customization
 
@@ -272,14 +288,16 @@ callers managing their own buffers; it returns the bytes written or
 (an encoding-side signal — no dispatch has run, growing and retrying
 is always safe, unlike the response-overflow retry).
 
-For the Spring proxy, `DispatchMode.DIRECT` is **opt-in**: the default
-resolver stays `BIDIRECTIONAL_STREAMING` for every request.  Opt in
-with a single property:
+For the Spring proxy, `SmartDispatchModeResolver` is the
+**autoconfigured default since 1.0.0** — `DispatchMode.DIRECT` /
+`SYNC` activate automatically on small bounded requests, no property
+required.  Restore the pre-1.0.0 default (every request that may carry
+a body streams both ways) with:
 
 ```yaml
 vespera:
   bridge:
-    dispatch-mode: smart   # default: bidirectional-streaming
+    dispatch-mode: bidirectional-streaming   # default since 1.0.0: smart
 ```
 
 `smart` picks the cheapest safe path per request (measured on a small
@@ -304,7 +322,7 @@ ignored when a user `DispatchModeResolver` bean exists):
 ```java
 @Bean
 public DispatchModeResolver dispatchModeResolver() {
-    return new SmartDispatchModeResolver();
+    return new BidirectionalStreamingDispatchModeResolver();
 }
 ```
 
@@ -321,15 +339,20 @@ garbage-collected, potentially causing memory pressure under high
 concurrency.
 
 **Recommendation for virtual-thread deployments:**
-- Use `dispatchBytes`, `dispatchStreaming`, or `dispatchFullStreaming`
-  instead of the pooled direct variants.
+- Set `vespera.bridge.dispatch-mode=bidirectional-streaming` to opt
+  out of the new smart default, so DIRECT (which relies on the
+  pooled per-thread direct buffer) is never chosen by the
+  autoconfigured resolver.
+- Or use `dispatchBytes`, `dispatchStreaming`, or
+  `dispatchFullStreaming` directly instead of the pooled direct
+  variants.
 - Or run dispatch on a bounded platform-thread executor (e.g. a
   `ForkJoinPool` with a fixed parallelism cap).
 - Or lower `vespera.direct.maxBufferBytes` to reduce per-thread
   allocation size.
 
-The default `DispatchMode.BIDIRECTIONAL_STREAMING` is safe for virtual
-threads and handles all payload sizes without pooling.
+`DispatchMode.BIDIRECTIONAL_STREAMING` is safe for virtual threads
+and handles all payload sizes without pooling.
 
 ## Direct API (without the proxy controller)
 
@@ -553,7 +576,7 @@ A Rust handler returning a binary response (e.g. `image/png`) flows the same way
 `@RequestMapping("/**")` catches every HTTP request, regardless of method or content type, and:
 
 1. Collects all incoming headers (lowercased keys).
-2. Asks the configured `DispatchModeResolver` which mode serves this request (default: `BIDIRECTIONAL_STREAMING` for everything — servlet input/output streams pass straight through, no body materialisation).
+2. Asks the configured `DispatchModeResolver` which mode serves this request (default since 1.0.0: `SmartDispatchModeResolver` — DIRECT for small/bodyless idempotent requests, SYNC for small non-idempotent requests, BIDIRECTIONAL_STREAMING for everything else; opt out with `vespera.bridge.dispatch-mode=bidirectional-streaming`).
 3. For `SYNC` / `ASYNC` / `STREAMING` / `DIRECT` modes the body is read into `byte[]` first, then encoded via `VesperaBridge.encodeRequest(...)` and dispatched through the matching native method.
 4. Sync/async responses are decoded via `VesperaBridge.decodeResponse(byte[])` and returned as `ResponseEntity<String>` for text-like `Content-Type` (e.g. `text/*`, `application/json`, `+json`, `+xml`, `application/xml`, `application/javascript`, `application/yaml`, `application/x-www-form-urlencoded`, `application/graphql`), `ResponseEntity<byte[]>` otherwise.  Streaming and DIRECT modes write status/headers and body straight to the servlet response.
 
@@ -571,6 +594,36 @@ The supported triples are `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `maco
 ## End-to-end example
 
 See [`examples/rust-jni-demo`](../../examples/rust-jni-demo/) for a complete Rust + Spring Boot integration including build scripts, native bundling, and a curl smoke test.
+
+## 1.0.0 breaking changes
+
+### 1. Autoconfigured default `DispatchModeResolver` flipped to `SmartDispatchModeResolver`
+
+Pre-1.0.0 the autoconfigured default was [`BidirectionalStreamingDispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/BidirectionalStreamingDispatchModeResolver.java) — every request that may carry a body streamed both ways, ~24.1 µs per round-trip uniform. Since 1.0.0 the default is [`SmartDispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/SmartDispatchModeResolver.java) — small bounded idempotent requests take `DIRECT` (~2.2 µs), small non-idempotent take `SYNC` (~3.2 µs), everything else still streams (~24.1 µs).
+
+| Request shape | Pre-1.0.0 mode | 1.0.0+ mode |
+|---|---|---|
+| Small/bodyless idempotent (GET/HEAD/PUT/DELETE/OPTIONS, ≤ 256 KiB CL or no CL) | `STREAMING` / `BIDIRECTIONAL_STREAMING` | `DIRECT` |
+| Small non-idempotent (POST/PATCH, ≤ 256 KiB CL) | `BIDIRECTIONAL_STREAMING` | `SYNC` |
+| Large or unknown-length body | `BIDIRECTIONAL_STREAMING` | `BIDIRECTIONAL_STREAMING` |
+
+Trade-offs the new default makes:
+- **DIRECT** writes the wire response straight into a pooled per-thread direct `ByteBuffer` (64 KiB → `vespera.direct.maxBufferBytes`, default 4 MiB).  Responses larger than the pooled buffer trigger a single retry with a bigger buffer, which **re-runs the Rust handler** — which is why DIRECT is gated on idempotent methods only.
+- **SYNC** fully buffers the response on the JVM heap.  The 256 KiB request-size gate keeps the response size reasonable for JSON-RPC-shaped traffic; large or unknown-length bodies still stream.
+
+**Opt out** (restore the pre-1.0.0 default):
+
+```yaml
+vespera:
+  bridge:
+    dispatch-mode: bidirectional-streaming
+```
+
+Or register a custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean — `@ConditionalOnMissingBean` ensures it wins over both the property and the autoconfigured default.
+
+### 2. `DecodedResponse.body()` returns `ByteBuffer`
+
+`DecodedResponse.body()` now returns a read-only `java.nio.ByteBuffer` (zero-copy view over the wire bytes); the owned `byte[]` materialisation moved to `DecodedResponse.bodyBytes()`.  Callers that previously consumed `body()` as `byte[]` must switch to `bodyBytes()` (or read directly from the buffer).
 
 ## Migrating from the JSON-envelope bridge (≤ 0.0.13)
 

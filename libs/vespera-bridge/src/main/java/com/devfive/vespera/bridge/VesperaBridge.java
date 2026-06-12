@@ -1,9 +1,11 @@
 package com.devfive.vespera.bridge;
 
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -49,7 +51,19 @@ import java.util.function.Consumer;
 public class VesperaBridge {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final JsonFactory JSON_FACTORY = MAPPER.getFactory();
     private static final int WIRE_VERSION = 1;
+    /**
+     * Per-thread reusable byte buffer for {@link #serializeHeaderJson}.
+     * Reset (size cleared, capacity preserved) per call; only the
+     * buffer is pooled — a fresh {@link JsonGenerator} is created per
+     * call because generators bind to stream state.  Virtual-thread
+     * caveat as {@link #DIRECT_POOL}: each vthread gets its own ~256 B
+     * buffer in Java 21+ and loses pooling until GC.
+     */
+    private static final ThreadLocal<ByteArrayOutputStream> HEADER_BUF =
+            ThreadLocal.withInitial(() -> new ByteArrayOutputStream(256));
+
     private static volatile boolean loaded = false;
 
     private static volatile Integer pendingChunkBytes = null;
@@ -820,42 +834,45 @@ public class VesperaBridge {
     }
 
     /**
-     * Internal: build and serialise the wire request header JSON.
-     *
-     * <p>Stays on Jackson deliberately: a hand-rolled
-     * StringBuilder-based encoder was measured <em>slower</em>
-     * (656 vs 487 ns/op on a typical 6-header request) —
-     * {@code UTF8JsonGenerator} writes bytes directly while the
-     * hand-rolled path paid three passes (builder → String → UTF-8).
+     * Internal: serialise the wire request header JSON via Jackson's
+     * streaming {@link JsonGenerator} writing directly into the
+     * per-thread {@link #HEADER_BUF}.  Byte-identical to the prior
+     * {@code createObjectNode() + writeValueAsBytes()} path: same
+     * field order ({@code v}, {@code method}, {@code path}, optional
+     * {@code query}/{@code headers}/{@code app}), same omission rules,
+     * same {@code UTF8JsonGenerator} emitter — the {@code ObjectNode}
+     * tree and {@code writeValueAsBytes} scratch buffer go away.
+     * (A 3-pass {@code StringBuilder} encoder was previously measured
+     * <em>slower</em>, 656 vs 487 ns/op; the generator writes bytes
+     * directly, so this rewrite keeps that win and drops the tree.)
      */
-    private static byte[] serializeHeaderJson(
-            String appName,
-            String method,
-            String path,
-            String query,
-            Map<String, String> headers) {
-        try {
-            ObjectNode header = MAPPER.createObjectNode();
-            header.put("v", WIRE_VERSION);
-            header.put("method", method);
-            header.put("path", path);
+    private static byte[] serializeHeaderJson(String appName, String method,
+            String path, String query, Map<String, String> headers) {
+        ByteArrayOutputStream buf = HEADER_BUF.get();
+        buf.reset();
+        try (JsonGenerator gen = JSON_FACTORY.createGenerator(buf)) {
+            gen.writeStartObject();
+            gen.writeNumberField("v", WIRE_VERSION);
+            gen.writeStringField("method", method);
+            gen.writeStringField("path", path);
             if (query != null && !query.isEmpty()) {
-                header.put("query", query);
+                gen.writeStringField("query", query);
             }
             if (headers != null && !headers.isEmpty()) {
-                ObjectNode hdrs = MAPPER.createObjectNode();
+                gen.writeObjectFieldStart("headers");
                 for (Map.Entry<String, String> e : headers.entrySet()) {
-                    hdrs.put(e.getKey(), e.getValue());
+                    gen.writeStringField(e.getKey(), e.getValue());
                 }
-                header.set("headers", hdrs);
+                gen.writeEndObject();
             }
             if (appName != null && !appName.isBlank()) {
-                header.put("app", appName.trim());
+                gen.writeStringField("app", appName.trim());
             }
-            return MAPPER.writeValueAsBytes(header);
+            gen.writeEndObject();
         } catch (IOException e) {
             throw new IllegalStateException("encodeRequest serialisation failed", e);
         }
+        return buf.toByteArray();
     }
 
     /**

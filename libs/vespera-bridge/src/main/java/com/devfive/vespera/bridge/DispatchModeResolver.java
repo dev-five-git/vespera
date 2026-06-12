@@ -6,13 +6,20 @@ import jakarta.servlet.http.HttpServletRequest;
  * Strategy for deciding which {@link DispatchMode} should serve an
  * incoming HTTP request.
  *
- * <p>The autoconfigured default returns
- * {@link DispatchMode#BIDIRECTIONAL_STREAMING} for every request,
- * which works correctly across all payload sizes (small requests
- * are processed as a single chunk) and keeps Spring endpoints
- * aligned with the URLs published in vespera's {@code openapi.json}
- * — no path-based mode selection that would diverge from the Rust
- * router's view.
+ * <p>The autoconfigured default since vespera-bridge 1.0.0 is
+ * {@link SmartDispatchModeResolver}: small bounded idempotent
+ * requests take {@link DispatchMode#DIRECT} (~2.2 µs), small
+ * non-idempotent requests take {@link DispatchMode#SYNC} (~3.2 µs),
+ * everything else falls back to
+ * {@link DispatchMode#BIDIRECTIONAL_STREAMING} (~24 µs).  Spring
+ * endpoints stay aligned with the URLs published in vespera's
+ * {@code openapi.json} either way — the mode is picked per request
+ * from request properties, not from the URL.
+ *
+ * <p>Restore the pre-1.0.0 default (every request that may carry a
+ * body streams both ways) with the conservative opt-out:
+ * {@code vespera.bridge.dispatch-mode=bidirectional-streaming} →
+ * {@link BidirectionalStreamingDispatchModeResolver}.
  *
  * <p>Users who want a mixed policy (e.g. {@link DispatchMode#SYNC}
  * for sub-KB JSON RPC, {@link DispatchMode#STREAMING} for paths

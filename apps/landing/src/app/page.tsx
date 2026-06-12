@@ -11,6 +11,7 @@ import {
 import { Button } from '@/components/button'
 import { GnbIcon } from '@/components/header/gnb-icon'
 import { HeaderSentinel } from '@/components/header/header-sentinel'
+import { Performance } from '@/components/performance'
 
 export const metadata: Metadata = {
   alternates: {
@@ -88,20 +89,40 @@ export default function HomePage() {
           <VStack gap="40px" maxW="1280px" w="100%">
             <VStack gap="16px">
               <Text color="$title" typography="h3">
-                Title
+                FastAPI-grade DX, Rust-grade performance
               </Text>
               <Text color="$text" typography="body">
-                Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nullam
-                venenatis, elit in hendrerit porta, augue ante scelerisque diam,{' '}
-                <br />
-                ac egestas lacus est nec urna. Cras commodo risus hendrerit,
-                suscipit nibh at, porttitor dui.
+                Vespera turns your Axum routes into a typed, validated, embeddable API
+                with one macro. File-based routing, compile-time OpenAPI 3.1, and a
+                JNI bridge that lets Spring host your Rust router with microsecond
+                round-trips — no TCP, no JSON envelope.
               </Text>
             </VStack>
             <VStack flexDir={[null, null, null, 'row']} gap={5}>
-              {[0, 1, 2, 3].map((i) => (
+              {[
+                {
+                  title: 'Zero-config OpenAPI 3.1',
+                  description:
+                    'Drop handlers into src/routes/, derive Schema on your types, and Vespera generates the full OpenAPI 3.1 spec at compile time. No annotations, no runtime registration, no hand-written JSON.',
+                },
+                {
+                  title: 'Type-safe validation',
+                  description:
+                    'Wrap any extractor in Validated<T> and garde runs before your handler. Failures become a structured 422 response automatically — under JNI, errors are hoisted into the wire header so Java decoders never special-case error shapes.',
+                },
+                {
+                  title: 'Embed Rust in Spring',
+                  description:
+                    'JNI in-process dispatch with a length-prefixed binary wire format. Multipart, PDFs, and images travel as raw bytes — no TCP socket, no JSON envelope, no base64 — the same Axum routes Spring users hit directly.',
+                },
+                {
+                  title: 'Microsecond dispatch',
+                  description:
+                    'Sync round-trip in ~2.9 µs, direct ByteBuffer path in ~2.2 µs, streaming throughput up to 14.5 GB/s — measured end-to-end across the real JNI boundary, not just on the Rust side.',
+                },
+              ].map(({ title, description }) => (
                 <Flex
-                  key={i}
+                  key={title}
                   bg="$cardBase"
                   borderRadius="$spacingSpacing08"
                   minH={['200px', null, null, '320px']}
@@ -114,11 +135,10 @@ export default function HomePage() {
                     gap={['10px', null, null, '$spacingSpacing12']}
                   >
                     <Text color="$title" typography="title">
-                      Feature title
+                      {title}
                     </Text>
                     <Text color="$textSub" typography="body">
-                      Lorem ipsum dolor sit amet. Etiam sit amet feugiat turpis.
-                      Proin nec ante a sem vestibulum sodales non ut ex.{' '}
+                      {description}
                     </Text>
                   </VStack>
                 </Flex>
@@ -126,6 +146,8 @@ export default function HomePage() {
             </VStack>
           </VStack>
         </Center>
+
+        <Performance />
 
         <ExampleProvider defaultSelected={EXAMPLES[0].id} examples={EXAMPLES}>
           <HeaderSentinel

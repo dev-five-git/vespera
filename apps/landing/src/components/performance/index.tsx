@@ -1,4 +1,4 @@
-import { Box, Flex, Text, VStack } from '@devup-ui/react'
+import { css, Flex, Text, VStack } from '@devup-ui/react'
 import Link from 'next/link'
 
 interface Stat {
@@ -28,10 +28,10 @@ const STATS: Stat[] = [
     detail: '256 KiB chunks, 3.3× faster than v0.x',
   },
   {
-    value: '32',
+    value: '20',
     unit: '%',
-    label: 'Async dispatch',
-    detail: 'Daemon-attached completion + JMethodID caching',
+    label: 'Faster sync dispatch',
+    detail: 'v1.0 zero-copy decode vs v0.1.1, same wire format',
   },
 ]
 
@@ -99,18 +99,20 @@ export function Performance() {
         </Flex>
 
         <Text color="$caption" typography="caption">
-          Measured in-process on a 1 MiB binary wire round-trip; streaming throughput
-          measured with a 64 MiB payload. Full methodology and raw runs in the{' '}
-          <Box
-            as={Link}
-            color="$vesperaPrimary"
+          Latency measured on small GET /health round-trips through the real JNI
+          boundary; streaming throughput measured with a 64 MiB payload. Full
+          methodology and raw runs in the{' '}
+          <Link
+            className={css({
+              color: '$vesperaPrimary',
+              textDecoration: 'underline',
+            })}
             href="https://github.com/dev-five-git/vespera/blob/main/libs/vespera-bridge/docs/jni-before-after-2026-06-11.md"
             rel="noopener noreferrer"
             target="_blank"
-            textDecoration="underline"
           >
             JNI benchmark report
-          </Box>
+          </Link>
           .
         </Text>
       </VStack>

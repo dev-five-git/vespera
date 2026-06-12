@@ -46,19 +46,27 @@ public class VesperaBridgeProperties {
      * Dispatch-mode policy for the autoconfigured proxy.
      *
      * <ul>
-     *   <li>{@code bidirectional-streaming} (default) — every request
-     *       streams both ways; safe for any payload size.</li>
-     *   <li>{@code smart} — small bounded idempotent requests
-     *       (Content-Length known and &le; 256 KiB; GET/HEAD/PUT/
-     *       DELETE/OPTIONS) take the pooled direct-buffer path,
-     *       skipping JNI array copies and per-request stream setup.
-     *       Responses larger than {@code vespera.direct.maxBufferBytes}
-     *       (default 4 MiB) re-run the handler once — acceptable for
-     *       idempotent requests only, which is why non-idempotent
-     *       methods always stream.</li>
+     *   <li>{@code smart} (default since 1.0.0) — small bounded
+     *       idempotent requests (Content-Length known and &le; 256
+     *       KiB; GET/HEAD/PUT/DELETE/OPTIONS) take the pooled
+     *       direct-buffer path, skipping JNI array copies and
+     *       per-request stream setup; small non-idempotent requests
+     *       (POST/PATCH) take heap-buffered SYNC; everything else
+     *       falls back to bidirectional streaming.  Measured 2.2 µs
+     *       (DIRECT) / 3.2 µs (SYNC) vs 24.1 µs (bidirectional) on
+     *       a small {@code GET /health} round-trip.  Trade-offs:
+     *       DIRECT re-runs the handler when a response overflows the
+     *       pooled buffer ({@code vespera.direct.maxBufferBytes},
+     *       default 4 MiB) — acceptable for idempotent requests
+     *       only; SYNC fully buffers the response on the JVM heap.</li>
+     *   <li>{@code bidirectional-streaming} — opt-out, restores the
+     *       pre-1.0.0 default: every request that may carry a body
+     *       streams both ways; safe for any payload size; the
+     *       uniform per-request cost is ~24 µs even on small
+     *       JSON-RPC payloads.</li>
      * </ul>
      */
-    private String dispatchMode = "bidirectional-streaming";
+    private String dispatchMode = "smart";
 
     public String getAppHeader() {
         return appHeader;

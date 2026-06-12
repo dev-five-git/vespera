@@ -4,14 +4,22 @@ package com.devfive.vespera.bridge;
  * How {@link VesperaProxyController} dispatches an incoming HTTP
  * request through the Rust JNI bridge.
  *
- * <p>The default {@link DispatchModeResolver} returns
- * {@link #BIDIRECTIONAL_STREAMING} for every request so that the
- * Spring side stays transparent to the vespera Rust router — the
- * routes published in the generated {@code openapi.json} are reached
- * via the same URLs, regardless of whether the underlying handler
- * emits a small JSON body or streams a multi-gigabyte file.  Users
- * who want a different policy (sync for small JSON RPC, async for
- * heavy I/O coordination, …) can register a custom
+ * <p>The autoconfigured default {@link DispatchModeResolver} since
+ * vespera-bridge 1.0.0 is {@link SmartDispatchModeResolver}: small
+ * bounded idempotent requests take {@link #DIRECT} (~2.2 µs), small
+ * non-idempotent requests take {@link #SYNC} (~3.2 µs), everything
+ * else falls back to {@link #BIDIRECTIONAL_STREAMING} (~24 µs).  The
+ * Spring side stays transparent to the vespera Rust router either
+ * way — the routes published in the generated {@code openapi.json}
+ * are reached via the same URLs, regardless of whether the underlying
+ * handler emits a small JSON body or streams a multi-gigabyte file.
+ *
+ * <p>Restore the pre-1.0.0 default (every request that may carry a
+ * body streams both ways) with the conservative opt-out:
+ * {@code vespera.bridge.dispatch-mode=bidirectional-streaming} →
+ * {@link BidirectionalStreamingDispatchModeResolver}.  Users who
+ * want a different policy (sync for small JSON RPC, async for heavy
+ * I/O coordination, …) can register a custom
  * {@link DispatchModeResolver} bean — {@code @ConditionalOnMissingBean}
  * ensures the default is automatically disabled.
  */
@@ -50,11 +58,14 @@ public enum DispatchMode {
      *        java.util.function.Consumer, java.io.InputStream,
      *        java.io.OutputStream)}.
      * Both request and response bodies stream chunk-by-chunk.
-     * This is the <strong>default mode</strong> — it works correctly
-     * for every payload size (small requests are processed as a
-     * single chunk), so callers see the vespera Rust router's
-     * endpoints exactly as published in {@code openapi.json} with
-     * no special configuration.
+     * Works correctly for every payload size (small requests are
+     * processed as a single chunk).  Selected by
+     * {@link SmartDispatchModeResolver} (the autoconfigured default
+     * since 1.0.0) for large or unknown-length bodies, and
+     * unconditionally by the conservative opt-out
+     * {@link BidirectionalStreamingDispatchModeResolver}
+     * ({@code vespera.bridge.dispatch-mode=bidirectional-streaming},
+     * pre-1.0.0 default).
      */
     BIDIRECTIONAL_STREAMING,
 
@@ -64,11 +75,15 @@ public enum DispatchMode {
      * eliminates the JNI region copies and per-call Java heap array
      * allocations of {@link #SYNC}.
      *
-     * <p><strong>Opt-in only</strong> — never selected by the
-     * autoconfigured default resolver.  Wire a
-     * {@link SmartDispatchModeResolver} (or a custom resolver) to use
-     * it.  Suitable for small, bounded payloads with a known
-     * {@code Content-Length}; large or unbounded bodies belong on
+     * <p>Selected by the autoconfigured
+     * {@link SmartDispatchModeResolver} (default since 1.0.0) for
+     * small, bounded, idempotent requests (GET/HEAD/PUT/DELETE/
+     * OPTIONS with {@code Content-Length} absent or &le; 256 KiB).
+     * The idempotency gate matters because a response that overflows
+     * the pooled direct buffer re-runs the Rust handler once.  Never
+     * selected by the conservative opt-out
+     * {@link BidirectionalStreamingDispatchModeResolver}; large or
+     * unbounded bodies always belong on
      * {@link #BIDIRECTIONAL_STREAMING}.
      */
     DIRECT,

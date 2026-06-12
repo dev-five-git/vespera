@@ -25,21 +25,31 @@ import org.springframework.context.annotation.Configuration;
  *       register a {@code @Bean AppNameResolver} —
  *       the default {@link HeaderAppNameResolver} is automatically
  *       disabled.</li>
- *   <li><strong>Smart dispatch mode</strong>:
- *       set {@code vespera.bridge.dispatch-mode=smart} to route
- *       small bounded idempotent requests through the pooled
- *       direct-buffer path ({@link SmartDispatchModeResolver})
- *       instead of streaming everything.</li>
+ *   <li><strong>Conservative dispatch mode (opt-out from smart)</strong>:
+ *       set {@code vespera.bridge.dispatch-mode=bidirectional-streaming}
+ *       to restore the pre-1.0.0 default
+ *       ({@link BidirectionalStreamingDispatchModeResolver}) — every
+ *       request that may carry a body streams both ways. Use when
+ *       you want maximally uniform handler invocation semantics and
+ *       are willing to pay the ~24 µs/request streaming cost on
+ *       small JSON-RPC payloads.</li>
  *   <li><strong>Custom dispatch mode policy</strong>:
  *       register a {@code @Bean DispatchModeResolver} —
- *       the default
- *       {@link BidirectionalStreamingDispatchModeResolver} is
+ *       the default {@link SmartDispatchModeResolver} is
  *       automatically disabled.</li>
  *   <li><strong>Completely BYO controller</strong>:
  *       set {@code vespera.bridge.controller-enabled=false} and
  *       provide your own {@code @RestController} that calls the
  *       {@link VesperaBridge} native methods directly.</li>
  * </ul>
+ *
+ * <p><strong>1.0.0 behavior change:</strong> the autoconfigured
+ * default {@link DispatchModeResolver} flipped from
+ * {@link BidirectionalStreamingDispatchModeResolver} to
+ * {@link SmartDispatchModeResolver}. Measured on a small {@code GET
+ * /health} round-trip through the real JNI boundary: DIRECT 2.2 µs /
+ * SYNC 3.2 µs vs the old bidirectional 24.1 µs. Restore the old
+ * behavior with {@code vespera.bridge.dispatch-mode=bidirectional-streaming}.
  */
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -53,28 +63,55 @@ public class VesperaBridgeAutoConfiguration {
     }
 
     /**
-     * Opt-in smart dispatch mode: DIRECT (pooled direct buffers, no
-     * JNI array copies) for small bounded idempotent requests,
-     * BIDIRECTIONAL_STREAMING for everything else.
+     * Opt-out conservative dispatch mode: every request that may
+     * carry a body streams both ways
+     * ({@link BidirectionalStreamingDispatchModeResolver}). Restores
+     * the pre-1.0.0 default.
      *
-     * <p>Declared <em>before</em> the default resolver bean so that
-     * {@code @ConditionalOnMissingBean} on the default sees this one
-     * when the property is set.  Opt-in only — the autoconfigured
-     * default stays {@link BidirectionalStreamingDispatchModeResolver}
-     * ("safe for any payload size"), because DIRECT re-runs the
-     * handler when a response overflows the pooled buffer.
+     * <p>Declared <em>before</em> the autoconfigured default so that
+     * {@code @ConditionalOnMissingBean} on the default skips when this
+     * one is created.  Opt-in via
+     * {@code vespera.bridge.dispatch-mode=bidirectional-streaming};
+     * the autoconfigured default is now
+     * {@link SmartDispatchModeResolver} because DIRECT/SYNC are
+     * 7–11× cheaper than streaming for small bounded requests
+     * (measured 2.2–3.2 µs vs 24.1 µs on a small {@code GET /health}).
      */
     @Bean
-    @ConditionalOnProperty(prefix = "vespera.bridge", name = "dispatch-mode", havingValue = "smart")
+    @ConditionalOnProperty(
+            prefix = "vespera.bridge",
+            name = "dispatch-mode",
+            havingValue = "bidirectional-streaming")
     @ConditionalOnMissingBean
-    public DispatchModeResolver vesperaBridgeSmartDispatchModeResolver() {
-        return new SmartDispatchModeResolver();
+    public DispatchModeResolver vesperaBridgeBidirectionalStreamingDispatchModeResolver() {
+        return new BidirectionalStreamingDispatchModeResolver();
     }
 
+    /**
+     * Autoconfigured default since 1.0.0:
+     * {@link SmartDispatchModeResolver} picks per request — DIRECT
+     * (pooled direct buffers, no JNI array copies) for small/bodyless
+     * idempotent requests, SYNC for small non-idempotent requests,
+     * BIDIRECTIONAL_STREAMING for everything else.
+     *
+     * <p>The two trade-offs callers accept on the new default:
+     * <ul>
+     *   <li>DIRECT retries (re-runs the Rust handler) once when a
+     *       response exceeds {@code vespera.direct.maxBufferBytes}
+     *       (default 4 MiB). This is why DIRECT is restricted to
+     *       idempotent methods (GET/HEAD/PUT/DELETE/OPTIONS).</li>
+     *   <li>SYNC buffers the full response on the JVM heap. The
+     *       256 KiB request-size gate keeps the response size
+     *       reasonable for JSON-RPC-shaped traffic.</li>
+     * </ul>
+     *
+     * <p>Restore the pre-1.0.0 behavior with
+     * {@code vespera.bridge.dispatch-mode=bidirectional-streaming}.
+     */
     @Bean
     @ConditionalOnMissingBean
     public DispatchModeResolver vesperaBridgeDispatchModeResolver() {
-        return new BidirectionalStreamingDispatchModeResolver();
+        return new SmartDispatchModeResolver();
     }
 
     @Bean

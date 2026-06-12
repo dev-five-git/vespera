@@ -14,7 +14,8 @@
 //! - `streaming_path`: `dispatch_streaming_async` (response
 //!   streaming) and `dispatch_bidirectional_streaming` (request +
 //!   response streaming through the mpsc channel + spawn_blocking
-//!   producer) — gates the chunk-size / channel-capacity work.
+//!   producer) — gates the chunk-size / channel-capacity work. Also
+//!   includes a no-body-poll route to isolate lazy request-pull setup.
 //!
 //! Scaling axes:
 //! - `route_count`: 10 / 100 / 500 routes (Router-build dominance).
@@ -58,6 +59,13 @@ async fn handler_echo_bytes(body: bytes::Bytes) -> bytes::Bytes {
     body
 }
 
+/// Return without polling the request body. This isolates the cost of
+/// bidirectional request-pull setup for handlers that do not need the
+/// body at all.
+async fn handler_discard_body() -> &'static str {
+    "ok"
+}
+
 /// Respond with a realistic header set: 10 single-value headers plus
 /// a 3-value `set-cookie` — exercises `collect_header_map`'s Vacant
 /// and Occupied paths and the wire header JSON serialisation.
@@ -93,6 +101,7 @@ fn build_router(n_routes: usize) -> Router {
     let mut router = Router::new()
         .route("/echo", post(handler_echo))
         .route("/echo/bytes", post(handler_echo_bytes))
+        .route("/discard", post(handler_discard_body))
         .route("/headers", get(handler_many_headers));
     for i in 0..n_routes {
         let path = format!("/r{i}");
@@ -421,6 +430,36 @@ fn bench_streaming_path(c: &mut Criterion) {
                     let mut sink = 0usize;
                     runtime.block_on(dispatch_bidirectional_streaming(
                         header_only.clone(),
+                        pull,
+                        |chunk| {
+                            sink += chunk.len();
+                        },
+                    ));
+                    sink
+                });
+            },
+        );
+
+        let discard_header_only =
+            assemble_wire("POST", "/discard", Some("application/octet-stream"), &[]);
+        group.bench_with_input(
+            BenchmarkId::new("bidirectional_no_body_poll", body_kb),
+            &body_kb,
+            |b, _| {
+                b.iter(|| {
+                    let remaining = Mutex::new(body_kb * 1024);
+                    let pull = move || -> Option<Vec<u8>> {
+                        let mut remaining = remaining.lock().unwrap();
+                        if *remaining == 0 {
+                            return None;
+                        }
+                        let len = (*remaining).min(pull_chunk_size);
+                        *remaining -= len;
+                        Some(vec![0xA5u8; len])
+                    };
+                    let mut sink = 0usize;
+                    runtime.block_on(dispatch_bidirectional_streaming(
+                        discard_header_only.clone(),
                         pull,
                         |chunk| {
                             sink += chunk.len();

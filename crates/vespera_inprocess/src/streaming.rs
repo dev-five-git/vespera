@@ -3,6 +3,7 @@
 
 use std::convert::Infallible;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use axum::body::Body;
@@ -190,8 +191,10 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
 ///
 /// `pull_chunk` runs on a Tokio blocking thread (`spawn_blocking`)
 /// because the JNI implementation reads from a Java `InputStream`,
-/// which is inherently blocking.  Backpressure is enforced by a
-/// bounded mpsc channel ([`streaming_channel_capacity`] slots,
+/// which is inherently blocking.  That blocking producer is started
+/// lazily on the first request-body poll, so handlers that never read
+/// the body never touch the `InputStream`. Backpressure is enforced by
+/// a bounded mpsc channel ([`streaming_channel_capacity`] slots,
 /// default 16): if axum reads slowly, the `pull_chunk` call blocks
 /// naturally.
 ///
@@ -282,29 +285,8 @@ async fn bidirectional_streaming_inner<P, F, H>(
         }
     };
 
-    // Bounded mpsc (default 16 slots, see streaming_channel_capacity)
-    // — gives natural backpressure between the pull_chunk producer
-    // thread and the axum handler consumer.
-    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(streaming_channel_capacity());
-
-    let producer_handle = tokio::task::spawn_blocking(move || {
-        let mut pull = pull_chunk;
-        // `None` from `pull()` ends the stream; an empty `Some(_)` is
-        // skipped (it's not EOF); a failed `blocking_send` means the
-        // receiver — axum's request body — was dropped because the
-        // handler aborted mid-stream, so we stop pulling.
-        while let Some(chunk) = pull() {
-            if chunk.is_empty() {
-                continue;
-            }
-            if tx.blocking_send(Bytes::from(chunk)).is_err() {
-                break;
-            }
-        }
-        // tx dropped at end of scope → axum sees end-of-stream.
-    });
-
-    let body = Body::new(ChannelBody { rx });
+    let producer_handle: RequestProducerHandle = Arc::new(Mutex::new(None));
+    let body = Body::new(ChannelBody::new(pull_chunk, Arc::clone(&producer_handle)));
     let (status, headers, metadata, mut response_body) = match dispatch_and_split(
         router,
         &header.method,
@@ -318,7 +300,7 @@ async fn bidirectional_streaming_inner<P, F, H>(
     {
         Ok(parts) => parts,
         Err((status, msg)) => {
-            let _ = producer_handle.await;
+            await_request_producer(&producer_handle).await;
             on_header(&error_wire(status, &msg));
             return;
         }
@@ -334,14 +316,59 @@ async fn bidirectional_streaming_inner<P, F, H>(
         }
     }
 
-    let _ = producer_handle.await;
+    await_request_producer(&producer_handle).await;
+}
+
+type RequestProducerHandle = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;
+type PullChunk = Box<dyn FnMut() -> Option<Vec<u8>> + Send + 'static>;
+
+struct RequestProducer {
+    pull_chunk: PullChunk,
+    capacity: usize,
 }
 
 /// Minimal `http_body::Body` implementation backed by an mpsc
 /// `Receiver<Bytes>` — used by [`dispatch_bidirectional_streaming`]
 /// to feed request body chunks into axum.
 struct ChannelBody {
-    rx: tokio::sync::mpsc::Receiver<Bytes>,
+    rx: Option<tokio::sync::mpsc::Receiver<Bytes>>,
+    producer: Option<RequestProducer>,
+    producer_handle: RequestProducerHandle,
+}
+
+impl ChannelBody {
+    fn new<P>(pull_chunk: P, producer_handle: RequestProducerHandle) -> Self
+    where
+        P: FnMut() -> Option<Vec<u8>> + Send + 'static,
+    {
+        Self {
+            rx: None,
+            producer: Some(RequestProducer {
+                pull_chunk: Box::new(pull_chunk),
+                capacity: streaming_channel_capacity(),
+            }),
+            producer_handle,
+        }
+    }
+
+    fn start_producer_if_needed(&mut self) {
+        if self.rx.is_some() {
+            return;
+        }
+
+        let Some(producer) = self.producer.take() else {
+            return;
+        };
+
+        // Bounded mpsc (default 16 slots, see streaming_channel_capacity)
+        // — gives natural backpressure between the pull_chunk producer
+        // thread and the axum handler consumer. The channel is created
+        // with the producer so unpolled bodies avoid both pieces of setup.
+        let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(producer.capacity);
+        self.rx = Some(rx);
+        let handle = spawn_request_producer(producer.pull_chunk, tx);
+        store_request_producer_handle(&self.producer_handle, handle);
+    }
 }
 
 impl HttpBody for ChannelBody {
@@ -352,10 +379,64 @@ impl HttpBody for ChannelBody {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        match self.rx.poll_recv(cx) {
+        self.start_producer_if_needed();
+
+        let Some(rx) = self.rx.as_mut() else {
+            return Poll::Ready(None);
+        };
+
+        match rx.poll_recv(cx) {
             Poll::Ready(Some(bytes)) => Poll::Ready(Some(Ok(Frame::data(bytes)))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }
+    }
+}
+
+fn spawn_request_producer(
+    mut pull: PullChunk,
+    tx: tokio::sync::mpsc::Sender<Bytes>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::task::spawn_blocking(move || {
+        // `None` from `pull()` ends the stream; an empty `Some(_)` is
+        // skipped (it's not EOF); a failed `blocking_send` means the
+        // receiver — axum's request body — was dropped because the
+        // handler aborted mid-stream, so we stop pulling.
+        while let Some(chunk) = pull() {
+            if chunk.is_empty() {
+                continue;
+            }
+            if tx.blocking_send(Bytes::from(chunk)).is_err() {
+                break;
+            }
+        }
+        // tx dropped at end of scope → axum sees end-of-stream.
+    })
+}
+
+fn store_request_producer_handle(
+    producer_handle: &RequestProducerHandle,
+    handle: tokio::task::JoinHandle<()>,
+) {
+    match producer_handle.lock() {
+        Ok(mut guard) => *guard = Some(handle),
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = Some(handle);
+        }
+    }
+}
+
+async fn await_request_producer(producer_handle: &RequestProducerHandle) {
+    let handle = match producer_handle.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            guard.take()
+        }
+    };
+
+    if let Some(handle) = handle {
+        let _ = handle.await;
     }
 }
