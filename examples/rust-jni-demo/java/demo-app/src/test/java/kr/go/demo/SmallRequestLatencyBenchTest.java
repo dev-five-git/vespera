@@ -8,6 +8,8 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
@@ -88,6 +90,18 @@ class SmallRequestLatencyBenchTest {
         return status[0];
     }
 
+    private static int asyncOnce() {
+        byte[] wire = VesperaBridge.encodeRequest(null, "GET", "/health", null, HEADERS, null);
+        CompletableFuture<byte[]> future = new CompletableFuture<>();
+        VesperaBridge.dispatchAsync(future, wire);
+        try {
+            byte[] resp = future.get(30, TimeUnit.SECONDS);
+            return VesperaBridge.decodeResponse(resp).status();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     /** Response-streaming only — no request pull thread (empty body inline). */
     private static int responseStreamingOnce() {
         byte[] wire = VesperaBridge.encodeRequest(null, "GET", "/health", null, HEADERS, null);
@@ -130,11 +144,17 @@ class SmallRequestLatencyBenchTest {
                         SmallRequestLatencyBenchTest::responseStreamingOnce);
         long streaming =
                 measure("bidirectional_streaming", SmallRequestLatencyBenchTest::streamingOnce);
+        long async =
+                measure(
+                        "async_completable_future",
+                        SmallRequestLatencyBenchTest::asyncOnce);
         System.out.printf(
                 "VESPERA_BENCH summary direct_vs_streaming=%.2fx direct_vs_sync=%.2fx"
-                        + " resp_only_vs_bidi=%.2fx%n",
+                        + " resp_only_vs_bidi=%.2fx async_vs_sync=%.2fx async_vs_direct=%.2fx%n",
                 (double) streaming / direct,
                 (double) sync / direct,
-                (double) streaming / respStreaming);
+                (double) streaming / respStreaming,
+                (double) async / sync,
+                (double) async / direct);
     }
 }

@@ -109,3 +109,60 @@ jobs:
     outputs:
       changepacks: ${{ steps.changepacks.outputs.changepacks }}
       release_assets_urls: ${{ steps.changepacks.outputs.release_assets_urls }}
+
+  # JNI end-to-end tests — builds the rust-jni-demo cdylib, publishes the
+  # vespera-bridge JAR to mavenLocal (so the demo-app Gradle plugin can
+  # resolve kr.devfive:vespera-bridge:1.0.0), then runs the full
+  # :demo-app:test suite (StreamingClosureStressTest + JNI dispatch tests)
+  # across all three target host OSes. This is the project's only Java/JNI
+  # coverage gate — until now the workflow ran zero JNI tests.
+  #
+  # Runs unconditionally on every push/PR (matching the existing CI job's
+  # style — no per-job paths-filter). The whole workflow already inherits
+  # the workflow-level `paths-ignore` for docs-only changes.
+  jni-e2e:
+    name: JNI E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Build rust-jni-demo cdylib (release)
+        # The vespera-bridge Gradle plugin's bundleNativeLib task copies
+        # this cdylib from target/release into demo-app's resources, so it
+        # must exist before `:demo-app:test` (processResources) runs.
+        run: cargo build -p rust-jni-demo --release
+      - name: Make gradlew executable (unix)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x libs/vespera-bridge/gradlew
+          chmod +x examples/rust-jni-demo/java/gradlew
+      - name: Publish vespera-bridge to mavenLocal
+        # demo-app resolves kr.devfive:vespera-bridge:1.0.0 from mavenLocal
+        # (see examples/rust-jni-demo/java/demo-app/build.gradle.kts —
+        # bridgeVersion.set("1.0.0")).
+        shell: bash
+        working-directory: libs/vespera-bridge
+        run: ./gradlew publishToMavenLocal --console=plain --no-daemon
+      - name: Run demo-app JNI E2E tests
+        # Includes StreamingClosureStressTest (1000 × 1 MiB SHA256
+        # bidirectional round-trip). Bench knobs are NOT propagated —
+        # gated bench tests stay skipped in CI.
+        shell: bash
+        working-directory: examples/rust-jni-demo/java
+        run: ./gradlew :demo-app:test --console=plain --no-daemon
+      - name: Upload demo-app test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jni-e2e-${{ matrix.os }}-test-results
+          path: examples/rust-jni-demo/java/demo-app/build/test-results/test/*.xml

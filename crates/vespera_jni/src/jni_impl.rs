@@ -1,7 +1,13 @@
-use std::sync::LazyLock;
+use std::{
+    cell::Cell,
+    ffi::c_void,
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+    ptr,
+    sync::LazyLock,
+};
 
 use jni::EnvUnowned;
-use jni::errors::ThrowRuntimeExAndDefault;
+use jni::errors::{ThrowRuntimeExAndDefault, jni_error_code_to_result};
 use jni::objects::{Global, JByteArray, JByteBuffer, JClass, JObject};
 use jni::sys::{jbyteArray, jint};
 
@@ -30,6 +36,75 @@ const MIN_RUNTIME_WORKERS: usize = 1;
 const MAX_RUNTIME_WORKERS: usize = 1024;
 
 static RUNTIME_WORKER_THREADS: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+
+thread_local! {
+    static ASYNC_DAEMON_ENV: Cell<*mut jni::sys::JNIEnv> = const { Cell::new(ptr::null_mut()) };
+}
+
+fn attach_async_daemon_thread(jvm: &jni::JavaVM) -> jni::errors::Result<*mut jni::sys::JNIEnv> {
+    let raw_vm = jvm.get_raw();
+    let mut env_ptr = ptr::null_mut::<c_void>();
+    let mut args = jni::sys::JavaVMAttachArgs {
+        version: jni::JNIVersion::V1_4.into(),
+        name: ptr::null_mut(),
+        group: ptr::null_mut(),
+    };
+
+    // SAFETY: `raw_vm` comes from `Env::get_java_vm()` and is therefore a valid
+    // JavaVM pointer for this process.  JNI 1.4 provides
+    // `AttachCurrentThreadAsDaemon`; the returned `JNIEnv` is valid only on the
+    // current OS thread and is cached in thread-local storage below.
+    let res = unsafe {
+        ((*(*raw_vm)).v1_4.AttachCurrentThreadAsDaemon)(
+            raw_vm,
+            &raw mut env_ptr,
+            (&raw mut args).cast::<c_void>(),
+        )
+    };
+    jni_error_code_to_result(res)?;
+    if env_ptr.is_null() {
+        return Err(jni::errors::Error::NullPtr("AttachCurrentThreadAsDaemon"));
+    }
+
+    Ok(env_ptr.cast())
+}
+
+fn with_async_daemon_env<F, T, E>(jvm: &jni::JavaVM, callback: F) -> std::result::Result<T, E>
+where
+    F: FnOnce(&mut jni::Env<'_>) -> std::result::Result<T, E>,
+    E: From<jni::errors::Error>,
+{
+    ASYNC_DAEMON_ENV.with(|env_cell| {
+        let mut env_ptr = env_cell.get();
+        if env_ptr.is_null() {
+            env_ptr = attach_async_daemon_thread(jvm)?;
+            env_cell.set(env_ptr);
+        }
+
+        // SAFETY: the pointer was produced for this exact Tokio worker thread
+        // by `AttachCurrentThreadAsDaemon` and is never shared across threads
+        // (TLS confines it).  Tokio workers for the static runtime live until
+        // process teardown, and daemon attachment means they do not keep the JVM
+        // alive during shutdown.  The per-call local frame prevents local-ref
+        // accumulation on the permanently attached daemon thread.  The explicit
+        // post-call exception cleanup below replaces jni-rs scoped-detach
+        // cleanup, which daemon attachments intentionally do not run.
+        let mut guard = unsafe { jni::AttachGuard::from_unowned(env_ptr) };
+        let env = guard.borrow_env_mut();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            env.with_local_frame(jni::DEFAULT_LOCAL_FRAME_CAPACITY, callback)
+        }));
+
+        if env.exception_check() {
+            env.exception_clear();
+        }
+
+        match result {
+            Ok(callback_result) => callback_result,
+            Err(payload) => resume_unwind(payload),
+        }
+    })
+}
 
 /// Worker thread count for the shared [`RUNTIME`], resolved once
 /// (first hit wins, then fixed for the process lifetime):
@@ -391,10 +466,10 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
                 .await
                 .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
 
-            // Re-attach to JVM on this worker thread; subsequent
-            // dispatches on the same thread will hit the TLS fast
-            // path (cheap).
-            let _ = jvm.attach_current_thread(|env| -> jni::errors::Result<()> {
+            // Complete on a cached daemon attachment for this Tokio
+            // worker.  This avoids attach/detach churn without making
+            // runtime workers block JVM shutdown.
+            let _ = with_async_daemon_env(&jvm, |env| -> jni::errors::Result<()> {
                 complete_future(env, &future_global, &response)
             });
         });
