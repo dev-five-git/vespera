@@ -1,7 +1,12 @@
+import com.vanniktech.maven.publish.GradlePublishPlugin
+
 plugins {
     `java-gradle-plugin`
     `kotlin-dsl`
     id("com.vanniktech.maven.publish") version "0.36.0"
+    // Gradle Plugin Portal publishing (`publishPlugins` task). Credentials
+    // come from GRADLE_PUBLISH_KEY / GRADLE_PUBLISH_SECRET env vars in CI.
+    id("com.gradle.plugin-publish") version "2.1.1"
 }
 
 group = "kr.devfive"
@@ -23,6 +28,10 @@ repositories {
 }
 
 gradlePlugin {
+    // Required by the Plugin Portal (`com.gradle.plugin-publish`).
+    website.set("https://github.com/dev-five-git/vespera")
+    vcsUrl.set("https://github.com/dev-five-git/vespera.git")
+
     plugins {
         create("vesperaBridge") {
             id = "kr.devfive.vespera-bridge"
@@ -48,6 +57,11 @@ val shouldSign = !providers.gradleProperty("signingInMemoryKey").orNull.isNullOr
 mavenPublishing {
     publishToMavenCentral(automaticRelease = true)
     if (shouldSign) signAllPublications()
+
+    // `com.gradle.plugin-publish` owns the sources/javadoc jars in this
+    // setup — vanniktech docs mandate GradlePublishPlugin (not GradlePlugin)
+    // when both plugins are applied, to avoid duplicate jar registration.
+    configure(GradlePublishPlugin())
 
     coordinates(
         groupId = "kr.devfive",

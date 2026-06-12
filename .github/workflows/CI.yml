@@ -69,7 +69,9 @@ jobs:
   changepacks:
     name: changepacks
     runs-on: ubuntu-latest
-    needs: test
+    # jni-e2e gates publishing: a release must never ship with a broken
+    # JNI dispatch path on any supported OS.
+    needs: [test, jni-e2e]
     permissions:
       # create pull request comments
       pull-requests: write
@@ -106,6 +108,10 @@ jobs:
           # GPG signing (in-memory key, no keyring file)
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_SIGNING_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_SIGNING_PASSWORD }}
+          # Gradle Plugin Portal credentials (read natively by
+          # com.gradle.plugin-publish for the `publishPlugins` task)
+          GRADLE_PUBLISH_KEY: ${{ secrets.GRADLE_PUBLISH_KEY }}
+          GRADLE_PUBLISH_SECRET: ${{ secrets.GRADLE_PUBLISH_SECRET }}
     outputs:
       changepacks: ${{ steps.changepacks.outputs.changepacks }}
       release_assets_urls: ${{ steps.changepacks.outputs.release_assets_urls }}
