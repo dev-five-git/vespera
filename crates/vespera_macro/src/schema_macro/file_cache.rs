@@ -188,7 +188,6 @@ fn get_mtime_cached(cache: &mut FileCache, path: &Path) -> Option<SystemTime> {
     {
         return mtime;
     }
-    // Epoch miss — call fs::metadata and cache the result.
     #[cfg(test)]
     METADATA_CALL_COUNT.with(|c| c.set(c.get() + 1));
     let mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
@@ -252,7 +251,6 @@ pub fn get_struct_candidates(src_dir: &Path, struct_name: &str) -> Arc<[PathBuf]
             return Arc::clone(candidates);
         }
 
-        // Ensure file list is cached
         let files: Arc<[PathBuf]> = if let Some(files) = cache.file_lists.get(src_dir) {
             Arc::clone(files)
         } else {
@@ -265,7 +263,6 @@ pub fn get_struct_candidates(src_dir: &Path, struct_name: &str) -> Arc<[PathBuf]
             files
         };
 
-        // Filter using cheap text search, caching file contents along the way
         let candidates: Arc<[PathBuf]> = files
             .iter()
             .filter(|path| {
@@ -293,8 +290,6 @@ fn ensure_struct_definitions(cache: &mut FileCache, path: &Path) -> bool {
         return true;
     }
 
-    // Cache miss — parse file and extract all struct definitions.
-    // Uses parse_file_cached: single syn::parse_file entry point.
     let Some(file_ast) = parse_file_cached(cache, path) else {
         return false;
     };
@@ -356,7 +351,6 @@ fn get_file_content_inner(cache: &mut FileCache, path: &Path) -> Option<Arc<Stri
         return Some(Arc::clone(content));
     }
 
-    // Cache miss or stale — read and cache
     let content = Arc::new(std::fs::read_to_string(path).ok()?);
     cache.file_disk_reads += 1;
 
@@ -392,17 +386,15 @@ pub fn parse_struct_cached(definition: &str) -> Result<syn::ItemStruct, syn::Err
 pub fn get_circular_analysis(source_module_path: &[String], definition: &str) -> CircularAnalysis {
     let key = (source_module_path.join("::"), definition.to_string());
 
-    // 1. Check cache — borrow dropped at end of closure
+    // The borrow must end before analyzing: analysis re-enters FILE_CACHE.
     let cached = FILE_CACHE.with(|cache| cache.borrow().circular_analysis.get(&key).cloned());
     if let Some(result) = cached {
         FILE_CACHE.with(|cache| cache.borrow_mut().circular_cache_hits += 1);
         return result;
     }
 
-    // 2. Compute — this re-enters FILE_CACHE via parse_struct_cached (safe: our borrow is dropped)
     let result = super::circular::analyze_circular_refs(source_module_path, definition);
 
-    // 3. Store — new borrow
     FILE_CACHE.with(|cache| {
         cache
             .borrow_mut()
@@ -421,17 +413,15 @@ pub fn get_circular_analysis(source_module_path: &[String], definition: &str) ->
 /// The `Arc` makes cache hits O(1) instead of cloning the full struct
 /// definition text per lookup.
 pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>> {
-    // 1. Check cache — borrow dropped at end of closure
+    // The borrow must end before lookup: lookup re-enters FILE_CACHE.
     let cached = FILE_CACHE.with(|cache| cache.borrow().struct_lookup.get(path_str).cloned());
     if let Some(result) = cached {
         FILE_CACHE.with(|cache| cache.borrow_mut().struct_lookup_cache_hits += 1);
         return result;
     }
 
-    // 2. Compute — this re-enters FILE_CACHE via get_struct_definition (safe: our borrow is dropped)
     let result = super::file_lookup::find_struct_from_schema_path(path_str).map(Arc::new);
 
-    // 3. Store — new borrow (Arc clone is O(1))
     FILE_CACHE.with(|cache| {
         cache
             .borrow_mut()
@@ -449,17 +439,15 @@ pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>
 pub fn get_fk_column(schema_path: &str, via_rel: &str) -> Option<String> {
     let key = (schema_path.to_string(), via_rel.to_string());
 
-    // 1. Check cache — borrow dropped at end of closure
+    // The borrow must end before lookup: lookup re-enters FILE_CACHE.
     let cached = FILE_CACHE.with(|cache| cache.borrow().fk_column_lookup.get(&key).cloned());
     if let Some(result) = cached {
         FILE_CACHE.with(|cache| cache.borrow_mut().fk_column_cache_hits += 1);
         return result;
     }
 
-    // 2. Compute — this re-enters FILE_CACHE via get_struct_definition (safe: our borrow is dropped)
     let result = super::file_lookup::find_fk_column_from_target_entity(schema_path, via_rel);
 
-    // 3. Store — new borrow
     FILE_CACHE.with(|cache| {
         cache
             .borrow_mut()
@@ -478,26 +466,20 @@ pub fn get_fk_column(schema_path: &str, via_rel: &str) -> Option<String> {
 pub fn get_module_path_from_schema_path(schema_path: &proc_macro2::TokenStream) -> Vec<String> {
     let path_str = schema_path.to_string();
 
-    // 1. Check cache — borrow dropped at end of closure
     let cached = FILE_CACHE.with(|cache| cache.borrow().module_path_cache.get(&path_str).cloned());
     if let Some(result) = cached {
         FILE_CACHE.with(|cache| cache.borrow_mut().module_path_cache_hits += 1);
         return result;
     }
 
-    // 2. Compute directly: collect once, pop the trailing schema segment.
-    //    The previous version built an intermediate `Vec<&str>` and then
-    //    re-allocated it into a `Vec<String>` (one wasted allocation per
-    //    cache miss).
     let mut result: Vec<String> = path_str
         .split("::")
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
         .collect();
-    result.pop(); // drop the trailing segment (the schema name itself)
+    result.pop();
 
-    // 3. Store — new borrow
     FILE_CACHE.with(|cache| {
         cache
             .borrow_mut()
@@ -637,21 +619,16 @@ mod tests {
         )
         .unwrap();
 
-        // First call: populates file_lists cache for src_dir
         let result1 = get_struct_candidates(src_dir, "Alpha");
         assert_eq!(result1.len(), 1);
 
-        // Second call: same src_dir, different struct_name
-        // struct_candidates cache MISS (different key), but file_lists cache HIT → line 125
         let result2 = get_struct_candidates(src_dir, "Beta");
         assert_eq!(result2.len(), 1);
     }
 
     #[test]
     fn test_get_fk_column_cache_hit() {
-        // First call: computes and caches result (None since path doesn't exist)
         let result1 = get_fk_column("nonexistent::path::Schema", "SomeRelation");
-        // Second call: hits cache → lines 259-260
         let result2 = get_fk_column("nonexistent::path::Schema", "SomeRelation");
         assert_eq!(result1, result2);
     }
@@ -659,24 +636,18 @@ mod tests {
     #[serial_test::serial]
     #[test]
     fn test_print_profile_summary_with_profile_env() {
-        // Set VESPERA_PROFILE to enable profiling output
         unsafe { std::env::set_var("VESPERA_PROFILE", "1") };
 
-        // This should print profile summary to stderr (lines 311-321)
         print_profile_summary();
 
-        // Clean up
         unsafe { std::env::remove_var("VESPERA_PROFILE") };
-        // Test passes if no panic — output goes to stderr
     }
 
     #[serial_test::serial]
     #[test]
     fn test_print_profile_summary_without_profile_env() {
-        // Ensure VESPERA_PROFILE is not set
         unsafe { std::env::remove_var("VESPERA_PROFILE") };
 
-        // Should early-return at line 308 without printing anything
         print_profile_summary();
     }
 

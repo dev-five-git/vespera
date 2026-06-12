@@ -80,7 +80,6 @@ pub fn collect_metadata_from_files(
 
         let mut file_path = file.display().to_string();
 
-        // Get module path (cheap — no parsing needed)
         let segments = file
             .strip_prefix(folder_path)
             .map(|file_stem| file_to_segments(file_stem, folder_path))
@@ -99,7 +98,6 @@ pub fn collect_metadata_from_files(
             format!("{}::{}", folder_name, segments.join("::"))
         };
 
-        // Pre-compute base path once per file (avoids repeated segments.join per route)
         let base_path = format!("/{}", segments.join("/"));
 
         // Fast path: ROUTE_STORAGE has entries for this file — skip syn::parse_file()
@@ -155,11 +153,8 @@ pub fn collect_metadata_from_files(
             // #[derive(Schema)] already extracts serde(default = "fn") values
             // into SCHEMA_STORAGE.field_defaults (Priority 0 in process_default_functions)
         } else {
-            // Slow path: full parsing (fallback for files not in ROUTE_STORAGE)
-            // Uses get_parsed_file: single syn::parse_file entry point + content cache
             let file_ast = crate::schema_macro::file_cache::get_parsed_file(file).ok_or_else(|| err_call_site(format!("vespera! macro: cannot read or parse '{}'. Fix the Rust syntax errors in this file.", file.display())))?;
 
-            // Store file AST for downstream reuse (HashMap key needs its own copy)
             file_asts.insert(file_path.clone(), file_ast);
             let file_ast = &file_asts[&file_path];
 
@@ -245,8 +240,6 @@ mod tests {
 
         assert!(metadata.routes.is_empty());
         assert!(metadata.structs.is_empty());
-
-        drop(temp_dir);
     }
 
     #[rstest]
@@ -374,8 +367,6 @@ mod tests {
                     .contains(first_filename.split('/').next().unwrap())
             );
         }
-
-        drop(temp_dir);
     }
 
     #[test]
@@ -386,8 +377,6 @@ mod tests {
         let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         assert_eq!(metadata.routes.len(), 0);
-
-        drop(temp_dir);
     }
 
     #[test]
@@ -410,8 +399,6 @@ mod tests {
 
         assert_eq!(metadata.routes.len(), 0);
         assert_eq!(metadata.structs.len(), 0);
-
-        drop(temp_dir);
     }
 
     #[test]
@@ -444,8 +431,6 @@ mod tests {
 
         let route = &metadata.routes[0];
         assert_eq!(route.function_name, "get_user");
-
-        drop(temp_dir);
     }
 
     #[test]
@@ -485,7 +470,6 @@ mod tests {
         assert_eq!(metadata.routes.len(), 3);
         assert_eq!(metadata.structs.len(), 0);
 
-        // Check all routes are present
         let function_names: Vec<&str> = metadata
             .routes
             .iter()
@@ -494,8 +478,6 @@ mod tests {
         assert!(function_names.contains(&"get_users"));
         assert!(function_names.contains(&"create_users"));
         assert!(function_names.contains(&"get_posts"));
-
-        drop(temp_dir);
     }
 
     #[test]
@@ -534,8 +516,6 @@ mod tests {
         let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
         assert_eq!(metadata.routes.len(), 0);
-
-        drop(temp_dir);
     }
 
     #[test]
@@ -561,8 +541,6 @@ mod tests {
         assert_eq!(route.function_name, "index");
         assert_eq!(route.path, "/");
         assert_eq!(route.module_path, "routes::");
-
-        drop(temp_dir);
     }
 
     #[test]
@@ -586,8 +564,6 @@ mod tests {
         assert_eq!(metadata.routes.len(), 1);
         let route = &metadata.routes[0];
         assert_eq!(route.module_path, "users");
-
-        drop(temp_dir);
     }
 
     #[test]
@@ -612,11 +588,8 @@ mod tests {
 
         let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
-        // Only .rs file should be processed
         assert_eq!(metadata.routes.len(), 1);
         assert_eq!(metadata.structs.len(), 0);
-
-        drop(temp_dir);
     }
 
     #[test]
@@ -639,10 +612,7 @@ mod tests {
 
         let metadata = collect_metadata(temp_dir.path(), folder_name, &[]).map(|(m, _)| m);
 
-        // Only valid file should be processed
         assert!(metadata.is_err());
-
-        drop(temp_dir);
     }
 
     #[test]
@@ -672,8 +642,6 @@ mod tests {
         assert!(error_status.contains(&400));
         assert!(error_status.contains(&404));
         assert!(error_status.contains(&500));
-
-        drop(temp_dir);
     }
 
     #[test]
@@ -720,19 +688,15 @@ mod tests {
         assert!(methods.contains(&"delete"));
         assert!(methods.contains(&"head"));
         assert!(methods.contains(&"options"));
-
-        drop(temp_dir);
     }
 
     #[test]
     fn test_collect_metadata_collect_files_error() {
-        // Test: collect_files returns error (non-existent directory)
         let non_existent_path = std::path::Path::new("/nonexistent/path/that/does/not/exist");
         let folder_name = "routes";
 
         let result = collect_metadata(non_existent_path, folder_name, &[]);
 
-        // Should return error when collect_files fails
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("failed to scan route folder"));
@@ -741,7 +705,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_collect_metadata_file_read_error_permissions() {
-        // Test line 31-37: file read error due to permission denial
         // On Unix, we can create a file and then remove read permissions
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
@@ -749,7 +712,6 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let folder_name = "routes";
 
-        // Create a file with valid Rust syntax
         let file_path = temp_dir.path().join("unreadable.rs");
         fs::write(
             &file_path,
@@ -762,7 +724,6 @@ mod tests {
         )
         .expect("Failed to write temp file");
 
-        // Remove read permissions
         let permissions = fs::Permissions::from_mode(0o000);
         fs::set_permissions(&file_path, permissions).expect("Failed to set permissions");
 
@@ -778,19 +739,14 @@ mod tests {
             return;
         }
 
-        // Attempt to collect metadata - should fail with "failed to read route file" error
         let result = collect_metadata(temp_dir.path(), folder_name, &[]);
 
-        // Verify error message
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("failed to read route file"));
 
-        // Restore permissions so tempdir cleanup doesn't fail
         let permissions = fs::Permissions::from_mode(0o644);
         fs::set_permissions(&file_path, permissions).ok();
-
-        drop(temp_dir);
     }
 
     #[test]
@@ -814,11 +770,9 @@ mod tests {
         // This is tested indirectly via test_collect_metadata_file_read_error_via_invalid_syntax
         // which verifies error propagation works correctly.
 
-        // Verify the documented behavior with a comment-only test
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let folder_name = "routes";
 
-        // Successfully create a readable file to verify the happy path
         create_temp_file(
             &temp_dir,
             "readable.rs",
@@ -830,34 +784,25 @@ mod tests {
 
         let result = collect_metadata(temp_dir.path(), folder_name, &[]);
         assert!(result.is_ok());
-
-        drop(temp_dir);
     }
 
     #[test]
     fn test_collect_metadata_file_read_error_via_invalid_syntax() {
-        // Test line 31-37: verify error handling by parsing invalid files
         // While we can't easily trigger read errors on all platforms,
         // we verify the code path by ensuring errors are properly propagated
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let folder_name = "routes";
 
-        // Create a file that will fail to parse (syntax error)
         create_temp_file(&temp_dir, "invalid.rs", "{{{");
 
-        // This should fail during syntax parsing, not file reading
         let result = collect_metadata(temp_dir.path(), folder_name, &[]);
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("syntax error"));
-
-        drop(temp_dir);
     }
 
     #[test]
     fn test_collect_metadata_strip_prefix_succeeds_in_normal_case() {
-        // Test line 49-58: strip_prefix succeeds in the normal case
-        //
         // DEFENSIVE CODE ANALYSIS (line 49-58):
         // The strip_prefix error path is nearly impossible to trigger in practice because:
         // 1. collect_files() returns paths by walking folder_path
@@ -869,15 +814,12 @@ mod tests {
         // - Or if folder_path contained symlinks with different absolute paths
         // - Or if the filesystem changed between collect_files and this loop
         //
-        // This test verifies the normal case works correctly.
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let folder_name = "routes";
 
-        // Create a subdirectory
         let sub_dir = temp_dir.path().join("routes");
         std::fs::create_dir_all(&sub_dir).expect("Failed to create subdirectory");
 
-        // Create a file in the subdirectory
         create_temp_file(
             &temp_dir,
             "routes/valid.rs",
@@ -889,21 +831,15 @@ mod tests {
     "#,
         );
 
-        // Collect metadata from the subdirectory
         let (metadata, _file_asts) = collect_metadata(&sub_dir, folder_name, &[]).unwrap();
 
-        // Should collect the route (strip_prefix succeeds in normal cases)
         assert_eq!(metadata.routes.len(), 1);
         let route = &metadata.routes[0];
         assert_eq!(route.function_name, "get_users");
-
-        drop(temp_dir);
     }
 
     #[test]
     fn test_collect_metadata_struct_without_derive() {
-        // Test line 81: attr.path().is_ident("derive") returns false
-        // Struct with non-derive attributes should not be collected
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let folder_name = "routes";
 
@@ -920,15 +856,11 @@ mod tests {
 
         let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
-        // Struct without Schema derive should not be collected
         assert_eq!(metadata.structs.len(), 0);
-
-        drop(temp_dir);
     }
 
     #[test]
     fn test_collect_metadata_struct_with_other_derive() {
-        // Test line 81: struct with other derive attributes (not Schema)
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let folder_name = "routes";
 
@@ -946,11 +878,6 @@ mod tests {
 
         let (metadata, _file_asts) = collect_metadata(temp_dir.path(), folder_name, &[]).unwrap();
 
-        // Struct with only Debug/Clone derive (no Schema) should not be collected
         assert_eq!(metadata.structs.len(), 0);
-
-        drop(temp_dir);
     }
-
-    // ── normalize_path_key regression locks ─────────────────────────
 }

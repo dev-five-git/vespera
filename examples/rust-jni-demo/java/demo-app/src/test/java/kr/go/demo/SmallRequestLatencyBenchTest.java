@@ -9,34 +9,14 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
-/**
- * E2E small-request latency benchmark through the REAL JNI boundary —
- * quantifies what {@code vespera.bridge.dispatch-mode=smart} buys for
- * the requests it targets (small bounded idempotent), by comparing the
- * three dispatch modes on the same tiny {@code GET /health} round-trip:
- *
- * <ul>
- *   <li>{@code SYNC} — {@code encodeRequest} → {@code dispatchBytes}
- *       → {@code decodeResponse} (two JNI array copies)</li>
- *   <li>{@code DIRECT} — {@code dispatchDirectPooled} fast path
- *       (pooled direct buffers, no Java heap arrays)</li>
- *   <li>{@code BIDIRECTIONAL_STREAMING} — the autoconfigured default
- *       ({@code dispatchFullStreamingWithHeader})</li>
- * </ul>
- *
- * <p>Gated behind {@code -Dvespera.bench=true} so normal test runs and
- * CI skip it:
- *
- * <pre>
- *   ./gradlew :demo-app:test --tests "*SmallRequestLatencyBenchTest*" \
- *       -Dvespera.bench=true
- * </pre>
- */
+/** E2E JNI latency benchmark gated behind {@code -Dvespera.bench=true}. */
 @EnabledIfSystemProperty(named = "vespera.bench", matches = "true")
 class SmallRequestLatencyBenchTest {
 
@@ -49,7 +29,6 @@ class SmallRequestLatencyBenchTest {
         VesperaBridge.init("rust_jni_demo");
     }
 
-    /** OutputStream that counts bytes without storing them. */
     private static final class CountingOutputStream extends OutputStream {
         long count;
 
@@ -97,7 +76,7 @@ class SmallRequestLatencyBenchTest {
         try {
             byte[] resp = future.get(30, TimeUnit.SECONDS);
             return VesperaBridge.decodeResponse(resp).status();
-        } catch (Exception e) {
+        } catch (InterruptedException | ExecutionException | TimeoutException e) {
             throw new RuntimeException(e);
         }
     }

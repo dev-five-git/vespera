@@ -427,13 +427,8 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
     // can't even promote the future to a GlobalRef, which would
     // mean the JVM is already in trouble).
     let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
-        // 1. Promote CompletableFuture to Global so it survives
-        //    across the tokio task boundary.
         let future_global: Global<JObject<'static>> = env.new_global_ref(&future_obj)?;
 
-        // 2. Try to read the input byte array.  On failure,
-        //    complete the future synchronously with the error wire
-        //    and return early — no async work needed.
         let input = {
             let len = request_bytes.len(env).unwrap_or(0);
             let mut buf = vec![0u8; len];
@@ -454,21 +449,15 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
             buf
         };
 
-        // 3. Snapshot the JavaVM (Send + Sync) so we can re-attach
-        //    the tokio worker thread once the dispatch completes.
         let jvm = env.get_java_vm()?;
 
-        // 4. Fire-and-forget on the runtime.  An inner tokio::spawn
-        //    converts any panic in dispatch_from_bytes_async into
-        //    a JoinError, guaranteeing always-complete semantics.
+        // The inner task converts Rust panics into JoinError, preserving
+        // always-complete semantics for the Java future.
         RUNTIME.spawn(async move {
             let response = tokio::spawn(vespera_inprocess::dispatch_from_bytes_async(input))
                 .await
                 .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
 
-            // Complete on a cached daemon attachment for this Tokio
-            // worker.  This avoids attach/detach churn without making
-            // runtime workers block JVM shutdown.
             let _ = with_async_daemon_env(&jvm, |env| -> jni::errors::Result<()> {
                 complete_future(env, &future_global, &response)
             });
@@ -587,13 +576,13 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
             let output_global: Global<JObject<'static>> = env.new_global_ref(&output_stream)?;
             let jvm = env.get_java_vm()?;
 
-            // One reusable Java chunk buffer PER SIDE — pull and
-            // push run concurrently on different threads, so each
+            let chunk_size = streaming_chunk_size();
+            // Pull and push run concurrently on different threads, so each
             // direction owns its own global-ref'd buffer.
-            let pull_buf_local = env.new_byte_array(streaming_chunk_size())?;
+            let pull_buf_local = env.new_byte_array(chunk_size)?;
             let pull_buf: Global<jni::objects::JByteArray<'static>> =
                 env.new_global_ref(&pull_buf_local)?;
-            let push_buf_local = env.new_byte_array(streaming_chunk_size())?;
+            let push_buf_local = env.new_byte_array(chunk_size)?;
             let push_buf: Global<jni::objects::JByteArray<'static>> =
                 env.new_global_ref(&push_buf_local)?;
 
@@ -729,12 +718,12 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
         let output_global: Global<JObject<'static>> = env.new_global_ref(&output_stream)?;
         let jvm = env.get_java_vm()?;
 
-        // One reusable Java chunk buffer PER SIDE — pull and push
-        // run concurrently on different threads.
-        let pull_buf_local = env.new_byte_array(streaming_chunk_size())?;
+        let chunk_size = streaming_chunk_size();
+        // Pull and push run concurrently on different threads.
+        let pull_buf_local = env.new_byte_array(chunk_size)?;
         let pull_buf: Global<jni::objects::JByteArray<'static>> =
             env.new_global_ref(&pull_buf_local)?;
-        let push_buf_local = env.new_byte_array(streaming_chunk_size())?;
+        let push_buf_local = env.new_byte_array(chunk_size)?;
         let push_buf: Global<jni::objects::JByteArray<'static>> =
             env.new_global_ref(&push_buf_local)?;
 

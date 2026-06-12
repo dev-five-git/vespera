@@ -145,7 +145,15 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           chmod +x libs/vespera-bridge/gradlew
+          chmod +x libs/vespera-bridge-gradle-plugin/gradlew
           chmod +x examples/rust-jni-demo/java/gradlew
+      - name: Publish vespera-bridge Gradle plugin to mavenLocal
+        # demo-app's plugins block resolves kr.devfive.vespera-bridge from
+        # mavenLocal (settings.gradle.kts pluginManagement) — the plugin is
+        # not on the Gradle Plugin Portal.
+        shell: bash
+        working-directory: libs/vespera-bridge-gradle-plugin
+        run: ./gradlew publishToMavenLocal --console=plain --no-daemon
       - name: Publish vespera-bridge to mavenLocal
         # demo-app resolves kr.devfive:vespera-bridge:1.0.0 from mavenLocal
         # (see examples/rust-jni-demo/java/demo-app/build.gradle.kts —

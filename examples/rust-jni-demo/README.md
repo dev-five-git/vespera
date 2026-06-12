@@ -188,9 +188,9 @@ All failure paths (malformed wire, Rust panic, no app registered) return a lengt
 ```kotlin
 // build.gradle.kts
 repositories {
-    maven { url = uri("https://maven.pkg.github.com/dev-five-git/vespera") }
+    mavenCentral()
 }
 dependencies {
-    implementation("kr.devfive:vespera-bridge:0.1.1")
+    implementation("kr.devfive:vespera-bridge:1.0.0")
 }
 ```

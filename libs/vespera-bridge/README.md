@@ -22,7 +22,7 @@ For Spring Boot apps the [`kr.devfive.vespera-bridge`](../vespera-bridge-gradle-
 
 ```kotlin
 plugins {
-    id("kr.devfive.vespera-bridge") version "0.0.15"
+    id("kr.devfive.vespera-bridge") version "0.1.1"
 }
 
 vespera {

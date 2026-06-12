@@ -97,7 +97,7 @@ public class VesperaProxyController {
                 return dispatchAsyncFlow(appName, method, path, query, headers,
                         readBody(request));
             case STREAMING:
-                dispatchStreaming(request, response, appName, method, path, query,
+                dispatchStreaming(response, appName, method, path, query,
                         headers, readBody(request));
                 return null;
             case DIRECT:
@@ -111,42 +111,27 @@ public class VesperaProxyController {
         }
     }
 
-    /**
-     * Fully read the servlet request body into a byte array.  Used
-     * by sync / async / response-streaming modes (the bidirectional
-     * mode forwards the InputStream as-is).
-     */
     private static byte[] readBody(HttpServletRequest request) throws IOException {
         try (InputStream in = request.getInputStream()) {
             return in.readAllBytes();
         }
     }
 
-    // ── Mode handlers ─────────────────────────────────────────────────
-
-    /** Sync — full request body materialised, full response materialised. */
     private ResponseEntity<?> dispatchSync(
             String appName, String method, String path, String query,
             Map<String, String> headers, byte[] body) {
-        byte[] bodyBytes = body != null ? body : new byte[0];
         byte[] wireReq = VesperaBridge.encodeRequest(
-                appName, method, path, query, headers, bodyBytes);
+                appName, method, path, query, headers, body);
         byte[] wireResp = VesperaBridge.dispatchBytes(wireReq);
         DecodedResponse decoded = VesperaBridge.decodeResponse(wireResp);
         return buildResponseEntity(decoded);
     }
 
-    /**
-     * Async — request body materialised, response delivered via a
-     * {@link CompletableFuture}.  Spring MVC adapts the future
-     * automatically to its servlet-async machinery.
-     */
     private CompletableFuture<ResponseEntity<?>> dispatchAsyncFlow(
             String appName, String method, String path, String query,
             Map<String, String> headers, byte[] body) {
-        byte[] bodyBytes = body != null ? body : new byte[0];
         byte[] wireReq = VesperaBridge.encodeRequest(
-                appName, method, path, query, headers, bodyBytes);
+                appName, method, path, query, headers, body);
         return VesperaBridge.dispatch(wireReq).thenApply(wireResp -> {
             DecodedResponse decoded = VesperaBridge.decodeResponse(wireResp);
             return buildResponseEntity(decoded);
@@ -160,12 +145,11 @@ public class VesperaProxyController {
      * first body byte hits the wire.
      */
     private void dispatchStreaming(
-            HttpServletRequest request, HttpServletResponse response,
+            HttpServletResponse response,
             String appName, String method, String path, String query,
             Map<String, String> headers, byte[] body) throws IOException {
-        byte[] bodyBytes = body != null ? body : new byte[0];
         byte[] wireReq = VesperaBridge.encodeRequest(
-                appName, method, path, query, headers, bodyBytes);
+                appName, method, path, query, headers, body);
         VesperaBridge.dispatchStreamingWithHeader(
                 wireReq,
                 headerBytes -> applyDecodedHeader(headerBytes, response),
@@ -258,8 +242,6 @@ public class VesperaProxyController {
         };
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────
-
     private static Map<String, String> collectHeaders(HttpServletRequest request) {
         Map<String, String> headers = new LinkedHashMap<>();
         Enumeration<String> names = request.getHeaderNames();
@@ -320,7 +302,9 @@ public class VesperaProxyController {
 
     private static boolean isTextContentType(String ct) {
         if (ct == null) return true;
-        String mime = ct.split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
+        int parameterStart = ct.indexOf(';');
+        String mediaType = parameterStart >= 0 ? ct.substring(0, parameterStart) : ct;
+        String mime = mediaType.trim().toLowerCase(Locale.ROOT);
         return mime.startsWith("text/")
                 || mime.equals("application/json")
                 || mime.endsWith("+json")

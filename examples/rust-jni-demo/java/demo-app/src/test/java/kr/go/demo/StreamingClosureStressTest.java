@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.CompletableFuture;
@@ -129,12 +130,10 @@ class StreamingClosureStressTest {
         VesperaBridge.init("rust_jni_demo");
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────
-
     private static byte[] sha256(byte[] data) {
         try {
             return MessageDigest.getInstance("SHA-256").digest(data);
-        } catch (Exception e) {
+        } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 unavailable", e);
         }
     }
@@ -202,8 +201,6 @@ class StreamingClosureStressTest {
             return buf.size();
         }
     }
-
-    // ── Tests ────────────────────────────────────────────────────────
 
     /**
      * Exercises cached {@code InputStream.read([B)I} AND cached

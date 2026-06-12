@@ -12,7 +12,7 @@ plugins {
     // detection helpers, library-name mapping, processResources wiring).
     // After: the 5-line `vespera { ... }` block below.
     // ───────────────────────────────────────────────────────────────────
-    id("kr.devfive.vespera-bridge") version "0.0.15"
+    id("kr.devfive.vespera-bridge") version "0.1.1"
 }
 
 group = "kr.go.demo"

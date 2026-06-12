@@ -150,7 +150,7 @@ fn call_input_stream_read(
     if can_call_unchecked(stream)
         && let Some(cache) = method_cache(env)
     {
-        let args = [JValue::Object(buf.as_ref()).as_jni()];
+        let args: [jvalue; 1] = [JValue::Object(buf.as_ref()).as_jni()];
         return call_cached_method(
             env,
             stream,
@@ -179,7 +179,7 @@ fn call_output_stream_write(
     if can_call_unchecked(stream)
         && let Some(cache) = method_cache(env)
     {
-        let args = [
+        let args: [jvalue; 3] = [
             JValue::Object(buf.as_ref()).as_jni(),
             JValue::Int(0).as_jni(),
             JValue::Int(len).as_jni(),
@@ -215,7 +215,7 @@ fn call_consumer_accept(
     if can_call_unchecked(consumer)
         && let Some(cache) = method_cache(env)
     {
-        let args = [JValue::Object(arg).as_jni()];
+        let args: [jvalue; 1] = [JValue::Object(arg).as_jni()];
         call_cached_method(
             env,
             consumer,
@@ -243,7 +243,7 @@ fn call_future_complete(
     if can_call_unchecked(future)
         && let Some(cache) = method_cache(env)
     {
-        let args = [JValue::Object(arg).as_jni()];
+        let args: [jvalue; 1] = [JValue::Object(arg).as_jni()];
         call_cached_method(
             env,
             future,
@@ -278,9 +278,6 @@ pub fn make_pull_closure(
     stream: Global<JObject<'static>>,
     buf: Global<jni::objects::JByteArray<'static>>,
 ) -> impl FnMut() -> Option<Vec<u8>> + Send + 'static {
-    // Resolved once at closure-build time — zero per-chunk cost.
-    // Identical to the buffer's allocation size by OnceLock
-    // construction (the config is process-fixed after first read).
     let chunk_size = streaming_chunk_size();
     move || -> Option<Vec<u8>> {
         let result: jni::errors::Result<Option<Vec<u8>>> = jvm.attach_current_thread(|env| {
@@ -300,7 +297,8 @@ pub fn make_pull_closure(
                 if n == 0 {
                     return Ok(Some(Vec::new()));
                 }
-                let n = usize::try_from(n).unwrap_or(0).min(chunk_size);
+                let n = usize::try_from(n).expect("positive read length fits usize");
+                let n = n.min(chunk_size);
                 let mut data = vec![0u8; n];
                 // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
                 // identical size/alignment; this views the
@@ -336,7 +334,6 @@ pub fn make_push_closure(
     stream: Global<JObject<'static>>,
     buf: Global<jni::objects::JByteArray<'static>>,
 ) -> impl FnMut(&[u8]) + Send + 'static {
-    // Resolved once at closure-build time — zero per-chunk cost.
     let chunk_size = streaming_chunk_size();
     move |chunk: &[u8]| {
         let _ = jvm.attach_current_thread(|env: &mut jni::Env<'_>| -> jni::errors::Result<()> {

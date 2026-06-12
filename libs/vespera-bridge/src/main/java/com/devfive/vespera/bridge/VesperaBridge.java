@@ -52,7 +52,6 @@ public class VesperaBridge {
     private static final int WIRE_VERSION = 1;
     private static volatile boolean loaded = false;
 
-    // ── Pending streaming configuration (before native library loads) ──
     private static volatile Integer pendingChunkBytes = null;
     private static volatile Integer pendingChannelCapacity = null;
 
@@ -428,8 +427,6 @@ public class VesperaBridge {
             Consumer<byte[]> headerConsumer,
             InputStream inputStream,
             OutputStream outputStream);
-
-    // ── Direct-buffer dispatch (zero JNI-region-copy path) ─────────────
 
     /**
      * Thrown by {@link #dispatchDirectPooled(byte[], boolean)} when the
@@ -938,8 +935,6 @@ public class VesperaBridge {
             throw new IllegalArgumentException("wire header JSON parse failed", e);
         }
     }
-
-    // --- Internal: bundled native lib extraction ---
 
     private static void loadBundled(String libraryName) {
         String os = detectOs();
