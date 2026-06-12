@@ -6,7 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
  * Strategy for deciding which {@link DispatchMode} should serve an
  * incoming HTTP request.
  *
- * <p>The autoconfigured default since vespera-bridge 1.0.0 is
+ * <p>The autoconfigured default since vespera-bridge 0.2.0 is
  * {@link SmartDispatchModeResolver}: small bounded idempotent
  * requests take {@link DispatchMode#DIRECT} (~2.2 µs), small
  * non-idempotent requests take {@link DispatchMode#SYNC} (~3.2 µs),
@@ -16,7 +16,7 @@ import jakarta.servlet.http.HttpServletRequest;
  * {@code openapi.json} either way — the mode is picked per request
  * from request properties, not from the URL.
  *
- * <p>Restore the pre-1.0.0 default (every request that may carry a
+ * <p>Restore the pre-0.2.0 default (every request that may carry a
  * body streams both ways) with the conservative opt-out:
  * {@code vespera.bridge.dispatch-mode=bidirectional-streaming} →
  * {@link BidirectionalStreamingDispatchModeResolver}.

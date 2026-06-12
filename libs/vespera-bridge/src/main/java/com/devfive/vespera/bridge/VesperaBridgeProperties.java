@@ -46,7 +46,7 @@ public class VesperaBridgeProperties {
      * Dispatch-mode policy for the autoconfigured proxy.
      *
      * <ul>
-     *   <li>{@code smart} (default since 1.0.0) — small bounded
+     *   <li>{@code smart} (default since 0.2.0) — small bounded
      *       idempotent requests (Content-Length known and &le; 256
      *       KiB; GET/HEAD/PUT/DELETE/OPTIONS) take the pooled
      *       direct-buffer path, skipping JNI array copies and
@@ -60,7 +60,7 @@ public class VesperaBridgeProperties {
      *       default 4 MiB) — acceptable for idempotent requests
      *       only; SYNC fully buffers the response on the JVM heap.</li>
      *   <li>{@code bidirectional-streaming} — opt-out, restores the
-     *       pre-1.0.0 default: every request that may carry a body
+     *       pre-0.2.0 default: every request that may carry a body
      *       streams both ways; safe for any payload size; the
      *       uniform per-request cost is ~24 µs even on small
      *       JSON-RPC payloads.</li>

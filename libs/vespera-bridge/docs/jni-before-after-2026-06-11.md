@@ -2,7 +2,7 @@
 
 ## Headline
 
-The v1.0.0 JNI break is justified by the hot-path wins it unlocks: the new `direct_pooled` ByteBuffer path completes the tiny `/health` round-trip in **2,349 ns/op**, **1.55× faster than the 0.1.1-era sync baseline** (3,643 ns/op), and the existing sync byte-array path is still **20% faster** after the series. The largest measured gains are in binary streaming throughput: AFTER is **2.14× to 3.26× faster** across 16 KiB → 256 KiB chunks, peaking at **14,458 MiB/s** for 256 KiB chunks versus **4,440 MiB/s** BEFORE. Response decoding now exposes the zero-copy API that did not exist BEFORE; that API gap is the core reason the breaking change is worth taking.
+The v0.2.0 JNI break is justified by the hot-path wins it unlocks: the new `direct_pooled` ByteBuffer path completes the tiny `/health` round-trip in **2,349 ns/op**, **1.55× faster than the 0.1.1-era sync baseline** (3,643 ns/op), and the existing sync byte-array path is still **20% faster** after the series. The largest measured gains are in binary streaming throughput: AFTER is **2.14× to 3.26× faster** across 16 KiB → 256 KiB chunks, peaking at **14,458 MiB/s** for 256 KiB chunks versus **4,440 MiB/s** BEFORE. Response decoding now exposes the zero-copy API that did not exist BEFORE; that API gap is the core reason the breaking change is worth taking.
 
 Small-request streaming and async latency did **not** improve in this run: response-only streaming, bidirectional streaming, and async-completable-future medians regressed versus the backported 0.1.1 harness. The async row is called out below as gate input for the follow-up attach/JMethodID optimization decision.
 
@@ -87,9 +87,9 @@ Logs are retained in `%TEMP%` as `bench-before-*.log` and `bench-after-*.log`.
 - BEFORE `CARGO_TARGET_DIR` isolation: all BEFORE Cargo commands used `C:\Users\owjs3\Desktop\projects\vespera-before-bench\target-isolated`, so the main repo `target/` was never shared with the worktree.
 - BEFORE cdylib evidence: isolated build produced `C:\Users\owjs3\Desktop\projects\vespera-before-bench\target-isolated\release\rust_jni_demo.dll`, length `1,774,592`, timestamp `2026-06-11 17:21:52 UTC`; because the Gradle plugin reads `target/release`, the DLL was copied to the worktree-local `target\release\rust_jni_demo.dll`, then bundled as `examples\rust-jni-demo\java\demo-app\build\resources\main\native\windows-x86_64\rust_jni_demo.dll`, length `1,774,592`, timestamp `2026-06-11 17:27:02 UTC`.
 - AFTER cdylib evidence: main build produced `C:\Users\owjs3\Desktop\projects\vespera\target\release\rust_jni_demo.dll`, length `1,521,664`, timestamp `2026-06-11 14:35:03 UTC`; Gradle bundled `examples\rust-jni-demo\java\demo-app\build\resources\main\native\windows-x86_64\rust_jni_demo.dll`, length `1,521,664`, timestamp `2026-06-11 17:30:38 UTC`.
-- Bridge versions: Maven local had both `kr/devfive/vespera-bridge/0.1.1` and `kr/devfive/vespera-bridge/1.0.0`. BEFORE `demo-app` was patched to `bridgeVersion.set("0.1.1")`; AFTER already pins `1.0.0`.
+- Bridge versions: Maven local had both `kr/devfive/vespera-bridge/0.1.1` and `kr/devfive/vespera-bridge/0.2.0`. BEFORE `demo-app` was patched to `bridgeVersion.set("0.1.1")`; AFTER already pins `0.2.0`.
 - BEFORE route support: the benchmark files did not exist at `6242533`, and the streaming benchmark's target route `POST /echo/stream` also did not exist. The throwaway worktree backported the current streaming echo route only to keep the throughput benchmark measuring JNI transport rather than route availability. Main production code was not changed.
-- API availability: AFTER's `direct_pooled` / direct `ByteBuffer` path measures an API that did not exist BEFORE. The BEFORE gap is therefore recorded as `N/A`, and that missing path is part of the measured improvement unlocked by the v1.0.0 break.
+- API availability: AFTER's `direct_pooled` / direct `ByteBuffer` path measures an API that did not exist BEFORE. The BEFORE gap is therefore recorded as `N/A`, and that missing path is part of the measured improvement unlocked by the v0.2.0 break.
 
 ### Verbatim backport diff between AFTER bench files and BEFORE-patched bench files
 

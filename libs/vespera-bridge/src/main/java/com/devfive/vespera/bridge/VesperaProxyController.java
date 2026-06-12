@@ -50,10 +50,10 @@ import java.util.concurrent.CompletableFuture;
  *
  * <p>The autoconfigured defaults ({@link HeaderAppNameResolver} on
  * {@code X-Vespera-App} + {@link SmartDispatchModeResolver} since
- * 1.0.0) keep the proxy transparent for every payload size while
+ * 0.2.0) keep the proxy transparent for every payload size while
  * routing small bounded idempotent requests through the
  * direct-buffer fast path (DIRECT 2.2 µs / SYNC 3.2 µs vs streaming
- * 24.1 µs on a small {@code GET /health}).  Restore the pre-1.0.0
+ * 24.1 µs on a small {@code GET /health}).  Restore the pre-0.2.0
  * bidirectional default with
  * {@code vespera.bridge.dispatch-mode=bidirectional-streaming}, or
  * replace either bean to change the policy without subclassing this

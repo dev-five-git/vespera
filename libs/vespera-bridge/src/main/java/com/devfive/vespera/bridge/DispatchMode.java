@@ -5,7 +5,7 @@ package com.devfive.vespera.bridge;
  * request through the Rust JNI bridge.
  *
  * <p>The autoconfigured default {@link DispatchModeResolver} since
- * vespera-bridge 1.0.0 is {@link SmartDispatchModeResolver}: small
+ * vespera-bridge 0.2.0 is {@link SmartDispatchModeResolver}: small
  * bounded idempotent requests take {@link #DIRECT} (~2.2 µs), small
  * non-idempotent requests take {@link #SYNC} (~3.2 µs), everything
  * else falls back to {@link #BIDIRECTIONAL_STREAMING} (~24 µs).  The
@@ -14,7 +14,7 @@ package com.devfive.vespera.bridge;
  * are reached via the same URLs, regardless of whether the underlying
  * handler emits a small JSON body or streams a multi-gigabyte file.
  *
- * <p>Restore the pre-1.0.0 default (every request that may carry a
+ * <p>Restore the pre-0.2.0 default (every request that may carry a
  * body streams both ways) with the conservative opt-out:
  * {@code vespera.bridge.dispatch-mode=bidirectional-streaming} →
  * {@link BidirectionalStreamingDispatchModeResolver}.  Users who
@@ -61,11 +61,11 @@ public enum DispatchMode {
      * Works correctly for every payload size (small requests are
      * processed as a single chunk).  Selected by
      * {@link SmartDispatchModeResolver} (the autoconfigured default
-     * since 1.0.0) for large or unknown-length bodies, and
+     * since 0.2.0) for large or unknown-length bodies, and
      * unconditionally by the conservative opt-out
      * {@link BidirectionalStreamingDispatchModeResolver}
      * ({@code vespera.bridge.dispatch-mode=bidirectional-streaming},
-     * pre-1.0.0 default).
+     * pre-0.2.0 default).
      */
     BIDIRECTIONAL_STREAMING,
 
@@ -76,7 +76,7 @@ public enum DispatchMode {
      * allocations of {@link #SYNC}.
      *
      * <p>Selected by the autoconfigured
-     * {@link SmartDispatchModeResolver} (default since 1.0.0) for
+     * {@link SmartDispatchModeResolver} (default since 0.2.0) for
      * small, bounded, idempotent requests (GET/HEAD/PUT/DELETE/
      * OPTIONS with {@code Content-Length} absent or &le; 256 KiB).
      * The idempotency gate matters because a response that overflows

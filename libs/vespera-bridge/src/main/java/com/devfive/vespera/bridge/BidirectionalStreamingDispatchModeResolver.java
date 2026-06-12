@@ -11,9 +11,9 @@ import jakarta.servlet.http.HttpServletRequest;
  * that costs ~16&nbsp;µs per request even when there is nothing to
  * pull (measured 24.1&nbsp;µs → 7.7&nbsp;µs on a small GET).
  *
- * <p><strong>Pre-1.0.0 default; opt-out since 1.0.0.</strong>  The
+ * <p><strong>Pre-0.2.0 default; opt-out since 0.2.0.</strong>  The
  * autoconfigured default flipped to {@link SmartDispatchModeResolver}
- * in vespera-bridge 1.0.0 (DIRECT 2.2 µs / SYNC 3.2 µs vs
+ * in vespera-bridge 0.2.0 (DIRECT 2.2 µs / SYNC 3.2 µs vs
  * bidirectional 24.1 µs on small bounded requests).  Restore this
  * resolver as the default with
  * {@code vespera.bridge.dispatch-mode=bidirectional-streaming}, or

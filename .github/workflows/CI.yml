@@ -118,7 +118,7 @@ jobs:
 
   # JNI end-to-end tests — builds the rust-jni-demo cdylib, publishes the
   # vespera-bridge JAR to mavenLocal (so the demo-app Gradle plugin can
-  # resolve kr.devfive:vespera-bridge:1.0.0), then runs the full
+  # resolve kr.devfive:vespera-bridge:0.1.1), then runs the full
   # :demo-app:test suite (StreamingClosureStressTest + JNI dispatch tests)
   # across all three target host OSes. This is the project's only Java/JNI
   # coverage gate — until now the workflow ran zero JNI tests.
@@ -161,9 +161,9 @@ jobs:
         working-directory: libs/vespera-bridge-gradle-plugin
         run: ./gradlew publishToMavenLocal --console=plain --no-daemon
       - name: Publish vespera-bridge to mavenLocal
-        # demo-app resolves kr.devfive:vespera-bridge:1.0.0 from mavenLocal
+        # demo-app resolves kr.devfive:vespera-bridge:0.1.1 from mavenLocal
         # (see examples/rust-jni-demo/java/demo-app/build.gradle.kts —
-        # bridgeVersion.set("1.0.0")).
+        # bridgeVersion.set("0.1.1")).
         shell: bash
         working-directory: libs/vespera-bridge
         run: ./gradlew publishToMavenLocal --console=plain --no-daemon

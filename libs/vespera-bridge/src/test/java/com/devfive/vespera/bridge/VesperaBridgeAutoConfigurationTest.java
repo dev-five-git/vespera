@@ -12,11 +12,11 @@ import org.springframework.context.annotation.Configuration;
 /**
  * Autoconfigure branch tests for the dispatch-mode policy beans.
  *
- * <p>The contract under test (1.0.0 default flip): the autoconfigured
+ * <p>The contract under test (0.2.0 default flip): the autoconfigured
  * default is {@link SmartDispatchModeResolver} (DIRECT/SYNC fast paths
  * for small bounded requests, measured 2.2–3.2 µs vs 24.1 µs);
  * {@code vespera.bridge.dispatch-mode=bidirectional-streaming} opts out
- * to {@link BidirectionalStreamingDispatchModeResolver} (pre-1.0.0
+ * to {@link BidirectionalStreamingDispatchModeResolver} (pre-0.2.0
  * behavior); {@code vespera.bridge.dispatch-mode=smart} explicitly
  * pins the new default; a user-supplied bean always wins over all of
  * the above via {@code @ConditionalOnMissingBean}.
@@ -37,7 +37,7 @@ class VesperaBridgeAutoConfigurationTest {
                         assertInstanceOf(
                                 SmartDispatchModeResolver.class,
                                 ctx.getBean(DispatchModeResolver.class),
-                                "1.0.0: autoconfigured default flipped to SmartDispatchModeResolver"));
+                                "0.2.0: autoconfigured default flipped to SmartDispatchModeResolver"));
     }
 
     @Test
@@ -60,7 +60,7 @@ class VesperaBridgeAutoConfigurationTest {
                                         BidirectionalStreamingDispatchModeResolver.class,
                                         ctx.getBean(DispatchModeResolver.class),
                                         "dispatch-mode=bidirectional-streaming must restore the"
-                                                + " pre-1.0.0 default"));
+                                                + " pre-0.2.0 default"));
     }
 
     @Test

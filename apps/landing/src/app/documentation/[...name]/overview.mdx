@@ -106,7 +106,7 @@ Vespera scans your `src/routes/` folder at compile time, extracts every `#[vespe
 
 ## JNI Performance Numbers
 
-When embedding Vespera inside a Java/Spring application via JNI, the `SmartDispatchModeResolver` (default since vespera-bridge 1.0.0) picks the cheapest safe path per request. Measured on a `GET /health` round-trip through the real JNI boundary (AMD Ryzen 9 9950X, Java 21, Windows 11):
+When embedding Vespera inside a Java/Spring application via JNI, the `SmartDispatchModeResolver` (default since vespera-bridge 0.2.0) picks the cheapest safe path per request. Measured on a `GET /health` round-trip through the real JNI boundary (AMD Ryzen 9 9950X, Java 21, Windows 11):
 
 <Table>
   <TableHead>
@@ -160,7 +160,7 @@ Binary streaming throughput (64 MiB payload, bidirectional):
   </TableBody>
 </Table>
 
-The `direct_pooled` path completes a tiny `/health` round-trip in **2,349 ns/op** — **1.55× faster** than the pre-1.0.0 sync baseline (3,643 ns/op).
+The `direct_pooled` path completes a tiny `/health` round-trip in **2,349 ns/op** — **1.55× faster** than the pre-0.2.0 sync baseline (3,643 ns/op).
 
 ## How It Works
 

@@ -27,7 +27,7 @@ import org.springframework.context.annotation.Configuration;
  *       disabled.</li>
  *   <li><strong>Conservative dispatch mode (opt-out from smart)</strong>:
  *       set {@code vespera.bridge.dispatch-mode=bidirectional-streaming}
- *       to restore the pre-1.0.0 default
+ *       to restore the pre-0.2.0 default
  *       ({@link BidirectionalStreamingDispatchModeResolver}) — every
  *       request that may carry a body streams both ways. Use when
  *       you want maximally uniform handler invocation semantics and
@@ -43,7 +43,7 @@ import org.springframework.context.annotation.Configuration;
  *       {@link VesperaBridge} native methods directly.</li>
  * </ul>
  *
- * <p><strong>1.0.0 behavior change:</strong> the autoconfigured
+ * <p><strong>0.2.0 behavior change:</strong> the autoconfigured
  * default {@link DispatchModeResolver} flipped from
  * {@link BidirectionalStreamingDispatchModeResolver} to
  * {@link SmartDispatchModeResolver}. Measured on a small {@code GET
@@ -66,7 +66,7 @@ public class VesperaBridgeAutoConfiguration {
      * Opt-out conservative dispatch mode: every request that may
      * carry a body streams both ways
      * ({@link BidirectionalStreamingDispatchModeResolver}). Restores
-     * the pre-1.0.0 default.
+     * the pre-0.2.0 default.
      *
      * <p>Declared <em>before</em> the autoconfigured default so that
      * {@code @ConditionalOnMissingBean} on the default skips when this
@@ -88,7 +88,7 @@ public class VesperaBridgeAutoConfiguration {
     }
 
     /**
-     * Autoconfigured default since 1.0.0:
+     * Autoconfigured default since 0.2.0:
      * {@link SmartDispatchModeResolver} picks per request — DIRECT
      * (pooled direct buffers, no JNI array copies) for small/bodyless
      * idempotent requests, SYNC for small non-idempotent requests,
@@ -105,7 +105,7 @@ public class VesperaBridgeAutoConfiguration {
      *       reasonable for JSON-RPC-shaped traffic.</li>
      * </ul>
      *
-     * <p>Restore the pre-1.0.0 behavior with
+     * <p>Restore the pre-0.2.0 behavior with
      * {@code vespera.bridge.dispatch-mode=bidirectional-streaming}.
      */
     @Bean

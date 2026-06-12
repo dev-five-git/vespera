@@ -98,9 +98,9 @@ Key properties:
 - Large upload + large download (file transfer, video transcoding) → `dispatchFullStreaming` + `InputStream` + `OutputStream`
 - The `*WithHeader` variants let Spring-style controllers commit status/headers before the first body byte is written
 
-## SmartDispatchModeResolver (Default since 1.0.0)
+## SmartDispatchModeResolver (Default since 0.2.0)
 
-The autoconfigured default since vespera-bridge 1.0.0 picks the cheapest safe path per request. Measured on a `GET /health` round-trip through the real JNI boundary:
+The autoconfigured default since vespera-bridge 0.2.0 picks the cheapest safe path per request. Measured on a `GET /health` round-trip through the real JNI boundary:
 
 | Request shape | Mode | ns / round-trip |
 |---------------|------|-----------------|
@@ -113,7 +113,7 @@ Trade-offs:
 - **SYNC** fully buffers the response on the JVM heap. The 256 KiB request-size gate keeps the response size reasonable for JSON-RPC-shaped traffic.
 - **BIDIRECTIONAL_STREAMING** is unchanged for large/unknown-length bodies — multi-GB upload + multi-GB download runs chunk-bounded, ~32 KiB resident each side.
 
-Restore the pre-1.0.0 default (every request that may carry a body streams both ways, ~24 µs uniform):
+Restore the pre-0.2.0 default (every request that may carry a body streams both ways, ~24 µs uniform):
 
 ```yaml
 vespera:
@@ -161,7 +161,7 @@ System.out.println(resp.headers());              // { "content-type": "applicati
 System.out.println(new String(resp.bodyBytes())); // copies the raw response body
 ```
 
-> **1.0.0 breaking change:** `DecodedResponse.body()` now returns a read-only `java.nio.ByteBuffer` (zero-copy view over the wire bytes). The owned `byte[]` materialisation moved to `DecodedResponse.bodyBytes()`. Callers that previously used `body()` as `byte[]` must switch to `bodyBytes()`.
+> **0.2.0 breaking change:** `DecodedResponse.body()` now returns a read-only `java.nio.ByteBuffer` (zero-copy view over the wire bytes). The owned `byte[]` materialisation moved to `DecodedResponse.bodyBytes()`. Callers that previously used `body()` as `byte[]` must switch to `bodyBytes()`.
 
 ## Async Dispatch
 

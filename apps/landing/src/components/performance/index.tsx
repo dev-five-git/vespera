@@ -31,7 +31,7 @@ const STATS: Stat[] = [
     value: '20',
     unit: '%',
     label: 'Faster sync dispatch',
-    detail: 'v1.0 zero-copy decode vs v0.1.1, same wire format',
+    detail: 'v0.2 zero-copy decode vs v0.1.1, same wire format',
   },
 ]
 

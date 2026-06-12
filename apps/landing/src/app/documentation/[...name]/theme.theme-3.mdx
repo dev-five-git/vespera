@@ -125,19 +125,19 @@ The pooled direct-buffer methods (`dispatchDirectPooled`) use `ThreadLocal<ByteB
 
 ---
 
-## 1.0.0 Breaking Changes
+## 0.2.0 Breaking Changes
 
 ### 1. Default DispatchModeResolver Flipped to SmartDispatchModeResolver
 
-Pre-1.0.0 the autoconfigured default was `BidirectionalStreamingDispatchModeResolver` — every request that may carry a body streamed both ways, ~24.1 µs per round-trip uniform. Since 1.0.0 the default is `SmartDispatchModeResolver`.
+Pre-0.2.0 the autoconfigured default was `BidirectionalStreamingDispatchModeResolver` — every request that may carry a body streamed both ways, ~24.1 µs per round-trip uniform. Since 0.2.0 the default is `SmartDispatchModeResolver`.
 
-| Request shape | Pre-1.0.0 mode | 1.0.0+ mode |
+| Request shape | Pre-0.2.0 mode | 0.2.0+ mode |
 |---------------|----------------|-------------|
 | Small/bodyless idempotent (GET/HEAD/PUT/DELETE/OPTIONS, ≤ 256 KiB CL or no CL) | `STREAMING` / `BIDIRECTIONAL_STREAMING` | `DIRECT` |
 | Small non-idempotent (POST/PATCH, ≤ 256 KiB CL) | `BIDIRECTIONAL_STREAMING` | `SYNC` |
 | Large or unknown-length body | `BIDIRECTIONAL_STREAMING` | `BIDIRECTIONAL_STREAMING` |
 
-Opt out (restore the pre-1.0.0 default):
+Opt out (restore the pre-0.2.0 default):
 
 ```yaml
 vespera:
@@ -152,10 +152,10 @@ Or register a custom `DispatchModeResolver` bean — `@ConditionalOnMissingBean`
 `DecodedResponse.body()` now returns a read-only `java.nio.ByteBuffer` (zero-copy view over the wire bytes). The owned `byte[]` materialisation moved to `DecodedResponse.bodyBytes()`.
 
 ```java
-// Before 1.0.0
+// Before 0.2.0
 byte[] body = resp.body();
 
-// After 1.0.0
+// After 0.2.0
 byte[] body = resp.bodyBytes();          // owned copy
 ByteBuffer view = resp.body();           // zero-copy view
 ```
