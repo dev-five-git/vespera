@@ -216,3 +216,22 @@ Two further changes, paired same-session benches (GET /health, 100k iters, mimal
 | async_completable_future | 22,038 | 19,468 | ~15,000 | **-32%** |
 
 \* with the 256 KiB chunk default: each streaming dispatch allocated+zeroed fresh 256 KiB Java arrays (bidi: two), costing ~10µs each — this addendum's TLS pooling (per-OS-thread cached Global<JByteArray>, fresh-alloc fallback when leased/reentrant) removes that per-dispatch cost entirely while keeping the 256 KiB throughput benefit for large transfers. mimalloc is opt-in via the vespera `mimalloc` cargo feature.
+
+## Concurrency frontier (B + C rounds, 32-logical-core machine)
+
+Single-thread latency was at its floor; the remaining headroom was CONCURRENT throughput. Measured with ConcurrencyBenchTest (N platform threads, 3s measure).
+
+### Diagnostic chain
+1. **Artifact-drift caught by JFR**: the local mavenLocal bridge jar was stale (pre-P1 \ObjectMapper.readTree\) — every prior local demo bench measured the OLD decode. \gradlew clean jar publishToMavenLocal\ (the \clean\ is mandatory; same-version republish is UP-TO-DATE-skipped) fixed it. Source/release were always correct (CI republishes fresh).
+2. **P1 confirmed once deployed**: JsonParser streaming decode cut per-op allocation **-31%** (3.5KB→2.4KB); this alone raised direct 16-thread throughput **+56%** — proving the plateau was substantially GC/allocation-driven below the knee.
+3. **B (further decode-alloc reduction)**: manual BE header-len read + lazy header map + fewer body-view ByteBuffers → **-4~7%** alloc, but 16-thread throughput **+0.7%** (noise). Conclusion: past the GC knee, decode allocation is NOT the concurrency lever.
+4. **C diagnostic**: worker-thread sweep — 16T throughput is INSENSITIVE to \espera.runtime.workerThreads\ (2/8/32/64 all ~3.6-3.9M ops/s) → NOT worker saturation. The bottleneck is shared-runtime \lock_on\ context-enter contention (every sync dispatch block_on's one shared multi-thread Tokio runtime).
+5. **C fix**: per-OS-thread \	hread_local!\ current-thread Tokio runtime for the sync paths (dispatchBytes, dispatchDirect) — zero shared-runtime state. Streaming/async keep the shared multi-thread RUNTIME.
+
+### C result (16-thread, the saturation metric)
+| mode | before ops/s (eff) | after ops/s (eff) | delta |
+|---|---|---|---|
+| sync_dispatch_bytes | 4.09M (49.5%) | 4.67M (60.2%) | **+14.2%** |
+| direct_pooled | 3.45M (47.5%) | 4.64M (66.8%) | **+34.6%** |
+
+Single-thread latency unchanged. Oracle-reviewed: TLS runtime drops at thread exit (outside block_on), reentrant nested dispatch panics are caught by catch_unwind → 500 wire, detached \	okio::spawn\ on the sync path no longer outlives block_on (documented, fragile pattern). Streaming bidirectional (spawn_blocking) + async (RUNTIME.spawn) verified unaffected.

@@ -886,8 +886,8 @@ public class VesperaBridge {
                     "wire response too short: "
                             + (wire == null ? "null" : wire.length + " bytes"));
         }
-        ByteBuffer buf = ByteBuffer.wrap(wire).order(ByteOrder.BIG_ENDIAN);
-        int headerLen = buf.getInt();
+        int headerLen = ((wire[0] & 0xFF) << 24) | ((wire[1] & 0xFF) << 16)
+                | ((wire[2] & 0xFF) << 8) | (wire[3] & 0xFF);
         if (headerLen < 0 || (long) 4 + headerLen > wire.length) {
             throw new IllegalArgumentException(
                     "wire header_len " + headerLen
@@ -896,7 +896,7 @@ public class VesperaBridge {
         // Streaming decode via JsonParser (no JsonNode tree); defaults match
         // the readTree path, unknown fields (incl. "v") are skipChildren'd.
         int status = 500;
-        Map<String, Object> headers = new LinkedHashMap<>();
+        Map<String, Object> headers = null;
         Map<String, String> metadata = new LinkedHashMap<>();
         List<Map<String, Object>> validationErrors = null;
         try (JsonParser p = JSON_FACTORY.createParser(wire, 4, headerLen)) {
@@ -910,6 +910,7 @@ public class VesperaBridge {
                             if (t != JsonToken.START_OBJECT) { p.skipChildren(); break; }
                             while (p.nextToken() == JsonToken.FIELD_NAME) {
                                 String k = p.currentName();
+                                if (headers == null) headers = new LinkedHashMap<>();
                                 if (p.nextToken() == JsonToken.START_ARRAY) {
                                     List<String> list = new ArrayList<>();
                                     while (p.nextToken() != JsonToken.END_ARRAY) list.add(p.getValueAsString());
@@ -947,10 +948,9 @@ public class VesperaBridge {
         } catch (IOException e) {
             throw new IllegalArgumentException("wire header JSON parse failed", e);
         }
-        int bodyStart = 4 + headerLen;
-        ByteBuffer body = ByteBuffer.wrap(wire, bodyStart, wire.length - bodyStart)
-                .slice().asReadOnlyBuffer();
-        return new DecodedResponse(status, headers, metadata, body, validationErrors);
+        ByteBuffer body = ByteBuffer.wrap(wire, 4 + headerLen, wire.length - 4 - headerLen);
+        return new DecodedResponse(
+                status, headers == null ? Map.of() : headers, metadata, body, validationErrors);
     }
 
     private static void loadBundled(String libraryName) {

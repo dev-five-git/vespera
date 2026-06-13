@@ -1,6 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
     ffi::c_void,
+    future::Future,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     ptr,
     sync::LazyLock,
@@ -38,9 +39,32 @@ const MAX_RUNTIME_WORKERS: usize = 1024;
 static RUNTIME_WORKER_THREADS: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
 
 thread_local! {
+    static SYNC_RUNTIME: tokio::runtime::Runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("failed to create per-thread Tokio runtime");
     static ASYNC_DAEMON_ENV: Cell<*mut jni::sys::JNIEnv> = const { Cell::new(ptr::null_mut()) };
     static STREAMING_PULL_BUFFER: RefCell<Option<CachedStreamingChunkBuffer>> = const { RefCell::new(None) };
     static STREAMING_PUSH_BUFFER: RefCell<Option<CachedStreamingChunkBuffer>> = const { RefCell::new(None) };
+}
+
+/// Drive a synchronous JNI dispatch on the calling OS thread's
+/// current-thread Tokio runtime.
+///
+/// The request future is driven to completion inside this `block_on`,
+/// avoiding shared-runtime enter/scheduler contention on tiny
+/// `dispatchBytes` / `dispatchDirect` calls.  Handlers that await their
+/// spawned tasks still complete normally, and `spawn_blocking` uses this
+/// runtime's blocking pool.  Detached `tokio::spawn` tasks are fragile on
+/// this path: a current-thread runtime has no worker threads, so detached
+/// tasks only make progress while a later `block_on` runs on the same
+/// Java caller thread.  The TLS runtime is dropped when that OS thread
+/// exits, cleanly shutting down its per-runtime state.
+fn block_on_sync_runtime<F>(future: F) -> F::Output
+where
+    F: Future,
+{
+    SYNC_RUNTIME.with(|runtime| runtime.block_on(future))
 }
 
 type StreamingChunkBuffer = Global<JByteArray<'static>>;
@@ -329,7 +353,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchByt
             };
 
             let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                vespera_inprocess::dispatch_from_bytes(input, &RUNTIME)
+                block_on_sync_runtime(vespera_inprocess::dispatch_from_bytes_async(input))
             }))
             .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
 
@@ -474,7 +498,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                 // region is exclusively ours; the slice never
                 // escapes this closure.
                 let out = unsafe { std::slice::from_raw_parts_mut(out_addr, out_cap) };
-                RUNTIME.block_on(vespera_inprocess::dispatch_into_async(input, out))
+                block_on_sync_runtime(vespera_inprocess::dispatch_into_async(input, out))
             }));
 
             let code = match dispatched {
