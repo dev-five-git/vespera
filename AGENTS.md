@@ -136,6 +136,7 @@ Feature flags:
 |---------|-----------|------|
 | `inprocess` | `vespera::inprocess` (= `vespera_inprocess`) | dispatch, register_app, envelopes |
 | `jni` | `vespera::jni` (= `vespera_jni`) + implies `inprocess` | RUNTIME, jni_app!, JNI symbol |
+| `mimalloc` | (with `jni`) mimalloc as the cdylib's `#[global_allocator]` | measured -15~19% on sync/direct dispatch vs Windows HeapAlloc |
 
 ## JNI ARCHITECTURE
 

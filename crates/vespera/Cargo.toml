@@ -22,6 +22,9 @@ default = [
 cron = ["dep:tokio-cron-scheduler"]
 inprocess = ["dep:vespera_inprocess"]
 jni = ["inprocess", "dep:vespera_jni"]
+# mimalloc as the cdylib's global allocator (see vespera_jni docs).
+# Weak dep syntax: only applies when the `jni` feature enables vespera_jni.
+mimalloc = ["vespera_jni?/mimalloc"]
 # Runtime validation: `#[derive(Schema)]` additionally emits
 # `impl garde::Validate` and the `Validated<T>` extractor is enabled.
 # The `garde` crate is bundled internally and never named by user code.

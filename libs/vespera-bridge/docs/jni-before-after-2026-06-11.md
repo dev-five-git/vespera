@@ -202,3 +202,17 @@ Protocol: same 3 JVM invocations; run 1 discarded as cold; retained value is the
 | `async_completable_future` | 22,756 | 21,474 | **1,282 ns/op faster** (-5.6%) |
 
 The measured win is above the **100 ns/op** keep gate. Follow-up review found that the daemon-attached Tokio worker must explicitly clear pending Java exceptions after every completion callback because it no longer gets jni-rs scoped-detach cleanup. The implementation now clears pending exceptions after callback success, callback error, and callback unwind while preserving the callback return/error. A targeted regression guard, `AsyncDispatchExceptionHygieneTest.throwingFutureCompleteDoesNotPoisonNextAsyncCompletion`, first forces `CompletableFuture.complete()` to throw and then asserts a normal `dispatchAsync` still completes with status 200; it failed before the cleanup with a timeout and passes after the fix. A single post-fix sanity bench run measured `async_completable_future` at **16,107 ns/op** (informational only; not a replacement for the 3-JVM gate). Verification also passed `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, `cargo test --workspace`, `cargo build -p rust-jni-demo --release`, and the full `:demo-app:test` Gradle suite (including `StreamingClosureStressTest` and the new hygiene guard).
+
+## Addendum (same day, later session): allocator + streaming buffer pooling
+
+Two further changes, paired same-session benches (GET /health, 100k iters, mimalloc build):
+
+| mode | default alloc | + mimalloc | + chunk-buffer pooling | total delta |
+|---|---:|---:|---:|---|
+| sync_dispatch_bytes | 2,870 | 2,314 | 2,322 | **-19%** |
+| direct_pooled | 2,376 | 2,017 | 2,000 | **-16%** |
+| response_streaming | 18,617* | 17,610 | **2,434** | **-87%** |
+| bidirectional_streaming | 37,543* | 32,326 | **2,605** | **-93%** |
+| async_completable_future | 22,038 | 19,468 | ~15,000 | **-32%** |
+
+\* with the 256 KiB chunk default: each streaming dispatch allocated+zeroed fresh 256 KiB Java arrays (bidi: two), costing ~10µs each — this addendum's TLS pooling (per-OS-thread cached Global<JByteArray>, fresh-alloc fallback when leased/reentrant) removes that per-dispatch cost entirely while keeping the 256 KiB throughput benefit for large transfers. mimalloc is opt-in via the vespera `mimalloc` cargo feature.

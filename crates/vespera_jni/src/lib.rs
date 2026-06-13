@@ -17,6 +17,18 @@
 pub use jni;
 pub use vespera_inprocess;
 
+/// mimalloc as the process-wide allocator (feature `mimalloc`).
+///
+/// The JNI dispatch hot path allocates several times per call (input
+/// buffer, request body, response collection, wire response); the OS
+/// default allocator — Windows `HeapAlloc` in particular — is
+/// measurably slower than mimalloc on this pattern.  Opt-in because a
+/// `#[global_allocator]` is process-wide and belongs to the final
+/// cdylib's build decision.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Generate the `JNI_OnLoad` export that registers a single (default)
 /// app.  Backward-compatible sugar for the single-app case; new code
 /// targeting multiple apps should use [`jni_apps!`] directly.

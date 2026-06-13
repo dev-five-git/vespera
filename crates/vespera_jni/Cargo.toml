@@ -10,6 +10,17 @@ repository.workspace = true
 vespera_inprocess = { workspace = true }
 jni = "0.22"
 tokio = { version = "1", features = ["rt-multi-thread"] }
+# Optional high-performance global allocator for the final cdylib.
+# Opt-in because #[global_allocator] is process-wide and must be the
+# embedding crate's decision.
+mimalloc = { version = "0.1", optional = true }
+
+[features]
+# Use mimalloc as the global allocator inside the JNI cdylib.  The
+# default OS allocator (Windows HeapAlloc in particular) is measurably
+# slower on the allocation-heavy dispatch paths (input Vec, response
+# collect, wire response, streaming chunks).
+mimalloc = ["dep:mimalloc"]
 
 [lints]
 workspace = true

@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     ffi::c_void,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     ptr,
@@ -39,6 +39,104 @@ static RUNTIME_WORKER_THREADS: std::sync::OnceLock<Option<usize>> = std::sync::O
 
 thread_local! {
     static ASYNC_DAEMON_ENV: Cell<*mut jni::sys::JNIEnv> = const { Cell::new(ptr::null_mut()) };
+    static STREAMING_PULL_BUFFER: RefCell<Option<CachedStreamingChunkBuffer>> = const { RefCell::new(None) };
+    static STREAMING_PUSH_BUFFER: RefCell<Option<CachedStreamingChunkBuffer>> = const { RefCell::new(None) };
+}
+
+type StreamingChunkBuffer = Global<JByteArray<'static>>;
+
+#[derive(Clone, Copy)]
+enum StreamingBufferRole {
+    Pull,
+    Push,
+}
+
+impl StreamingBufferRole {
+    fn with_cache<R>(
+        self,
+        callback: impl FnOnce(&RefCell<Option<CachedStreamingChunkBuffer>>) -> R,
+    ) -> R {
+        match self {
+            Self::Pull => STREAMING_PULL_BUFFER.with(callback),
+            Self::Push => STREAMING_PUSH_BUFFER.with(callback),
+        }
+    }
+}
+
+struct CachedStreamingChunkBuffer {
+    size: usize,
+    array: StreamingChunkBuffer,
+    checked_out: bool,
+}
+
+// Released explicitly only after the streaming future returns normally.  If a
+// panic unwinds through a bidirectional dispatch while the request producer may
+// still be in `InputStream.read`, the cache stays checked out and future
+// dispatches allocate fresh buffers instead of aliasing the Java array.
+struct StreamingChunkBufferLease {
+    role: StreamingBufferRole,
+}
+
+impl StreamingChunkBufferLease {
+    const fn new(role: StreamingBufferRole) -> Self {
+        Self { role }
+    }
+
+    fn mark_reusable(self) {
+        self.role.with_cache(|cache| {
+            if let Some(cached) = cache.borrow_mut().as_mut() {
+                cached.checked_out = false;
+            }
+        });
+    }
+}
+
+fn new_streaming_chunk_buffer(
+    env: &mut jni::Env<'_>,
+    size: usize,
+) -> jni::errors::Result<StreamingChunkBuffer> {
+    let local = env.new_byte_array(size)?;
+    env.new_global_ref(&local)
+}
+
+fn checkout_streaming_chunk_buffer(
+    env: &mut jni::Env<'_>,
+    role: StreamingBufferRole,
+) -> jni::errors::Result<(StreamingChunkBuffer, Option<StreamingChunkBufferLease>)> {
+    let size = streaming_chunk_size();
+    role.with_cache(|cache| {
+        let mut slot = cache.borrow_mut();
+        let replace_cached = slot
+            .as_ref()
+            .is_none_or(|cached| cached.size != size && !cached.checked_out);
+
+        if replace_cached {
+            *slot = Some(CachedStreamingChunkBuffer {
+                size,
+                array: new_streaming_chunk_buffer(env, size)?,
+                checked_out: false,
+            });
+        }
+
+        let Some(cached) = slot.as_mut() else {
+            return Ok((new_streaming_chunk_buffer(env, size)?, None));
+        };
+
+        if cached.size != size || cached.checked_out {
+            return Ok((new_streaming_chunk_buffer(env, size)?, None));
+        }
+
+        let cached_array: &JByteArray<'static> = cached.array.as_ref();
+        let dispatch_array = env.new_global_ref(cached_array)?;
+        cached.checked_out = true;
+        Ok((dispatch_array, Some(StreamingChunkBufferLease::new(role))))
+    })
+}
+
+fn mark_streaming_buffer_reusable(lease: Option<StreamingChunkBufferLease>) {
+    if let Some(lease) = lease {
+        lease.mark_reusable();
+    }
 }
 
 fn attach_async_daemon_thread(jvm: &jni::JavaVM) -> jni::errors::Result<*mut jni::sys::JNIEnv> {
@@ -509,18 +607,23 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
             let stream_global: Global<JObject<'static>> = env.new_global_ref(&output_stream)?;
             let jvm = env.get_java_vm()?;
 
-            // One reusable Java chunk buffer for the whole stream.
-            let push_buf_local = env.new_byte_array(streaming_chunk_size())?;
-            let push_buf: Global<jni::objects::JByteArray<'static>> =
-                env.new_global_ref(&push_buf_local)?;
+            // One per-thread reusable Java chunk buffer for the whole stream.
+            let (push_buf, push_buf_lease) =
+                checkout_streaming_chunk_buffer(env, StreamingBufferRole::Push)?;
 
             let header_bytes = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 RUNTIME.block_on(vespera_inprocess::dispatch_streaming_async(
                     input,
                     make_push_closure(jvm, stream_global, push_buf),
                 ))
-            }))
-            .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
+            }));
+            let header_bytes = header_bytes.map_or_else(
+                |_| vespera_inprocess::error_wire(500, "panic in Rust engine"),
+                |header_bytes| {
+                    mark_streaming_buffer_reusable(push_buf_lease);
+                    header_bytes
+                },
+            );
 
             Ok(env.byte_array_from_slice(&header_bytes)?.into())
         })
@@ -576,15 +679,18 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
             let output_global: Global<JObject<'static>> = env.new_global_ref(&output_stream)?;
             let jvm = env.get_java_vm()?;
 
-            let chunk_size = streaming_chunk_size();
             // Pull and push run concurrently on different threads, so each
-            // direction owns its own global-ref'd buffer.
-            let pull_buf_local = env.new_byte_array(chunk_size)?;
-            let pull_buf: Global<jni::objects::JByteArray<'static>> =
-                env.new_global_ref(&pull_buf_local)?;
-            let push_buf_local = env.new_byte_array(chunk_size)?;
-            let push_buf: Global<jni::objects::JByteArray<'static>> =
-                env.new_global_ref(&push_buf_local)?;
+            // direction checks out its own per-thread cached buffer.
+            let (pull_buf, pull_buf_lease) =
+                checkout_streaming_chunk_buffer(env, StreamingBufferRole::Pull)?;
+            let (push_buf, push_buf_lease) =
+                match checkout_streaming_chunk_buffer(env, StreamingBufferRole::Push) {
+                    Ok(checked_out) => checked_out,
+                    Err(err) => {
+                        mark_streaming_buffer_reusable(pull_buf_lease);
+                        return Err(err);
+                    }
+                };
 
             // Closures capture clones of the JavaVM and Globals;
             // both types are Send+Sync.
@@ -604,8 +710,15 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                     // Runs on the tokio worker driving the dispatch.
                     make_push_closure(push_jvm, push_global, push_buf),
                 ))
-            }))
-            .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
+            }));
+            let header_response = header_response.map_or_else(
+                |_| vespera_inprocess::error_wire(500, "panic in Rust engine"),
+                |header_response| {
+                    mark_streaming_buffer_reusable(pull_buf_lease);
+                    mark_streaming_buffer_reusable(push_buf_lease);
+                    header_response
+                },
+            );
 
             Ok(env.byte_array_from_slice(&header_response)?.into())
         })
@@ -649,10 +762,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
         let stream_global: Global<JObject<'static>> = env.new_global_ref(&output_stream)?;
         let jvm = env.get_java_vm()?;
 
-        // One reusable Java chunk buffer for the whole stream.
-        let push_buf_local = env.new_byte_array(streaming_chunk_size())?;
-        let push_buf: Global<jni::objects::JByteArray<'static>> =
-            env.new_global_ref(&push_buf_local)?;
+        // One per-thread reusable Java chunk buffer for the whole stream.
+        let (push_buf, push_buf_lease) =
+            checkout_streaming_chunk_buffer(env, StreamingBufferRole::Push)?;
 
         // Panic safety: catch_unwind absorbs Rust panics so the
         // JVM never sees an unwinding stack across the FFI
@@ -664,7 +776,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
         // rare — e.g. wire parse), the Java side will see a
         // dangling controller; document that follow-up callers
         // should set a timeout.
-        let _panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let header_for_cb = header_global;
             let jvm_for_cb = jvm.clone();
             let push = make_push_closure(jvm, stream_global, push_buf);
@@ -680,6 +792,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                 push,
             ));
         }));
+        if panic_result.is_ok() {
+            mark_streaming_buffer_reusable(push_buf_lease);
+        }
 
         Ok(())
     });
@@ -718,14 +833,17 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
         let output_global: Global<JObject<'static>> = env.new_global_ref(&output_stream)?;
         let jvm = env.get_java_vm()?;
 
-        let chunk_size = streaming_chunk_size();
         // Pull and push run concurrently on different threads.
-        let pull_buf_local = env.new_byte_array(chunk_size)?;
-        let pull_buf: Global<jni::objects::JByteArray<'static>> =
-            env.new_global_ref(&pull_buf_local)?;
-        let push_buf_local = env.new_byte_array(chunk_size)?;
-        let push_buf: Global<jni::objects::JByteArray<'static>> =
-            env.new_global_ref(&push_buf_local)?;
+        let (pull_buf, pull_buf_lease) =
+            checkout_streaming_chunk_buffer(env, StreamingBufferRole::Pull)?;
+        let (push_buf, push_buf_lease) =
+            match checkout_streaming_chunk_buffer(env, StreamingBufferRole::Push) {
+                Ok(checked_out) => checked_out,
+                Err(err) => {
+                    mark_streaming_buffer_reusable(pull_buf_lease);
+                    return Err(err);
+                }
+            };
 
         let pull_jvm = jvm.clone();
         let pull_global = input_global;
@@ -737,7 +855,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
         // See dispatchStreamingWithHeader: panic absorbed silently,
         // recovery semantics depend on which side of the header
         // callback the panic landed.
-        let _panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             RUNTIME.block_on(
                 vespera_inprocess::dispatch_bidirectional_streaming_with_header(
                     header_input,
@@ -753,6 +871,10 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                 ),
             );
         }));
+        if panic_result.is_ok() {
+            mark_streaming_buffer_reusable(pull_buf_lease);
+            mark_streaming_buffer_reusable(push_buf_lease);
+        }
 
         Ok(())
     });
