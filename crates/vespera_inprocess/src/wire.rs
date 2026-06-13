@@ -247,8 +247,11 @@ struct WireHeaders<'a>(&'a http::HeaderMap);
 impl Serialize for WireHeaders<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        // `HeaderMap::keys` yields each distinct name exactly once.
-        let mut names: Vec<&str> = self.0.keys().map(http::HeaderName::as_str).collect();
+        // `HeaderMap::keys` yields each distinct name exactly once;
+        // pre-size to the exact distinct-key count so the collect never
+        // reallocates.
+        let mut names: Vec<&str> = Vec::with_capacity(self.0.keys_len());
+        names.extend(self.0.keys().map(http::HeaderName::as_str));
         names.sort_unstable();
         let mut map = serializer.serialize_map(Some(names.len()))?;
         for name in names {

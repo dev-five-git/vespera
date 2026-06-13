@@ -34,8 +34,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 use vespera_inprocess::{
-    RequestEnvelope, dispatch_bidirectional_streaming, dispatch_from_bytes, dispatch_owned,
-    dispatch_streaming_async, dispatch_typed, register_app,
+    RequestChunk, RequestEnvelope, dispatch_bidirectional_streaming, dispatch_from_bytes,
+    dispatch_owned, dispatch_streaming_async, dispatch_typed, register_app,
 };
 
 // ── Test fixtures ────────────────────────────────────────────────────
@@ -426,7 +426,13 @@ fn bench_streaming_path(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let chunks_iter = Mutex::new(request_chunks.clone().into_iter());
-                    let pull = move || -> Option<Vec<u8>> { chunks_iter.lock().unwrap().next() };
+                    let pull = move || -> RequestChunk {
+                        chunks_iter
+                            .lock()
+                            .unwrap()
+                            .next()
+                            .map_or(RequestChunk::End, RequestChunk::Data)
+                    };
                     let mut sink = 0usize;
                     runtime.block_on(dispatch_bidirectional_streaming(
                         header_only.clone(),
@@ -448,14 +454,14 @@ fn bench_streaming_path(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let remaining = Mutex::new(body_kb * 1024);
-                    let pull = move || -> Option<Vec<u8>> {
+                    let pull = move || -> RequestChunk {
                         let mut remaining = remaining.lock().unwrap();
                         if *remaining == 0 {
-                            return None;
+                            return RequestChunk::End;
                         }
                         let len = (*remaining).min(pull_chunk_size);
                         *remaining -= len;
-                        Some(vec![0xA5u8; len])
+                        RequestChunk::Data(vec![0xA5u8; len])
                     };
                     let mut sink = 0usize;
                     runtime.block_on(dispatch_bidirectional_streaming(

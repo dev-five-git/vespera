@@ -1,7 +1,6 @@
 //! Streaming dispatch variants: response streaming, header-callback
 //! streaming, and bidirectional (request + response) streaming.
 
-use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -18,6 +17,39 @@ use crate::wire::{
     WIRE_HEADER_RESERVE, WIRE_VERSION, build_wire_header_bytes, error_wire, parse_wire_header,
     split_wire_request,
 };
+
+/// Outcome of one request-body pull on the bidirectional streaming
+/// path (the `pull_chunk` callback).
+///
+/// `Data(empty)` means "nothing right now, keep the stream open" — it
+/// is skipped, not treated as EOF.  [`RequestChunk::Error`] terminates
+/// the request body with a [`StreamAbort`] so axum and the handler see
+/// a failed body rather than a clean EOF — a truncated upload (e.g. the
+/// source `InputStream` threw mid-stream) is never silently accepted as
+/// complete.
+pub enum RequestChunk {
+    /// A request body chunk (an empty vec is a no-op "keep open" signal).
+    Data(Vec<u8>),
+    /// Clean end of the request body.
+    End,
+    /// The producer failed; the request body errors out instead of
+    /// ending cleanly.
+    Error,
+}
+
+/// Error yielded by the request body when the producer reports
+/// [`RequestChunk::Error`].  Surfaced to axum so a truncated upload is
+/// not mistaken for a complete one.
+#[derive(Debug)]
+pub struct StreamAbort;
+
+impl std::fmt::Display for StreamAbort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("request body stream aborted by producer")
+    }
+}
+
+impl std::error::Error for StreamAbort {}
 
 /// **Streaming** sibling of [`dispatch_from_bytes_async`].
 ///
@@ -179,10 +211,13 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
 ///   (just `[u32 BE header_len | JSON header]`).  Send the body
 ///   chunks via `pull_chunk`, not embedded in this buffer.
 /// - `pull_chunk` is called repeatedly to obtain request body
-///   chunks.  Return `Some(chunk)` for each chunk and `None` to
-///   signal EOF.  An empty `Some(Vec::new())` is treated as
-///   "no more data right now, but keep the stream open" — rarely
-///   useful; most callers should just return `None`.
+///   chunks.  Return [`RequestChunk::Data`] for each chunk and
+///   [`RequestChunk::End`] to signal clean EOF.  An empty
+///   `Data(Vec::new())` is treated as "no more data right now, but
+///   keep the stream open" — rarely useful; most callers should just
+///   return `End`.  Return [`RequestChunk::Error`] to abort the
+///   request body (e.g. the source stream threw) so the truncated
+///   upload is rejected rather than seen as complete.
 /// - `on_chunk` receives response body chunks in arrival order, same
 ///   contract as [`dispatch_streaming_async`].
 ///
@@ -208,7 +243,7 @@ pub async fn dispatch_bidirectional_streaming<P, F>(
     on_chunk: F,
 ) -> Vec<u8>
 where
-    P: FnMut() -> Option<Vec<u8>> + Send + 'static,
+    P: FnMut() -> RequestChunk + Send + 'static,
     F: FnMut(&[u8]),
 {
     let mut header_bytes: Vec<u8> = Vec::with_capacity(4 + WIRE_HEADER_RESERVE);
@@ -236,7 +271,7 @@ pub async fn dispatch_bidirectional_streaming_with_header<P, F, H>(
     on_chunk: F,
     on_header: H,
 ) where
-    P: FnMut() -> Option<Vec<u8>> + Send + 'static,
+    P: FnMut() -> RequestChunk + Send + 'static,
     F: FnMut(&[u8]),
     H: FnMut(&[u8]),
 {
@@ -249,7 +284,7 @@ async fn bidirectional_streaming_inner<P, F, H>(
     mut on_chunk: F,
     mut on_header: H,
 ) where
-    P: FnMut() -> Option<Vec<u8>> + Send + 'static,
+    P: FnMut() -> RequestChunk + Send + 'static,
     F: FnMut(&[u8]),
     H: FnMut(&[u8]),
 {
@@ -320,7 +355,8 @@ async fn bidirectional_streaming_inner<P, F, H>(
 }
 
 type RequestProducerHandle = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;
-type PullChunk = Box<dyn FnMut() -> Option<Vec<u8>> + Send + 'static>;
+type PullChunk = Box<dyn FnMut() -> RequestChunk + Send + 'static>;
+type RequestFrame = Result<Bytes, StreamAbort>;
 
 struct RequestProducer {
     pull_chunk: PullChunk,
@@ -328,10 +364,12 @@ struct RequestProducer {
 }
 
 /// Minimal `http_body::Body` implementation backed by an mpsc
-/// `Receiver<Bytes>` — used by [`dispatch_bidirectional_streaming`]
-/// to feed request body chunks into axum.
+/// `Receiver<Result<Bytes, StreamAbort>>` — used by
+/// [`dispatch_bidirectional_streaming`] to feed request body chunks
+/// into axum.  A producer error is forwarded as a body error so a
+/// truncated upload is not seen as a clean EOF.
 struct ChannelBody {
-    rx: Option<tokio::sync::mpsc::Receiver<Bytes>>,
+    rx: Option<tokio::sync::mpsc::Receiver<RequestFrame>>,
     producer: Option<RequestProducer>,
     producer_handle: RequestProducerHandle,
 }
@@ -339,7 +377,7 @@ struct ChannelBody {
 impl ChannelBody {
     fn new<P>(pull_chunk: P, producer_handle: RequestProducerHandle) -> Self
     where
-        P: FnMut() -> Option<Vec<u8>> + Send + 'static,
+        P: FnMut() -> RequestChunk + Send + 'static,
     {
         Self {
             rx: None,
@@ -364,7 +402,7 @@ impl ChannelBody {
         // — gives natural backpressure between the pull_chunk producer
         // thread and the axum handler consumer. The channel is created
         // with the producer so unpolled bodies avoid both pieces of setup.
-        let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(producer.capacity);
+        let (tx, rx) = tokio::sync::mpsc::channel::<RequestFrame>(producer.capacity);
         self.rx = Some(rx);
         let handle = spawn_request_producer(producer.pull_chunk, tx);
         store_request_producer_handle(&self.producer_handle, handle);
@@ -373,7 +411,7 @@ impl ChannelBody {
 
 impl HttpBody for ChannelBody {
     type Data = Bytes;
-    type Error = Infallible;
+    type Error = StreamAbort;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
@@ -386,7 +424,10 @@ impl HttpBody for ChannelBody {
         };
 
         match rx.poll_recv(cx) {
-            Poll::Ready(Some(bytes)) => Poll::Ready(Some(Ok(Frame::data(bytes)))),
+            Poll::Ready(Some(Ok(bytes))) => Poll::Ready(Some(Ok(Frame::data(bytes)))),
+            // Producer reported an abort: surface it as a body error so
+            // axum/the handler rejects the truncated upload.
+            Poll::Ready(Some(Err(abort))) => Poll::Ready(Some(Err(abort))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }
@@ -395,22 +436,35 @@ impl HttpBody for ChannelBody {
 
 fn spawn_request_producer(
     mut pull: PullChunk,
-    tx: tokio::sync::mpsc::Sender<Bytes>,
+    tx: tokio::sync::mpsc::Sender<RequestFrame>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
-        // `None` from `pull()` ends the stream; an empty `Some(_)` is
-        // skipped (it's not EOF); a failed `blocking_send` means the
+        // `End` ends the stream; an empty `Data(_)` is skipped (it's not
+        // EOF); `Error` forwards a `StreamAbort` so the body errors out
+        // instead of ending cleanly.  A failed `blocking_send` means the
         // receiver — axum's request body — was dropped because the
         // handler aborted mid-stream, so we stop pulling.
-        while let Some(chunk) = pull() {
-            if chunk.is_empty() {
-                continue;
-            }
-            if tx.blocking_send(Bytes::from(chunk)).is_err() {
-                break;
+        loop {
+            match pull() {
+                RequestChunk::Data(chunk) => {
+                    if chunk.is_empty() {
+                        continue;
+                    }
+                    if tx.blocking_send(Ok(Bytes::from(chunk))).is_err() {
+                        break;
+                    }
+                }
+                RequestChunk::End => break,
+                RequestChunk::Error => {
+                    // Best-effort: if the receiver is already gone there
+                    // is nothing to abort.
+                    let _ = tx.blocking_send(Err(StreamAbort));
+                    break;
+                }
             }
         }
-        // tx dropped at end of scope → axum sees end-of-stream.
+        // tx dropped at end of scope → axum sees end-of-stream (or the
+        // forwarded error above).
     })
 }
 

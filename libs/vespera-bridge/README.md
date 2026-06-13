@@ -332,24 +332,29 @@ The pooled direct-buffer methods (`dispatchDirectPooled`) use
 `ThreadLocal<ByteBuffer[]>` to maintain per-thread reusable buffers
 (64 KiB initial, growing to `vespera.direct.maxBufferBytes`, default
 4 MiB).  In Java 21+, `ThreadLocal` binds to the **virtual thread**
-(not the carrier thread) — so in a virtual-thread-per-request server,
-each virtual thread allocates a fresh direct buffer and loses all
-pooling benefit.  Direct memory accumulates until the virtual thread is
-garbage-collected, potentially causing memory pressure under high
-concurrency.
+(not the carrier thread) — so on a virtual thread each dispatch would
+allocate a fresh direct buffer, lose all pooling benefit, and
+accumulate off-heap memory until the virtual thread is
+garbage-collected.
 
-**Recommendation for virtual-thread deployments:**
-- Set `vespera.bridge.dispatch-mode=bidirectional-streaming` to opt
-  out of the new smart default, so DIRECT (which relies on the
-  pooled per-thread direct buffer) is never chosen by the
-  autoconfigured resolver.
+**Automatic mitigation (since 0.2.1):** `dispatchDirectPooled` detects
+the calling thread via `Thread.isVirtual()` (resolved reflectively so
+the library still targets Java 17) and, when it is a virtual thread,
+**routes the request to the GC-managed heap `dispatchBytes` path
+instead of the pooled direct buffer** — no per-vthread off-heap
+accumulation, no configuration required.  The DIRECT fast path keeps
+its pooling benefit on platform threads (Tomcat's default request
+pool); virtual-thread deployments transparently fall back to the heap
+path at a small per-call allocation cost.
+
+You can still opt out of DIRECT entirely if you prefer streaming
+end-to-end:
+- Set `vespera.bridge.dispatch-mode=bidirectional-streaming` so DIRECT
+  is never chosen by the autoconfigured resolver.
 - Or use `dispatchBytes`, `dispatchStreaming`, or
-  `dispatchFullStreaming` directly instead of the pooled direct
-  variants.
-- Or run dispatch on a bounded platform-thread executor (e.g. a
-  `ForkJoinPool` with a fixed parallelism cap).
+  `dispatchFullStreaming` directly.
 - Or lower `vespera.direct.maxBufferBytes` to reduce per-thread
-  allocation size.
+  allocation size on platform threads.
 
 `DispatchMode.BIDIRECTIONAL_STREAMING` is safe for virtual threads
 and handles all payload sizes without pooling.
@@ -569,7 +574,7 @@ DecodedResponse resp = VesperaBridge.decodeResponse(
 assert Arrays.equals(pdf, resp.bodyBytes()); // exact round-trip (copy on demand)
 ```
 
-A Rust handler returning a binary response (e.g. `image/png`) flows the same way: `VesperaProxyController` inspects the response `Content-Type` and returns `ResponseEntity<byte[]>` for binary content, `ResponseEntity<String>` for text-like content.
+A Rust handler returning a binary response (e.g. `image/png`) flows the same way: `VesperaProxyController` returns `ResponseEntity<byte[]>` for **every** content type — the wire header already carries the exact `Content-Type`, which Spring's `ByteArrayHttpMessageConverter` writes verbatim. (Before 0.2.1 text-like content types were delivered as `ResponseEntity<String>`; that path was dropped because it forced a redundant UTF-8 decode→re-encode round-trip.)
 
 ## VesperaProxyController behaviour
 
@@ -577,10 +582,8 @@ A Rust handler returning a binary response (e.g. `image/png`) flows the same way
 
 1. Collects all incoming headers (lowercased keys).
 2. Asks the configured `DispatchModeResolver` which mode serves this request (default since 0.2.0: `SmartDispatchModeResolver` — DIRECT for small/bodyless idempotent requests, SYNC for small non-idempotent requests, BIDIRECTIONAL_STREAMING for everything else; opt out with `vespera.bridge.dispatch-mode=bidirectional-streaming`).
-3. For `SYNC` / `ASYNC` / `STREAMING` / `DIRECT` modes the body is read into `byte[]` first, then encoded via `VesperaBridge.encodeRequest(...)` and dispatched through the matching native method.
-4. Sync/async responses are decoded via `VesperaBridge.decodeResponse(byte[])` and returned as `ResponseEntity<String>` for text-like `Content-Type` (e.g. `text/*`, `application/json`, `+json`, `+xml`, `application/xml`, `application/javascript`, `application/yaml`, `application/x-www-form-urlencoded`, `application/graphql`), `ResponseEntity<byte[]>` otherwise.  Streaming and DIRECT modes write status/headers and body straight to the servlet response.
-
-Missing `Content-Type` defaults to "text" — matching the long-standing Vespera convention of treating unspecified content as JSON-shaped.
+3. For `SYNC` / `ASYNC` / `STREAMING` / `DIRECT` modes the body is read into `byte[]` first (bodyless requests — explicit `Content-Length: 0`, e.g. the small idempotent GETs the SmartDispatch resolver routes through DIRECT — skip the read and reuse a shared empty array), then encoded via `VesperaBridge.encodeRequest(...)` and dispatched through the matching native method.
+4. Sync/async responses are parsed straight from the wire response via the allocation-lean `WireHeaderReader` (status + headers) and returned as `ResponseEntity<byte[]>` for **every** `Content-Type` — the body is sliced once from the wire tail; the `Content-Type` header is carried verbatim, so no text/binary branching is needed.  Streaming and DIRECT modes write status/headers and body straight to the servlet response.
 
 ## Native library loading
 

@@ -24,7 +24,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Mutex;
 use tokio::runtime::Builder;
-use vespera_inprocess::{dispatch_from_bytes, register_app};
+use vespera_inprocess::{RequestChunk, dispatch_from_bytes, register_app};
 
 // ── Test app ─────────────────────────────────────────────────────────
 
@@ -358,7 +358,13 @@ async fn dispatch_bidirectional_streaming_roundtrips_small_body() {
     // Request body chunks to push.
     let chunks: Vec<Vec<u8>> = vec![b"hello ".to_vec(), b"world".to_vec(), b"!".to_vec()];
     let chunks_iter = Mutex::new(chunks.into_iter());
-    let pull_chunk = move || -> Option<Vec<u8>> { chunks_iter.lock().unwrap().next() };
+    let pull_chunk = move || -> RequestChunk {
+        chunks_iter
+            .lock()
+            .unwrap()
+            .next()
+            .map_or(RequestChunk::End, RequestChunk::Data)
+    };
 
     // Response body sink.
     let received: std::sync::Arc<Mutex<Vec<u8>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
@@ -384,6 +390,61 @@ async fn dispatch_bidirectional_streaming_roundtrips_small_body() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dispatch_bidirectional_streaming_pull_error_aborts_upload() {
+    install_router();
+
+    let header_only_wire = encode_wire(
+        "POST",
+        "/echo/bytes",
+        None,
+        HashMap::from([("content-type", "application/octet-stream")]),
+        &[],
+    );
+
+    // First pull yields a chunk, the second reports a producer error
+    // (e.g. the source `InputStream` threw mid-upload).  The body must
+    // abort so the handler's `Bytes` extractor fails — NOT be accepted
+    // as a clean EOF carrying the partial "hello ".
+    let counter = Mutex::new(0u32);
+    let pull_chunk = move || -> RequestChunk {
+        let mut g = counter.lock().unwrap();
+        *g += 1;
+        match *g {
+            1 => RequestChunk::Data(b"hello ".to_vec()),
+            _ => RequestChunk::Error,
+        }
+    };
+
+    let received: std::sync::Arc<Mutex<Vec<u8>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let received_clone = std::sync::Arc::clone(&received);
+    let on_chunk = move |chunk: &[u8]| {
+        received_clone.lock().unwrap().extend_from_slice(chunk);
+    };
+
+    let header_bytes =
+        vespera_inprocess::dispatch_bidirectional_streaming(header_only_wire, pull_chunk, on_chunk)
+            .await;
+
+    let (header, _body) = decode_wire(&header_bytes);
+    // axum's `Bytes` extractor rejects a body that errors mid-stream
+    // (400), instead of the 200 echo of the partial "hello " that the
+    // old silent-EOF behaviour would have produced.
+    assert_eq!(
+        header["status"].as_u64(),
+        Some(400),
+        "a producer error must reject the upload, not silently complete it"
+    );
+    // Whatever streams back is axum's 400 rejection body — never the
+    // partial "hello " echoed as a successful upload.
+    let echoed = received.lock().unwrap().clone();
+    assert_ne!(
+        echoed.as_slice(),
+        b"hello ",
+        "the aborted upload must not be echoed back as a completed body"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dispatch_bidirectional_streaming_empty_chunk_is_retry_not_eof() {
     // Pins the pull contract relied on by the JNI bridge:
     // `Some(vec![])` means "no data right now, keep pulling" (mirrors
@@ -405,7 +466,13 @@ async fn dispatch_bidirectional_streaming_empty_chunk_is_retry_not_eof() {
         b" after".to_vec(),
     ];
     let chunks_iter = Mutex::new(chunks.into_iter());
-    let pull_chunk = move || -> Option<Vec<u8>> { chunks_iter.lock().unwrap().next() };
+    let pull_chunk = move || -> RequestChunk {
+        chunks_iter
+            .lock()
+            .unwrap()
+            .next()
+            .map_or(RequestChunk::End, RequestChunk::Data)
+    };
 
     let received: std::sync::Arc<Mutex<Vec<u8>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
     let received_clone = std::sync::Arc::clone(&received);
@@ -452,7 +519,13 @@ async fn dispatch_bidirectional_streaming_large_request_body() {
         .collect();
     let expected: Vec<u8> = request_chunks.iter().flatten().copied().collect();
     let chunks_iter = Mutex::new(request_chunks.into_iter());
-    let pull_chunk = move || -> Option<Vec<u8>> { chunks_iter.lock().unwrap().next() };
+    let pull_chunk = move || -> RequestChunk {
+        chunks_iter
+            .lock()
+            .unwrap()
+            .next()
+            .map_or(RequestChunk::End, RequestChunk::Data)
+    };
 
     let received: std::sync::Arc<Mutex<Vec<u8>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
     let received_clone = std::sync::Arc::clone(&received);
@@ -479,7 +552,7 @@ async fn dispatch_bidirectional_streaming_large_request_body() {
 async fn dispatch_bidirectional_streaming_emits_error_wire_on_malformed_header() {
     install_router();
     let bad_header: Vec<u8> = vec![0u8, 0, 0, 99]; // overflow
-    let pull = || -> Option<Vec<u8>> { None };
+    let pull = || -> RequestChunk { RequestChunk::End };
     let on = |_: &[u8]| {};
 
     let header_bytes =

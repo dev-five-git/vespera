@@ -56,9 +56,14 @@ pub async fn dispatch_parts<'h>(
         builder = builder.header("content-type", "application/json");
     }
 
-    let request = builder
-        .body(Body::from(body_bytes))
-        .expect("request construction should not fail with valid URI");
+    // A malformed wire `path` (e.g. a raw space → not a valid
+    // `http::Uri`) or an invalid header name/value surfaces here as a
+    // builder error; convert it to a 400 so the contract "every failure
+    // returns a wire response" holds instead of panicking.
+    let request = match builder.body(Body::from(body_bytes)) {
+        Ok(req) => req,
+        Err(e) => return Err((400, format!("invalid request: {e}"))),
+    };
 
     let response = router
         .oneshot(request)
@@ -122,9 +127,14 @@ where
         builder = builder.header("content-type", "application/json");
     }
 
-    let request = builder
-        .body(Body::from(body_bytes))
-        .expect("request construction should not fail with valid URI");
+    // A malformed wire `path` (e.g. a raw space → not a valid
+    // `http::Uri`) or an invalid header name/value surfaces here as a
+    // builder error; convert it to a 400 so the contract "every failure
+    // returns a wire response" holds instead of panicking.
+    let request = match builder.body(Body::from(body_bytes)) {
+        Ok(req) => req,
+        Err(e) => return Err((400, format!("invalid request: {e}"))),
+    };
 
     let response = router
         .oneshot(request)
@@ -205,7 +215,12 @@ async fn collect_response_parts(response: axum::response::Response) -> ResponseP
 /// [`http::HeaderMap`].
 pub fn to_response_envelope_text(parts: ResponseParts) -> ResponseEnvelope {
     let (status, headers, body_bytes, metadata) = parts;
-    let body = String::from_utf8(body_bytes.to_vec()).unwrap_or_default();
+    // `Vec::from(Bytes)` reuses the underlying buffer when the `Bytes`
+    // is uniquely owned (the common case for a collected response body),
+    // copying only for a shared/static slice — unlike `to_vec()`, which
+    // always allocates and copies.  Semantics preserved: a non-UTF-8
+    // body still yields the empty string.
+    let body = String::from_utf8(Vec::from(body_bytes)).unwrap_or_default();
     ResponseEnvelope {
         status,
         headers: collect_header_map(&headers),
@@ -250,9 +265,12 @@ pub async fn dispatch_and_split<'h>(
         builder = builder.header("content-type", "application/json");
     }
 
-    let request = builder
-        .body(body)
-        .expect("request construction should not fail with valid URI");
+    // Same contract as dispatch_parts: a malformed path/header must
+    // surface as a 400 wire response, not a panic.
+    let request = match builder.body(body) {
+        Ok(req) => req,
+        Err(e) => return Err((400, format!("invalid request: {e}"))),
+    };
 
     let response = router
         .oneshot(request)
@@ -266,4 +284,85 @@ pub async fn dispatch_and_split<'h>(
         ResponseMetadata::current(),
         body,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build current-thread runtime")
+            .block_on(fut)
+    }
+
+    /// A wire `path` that cannot be parsed into an [`http::Uri`] (a raw
+    /// space is illegal) must surface as an `Err((4xx, _))` the caller
+    /// turns into a wire response — never a panic.  Guards the
+    /// "all failure modes return a valid wire response" contract for
+    /// every `request_builder` call site.
+    #[test]
+    fn malformed_path_returns_error_not_panic() {
+        let result = block_on(async {
+            dispatch_parts(
+                crate::Router::new(),
+                "GET",
+                "bad path with spaces",
+                "",
+                std::iter::empty(),
+                Bytes::new(),
+            )
+            .await
+        });
+        match result {
+            Err((status, _)) => assert!(
+                (400..500).contains(&status),
+                "expected 4xx for malformed path, got {status}"
+            ),
+            Ok(_) => panic!("malformed path should not produce a successful dispatch"),
+        }
+    }
+
+    #[test]
+    fn malformed_path_streaming_returns_error_not_panic() {
+        let result = block_on(async {
+            let mut sink = |_: &[u8]| {};
+            dispatch_response_streaming(
+                crate::Router::new(),
+                "GET",
+                "bad path with spaces",
+                "",
+                std::iter::empty(),
+                Bytes::new(),
+                &mut sink,
+            )
+            .await
+        });
+        assert!(
+            result.is_err(),
+            "streaming dispatch must reject malformed path"
+        );
+    }
+
+    #[test]
+    fn malformed_path_split_returns_error_not_panic() {
+        let result = block_on(async {
+            dispatch_and_split(
+                crate::Router::new(),
+                "GET",
+                "bad path with spaces",
+                "",
+                std::iter::empty(),
+                Body::empty(),
+                false,
+            )
+            .await
+        });
+        assert!(
+            result.is_err(),
+            "dispatch_and_split must reject malformed path"
+        );
+    }
 }

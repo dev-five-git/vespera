@@ -509,7 +509,10 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for tempfile::NamedTempFile {
 
         let mut total = 0usize;
         while let Some(chunk) = field.chunk().await? {
-            total += chunk.len();
+            // `saturating_add` (matching `read_field_data`) prevents a
+            // pathological chunk size from wrapping `total` and slipping
+            // past the limit check below.
+            total = total.saturating_add(chunk.len());
             if let Some(limit) = limit_bytes
                 && total > limit
             {

@@ -20,8 +20,8 @@ use axum::routing::{get, post};
 use bytes::Bytes;
 use serde_json::Value;
 use vespera_inprocess::{
-    dispatch_bidirectional_streaming_with_header, dispatch_streaming_with_header_async,
-    register_app_named,
+    RequestChunk, dispatch_bidirectional_streaming_with_header,
+    dispatch_streaming_with_header_async, register_app_named,
 };
 
 // ── Test app ─────────────────────────────────────────────────────────
@@ -345,7 +345,13 @@ async fn bidirectional_with_header_roundtrips_body() {
 
     let chunks = vec![b"foo".to_vec(), b"bar".to_vec()];
     let chunks_iter = Mutex::new(chunks.into_iter());
-    let pull = move || -> Option<Vec<u8>> { chunks_iter.lock().unwrap().next() };
+    let pull = move || -> RequestChunk {
+        chunks_iter
+            .lock()
+            .unwrap()
+            .next()
+            .map_or(RequestChunk::End, RequestChunk::Data)
+    };
 
     let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
@@ -368,7 +374,7 @@ async fn bidirectional_with_header_roundtrips_body() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bidirectional_with_header_error_on_short_input() {
     let bad: Vec<u8> = vec![0u8, 0, 0]; // < 4 bytes
-    let pull = || -> Option<Vec<u8>> { None };
+    let pull = || -> RequestChunk { RequestChunk::End };
     let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
@@ -392,7 +398,7 @@ async fn bidirectional_with_header_error_on_short_input() {
 async fn bidirectional_with_header_error_on_version_mismatch() {
     install_router();
     let bad = encode_bad_version("POST", "/echo");
-    let pull = || -> Option<Vec<u8>> { None };
+    let pull = || -> RequestChunk { RequestChunk::End };
     let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
@@ -415,7 +421,7 @@ async fn bidirectional_with_header_error_on_version_mismatch() {
 async fn bidirectional_with_header_error_on_unknown_app() {
     install_router();
     let bad = encode_unknown_app("POST", "/echo");
-    let pull = || -> Option<Vec<u8>> { None };
+    let pull = || -> RequestChunk { RequestChunk::End };
     let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
@@ -438,7 +444,7 @@ async fn bidirectional_with_header_error_on_unknown_app() {
 async fn bidirectional_with_header_invalid_method_returns_405() {
     install_router();
     let wire = encode_wire("BAD METHOD", "/echo", HashMap::new(), &[]);
-    let pull = || -> Option<Vec<u8>> { None };
+    let pull = || -> RequestChunk { RequestChunk::End };
     let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
@@ -475,15 +481,15 @@ async fn bidirectional_with_header_break_when_receiver_dropped_mid_stream() {
 
     let counter = Arc::new(Mutex::new(0u32));
     let counter_clone = Arc::clone(&counter);
-    let pull = move || -> Option<Vec<u8>> {
+    let pull = move || -> RequestChunk {
         let mut g = counter_clone.lock().unwrap();
         if *g >= 1000 {
-            return None;
+            return RequestChunk::End;
         }
         *g += 1;
         // 4 KiB chunks — large enough that 16 slots ≈ 64 KiB worth
         // pile up before the handler decides to return.
-        Some(vec![0u8; 4096])
+        RequestChunk::Data(vec![0u8; 4096])
     };
 
     let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
@@ -522,15 +528,15 @@ async fn bidirectional_with_header_slow_producer_yields_poll_pending() {
 
     let counter = Arc::new(Mutex::new(0u32));
     let counter_clone = Arc::clone(&counter);
-    let pull = move || -> Option<Vec<u8>> {
+    let pull = move || -> RequestChunk {
         let mut g = counter_clone.lock().unwrap();
         if *g >= 3 {
-            return None;
+            return RequestChunk::End;
         }
         *g += 1;
         // Sleep so the consumer drains the channel and hits Pending.
         std::thread::sleep(std::time::Duration::from_millis(25));
-        Some(b"chunk".to_vec())
+        RequestChunk::Data(b"chunk".to_vec())
     };
 
     let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
@@ -565,13 +571,13 @@ async fn bidirectional_with_header_empty_pull_chunks_are_skipped() {
     // Second call returns the real body, third returns None (EOF).
     let counter = Arc::new(Mutex::new(0u32));
     let counter_clone = Arc::clone(&counter);
-    let pull = move || -> Option<Vec<u8>> {
+    let pull = move || -> RequestChunk {
         let mut g = counter_clone.lock().unwrap();
         *g += 1;
         match *g {
-            1 => Some(Vec::new()), // empty chunk — must be skipped
-            2 => Some(b"X".to_vec()),
-            _ => None,
+            1 => RequestChunk::Data(Vec::new()), // empty chunk — must be skipped
+            2 => RequestChunk::Data(b"X".to_vec()),
+            _ => RequestChunk::End,
         }
     };
 

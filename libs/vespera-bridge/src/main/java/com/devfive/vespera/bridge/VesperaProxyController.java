@@ -1,6 +1,5 @@
 package com.devfive.vespera.bridge;
 
-import com.devfive.vespera.bridge.VesperaBridge.DecodedResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
@@ -19,7 +18,6 @@ import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -116,7 +114,18 @@ public class VesperaProxyController {
         }
     }
 
+    /** Shared empty body — avoids a {@code new byte[0]} per bodyless request. */
+    private static final byte[] EMPTY_BODY = new byte[0];
+
     private static byte[] readBody(HttpServletRequest request) throws IOException {
+        // Bodyless requests (explicit Content-Length: 0 — e.g. the
+        // small/bodyless idempotent GETs the SmartDispatch resolver
+        // routes through DIRECT) skip the InputStream + readAllBytes
+        // allocations entirely.  Chunked / unknown-length bodies
+        // (Content-Length == -1) still read through normally.
+        if (request.getContentLengthLong() == 0L) {
+            return EMPTY_BODY;
+        }
         try (InputStream in = request.getInputStream()) {
             return in.readAllBytes();
         }
@@ -251,9 +260,27 @@ public class VesperaProxyController {
         Enumeration<String> names = request.getHeaderNames();
         while (names.hasMoreElements()) {
             String name = names.nextElement();
-            headers.put(name.toLowerCase(Locale.ROOT), request.getHeader(name));
+            headers.put(toLowerCaseAscii(name), request.getHeader(name));
         }
         return headers;
+    }
+
+    /**
+     * Lowercase an HTTP header name without allocating when it is
+     * already lowercase — the common case, since HTTP/2 mandates
+     * lowercase field names and most HTTP/1.1 clients send canonical
+     * names.  Header names are ASCII per RFC 9110 §5.1, so an ASCII
+     * scan is sufficient; only on encountering an uppercase letter do
+     * we fall back to a full {@link String#toLowerCase} copy.
+     */
+    private static String toLowerCaseAscii(String name) {
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (c >= 'A' && c <= 'Z') {
+                return name.toLowerCase(Locale.ROOT);
+            }
+        }
+        return name;
     }
 
     /**
@@ -263,18 +290,18 @@ public class VesperaProxyController {
      */
     private static void applyDecodedHeader(byte[] headerBytes,
                                             HttpServletResponse response) {
-        DecodedResponse meta = VesperaBridge.decodeResponse(headerBytes);
-        response.setStatus(meta.status());
-        for (Map.Entry<String, Object> entry : meta.headers().entrySet()) {
-            Object val = entry.getValue();
-            if (val instanceof List<?> list) {
-                for (Object v : list) {
-                    response.addHeader(entry.getKey(), String.valueOf(v));
-                }
-            } else if (val != null) {
-                response.setHeader(entry.getKey(), String.valueOf(val));
-            }
-        }
+        // Apply status + headers straight from the wire header bytes via
+        // the allocation-lean WireHeaderReader — the same path
+        // dispatchDirectMode uses.  This avoids the DecodedResponse object
+        // graph (headers map, the always-allocated metadata LinkedHashMap,
+        // and the body ByteBuffer view) that VesperaBridge.decodeResponse
+        // builds, on every streaming dispatch's header callback.
+        // addHeader on an uncommitted response equals setHeader for a
+        // header's first value and appends for multi-valued headers
+        // (e.g. set-cookie), preserving the prior semantics.
+        ByteBuffer buf = ByteBuffer.wrap(headerBytes);
+        int headerLen = buf.getInt(0);
+        WireHeaderReader.apply(buf, 4, headerLen, response::setStatus, response::addHeader);
     }
 
     /**
@@ -322,32 +349,19 @@ public class VesperaProxyController {
                 s -> statusHolder[0] = s,
                 httpHeaders::add);
         HttpStatus status = HttpStatus.valueOf(statusHolder[0]);
-        String contentType = httpHeaders.getFirst(HttpHeaders.CONTENT_TYPE);
+        // Deliver the body as byte[] for every content type.  The wire
+        // header already carries the exact Content-Type, and Spring's
+        // ByteArrayHttpMessageConverter writes it verbatim — so this
+        // drops, for text responses, both the intermediate String
+        // allocation AND the UTF-8 decode→re-encode round-trip that
+        // ResponseEntity<String> performed (the StringHttpMessageConverter
+        // would re-encode the just-decoded String straight back to UTF-8).
+        // One body-sized slice copy remains: ResponseEntity<byte[]> needs
+        // an owned array.  (BREAKING vs ≤0.2.0: text responses surface as
+        // ResponseEntity<byte[]> rather than ResponseEntity<String>; the
+        // bytes on the wire are identical.)
         int bodyOff = 4 + headerLen;
-        int bodyLen = wire.length - bodyOff;
-        if (isTextContentType(contentType)) {
-            return new ResponseEntity<>(
-                    new String(wire, bodyOff, bodyLen, StandardCharsets.UTF_8), httpHeaders, status);
-        }
         return new ResponseEntity<>(
                 java.util.Arrays.copyOfRange(wire, bodyOff, wire.length), httpHeaders, status);
-    }
-
-    private static boolean isTextContentType(String ct) {
-        if (ct == null) return true;
-        int parameterStart = ct.indexOf(';');
-        String mediaType = parameterStart >= 0 ? ct.substring(0, parameterStart) : ct;
-        String mime = mediaType.trim().toLowerCase(Locale.ROOT);
-        return mime.startsWith("text/")
-                || mime.equals("application/json")
-                || mime.endsWith("+json")
-                || mime.equals("application/xml")
-                || mime.endsWith("+xml")
-                || mime.equals("application/javascript")
-                || mime.equals("application/ecmascript")
-                || mime.equals("application/yaml")
-                || mime.equals("application/x-yaml")
-                || mime.equals("application/x-www-form-urlencoded")
-                || mime.equals("application/graphql");
     }
 }

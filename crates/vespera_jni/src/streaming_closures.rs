@@ -25,6 +25,7 @@ use jni::strings::JNIStr;
 use jni::sys::{jint, jvalue};
 use jni::{JValue, JValueOwned, jni_sig, jni_str};
 
+use crate::daemon_env::with_cached_daemon_env;
 use crate::jni_impl::streaming_chunk_size;
 
 struct CachedMethod {
@@ -277,44 +278,50 @@ pub fn make_pull_closure(
     jvm: jni::JavaVM,
     stream: Global<JObject<'static>>,
     buf: Global<jni::objects::JByteArray<'static>>,
-) -> impl FnMut() -> Option<Vec<u8>> + Send + 'static {
+) -> impl FnMut() -> vespera_inprocess::RequestChunk + Send + 'static {
+    use vespera_inprocess::RequestChunk;
     let chunk_size = streaming_chunk_size();
-    move || -> Option<Vec<u8>> {
-        let result: jni::errors::Result<Option<Vec<u8>>> = jvm.attach_current_thread(|env| {
-            env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
-                let n = call_input_stream_read(env, &stream, &buf)?;
-                if env.exception_check() {
-                    env.exception_clear();
-                }
-                // InputStream.read(byte[]) contract (mirrored in the
-                // VesperaBridge javadoc): -1 = EOF, 0 = empty read that
-                // MUST be retried.  The inprocess producer skips empty
-                // chunks and keeps pulling, so report `0` as an empty
-                // chunk rather than end-of-stream.
-                if n < 0 {
-                    return Ok(None);
-                }
-                if n == 0 {
-                    return Ok(Some(Vec::new()));
-                }
-                let n = usize::try_from(n).expect("positive read length fits usize");
-                let n = n.min(chunk_size);
-                let mut data = vec![0u8; n];
-                // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
-                // identical size/alignment; this views the
-                // freshly allocated buffer as the signed slice
-                // `get_byte_array_region` expects.
-                let data_i8 =
-                    unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast::<i8>(), n) };
-                let arr: &jni::objects::JByteArray<'_> = buf.as_ref();
-                arr.get_region(env, 0, data_i8)?;
-                Ok(Some(data))
-            })
+    move || -> RequestChunk {
+        // Daemon-attach this (Tokio `spawn_blocking`) thread once,
+        // cached in TLS, instead of attach+detach per chunk; the helper
+        // also wraps the body in a fresh local-reference frame.
+        let result: jni::errors::Result<RequestChunk> = with_cached_daemon_env(&jvm, |env| {
+            let n = call_input_stream_read(env, &stream, &buf)?;
+            if env.exception_check() {
+                env.exception_clear();
+            }
+            // InputStream.read(byte[]) contract (mirrored in the
+            // VesperaBridge javadoc): -1 = EOF, 0 = empty read that
+            // MUST be retried.  The inprocess producer skips empty
+            // chunks and keeps pulling, so report `0` as an empty
+            // chunk rather than end-of-stream.
+            if n < 0 {
+                return Ok(RequestChunk::End);
+            }
+            if n == 0 {
+                return Ok(RequestChunk::Data(Vec::new()));
+            }
+            let n = usize::try_from(n).expect("positive read length fits usize");
+            let n = n.min(chunk_size);
+            let mut data = vec![0u8; n];
+            // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
+            // identical size/alignment; this views the
+            // freshly allocated buffer as the signed slice
+            // `get_byte_array_region` expects.
+            let data_i8 =
+                unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast::<i8>(), n) };
+            let arr: &jni::objects::JByteArray<'_> = buf.as_ref();
+            arr.get_region(env, 0, data_i8)?;
+            Ok(RequestChunk::Data(data))
         });
-        result.ok().flatten()
+        // A JNI failure here — most importantly a `InputStream.read`
+        // that threw (jni-rs surfaces a pending Java exception as
+        // `Err`) — aborts the request body via `RequestChunk::Error`
+        // instead of being silently mistaken for a clean EOF, so a
+        // truncated upload is rejected rather than accepted as complete.
+        result.unwrap_or(RequestChunk::Error)
     }
 }
-
 /// Build the response-body push closure shared by all four
 /// streaming JNI entry points.
 ///
@@ -335,33 +342,45 @@ pub fn make_push_closure(
     buf: Global<jni::objects::JByteArray<'static>>,
 ) -> impl FnMut(&[u8]) + Send + 'static {
     let chunk_size = streaming_chunk_size();
+    // Latches once the Java OutputStream errors (e.g. the client
+    // disconnected mid-download): subsequent frames become a cheap
+    // no-op instead of repeatedly crossing JNI to write into a broken
+    // sink and clearing the resulting exception every time.
+    let mut failed = false;
     move |chunk: &[u8]| {
-        let _ = jvm.attach_current_thread(|env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
-            env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
-                let arr: &jni::objects::JByteArray<'_> = buf.as_ref();
-                for seg in chunk.chunks(chunk_size) {
-                    // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
-                    // identical size/alignment; this views the
-                    // segment as the signed slice `set_region`
-                    // expects.  `seg.len() <= chunk_size` (max
-                    // 8 MiB) so it always fits both the buffer
-                    // and `i32`.
-                    let seg_i8 =
-                        unsafe { std::slice::from_raw_parts(seg.as_ptr().cast::<i8>(), seg.len()) };
-                    arr.set_region(env, 0, seg_i8)?;
-                    let len = i32::try_from(seg.len())
-                        .expect("segment length bounded by streaming_chunk_size");
-                    call_output_stream_write(env, &stream, &buf, len)?;
-                    // Any IOException thrown by write() is left
-                    // pending on the env; clear it so subsequent
-                    // chunks on the same thread aren't poisoned.
-                    if env.exception_check() {
-                        env.exception_clear();
-                    }
+        if failed {
+            return;
+        }
+        // Daemon-attach this thread once, cached in TLS, instead of
+        // attach+detach per frame; the helper wraps the body in a fresh
+        // local-reference frame.
+        let outcome = with_cached_daemon_env(&jvm, |env| -> jni::errors::Result<()> {
+            let arr: &jni::objects::JByteArray<'_> = buf.as_ref();
+            for seg in chunk.chunks(chunk_size) {
+                // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
+                // identical size/alignment; this views the
+                // segment as the signed slice `set_region`
+                // expects.  `seg.len() <= chunk_size` (max
+                // 8 MiB) so it always fits both the buffer
+                // and `i32`.
+                let seg_i8 =
+                    unsafe { std::slice::from_raw_parts(seg.as_ptr().cast::<i8>(), seg.len()) };
+                arr.set_region(env, 0, seg_i8)?;
+                let len = i32::try_from(seg.len())
+                    .expect("segment length bounded by streaming_chunk_size");
+                call_output_stream_write(env, &stream, &buf, len)?;
+                // Any IOException thrown by write() is left
+                // pending on the env; clear it so subsequent
+                // chunks on the same thread aren't poisoned.
+                if env.exception_check() {
+                    env.exception_clear();
                 }
-                Ok(())
-            })
+            }
+            Ok(())
         });
+        if outcome.is_err() {
+            failed = true;
+        }
     }
 }
 

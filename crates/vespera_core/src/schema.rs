@@ -59,10 +59,21 @@ where
 {
     match value {
         Some(v) if v.fract() == 0.0 => {
-            // Practical OpenAPI constraints are well within i64 range
+            // Float→int casts saturate in Rust, so an out-of-range
+            // constraint (e.g. `1e20`) would silently become `i64::MAX`
+            // and corrupt the generated spec.  Emit the integer form
+            // only when it round-trips exactly back to the original
+            // value; otherwise keep the `f64` rendering.
             #[allow(clippy::cast_possible_truncation)]
             let int_val = *v as i64;
-            serializer.serialize_some(&int_val)
+            // Exact round-trip check is intentional: we emit the integer
+            // form only when `i64 → f64` reproduces the original bits.
+            #[allow(clippy::cast_precision_loss, clippy::float_cmp)]
+            if int_val as f64 == *v {
+                serializer.serialize_some(&int_val)
+            } else {
+                serializer.serialize_some(v)
+            }
         }
         Some(v) => serializer.serialize_some(v),
         None => serializer.serialize_none(),
@@ -500,6 +511,29 @@ mod tests {
         assert!(
             !json.contains("\"maximum\":100.0"),
             "must not contain 100.0: {json}"
+        );
+    }
+
+    #[test]
+    fn serialize_out_of_i64_range_constraint_stays_float() {
+        // A whole-number constraint beyond i64 range must NOT saturate to
+        // i64::MAX — it stays a float so the spec keeps the real value.
+        let schema = Schema {
+            maximum: Some(1e20),
+            ..Schema::number()
+        };
+        let json = serde_json::to_string(&schema).unwrap();
+        assert!(
+            !json.contains(&i64::MAX.to_string()),
+            "must not saturate to i64::MAX: {json}"
+        );
+        // Parse back: the constraint value must be preserved exactly,
+        // regardless of serde's float formatting.
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed["maximum"].as_f64(),
+            Some(1e20),
+            "constraint value must be preserved: {json}"
         );
     }
 

@@ -13,12 +13,15 @@ import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 
 /**
- * Lever 1 gate: the controller now builds the response body straight from the
- * wire buffer ({@code new String(wire, bodyOff, bodyLen)} / {@code
- * Arrays.copyOfRange}) instead of {@code decoded.bodyBytes()} + {@code new
- * String}. This proves the new extraction is byte-identical to the old path
- * across the content/charset matrix, and measures the per-text-response
- * allocation saved (the dropped intermediate {@code byte[]}).
+ * Lever 1 gate: the controller builds the response body straight from the wire
+ * buffer ({@code Arrays.copyOfRange(wire, bodyOff, end)}) instead of {@code
+ * decoded.bodyBytes()}. Since the controller now unifies on {@code
+ * ResponseEntity<byte[]>} for every content type, the text helpers below
+ * ({@code new String(wire, off, len)}) remain as a byte-identity proof of the
+ * extraction offsets across the content/charset matrix — they are no longer the
+ * controller's delivery path, which slices to {@code byte[]} uniformly and so
+ * drops both the intermediate {@code byte[]} and the prior text-only UTF-8
+ * decode→re-encode round-trip.
  */
 class ResponseBodyBuildTest {
 
@@ -217,16 +220,21 @@ class ResponseBodyBuildTest {
         return d.status() + h.size() + new String(d.bodyBytes(), StandardCharsets.UTF_8).length();
     }
 
-    /** NEW full response build (lean reader + body-from-wire) — buildResponseEntityFromWire logic. */
+    /**
+     * NEW full response build (lean reader + body-from-wire) —
+     * buildResponseEntityFromWire logic. Since the controller now unifies
+     * on {@code ResponseEntity<byte[]>} for every content type (dropping
+     * the text-only {@code new String} branch and its UTF-8
+     * decode→re-encode round-trip), the body is modelled as the
+     * {@code Arrays.copyOfRange} slice the controller actually returns.
+     */
     private static int newFull(byte[] w) {
         int hl = headerLen(w);
         HttpHeaders h = new HttpHeaders();
         int[] st = {500};
         WireHeaderReader.apply(java.nio.ByteBuffer.wrap(w), 4, hl, s -> st[0] = s, h::add);
         int bodyOff = 4 + hl;
-        return st[0]
-                + h.size()
-                + new String(w, bodyOff, w.length - bodyOff, StandardCharsets.UTF_8).length();
+        return st[0] + h.size() + Arrays.copyOfRange(w, bodyOff, w.length).length;
     }
 
     @Test

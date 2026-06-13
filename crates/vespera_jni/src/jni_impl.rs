@@ -1,17 +1,11 @@
-use std::{
-    cell::{Cell, RefCell},
-    ffi::c_void,
-    future::Future,
-    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
-    ptr,
-    sync::LazyLock,
-};
+use std::{cell::RefCell, future::Future, sync::LazyLock};
 
 use jni::EnvUnowned;
-use jni::errors::{ThrowRuntimeExAndDefault, jni_error_code_to_result};
+use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{Global, JByteArray, JByteBuffer, JClass, JObject};
 use jni::sys::{jbyteArray, jint};
 
+use crate::daemon_env::with_cached_daemon_env;
 use crate::streaming_closures::{
     call_header_consumer, complete_future, make_pull_closure, make_push_closure,
 };
@@ -43,7 +37,6 @@ thread_local! {
         .enable_all()
         .build()
         .expect("failed to create per-thread Tokio runtime");
-    static ASYNC_DAEMON_ENV: Cell<*mut jni::sys::JNIEnv> = const { Cell::new(ptr::null_mut()) };
     static STREAMING_PULL_BUFFER: RefCell<Option<CachedStreamingChunkBuffer>> = const { RefCell::new(None) };
     static STREAMING_PUSH_BUFFER: RefCell<Option<CachedStreamingChunkBuffer>> = const { RefCell::new(None) };
 }
@@ -163,71 +156,6 @@ fn mark_streaming_buffer_reusable(lease: Option<StreamingChunkBufferLease>) {
     }
 }
 
-fn attach_async_daemon_thread(jvm: &jni::JavaVM) -> jni::errors::Result<*mut jni::sys::JNIEnv> {
-    let raw_vm = jvm.get_raw();
-    let mut env_ptr = ptr::null_mut::<c_void>();
-    let mut args = jni::sys::JavaVMAttachArgs {
-        version: jni::JNIVersion::V1_4.into(),
-        name: ptr::null_mut(),
-        group: ptr::null_mut(),
-    };
-
-    // SAFETY: `raw_vm` comes from `Env::get_java_vm()` and is therefore a valid
-    // JavaVM pointer for this process.  JNI 1.4 provides
-    // `AttachCurrentThreadAsDaemon`; the returned `JNIEnv` is valid only on the
-    // current OS thread and is cached in thread-local storage below.
-    let res = unsafe {
-        ((*(*raw_vm)).v1_4.AttachCurrentThreadAsDaemon)(
-            raw_vm,
-            &raw mut env_ptr,
-            (&raw mut args).cast::<c_void>(),
-        )
-    };
-    jni_error_code_to_result(res)?;
-    if env_ptr.is_null() {
-        return Err(jni::errors::Error::NullPtr("AttachCurrentThreadAsDaemon"));
-    }
-
-    Ok(env_ptr.cast())
-}
-
-fn with_async_daemon_env<F, T, E>(jvm: &jni::JavaVM, callback: F) -> std::result::Result<T, E>
-where
-    F: FnOnce(&mut jni::Env<'_>) -> std::result::Result<T, E>,
-    E: From<jni::errors::Error>,
-{
-    ASYNC_DAEMON_ENV.with(|env_cell| {
-        let mut env_ptr = env_cell.get();
-        if env_ptr.is_null() {
-            env_ptr = attach_async_daemon_thread(jvm)?;
-            env_cell.set(env_ptr);
-        }
-
-        // SAFETY: the pointer was produced for this exact Tokio worker thread
-        // by `AttachCurrentThreadAsDaemon` and is never shared across threads
-        // (TLS confines it).  Tokio workers for the static runtime live until
-        // process teardown, and daemon attachment means they do not keep the JVM
-        // alive during shutdown.  The per-call local frame prevents local-ref
-        // accumulation on the permanently attached daemon thread.  The explicit
-        // post-call exception cleanup below replaces jni-rs scoped-detach
-        // cleanup, which daemon attachments intentionally do not run.
-        let mut guard = unsafe { jni::AttachGuard::from_unowned(env_ptr) };
-        let env = guard.borrow_env_mut();
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            env.with_local_frame(jni::DEFAULT_LOCAL_FRAME_CAPACITY, callback)
-        }));
-
-        if env.exception_check() {
-            env.exception_clear();
-        }
-
-        match result {
-            Ok(callback_result) => callback_result,
-            Err(payload) => resume_unwind(payload),
-        }
-    })
-}
-
 /// Worker thread count for the shared [`RUNTIME`], resolved once
 /// (first hit wins, then fixed for the process lifetime):
 ///
@@ -271,11 +199,16 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_configureRu
     _class: JClass<'local>,
     worker_threads: jint,
 ) {
-    if let Ok(workers) = usize::try_from(worker_threads)
-        && workers > 0
-    {
-        let _ = set_runtime_worker_threads(workers);
-    }
+    // Defensive `catch_unwind`: this body cannot panic today, but it is
+    // an `extern "system"` JNI symbol, so guard it for consistency with
+    // the dispatch symbols — an unwind must never cross the FFI boundary.
+    let _ = std::panic::catch_unwind(|| {
+        if let Ok(workers) = usize::try_from(worker_threads)
+            && workers > 0
+        {
+            let _ = set_runtime_worker_threads(workers);
+        }
+    });
 }
 
 /// Per-chunk buffer size for streaming dispatches.
@@ -306,16 +239,21 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_configureSt
     chunk_bytes: jint,
     channel_capacity: jint,
 ) {
-    if let Ok(bytes) = usize::try_from(chunk_bytes)
-        && bytes > 0
-    {
-        let _ = vespera_inprocess::set_streaming_chunk_bytes(bytes);
-    }
-    if let Ok(slots) = usize::try_from(channel_capacity)
-        && slots > 0
-    {
-        let _ = vespera_inprocess::set_streaming_channel_capacity(slots);
-    }
+    // Defensive `catch_unwind` — see `configureRuntime0`: keep every JNI
+    // `extern "system"` symbol panic-safe even though this body cannot
+    // panic with the current setters.
+    let _ = std::panic::catch_unwind(|| {
+        if let Ok(bytes) = usize::try_from(chunk_bytes)
+            && bytes > 0
+        {
+            let _ = vespera_inprocess::set_streaming_chunk_bytes(bytes);
+        }
+        if let Ok(slots) = usize::try_from(channel_capacity)
+            && slots > 0
+        {
+            let _ = vespera_inprocess::set_streaming_channel_capacity(slots);
+        }
+    });
 }
 
 /// `com.devfive.vespera.bridge.VesperaBridge.dispatchBytes(byte[]) -> byte[]`
@@ -544,10 +482,12 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
     future_obj: JObject<'local>,
     request_bytes: JByteArray<'local>,
 ) {
-    // Best-effort: any error inside with_env aborts the dispatch
-    // (future will dangle on the Java side — only happens if we
-    // can't even promote the future to a GlobalRef, which would
-    // mean the JVM is already in trouble).
+    // The only unrecoverable path is failing to promote the future to a
+    // GlobalRef (below): without that ref there is nothing to complete,
+    // and a failure there means the JVM is already in trouble.  Every
+    // path AFTER the ref exists completes the future, so the
+    // always-complete contract holds even on VM-promotion / scheduling
+    // failures.
     let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
         let future_global: Global<JObject<'static>> = env.new_global_ref(&future_obj)?;
 
@@ -571,19 +511,59 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
             buf
         };
 
-        let jvm = env.get_java_vm()?;
+        // Promote the VM; on the (near-impossible) failure complete the
+        // future we already hold so it never dangles.
+        let jvm = match env.get_java_vm() {
+            Ok(jvm) => jvm,
+            Err(e) => {
+                let _ = complete_future(
+                    env,
+                    &future_global,
+                    &vespera_inprocess::error_wire(500, "JNI VM promotion failed"),
+                );
+                return Err(e);
+            }
+        };
+
+        // A second owning global ref for the spawned task (`Global` is
+        // not `Clone`); the original `future_global` stays on this thread
+        // to complete the future if scheduling fails below.  Both refs
+        // are independent GC roots to the same Java future.
+        let future_for_task = match env.new_global_ref(&future_obj) {
+            Ok(g) => g,
+            Err(e) => {
+                let _ = complete_future(
+                    env,
+                    &future_global,
+                    &vespera_inprocess::error_wire(500, "JNI global ref failed"),
+                );
+                return Err(e);
+            }
+        };
 
         // The inner task converts Rust panics into JoinError, preserving
-        // always-complete semantics for the Java future.
-        RUNTIME.spawn(async move {
-            let response = tokio::spawn(vespera_inprocess::dispatch_from_bytes_async(input))
-                .await
-                .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
+        // always-complete semantics for the Java future.  Scheduling
+        // itself is wrapped in `catch_unwind` so a failure to build or
+        // schedule on the shared runtime completes the future (with a
+        // 500) instead of leaving the Java caller hanging.
+        let scheduled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            RUNTIME.spawn(async move {
+                let response = tokio::spawn(vespera_inprocess::dispatch_from_bytes_async(input))
+                    .await
+                    .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
 
-            let _ = with_async_daemon_env(&jvm, |env| -> jni::errors::Result<()> {
-                complete_future(env, &future_global, &response)
+                let _ = with_cached_daemon_env(&jvm, |env| -> jni::errors::Result<()> {
+                    complete_future(env, &future_for_task, &response)
+                });
             });
-        });
+        }));
+        if scheduled.is_err() {
+            let _ = complete_future(
+                env,
+                &future_global,
+                &vespera_inprocess::error_wire(500, "failed to schedule Rust dispatch"),
+            );
+        }
 
         Ok(())
     });
@@ -790,16 +770,18 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
         let (push_buf, push_buf_lease) =
             checkout_streaming_chunk_buffer(env, StreamingBufferRole::Push)?;
 
-        // Panic safety: catch_unwind absorbs Rust panics so the
-        // JVM never sees an unwinding stack across the FFI
-        // boundary.  If the panic happens AFTER the header
-        // callback fires (the common case — most panics are in
-        // axum handlers), Spring's response is already partially
-        // committed; we have no way to recover that.  If the
-        // panic happens BEFORE the header callback fires (very
-        // rare — e.g. wire parse), the Java side will see a
-        // dangling controller; document that follow-up callers
-        // should set a timeout.
+        // Panic safety: catch_unwind absorbs Rust panics so the JVM
+        // never sees an unwinding stack across the FFI boundary.
+        // `header_sent` records whether the header callback fired; if a
+        // panic unwinds BEFORE it does (e.g. the axum handler panicked
+        // inside dispatch, before status/headers are produced), we fire
+        // the consumer once with a 500 header below so the documented
+        // "header consumer invoked exactly once on every code path"
+        // contract holds and the Java caller is not left hanging.  A
+        // panic AFTER the header fired leaves Spring's response partially
+        // committed — unrecoverable, but the contract is already met.
+        let header_sent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let header_sent_cb = std::sync::Arc::clone(&header_sent);
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let header_for_cb = header_global;
             let jvm_for_cb = jvm.clone();
@@ -807,7 +789,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
             RUNTIME.block_on(vespera_inprocess::dispatch_streaming_with_header_async(
                 input,
                 |header_bytes: &[u8]| {
-                    let _ = jvm_for_cb.attach_current_thread(
+                    header_sent_cb.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = with_cached_daemon_env(
+                        &jvm_for_cb,
                         |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
                             call_header_consumer(env, &header_for_cb, header_bytes)
                         },
@@ -818,6 +802,11 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
         }));
         if panic_result.is_ok() {
             mark_streaming_buffer_reusable(push_buf_lease);
+        } else if !header_sent.load(std::sync::atomic::Ordering::SeqCst)
+            && let Ok(fallback) = env.new_global_ref(&header_consumer)
+        {
+            let err = vespera_inprocess::error_wire(500, "panic in Rust engine");
+            let _ = call_header_consumer(env, &fallback, &err);
         }
 
         Ok(())
@@ -876,9 +865,14 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
         let header_jvm = jvm;
         let header_for_cb = header_global;
 
-        // See dispatchStreamingWithHeader: panic absorbed silently,
-        // recovery semantics depend on which side of the header
-        // callback the panic landed.
+        // See dispatchStreamingWithHeader: `header_sent` lets us honour
+        // the "header consumer invoked exactly once on every code path"
+        // contract — if a panic unwinds before the header callback fires
+        // (e.g. the handler panicked before producing status/headers),
+        // we fire the consumer once with a 500 below instead of leaving
+        // the Java caller hanging.
+        let header_sent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let header_sent_cb = std::sync::Arc::clone(&header_sent);
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             RUNTIME.block_on(
                 vespera_inprocess::dispatch_bidirectional_streaming_with_header(
@@ -886,7 +880,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                     make_pull_closure(pull_jvm, pull_global, pull_buf),
                     make_push_closure(push_jvm, push_global, push_buf),
                     |header_bytes: &[u8]| {
-                        let _ = header_jvm.attach_current_thread(
+                        header_sent_cb.store(true, std::sync::atomic::Ordering::SeqCst);
+                        let _ = with_cached_daemon_env(
+                            &header_jvm,
                             |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
                                 call_header_consumer(env, &header_for_cb, header_bytes)
                             },
@@ -898,6 +894,11 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
         if panic_result.is_ok() {
             mark_streaming_buffer_reusable(pull_buf_lease);
             mark_streaming_buffer_reusable(push_buf_lease);
+        } else if !header_sent.load(std::sync::atomic::Ordering::SeqCst)
+            && let Ok(fallback) = env.new_global_ref(&header_consumer)
+        {
+            let err = vespera_inprocess::error_wire(500, "panic in Rust engine");
+            let _ = call_header_consumer(env, &fallback, &err);
         }
 
         Ok(())

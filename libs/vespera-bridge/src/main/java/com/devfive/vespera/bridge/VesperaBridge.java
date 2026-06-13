@@ -495,6 +495,48 @@ public class VesperaBridge {
                     ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY)});
 
     /**
+     * Handle to {@code Thread.isVirtual()} (final API since Java 21),
+     * resolved reflectively so this library still compiles and runs on
+     * the Java 17 baseline.  {@code null} on pre-21 runtimes, where no
+     * thread is ever virtual.
+     */
+    private static final java.lang.invoke.MethodHandle IS_VIRTUAL = resolveIsVirtual();
+
+    private static java.lang.invoke.MethodHandle resolveIsVirtual() {
+        try {
+            return java.lang.invoke.MethodHandles.lookup()
+                    .findVirtual(Thread.class, "isVirtual",
+                            java.lang.invoke.MethodType.methodType(boolean.class));
+        } catch (ReflectiveOperationException pre21Runtime) {
+            return null;
+        }
+    }
+
+    /**
+     * Whether the calling thread is a virtual thread (Java 21+); always
+     * {@code false} on the Java 17 baseline runtime.
+     *
+     * <p>The pooled direct-buffer fast path is backed by
+     * {@link ThreadLocal}, which binds to the <em>virtual</em> thread
+     * (not its carrier) in Java 21+ — so on a virtual-thread-per-request
+     * server every dispatch would allocate a fresh direct buffer and
+     * accumulate off-heap memory until GC.  {@link #dispatchDirectPooled}
+     * detects this and routes virtual threads to the GC-managed heap
+     * {@link #dispatchBytes(byte[])} path instead, automating the
+     * mitigation the docs previously left to manual configuration.
+     */
+    private static boolean currentThreadIsVirtual() {
+        if (IS_VIRTUAL == null) {
+            return false;
+        }
+        try {
+            return (boolean) IS_VIRTUAL.invokeExact(Thread.currentThread());
+        } catch (Throwable ignoredFallBackToPooled) {
+            return false;
+        }
+    }
+
+    /**
      * Raw native entry — validated by {@link #dispatchDirect(ByteBuffer,
      * int, ByteBuffer)}; never call this directly.
      */
@@ -592,8 +634,12 @@ public class VesperaBridge {
      */
     public static ByteBuffer dispatchDirectPooled(byte[] wireRequest, boolean retryOnOverflow) {
         Objects.requireNonNull(wireRequest, "wireRequest");
-        if (wireRequest.length > DIRECT_MAX_CAPACITY) {
-            // No dispatch has run yet — byte[] fallback is safe for any method.
+        if (currentThreadIsVirtual() || wireRequest.length > DIRECT_MAX_CAPACITY) {
+            // Virtual thread: the per-thread direct buffer pool would
+            // accumulate off-heap memory per vthread (ThreadLocal binds to
+            // the vthread, not the carrier) — use the GC-managed heap path.
+            // Oversized request (> cap): byte[] fallback is safe for any
+            // method because no dispatch has run yet.
             return ByteBuffer.wrap(dispatchBytes(wireRequest)).asReadOnlyBuffer();
         }
         ByteBuffer[] pool = DIRECT_POOL.get();
@@ -655,8 +701,11 @@ public class VesperaBridge {
         byte[] headerJson = serializeHeaderJson(appName, method, path, query, headers);
         byte[] bodyBytes = body != null ? body : new byte[0];
         int total = 4 + headerJson.length + bodyBytes.length;
-        if (total > DIRECT_MAX_CAPACITY) {
-            // No dispatch has run yet — byte[] fallback is safe for any method.
+        if (currentThreadIsVirtual() || total > DIRECT_MAX_CAPACITY) {
+            // Virtual thread: avoid the per-vthread off-heap direct buffer
+            // accumulation — use the GC-managed heap path.  Oversized
+            // request (> cap): byte[] fallback is safe for any method
+            // because no dispatch has run yet.
             return ByteBuffer.wrap(dispatchBytes(assembleWire(headerJson, bodyBytes)))
                     .asReadOnlyBuffer();
         }
@@ -765,13 +814,20 @@ public class VesperaBridge {
 
     /** Internal: assemble a heap wire array from pre-serialised parts. */
     private static byte[] assembleWire(byte[] headerJson, byte[] body) {
-        ByteBuffer buf = ByteBuffer
-                .allocate(4 + headerJson.length + body.length)
-                .order(ByteOrder.BIG_ENDIAN);
-        buf.putInt(headerJson.length);
-        buf.put(headerJson);
-        buf.put(body);
-        return buf.array();
+        int headerLen = headerJson.length;
+        byte[] wire = new byte[4 + headerLen + body.length];
+        // Write the u32 BE length prefix directly — avoids the
+        // HeapByteBuffer wrapper object that
+        // ByteBuffer.allocate(...).array() allocates per request; the
+        // arraycopy intrinsics handle the header + body.  Byte-identical
+        // to the prior ByteBuffer path.
+        wire[0] = (byte) (headerLen >>> 24);
+        wire[1] = (byte) (headerLen >>> 16);
+        wire[2] = (byte) (headerLen >>> 8);
+        wire[3] = (byte) headerLen;
+        System.arraycopy(headerJson, 0, wire, 4, headerLen);
+        System.arraycopy(body, 0, wire, 4 + headerLen, body.length);
+        return wire;
     }
 
     /** Smallest power-of-two-ish growth ≥ {@code needed}, capped. */
