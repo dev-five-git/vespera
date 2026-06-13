@@ -15,5 +15,5 @@ vespera = { path = "../../crates/vespera" }
 
 [dev-dependencies]
 axum-test = "20.1"
-insta = "1.47"
+insta = "1.48"
 

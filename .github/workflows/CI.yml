@@ -176,7 +176,7 @@ jobs:
         run: ./gradlew :demo-app:test --console=plain --no-daemon
       - name: Upload demo-app test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: jni-e2e-${{ matrix.os }}-test-results
           path: examples/rust-jni-demo/java/demo-app/build/test-results/test/*.xml

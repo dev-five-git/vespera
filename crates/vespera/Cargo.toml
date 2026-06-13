@@ -67,7 +67,7 @@ tower = { version = "0.5", features = ["util"] }
 # they don't need the `inprocess` cargo feature to be enabled.
 vespera_inprocess = { workspace = true }
 # Byte-snapshot testing for 422 validation envelope contract
-insta = "1.47"
+insta = "1.48"
 
 [lints]
 workspace = true

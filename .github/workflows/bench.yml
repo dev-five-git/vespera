@@ -48,7 +48,7 @@ jobs:
 
       - name: Restore criterion baseline (latest main)
         id: restore-baseline
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: target/criterion
           key: bench-baseline-${{ runner.os }}-${{ github.sha }}
@@ -63,7 +63,7 @@ jobs:
 
       - name: Save criterion baseline cache
         if: github.event_name == 'push'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: target/criterion
           key: bench-baseline-${{ runner.os }}-${{ github.sha }}

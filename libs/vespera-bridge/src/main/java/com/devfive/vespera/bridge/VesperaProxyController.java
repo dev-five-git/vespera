@@ -128,8 +128,7 @@ public class VesperaProxyController {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
         byte[] wireResp = VesperaBridge.dispatchBytes(wireReq);
-        DecodedResponse decoded = VesperaBridge.decodeResponse(wireResp);
-        return buildResponseEntity(decoded);
+        return buildResponseEntityFromWire(wireResp);
     }
 
     private CompletableFuture<ResponseEntity<?>> dispatchAsyncFlow(
@@ -137,10 +136,8 @@ public class VesperaProxyController {
             Map<String, String> headers, byte[] body) {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
-        return VesperaBridge.dispatch(wireReq).thenApply(wireResp -> {
-            DecodedResponse decoded = VesperaBridge.decodeResponse(wireResp);
-            return buildResponseEntity(decoded);
-        });
+        return VesperaBridge.dispatch(wireReq)
+                .thenApply(VesperaProxyController::buildResponseEntityFromWire);
     }
 
     /**
@@ -225,11 +222,13 @@ public class VesperaProxyController {
             return;
         }
 
-        // Commit status + headers from the wire header slice (small copy).
+        // Commit status + headers parsed straight from the direct buffer —
+        // no byte[] copy, no DecodedResponse object graph (maps / metadata /
+        // body views). addHeader on the still-uncommitted response is
+        // equivalent to setHeader for a header's first value and appends for
+        // multi-valued headers (e.g. set-cookie).
         int headerLen = wireResp.getInt(0);
-        byte[] headerWire = new byte[4 + headerLen];
-        wireResp.get(0, headerWire);
-        applyDecodedHeader(headerWire, response);
+        WireHeaderReader.apply(wireResp, 4, headerLen, response::setStatus, response::addHeader);
 
         // Stream the body region of the direct buffer straight out.
         wireResp.position(4 + headerLen);
@@ -284,25 +283,54 @@ public class VesperaProxyController {
      * {@link String} for text-like Content-Types,
      * {@code byte[]} otherwise.
      */
-    private static ResponseEntity<?> buildResponseEntity(DecodedResponse decoded) {
+    /**
+     * Build a {@link ResponseEntity} straight from the wire response
+     * {@code byte[]} with minimal allocation:
+     *
+     * <ul>
+     *   <li><b>status + headers</b> via the allocation-lean
+     *       {@link WireHeaderReader} (parses directly to {@link HttpHeaders} —
+     *       no {@code DecodedResponse} graph: no {@code metadata} map, no
+     *       intermediate headers map, no body {@code ByteBuffer} views), and</li>
+     *   <li><b>body</b> sliced once straight from the wire tail — for text this
+     *       drops the intermediate {@code byte[]} that {@code bodyBytes()} would
+     *       allocate (a body-sized copy avoided per text response, scaling with
+     *       payload).</li>
+     * </ul>
+     *
+     * <p>{@link VesperaBridge#decodeResponse(byte[])} stays the public API for
+     * external/streaming consumers; this is a controller-internal fast path.
+     * Pure Java (no JNI) — safe to run on the async completion thread.
+     */
+    private static ResponseEntity<?> buildResponseEntityFromWire(byte[] wire) {
+        if (wire == null || wire.length < 4) {
+            throw new IllegalArgumentException(
+                    "wire response too short: " + (wire == null ? "null" : wire.length + " bytes"));
+        }
+        int headerLen = ((wire[0] & 0xFF) << 24) | ((wire[1] & 0xFF) << 16)
+                | ((wire[2] & 0xFF) << 8) | (wire[3] & 0xFF);
+        if (headerLen < 0 || (long) 4 + headerLen > wire.length) {
+            throw new IllegalArgumentException(
+                    "wire header_len " + headerLen + " overflows response (" + wire.length + " bytes)");
+        }
         HttpHeaders httpHeaders = new HttpHeaders();
-        for (Map.Entry<String, Object> entry : decoded.headers().entrySet()) {
-            Object val = entry.getValue();
-            if (val instanceof List<?> list) {
-                for (Object v : list) {
-                    httpHeaders.add(entry.getKey(), String.valueOf(v));
-                }
-            } else if (val != null) {
-                httpHeaders.set(entry.getKey(), String.valueOf(val));
-            }
-        }
-        HttpStatus status = HttpStatus.valueOf(decoded.status());
+        int[] statusHolder = {500};
+        WireHeaderReader.apply(
+                java.nio.ByteBuffer.wrap(wire),
+                4,
+                headerLen,
+                s -> statusHolder[0] = s,
+                httpHeaders::add);
+        HttpStatus status = HttpStatus.valueOf(statusHolder[0]);
         String contentType = httpHeaders.getFirst(HttpHeaders.CONTENT_TYPE);
+        int bodyOff = 4 + headerLen;
+        int bodyLen = wire.length - bodyOff;
         if (isTextContentType(contentType)) {
-            String bodyStr = new String(decoded.bodyBytes(), StandardCharsets.UTF_8);
-            return new ResponseEntity<>(bodyStr, httpHeaders, status);
+            return new ResponseEntity<>(
+                    new String(wire, bodyOff, bodyLen, StandardCharsets.UTF_8), httpHeaders, status);
         }
-        return new ResponseEntity<>(decoded.bodyBytes(), httpHeaders, status);
+        return new ResponseEntity<>(
+                java.util.Arrays.copyOfRange(wire, bodyOff, wire.length), httpHeaders, status);
     }
 
     private static boolean isTextContentType(String ct) {
