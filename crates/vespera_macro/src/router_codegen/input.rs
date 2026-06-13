@@ -698,10 +698,12 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_auto_router_input_server_env_var_fallback() {
         // Test lines 181-183: VESPERA_SERVER_URL env var fallback
-        // This test verifies the code path but may be affected by parallel tests
-        // Using a unique test URL to reduce collision chances
+        // `#[serial]` serializes this with every other env-mutating test so
+        // the process-global VESPERA_SERVER_* vars cannot race across the
+        // parallel test threads.
         let test_url = "https://vespera-test-unique-12345.example.com";
         let test_desc = "Vespera Test Server 12345";
 
@@ -745,6 +747,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_auto_router_input_server_env_var_invalid_url_filtered() {
         // Test that invalid URLs (not http/https) are filtered out by the .filter() call
         // This exercises the filter branch, not lines 181-183 directly

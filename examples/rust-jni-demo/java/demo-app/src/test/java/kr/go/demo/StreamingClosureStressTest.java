@@ -378,4 +378,76 @@ class StreamingClosureStressTest {
                         + " cachedFutureCompleteCalls=%d%n",
                 ASYNC_ITERATIONS, PAYLOAD_BYTES, elapsedMs, ASYNC_ITERATIONS);
     }
+
+    /**
+     * Handler-panic fallback: {@code /echo/panic} panics before producing
+     * status/headers.  The "header consumer invoked exactly once on every
+     * code path" contract requires {@code dispatchStreamingWithHeader} to
+     * still fire the consumer — with a wire-format {@code 500} header (the
+     * Rust-side {@code header_sent} fallback) — instead of leaving this
+     * caller hanging.  Guards the JNI catch_unwind + fallback path that
+     * has no Rust-level unit test (it needs a real JVM).
+     */
+    @Test
+    @Order(4)
+    void responseStreamingWithHeader_handlerPanic_firesHeaderWith500() {
+        byte[] wireRequest = VesperaBridge.encodeRequest(
+                "POST", "/echo/panic", null, ECHO_HEADERS, new byte[] {1, 2, 3});
+
+        CountingByteSink sink = new CountingByteSink();
+        AtomicInteger headerCalls = new AtomicInteger();
+        AtomicReference<byte[]> headerBytesRef = new AtomicReference<>();
+
+        VesperaBridge.dispatchStreamingWithHeader(
+                wireRequest,
+                headerBytes -> {
+                    headerBytesRef.set(headerBytes.clone());
+                    headerCalls.incrementAndGet();
+                },
+                sink);
+
+        assertEquals(1, headerCalls.get(),
+                "header consumer must fire exactly once even when the handler panics");
+        byte[] hdr = headerBytesRef.get();
+        assertNotNull(hdr, "header bytes must be captured on a handler panic");
+        VesperaBridge.DecodedResponse resp = VesperaBridge.decodeResponse(hdr);
+        assertEquals(500, resp.status(),
+                "a panic before the header must surface as a 500 header, not a hang");
+        assertEquals(0, sink.size(),
+                "no body should be written when the handler panics before headers");
+    }
+
+    /**
+     * Push failed-flag: a hostile/broken {@code OutputStream} that throws
+     * on every write must not hang or SIGSEGV the JVM.  The Rust push
+     * closure latches a {@code failed} flag on the first write failure and
+     * turns subsequent frames into a no-op instead of repeatedly crossing
+     * JNI into the broken sink; the dispatch still returns the wire header.
+     */
+    @Test
+    @Order(5)
+    void responseStreaming_outputStreamThrows_doesNotHangOrCrash() {
+        byte[] payload = randomPayload(new Random(SEED));
+        byte[] wireRequest = VesperaBridge.encodeRequest(
+                "POST", "/echo/stream", null, ECHO_HEADERS, payload);
+
+        OutputStream throwing = new OutputStream() {
+            @Override
+            public void write(int b) throws IOException {
+                throw new IOException("sink closed");
+            }
+
+            @Override
+            public void write(byte[] b, int off, int len) throws IOException {
+                throw new IOException("sink closed");
+            }
+        };
+
+        byte[] respHeader = VesperaBridge.dispatchStreaming(wireRequest, throwing);
+        assertNotNull(respHeader,
+                "dispatch must return a header even when the OutputStream throws");
+        VesperaBridge.DecodedResponse resp = VesperaBridge.decodeResponse(respHeader);
+        assertEquals(200, resp.status(),
+                "the handler succeeded (200); only the JVM sink failed");
+    }
 }

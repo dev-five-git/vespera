@@ -390,6 +390,41 @@ async fn dispatch_bidirectional_streaming_roundtrips_small_body() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dispatch_bidirectional_streaming_endless_empty_pull_aborts_not_hangs() {
+    install_router();
+
+    let header_only_wire = encode_wire(
+        "POST",
+        "/echo/bytes",
+        None,
+        HashMap::from([("content-type", "application/octet-stream")]),
+        &[],
+    );
+
+    // A hostile producer that ALWAYS reports an empty chunk (mirrors a
+    // non-conformant InputStream.read() returning 0 forever).  Without
+    // the consecutive-empty cap this busy-spins the blocking-pool thread
+    // forever; with it, the producer aborts the body so the dispatch
+    // terminates.  A timeout guards against regression to a hang.
+    let pull_chunk = || -> RequestChunk { RequestChunk::Data(Vec::new()) };
+    let on_chunk = |_: &[u8]| {};
+
+    let dispatched = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        vespera_inprocess::dispatch_bidirectional_streaming(header_only_wire, pull_chunk, on_chunk),
+    )
+    .await;
+
+    let header_bytes = dispatched.expect("dispatch must terminate, not busy-spin forever");
+    let (header, _body) = decode_wire(&header_bytes);
+    assert_eq!(
+        header["status"].as_u64(),
+        Some(400),
+        "endless empty reads must abort the upload (400), not hang"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dispatch_bidirectional_streaming_pull_error_aborts_upload() {
     install_router();
 

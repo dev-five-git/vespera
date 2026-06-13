@@ -1,0 +1,37 @@
+# Coverage-guided fuzzing for the wire trust boundary.
+#
+# Isolated from the root workspace via the empty `[workspace]` table
+# below, so `cargo build --workspace` / `cargo test --workspace` at the
+# repo root NEVER touch it — it builds only under `cargo fuzz` (nightly
+# + libFuzzer; Linux/macOS).  The deterministic, portable counterpart
+# that DOES run under `cargo test` on every platform lives in
+# `crates/vespera_inprocess/tests/wire_robustness.rs`.
+#
+# Run (Linux/macOS, requires `cargo install cargo-fuzz` + a nightly
+# toolchain):
+#   cargo +nightly fuzz run wire_dispatch
+[package]
+name = "vespera-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+vespera_inprocess = { path = "../crates/vespera_inprocess" }
+tokio = { version = "1", features = ["rt"] }
+serde_json = "1"
+
+[[bin]]
+name = "wire_dispatch"
+path = "fuzz_targets/wire_dispatch.rs"
+test = false
+doc = false
+bench = false
+
+# Empty table → this crate is its own workspace root, isolated from the
+# repository's root workspace.
+[workspace]

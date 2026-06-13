@@ -116,7 +116,20 @@ pub fn dispatch_from_bytes(input: Vec<u8>, runtime: &tokio::runtime::Runtime) ->
 /// guarantees as [`dispatch_from_bytes`]), including `404` when no app
 /// is registered under the requested name.
 pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
-    // Wire-level checks first: malformed input must report parse
+    // Ingress cap (defense-in-depth): reject an oversized buffered
+    // request with 413 before doing any further work.  Unlimited by
+    // default (see `max_request_bytes`); streaming paths are exempt.
+    if crate::config::request_exceeds_limit(input.len()) {
+        return error_wire(
+            413,
+            &format!(
+                "request size {} bytes exceeds configured maximum of {} bytes",
+                input.len(),
+                crate::config::max_request_bytes()
+            ),
+        );
+    }
+    // Wire-level checks next: malformed input must report parse
     // errors regardless of whether an app is registered.
     let (header_bytes, body_bytes) = match split_wire_request(input) {
         Ok(parts) => parts,
@@ -204,6 +217,21 @@ pub fn dispatch_into(
 /// **exact** required size.  The handler has already run; retrying
 /// runs it again — callers must gate retries on idempotency.
 pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResult {
+    // Ingress cap (defense-in-depth) — same policy as
+    // `dispatch_from_bytes_async`; 413 written into the caller buffer.
+    if crate::config::request_exceeds_limit(input.len()) {
+        return write_wire_into(
+            out,
+            &error_wire(
+                413,
+                &format!(
+                    "request size {} bytes exceeds configured maximum of {} bytes",
+                    input.len(),
+                    crate::config::max_request_bytes()
+                ),
+            ),
+        );
+    }
     let (header_bytes, body_bytes) = match split_wire_request(input) {
         Ok(parts) => parts,
         Err(msg) => return write_wire_into(out, &error_wire(400, &msg)),

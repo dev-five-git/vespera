@@ -153,16 +153,21 @@ fn compute_macro_dev_fingerprint_uncached() -> u64 {
 
 /// Recursively collect `(path, mtime)` pairs for `.rs` files.
 ///
-/// Uses `DirEntry::metadata()` (not `fs::metadata(&path)`): on Windows
-/// the entry already carries the `FindNextFile` data, so this avoids a
-/// second `stat` syscall per file.
+/// Uses `DirEntry::file_type()` / `DirEntry::metadata()` rather than
+/// `Path::is_dir()` / `fs::metadata(&path)`: both `DirEntry` accessors
+/// are carried by the directory scan (free on Windows + most Unix), so
+/// the dir/file split costs no extra `stat` syscall per entry — only
+/// the `.rs` files we actually fingerprint pay for their mtime.
 fn collect_rs_mtimes(dir: &Path, out: &mut Vec<(String, u64)>) {
     let Ok(read_dir) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in read_dir.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         let path = entry.path();
-        if path.is_dir() {
+        if file_type.is_dir() {
             collect_rs_mtimes(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs") {
             let mtime = entry.metadata().and_then(|m| m.modified()).map_or(0, |t| {

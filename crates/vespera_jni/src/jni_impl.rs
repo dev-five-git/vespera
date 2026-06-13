@@ -60,6 +60,26 @@ where
     SYNC_RUNTIME.with(|runtime| runtime.block_on(future))
 }
 
+/// Build a `413` wire response when `len` exceeds the configured
+/// request-size cap ([`vespera_inprocess::max_request_bytes`]); `None`
+/// when within the limit (the default — unlimited).  Lets the buffered
+/// JNI entry points reject an oversized request **before** allocating
+/// the Rust-side body copy that would otherwise double the Java
+/// `byte[]` already resident.
+fn oversized_request_wire(len: usize) -> Option<Vec<u8>> {
+    if vespera_inprocess::request_exceeds_limit(len) {
+        Some(vespera_inprocess::error_wire(
+            413,
+            &format!(
+                "request size {len} bytes exceeds configured maximum of {} bytes",
+                vespera_inprocess::max_request_bytes()
+            ),
+        ))
+    } else {
+        None
+    }
+}
+
 type StreamingChunkBuffer = Global<JByteArray<'static>>;
 
 #[derive(Clone, Copy)]
@@ -273,6 +293,12 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchByt
         .with_env(|env| -> jni::errors::Result<JObject<'local>> {
             let input = {
                 let len = request_bytes.len(env).unwrap_or(0);
+                // Ingress cap: reject an oversized request with 413
+                // BEFORE allocating the Rust-side body copy (the
+                // amplification the Java `byte[]` would otherwise double).
+                if let Some(err) = oversized_request_wire(len) {
+                    return Ok(env.byte_array_from_slice(&err)?.into());
+                }
                 let mut buf = vec![0u8; len];
                 // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
                 // identical size/alignment; this views the
@@ -493,6 +519,12 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
 
         let input = {
             let len = request_bytes.len(env).unwrap_or(0);
+            // Ingress cap: complete the future with 413 BEFORE allocating
+            // the Rust-side body copy if the request exceeds the limit.
+            if let Some(err) = oversized_request_wire(len) {
+                let _ = complete_future(env, &future_global, &err);
+                return Ok(());
+            }
             let mut buf = vec![0u8; len];
             // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
             // identical size/alignment; this views the

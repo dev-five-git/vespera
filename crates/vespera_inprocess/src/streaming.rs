@@ -37,6 +37,13 @@ pub enum RequestChunk {
     Error,
 }
 
+/// Upper bound on consecutive empty request-body pulls before the
+/// producer aborts the stream.  A conformant blocking `InputStream`
+/// never returns 0 for a non-empty buffer, so sustained empty reads
+/// indicate a stuck or hostile producer; the cap stops a DoS busy-spin
+/// on a blocking-pool thread.
+const MAX_CONSECUTIVE_EMPTY_READS: u32 = 1024;
+
 /// Error yielded by the request body when the producer reports
 /// [`RequestChunk::Error`].  Surfaced to axum so a truncated upload is
 /// not mistaken for a complete one.
@@ -444,12 +451,27 @@ fn spawn_request_producer(
         // instead of ending cleanly.  A failed `blocking_send` means the
         // receiver — axum's request body — was dropped because the
         // handler aborted mid-stream, so we stop pulling.
+        let mut consecutive_empty: u32 = 0;
         loop {
             match pull() {
                 RequestChunk::Data(chunk) => {
                     if chunk.is_empty() {
+                        // A conformant blocking `InputStream.read(byte[])`
+                        // never returns 0 for a non-empty buffer — it
+                        // blocks until ≥1 byte or returns -1 at EOF.
+                        // Sustained empty reads therefore mean a stuck or
+                        // hostile producer; cap them (with a yield so we
+                        // don't peg a blocking-pool core) and abort instead
+                        // of busy-spinning this thread forever.
+                        consecutive_empty += 1;
+                        if consecutive_empty >= MAX_CONSECUTIVE_EMPTY_READS {
+                            let _ = tx.blocking_send(Err(StreamAbort));
+                            break;
+                        }
+                        std::thread::yield_now();
                         continue;
                     }
+                    consecutive_empty = 0;
                     if tx.blocking_send(Ok(Bytes::from(chunk))).is_err() {
                         break;
                     }

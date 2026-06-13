@@ -109,6 +109,53 @@ pub fn set_streaming_channel_capacity(slots: usize) -> bool {
         .is_ok()
 }
 
+// ── Request-size ingress cap ─────────────────────────────────────────
+
+static MAX_REQUEST_BYTES: OnceLock<usize> = OnceLock::new();
+
+/// Maximum accepted request size (header + body) for the **buffered**
+/// dispatch entry points, in bytes.  `0` (the default) means
+/// **unlimited**, preserving prior behaviour.
+///
+/// Resolution order (first hit wins, then cached for the process
+/// lifetime): [`set_max_request_bytes`] > `VESPERA_MAX_REQUEST_BYTES`
+/// env var > `0` (unlimited).
+///
+/// This is a defense-in-depth ingress cap: a caller that bypasses the
+/// autoconfigured Spring proxy (which already routes large bodies to
+/// streaming) and feeds a multi-GB body straight into `dispatchBytes` /
+/// `dispatchAsync` / `dispatchDirect` would otherwise force a full
+/// resident copy.  When set, oversized requests get a `413` wire
+/// response **before** the body is allocated.  The **streaming**
+/// entry points are intentionally exempt — they are `O(chunk)` RAM and
+/// are the correct path for legitimately large payloads.
+#[must_use]
+#[inline]
+pub fn max_request_bytes() -> usize {
+    *MAX_REQUEST_BYTES.get_or_init(|| {
+        std::env::var("VESPERA_MAX_REQUEST_BYTES")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(0)
+    })
+}
+
+/// Override the request-size cap **before the first dispatch**.
+/// `0` means unlimited.  Returns `false` when the value was already
+/// fixed (a previous call or a dispatch already read it).
+pub fn set_max_request_bytes(bytes: usize) -> bool {
+    MAX_REQUEST_BYTES.set(bytes).is_ok()
+}
+
+/// Whether a request of `len` bytes exceeds the configured cap.
+/// Always `false` when the cap is unlimited (`0`).
+#[must_use]
+#[inline]
+pub fn request_exceeds_limit(len: usize) -> bool {
+    let max = max_request_bytes();
+    max != 0 && len > max
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

@@ -13,6 +13,18 @@
 //!    empty string.  Callers that need raw bytes must use the
 //!    binary wire API below.
 //!
+//!    This API is intended for **in-process Rust embedding** where a
+//!    typed envelope is convenient.  It is not the throughput-oriented
+//!    path: the response headers are materialised into an owned
+//!    `BTreeMap<String, HeaderValue>` and the body is decoded to a
+//!    `String`.  **FFI / high-throughput callers should prefer the
+//!    binary wire API** ([`dispatch_from_bytes`] / [`dispatch_into`]),
+//!    which borrows the wire header, serialises response headers
+//!    straight from the `http::HeaderMap`, and carries the body as raw
+//!    bytes (no UTF-8 round-trip).  Within the direct API itself,
+//!    prefer [`dispatch_owned`] over [`dispatch`] / [`dispatch_typed`]
+//!    to avoid cloning the request envelope.
+//!
 //! 2. **Binary wire API** — [`dispatch_from_bytes`] is the
 //!    zero-overhead FFI entry point.  Wire format (request and
 //!    response use the same layout):
@@ -67,9 +79,9 @@ mod wire;
 /// Re-export `axum::Router` so consumers don't need a direct axum dependency.
 pub use axum::Router;
 pub use config::{
-    DEFAULT_STREAMING_CHANNEL_CAPACITY, DEFAULT_STREAMING_CHUNK_BYTES,
-    set_streaming_channel_capacity, set_streaming_chunk_bytes, streaming_channel_capacity,
-    streaming_chunk_bytes,
+    DEFAULT_STREAMING_CHANNEL_CAPACITY, DEFAULT_STREAMING_CHUNK_BYTES, max_request_bytes,
+    request_exceeds_limit, set_max_request_bytes, set_streaming_channel_capacity,
+    set_streaming_chunk_bytes, streaming_channel_capacity, streaming_chunk_bytes,
 };
 pub use dispatch::{
     DirectWriteResult, dispatch, dispatch_from_bytes, dispatch_from_bytes_async, dispatch_into,

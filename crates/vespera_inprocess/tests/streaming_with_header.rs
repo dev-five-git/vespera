@@ -63,6 +63,13 @@ async fn discard_body() -> &'static str {
     "ok"
 }
 
+/// Panics before producing any status/headers — exercises the
+/// "handler panic before the header callback fires" path that the JNI
+/// layer's `header_sent` fallback depends on.
+async fn panic_before_header() -> Response {
+    panic!("intentional handler panic for test");
+}
+
 fn make_router() -> Router {
     Router::new()
         .route("/ping", get(ping))
@@ -70,6 +77,7 @@ fn make_router() -> Router {
         .route("/triple", get(triple_header))
         .route("/q", get(echo_query))
         .route("/discard", post(discard_body))
+        .route("/panic", get(panic_before_header))
 }
 
 fn install_router() {
@@ -597,4 +605,42 @@ async fn bidirectional_with_header_empty_pull_chunks_are_skipped() {
     let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
     assert_eq!(header_json["status"].as_u64(), Some(200));
     assert_eq!(body_buf.lock().unwrap().as_slice(), b"X");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn streaming_with_header_handler_panic_does_not_emit_header() {
+    // Precondition lock for the JNI layer's `header_sent` fallback: when
+    // an axum handler panics BEFORE producing status/headers, the panic
+    // propagates through dispatch_streaming_with_header_async (the
+    // inprocess layer does NOT catch it) and `on_header` is never called.
+    // The JNI symbol relies on exactly this — its catch_unwind sees the
+    // panic with `header_sent == false` and emits a 500 header itself.
+    install_router();
+    let wire = encode_wire("GET", "/panic", HashMap::new(), &[]);
+
+    let header_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hs = Arc::clone(&header_seen);
+
+    // Drive it on a spawned task so the handler panic surfaces as a
+    // JoinError instead of unwinding the test thread.
+    let join = tokio::spawn(async move {
+        dispatch_streaming_with_header_async(
+            wire,
+            move |_header: &[u8]| {
+                hs.store(true, std::sync::atomic::Ordering::SeqCst);
+            },
+            |_chunk: &[u8]| {},
+        )
+        .await;
+    })
+    .await;
+
+    assert!(
+        join.is_err(),
+        "a handler panic must propagate (inprocess does not catch it)"
+    );
+    assert!(
+        !header_seen.load(std::sync::atomic::Ordering::SeqCst),
+        "on_header must NOT fire when the handler panics before producing a header"
+    );
 }

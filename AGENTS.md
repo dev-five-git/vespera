@@ -63,8 +63,8 @@ vespera/
 | Modify schema_type! macro | `crates/vespera_macro/src/schema_macro.rs` | Type derivation & SeaORM support |
 | Add core types | `crates/vespera_core/src/` | OpenAPI spec types |
 | Test new features | `examples/axum-example/` | Add route, run example |
-| In-process dispatch | `crates/vespera_inprocess/src/lib.rs` | RequestEnvelope → Router → ResponseEnvelope |
-| App factory (FFI pattern) | `crates/vespera_inprocess/src/lib.rs` | register_app(), dispatch_from_bytes() |
+| In-process dispatch | `crates/vespera_inprocess/src/dispatch.rs` | RequestEnvelope → Router → ResponseEnvelope; wire + direct-write entry points |
+| App factory (FFI pattern) | `crates/vespera_inprocess/src/registry.rs` | register_app(), resolve_app_router() |
 | JNI integration | `crates/vespera_jni/src/jni_impl.rs` | RUNTIME, jni_app! macro, JNI symbol export |
 | Java bridge library | `libs/vespera-bridge/` | com.devfive.vespera.bridge package |
 | JNI demo (Rust) | `examples/rust-jni-demo/src/` | Routes + vespera::jni_app! |
@@ -80,10 +80,15 @@ vespera/
 | `vespera_macro/src/parser/parameters.rs` | ~845 | Extract path/query params from handlers |
 | `vespera_macro/src/openapi_generator.rs` | ~808 | OpenAPI doc assembly |
 | `vespera_macro/src/collector.rs` | ~707 | Filesystem route scanning |
-| `vespera_inprocess/src/lib.rs` | ~1184 | In-process dispatch + app factory + streaming + binary wire |
+| `vespera_inprocess/src/lib.rs` | ~85 | Crate root: module wiring + public re-exports (modularized — logic lives in the files below) |
+| `vespera_inprocess/src/wire.rs` | ~429 | Binary wire encode/decode: split/parse, `Cow` borrowing request header, `HeaderMap`-direct response serialization, 422 validation-error hoisting |
+| `vespera_inprocess/src/dispatch.rs` | ~290 | Public dispatch entry points: text envelope API, binary wire API, direct-write (`dispatch_into`) API |
+| `vespera_inprocess/src/internal.rs` | ~335 | Request building + router oneshot + response collection (malformed path/header → 400) |
+| `vespera_inprocess/src/streaming.rs` | ~462 | Response / header-callback / bidirectional streaming; `RequestChunk`/`StreamAbort` error-aware request body; bounded `ChannelBody` |
+| `vespera_inprocess/src/registry.rs` | ~200 | App registration + lock-free default-app `OnceLock` + named-app `RwLock<HashMap>` |
 | `vespera_jni/src/jni_impl.rs` | ~880 | JNI RUNTIME + jni_app! macro + 7 JNI symbols (incl. direct-buffer path) |
 | `vespera_jni/src/streaming_closures.rs` | ~410 | Streaming closure factories (`make_pull_closure`, `make_push_closure`, `call_header_consumer`, `complete_future`) + `OnceLock<MethodCache>` caching `JMethodID`+`GlobalRef<JClass>` for `InputStream.read`, `OutputStream.write`, `Consumer.accept`, `CompletableFuture.complete` — `call_method_unchecked` on the hot path. Pull/push/header closures attach via [`daemon_env::with_cached_daemon_env`] (TLS-cached daemon attach), not `attach_current_thread` per chunk |
-| `vespera_jni/src/daemon_env.rs` | ~130 | `with_cached_daemon_env(jvm, cb)` — attaches the current OS thread once as a daemon (`AttachCurrentThreadAsDaemon`), caches the `JNIEnv` in a `thread_local!` `Cell`, and reuses it for every JNI callback on that thread (streaming chunk pull/push, header callbacks, async `CompletableFuture.complete`). Replaces the prior per-chunk attach/detach churn; per-call local frame + exception scrub preserved |
+| `vespera_jni/src/daemon_env.rs` | ~210 | `with_cached_daemon_env(jvm, cb)` — resolves the current OS thread's `JNIEnv` once via `GetEnv` and caches it in a `thread_local!` `RefCell<Option<CachedEnv>>`, reused for every JNI callback on that thread (streaming chunk pull/push, header callbacks, async `CompletableFuture.complete`). Already-attached JVM threads are **borrowed** (never detached); unattached Tokio/`spawn_blocking` threads are **owned** (attached via `AttachCurrentThreadAsDaemon`, detached in the TLS `Drop` on thread exit). Replaces the prior per-chunk attach/detach churn; per-call local frame + exception scrub preserved |
 
 ## CRATE DEPENDENCY GRAPH
 
