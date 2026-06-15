@@ -1043,7 +1043,12 @@ public class VesperaBridge {
         // the readTree path, unknown fields (incl. "v") are skipChildren'd.
         int status = 500;
         Map<String, Object> headers = null;
-        Map<String, String> metadata = new LinkedHashMap<>();
+        // Pre-size to the actual occupancy: the wire metadata object
+        // carries only a handful of keys (typically just "version"), so a
+        // capacity-4 table (Node[4]) is allocated instead of the default
+        // capacity-16 (Node[16]) on the first put — a deterministic
+        // per-response heap saving with no behavioural change.
+        Map<String, String> metadata = new LinkedHashMap<>(4);
         List<Map<String, Object>> validationErrors = null;
         try (JsonParser p = JSON_FACTORY.createParser(wire, 4, headerLen)) {
             if (p.nextToken() == JsonToken.START_OBJECT) {
@@ -1056,7 +1061,12 @@ public class VesperaBridge {
                             if (t != JsonToken.START_OBJECT) { p.skipChildren(); break; }
                             while (p.nextToken() == JsonToken.FIELD_NAME) {
                                 String k = p.currentName();
-                                if (headers == null) headers = new LinkedHashMap<>();
+                                // Pre-size for a typical response header count
+                                // (content-type, content-length, a few more):
+                                // capacity-8 table holds up to 6 entries before
+                                // resizing, vs the default capacity-16 — a
+                                // deterministic per-response heap saving.
+                                if (headers == null) headers = new LinkedHashMap<>(8);
                                 if (p.nextToken() == JsonToken.START_ARRAY) {
                                     List<String> list = new ArrayList<>();
                                     while (p.nextToken() != JsonToken.END_ARRAY) list.add(p.getValueAsString());

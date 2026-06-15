@@ -37,8 +37,9 @@ use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 use vespera_inprocess::{
-    RequestChunk, RequestEnvelope, dispatch_bidirectional_streaming, dispatch_from_bytes,
-    dispatch_owned, dispatch_streaming_async, dispatch_typed, register_app,
+    DirectWriteResult, RequestChunk, RequestEnvelope, dispatch_bidirectional_streaming,
+    dispatch_from_bytes, dispatch_into, dispatch_owned, dispatch_streaming_async, dispatch_typed,
+    register_app,
 };
 
 // ── Test fixtures ────────────────────────────────────────────────────
@@ -269,6 +270,96 @@ fn bench_wire_path(c: &mut Criterion) {
             &body_kb,
             |b, _| {
                 b.iter(|| dispatch_from_bytes(wire.clone(), &runtime));
+            },
+        );
+    }
+
+    group.finish();
+    drop(runtime);
+}
+
+/// Raw-byte isolation: `dispatch_from_bytes` against `/echo/bytes`,
+/// which echoes the request body unchanged.  Comparing this group with
+/// `wire_path` (JSON `/echo`) isolates the `serde_json`
+/// deserialize+reserialize cost from vespera's pure dispatch/copy
+/// overhead at identical body sizes.
+fn bench_bytes_path(c: &mut Criterion) {
+    install_bench_app();
+
+    let runtime = Runtime::new().expect("tokio runtime");
+    let mut group = c.benchmark_group("bytes_path");
+
+    for &body_kb in &[1_usize, 64, 1024] {
+        let payload = vec![0xA5u8; body_kb * 1024];
+        let wire = assemble_wire(
+            "POST",
+            "/echo/bytes",
+            Some("application/octet-stream"),
+            &payload,
+        );
+        group.throughput(Throughput::Bytes((body_kb * 1024) as u64));
+
+        group.bench_with_input(
+            BenchmarkId::new("raw_bytes_dispatch_from_bytes", body_kb),
+            &body_kb,
+            |b, _| {
+                b.iter(|| dispatch_from_bytes(wire.clone(), &runtime));
+            },
+        );
+    }
+
+    group.finish();
+    drop(runtime);
+}
+
+/// Direct-write A/B: `dispatch_from_bytes` (materialises the wire
+/// response into a fresh `Vec` per call) vs `dispatch_into` (streams
+/// the wire response straight into a caller-owned, preallocated buffer
+/// — the JNI `dispatchDirect` path).  Both echo a raw byte body via
+/// `/echo/bytes`, so the delta isolates the response `Vec` allocation +
+/// final body memcpy that the direct-write path removes.
+///
+/// The `dispatch_into` buffer is sized exactly once (outside the timed
+/// loop) and reused across iterations, mirroring the pooled direct
+/// buffer the Java bridge hands in.
+fn bench_direct_write_path(c: &mut Criterion) {
+    install_bench_app();
+
+    let runtime = Runtime::new().expect("tokio runtime");
+    let mut group = c.benchmark_group("direct_write_path");
+
+    for &body_kb in &[64_usize, 1024, 4096] {
+        let payload = vec![0xA5u8; body_kb * 1024];
+        let wire = assemble_wire(
+            "POST",
+            "/echo/bytes",
+            Some("application/octet-stream"),
+            &payload,
+        );
+        group.throughput(Throughput::Bytes((body_kb * 1024) as u64));
+
+        // Exact response size: one untimed probe with a generous buffer.
+        let required = {
+            let mut probe = vec![0u8; payload.len() + 4096];
+            match dispatch_into(wire.clone(), &mut probe, &runtime) {
+                DirectWriteResult::Complete(n) | DirectWriteResult::Overflow(n) => n,
+            }
+        };
+
+        group.bench_with_input(
+            BenchmarkId::new("materialize_dispatch_from_bytes", body_kb),
+            &body_kb,
+            |b, _| {
+                b.iter(|| dispatch_from_bytes(wire.clone(), &runtime));
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("direct_write_dispatch_into", body_kb),
+            &body_kb,
+            |b, _| {
+                let mut out = vec![0u8; required];
+                b.iter(|| dispatch_into(wire.clone(), &mut out, &runtime));
             },
         );
     }
@@ -547,6 +638,8 @@ criterion_group!(
     bench_router_path,
     bench_dispatch_path,
     bench_wire_path,
+    bench_bytes_path,
+    bench_direct_write_path,
     bench_resolve_path,
     bench_contended_path,
     bench_headers_path,
