@@ -117,6 +117,84 @@ fn extract_ok_payload_and_headers(ok_ty: &Type) -> (Type, Option<HashMap<String,
     (ok_ty.clone(), None)
 }
 
+/// True if `ty` is a bare `String` / `str` / `&str` (NOT wrapped in `Json`).
+/// axum serves such bodies as `text/plain`, mirroring the request-body side.
+fn is_string_like(ty: &Type) -> bool {
+    match ty {
+        Type::Reference(reference) => is_string_like(&reference.elem),
+        Type::Path(type_path) => type_path
+            .path
+            .segments
+            .last()
+            .is_some_and(|seg| seg.ident == "String" || seg.ident == "str"),
+        _ => false,
+    }
+}
+
+/// The response `Content-Type` for a body of the given original (pre-`unwrap_json`)
+/// type: bare strings are `text/plain`; `Json<T>` and structs are
+/// `application/json`.
+fn body_content_type(ty: &Type) -> &'static str {
+    if is_string_like(ty) {
+        "text/plain"
+    } else {
+        "application/json"
+    }
+}
+
+/// The last non-metadata element of a tuple body (`(StatusCode, T)` → `T`), or
+/// `ty` itself when it is not a tuple.
+fn tuple_body(ty: &Type) -> &Type {
+    if let Type::Tuple(tuple) = ty {
+        tuple
+            .elems
+            .iter()
+            .rev()
+            .find(|elem| !is_non_body_type(elem))
+            .unwrap_or(ty)
+    } else {
+        ty
+    }
+}
+
+/// The original `(Ok, Err)` argument types of a `Result<Ok, Err>` return type
+/// (no `Json` unwrapping) — used for content-type determination only.
+fn result_args(ty: &Type) -> Option<(&Type, &Type)> {
+    let type_path = match unwrap_json(ty) {
+        Type::Path(type_path) => type_path,
+        Type::Reference(type_ref) => match type_ref.elem.as_ref() {
+            Type::Path(type_path) => type_path,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    if is_keyword_type_by_type_path(type_path, &KeywordType::Result)
+        && let Some(segment) = type_path.path.segments.last()
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && args.args.len() >= 2
+        && let (Some(syn::GenericArgument::Type(ok)), Some(syn::GenericArgument::Type(err))) =
+            (args.args.first(), args.args.get(1))
+    {
+        Some((ok, err))
+    } else {
+        None
+    }
+}
+
+/// `(200-body content-type, error-body content-type)` for a handler return type.
+/// Bare `String`/`&str` bodies map to `text/plain` (what axum actually sends);
+/// `Json<T>` and structs map to `application/json`.
+fn response_content_types(ty: &Type) -> (&'static str, &'static str) {
+    if let Some((ok, err)) = result_args(ty) {
+        (
+            body_content_type(tuple_body(ok)),
+            body_content_type(tuple_body(err)),
+        )
+    } else {
+        (body_content_type(tuple_body(ty)), "application/json")
+    }
+}
+
 /// Analyze return type and convert to Responses map
 #[allow(clippy::too_many_lines)]
 pub fn parse_return_type(
@@ -139,6 +217,7 @@ pub fn parse_return_type(
             );
         }
         ReturnType::Type(_, ty) => {
+            let (ok_content_type, err_content_type) = response_content_types(ty);
             // Check if it's a Result<T, E>
             if let Some((ok_ty, err_ty)) = extract_result_types(ty) {
                 // Handle success response (200)
@@ -155,7 +234,7 @@ pub fn parse_return_type(
                     );
                     let mut content = BTreeMap::new();
                     content.insert(
-                        "application/json".to_string(),
+                        ok_content_type.to_string(),
                         MediaType {
                             schema: Some(ok_schema),
                             example: None,
@@ -185,7 +264,7 @@ pub fn parse_return_type(
                     );
                     let mut err_content = BTreeMap::new();
                     err_content.insert(
-                        "application/json".to_string(),
+                        err_content_type.to_string(),
                         MediaType {
                             schema: Some(err_schema),
                             example: None,
@@ -212,7 +291,7 @@ pub fn parse_return_type(
                     );
                     let mut err_content = BTreeMap::new();
                     err_content.insert(
-                        "application/json".to_string(),
+                        err_content_type.to_string(),
                         MediaType {
                             schema: Some(err_schema),
                             example: None,
@@ -245,7 +324,7 @@ pub fn parse_return_type(
                     );
                     let mut c = BTreeMap::new();
                     c.insert(
-                        "application/json".to_string(),
+                        ok_content_type.to_string(),
                         MediaType {
                             schema: Some(schema),
                             example: None,
@@ -486,9 +565,7 @@ mod tests {
                     .content
                     .as_ref()
                     .expect("ok content should exist");
-                let media_type = content
-                    .get("application/json")
-                    .expect("ok media type should exist");
+                let media_type = content.values().next().expect("ok media type should exist");
                 let schema_ref = media_type.schema.as_ref().expect("ok schema should exist");
                 assert_schema_matches(schema_ref, expected_schema);
             }
@@ -511,7 +588,8 @@ mod tests {
                     .as_ref()
                     .expect("error content should exist");
                 let media_type = content
-                    .get("application/json")
+                    .values()
+                    .next()
                     .expect("error media type should exist");
                 let schema_ref = media_type
                     .schema
@@ -520,6 +598,42 @@ mod tests {
                 assert_schema_matches(schema_ref, &err.schema);
             }
         }
+    }
+
+    #[rstest]
+    #[case("-> String", "200", "text/plain")]
+    #[case("-> &str", "200", "text/plain")]
+    #[case("-> Json<String>", "200", "application/json")]
+    #[case("-> i32", "200", "application/json")]
+    #[case("-> Result<String, String>", "200", "text/plain")]
+    #[case("-> Result<String, String>", "400", "text/plain")]
+    #[case(
+        "-> Result<Json<User>, (StatusCode, String)>",
+        "200",
+        "application/json"
+    )]
+    #[case("-> Result<Json<User>, (StatusCode, String)>", "400", "text/plain")]
+    #[case(
+        "-> Result<String, (StatusCode, Json<String>)>",
+        "400",
+        "application/json"
+    )]
+    fn response_content_type_matches_body_kind(
+        #[case] return_type_str: &str,
+        #[case] status: &str,
+        #[case] expected_content_type: &str,
+    ) {
+        let return_type = parse_return_type_str(return_type_str);
+        let responses = parse_return_type(&return_type, &HashSet::new(), &HashMap::new());
+        let content = responses
+            .get(status)
+            .and_then(|response| response.content.as_ref())
+            .unwrap_or_else(|| panic!("{status} content missing for `{return_type_str}`"));
+        assert!(
+            content.contains_key(expected_content_type),
+            "`{return_type_str}` {status}: expected {expected_content_type}, got {:?}",
+            content.keys().collect::<Vec<_>>()
+        );
     }
 
     // ======== Tests for uncovered lines ========

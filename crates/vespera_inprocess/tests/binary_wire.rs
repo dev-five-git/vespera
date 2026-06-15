@@ -11,6 +11,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::sync::Once;
 
 use axum::Router;
@@ -273,6 +274,7 @@ async fn dispatch_streaming_async_chunks_text_body() {
     let mut chunks: Vec<Vec<u8>> = Vec::new();
     let header_bytes = vespera_inprocess::dispatch_streaming_async(wire, |chunk| {
         chunks.push(chunk.to_vec());
+        ControlFlow::Continue(())
     })
     .await;
     let (header, body) = decode_wire(&header_bytes);
@@ -301,6 +303,7 @@ async fn dispatch_streaming_async_large_binary_body() {
     let mut received: Vec<u8> = Vec::with_capacity(big_payload.len());
     let header_bytes = vespera_inprocess::dispatch_streaming_async(wire, |chunk| {
         received.extend_from_slice(chunk);
+        ControlFlow::Continue(())
     })
     .await;
     let (header, _body) = decode_wire(&header_bytes);
@@ -371,6 +374,7 @@ async fn dispatch_bidirectional_streaming_roundtrips_small_body() {
     let received_clone = std::sync::Arc::clone(&received);
     let on_chunk = move |chunk: &[u8]| {
         received_clone.lock().unwrap().extend_from_slice(chunk);
+        ControlFlow::Continue(())
     };
 
     let header_bytes =
@@ -407,7 +411,7 @@ async fn dispatch_bidirectional_streaming_endless_empty_pull_aborts_not_hangs() 
     // forever; with it, the producer aborts the body so the dispatch
     // terminates.  A timeout guards against regression to a hang.
     let pull_chunk = || -> RequestChunk { RequestChunk::Data(Vec::new()) };
-    let on_chunk = |_: &[u8]| {};
+    let on_chunk = |_: &[u8]| ControlFlow::Continue(());
 
     let dispatched = tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -454,6 +458,7 @@ async fn dispatch_bidirectional_streaming_pull_error_aborts_upload() {
     let received_clone = std::sync::Arc::clone(&received);
     let on_chunk = move |chunk: &[u8]| {
         received_clone.lock().unwrap().extend_from_slice(chunk);
+        ControlFlow::Continue(())
     };
 
     let header_bytes =
@@ -513,6 +518,7 @@ async fn dispatch_bidirectional_streaming_empty_chunk_is_retry_not_eof() {
     let received_clone = std::sync::Arc::clone(&received);
     let on_chunk = move |chunk: &[u8]| {
         received_clone.lock().unwrap().extend_from_slice(chunk);
+        ControlFlow::Continue(())
     };
 
     let header_bytes =
@@ -566,6 +572,7 @@ async fn dispatch_bidirectional_streaming_large_request_body() {
     let received_clone = std::sync::Arc::clone(&received);
     let on_chunk = move |chunk: &[u8]| {
         received_clone.lock().unwrap().extend_from_slice(chunk);
+        ControlFlow::Continue(())
     };
 
     let header_bytes =
@@ -588,7 +595,7 @@ async fn dispatch_bidirectional_streaming_emits_error_wire_on_malformed_header()
     install_router();
     let bad_header: Vec<u8> = vec![0u8, 0, 0, 99]; // overflow
     let pull = || -> RequestChunk { RequestChunk::End };
-    let on = |_: &[u8]| {};
+    let on = |_: &[u8]| ControlFlow::Continue(());
 
     let header_bytes =
         vespera_inprocess::dispatch_bidirectional_streaming(bad_header, pull, on).await;
@@ -604,6 +611,7 @@ async fn dispatch_streaming_async_emits_error_wire_on_malformed_input() {
     let mut chunks: Vec<Vec<u8>> = Vec::new();
     let header_bytes = vespera_inprocess::dispatch_streaming_async(bad_wire, |chunk| {
         chunks.push(chunk.to_vec());
+        ControlFlow::Continue(())
     })
     .await;
     // On error the streaming variant emits a normal error_wire — header + body

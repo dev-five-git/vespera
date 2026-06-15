@@ -178,7 +178,15 @@ mod tests {
             module_path: format!("test::{fn_name}"),
             file_path: file_path.to_string(),
             error_status: None,
+            typed_responses: None,
             tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: None,
         }
     }
@@ -240,7 +248,7 @@ mod tests {
         let mut metadata = CollectedMetadata::new();
         metadata.structs.push(struct_meta(name, definition));
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
 
         assert!(schemas(&doc).contains_key(name));
     }
@@ -257,7 +265,7 @@ mod tests {
             field_defaults: BTreeMap::new(),
         });
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
 
         assert!(doc.components.is_none() || doc.components.as_ref().unwrap().schemas.is_none());
     }
@@ -281,7 +289,7 @@ mod tests {
             &route_file.to_string_lossy(),
         ));
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
 
         assert!(schemas(&doc).contains_key("Status"));
         assert!(doc.paths.contains_key("/status"));
@@ -316,7 +324,7 @@ pub fn get_user() -> User { User { name: "Alice".to_string() } }
             &route_file.to_string_lossy(),
         ));
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
         let user_schema = schemas(&doc).get("User").expect("User schema");
 
         assert_eq!(property_default(user_schema, "name"), Some(&json!("John")));
@@ -351,7 +359,7 @@ pub fn get_config() -> Config { Config { enabled: true, count: 0 } }
             &route_file.to_string_lossy(),
         ));
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
         let config_schema = schemas(&doc).get("Config").expect("Config schema");
 
         assert_eq!(
@@ -400,7 +408,7 @@ pub fn get_user() -> User { User { name: "Alice".to_string() } }
             &route2_file.to_string_lossy(),
         ));
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
         let user_schema = schemas(&doc).get("User").expect("User schema");
 
         assert_eq!(property_default(user_schema, "name"), Some(&json!("Guest")));
@@ -434,7 +442,7 @@ pub fn get_config() -> Config { Config { count: 0, name: String::new() } }
             &route_file.to_string_lossy(),
         ));
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
         let config_schema = schemas(&doc).get("Config").expect("Config schema");
 
         assert_eq!(property_default(config_schema, "count"), Some(&json!(42)));

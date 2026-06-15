@@ -1,4 +1,4 @@
-use crate::{args::RouteArgs, http::is_http_method};
+use crate::{args::RouteArgs, http::is_http_method, metadata::HeaderParam};
 
 /// Extract doc comments from attributes
 /// Returns concatenated doc comment string or None if no doc comments
@@ -38,7 +38,15 @@ pub struct RouteInfo {
     pub method: String,
     pub path: Option<String>,
     pub error_status: Option<Vec<u16>>,
+    pub typed_responses: Option<Vec<(u16, String)>>,
     pub tags: Option<Vec<String>>,
+    pub security: Option<Vec<String>>,
+    pub headers: Vec<HeaderParam>,
+    pub operation_id: Option<String>,
+    pub summary: Option<String>,
+    pub request_example: Option<serde_json::Value>,
+    pub response_example: Option<serde_json::Value>,
+    pub deprecated: bool,
     pub description: Option<String>,
 }
 
@@ -62,42 +70,17 @@ fn build_route_info_from_args(route_args: &RouteArgs) -> RouteInfo {
         None
     };
 
-    let error_status = route_args.error_status.as_ref().and_then(|array| {
-        let mut status_codes = Vec::new();
-        for elem in &array.elems {
-            if let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Int(lit_int),
-                ..
-            }) = elem
-                && let Ok(code) = lit_int.base10_parse::<u16>()
-            {
-                status_codes.push(code);
-            }
-        }
-        if status_codes.is_empty() {
-            None
-        } else {
-            Some(status_codes)
-        }
-    });
-
-    let tags = route_args.tags.as_ref().and_then(|array| {
-        let mut tag_list = Vec::new();
-        for elem in &array.elems {
-            if let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(lit_str),
-                ..
-            }) = elem
-            {
-                tag_list.push(lit_str.value());
-            }
-        }
-        if tag_list.is_empty() {
-            None
-        } else {
-            Some(tag_list)
-        }
-    });
+    let error_status = route_args
+        .error_status
+        .as_ref()
+        .and_then(extract_status_codes);
+    let tags = route_args.tags.as_ref().and_then(extract_non_empty_strings);
+    let typed_responses = route_args
+        .responses
+        .as_ref()
+        .and_then(extract_typed_responses);
+    let security = route_args.security.as_ref().map(extract_strings);
+    let headers = route_args.headers.clone().unwrap_or_default();
 
     let description = if let Some(lit) = route_args.description.as_ref() {
         Some(lit.value())
@@ -105,13 +88,123 @@ fn build_route_info_from_args(route_args: &RouteArgs) -> RouteInfo {
         None
     };
 
+    let operation_id = if let Some(lit) = route_args.operation_id.as_ref() {
+        Some(lit.value())
+    } else {
+        None
+    };
+
+    let summary = if let Some(lit) = route_args.summary.as_ref() {
+        Some(lit.value())
+    } else {
+        None
+    };
+
+    let request_example = route_args
+        .request_example
+        .as_ref()
+        .map(parse_example_string);
+    let response_example = route_args
+        .response_example
+        .as_ref()
+        .map(parse_example_string);
+
     RouteInfo {
         method,
         path,
         error_status,
+        typed_responses,
         tags,
+        security,
+        headers,
+        operation_id,
+        summary,
+        request_example,
+        response_example,
+        deprecated: route_args.deprecated,
         description,
     }
+}
+
+fn parse_example_string(lit: &syn::LitStr) -> serde_json::Value {
+    let value = lit.value();
+    serde_json::from_str(&value).unwrap_or(serde_json::Value::String(value))
+}
+
+fn extract_status_codes(array: &syn::ExprArray) -> Option<Vec<u16>> {
+    let status_codes: Vec<u16> = array
+        .elems
+        .iter()
+        .filter_map(|elem| {
+            if let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(lit_int),
+                ..
+            }) = elem
+            {
+                lit_int.base10_parse::<u16>().ok()
+            } else {
+                None
+            }
+        })
+        .collect();
+    (!status_codes.is_empty()).then_some(status_codes)
+}
+
+fn extract_strings(array: &syn::ExprArray) -> Vec<String> {
+    array
+        .elems
+        .iter()
+        .filter_map(|elem| {
+            if let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(lit_str),
+                ..
+            }) = elem
+            {
+                Some(lit_str.value())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn extract_non_empty_strings(array: &syn::ExprArray) -> Option<Vec<String>> {
+    let values = extract_strings(array);
+    (!values.is_empty()).then_some(values)
+}
+
+fn extract_typed_responses(array: &syn::ExprArray) -> Option<Vec<(u16, String)>> {
+    let responses: Vec<(u16, String)> = array
+        .elems
+        .iter()
+        .filter_map(extract_typed_response)
+        .collect();
+    (!responses.is_empty()).then_some(responses)
+}
+
+fn extract_typed_response(elem: &syn::Expr) -> Option<(u16, String)> {
+    let syn::Expr::Tuple(tuple) = elem else {
+        return None;
+    };
+    let status = tuple.elems.first().and_then(|status| {
+        if let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(lit_int),
+            ..
+        }) = status
+        {
+            lit_int.base10_parse::<u16>().ok()
+        } else {
+            None
+        }
+    })?;
+    let schema_name = tuple.elems.get(1).and_then(|schema| {
+        if let syn::Expr::Path(path) = schema {
+            path.path.segments.last().map(|seg| seg.ident.to_string())
+        } else {
+            None
+        }
+    })?;
+    Some((status, schema_name))
 }
 
 pub fn check_route_by_meta(meta: &syn::Meta) -> bool {
@@ -176,7 +269,15 @@ fn try_extract_from_meta(meta: &syn::Meta) -> Option<RouteInfo> {
                 method: method_str,
                 path: None,
                 error_status: None,
+                typed_responses: None,
                 tags: None,
+                security: None,
+                headers: Vec::new(),
+                operation_id: None,
+                summary: None,
+                request_example: None,
+                response_example: None,
+                deprecated: false,
                 description: None,
             })
         }
@@ -185,7 +286,15 @@ fn try_extract_from_meta(meta: &syn::Meta) -> Option<RouteInfo> {
             method: "get".to_string(),
             path: None,
             error_status: None,
+            typed_responses: None,
             tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: None,
         }),
     }

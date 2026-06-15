@@ -51,21 +51,6 @@ pub async fn mod_file_with_map_query(Query(query): Query<MapQuery>) -> &'static 
     "mod file endpoint"
 }
 
-#[derive(Deserialize, Debug)]
-pub struct NoSchemaQuery {
-    pub name: String,
-    pub age: u32,
-    pub optional_age: Option<u32>,
-}
-
-#[vespera::route(get, path = "/no-schema-query")]
-pub async fn mod_file_with_no_schema_query(Query(query): Query<NoSchemaQuery>) -> &'static str {
-    println!("no schema query: {:?}", query.age);
-    println!("no schema query: {:?}", query.name);
-    println!("no schema query: {:?}", query.optional_age);
-    "mod file endpoint"
-}
-
 #[derive(Deserialize, Schema)]
 pub struct StructQuery {
     pub name: String,

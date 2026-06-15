@@ -34,7 +34,7 @@
 
 use std::sync::{LazyLock, Mutex};
 
-use crate::args;
+use crate::{args, metadata::HeaderParam};
 /// Metadata stored by `#[route]` for later consumption by `vespera!()`.
 ///
 /// Each invocation of `#[route]` pushes one entry into [`ROUTE_STORAGE`].
@@ -55,8 +55,24 @@ pub struct StoredRouteInfo {
     pub custom_path: Option<String>,
     /// Additional error status codes from `error_status = [400, 404]`.
     pub error_status: Option<Vec<u16>>,
+    /// Typed error responses from `responses = [(404, NotFoundError)]`.
+    pub typed_responses: Option<Vec<(u16, String)>>,
     /// Tags for `OpenAPI` grouping from `tags = ["users"]`.
     pub tags: Option<Vec<String>>,
+    /// Per-route security requirements from `security = ["bearerAuth"]`.
+    pub security: Option<Vec<String>>,
+    /// Header parameters from `headers = [{ name = "Authorization" }]`.
+    pub headers: Vec<HeaderParam>,
+    /// Explicit OpenAPI operationId from `operation_id = "getUser"`.
+    pub operation_id: Option<String>,
+    /// OpenAPI operation summary from `summary = "Get user"`.
+    pub summary: Option<String>,
+    /// Operation-level request example.
+    pub request_example: Option<serde_json::Value>,
+    /// Operation-level response example.
+    pub response_example: Option<serde_json::Value>,
+    /// Whether the operation is deprecated via bare `deprecated`.
+    pub deprecated: bool,
     /// Description from `description = "Get user by ID"`.
     pub description: Option<String>,
     /// Source file path from `Span::call_site().local_file()` (requires Rust 1.88+).
@@ -114,6 +130,70 @@ fn extract_tag_strings(arr: &syn::ExprArray) -> Option<Vec<String>> {
     if tags.is_empty() { None } else { Some(tags) }
 }
 
+/// Extract security scheme names from a `syn::ExprArray`.
+///
+/// Unlike tags, an empty array is meaningful: `security = []` disables
+/// inherited/global security for that operation in OpenAPI.
+fn extract_security_strings(arr: &syn::ExprArray) -> Vec<String> {
+    arr.elems
+        .iter()
+        .filter_map(|elem| {
+            if let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(lit_str),
+                ..
+            }) = elem
+            {
+                Some(lit_str.value())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn parse_example_string(lit: &syn::LitStr) -> serde_json::Value {
+    let value = lit.value();
+    serde_json::from_str(&value).unwrap_or(serde_json::Value::String(value))
+}
+
+/// Extract typed response status/schema pairs from `responses = [(404, NotFoundError)]`.
+fn extract_typed_responses(arr: &syn::ExprArray) -> Option<Vec<(u16, String)>> {
+    let responses: Vec<(u16, String)> = arr
+        .elems
+        .iter()
+        .filter_map(|elem| {
+            let syn::Expr::Tuple(tuple) = elem else {
+                return None;
+            };
+            let status = tuple.elems.first().and_then(|status| {
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Int(lit_int),
+                    ..
+                }) = status
+                {
+                    lit_int.base10_parse::<u16>().ok()
+                } else {
+                    None
+                }
+            })?;
+            let schema_name = tuple.elems.get(1).and_then(|schema| {
+                if let syn::Expr::Path(path) = schema {
+                    path.path.segments.last().map(|seg| seg.ident.to_string())
+                } else {
+                    None
+                }
+            })?;
+            Some((status, schema_name))
+        })
+        .collect();
+
+    if responses.is_empty() {
+        None
+    } else {
+        Some(responses)
+    }
+}
+
 /// Validate route function - must be pub and async
 pub fn validate_route_fn(item_fn: &syn::ItemFn) -> Result<(), syn::Error> {
     if !matches!(item_fn.vis, syn::Visibility::Public(_)) {
@@ -149,7 +229,24 @@ pub fn process_route_attribute(
             .error_status
             .as_ref()
             .and_then(extract_error_status_codes),
+        typed_responses: route_args
+            .responses
+            .as_ref()
+            .and_then(extract_typed_responses),
         tags: route_args.tags.as_ref().and_then(extract_tag_strings),
+        security: route_args.security.as_ref().map(extract_security_strings),
+        headers: route_args.headers.unwrap_or_default(),
+        operation_id: route_args.operation_id.as_ref().map(syn::LitStr::value),
+        summary: route_args.summary.as_ref().map(syn::LitStr::value),
+        request_example: route_args
+            .request_example
+            .as_ref()
+            .map(parse_example_string),
+        response_example: route_args
+            .response_example
+            .as_ref()
+            .map(parse_example_string),
+        deprecated: route_args.deprecated,
         description: route_args
             .description
             .as_ref()
@@ -366,6 +463,7 @@ mod tests {
         assert_eq!(stored.tags, Some(vec!["users".to_string()]));
         assert_eq!(stored.description, Some("Get user by ID".to_string()));
         assert_eq!(stored.error_status, Some(vec![404]));
+        assert!(stored.headers.is_empty());
         assert!(stored.fn_item_str.contains("get_user_test_storage"));
     }
 
@@ -392,6 +490,7 @@ mod tests {
         assert_eq!(stored.tags, None);
         assert_eq!(stored.description, None);
         assert_eq!(stored.error_status, None);
+        assert!(stored.headers.is_empty());
     }
 
     #[test]

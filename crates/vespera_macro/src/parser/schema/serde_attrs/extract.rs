@@ -122,30 +122,33 @@ pub fn extract_field_rename(attrs: &[syn::Attribute]) -> Option<String> {
 /// Returns true if #[serde(skip)] is present
 pub fn extract_skip(attrs: &[syn::Attribute]) -> bool {
     for attr in attrs {
-        if attr.path().is_ident("serde")
-            && let syn::Meta::List(meta_list) = &attr.meta
-        {
-            let tokens = meta_list.tokens.to_string();
-            // Check for "skip" (not part of skip_serializing_if or skip_deserializing)
-            if tokens.contains("skip") {
-                // Make sure it's not skip_serializing_if or skip_deserializing
-                if !tokens.contains("skip_serializing_if") && !tokens.contains("skip_deserializing")
-                {
-                    // Check if it's a standalone "skip"
-                    let skip_pos = tokens.find("skip");
-                    if let Some(pos) = skip_pos {
-                        let before = if pos > 0 { &tokens[..pos] } else { "" };
-                        let after = &tokens[pos + "skip".len()..];
-                        // Check if skip is not part of another word
-                        let before_char = before.chars().last().unwrap_or(' ');
-                        let after_char = after.chars().next().unwrap_or(' ');
-                        if (before_char == ' ' || before_char == ',' || before_char == '(')
-                            && (after_char == ' ' || after_char == ',' || after_char == ')')
-                        {
-                            return true;
-                        }
-                    }
+        if attr.path().is_ident("serde") {
+            let mut has_skip = false;
+            let mut has_skip_serializing = false;
+            let mut has_skip_deserializing = false;
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("skip") {
+                    has_skip = true;
+                } else if meta.path.is_ident("skip_serializing") {
+                    has_skip_serializing = true;
+                } else if meta.path.is_ident("skip_deserializing") {
+                    has_skip_deserializing = true;
                 }
+                Ok(())
+            });
+            if has_skip || (has_skip_serializing && has_skip_deserializing) {
+                return true;
+            }
+
+            let syn::Meta::List(meta_list) = &attr.meta else {
+                continue;
+            };
+            let tokens = meta_list.tokens.to_string();
+            if contains_standalone_word(&tokens, "skip")
+                || (contains_standalone_word(&tokens, "skip_serializing")
+                    && contains_standalone_word(&tokens, "skip_deserializing"))
+            {
+                return true;
             }
         }
     }
@@ -336,6 +339,11 @@ mod tests {
     // Tests for extract_skip function
     #[rstest]
     #[case(r"#[serde(skip)] field: i32", true)]
+    #[case(
+        r#"#[serde(skip, skip_serializing_if = "Option::is_none")] field: Option<String>"#,
+        true
+    )]
+    #[case(r"#[serde(skip_serializing, skip_deserializing)] field: String", true)]
     #[case(r"#[serde(default)] field: i32", false)]
     #[case(r#"#[serde(rename = "x")] field: i32"#, false)]
     #[case(r"field: i32", false)]

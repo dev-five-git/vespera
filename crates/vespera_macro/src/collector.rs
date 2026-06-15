@@ -7,7 +7,7 @@ use syn::Item;
 
 mod path_scan;
 
-use path_scan::normalize_path_key;
+pub use path_scan::normalize_path_key;
 pub use path_scan::{fingerprints_from_scan, scan_route_folder};
 
 use crate::{
@@ -144,7 +144,15 @@ pub fn collect_metadata_from_files(
                     module_path: mp,
                     file_path: fp,
                     error_status: stored.error_status.clone(),
+                    typed_responses: stored.typed_responses.clone(),
                     tags: stored.tags.clone(),
+                    security: stored.security.clone(),
+                    headers: stored.headers.clone(),
+                    operation_id: stored.operation_id.clone(),
+                    summary: stored.summary.clone(),
+                    request_example: stored.request_example.clone(),
+                    response_example: stored.response_example.clone(),
+                    deprecated: stored.deprecated,
                     description,
                 });
             }
@@ -203,7 +211,15 @@ pub fn collect_metadata_from_files(
                     module_path: mp,
                     file_path: fp,
                     error_status: route_info.error_status,
+                    typed_responses: route_info.typed_responses,
                     tags: route_info.tags,
+                    security: route_info.security,
+                    headers: route_info.headers,
+                    operation_id: route_info.operation_id,
+                    summary: route_info.summary,
+                    request_example: route_info.request_example,
+                    response_example: route_info.response_example,
+                    deprecated: route_info.deprecated,
                     description,
                 });
             }

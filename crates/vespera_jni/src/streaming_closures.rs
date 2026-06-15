@@ -15,6 +15,7 @@
 //! root — so the JNI ABI surface (the `Java_...` symbols) lives
 //! exclusively in [`crate::jni_impl`].
 
+use std::ops::ControlFlow;
 use std::sync::OnceLock;
 
 use jni::ids::JMethodID;
@@ -25,7 +26,7 @@ use jni::strings::JNIStr;
 use jni::sys::{jint, jvalue};
 use jni::{JValue, JValueOwned, jni_sig, jni_str};
 
-use crate::daemon_env::with_cached_daemon_env;
+use crate::daemon_env::with_cached_daemon_env_no_frame;
 use crate::jni_impl::streaming_chunk_size;
 
 struct CachedMethod {
@@ -283,37 +284,35 @@ pub fn make_pull_closure(
     let chunk_size = streaming_chunk_size();
     move || -> RequestChunk {
         // Daemon-attach this (Tokio `spawn_blocking`) thread once,
-        // cached in TLS, instead of attach+detach per chunk; the helper
-        // also wraps the body in a fresh local-reference frame.
-        let result: jni::errors::Result<RequestChunk> = with_cached_daemon_env(&jvm, |env| {
-            let n = call_input_stream_read(env, &stream, &buf)?;
-            if env.exception_check() {
-                env.exception_clear();
-            }
-            // InputStream.read(byte[]) contract (mirrored in the
-            // VesperaBridge javadoc): -1 = EOF, 0 = empty read that
-            // MUST be retried.  The inprocess producer skips empty
-            // chunks and keeps pulling, so report `0` as an empty
-            // chunk rather than end-of-stream.
-            if n < 0 {
-                return Ok(RequestChunk::End);
-            }
-            if n == 0 {
-                return Ok(RequestChunk::Data(Vec::new()));
-            }
-            let n = usize::try_from(n).expect("positive read length fits usize");
-            let n = n.min(chunk_size);
-            let mut data = vec![0u8; n];
-            // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
-            // identical size/alignment; this views the
-            // freshly allocated buffer as the signed slice
-            // `get_byte_array_region` expects.
-            let data_i8 =
-                unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast::<i8>(), n) };
-            let arr: &jni::objects::JByteArray<'_> = buf.as_ref();
-            arr.get_region(env, 0, data_i8)?;
-            Ok(RequestChunk::Data(data))
-        });
+        // cached in TLS, instead of attach+detach per chunk.  No local
+        // frame: the body below creates no JNI local refs (cached
+        // unchecked `read` call + raw `get_region` into a Rust Vec), so
+        // the per-chunk frame would be pure overhead.
+        let result: jni::errors::Result<RequestChunk> =
+            with_cached_daemon_env_no_frame(&jvm, |env| {
+                let n = call_input_stream_read(env, &stream, &buf)?;
+                if env.exception_check() {
+                    env.exception_clear();
+                }
+                // InputStream.read(byte[]) contract (mirrored in the
+                // VesperaBridge javadoc): -1 = EOF, 0 = empty read that
+                // MUST be retried.  The inprocess producer skips empty
+                // chunks and keeps pulling, so report `0` as an empty
+                // chunk rather than end-of-stream.
+                if n < 0 {
+                    return Ok(RequestChunk::End);
+                }
+                if n == 0 {
+                    return Ok(RequestChunk::Data(Vec::new()));
+                }
+                let n = usize::try_from(n).expect("positive read length fits usize");
+                let n = n.min(chunk_size);
+                // Copy the n bytes just read into the Java buffer straight into
+                // uninitialised capacity — no zero-fill to immediately overwrite.
+                let arr: &jni::objects::JByteArray<'_> = buf.as_ref();
+                let data = crate::jni_buf::read_byte_array_region(env, arr, n)?;
+                Ok(RequestChunk::Data(data))
+            });
         // A JNI failure here — most importantly a `InputStream.read`
         // that threw (jni-rs surfaces a pending Java exception as
         // `Err`) — aborts the request body via `RequestChunk::Error`
@@ -340,7 +339,7 @@ pub fn make_push_closure(
     jvm: jni::JavaVM,
     stream: Global<JObject<'static>>,
     buf: Global<jni::objects::JByteArray<'static>>,
-) -> impl FnMut(&[u8]) + Send + 'static {
+) -> impl FnMut(&[u8]) -> ControlFlow<()> + Send + 'static {
     let chunk_size = streaming_chunk_size();
     // Latches once the Java OutputStream errors (e.g. the client
     // disconnected mid-download): subsequent frames become a cheap
@@ -349,12 +348,13 @@ pub fn make_push_closure(
     let mut failed = false;
     move |chunk: &[u8]| {
         if failed {
-            return;
+            return ControlFlow::Break(());
         }
         // Daemon-attach this thread once, cached in TLS, instead of
-        // attach+detach per frame; the helper wraps the body in a fresh
-        // local-reference frame.
-        let outcome = with_cached_daemon_env(&jvm, |env| -> jni::errors::Result<()> {
+        // attach+detach per frame.  No local frame: the body below
+        // creates no JNI local refs (cached unchecked `write` call +
+        // `set_region`), so the per-chunk frame would be pure overhead.
+        let outcome = with_cached_daemon_env_no_frame(&jvm, |env| -> jni::errors::Result<()> {
             let arr: &jni::objects::JByteArray<'_> = buf.as_ref();
             for seg in chunk.chunks(chunk_size) {
                 // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
@@ -380,6 +380,9 @@ pub fn make_push_closure(
         });
         if outcome.is_err() {
             failed = true;
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
         }
     }
 }
@@ -398,6 +401,52 @@ pub fn call_header_consumer(
         }
         Ok(())
     })
+}
+
+/// Complete a `CompletableFuture` via a **local** reference, for the
+/// cold error / fallback paths of `dispatchAsync` that run on the JNI
+/// entry thread (where the original `future` local ref is still valid).
+///
+/// Uses the checked `call_method` — these paths are rare (oversized
+/// request, JNI conversion failure, VM-promotion / scheduling failure),
+/// so they do not need the cached-`JMethodID` fast path that
+/// [`complete_future`] uses for the per-dispatch hot completion on the
+/// worker thread.  This lets `dispatchAsync` hold a **single** `Global`
+/// ref (for the spawned task) instead of a second one kept solely for
+/// these on-thread completions.
+pub fn complete_future_local(
+    env: &mut jni::Env<'_>,
+    future: &JObject<'_>,
+    bytes: &[u8],
+) -> jni::errors::Result<()> {
+    let arr = env.byte_array_from_slice(bytes)?;
+    let arr_obj: JObject = arr.into();
+    env.call_method(
+        future,
+        jni_str!("complete"),
+        jni_sig!("(Ljava/lang/Object;)Z"),
+        &[JValue::Object(&arr_obj)],
+    )?;
+    if env.exception_check() {
+        env.exception_clear();
+    }
+    Ok(())
+}
+
+/// Best-effort `InputStream.close()` — invoked after a bidirectional
+/// dispatch finishes to unblock a request producer parked in a blocking
+/// `read`, so the dispatch cannot hang on a stuck upload.  Any pending
+/// exception (e.g. an `IOException` from closing an already-broken
+/// stream) is cleared so the thread is left clean.
+pub fn close_input_stream(
+    env: &mut jni::Env<'_>,
+    stream: &Global<JObject<'static>>,
+) -> jni::errors::Result<()> {
+    env.call_method(stream, jni_str!("close"), jni_sig!("()V"), &[])?;
+    if env.exception_check() {
+        env.exception_clear();
+    }
+    Ok(())
 }
 
 /// Call `CompletableFuture.complete(byte[])` and clear any pending

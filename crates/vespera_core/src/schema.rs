@@ -31,7 +31,13 @@ impl Reference {
     /// Create a component schema reference
     #[must_use]
     pub fn schema(name: &str) -> Self {
-        Self::new(format!("#/components/schemas/{name}"))
+        // Build with an exact-capacity push instead of `format!` — same
+        // string, no formatting machinery and no reallocation.
+        const PREFIX: &str = "#/components/schemas/";
+        let mut ref_path = String::with_capacity(PREFIX.len() + name.len());
+        ref_path.push_str(PREFIX);
+        ref_path.push_str(name);
+        Self::new(ref_path)
     }
 }
 
@@ -371,11 +377,11 @@ pub struct Components {
     pub headers: Option<HashMap<String, crate::route::Header>>,
     /// Security scheme definitions
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub security_schemes: Option<HashMap<String, SecurityScheme>>,
+    pub security_schemes: Option<BTreeMap<String, SecurityScheme>>,
 }
 
 /// Security scheme type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SecuritySchemeType {
     ApiKey,

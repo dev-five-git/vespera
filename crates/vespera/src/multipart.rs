@@ -325,38 +325,48 @@ where
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-/// Read all bytes from a multipart field, enforcing an optional size limit.
+/// Read all bytes from a multipart field into an owned `Vec<u8>`,
+/// enforcing an optional size limit.
 ///
-/// When a limit is set, bytes are read incrementally via `chunk()` and the
-/// cumulative size is checked after each chunk. Without a limit, `bytes()` is
-/// called for a single-allocation read.
+/// Bytes are accumulated chunk-by-chunk directly into the returned
+/// `Vec` — the same buffer `String::from_utf8` later reuses without a
+/// copy.  This deliberately avoids the previous
+/// `field.bytes().await?.to_vec()` on the unlimited path, which built
+/// an owned `Bytes` and then copied it into a *second* allocation,
+/// doubling peak memory for large text/scalar fields.  (Returning
+/// `Bytes` instead would only shift that second copy onto the `String`
+/// parser, so direct `Vec` accumulation is the allocation-minimal
+/// shape for every current caller.)
+///
+/// When a limit is set the cumulative size is checked after each chunk
+/// and an over-limit chunk is rejected *before* it is copied in.
 async fn read_field_data(
     mut field: Field<'_>,
     limit: Option<usize>,
 ) -> Result<(String, Vec<u8>), TypedMultipartError> {
     let field_name = field.name().unwrap_or_default().to_string();
 
-    let data = if let Some(limit) = limit {
-        // Pre-size up to 64 KiB: avoids repeated doubling reallocations for
-        // typical fields without reserving huge buffers for large limits.
-        let mut buf = Vec::with_capacity(limit.min(64 * 1024));
-        while let Some(chunk) = field.chunk().await? {
-            // Reject BEFORE copying the over-limit chunk into the buffer —
-            // same acceptance condition (total <= limit), no wasted copy.
-            if buf.len().saturating_add(chunk.len()) > limit {
-                return Err(TypedMultipartError::FieldTooLarge {
-                    field_name,
-                    limit_bytes: limit,
-                });
-            }
-            buf.extend_from_slice(&chunk);
+    // Pre-size up to 64 KiB when a limit is known: avoids repeated
+    // doubling reallocations for typical fields without reserving huge
+    // buffers for large limits.  Unbounded fields start empty and grow
+    // on demand, so a tiny scalar field never over-allocates.
+    let mut buf = limit.map_or_else(Vec::new, |limit| Vec::with_capacity(limit.min(64 * 1024)));
+    while let Some(chunk) = field.chunk().await? {
+        if let Some(limit) = limit
+            && buf.len().saturating_add(chunk.len()) > limit
+        {
+            // Reject BEFORE copying the over-limit chunk into the
+            // buffer — same acceptance condition (total <= limit),
+            // no wasted copy.
+            return Err(TypedMultipartError::FieldTooLarge {
+                field_name,
+                limit_bytes: limit,
+            });
         }
-        buf
-    } else {
-        field.bytes().await?.to_vec()
-    };
+        buf.extend_from_slice(&chunk);
+    }
 
-    Ok((field_name, data))
+    Ok((field_name, buf))
 }
 
 /// Parse a string as a boolean using clap-style conventions.

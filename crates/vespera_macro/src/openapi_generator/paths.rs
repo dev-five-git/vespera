@@ -20,8 +20,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use vespera_core::route::{HttpMethod, PathItem};
 
 use crate::{
-    metadata::CollectedMetadata, parser::build_operation_from_function, route_impl::StoredRouteInfo,
+    collector::normalize_path_key,
+    metadata::CollectedMetadata,
+    parser::{OperationRouteConfig, build_operation_from_function},
+    route_impl::StoredRouteInfo,
 };
+
+type FnIndex<'a> = HashMap<&'a str, HashMap<String, &'a syn::ItemFn>>;
+type StorageFnStrs<'a> = HashMap<(Option<String>, &'a str), Option<&'a str>>;
 
 /// Build path items and collect tags from route metadata.
 ///
@@ -67,20 +73,8 @@ pub(super) fn build_path_items(
     // `syn::parse_str` + operation build runs on worker threads below;
     // `syn` ASTs are not `Send`, which is also why fn_index-backed
     // routes stay on this thread.
-    let storage_fn_strs: HashMap<&str, &str> = route_storage
-        .iter()
-        .filter_map(|s| {
-            let already_in_ast = s
-                .file_path
-                .as_deref()
-                .and_then(|fp| fn_index.get(fp))
-                .is_some_and(|fns| fns.contains_key(&s.fn_name));
-            if already_in_ast {
-                return None;
-            }
-            Some((s.fn_name.as_str(), s.fn_item_str.as_str()))
-        })
-        .collect();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let storage_fn_strs = build_storage_fn_strs(route_storage, &fn_index, &cwd);
 
     // Split routes by signature source. `idx` preserves the original
     // route order so PathItem operations are applied deterministically
@@ -90,7 +84,17 @@ pub(super) fn build_path_items(
     for (idx, route_meta) in metadata.routes.iter().enumerate() {
         // ROUTE_STORAGE first (avoids file_cache dependency for known
         // routes) — same priority order as the previous sequential code.
-        if let Some(fn_str) = storage_fn_strs.get(route_meta.function_name.as_str()) {
+        let storage_key = (
+            Some(normalize_path_key(&route_meta.file_path, &cwd)),
+            route_meta.function_name.as_str(),
+        );
+        let legacy_storage_key = (None, route_meta.function_name.as_str());
+        if let Some(fn_str) = storage_fn_strs
+            .get(&storage_key)
+            .copied()
+            .flatten()
+            .or_else(|| storage_fn_strs.get(&legacy_storage_key).copied().flatten())
+        {
             parallel_jobs.push((idx, route_meta, fn_str));
         } else if let Some(fns) = fn_index.get(route_meta.file_path.as_str())
             && let Some(fn_item) = fns.get(&route_meta.function_name)
@@ -114,8 +118,18 @@ pub(super) fn build_path_items(
             &route_meta.path,
             known_schema_names,
             struct_definitions,
-            route_meta.error_status.as_deref(),
-            route_meta.tags.as_deref(),
+            OperationRouteConfig {
+                error_status: route_meta.error_status.as_deref(),
+                typed_responses: route_meta.typed_responses.as_deref(),
+                tags: route_meta.tags.as_deref(),
+                security: route_meta.security.as_deref(),
+                headers: Some(&route_meta.headers),
+                operation_id: route_meta.operation_id.as_deref(),
+                summary: route_meta.summary.as_deref(),
+                request_example: route_meta.request_example.as_ref(),
+                response_example: route_meta.response_example.as_ref(),
+                deprecated: route_meta.deprecated,
+            },
         );
         operation.description.clone_from(&route_meta.description);
         Some((method, operation))
@@ -150,6 +164,35 @@ pub(super) fn build_path_items(
     }
 
     (paths, all_tags)
+}
+
+fn build_storage_fn_strs<'a>(
+    route_storage: &'a [StoredRouteInfo],
+    fn_index: &FnIndex<'_>,
+    cwd: &std::path::Path,
+) -> StorageFnStrs<'a> {
+    let mut storage = HashMap::with_capacity(route_storage.len());
+    for s in route_storage {
+        let already_in_ast = s
+            .file_path
+            .as_deref()
+            .and_then(|fp| fn_index.get(fp))
+            .is_some_and(|fns| fns.contains_key(&s.fn_name));
+        if already_in_ast {
+            continue;
+        }
+        let key = (
+            s.file_path
+                .as_deref()
+                .map(|path| normalize_path_key(path, cwd)),
+            s.fn_name.as_str(),
+        );
+        storage
+            .entry(key)
+            .and_modify(|slot| *slot = None)
+            .or_insert(Some(s.fn_item_str.as_str()));
+    }
+    storage
 }
 
 /// Run string-backed route-operation builds across worker threads.
@@ -264,7 +307,15 @@ mod tests {
             module_path: format!("test::{fn_name}"),
             file_path: file_path.to_string(),
             error_status: None,
+            typed_responses: None,
             tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: None,
         }
     }
@@ -285,7 +336,7 @@ mod tests {
             &route_file.to_string_lossy(),
         ));
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
 
         let op = doc
             .paths
@@ -317,13 +368,22 @@ mod tests {
             method: Some("get".to_string()),
             custom_path: None,
             error_status: None,
+            typed_responses: None,
             tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: None,
             file_path: Some(route_file_path),
             fn_item_str: route_src.to_string(),
         }];
 
         let doc = generate_openapi_doc_with_metadata(
+            None,
             None,
             None,
             None,
@@ -360,14 +420,29 @@ mod tests {
             method: Some("get".to_string()),
             custom_path: None,
             error_status: None,
+            typed_responses: None,
             tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: None,
             fn_item_str: "pub fn get_users() -> String { \"users\".to_string() }".to_string(),
             file_path: None,
         }];
 
-        let doc =
-            generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &route_storage);
+        let doc = generate_openapi_doc_with_metadata(
+            None,
+            None,
+            None,
+            None,
+            &metadata,
+            None,
+            &route_storage,
+        );
 
         let op = doc
             .paths
@@ -375,6 +450,201 @@ mod tests {
             .and_then(|p| p.get.as_ref())
             .expect("GET op");
         assert_eq!(op.operation_id.as_deref(), Some("get_users"));
+    }
+
+    #[test]
+    fn route_storage_fast_path_disambiguates_same_fn_name_by_file_path() {
+        let users_path = "/virtual/users.rs".to_string();
+        let posts_path = "/virtual/posts.rs".to_string();
+        let mut metadata = CollectedMetadata::new();
+        metadata
+            .routes
+            .push(route_meta("GET", "/users", "list", &users_path));
+        metadata
+            .routes
+            .push(route_meta("GET", "/posts", "list", &posts_path));
+
+        let route_storage = vec![
+            StoredRouteInfo {
+                fn_name: "list".to_string(),
+                method: Some("get".to_string()),
+                custom_path: None,
+                error_status: None,
+                typed_responses: None,
+                tags: None,
+                security: None,
+                headers: Vec::new(),
+                operation_id: None,
+                summary: None,
+                request_example: None,
+                response_example: None,
+                deprecated: false,
+                description: None,
+                fn_item_str: "pub fn list() -> String { String::new() }".to_string(),
+                file_path: Some(users_path),
+            },
+            StoredRouteInfo {
+                fn_name: "list".to_string(),
+                method: Some("get".to_string()),
+                custom_path: None,
+                error_status: None,
+                typed_responses: None,
+                tags: None,
+                security: None,
+                headers: Vec::new(),
+                operation_id: None,
+                summary: None,
+                request_example: None,
+                response_example: None,
+                deprecated: false,
+                description: None,
+                fn_item_str: "pub fn list() -> i32 { 1 }".to_string(),
+                file_path: Some(posts_path),
+            },
+        ];
+
+        let doc = generate_openapi_doc_with_metadata(
+            None,
+            None,
+            None,
+            None,
+            &metadata,
+            None,
+            &route_storage,
+        );
+
+        let users_schema = doc
+            .paths
+            .get("/users")
+            .and_then(|path| path.get.as_ref())
+            .and_then(|op| op.responses.get("200"))
+            .and_then(|response| response.content.as_ref())
+            .and_then(|content| content.values().next())
+            .and_then(|media| media.schema.as_ref())
+            .expect("users response schema");
+        let posts_schema = doc
+            .paths
+            .get("/posts")
+            .and_then(|path| path.get.as_ref())
+            .and_then(|op| op.responses.get("200"))
+            .and_then(|response| response.content.as_ref())
+            .and_then(|content| content.values().next())
+            .and_then(|media| media.schema.as_ref())
+            .expect("posts response schema");
+
+        let schema_type = |schema: &vespera_core::schema::SchemaRef| match schema {
+            vespera_core::schema::SchemaRef::Inline(schema) => schema.schema_type,
+            vespera_core::schema::SchemaRef::Ref(reference) => {
+                panic!("expected inline schema, got {}", reference.ref_path)
+            }
+        };
+        assert_eq!(
+            schema_type(users_schema),
+            Some(vespera_core::schema::SchemaType::String)
+        );
+        assert_eq!(
+            schema_type(posts_schema),
+            Some(vespera_core::schema::SchemaType::Integer)
+        );
+    }
+
+    #[test]
+    fn route_storage_legacy_none_file_path_is_skipped_when_ambiguous() {
+        let users_path = "/virtual/users.rs".to_string();
+        let posts_path = "/virtual/posts.rs".to_string();
+        let mut metadata = CollectedMetadata::new();
+        metadata
+            .routes
+            .push(route_meta("GET", "/users", "list", &users_path));
+        metadata
+            .routes
+            .push(route_meta("GET", "/posts", "list", &posts_path));
+
+        let mut file_cache = HashMap::new();
+        file_cache.insert(
+            users_path.clone(),
+            syn::parse_str("pub fn list() -> String { String::new() }").unwrap(),
+        );
+        file_cache.insert(
+            posts_path.clone(),
+            syn::parse_str("pub fn list() -> i32 { 1 }").unwrap(),
+        );
+
+        let route_storage = vec![
+            StoredRouteInfo {
+                fn_name: "list".to_string(),
+                method: Some("get".to_string()),
+                custom_path: None,
+                error_status: None,
+                typed_responses: None,
+                tags: None,
+                security: None,
+                headers: Vec::new(),
+                operation_id: None,
+                summary: None,
+                request_example: None,
+                response_example: None,
+                deprecated: false,
+                description: None,
+                fn_item_str: "pub fn list() -> bool { true }".to_string(),
+                file_path: None,
+            },
+            StoredRouteInfo {
+                fn_name: "list".to_string(),
+                method: Some("get".to_string()),
+                custom_path: None,
+                error_status: None,
+                typed_responses: None,
+                tags: None,
+                security: None,
+                headers: Vec::new(),
+                operation_id: None,
+                summary: None,
+                request_example: None,
+                response_example: None,
+                deprecated: false,
+                description: None,
+                fn_item_str: "pub fn list() -> bool { false }".to_string(),
+                file_path: None,
+            },
+        ];
+
+        let doc = generate_openapi_doc_with_metadata(
+            None,
+            None,
+            None,
+            None,
+            &metadata,
+            Some(file_cache),
+            &route_storage,
+        );
+
+        let response_schema_type = |path: &str| {
+            let schema = doc
+                .paths
+                .get(path)
+                .and_then(|path| path.get.as_ref())
+                .and_then(|op| op.responses.get("200"))
+                .and_then(|response| response.content.as_ref())
+                .and_then(|content| content.values().next())
+                .and_then(|media| media.schema.as_ref())
+                .expect("response schema");
+            match schema {
+                vespera_core::schema::SchemaRef::Inline(schema) => schema.schema_type,
+                vespera_core::schema::SchemaRef::Ref(reference) => {
+                    panic!("expected inline schema, got {}", reference.ref_path)
+                }
+            }
+        };
+
+        assert_eq!(
+            response_schema_type("/users"),
+            Some(vespera_core::schema::SchemaType::String)
+        );
+        assert_eq!(
+            response_schema_type("/posts"),
+            Some(vespera_core::schema::SchemaType::Integer)
+        );
     }
 
     #[test]
@@ -393,7 +663,7 @@ mod tests {
             &route_file.to_string_lossy(),
         ));
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
 
         assert!(
             doc.paths.is_empty(),
@@ -432,6 +702,7 @@ User { id: 1, name: "Alice".to_string() }
         let doc = generate_openapi_doc_with_metadata(
             Some("Test API".to_string()),
             Some("1.0.0".to_string()),
+            None,
             None,
             &metadata,
             None,
@@ -480,7 +751,7 @@ User { id: 1, name: "Alice".to_string() }
             &r2.to_string_lossy(),
         ));
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
 
         assert_eq!(doc.paths.len(), 1);
         let path_item = doc.paths.get("/users").unwrap();
@@ -504,7 +775,7 @@ User { id: 1, name: "Alice".to_string() }
         rm.description = Some("Get all users".to_string());
         metadata.routes.push(rm);
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
 
         let op = doc
             .paths
@@ -540,7 +811,7 @@ User { id: 1, name: "Alice".to_string() }
             .routes
             .push(route_meta("GET", "/users", "get_users", &final_file_path));
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
 
         assert!(!doc.paths.contains_key("/users"));
         // schemas must also be empty — no struct was registered.
@@ -566,7 +837,7 @@ User { id: 1, name: "Alice".to_string() }
             &route_file.to_string_lossy(),
         ));
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
 
         assert!(doc.paths.is_empty(), "unknown method should be skipped");
     }
@@ -593,7 +864,7 @@ pub fn create_users() -> String { "created".to_string() }
             .routes
             .push(route_meta("POST", "/users", "create_users", &file_path));
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, &metadata, None, &[]);
+        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
 
         assert_eq!(doc.paths.len(), 1);
         let path_item = doc.paths.get("/users").unwrap();

@@ -56,21 +56,25 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
         }
     };
 
-    let mut cg = process_fields(fields.iter(), rename_all.as_deref(), strict, struct_default);
+    let cg = process_fields(fields.iter(), rename_all.as_deref(), strict, struct_default);
 
-    if strict {
-        // Cold path: allocate the owned name only when the request is
-        // about to be rejected.
-        cg.assignments.push(quote! {
-            {
+    // Wildcard arm of the field-dispatch `match`: strict mode rejects an
+    // unknown field name; non-strict ignores it.  Replaces the trailing
+    // `else { ... }` of the previous `if __field_name__ == "..." else if`
+    // chain.  Cold path: the owned name is allocated only on rejection.
+    let unknown_field_arm = if strict {
+        quote! {
+            _ => {
                 return std::result::Result::Err(
                     vespera::multipart::TypedMultipartError::UnknownField {
                         field_name: std::string::String::from(__field_name__)
                     }
                 );
             }
-        });
-    }
+        }
+    } else {
+        quote! { _ => {} }
+    };
 
     let missing_name_fallback = if strict {
         quote! {
@@ -109,7 +113,13 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
                         | std::option::Option::Some(__name__) => __name__,
                     };
 
-                    #(#assignments) else *
+                    // Dispatch by resolved field name — a `match` over the
+                    // field-name string literals instead of an
+                    // `if __field_name__ == "..." else if ...` chain.
+                    match __field_name__ {
+                        #(#assignments)*
+                        #unknown_field_arm
+                    }
                 }
 
                 #(#post_loop)*

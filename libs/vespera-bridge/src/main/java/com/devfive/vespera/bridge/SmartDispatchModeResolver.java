@@ -2,9 +2,6 @@ package com.devfive.vespera.bridge;
 
 import jakarta.servlet.http.HttpServletRequest;
 
-import java.util.Locale;
-import java.util.Set;
-
 /**
  * Opt-in {@link DispatchModeResolver} that picks the cheapest safe
  * JNI path per request (measured on a small {@code GET /health}
@@ -46,9 +43,6 @@ import java.util.Set;
  */
 public class SmartDispatchModeResolver implements DispatchModeResolver {
 
-    private static final Set<String> IDEMPOTENT_METHODS =
-            Set.of("GET", "HEAD", "PUT", "DELETE", "OPTIONS");
-
     /** Default request-size gate: 256 KiB. */
     public static final long DEFAULT_MAX_DIRECT_BYTES = 256 * 1024L;
 
@@ -82,7 +76,17 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
             return DispatchMode.BIDIRECTIONAL_STREAMING;
         }
         String method = request.getMethod();
-        if (method != null && IDEMPOTENT_METHODS.contains(method.toUpperCase(Locale.ROOT))) {
+        if (HttpMethods.isIdempotent(method)) {
+            // DIRECT's pooled direct buffers bind to the virtual thread
+            // (not the carrier) in Java 21+, so on a virtual-thread-per-
+            // request server dispatchDirectPooled allocates fresh off-heap
+            // buffers and falls back to the heap path anyway.  Route
+            // virtual threads straight to SYNC to skip the direct-buffer
+            // machinery; the request is already direct-sized (small or
+            // bodyless) and SYNC never re-runs the handler, so it is safe.
+            if (VesperaBridge.currentThreadIsVirtual()) {
+                return DispatchMode.SYNC;
+            }
             return DispatchMode.DIRECT;
         }
         // Small non-idempotent (POST / PATCH): SYNC never re-runs the

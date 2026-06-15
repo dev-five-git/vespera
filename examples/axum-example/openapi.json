@@ -18,7 +18,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -45,7 +45,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -72,7 +72,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -281,7 +281,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -322,7 +322,7 @@
           "400": {
             "description": "Error response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -339,7 +339,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -366,7 +366,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -413,7 +413,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -441,7 +441,7 @@
             "description": "Successful response",
             "headers": {},
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -469,7 +469,7 @@
             "description": "Successful response",
             "headers": {},
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -514,7 +514,7 @@
           "400": {
             "description": "Error response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -613,7 +613,7 @@
           "400": {
             "description": "Error response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -893,7 +893,7 @@
           "400": {
             "description": "Error response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -910,7 +910,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -931,7 +931,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -977,7 +977,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1049,7 +1049,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1144,16 +1144,28 @@
         }
       }
     },
-    "/no-schema-query": {
+    "/memos/{id}/summary": {
       "get": {
-        "operationId": "mod_file_with_no_schema_query",
+        "operationId": "get_memo_summary",
+        "description": "Get a memo summary (same-file relation adapter with a custom schema name)",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/MemoSummaryResponse"
                 }
               }
             }
@@ -1194,7 +1206,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1206,7 +1218,7 @@
     },
     "/path/multi-path/{var1}": {
       "get": {
-        "operationId": "mod_file_with_test_struct",
+        "operationId": "mod_file_with_multi_path_single",
         "parameters": [
           {
             "name": "var1",
@@ -1215,32 +1227,15 @@
             "schema": {
               "type": "string"
             }
-          },
-          {
-            "name": "name",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "age",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "format": "uint32"
-            }
           }
         ],
         "responses": {
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/TestStruct"
+                  "type": "string"
                 }
               }
             }
@@ -1281,7 +1276,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1308,7 +1303,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1335,7 +1330,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1362,7 +1357,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1398,7 +1393,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1482,7 +1477,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1503,7 +1498,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1552,7 +1547,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1615,7 +1610,7 @@
           "400": {
             "description": "Error response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1667,7 +1662,7 @@
           "400": {
             "description": "Error response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1717,7 +1712,7 @@
           "400": {
             "description": "Error response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1744,7 +1739,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1777,7 +1772,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -2018,6 +2013,16 @@
           "validated"
         ],
         "description": "Echo back the validated input.  If the request body fails\nvalidation, this handler never runs — the `Validated` extractor\nreturns a `422` before it is reached.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidatedUserRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful response",
@@ -2025,6 +2030,39 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ValidatedUserRequest"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "message": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "message"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "errors"
+                  ]
                 }
               }
             }
@@ -2333,7 +2371,7 @@
             "nullable": true
           },
           "discountRate": {
-            "type": "number",
+            "type": "string",
             "format": "decimal",
             "nullable": true
           },
@@ -2342,11 +2380,11 @@
             "minimum": 0
           },
           "maxPrice": {
-            "type": "number",
+            "type": "string",
             "format": "decimal"
           },
           "minPrice": {
-            "type": "number",
+            "type": "string",
             "format": "decimal"
           },
           "priority": {
@@ -2362,7 +2400,7 @@
             "format": "char"
           },
           "taxRate": {
-            "type": "number",
+            "type": "string",
             "format": "decimal"
           }
         },
@@ -2385,9 +2423,9 @@
             "default": 0
           },
           "temperature": {
-            "type": "number",
+            "type": "string",
             "format": "decimal",
-            "default": 0.7
+            "default": "0.7"
           }
         },
         "required": [
@@ -3188,7 +3226,7 @@
             "default": "1970-01-01T00:00:00+00:00"
           },
           "user": {
-            "$ref": "#/components/schemas/UserSchema",
+            "$ref": "#/components/schemas/UserInMemoDetail",
             "nullable": true
           },
           "userId": {
@@ -3410,6 +3448,67 @@
           "draft",
           "published",
           "archived"
+        ]
+      },
+      "MemoSummaryResponse": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "default": "1970-01-01T00:00:00+00:00"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "note": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MemoStatus"
+          },
+          "title": {
+            "type": "string"
+          },
+          "user": {
+            "$ref": "#/components/schemas/MemoSummaryUser",
+            "nullable": true
+          },
+          "userId": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "title",
+          "content",
+          "status",
+          "createdAt",
+          "user",
+          "note"
+        ]
+      },
+      "MemoSummaryUser": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
         ]
       },
       "PaginatedResponse": {
@@ -3648,10 +3747,6 @@
       "SkipResponse": {
         "type": "object",
         "properties": {
-          "email2": {
-            "type": "string",
-            "nullable": true
-          },
           "email4": {
             "type": "string",
             "nullable": true
@@ -3903,7 +3998,7 @@
             "nullable": true
           },
           "discountRate": {
-            "type": "number",
+            "type": "string",
             "format": "decimal",
             "nullable": true
           },
@@ -3913,12 +4008,12 @@
             "nullable": true
           },
           "maxPrice": {
-            "type": "number",
+            "type": "string",
             "format": "decimal",
             "nullable": true
           },
           "minPrice": {
-            "type": "number",
+            "type": "string",
             "format": "decimal",
             "nullable": true
           },
@@ -3938,7 +4033,7 @@
             "nullable": true
           },
           "taxRate": {
-            "type": "number",
+            "type": "string",
             "format": "decimal",
             "nullable": true
           }
@@ -4089,7 +4184,8 @@
               },
               "sort": {
                 "type": "string",
-                "description": "Sort order: \"asc\" or \"desc\""
+                "description": "Sort order: \"asc\" or \"desc\"",
+                "default": "asc"
               }
             },
             "required": [

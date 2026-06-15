@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::ops::ControlFlow;
 
 use axum::body::Body;
 use bytes::Bytes;
@@ -94,10 +95,12 @@ fn request_builder(method: Method, path: &str, query: &str) -> http::request::Bu
 /// stream finishes.
 ///
 /// Same pre-dispatch error semantics as [`dispatch_parts`] (invalid
-/// HTTP method → `Err((405, ...))`).  Body stream errors are silently
-/// ended (the consumer sees a truncated response) because they
-/// indicate the upstream handler aborted; the headers/status that
-/// were already collected remain accurate.
+/// HTTP method → `Err((405, ...))`).  A **response body stream error**
+/// mid-drain returns `Err((500, ...))` so the caller emits a 500 wire
+/// response instead of reporting the partially-streamed body as a
+/// success — a truncated body must never be presented as complete.
+/// (Chunks emitted via `on_chunk` before the error have already left,
+/// but the 500 status the caller returns signals the failure.)
 pub async fn dispatch_response_streaming<'h, F>(
     router: Router,
     method_str: &str,
@@ -108,7 +111,7 @@ pub async fn dispatch_response_streaming<'h, F>(
     on_chunk: &mut F,
 ) -> Result<(u16, http::HeaderMap, ResponseMetadata), (u16, String)>
 where
-    F: FnMut(&[u8]),
+    F: FnMut(&[u8]) -> ControlFlow<()>,
 {
     let Ok(http_method) = method_str.parse::<Method>() else {
         return Err((
@@ -145,12 +148,23 @@ where
 
     // Stream body chunks: pull frames one at a time and surface only
     // data frames (trailers are dropped — wire format does not carry
-    // them).  Frame errors or end-of-stream both terminate cleanly.
-    while let Some(Ok(frame)) = body.frame().await {
-        if let Some(data) = frame.data_ref()
-            && !data.is_empty()
-        {
-            on_chunk(data.as_ref());
+    // them).  A frame error means the body aborted mid-stream; propagate
+    // it as a 500 so a truncated response is never reported as a clean
+    // success.
+    loop {
+        match body.frame().await {
+            Some(Ok(frame)) => {
+                if let Some(data) = frame.data_ref()
+                    && !data.is_empty()
+                    && on_chunk(data.as_ref()).is_break()
+                {
+                    break;
+                }
+            }
+            Some(Err(_)) => {
+                return Err((500, "response body stream error".to_owned()));
+            }
+            None => break,
         }
     }
 
@@ -328,7 +342,7 @@ mod tests {
     #[test]
     fn malformed_path_streaming_returns_error_not_panic() {
         let result = block_on(async {
-            let mut sink = |_: &[u8]| {};
+            let mut sink = |_: &[u8]| ControlFlow::Continue(());
             dispatch_response_streaming(
                 crate::Router::new(),
                 "GET",

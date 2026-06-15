@@ -1,15 +1,31 @@
 use proc_macro2::Span;
+use std::collections::{BTreeMap, HashMap};
 use syn::{
     LitStr, bracketed,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
 };
 use vespera_core::openapi::Server;
+use vespera_core::schema::{SecurityScheme, SecuritySchemeType};
 
 /// Server configuration for `OpenAPI`
 #[derive(Clone)]
 pub struct ServerConfig {
     pub url: String,
+    pub description: Option<String>,
+}
+
+/// Security scheme configuration for `OpenAPI` components.
+#[derive(Clone)]
+pub struct SecuritySchemeConfig {
+    pub name: String,
+    pub scheme: SecurityScheme,
+}
+
+/// Top-level OpenAPI tag configuration from `vespera!(tags = [...])`.
+#[derive(Clone)]
+pub struct TagConfig {
+    pub name: String,
     pub description: Option<String>,
 }
 
@@ -22,6 +38,9 @@ pub struct AutoRouterInput {
     pub docs_url: Option<LitStr>,
     pub redoc_url: Option<LitStr>,
     pub servers: Option<Vec<ServerConfig>>,
+    pub security_schemes: Option<Vec<SecuritySchemeConfig>>,
+    pub security: Option<Vec<String>>,
+    pub tags: Option<Vec<TagConfig>>,
     /// Apps to merge (e.g., [`third::ThirdApp`, `another::AnotherApp`])
     pub merge: Option<Vec<syn::Path>>,
 }
@@ -36,6 +55,9 @@ impl Parse for AutoRouterInput {
         let mut docs_url = None;
         let mut redoc_url = None;
         let mut servers = None;
+        let mut security_schemes = None;
+        let mut security = None;
+        let mut tags = None;
         let mut merge = None;
 
         while !input.is_empty() {
@@ -72,6 +94,15 @@ impl Parse for AutoRouterInput {
                     "servers" => {
                         servers = Some(parse_servers_values(input)?);
                     }
+                    "security_schemes" => {
+                        security_schemes = Some(parse_security_scheme_values(input)?);
+                    }
+                    "security" => {
+                        security = Some(parse_security_values(input)?);
+                    }
+                    "tags" => {
+                        tags = Some(parse_tag_values(input)?);
+                    }
                     "merge" => {
                         merge = Some(parse_merge_values(input)?);
                     }
@@ -79,7 +110,7 @@ impl Parse for AutoRouterInput {
                         return Err(syn::Error::new(
                             ident.span(),
                             format!(
-                                "unknown field: `{ident_str}`. Expected `dir`, `openapi`, `title`, `version`, `docs_url`, `redoc_url`, `servers`, or `merge`"
+                                "unknown field: `{ident_str}`. Expected `dir`, `openapi`, `title`, `version`, `docs_url`, `redoc_url`, `servers`, `security_schemes`, `security`, `tags`, or `merge`"
                             ),
                         ));
                     }
@@ -146,8 +177,206 @@ impl Parse for AutoRouterInput {
                         }]
                     })
             }),
+            security_schemes,
+            security,
+            tags,
             merge,
         })
+    }
+}
+
+fn parse_tag_values(input: ParseStream) -> syn::Result<Vec<TagConfig>> {
+    input.parse::<syn::Token![=]>()?;
+
+    let content;
+    let _ = bracketed!(content in input);
+    let mut tags = Vec::new();
+
+    while !content.is_empty() {
+        tags.push(parse_tag_struct(&content)?);
+
+        if content.peek(syn::Token![,]) {
+            content.parse::<syn::Token![,]>()?;
+        } else {
+            break;
+        }
+    }
+
+    Ok(tags)
+}
+
+fn parse_tag_struct(input: ParseStream) -> syn::Result<TagConfig> {
+    let content;
+    syn::braced!(content in input);
+
+    let mut name: Option<String> = None;
+    let mut description: Option<String> = None;
+
+    while !content.is_empty() {
+        let ident: syn::Ident = content.parse()?;
+        let ident_str = ident.to_string();
+        content.parse::<syn::Token![=]>()?;
+        let value: LitStr = content.parse()?;
+
+        match ident_str.as_str() {
+            "name" => name = Some(value.value()),
+            "description" => description = Some(value.value()),
+            _ => {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    format!("unknown tag field: `{ident_str}`. Expected `name` or `description`"),
+                ));
+            }
+        }
+
+        if content.peek(syn::Token![,]) {
+            content.parse::<syn::Token![,]>()?;
+        } else {
+            break;
+        }
+    }
+
+    let name = name.ok_or_else(|| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "vespera! macro: tag configuration missing required `name` field.",
+        )
+    })?;
+
+    Ok(TagConfig { name, description })
+}
+
+fn parse_security_values(input: ParseStream) -> syn::Result<Vec<String>> {
+    input.parse::<syn::Token![=]>()?;
+
+    let content;
+    let _ = bracketed!(content in input);
+    let entries: Punctuated<LitStr, syn::Token![,]> =
+        content.parse_terminated(syn::parse::ParseBuffer::parse::<LitStr>, syn::Token![,])?;
+    Ok(entries.into_iter().map(|entry| entry.value()).collect())
+}
+
+fn security_requirements(schemes: Vec<String>) -> Vec<HashMap<String, Vec<String>>> {
+    schemes
+        .into_iter()
+        .map(|scheme| HashMap::from([(scheme, Vec::new())]))
+        .collect()
+}
+
+fn parse_security_scheme_values(input: ParseStream) -> syn::Result<Vec<SecuritySchemeConfig>> {
+    input.parse::<syn::Token![=]>()?;
+
+    let content;
+    let _ = bracketed!(content in input);
+    let mut schemes = Vec::new();
+
+    while !content.is_empty() {
+        schemes.push(parse_security_scheme_struct(&content)?);
+
+        if content.peek(syn::Token![,]) {
+            content.parse::<syn::Token![,]>()?;
+        } else {
+            break;
+        }
+    }
+
+    Ok(schemes)
+}
+
+fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchemeConfig> {
+    let content;
+    syn::braced!(content in input);
+
+    let mut name: Option<String> = None;
+    let mut scheme_type: Option<SecuritySchemeType> = None;
+    let mut description: Option<String> = None;
+    let mut header_name: Option<String> = None;
+    let mut location: Option<String> = None;
+    let mut scheme: Option<String> = None;
+    let mut bearer_format: Option<String> = None;
+
+    while !content.is_empty() {
+        let (field_name, span) = parse_security_field_name(&content)?;
+        content.parse::<syn::Token![=]>()?;
+        let value: LitStr = content.parse()?;
+
+        match field_name.as_str() {
+            "name" => name = Some(value.value()),
+            "type" => scheme_type = Some(parse_security_scheme_type(&value)?),
+            "description" => description = Some(value.value()),
+            "header_name" => header_name = Some(value.value()),
+            "in" => location = Some(value.value()),
+            "scheme" => scheme = Some(value.value()),
+            "bearer_format" => bearer_format = Some(value.value()),
+            _ => {
+                return Err(syn::Error::new(
+                    span,
+                    format!(
+                        "unknown security scheme field: `{field_name}`. Expected `name`, `type`, `description`, `header_name`, `in`, `scheme`, or `bearer_format`"
+                    ),
+                ));
+            }
+        }
+
+        if content.peek(syn::Token![,]) {
+            content.parse::<syn::Token![,]>()?;
+        } else {
+            break;
+        }
+    }
+
+    let name = name.ok_or_else(|| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "vespera! macro: security scheme missing required `name` field.",
+        )
+    })?;
+    let scheme_type = scheme_type.ok_or_else(|| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "vespera! macro: security scheme missing required `type` field.",
+        )
+    })?;
+
+    Ok(SecuritySchemeConfig {
+        name,
+        scheme: SecurityScheme {
+            r#type: scheme_type,
+            description,
+            name: header_name,
+            r#in: location,
+            scheme,
+            bearer_format,
+        },
+    })
+}
+
+fn parse_security_field_name(input: ParseStream) -> syn::Result<(String, proc_macro2::Span)> {
+    if input.peek(syn::Token![type]) {
+        let token: syn::Token![type] = input.parse()?;
+        Ok(("type".to_string(), token.span))
+    } else if input.peek(syn::Token![in]) {
+        let token: syn::Token![in] = input.parse()?;
+        Ok(("in".to_string(), token.span))
+    } else {
+        let ident: syn::Ident = input.parse()?;
+        Ok((ident.to_string(), ident.span()))
+    }
+}
+
+fn parse_security_scheme_type(value: &LitStr) -> syn::Result<SecuritySchemeType> {
+    match value.value().as_str() {
+        "apiKey" => Ok(SecuritySchemeType::ApiKey),
+        "http" => Ok(SecuritySchemeType::Http),
+        "mutualTLS" => Ok(SecuritySchemeType::MutualTls),
+        "oauth2" => Ok(SecuritySchemeType::OAuth2),
+        "openIdConnect" => Ok(SecuritySchemeType::OpenIdConnect),
+        other => Err(syn::Error::new(
+            value.span(),
+            format!(
+                "invalid security scheme type: `{other}`. Expected `apiKey`, `http`, `mutualTLS`, `oauth2`, or `openIdConnect`"
+            ),
+        )),
     }
 }
 
@@ -314,6 +543,9 @@ pub struct ProcessedVesperaInput {
     pub docs_url: Option<String>,
     pub redoc_url: Option<String>,
     pub servers: Option<Vec<Server>>,
+    pub security_schemes: Option<BTreeMap<String, SecurityScheme>>,
+    pub security: Option<Vec<HashMap<String, Vec<String>>>>,
+    pub tag_descriptions: Option<HashMap<String, String>>,
     /// Apps to merge (`syn::Path` for code generation)
     pub merge: Vec<syn::Path>,
 }
@@ -343,441 +575,29 @@ pub fn process_vespera_input(input: AutoRouterInput) -> ProcessedVesperaInput {
                 })
                 .collect()
         }),
+        security_schemes: input.security_schemes.and_then(|schemes| {
+            let schemes = schemes
+                .into_iter()
+                .map(|scheme| (scheme.name, scheme.scheme))
+                .collect::<BTreeMap<_, _>>();
+            if schemes.is_empty() {
+                None
+            } else {
+                Some(schemes)
+            }
+        }),
+        security: input.security.map(security_requirements),
+        tag_descriptions: input.tags.and_then(|tags| {
+            let tags = tags
+                .into_iter()
+                .filter_map(|tag| tag.description.map(|description| (tag.name, description)))
+                .collect::<HashMap<_, _>>();
+            if tags.is_empty() { None } else { Some(tags) }
+        }),
         merge: input.merge.unwrap_or_default(),
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_openapi_values_single() {
-        // Test that single string openapi value parses correctly via AutoRouterInput
-        let tokens = quote::quote!(openapi = "openapi.json");
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let openapi = input.openapi.unwrap();
-        assert_eq!(openapi.len(), 1);
-        assert_eq!(openapi[0].value(), "openapi.json");
-    }
-
-    #[test]
-    fn test_parse_openapi_values_array() {
-        // Test that array openapi value parses correctly via AutoRouterInput
-        let tokens = quote::quote!(openapi = ["openapi.json", "api.json"]);
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let openapi = input.openapi.unwrap();
-        assert_eq!(openapi.len(), 2);
-        assert_eq!(openapi[0].value(), "openapi.json");
-        assert_eq!(openapi[1].value(), "api.json");
-    }
-
-    #[test]
-    fn test_validate_server_url_valid_http() {
-        let lit = LitStr::new("http://localhost:3000", Span::call_site());
-        let result = validate_server_url(&lit);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "http://localhost:3000");
-    }
-
-    #[test]
-    fn test_validate_server_url_valid_https() {
-        let lit = LitStr::new("https://api.example.com", Span::call_site());
-        let result = validate_server_url(&lit);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "https://api.example.com");
-    }
-
-    #[test]
-    fn test_validate_server_url_invalid() {
-        let lit = LitStr::new("ftp://example.com", Span::call_site());
-        let result = validate_server_url(&lit);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_validate_server_url_no_scheme() {
-        let lit = LitStr::new("example.com", Span::call_site());
-        let result = validate_server_url(&lit);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_auto_router_input_parse_dir_only() {
-        let tokens = quote::quote!(dir = "api");
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        assert_eq!(input.dir.unwrap().value(), "api");
-        assert!(input.openapi.is_none());
-    }
-
-    #[test]
-    fn test_auto_router_input_parse_string_as_dir() {
-        let tokens = quote::quote!("routes");
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        assert_eq!(input.dir.unwrap().value(), "routes");
-    }
-
-    #[test]
-    fn test_auto_router_input_parse_openapi_single() {
-        let tokens = quote::quote!(openapi = "openapi.json");
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let openapi = input.openapi.unwrap();
-        assert_eq!(openapi.len(), 1);
-        assert_eq!(openapi[0].value(), "openapi.json");
-    }
-
-    #[test]
-    fn test_auto_router_input_parse_openapi_array() {
-        let tokens = quote::quote!(openapi = ["a.json", "b.json"]);
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let openapi = input.openapi.unwrap();
-        assert_eq!(openapi.len(), 2);
-    }
-
-    #[test]
-    fn test_auto_router_input_parse_title_version() {
-        let tokens = quote::quote!(title = "My API", version = "2.0.0");
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        assert_eq!(input.title.unwrap().value(), "My API");
-        assert_eq!(input.version.unwrap().value(), "2.0.0");
-    }
-
-    #[test]
-    fn test_auto_router_input_parse_docs_redoc() {
-        let tokens = quote::quote!(docs_url = "/docs", redoc_url = "/redoc");
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        assert_eq!(input.docs_url.unwrap().value(), "/docs");
-        assert_eq!(input.redoc_url.unwrap().value(), "/redoc");
-    }
-
-    #[test]
-    fn test_auto_router_input_parse_servers_single() {
-        let tokens = quote::quote!(servers = "http://localhost:3000");
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let servers = input.servers.unwrap();
-        assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].url, "http://localhost:3000");
-        assert!(servers[0].description.is_none());
-    }
-
-    #[test]
-    fn test_auto_router_input_parse_servers_array_strings() {
-        let tokens = quote::quote!(servers = ["http://localhost:3000", "https://api.example.com"]);
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let servers = input.servers.unwrap();
-        assert_eq!(servers.len(), 2);
-    }
-
-    #[test]
-    fn test_auto_router_input_parse_servers_tuple() {
-        let tokens = quote::quote!(servers = [("http://localhost:3000", "Development")]);
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let servers = input.servers.unwrap();
-        assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].url, "http://localhost:3000");
-        assert_eq!(servers[0].description, Some("Development".to_string()));
-    }
-
-    #[test]
-    fn test_auto_router_input_parse_servers_struct() {
-        let tokens =
-            quote::quote!(servers = [{ url = "http://localhost:3000", description = "Dev" }]);
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let servers = input.servers.unwrap();
-        assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].url, "http://localhost:3000");
-        assert_eq!(servers[0].description, Some("Dev".to_string()));
-    }
-
-    #[test]
-    fn test_auto_router_input_parse_servers_single_struct() {
-        let tokens = quote::quote!(servers = { url = "https://api.example.com" });
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let servers = input.servers.unwrap();
-        assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].url, "https://api.example.com");
-    }
-
-    #[test]
-    fn test_auto_router_input_parse_unknown_field() {
-        let tokens = quote::quote!(unknown_field = "value");
-        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_auto_router_input_parse_all_fields() {
-        let tokens = quote::quote!(
-            dir = "api",
-            openapi = "openapi.json",
-            title = "Test API",
-            version = "1.0.0",
-            docs_url = "/docs",
-            redoc_url = "/redoc",
-            servers = "http://localhost:3000"
-        );
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        assert!(input.dir.is_some());
-        assert!(input.openapi.is_some());
-        assert!(input.title.is_some());
-        assert!(input.version.is_some());
-        assert!(input.docs_url.is_some());
-        assert!(input.redoc_url.is_some());
-        assert!(input.servers.is_some());
-    }
-
-    #[test]
-    fn test_parse_server_struct_url_only() {
-        // Test server struct parsing via AutoRouterInput
-        let tokens = quote::quote!(servers = { url = "http://localhost:3000" });
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let servers = input.servers.unwrap();
-        assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].url, "http://localhost:3000");
-        assert!(servers[0].description.is_none());
-    }
-
-    #[test]
-    fn test_parse_server_struct_with_description() {
-        let tokens =
-            quote::quote!(servers = { url = "http://localhost:3000", description = "Local" });
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let servers = input.servers.unwrap();
-        assert_eq!(servers[0].description, Some("Local".to_string()));
-    }
-
-    #[test]
-    fn test_parse_server_struct_unknown_field() {
-        let tokens = quote::quote!(servers = { url = "http://localhost:3000", unknown = "test" });
-        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_server_struct_missing_url() {
-        let tokens = quote::quote!(servers = { description = "test" });
-        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_servers_tuple_url_only() {
-        let tokens = quote::quote!(servers = [("http://localhost:3000")]);
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let servers = input.servers.unwrap();
-        assert_eq!(servers.len(), 1);
-        assert!(servers[0].description.is_none());
-    }
-
-    #[test]
-    fn test_parse_servers_invalid_url() {
-        let tokens = quote::quote!(servers = "invalid-url");
-        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_auto_router_input_parse_invalid_token() {
-        // Test line 149: neither ident nor string literal triggers lookahead error
-        let tokens = quote::quote!(123);
-        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_auto_router_input_empty() {
-        // Test empty input - should use defaults/env vars
-        let tokens = quote::quote!();
-        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_auto_router_input_multiple_commas() {
-        // Test input with trailing comma
-        let tokens = quote::quote!(dir = "api",);
-        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_auto_router_input_no_comma() {
-        // Test input without comma between fields (should stop at second field)
-        let tokens = quote::quote!(dir = "api" title = "Test");
-        let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
-        // This should fail or only parse first field
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_process_vespera_input_defaults() {
-        let tokens = quote::quote!();
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let processed = process_vespera_input(input);
-        assert_eq!(processed.folder_name, "routes");
-        assert!(processed.openapi_file_names.is_empty());
-        assert!(processed.title.is_none());
-        assert!(processed.docs_url.is_none());
-    }
-
-    #[test]
-    fn test_process_vespera_input_all_fields() {
-        let tokens = quote::quote!(
-            dir = "api",
-            openapi = ["openapi.json", "api.json"],
-            title = "My API",
-            version = "1.0.0",
-            docs_url = "/docs",
-            redoc_url = "/redoc",
-            servers = "http://localhost:3000"
-        );
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let processed = process_vespera_input(input);
-        assert_eq!(processed.folder_name, "api");
-        assert_eq!(
-            processed.openapi_file_names,
-            vec!["openapi.json", "api.json"]
-        );
-        assert_eq!(processed.title, Some("My API".to_string()));
-        assert_eq!(processed.version, Some("1.0.0".to_string()));
-        assert_eq!(processed.docs_url, Some("/docs".to_string()));
-        assert_eq!(processed.redoc_url, Some("/redoc".to_string()));
-        let servers = processed.servers.unwrap();
-        assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].url, "http://localhost:3000");
-    }
-
-    #[test]
-    fn test_process_vespera_input_servers_with_description() {
-        let tokens = quote::quote!(
-            servers = [{ url = "https://api.example.com", description = "Production" }]
-        );
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let processed = process_vespera_input(input);
-        let servers = processed.servers.unwrap();
-        assert_eq!(servers[0].url, "https://api.example.com");
-        assert_eq!(servers[0].description, Some("Production".to_string()));
-    }
-
-    // ========== Tests for parse_merge_values ==========
-
-    #[test]
-    fn test_parse_merge_values_single() {
-        let tokens = quote::quote!(merge = [some::path::App]);
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let merge = input.merge.unwrap();
-        assert_eq!(merge.len(), 1);
-        // Check the path segments
-        let path = &merge[0];
-        let segments: Vec<_> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-        assert_eq!(segments, vec!["some", "path", "App"]);
-    }
-
-    #[test]
-    fn test_parse_merge_values_multiple() {
-        let tokens = quote::quote!(merge = [first::App, second::Other]);
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let merge = input.merge.unwrap();
-        assert_eq!(merge.len(), 2);
-    }
-
-    #[test]
-    fn test_parse_merge_values_empty() {
-        let tokens = quote::quote!(merge = []);
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let merge = input.merge.unwrap();
-        assert!(merge.is_empty());
-    }
-
-    #[test]
-    fn test_parse_merge_values_with_trailing_comma() {
-        let tokens = quote::quote!(merge = [app::MyApp,]);
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-        let merge = input.merge.unwrap();
-        assert_eq!(merge.len(), 1);
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_auto_router_input_server_env_var_fallback() {
-        // Test lines 181-183: VESPERA_SERVER_URL env var fallback
-        // `#[serial]` serializes this with every other env-mutating test so
-        // the process-global VESPERA_SERVER_* vars cannot race across the
-        // parallel test threads.
-        let test_url = "https://vespera-test-unique-12345.example.com";
-        let test_desc = "Vespera Test Server 12345";
-
-        // Save current state
-        let old_server_url = std::env::var("VESPERA_SERVER_URL").ok();
-        let old_server_desc = std::env::var("VESPERA_SERVER_DESCRIPTION").ok();
-
-        // SAFETY: Single-threaded test context
-        unsafe {
-            std::env::set_var("VESPERA_SERVER_URL", test_url);
-            std::env::set_var("VESPERA_SERVER_DESCRIPTION", test_desc);
-        }
-
-        // Parse empty input - should pick up env vars
-        let tokens = quote::quote!();
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-
-        // Restore env vars immediately after parsing
-        unsafe {
-            if let Some(url) = old_server_url {
-                std::env::set_var("VESPERA_SERVER_URL", url);
-            } else {
-                std::env::remove_var("VESPERA_SERVER_URL");
-            }
-            if let Some(desc) = old_server_desc {
-                std::env::set_var("VESPERA_SERVER_DESCRIPTION", desc);
-            } else {
-                std::env::remove_var("VESPERA_SERVER_DESCRIPTION");
-            }
-        }
-
-        // Check if servers was set - may not be if another test interfered
-        if let Some(servers) = input.servers {
-            // If we got servers, verify they match our test values
-            if servers.len() == 1 && servers[0].url == test_url {
-                assert_eq!(servers[0].description, Some(test_desc.to_string()));
-            }
-            // Otherwise another test's values were picked up, which is fine
-        }
-        // If servers is None, another test may have cleared the env var - acceptable
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_auto_router_input_server_env_var_invalid_url_filtered() {
-        // Test that invalid URLs (not http/https) are filtered out by the .filter() call
-        // This exercises the filter branch, not lines 181-183 directly
-        let old_server_url = std::env::var("VESPERA_SERVER_URL").ok();
-
-        // SAFETY: Single-threaded test context
-        unsafe {
-            std::env::set_var("VESPERA_SERVER_URL", "ftp://invalid-url-test.com");
-        }
-
-        let tokens = quote::quote!();
-        let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-
-        // Restore env var
-        unsafe {
-            if let Some(url) = old_server_url {
-                std::env::set_var("VESPERA_SERVER_URL", url);
-            } else {
-                std::env::remove_var("VESPERA_SERVER_URL");
-            }
-        }
-
-        // If servers is Some, it means another test set a valid URL - acceptable
-        // If servers is None, our invalid URL was correctly filtered
-        if let Some(servers) = &input.servers {
-            // Another test set a valid URL, check it's not our invalid one
-            assert!(
-                servers.is_empty() || servers[0].url != "ftp://invalid-url-test.com",
-                "Invalid ftp:// URL should have been filtered"
-            );
-        }
-    }
-}
+#[path = "input_tests.rs"]
+mod tests;

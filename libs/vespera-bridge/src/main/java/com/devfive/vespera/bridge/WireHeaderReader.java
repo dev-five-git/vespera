@@ -168,6 +168,18 @@ final class WireHeaderReader {
             throw err("expected string");
         }
         pos++;
+        // Fast path: a plain run of ASCII bytes (no escape, no byte
+        // >= 0x80) — the overwhelmingly common shape for header names /
+        // values — is built in one bulk copy + String construction,
+        // skipping both the StringBuilder and the per-char escape / UTF-8
+        // decode loop below.
+        int simpleLen = simpleAsciiRun();
+        if (simpleLen >= 0) {
+            byte[] tmp = new byte[simpleLen];
+            buf.get(pos, tmp, 0, simpleLen); // absolute bulk get (Java 13+); position untouched
+            pos += simpleLen + 1; // consume the run + the closing quote
+            return new String(tmp, java.nio.charset.StandardCharsets.US_ASCII);
+        }
         StringBuilder sb = new StringBuilder();
         while (pos < end) {
             int b = buf.get(pos++) & 0xFF;
@@ -203,6 +215,28 @@ final class WireHeaderReader {
             }
         }
         throw err("unterminated string");
+    }
+
+    /**
+     * If the string starting at {@code pos} (just past the opening quote)
+     * is a plain run of ASCII bytes — no backslash escape, no byte
+     * {@code >= 0x80} — terminated by a closing quote within bounds,
+     * return its byte length; otherwise {@code -1}, so the caller falls
+     * back to the full escape / UTF-8 decoder.  Does not move {@code pos}.
+     */
+    private int simpleAsciiRun() {
+        int p = pos;
+        while (p < end) {
+            int b = buf.get(p) & 0xFF;
+            if (b == '"') {
+                return p - pos;
+            }
+            if (b == '\\' || b >= 0x80) {
+                return -1;
+            }
+            p++;
+        }
+        return -1;
     }
 
     private int nextCont() {

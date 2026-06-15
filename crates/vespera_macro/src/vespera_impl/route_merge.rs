@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::{metadata::CollectedMetadata, route_impl::StoredRouteInfo};
+use crate::{
+    collector::normalize_path_key, metadata::CollectedMetadata, route_impl::StoredRouteInfo,
+};
 
 /// Supplement collector's `RouteMetadata` with data from `ROUTE_STORAGE`.
 ///
@@ -9,8 +11,8 @@ use crate::{metadata::CollectedMetadata, route_impl::StoredRouteInfo};
 /// This function merges ROUTE_STORAGE data into collector's output,
 /// preferring ROUTE_STORAGE values when they provide richer info.
 ///
-/// Matching is by function name. If multiple routes share a function name,
-/// the match is ambiguous and ROUTE_STORAGE data is skipped for safety.
+/// Matching is by normalized `(file_path, function_name)`. Legacy storage entries
+/// without a file path only match when their function name is unambiguous.
 pub(super) fn merge_route_storage_data(
     metadata: &mut CollectedMetadata,
     route_storage: &[StoredRouteInfo],
@@ -19,36 +21,78 @@ pub(super) fn merge_route_storage_data(
         return;
     }
 
-    // Build `fn_name -> Option<&StoredRouteInfo>` index in a single pass:
-    // `Some(_)` when the name is unique, `None` when it is ambiguous
-    // (appears more than once).  This turns the previous O(N*M) nested
-    // scan into O(N + M).
-    let mut stored_index: HashMap<&str, Option<&StoredRouteInfo>> =
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let mut stored_by_path: HashMap<(String, &str), &StoredRouteInfo> =
+        HashMap::with_capacity(route_storage.len());
+    let mut fallback_by_name: HashMap<&str, Option<&StoredRouteInfo>> =
         HashMap::with_capacity(route_storage.len());
     for stored in route_storage {
-        stored_index
+        if let Some(file_path) = &stored.file_path {
+            stored_by_path.insert(
+                (normalize_path_key(file_path, &cwd), stored.fn_name.as_str()),
+                stored,
+            );
+        }
+        fallback_by_name
             .entry(stored.fn_name.as_str())
             .and_modify(|slot| *slot = None)
             .or_insert(Some(stored));
     }
 
     for route in &mut metadata.routes {
-        // Skip if no match or ambiguous (multiple routes share fn_name).
-        let Some(Some(stored)) = stored_index.get(route.function_name.as_str()) else {
+        let route_key = (
+            normalize_path_key(&route.file_path, &cwd),
+            route.function_name.as_str(),
+        );
+        let stored = stored_by_path.get(&route_key).copied().or_else(|| {
+            fallback_by_name
+                .get(route.function_name.as_str())
+                .copied()
+                .flatten()
+        });
+
+        let Some(stored) = stored else {
             continue;
         };
 
-        // Supplement with ROUTE_STORAGE data — only override when an
-        // explicit value is present.
-        if let Some(ref tags) = stored.tags {
-            route.tags = Some(tags.clone());
-        }
-        if let Some(ref desc) = stored.description {
-            route.description = Some(desc.clone());
-        }
-        if let Some(ref status) = stored.error_status {
-            route.error_status = Some(status.clone());
-        }
+        apply_stored_route(route, stored);
+    }
+}
+
+fn apply_stored_route(route: &mut crate::metadata::RouteMetadata, stored: &StoredRouteInfo) {
+    // Supplement with ROUTE_STORAGE data — only override when an explicit value is present.
+    if let Some(ref tags) = stored.tags {
+        route.tags = Some(tags.clone());
+    }
+    if let Some(ref security) = stored.security {
+        route.security = Some(security.clone());
+    }
+    if let Some(ref operation_id) = stored.operation_id {
+        route.operation_id = Some(operation_id.clone());
+    }
+    if let Some(ref summary) = stored.summary {
+        route.summary = Some(summary.clone());
+    }
+    if stored.deprecated {
+        route.deprecated = true;
+    }
+    if let Some(ref desc) = stored.description {
+        route.description = Some(desc.clone());
+    }
+    if let Some(ref status) = stored.error_status {
+        route.error_status = Some(status.clone());
+    }
+    if let Some(ref typed_responses) = stored.typed_responses {
+        route.typed_responses = Some(typed_responses.clone());
+    }
+    if !stored.headers.is_empty() {
+        route.headers.clone_from(&stored.headers);
+    }
+    if let Some(ref example) = stored.request_example {
+        route.request_example = Some(example.clone());
+    }
+    if let Some(ref example) = stored.response_example {
+        route.response_example = Some(example.clone());
     }
 }
 
@@ -56,6 +100,27 @@ pub(super) fn merge_route_storage_data(
 mod tests {
     use super::*;
     use crate::metadata::RouteMetadata;
+
+    fn stored_route(fn_name: &str, file_path: Option<&str>, tags: &[&str]) -> StoredRouteInfo {
+        StoredRouteInfo {
+            fn_name: fn_name.to_string(),
+            method: Some("get".to_string()),
+            custom_path: None,
+            error_status: None,
+            typed_responses: None,
+            tags: Some(tags.iter().map(|tag| (*tag).to_string()).collect()),
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
+            description: None,
+            fn_item_str: String::new(),
+            file_path: file_path.map(str::to_string),
+        }
+    }
 
     // ========== Tests for merge_route_storage_data ==========
 
@@ -69,7 +134,15 @@ mod tests {
             module_path: "routes".to_string(),
             file_path: "routes/users.rs".to_string(),
             error_status: None,
+            typed_responses: None,
             tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: None,
         });
 
@@ -90,7 +163,15 @@ mod tests {
             module_path: "routes".to_string(),
             file_path: "routes/users.rs".to_string(),
             error_status: None,
+            typed_responses: None,
             tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: None,
         });
 
@@ -99,7 +180,15 @@ mod tests {
             method: Some("get".to_string()),
             custom_path: None,
             error_status: Some(vec![400, 404]),
+            typed_responses: None,
             tags: Some(vec!["users".to_string()]),
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: Some("List all users".to_string()),
             fn_item_str: String::new(),
             file_path: None,
@@ -124,7 +213,15 @@ mod tests {
             module_path: "routes".to_string(),
             file_path: "routes/users.rs".to_string(),
             error_status: None,
+            typed_responses: None,
             tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: None,
         });
 
@@ -133,7 +230,15 @@ mod tests {
             method: Some("post".to_string()),
             custom_path: None,
             error_status: Some(vec![400]),
+            typed_responses: None,
             tags: Some(vec!["users".to_string()]),
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: None,
             fn_item_str: String::new(),
             file_path: None,
@@ -155,7 +260,15 @@ mod tests {
             module_path: "routes".to_string(),
             file_path: "routes/users.rs".to_string(),
             error_status: None,
+            typed_responses: None,
             tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: None,
         });
 
@@ -166,7 +279,15 @@ mod tests {
                 method: Some("get".to_string()),
                 custom_path: None,
                 error_status: None,
+                typed_responses: None,
                 tags: Some(vec!["file-a".to_string()]),
+                security: None,
+                headers: Vec::new(),
+                operation_id: None,
+                summary: None,
+                request_example: None,
+                response_example: None,
+                deprecated: false,
                 description: None,
                 fn_item_str: String::new(),
                 file_path: None,
@@ -176,7 +297,15 @@ mod tests {
                 method: Some("post".to_string()),
                 custom_path: None,
                 error_status: None,
+                typed_responses: None,
                 tags: Some(vec!["file-b".to_string()]),
+                security: None,
+                headers: Vec::new(),
+                operation_id: None,
+                summary: None,
+                request_example: None,
+                response_example: None,
+                deprecated: false,
                 description: None,
                 fn_item_str: String::new(),
                 file_path: None,
@@ -189,6 +318,63 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_route_storage_disambiguates_same_fn_name_by_file_path() {
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(RouteMetadata {
+            method: "get".to_string(),
+            path: "/users".to_string(),
+            function_name: "handler".to_string(),
+            module_path: "routes::users".to_string(),
+            file_path: "routes/users.rs".to_string(),
+            error_status: None,
+            typed_responses: None,
+            tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
+            description: None,
+        });
+        metadata.routes.push(RouteMetadata {
+            method: "get".to_string(),
+            path: "/posts".to_string(),
+            function_name: "handler".to_string(),
+            module_path: "routes::posts".to_string(),
+            file_path: "routes/posts.rs".to_string(),
+            error_status: None,
+            typed_responses: None,
+            tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
+            description: None,
+        });
+
+        let storage = vec![
+            stored_route("handler", Some("routes/users.rs"), &["users-file"]),
+            stored_route("handler", Some("routes/posts.rs"), &["posts-file"]),
+        ];
+
+        merge_route_storage_data(&mut metadata, &storage);
+
+        assert_eq!(
+            metadata.routes[0].tags,
+            Some(vec!["users-file".to_string()])
+        );
+        assert_eq!(
+            metadata.routes[1].tags,
+            Some(vec!["posts-file".to_string()])
+        );
+    }
+
+    #[test]
     fn test_merge_route_storage_preserves_existing() {
         let mut metadata = CollectedMetadata::new();
         metadata.routes.push(RouteMetadata {
@@ -198,7 +384,15 @@ mod tests {
             module_path: "routes".to_string(),
             file_path: "routes/users.rs".to_string(),
             error_status: Some(vec![500]),
+            typed_responses: None,
             tags: Some(vec!["existing-tag".to_string()]),
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: Some("Existing description".to_string()),
         });
 
@@ -207,7 +401,15 @@ mod tests {
             method: Some("get".to_string()),
             custom_path: None,
             error_status: Some(vec![400, 404]),
+            typed_responses: None,
             tags: Some(vec!["new-tag".to_string()]),
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: Some("New description".to_string()),
             fn_item_str: String::new(),
             file_path: None,
@@ -233,7 +435,15 @@ mod tests {
             module_path: "routes".to_string(),
             file_path: "routes/users.rs".to_string(),
             error_status: None,
+            typed_responses: None,
             tags: Some(vec!["from-collector".to_string()]),
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: Some("From doc comment".to_string()),
         });
 
@@ -243,7 +453,15 @@ mod tests {
             method: Some("get".to_string()),
             custom_path: None,
             error_status: Some(vec![400]),
+            typed_responses: None,
             tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: None,
             fn_item_str: String::new(),
             file_path: None,

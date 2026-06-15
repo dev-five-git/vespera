@@ -38,16 +38,28 @@ impl TryFrom<&str> for HttpMethod {
     type Error = String;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value.to_uppercase().as_str() {
-            "GET" => Ok(Self::Get),
-            "POST" => Ok(Self::Post),
-            "PUT" => Ok(Self::Put),
-            "PATCH" => Ok(Self::Patch),
-            "DELETE" => Ok(Self::Delete),
-            "HEAD" => Ok(Self::Head),
-            "OPTIONS" => Ok(Self::Options),
-            "TRACE" => Ok(Self::Trace),
-            other => Err(format!("unknown HTTP method: {other}")),
+        // Match case-insensitively without allocating an upper-cased copy
+        // on the success path (HTTP method names are ASCII per RFC 9110);
+        // the cold error path still reports the upper-cased value so the
+        // message is byte-identical to the previous implementation.
+        if value.eq_ignore_ascii_case("GET") {
+            Ok(Self::Get)
+        } else if value.eq_ignore_ascii_case("POST") {
+            Ok(Self::Post)
+        } else if value.eq_ignore_ascii_case("PUT") {
+            Ok(Self::Put)
+        } else if value.eq_ignore_ascii_case("PATCH") {
+            Ok(Self::Patch)
+        } else if value.eq_ignore_ascii_case("DELETE") {
+            Ok(Self::Delete)
+        } else if value.eq_ignore_ascii_case("HEAD") {
+            Ok(Self::Head)
+        } else if value.eq_ignore_ascii_case("OPTIONS") {
+            Ok(Self::Options)
+        } else if value.eq_ignore_ascii_case("TRACE") {
+            Ok(Self::Trace)
+        } else {
+            Err(format!("unknown HTTP method: {}", value.to_uppercase()))
         }
     }
 }
@@ -181,6 +193,9 @@ pub struct Operation {
     /// Security requirements
     #[serde(skip_serializing_if = "Option::is_none")]
     pub security: Option<Vec<HashMap<String, Vec<String>>>>,
+    /// Whether this operation is deprecated
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecated: Option<bool>,
 }
 
 /// Path Item definition (all HTTP methods for a specific path)
@@ -321,6 +336,7 @@ mod tests {
             request_body: None,
             responses: BTreeMap::new(),
             security: None,
+            deprecated: None,
         };
 
         // Test setting GET operation
@@ -391,6 +407,7 @@ mod tests {
             request_body: None,
             responses: BTreeMap::new(),
             security: None,
+            deprecated: None,
         };
 
         let operation2 = Operation {
@@ -402,6 +419,7 @@ mod tests {
             request_body: None,
             responses: BTreeMap::new(),
             security: None,
+            deprecated: None,
         };
 
         // Set first operation

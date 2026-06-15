@@ -4,7 +4,7 @@ use syn::{FnArg, PatType, Type};
 use vespera_core::route::{MediaType, RequestBody};
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
-use super::schema::parse_type_to_schema_ref_with_schemas;
+use super::{extractors::unwrap_validated_type, schema::parse_type_to_schema_ref_with_schemas};
 
 fn is_string_like(ty: &Type) -> bool {
     match ty {
@@ -28,7 +28,8 @@ pub fn parse_request_body(
     match arg {
         FnArg::Receiver(_) => None,
         FnArg::Typed(PatType { ty, .. }) => {
-            if let Type::Path(type_path) = ty.as_ref() {
+            let ty = unwrap_validated_type(ty.as_ref());
+            if let Type::Path(type_path) = ty {
                 let path = &type_path.path;
 
                 // Check the last segment (handles both Json<T> and vespera::axum::Json<T>)
@@ -134,7 +135,7 @@ pub fn parse_request_body(
                 }
             }
 
-            if is_string_like(ty.as_ref()) {
+            if is_string_like(ty) {
                 let schema =
                     parse_type_to_schema_ref_with_schemas(ty, known_schemas, struct_definitions);
                 let mut content = BTreeMap::new();
@@ -182,6 +183,16 @@ mod tests {
 
     #[rstest]
     #[case::json("fn test(Json(payload): Json<User>) {}", true, "json")]
+    #[case::validated_json(
+        "fn test(Validated(Json(payload)): Validated<Json<User>>) {}",
+        true,
+        "validated_json"
+    )]
+    #[case::validated_form(
+        "fn test(Validated(Form(input)): Validated<Form<User>>) {}",
+        true,
+        "validated_form"
+    )]
     #[case::form("fn test(Form(input): Form<User>) {}", true, "form")]
     #[case::string("fn test(just_string: String) {}", true, "string")]
     #[case::str("fn test(just_str: &str) {}", true, "str")]

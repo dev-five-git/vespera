@@ -430,6 +430,26 @@ mod tests {
         assert!(!props.contains_key("internal_data")); // Should be skipped
     }
 
+    #[test]
+    fn test_parse_struct_to_schema_skip_takes_precedence_over_skip_serializing_if() {
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r#"
+            struct User {
+                id: i32,
+                #[serde(skip, skip_serializing_if = "Option::is_none")]
+                email2: Option<String>,
+                name: String,
+            }
+        "#,
+        )
+        .unwrap();
+        let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
+        let props = schema.properties.as_ref().unwrap();
+        assert!(props.contains_key("id"));
+        assert!(props.contains_key("name"));
+        assert!(!props.contains_key("email2"));
+    }
+
     // Test struct with default and skip_serializing_if
     // Required is determined solely by nullability (Option<T>), not by defaults.
     #[test]

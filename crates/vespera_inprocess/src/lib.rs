@@ -93,7 +93,8 @@ pub use envelope::{
 pub use registry::{DEFAULT_APP_NAME, register_app, register_app_named};
 pub use streaming::{
     RequestChunk, StreamAbort, dispatch_bidirectional_streaming,
-    dispatch_bidirectional_streaming_with_header, dispatch_streaming_async,
+    dispatch_bidirectional_streaming_closing, dispatch_bidirectional_streaming_with_header,
+    dispatch_bidirectional_streaming_with_header_closing, dispatch_streaming_async,
     dispatch_streaming_with_header_async,
 };
 pub use wire::error_wire;

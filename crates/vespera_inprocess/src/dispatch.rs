@@ -12,8 +12,8 @@ use crate::envelope::{RequestEnvelope, ResponseEnvelope, ResponseMetadata};
 use crate::internal::{dispatch_and_split, dispatch_parts, to_response_envelope_text};
 use crate::registry::resolve_app_router;
 use crate::wire::{
-    WIRE_VERSION, build_wire_header_bytes, error_wire, parse_wire_header, split_wire_request,
-    to_wire_bytes,
+    WIRE_VERSION, error_wire, parse_wire_header, split_wire_request, to_wire_bytes,
+    write_wire_header_into_slice,
 };
 
 // ── Dispatch (direct API — backward compatible) ──────────────────────
@@ -296,26 +296,42 @@ pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteR
         return write_wire_into(out, &wire);
     }
 
-    let header_bytes = build_wire_header_bytes(status, &headers, &metadata);
-    let mut written = 0usize;
-    if header_bytes.len() <= out.len() {
-        out[..header_bytes.len()].copy_from_slice(&header_bytes);
-        written = header_bytes.len();
-    }
-    let mut required = header_bytes.len();
+    // Write the wire header straight into `out` — no intermediate Vec
+    // and no second copy.  `header_total` is the exact header byte count
+    // whether or not it fit, so overflow reporting stays exact.
+    let header_total = write_wire_header_into_slice(out, status, &headers, &metadata);
+    let mut written = if header_total <= out.len() {
+        header_total
+    } else {
+        0
+    };
+    let mut required = header_total;
 
-    while let Some(Ok(frame)) = body.frame().await {
-        if let Some(data) = frame.data_ref()
-            && !data.is_empty()
-        {
-            let len = data.len();
-            // Write only while the output is still contiguous
-            // (`written == required` ⇒ nothing has been skipped yet).
-            if written == required && written + len <= out.len() {
-                out[written..written + len].copy_from_slice(data);
-                written += len;
+    loop {
+        match body.frame().await {
+            Some(Ok(frame)) => {
+                if let Some(data) = frame.data_ref()
+                    && !data.is_empty()
+                {
+                    let len = data.len();
+                    // Write only while the output is still contiguous
+                    // (`written == required` ⇒ nothing has been skipped yet).
+                    if written == required && written + len <= out.len() {
+                        out[written..written + len].copy_from_slice(data);
+                        written += len;
+                    }
+                    required += len;
+                }
             }
-            required += len;
+            // Response body aborted mid-stream. Nothing has been committed to
+            // the caller yet (we write into `out` and only return at the end),
+            // so discard the partial write and emit a 500 error wire instead
+            // of reporting truncated bytes as a successful response.
+            Some(Err(_)) => {
+                let wire = error_wire(500, "response body stream error");
+                return write_wire_into(out, &wire);
+            }
+            None => break,
         }
     }
 

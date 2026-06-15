@@ -75,7 +75,9 @@ pub async fn header_map_endpoint2() -> Result<(StatusCode, HeaderMap, &'static s
 {
     let headers = HeaderMap::new();
     println!("headers: {:?}", headers);
-    Ok((StatusCode::INTERNAL_SERVER_ERROR, headers, "ok"))
+    // Success branch returns 200 (the generated spec infers 200 for the Ok
+    // arm); returning 500 here was a fixture quirk that contradicted the spec.
+    Ok((StatusCode::OK, headers, "ok"))
 }
 
 /// Delete endpoint that returns just a StatusCode

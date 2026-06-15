@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 use syn::{FnArg, Pat, PatType};
 use vespera_core::route::Parameter;
 
+use super::extractors::unwrap_validated_type;
+
 mod header;
 mod path;
 mod query;
@@ -20,6 +22,7 @@ pub fn parse_function_parameter(
         FnArg::Receiver(_) => None,
         FnArg::Typed(PatType { pat, ty, .. }) => {
             let param_name = extract_param_name(pat.as_ref())?;
+            let ty = unwrap_validated_type(ty.as_ref());
 
             if let Some(parameters) = header::parse_option_typed_header(&param_name, ty) {
                 return Some(parameters);
@@ -55,10 +58,7 @@ fn extract_param_name(pat: &Pat) -> Option<String> {
     match pat {
         Pat::Ident(ident) => Some(ident.ident.to_string()),
         Pat::TupleStruct(tuple_struct) if tuple_struct.elems.len() == 1 => {
-            let Pat::Ident(ident) = &tuple_struct.elems[0] else {
-                return None;
-            };
-            Some(ident.ident.to_string())
+            extract_param_name(&tuple_struct.elems[0])
         }
         _ => None,
     }
@@ -107,6 +107,8 @@ mod tests {
     #[case("fn test(&self, id: i32) {}", vec![], vec![vec![], vec![]], "method_receiver")]
     #[case("fn test(Path((a, b)): Path<(i32, String)>) {}", vec![], vec![vec![]], "path_tuple_destructure")]
     #[case("fn test(params: Query<QueryParams>) {}", vec![], vec![vec![ParameterLocation::Query, ParameterLocation::Query]], "query_struct")]
+    #[case("fn test(Validated(Query(params)): Validated<Query<QueryParams>>) {}", vec![], vec![vec![ParameterLocation::Query, ParameterLocation::Query]], "validated_query_struct")]
+    #[case("fn test(Validated(Path(id)): Validated<Path<i32>>) {}", vec!["item_id".to_string()], vec![vec![ParameterLocation::Path]], "validated_path_single")]
     #[case("fn test(body: Json<User>) {}", vec![], vec![vec![]], "json_body")]
     #[case("fn test(params: Query<UnknownType>) {}", vec![], vec![vec![]], "query_unknown")]
     #[case("fn test(params: Query<BTreeMap<String, String>>) {}", vec![], vec![vec![]], "query_map")]

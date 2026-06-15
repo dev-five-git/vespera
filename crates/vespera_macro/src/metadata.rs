@@ -4,6 +4,16 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
+/// Header parameter declared at the route site via `headers = [...]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeaderParam {
+    pub name: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 /// Route metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteMetadata {
@@ -21,9 +31,33 @@ pub struct RouteMetadata {
     /// Additional error status codes from `error_status` attribute
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_status: Option<Vec<u16>>,
+    /// Typed error responses from `responses` attribute.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typed_responses: Option<Vec<(u16, String)>>,
     /// Tags for `OpenAPI` grouping
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    /// Per-route OpenAPI security requirements.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security: Option<Vec<String>>,
+    /// Header parameters declared by custom extractors at the route site.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<HeaderParam>,
+    /// Explicit OpenAPI operationId override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    /// OpenAPI operation summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Operation-level request example JSON/string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_example: Option<serde_json::Value>,
+    /// Operation-level response example JSON/string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_example: Option<serde_json::Value>,
+    /// Whether the OpenAPI operation is deprecated.
+    #[serde(default)]
+    pub deprecated: bool,
     /// Description for `OpenAPI` (from route attribute or doc comment)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

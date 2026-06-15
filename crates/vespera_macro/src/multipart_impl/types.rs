@@ -33,13 +33,20 @@ fn matches_type_name(ty: &Type, names: &[&str]) -> bool {
         Type::Path(type_path) if type_path.qself.is_none() => &type_path.path,
         _ => return false,
     };
-    let sig = path
-        .segments
-        .iter()
-        .map(|s| s.ident.to_string())
-        .collect::<Vec<_>>()
-        .join("::");
-    names.contains(&sig.as_str())
+    // Compare each candidate's `::`-split components against the path's
+    // segments directly — avoids building a `Vec<String>` and joining it
+    // just to run a string compare.
+    names.iter().any(|name| {
+        let mut expected = name.split("::");
+        let mut actual = path.segments.iter();
+        loop {
+            match (expected.next(), actual.next()) {
+                (Some(e), Some(a)) if a.ident == e => {}
+                (None, None) => break true,
+                _ => break false,
+            }
+        }
+    })
 }
 
 /// Strip leading `r#` from raw identifiers.

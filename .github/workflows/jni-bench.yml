@@ -1,0 +1,98 @@
+name: JNI Bench (nightly)
+
+# Informational JNI / perf benchmark run — NOT a regression gate.
+#
+# Most of the in-process & JNI performance work lives on the Java side
+# (dispatch modes, daemon-env attach caching, direct buffers, mimalloc),
+# which the criterion gate in bench.yml does NOT cover. Shared GitHub
+# runners are far too noisy to threshold absolute ns/op, so this job runs
+# the gated *BenchTest suite nightly purely to RECORD the numbers
+# (printed to the job summary + uploaded as artifacts) so a human can spot
+# drift over time. It never fails on a slow number — see PERF_REPORT.md
+# for the locally-measured baselines.
+
+on:
+  schedule:
+    # 06:00 UTC daily (~15:00 KST)
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: jni-bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  jni-bench:
+    name: JNI Bench (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Build rust-jni-demo cdylib (release)
+        # mimalloc is opt-in; the bench numbers reflect the default
+        # allocator unless the cdylib is built with --features mimalloc.
+        run: cargo build -p rust-jni-demo --release
+      - name: Make gradlew executable
+        run: |
+          chmod +x libs/vespera-bridge/gradlew
+          chmod +x libs/vespera-bridge-gradle-plugin/gradlew
+          chmod +x examples/rust-jni-demo/java/gradlew
+      - name: Publish vespera-bridge Gradle plugin to mavenLocal
+        working-directory: libs/vespera-bridge-gradle-plugin
+        run: ./gradlew publishToMavenLocal --console=plain --no-daemon
+      - name: Publish vespera-bridge to mavenLocal
+        working-directory: libs/vespera-bridge
+        run: ./gradlew publishToMavenLocal --console=plain --no-daemon
+      - name: Run JNI benchmarks (informational — never gates)
+        # The bench tests are gated behind -Dvespera.bench=true (the
+        # demo-app test task forwards that system property into the forked
+        # test JVM). This step is allowed to fail without failing the job:
+        # a flaky bench number must never break the nightly run.
+        continue-on-error: true
+        working-directory: examples/rust-jni-demo/java
+        run: |
+          ./gradlew :demo-app:test -Dvespera.bench=true \
+            --tests 'kr.go.demo.*BenchTest' \
+            --console=plain --no-daemon
+      - name: Summarise bench results
+        if: always()
+        run: |
+          {
+            echo '## JNI bench results'
+            echo ''
+            echo '> **Watch the ratios, not the absolute ns/op.** The latency bench'
+            echo '> measures every mode *interleaved* (round-robin blocks, median of'
+            echo '> 100), so the cross-mode ratios (`async_vs_sync`, `direct_vs_sync`,'
+            echo '> `resp_only_vs_bidi`) are the noise-robust regression signal — they'
+            echo '> stay stable run-to-run even when absolute numbers drift ±10% on a'
+            echo '> shared runner. A ratio moving materially = a real regression.'
+            echo ''
+            echo '### Noise-robust ratios'
+            echo '```'
+            grep -hoE 'VESPERA_BENCH summary[^<]*' \
+              examples/rust-jni-demo/java/demo-app/build/test-results/test/*.xml \
+              | sort -u || echo '(no ratio summary captured)'
+            echo '```'
+            echo '### All bench lines'
+            echo '```'
+            # Bench lines (VESPERA_BENCH / ALLOC / CONC / JFR_LOAD) are
+            # captured in the JUnit XML <system-out>; pull them out for a
+            # quick at-a-glance view in the run summary.
+            grep -hoE 'VESPERA_(BENCH|ALLOC|CONC|JFR_LOAD)[^<]*' \
+              examples/rust-jni-demo/java/demo-app/build/test-results/test/*.xml \
+              | sort -u || echo '(no bench lines captured)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload bench results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: jni-bench-results
+          path: examples/rust-jni-demo/java/demo-app/build/test-results/test/*.xml
+          if-no-files-found: warn

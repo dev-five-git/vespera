@@ -7,7 +7,8 @@ use jni::sys::{jbyteArray, jint};
 
 use crate::daemon_env::with_cached_daemon_env;
 use crate::streaming_closures::{
-    call_header_consumer, complete_future, make_pull_closure, make_push_closure,
+    call_header_consumer, close_input_stream, complete_future, complete_future_local,
+    make_pull_closure, make_push_closure,
 };
 
 /// Multi-threaded Tokio runtime shared across all JNI calls.
@@ -299,20 +300,16 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchByt
                 if let Some(err) = oversized_request_wire(len) {
                     return Ok(env.byte_array_from_slice(&err)?.into());
                 }
-                let mut buf = vec![0u8; len];
-                // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
-                // identical size/alignment; this views the
-                // freshly allocated buffer as the signed slice
-                // `get_region` expects.
-                let buf_i8 =
-                    unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<i8>(), len) };
-                if request_bytes.get_region(env, 0, buf_i8).is_err() {
+                // Read straight into uninitialised capacity — no zero-fill
+                // that `get_region` would immediately overwrite.
+                let Ok(buf) = crate::jni_buf::read_byte_array_region(env, &request_bytes, len)
+                else {
                     let err = vespera_inprocess::error_wire(
                         400,
                         "invalid input byte array (JNI conversion failed)",
                     );
                     return Ok(env.byte_array_from_slice(&err)?.into());
-                }
+                };
                 buf
             };
 
@@ -515,31 +512,29 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
     // always-complete contract holds even on VM-promotion / scheduling
     // failures.
     let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
-        let future_global: Global<JObject<'static>> = env.new_global_ref(&future_obj)?;
-
+        // On-thread cold paths (oversized, JNI conversion failure, VM
+        // promotion / scheduling failure) complete the future via the
+        // still-valid LOCAL `future_obj` ref, so only the spawned task
+        // needs a `Global` ref (created just before the spawn below) —
+        // instead of a second one held solely for these paths.
         let input = {
             let len = request_bytes.len(env).unwrap_or(0);
             // Ingress cap: complete the future with 413 BEFORE allocating
             // the Rust-side body copy if the request exceeds the limit.
             if let Some(err) = oversized_request_wire(len) {
-                let _ = complete_future(env, &future_global, &err);
+                let _ = complete_future_local(env, &future_obj, &err);
                 return Ok(());
             }
-            let mut buf = vec![0u8; len];
-            // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
-            // identical size/alignment; this views the
-            // freshly allocated buffer as the signed slice
-            // `get_region` expects.
-            let buf_i8 =
-                unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<i8>(), len) };
-            if request_bytes.get_region(env, 0, buf_i8).is_err() {
+            // Read straight into uninitialised capacity — no zero-fill
+            // that `get_region` would immediately overwrite.
+            let Ok(buf) = crate::jni_buf::read_byte_array_region(env, &request_bytes, len) else {
                 let err = vespera_inprocess::error_wire(
                     400,
                     "invalid input byte array (JNI conversion failed)",
                 );
-                let _ = complete_future(env, &future_global, &err);
+                let _ = complete_future_local(env, &future_obj, &err);
                 return Ok(());
-            }
+            };
             buf
         };
 
@@ -548,25 +543,25 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
         let jvm = match env.get_java_vm() {
             Ok(jvm) => jvm,
             Err(e) => {
-                let _ = complete_future(
+                let _ = complete_future_local(
                     env,
-                    &future_global,
+                    &future_obj,
                     &vespera_inprocess::error_wire(500, "JNI VM promotion failed"),
                 );
                 return Err(e);
             }
         };
 
-        // A second owning global ref for the spawned task (`Global` is
-        // not `Clone`); the original `future_global` stays on this thread
-        // to complete the future if scheduling fails below.  Both refs
-        // are independent GC roots to the same Java future.
+        // The single owning global ref, created only now and moved into
+        // the spawned task (which completes the future from a worker
+        // thread).  Every on-thread path uses the local `future_obj`
+        // instead, so this is the only `Global` ref allocated per call.
         let future_for_task = match env.new_global_ref(&future_obj) {
             Ok(g) => g,
             Err(e) => {
-                let _ = complete_future(
+                let _ = complete_future_local(
                     env,
-                    &future_global,
+                    &future_obj,
                     &vespera_inprocess::error_wire(500, "JNI global ref failed"),
                 );
                 return Err(e);
@@ -590,9 +585,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
             });
         }));
         if scheduled.is_err() {
-            let _ = complete_future(
+            let _ = complete_future_local(
                 env,
-                &future_global,
+                &future_obj,
                 &vespera_inprocess::error_wire(500, "failed to schedule Rust dispatch"),
             );
         }
@@ -629,12 +624,20 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
 ) -> jbyteArray {
     unowned_env
         .with_env(|env| -> jni::errors::Result<JObject<'local>> {
-            let Ok(input) = env.convert_byte_array(&request_bytes) else {
-                let err = vespera_inprocess::error_wire(
-                    400,
-                    "invalid input byte array (JNI conversion failed)",
-                );
-                return Ok(env.byte_array_from_slice(&err)?.into());
+            let input = {
+                let len = request_bytes.len(env).unwrap_or(0);
+                if let Some(err) = oversized_request_wire(len) {
+                    return Ok(env.byte_array_from_slice(&err)?.into());
+                }
+                let Ok(buf) = crate::jni_buf::read_byte_array_region(env, &request_bytes, len)
+                else {
+                    let err = vespera_inprocess::error_wire(
+                        400,
+                        "invalid input byte array (JNI conversion failed)",
+                    );
+                    return Ok(env.byte_array_from_slice(&err)?.into());
+                };
+                buf
             };
 
             // Promote the OutputStream to Global so we can call
@@ -712,6 +715,10 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
             };
 
             let input_global: Global<JObject<'static>> = env.new_global_ref(&input_stream)?;
+            // A second InputStream ref for the post-response close — the
+            // first is moved into the pull closure (a `Global` is not
+            // `Clone`); both are independent GC roots to the same stream.
+            let input_for_close: Global<JObject<'static>> = env.new_global_ref(&input_stream)?;
             let output_global: Global<JObject<'static>> = env.new_global_ref(&output_stream)?;
             let jvm = env.get_java_vm()?;
 
@@ -732,11 +739,12 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
             // both types are Send+Sync.
             let pull_jvm = jvm.clone();
             let pull_global = input_global;
+            let close_jvm = jvm.clone();
             let push_jvm = jvm;
             let push_global = output_global;
 
             let header_response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                RUNTIME.block_on(vespera_inprocess::dispatch_bidirectional_streaming(
+                RUNTIME.block_on(vespera_inprocess::dispatch_bidirectional_streaming_closing(
                     header_input,
                     // Pull request body chunks from Java InputStream.
                     // Runs on a tokio blocking thread (spawn_blocking
@@ -745,6 +753,15 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                     // Push response body chunks to Java OutputStream.
                     // Runs on the tokio worker driving the dispatch.
                     make_push_closure(push_jvm, push_global, push_buf),
+                    // Close the InputStream once the response is fully
+                    // streamed, so a producer parked in a blocking read is
+                    // unblocked and the dispatch cannot hang on a stuck
+                    // upload that never reaches EOF.
+                    move || {
+                        let _ = with_cached_daemon_env(&close_jvm, |env| {
+                            close_input_stream(env, &input_for_close)
+                        });
+                    },
                 ))
             }));
             let header_response = header_response.map_or_else(
@@ -785,13 +802,21 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
     output_stream: JObject<'local>,
 ) {
     let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
-        let Ok(input) = env.convert_byte_array(&request_bytes) else {
-            let err = vespera_inprocess::error_wire(
-                400,
-                "invalid input byte array (JNI conversion failed)",
-            );
-            let _ = call_header_consumer(env, &env.new_global_ref(&header_consumer)?, &err);
-            return Ok(());
+        let input = {
+            let len = request_bytes.len(env).unwrap_or(0);
+            if let Some(err) = oversized_request_wire(len) {
+                let _ = call_header_consumer(env, &env.new_global_ref(&header_consumer)?, &err);
+                return Ok(());
+            }
+            let Ok(buf) = crate::jni_buf::read_byte_array_region(env, &request_bytes, len) else {
+                let err = vespera_inprocess::error_wire(
+                    400,
+                    "invalid input byte array (JNI conversion failed)",
+                );
+                let _ = call_header_consumer(env, &env.new_global_ref(&header_consumer)?, &err);
+                return Ok(());
+            };
+            buf
         };
 
         let header_global: Global<JObject<'static>> = env.new_global_ref(&header_consumer)?;
@@ -821,13 +846,16 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
             RUNTIME.block_on(vespera_inprocess::dispatch_streaming_with_header_async(
                 input,
                 |header_bytes: &[u8]| {
-                    header_sent_cb.store(true, std::sync::atomic::Ordering::SeqCst);
-                    let _ = with_cached_daemon_env(
+                    if with_cached_daemon_env(
                         &jvm_for_cb,
                         |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
                             call_header_consumer(env, &header_for_cb, header_bytes)
                         },
-                    );
+                    )
+                    .is_ok()
+                    {
+                        header_sent_cb.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
                 },
                 push,
             ));
@@ -875,6 +903,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
 
         let header_global: Global<JObject<'static>> = env.new_global_ref(&header_consumer)?;
         let input_global: Global<JObject<'static>> = env.new_global_ref(&input_stream)?;
+        // Second InputStream ref for the post-response close (the first is
+        // moved into the pull closure; `Global` is not `Clone`).
+        let input_for_close: Global<JObject<'static>> = env.new_global_ref(&input_stream)?;
         let output_global: Global<JObject<'static>> = env.new_global_ref(&output_stream)?;
         let jvm = env.get_java_vm()?;
 
@@ -894,6 +925,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
         let pull_global = input_global;
         let push_jvm = jvm.clone();
         let push_global = output_global;
+        let close_jvm = jvm.clone();
         let header_jvm = jvm;
         let header_for_cb = header_global;
 
@@ -907,18 +939,29 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
         let header_sent_cb = std::sync::Arc::clone(&header_sent);
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             RUNTIME.block_on(
-                vespera_inprocess::dispatch_bidirectional_streaming_with_header(
+                vespera_inprocess::dispatch_bidirectional_streaming_with_header_closing(
                     header_input,
                     make_pull_closure(pull_jvm, pull_global, pull_buf),
                     make_push_closure(push_jvm, push_global, push_buf),
                     |header_bytes: &[u8]| {
-                        header_sent_cb.store(true, std::sync::atomic::Ordering::SeqCst);
-                        let _ = with_cached_daemon_env(
+                        if with_cached_daemon_env(
                             &header_jvm,
                             |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
                                 call_header_consumer(env, &header_for_cb, header_bytes)
                             },
-                        );
+                        )
+                        .is_ok()
+                        {
+                            header_sent_cb.store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    },
+                    // Close the InputStream once the response is fully
+                    // streamed, to unblock a producer parked in a blocking
+                    // read so the dispatch cannot hang on a stuck upload.
+                    move || {
+                        let _ = with_cached_daemon_env(&close_jvm, |env| {
+                            close_input_stream(env, &input_for_close)
+                        });
                     },
                 ),
             );
@@ -938,64 +981,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
 }
 
 #[cfg(test)]
-mod runtime_config_tests {
-    use super::{runtime_worker_threads, set_runtime_worker_threads};
-
-    /// One test owns the process-global `OnceLock`: setter wins,
-    /// clamping applies, and later writes are rejected.
-    #[test]
-    fn setter_fixes_clamped_value_first_wins() {
-        assert!(set_runtime_worker_threads(99_999), "first set must win");
-        assert_eq!(
-            runtime_worker_threads(),
-            Some(1024),
-            "value must clamp to the upper bound"
-        );
-        assert!(
-            !set_runtime_worker_threads(4),
-            "second set must be rejected once fixed"
-        );
-        assert_eq!(runtime_worker_threads(), Some(1024));
-    }
-}
+#[path = "jni_impl_runtime_config_tests.rs"]
+mod runtime_config_tests;
 
 #[cfg(test)]
-mod direct_tests {
-    use super::write_response_to_out;
-
-    #[test]
-    fn response_fits_returns_len_and_writes_bytes() {
-        let mut out = vec![0u8; 16];
-        let response = b"hello wire";
-        let n = write_response_to_out(out.as_mut_ptr(), out.len(), response);
-        assert_eq!(n, 10);
-        assert_eq!(&out[..10], response);
-    }
-
-    #[test]
-    fn exact_fit_boundary() {
-        let mut out = vec![0u8; 4];
-        let n = write_response_to_out(out.as_mut_ptr(), out.len(), b"abcd");
-        assert_eq!(n, 4);
-        assert_eq!(&out[..], b"abcd");
-    }
-
-    #[test]
-    fn overflow_returns_negative_required_size_and_writes_nothing() {
-        let mut out = vec![0xAAu8; 4];
-        let n = write_response_to_out(out.as_mut_ptr(), out.len(), b"too large");
-        assert_eq!(n, -9);
-        assert_eq!(
-            &out[..],
-            &[0xAA; 4],
-            "overflow must not touch the out buffer"
-        );
-    }
-
-    #[test]
-    fn zero_capacity_overflow() {
-        let mut out: Vec<u8> = Vec::new();
-        let n = write_response_to_out(out.as_mut_ptr(), 0, b"x");
-        assert_eq!(n, -1);
-    }
-}
+#[path = "jni_impl_direct_tests.rs"]
+mod direct_tests;

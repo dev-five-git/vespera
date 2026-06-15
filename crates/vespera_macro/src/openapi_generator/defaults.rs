@@ -25,11 +25,22 @@ pub(super) fn set_property_default(
     field_name: &str,
     value: serde_json::Value,
 ) {
-    use vespera_core::schema::SchemaRef;
+    use vespera_core::schema::{SchemaRef, SchemaType};
 
     if let Some(SchemaRef::Inline(prop_schema)) = properties.get_mut(field_name)
         && prop_schema.default.is_none()
     {
+        // A default on a string-typed property must itself be a string — e.g. a
+        // `Decimal` field (string wire type) carrying a numeric DB default value.
+        let value = if prop_schema.schema_type == Some(SchemaType::String) {
+            match value {
+                serde_json::Value::Number(n) => serde_json::Value::String(n.to_string()),
+                serde_json::Value::Bool(b) => serde_json::Value::String(b.to_string()),
+                other => other,
+            }
+        } else {
+            value
+        };
         prop_schema.default = Some(value);
     }
 }
@@ -50,13 +61,24 @@ pub(super) fn process_default_functions(
     // Extract rename_all from struct level
     let struct_rename_all = extract_rename_all(&struct_item.attrs);
 
-    // Get properties from schema
-    let Some(properties) = &mut schema.properties else {
+    // Locate the object schema that actually holds the fields. Flatten structs
+    // are `allOf`-shaped: their own (non-flattened) fields live in the first
+    // inline `allOf` member, not a top-level `properties` map — defaults (and
+    // the `required` demotion below) must apply there too.
+    let Some(target) = field_bearing_schema_mut(schema) else {
         return;
     };
 
+    // Fields carrying a `#[serde(default)]` whose default value cannot be
+    // resolved at compile time. A non-`Option` such field would otherwise be
+    // `required` with no `default` — impossible for a client to satisfy — so it
+    // is demoted to optional after the field walk.
+    let mut unresolved_default_fields: Vec<String> = Vec::new();
+
     // Process each field in the struct
-    if let Fields::Named(fields_named) = &struct_item.fields {
+    if let Some(properties) = target.properties.as_mut()
+        && let Fields::Named(fields_named) = &struct_item.fields
+    {
         for field in &fields_named.named {
             let rust_field_name = field.ident.as_ref().map_or_else(
                 || "unknown".to_string(),
@@ -82,26 +104,63 @@ pub(super) fn process_default_functions(
             let default_info = match extract_default(&field.attrs) {
                 Some(Some(func_name)) => func_name, // default = "function_name"
                 Some(None) => {
-                    // Simple default (no function) - we can set type-specific defaults
+                    // Simple default (no function): use the type-specific default
+                    // when known; otherwise serde fills a value we cannot
+                    // express, so demote the field from `required`.
                     if let Some(default_value) = utils_get_type_default(&field.ty) {
                         set_property_default(properties, &field_name, default_value);
+                    } else {
+                        unresolved_default_fields.push(field_name);
                     }
                     continue;
                 }
                 None => continue, // No default attribute
             };
 
-            // Find the function in the file AST and extract default
-            // value — Priority 2 is the only step that needs the AST,
-            // so it degrades gracefully when none is available.
-            if let Some(func_item) =
-                file_ast.and_then(|ast| find_function_in_file(ast, &default_info))
-                && let Some(default_value) = extract_default_value_from_function(func_item)
-            {
+            // Priority 2 (function form) is the only step that needs the AST, so
+            // it degrades gracefully when none is available. When the value
+            // cannot be extracted (function missing or non-literal body), the
+            // field has a serde default we cannot express → demote it.
+            let resolved = file_ast
+                .and_then(|ast| find_function_in_file(ast, &default_info))
+                .and_then(extract_default_value_from_function);
+            if let Some(default_value) = resolved {
                 set_property_default(properties, &field_name, default_value);
+            } else {
+                unresolved_default_fields.push(field_name);
             }
         }
     }
+
+    // Demote fields with an unexpressible serde default from `required` so the
+    // spec never advertises a required field a client cannot provide.
+    if !unresolved_default_fields.is_empty() {
+        if let Some(required) = target.required.as_mut() {
+            required.retain(|name| !unresolved_default_fields.contains(name));
+        }
+        if target.required.as_ref().is_some_and(Vec::is_empty) {
+            target.required = None;
+        }
+    }
+}
+
+/// Return the object schema that actually carries the struct's fields: the
+/// schema itself, or — for flatten/`allOf`-shaped structs — the first inline
+/// `allOf` member (where the non-flattened fields live).
+fn field_bearing_schema_mut(
+    schema: &mut vespera_core::schema::Schema,
+) -> Option<&mut vespera_core::schema::Schema> {
+    if schema.properties.is_some() {
+        return Some(schema);
+    }
+    schema
+        .all_of
+        .as_mut()?
+        .iter_mut()
+        .find_map(|member| match member {
+            vespera_core::schema::SchemaRef::Inline(inline) => Some(inline.as_mut()),
+            vespera_core::schema::SchemaRef::Ref(_) => None,
+        })
 }
 
 /// Extract `default` value from `#[schema(default = "...")]` field attribute.
@@ -224,6 +283,26 @@ pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Va
             }
             None
         }
+        // Associated function calls like String::from("value")
+        Expr::Call(call) => {
+            let Expr::Path(path) = call.func.as_ref() else {
+                return None;
+            };
+            let mut segments = path.path.segments.iter().rev();
+            let last = segments.next()?;
+            let prev = segments.next()?;
+            if last.ident == "from"
+                && prev.ident == "String"
+                && call.args.len() == 1
+                && let Some(first_arg) = call.args.first()
+            {
+                return extract_value_from_expr(first_arg).and_then(|value| match value {
+                    serde_json::Value::String(_) => Some(value),
+                    _ => None,
+                });
+            }
+            None
+        }
         // Macro calls like vec![]
         Expr::Macro(ExprMacro { mac, .. }) => {
             if mac.path.is_ident("vec") {
@@ -266,6 +345,7 @@ mod tests {
     #[case::bool_true("true", Some(Value::Bool(true)))]
     #[case::bool_false("false", Some(Value::Bool(false)))]
     #[case::to_string(r#""hello".to_string()"#, Some(Value::String("hello".to_string())))]
+    #[case::string_from(r#"String::from("hello")"#, Some(Value::String("hello".to_string())))]
     #[case::vec_macro("vec![]", Some(Value::Array(vec![])))]
     #[case::int_to_string("42.to_string()", Some(Value::Number(42.into())))]
     #[case::binary_unsupported("1 + 2", None)]
@@ -367,6 +447,44 @@ mod tests {
             extract_default_value_from_function(&func),
             Some(Value::String("hello".to_string()))
         );
+    }
+
+    #[test]
+    fn process_default_functions_applies_string_default_fn_value() {
+        let file_ast: syn::File = syn::parse_str(
+            r#"
+            fn default_sort() -> String { "asc".to_string() }
+            fn default_direction() -> String { String::from("desc") }
+            "#,
+        )
+        .unwrap();
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r#"
+            pub struct Test {
+                #[serde(default = "default_sort")]
+                pub sort: String,
+                #[serde(default = "default_direction")]
+                pub direction: String,
+            }
+            "#,
+        )
+        .unwrap();
+        let mut schema = Schema::object();
+        let props = schema.properties.get_or_insert_with(BTreeMap::new);
+        props.insert(
+            "sort".to_string(),
+            SchemaRef::Inline(Box::new(Schema::string())),
+        );
+        props.insert(
+            "direction".to_string(),
+            SchemaRef::Inline(Box::new(Schema::string())),
+        );
+
+        process_default_functions(&struct_item, Some(&file_ast), &mut schema, &BTreeMap::new());
+
+        let properties = schema.properties.as_ref().unwrap();
+        assert_inline_default(properties, "sort", &json!("asc"));
+        assert_inline_default(properties, "direction", &json!("desc"));
     }
 
     #[test]
@@ -493,5 +611,153 @@ mod tests {
         process_default_functions(&struct_item, Some(&file_ast), &mut schema, &BTreeMap::new());
 
         assert_inline_default(schema.properties.as_ref().unwrap(), "count", &json!(100));
+    }
+
+    #[test]
+    fn process_default_functions_applies_default_into_flatten_allof_member() {
+        // Flatten struct: the own field `sort` (defaulted) lives in the inline
+        // `allOf[0]` member, `pagination` is flattened to a `$ref`. The default
+        // must still land on `sort` even though there is no top-level
+        // `properties` map.
+        let file_ast: syn::File =
+            syn::parse_str(r#"fn default_sort() -> String { "asc".to_string() }"#).unwrap();
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r#"
+            pub struct UserListRequest {
+                #[serde(default = "default_sort")]
+                pub sort: String,
+                #[serde(flatten)]
+                pub pagination: Pagination,
+            }
+            "#,
+        )
+        .unwrap();
+
+        let mut inline = Schema::object();
+        inline.properties.get_or_insert_with(BTreeMap::new).insert(
+            "sort".to_string(),
+            SchemaRef::Inline(Box::new(Schema::string())),
+        );
+        let mut schema = Schema::default();
+        schema.all_of = Some(vec![
+            SchemaRef::Inline(Box::new(inline)),
+            SchemaRef::Ref(Reference::schema("Pagination")),
+        ]);
+
+        process_default_functions(&struct_item, Some(&file_ast), &mut schema, &BTreeMap::new());
+
+        let all_of = schema.all_of.as_ref().expect("allOf present");
+        let SchemaRef::Inline(inline) = &all_of[0] else {
+            panic!("expected inline allOf member");
+        };
+        assert_inline_default(inline.properties.as_ref().unwrap(), "sort", &json!("asc"));
+    }
+
+    #[test]
+    fn process_default_functions_demotes_unresolvable_fn_default_from_required() {
+        // `#[serde(default = "fn")]` whose body is not a simple literal: no value
+        // can be extracted at compile time, so the field must drop out of
+        // `required` (a required field with no default is unsatisfiable).
+        let file_ast: syn::File =
+            syn::parse_str("fn complex() -> Vec<String> { compute_tags() }").unwrap();
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r#"
+            pub struct Req {
+                pub name: String,
+                #[serde(default = "complex")]
+                pub tags: Vec<String>,
+            }
+            "#,
+        )
+        .unwrap();
+        let mut schema = Schema::object();
+        let props = schema.properties.get_or_insert_with(BTreeMap::new);
+        props.insert(
+            "name".to_string(),
+            SchemaRef::Inline(Box::new(Schema::string())),
+        );
+        props.insert(
+            "tags".to_string(),
+            SchemaRef::Inline(Box::new(Schema::object())),
+        );
+        schema.required = Some(vec!["name".to_string(), "tags".to_string()]);
+
+        process_default_functions(&struct_item, Some(&file_ast), &mut schema, &BTreeMap::new());
+
+        let required = schema.required.as_ref().expect("required present");
+        assert!(
+            required.contains(&"name".to_string()),
+            "name stays required"
+        );
+        assert!(
+            !required.contains(&"tags".to_string()),
+            "tags must be demoted: its serde default cannot be expressed"
+        );
+    }
+
+    #[test]
+    fn process_default_functions_demotes_simple_default_without_type_default() {
+        // `#[serde(default)]` on `Vec<T>`: `get_type_default` yields no value for
+        // Vec, so the field is demoted from `required`.
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r"
+            pub struct Req {
+                pub name: String,
+                #[serde(default)]
+                pub tags: Vec<String>,
+            }
+            ",
+        )
+        .unwrap();
+        let mut schema = Schema::object();
+        let props = schema.properties.get_or_insert_with(BTreeMap::new);
+        props.insert(
+            "name".to_string(),
+            SchemaRef::Inline(Box::new(Schema::string())),
+        );
+        props.insert(
+            "tags".to_string(),
+            SchemaRef::Inline(Box::new(Schema::object())),
+        );
+        schema.required = Some(vec!["name".to_string(), "tags".to_string()]);
+
+        process_default_functions(&struct_item, None, &mut schema, &BTreeMap::new());
+
+        let required = schema.required.as_ref().expect("required present");
+        assert!(required.contains(&"name".to_string()));
+        assert!(
+            !required.contains(&"tags".to_string()),
+            "Vec serde default demoted"
+        );
+    }
+
+    #[test]
+    fn process_default_functions_keeps_required_when_default_resolvable() {
+        // A resolvable default keeps the field `required` AND sets `default`
+        // (the user's required+default strategy is preserved).
+        let file_ast: syn::File =
+            syn::parse_str(r#"fn default_sort() -> String { "asc".to_string() }"#).unwrap();
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r#"pub struct Req { #[serde(default = "default_sort")] pub sort: String }"#,
+        )
+        .unwrap();
+        let mut schema = Schema::object();
+        schema.properties.get_or_insert_with(BTreeMap::new).insert(
+            "sort".to_string(),
+            SchemaRef::Inline(Box::new(Schema::string())),
+        );
+        schema.required = Some(vec!["sort".to_string()]);
+
+        process_default_functions(&struct_item, Some(&file_ast), &mut schema, &BTreeMap::new());
+
+        assert!(
+            schema
+                .required
+                .as_ref()
+                .unwrap()
+                .contains(&"sort".to_string()),
+            "resolvable default keeps the field required"
+        );
+        assert_inline_default(schema.properties.as_ref().unwrap(), "sort", &json!("asc"));
     }
 }

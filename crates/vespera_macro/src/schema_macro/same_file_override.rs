@@ -11,7 +11,7 @@ use quote::quote;
 
 use super::file_cache;
 use super::seaorm::RelationFieldInfo;
-use super::type_utils::{capitalize_first, snake_to_pascal_case};
+use super::type_utils::snake_to_pascal_case;
 use crate::metadata::StructMetadata;
 #[cfg(test)]
 pub(super) struct __VesperaSameFileLookupFixture {
@@ -62,23 +62,6 @@ pub(super) fn find_same_file_struct_metadata<'a>(
 pub(super) fn related_model_type_from_schema_path(schema_path: &TokenStream) -> Option<syn::Type> {
     let schema_path_str = schema_path.to_string().replace("Schema", "Model");
     syn::parse_str(&schema_path_str).ok()
-}
-
-pub(super) fn schema_component_name_from_path(schema_path: &TokenStream) -> String {
-    // Keep the stringified path alive in this scope so the `&str`
-    // segments borrow from it.  The previous implementation collected
-    // owned `String`s — one allocation per path segment — even though
-    // each segment is only ever inspected as `&str`.
-    let path_str = schema_path.to_string();
-    let segments: Vec<&str> = path_str.split("::").map(str::trim).collect();
-
-    if segments.last().is_some_and(|s| *s == "Schema") && segments.len() > 1 {
-        format!("{}Schema", capitalize_first(segments[segments.len() - 2]))
-    } else {
-        segments
-            .last()
-            .map_or_else(|| "Schema".to_string(), |s| (*s).to_string())
-    }
 }
 
 pub(super) fn has_derive(struct_item: &syn::ItemStruct, derive_name: &str) -> bool {
@@ -199,6 +182,13 @@ pub(super) fn build_clone_assignments(
     Ok(assignments)
 }
 
+/// The OpenAPI component name the adapter DTO is emitted under — its
+/// `#[schema(name = "...")]` override when present, else the struct name.
+fn dto_schema_ref_name(dto_struct: &syn::ItemStruct, dto_name: &str) -> String {
+    crate::schema_impl::extract_schema_name_attr(&dto_struct.attrs)
+        .unwrap_or_else(|| dto_name.to_string())
+}
+
 pub(super) fn maybe_generate_same_file_relation_override(
     new_type_name: &syn::Ident,
     field_name: &str,
@@ -230,7 +220,9 @@ pub(super) fn maybe_generate_same_file_relation_override(
         ),
         proc_macro2::Span::call_site(),
     );
-    let schema_ref_name = schema_component_name_from_path(&rel_info.schema_path);
+    // B6: $ref the adapter DTO's own schema component (honoring its
+    // `#[schema(name = ...)]` override), not the base relation schema.
+    let schema_ref_name = dto_schema_ref_name(&dto_struct, &dto_name);
 
     let dto_serde_attrs: Vec<_> = dto_struct
         .attrs
@@ -487,5 +479,43 @@ mod tests {
         assert!(output.contains("Clone"));
         assert!(output.contains("CustomArticleSchema"));
         assert_eq!(metadata.unwrap().name, "CustomArticleSchema");
+    }
+
+    #[test]
+    fn override_ref_honors_dto_schema_name_attribute() {
+        // When the adapter DTO overrides its OpenAPI component name via
+        // `#[schema(name = "...")]`, the generated wrapper's `#[schema(ref = ...)]`
+        // must use that name (not the Rust struct name) so the emitted `$ref`
+        // resolves instead of dangling.
+        let rel_info = RelationFieldInfo {
+            field_name: syn::Ident::new("user", proc_macro2::Span::call_site()),
+            relation_type: "HasOne".to_string(),
+            schema_path: quote!(crate::models::user::Schema),
+            is_optional: true,
+            inline_type_info: None,
+            relation_enum: None,
+            fk_column: None,
+            via_rel: None,
+        };
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "UserInArticle",
+            r#"#[schema(name = "ArticleUser")] struct UserInArticle { id: i32, name: String }"#,
+        )]);
+        let new_type_name = syn::Ident::new("ArticleResponse", proc_macro2::Span::call_site());
+
+        let (_field_ty, helpers) =
+            maybe_generate_same_file_relation_override(&new_type_name, "user", &rel_info, &storage)
+                .expect("override generation should succeed")
+                .expect("DTO present → override generated");
+
+        let output = helpers.to_string();
+        assert!(
+            output.contains("ref = \"ArticleUser\""),
+            "wrapper $ref must use the DTO's #[schema(name=...)] override, got: {output}"
+        );
+        assert!(
+            !output.contains("ref = \"UserInArticle\""),
+            "must not fall back to the struct name when a name override exists, got: {output}"
+        );
     }
 }

@@ -683,7 +683,15 @@ pub fn get_users() -> String {
             module_path: "routes::users".to_string(),
             file_path: "dummy.rs".to_string(),
             error_status: None,
+            typed_responses: None,
             tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: None,
         });
 
@@ -725,7 +733,15 @@ pub fn get_users() -> String {
             module_path: "routes::invalid".to_string(),
             file_path: "dummy.rs".to_string(),
             error_status: None,
+            typed_responses: None,
             tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: None,
         });
 

@@ -143,8 +143,13 @@ fn build_validation_response(report: &::garde::Report) -> Response {
         })
         .collect();
 
-    let body = ::serde_json::to_string(&ValidationEnvelope { errors })
-        .unwrap_or_else(|_| r#"{"errors":[]}"#.to_owned());
+    // Serialize straight to bytes: skips the UTF-8 re-validation that
+    // `to_string` performs over `to_vec`'s output, and the body is handed
+    // to axum as raw bytes (content-type is overridden to
+    // application/json below regardless).  Byte-identical to the previous
+    // `to_string` body.
+    let body = ::serde_json::to_vec(&ValidationEnvelope { errors })
+        .unwrap_or_else(|_| br#"{"errors":[]}"#.to_vec());
 
     let mut response = (StatusCode::UNPROCESSABLE_ENTITY, body).into_response();
     response.headers_mut().insert(

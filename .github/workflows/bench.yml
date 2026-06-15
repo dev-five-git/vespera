@@ -10,9 +10,10 @@ name: Bench
 #   double condition filters shared-runner noise).
 #
 # Gated groups are the stable per-request paths (wire_path,
-# headers_path, resolve_path). The streaming groups are noisier
-# (spawn_blocking scheduling) and are validated locally instead — see
-# PERF_REPORT.md.
+# headers_path, resolve_path, dispatch_path). The streaming and
+# contended groups are noisier (spawn_blocking / scheduler timing) and
+# the router_path setup micro-bench is low-signal, so those are
+# validated locally instead — see PERF_REPORT.md.
 
 on:
   push:
@@ -35,7 +36,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BENCH_FILTER: 'wire_path|headers_path|resolve_path'
+  BENCH_FILTER: 'wire_path|headers_path|resolve_path|dispatch_path'
 
 jobs:
   bench:

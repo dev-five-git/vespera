@@ -158,10 +158,50 @@ where
     F: FnOnce(&mut jni::Env<'_>) -> std::result::Result<T, E>,
     E: From<jni::errors::Error>,
 {
+    with_cached_daemon_env_impl(jvm, true, callback)
+}
+
+/// Like [`with_cached_daemon_env`] but **without** wrapping `callback` in
+/// a JNI local-reference frame.
+///
+/// For the streaming chunk callbacks (`make_pull_closure` /
+/// `make_push_closure`) whose hot path uses cached-`JMethodID`
+/// `call_method_unchecked` + `get_region`/`set_region` and therefore
+/// creates **no** JNI local references per chunk — so the per-chunk
+/// `PushLocalFrame`/`PopLocalFrame` of [`with_cached_daemon_env`] is pure
+/// overhead (≈ 4096 frame pairs for a 1 GiB / 256 KiB stream).  The
+/// pending-exception scrub and panic handling are preserved identically;
+/// only the local frame is dropped.
+///
+/// Callbacks that DO create local refs (e.g. `byte_array_from_slice` in
+/// `complete_future` / `call_header_consumer`) MUST keep using
+/// [`with_cached_daemon_env`] so those refs are reclaimed per call.
+pub fn with_cached_daemon_env_no_frame<F, T, E>(
+    jvm: &jni::JavaVM,
+    callback: F,
+) -> std::result::Result<T, E>
+where
+    F: FnOnce(&mut jni::Env<'_>) -> std::result::Result<T, E>,
+    E: From<jni::errors::Error>,
+{
+    with_cached_daemon_env_impl(jvm, false, callback)
+}
+
+/// Shared implementation of [`with_cached_daemon_env`] (frame) and
+/// [`with_cached_daemon_env_no_frame`] (no frame).
+fn with_cached_daemon_env_impl<F, T, E>(
+    jvm: &jni::JavaVM,
+    use_local_frame: bool,
+    callback: F,
+) -> std::result::Result<T, E>
+where
+    F: FnOnce(&mut jni::Env<'_>) -> std::result::Result<T, E>,
+    E: From<jni::errors::Error>,
+{
     DAEMON_ENV.with(|cell| {
         // Resolve + cache under a short-lived borrow, then release it
-        // before running the callback so a nested `with_cached_daemon_env`
-        // on the same thread cannot double-borrow the cell.
+        // before running the callback so a nested call on the same thread
+        // cannot double-borrow the cell.
         let env_ptr = {
             let mut slot = cell.borrow_mut();
             if slot.is_none() {
@@ -181,12 +221,17 @@ where
         // the module-level safety invariant) and is confined to this
         // thread's TLS cell; it is never shared across threads.  The
         // owning `CachedEnv` remains in TLS, so the attachment outlives
-        // this borrow.  The per-call local frame prevents local-ref
-        // accumulation on the long-lived thread.
+        // this borrow.  When `use_local_frame` is true a per-call local
+        // frame prevents local-ref accumulation on the long-lived thread;
+        // the no-frame path is reserved for callbacks that create none.
         let mut guard = unsafe { jni::AttachGuard::from_unowned(env_ptr) };
         let env = guard.borrow_env_mut();
         let result = catch_unwind(AssertUnwindSafe(|| {
-            env.with_local_frame(jni::DEFAULT_LOCAL_FRAME_CAPACITY, callback)
+            if use_local_frame {
+                env.with_local_frame(jni::DEFAULT_LOCAL_FRAME_CAPACITY, callback)
+            } else {
+                callback(env)
+            }
         }));
 
         if env.exception_check() {

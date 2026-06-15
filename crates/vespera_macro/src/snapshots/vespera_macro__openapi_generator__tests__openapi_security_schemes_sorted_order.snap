@@ -1,0 +1,36 @@
+---
+source: crates/vespera_macro/src/openapi_generator.rs
+expression: "serde_json::to_string_pretty(&doc).unwrap()"
+---
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Security API",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000"
+    }
+  ],
+  "paths": {},
+  "components": {
+    "securitySchemes": {
+      "apiKey": {
+        "type": "apiKey",
+        "description": "API key",
+        "name": "X-API-Key",
+        "in": "header"
+      },
+      "basicAuth": {
+        "type": "http",
+        "scheme": "basic"
+      },
+      "zBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  }
+}

@@ -121,7 +121,7 @@ fn push_assignment<'a>(
     };
 
     cg.assignments
-        .push(quote! { if __field_name__ == #field_name { #assignment } });
+        .push(quote! { #field_name => { #assignment } });
 }
 
 fn push_post_loop<'a>(

@@ -44,7 +44,11 @@ pub const HTTP_METHODS: &[&str] = &[
 /// assert!(!is_http_method("invalid"));
 /// ```
 pub fn is_http_method(s: &str) -> bool {
-    HTTP_METHODS.contains(&s.to_lowercase().as_str())
+    // Case-insensitive match without allocating a lowercased copy
+    // (HTTP method names are ASCII; HTTP_METHODS are lowercase).
+    HTTP_METHODS
+        .iter()
+        .any(|&method| s.eq_ignore_ascii_case(method))
 }
 
 #[cfg(test)]

@@ -89,9 +89,48 @@ pub(super) fn compute_config_hash(processed: &ProcessedVesperaInput) -> u64 {
     processed.docs_url.hash(&mut hasher);
     processed.redoc_url.hash(&mut hasher);
     processed.openapi_file_names.hash(&mut hasher);
-    if let Some(ref servers) = processed.servers {
-        for s in servers {
-            s.url.hash(&mut hasher);
+    match &processed.servers {
+        None => "servers:none".hash(&mut hasher),
+        Some(servers) => {
+            "servers:some".hash(&mut hasher);
+            servers.len().hash(&mut hasher);
+            for s in servers {
+                s.url.hash(&mut hasher);
+                s.description.hash(&mut hasher);
+            }
+        }
+    }
+    if let Some(ref schemes) = processed.security_schemes {
+        for (name, scheme) in schemes {
+            name.hash(&mut hasher);
+            scheme.r#type.hash(&mut hasher);
+            scheme.description.hash(&mut hasher);
+            scheme.name.hash(&mut hasher);
+            scheme.r#in.hash(&mut hasher);
+            scheme.scheme.hash(&mut hasher);
+            scheme.bearer_format.hash(&mut hasher);
+        }
+    }
+    match &processed.security {
+        None => "security:none".hash(&mut hasher),
+        Some(security) => {
+            "security:some".hash(&mut hasher);
+            security.len().hash(&mut hasher);
+            for requirement in security {
+                let mut names: Vec<_> = requirement.keys().collect();
+                names.sort_unstable();
+                for name in names {
+                    name.hash(&mut hasher);
+                }
+            }
+        }
+    }
+    if let Some(ref descriptions) = processed.tag_descriptions {
+        let mut names: Vec<_> = descriptions.keys().collect();
+        names.sort_unstable();
+        for name in names {
+            name.hash(&mut hasher);
+            descriptions[name].hash(&mut hasher);
         }
     }
     for merge_path in &processed.merge {
@@ -198,12 +237,14 @@ pub(super) fn write_cache(cache_path: &Path, cache: &VesperaCache) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use vespera_core::schema::{SecurityScheme, SecuritySchemeType};
+
     use super::*;
 
-    #[test]
-    fn test_compute_config_hash_with_servers() {
-        // Exercises lines 92-96: servers loop in compute_config_hash
-        let processed_no_servers = ProcessedVesperaInput {
+    fn base_processed() -> ProcessedVesperaInput {
+        ProcessedVesperaInput {
             folder_name: "routes".to_string(),
             openapi_file_names: vec![],
             title: None,
@@ -211,16 +252,19 @@ mod tests {
             docs_url: None,
             redoc_url: None,
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![],
-        };
+        }
+    }
+
+    #[test]
+    fn test_compute_config_hash_with_servers() {
+        // Exercises lines 92-96: servers loop in compute_config_hash
+        let processed_no_servers = base_processed();
 
         let processed_with_servers = ProcessedVesperaInput {
-            folder_name: "routes".to_string(),
-            openapi_file_names: vec![],
-            title: None,
-            version: None,
-            docs_url: None,
-            redoc_url: None,
             servers: Some(vec![
                 vespera_core::openapi::Server {
                     url: "https://api.example.com".to_string(),
@@ -233,7 +277,7 @@ mod tests {
                     variables: None,
                 },
             ]),
-            merge: vec![],
+            ..base_processed()
         };
 
         let hash_no_servers = compute_config_hash(&processed_no_servers);
@@ -249,26 +293,11 @@ mod tests {
     #[test]
     fn test_compute_config_hash_with_merge() {
         // Exercises lines 97-99: merge loop in compute_config_hash
-        let processed_no_merge = ProcessedVesperaInput {
-            folder_name: "routes".to_string(),
-            openapi_file_names: vec![],
-            title: None,
-            version: None,
-            docs_url: None,
-            redoc_url: None,
-            servers: None,
-            merge: vec![],
-        };
+        let processed_no_merge = base_processed();
 
         let processed_with_merge = ProcessedVesperaInput {
-            folder_name: "routes".to_string(),
-            openapi_file_names: vec![],
-            title: None,
-            version: None,
-            docs_url: None,
-            redoc_url: None,
-            servers: None,
             merge: vec![syn::parse_quote!(app::TestApp)],
+            ..base_processed()
         };
 
         let hash_no_merge = compute_config_hash(&processed_no_merge);
@@ -323,5 +352,75 @@ mod tests {
     fn test_hash_str_deterministic_and_content_sensitive() {
         assert_eq!(hash_str("abc"), hash_str("abc"));
         assert_ne!(hash_str("abc"), hash_str("abd"));
+    }
+
+    #[test]
+    fn security_scheme_field_changes_affect_config_hash() {
+        fn scheme(http_scheme: &str) -> SecurityScheme {
+            SecurityScheme {
+                r#type: SecuritySchemeType::Http,
+                description: Some("Auth".to_string()),
+                name: None,
+                r#in: None,
+                scheme: Some(http_scheme.to_string()),
+                bearer_format: Some("JWT".to_string()),
+            }
+        }
+
+        let bearer = ProcessedVesperaInput {
+            security_schemes: Some(BTreeMap::from([(
+                "bearerAuth".to_string(),
+                scheme("bearer"),
+            )])),
+            ..base_processed()
+        };
+        let basic = ProcessedVesperaInput {
+            security_schemes: Some(BTreeMap::from([(
+                "bearerAuth".to_string(),
+                scheme("basic"),
+            )])),
+            ..base_processed()
+        };
+
+        assert_ne!(compute_config_hash(&bearer), compute_config_hash(&basic));
+    }
+
+    #[test]
+    fn security_none_and_empty_some_have_distinct_config_hashes() {
+        let omitted = base_processed();
+        let explicit_empty = ProcessedVesperaInput {
+            security: Some(Vec::new()),
+            ..base_processed()
+        };
+
+        assert_ne!(
+            compute_config_hash(&omitted),
+            compute_config_hash(&explicit_empty)
+        );
+    }
+
+    #[test]
+    fn server_description_changes_affect_config_hash() {
+        let production = ProcessedVesperaInput {
+            servers: Some(vec![vespera_core::openapi::Server {
+                url: "https://api.example.com".to_string(),
+                description: Some("Production".to_string()),
+                variables: None,
+            }]),
+            ..base_processed()
+        };
+        let staging = ProcessedVesperaInput {
+            servers: Some(vec![vespera_core::openapi::Server {
+                url: "https://api.example.com".to_string(),
+                description: Some("Staging".to_string()),
+                variables: None,
+            }]),
+            ..base_processed()
+        };
+
+        assert_ne!(
+            compute_config_hash(&production),
+            compute_config_hash(&staging)
+        );
     }
 }

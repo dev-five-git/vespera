@@ -1,14 +1,34 @@
 use std::cell::OnceCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use syn::{FnArg, PatType, Type};
 use vespera_core::route::{MediaType, Operation, Parameter, ParameterLocation, Response};
+use vespera_core::schema::{Reference, Schema, SchemaRef, SchemaType};
+
+use crate::metadata::HeaderParam;
 
 use super::{
-    parameters::parse_function_parameter, path::extract_path_parameters,
-    request_body::parse_request_body, response::parse_return_type,
+    extractors::{is_validated_type, unwrap_validated_type},
+    parameters::parse_function_parameter,
+    path::extract_path_parameters,
+    request_body::parse_request_body,
+    response::parse_return_type,
     schema::parse_type_to_schema_ref_with_schemas,
 };
+
+#[derive(Clone, Copy, Default)]
+pub struct OperationRouteConfig<'a> {
+    pub error_status: Option<&'a [u16]>,
+    pub typed_responses: Option<&'a [(u16, String)]>,
+    pub tags: Option<&'a [String]>,
+    pub security: Option<&'a [String]>,
+    pub headers: Option<&'a [HeaderParam]>,
+    pub operation_id: Option<&'a str>,
+    pub summary: Option<&'a str>,
+    pub request_example: Option<&'a serde_json::Value>,
+    pub response_example: Option<&'a serde_json::Value>,
+    pub deprecated: bool,
+}
 
 /// Build Operation from function signature
 #[allow(clippy::too_many_lines)]
@@ -17,20 +37,21 @@ pub fn build_operation_from_function(
     path: &str,
     known_schemas: &HashSet<String>,
     struct_definitions: &std::collections::HashMap<String, String>,
-    error_status: Option<&[u16]>,
-    tags: Option<&[String]>,
+    config: OperationRouteConfig<'_>,
 ) -> Operation {
     let path_params = extract_path_parameters(path);
     let mut parameters = Vec::new();
     let mut request_body = None;
     let mut path_extractor_type: Option<Type> = None;
+    let mut has_validated_extractor = false;
     let string_type: OnceCell<Type> = OnceCell::new();
 
     // First pass: find Path<T> extractor and extract its type
     for input in &sig.inputs {
         if let FnArg::Typed(PatType { ty, .. }) = input
-            && let Type::Path(type_path) = ty.as_ref()
+            && let Type::Path(type_path) = unwrap_validated_type(ty.as_ref())
         {
+            has_validated_extractor |= is_validated_type(ty.as_ref());
             let path_segments = &type_path.path;
             if !path_segments.segments.is_empty() {
                 let segment = path_segments.segments.last().unwrap();
@@ -146,7 +167,7 @@ pub fn build_operation_from_function(
         } else {
             // Skip Path extractor - we already handled path parameters above
             let is_path_extractor = if let FnArg::Typed(PatType { ty, .. }) = input
-                && let Type::Path(type_path) = ty.as_ref()
+                && let Type::Path(type_path) = unwrap_validated_type(ty.as_ref())
                 && !&type_path.path.segments.is_empty()
             {
                 let segment = &type_path.path.segments.last().unwrap();
@@ -169,40 +190,50 @@ pub fn build_operation_from_function(
         }
     }
 
+    if let Some(headers) = config.headers {
+        parameters.extend(headers.iter().map(header_parameter));
+    }
+    deduplicate_header_parameters(&mut parameters);
+
     // Parse return type - may return multiple responses (for Result types)
     let mut responses = parse_return_type(&sig.output, known_schemas, struct_definitions);
 
-    // Add additional error status codes from error_status attribute
-    if let Some(status_codes) = error_status {
-        // Find the error response schema (usually 400 or the first error response)
-        let error_schema = responses
-            .iter()
-            .find(|(code, _)| code != &&"200".to_string())
-            .and_then(|(_, resp)| {
-                resp.content
-                    .as_ref()?
-                    .get("application/json")?
-                    .schema
-                    .clone()
-            });
+    if let Some(example) = config.request_example
+        && let Some(body) = request_body.as_mut()
+    {
+        for media in body.content.values_mut() {
+            media.example = Some(example.clone());
+        }
+    }
 
-        if let Some(schema) = error_schema {
+    // Add additional error status codes from error_status attribute
+    if let Some(status_codes) = config.error_status {
+        // Clone the existing error response's media (its content-type AND schema)
+        // for each extra status code — the content-type may be `text/plain` when
+        // the error body is a bare `String`, not always `application/json`.
+        let error_media = responses
+            .iter()
+            .find(|(code, _)| code.as_str() != "200")
+            .and_then(|(_, resp)| resp.content.as_ref()?.iter().next())
+            .map(|(content_type, media)| (content_type.clone(), media.schema.clone()));
+
+        if let Some((content_type, schema)) = error_media {
             for &status_code in status_codes {
                 let status_str = status_code.to_string();
                 // Only add if not already present
                 responses.entry(status_str).or_insert_with(|| {
                     let mut err_content = BTreeMap::new();
                     err_content.insert(
-                        "application/json".to_string(),
+                        content_type.clone(),
                         MediaType {
-                            schema: Some(schema.clone()),
+                            schema: schema.clone(),
                             example: None,
                             examples: None,
                         },
                     );
 
                     Response {
-                        description: "Error response".to_string(),
+                        description: error_response_description(),
                         headers: None,
                         content: Some(err_content),
                     }
@@ -211,10 +242,39 @@ pub fn build_operation_from_function(
         }
     }
 
+    // Add typed error responses from `responses = [(404, NotFoundError)]`.
+    // These intentionally overwrite `error_status` entries for the same code.
+    if let Some(typed_responses) = config.typed_responses {
+        for (status_code, schema_name) in typed_responses {
+            responses.insert(
+                status_code.to_string(),
+                typed_response(schema_name, response_description_for_status(*status_code)),
+            );
+        }
+    }
+
+    if has_validated_extractor {
+        responses
+            .entry("422".to_string())
+            .or_insert_with(validation_error_response);
+    }
+
+    if let Some(example) = config.response_example
+        && let Some(response) = responses.get_mut("200")
+        && let Some(content) = response.content.as_mut()
+    {
+        for media in content.values_mut() {
+            media.example = Some(example.clone());
+        }
+    }
+
     Operation {
-        operation_id: Some(sig.ident.to_string()),
-        tags: tags.map(<[std::string::String]>::to_vec),
-        summary: None,
+        operation_id: config
+            .operation_id
+            .map(str::to_owned)
+            .or_else(|| Some(sig.ident.to_string())),
+        tags: config.tags.map(<[std::string::String]>::to_vec),
+        summary: config.summary.map(str::to_owned),
         description: None,
         parameters: if parameters.is_empty() {
             None
@@ -223,8 +283,124 @@ pub fn build_operation_from_function(
         },
         request_body,
         responses,
-        security: None,
+        security: config.security.map(security_requirements),
+        deprecated: config.deprecated.then_some(true),
     }
+}
+
+fn header_parameter(header: &HeaderParam) -> Parameter {
+    Parameter {
+        name: header.name.clone(),
+        r#in: ParameterLocation::Header,
+        description: header.description.clone(),
+        required: Some(header.required),
+        schema: Some(SchemaRef::Inline(Box::new(Schema {
+            schema_type: Some(SchemaType::String),
+            ..Schema::default()
+        }))),
+        example: None,
+    }
+}
+
+fn error_response_description() -> String {
+    "Error response".to_string()
+}
+
+fn response_description_for_status(status_code: u16) -> String {
+    if (200..300).contains(&status_code) {
+        "Successful response".to_string()
+    } else {
+        error_response_description()
+    }
+}
+
+/// Header parameters can be declared from both typed extractors and route-site
+/// `headers = [...]`. Keep the first occurrence (signature-derived parameters
+/// are appended before route-site headers and usually carry the richer schema)
+/// and drop later duplicates using HTTP's case-insensitive header-name rules.
+fn deduplicate_header_parameters(parameters: &mut Vec<Parameter>) {
+    let mut seen_headers = HashSet::new();
+    parameters.retain(|parameter| {
+        if parameter.r#in != ParameterLocation::Header {
+            return true;
+        }
+        seen_headers.insert(parameter.name.to_ascii_lowercase())
+    });
+}
+
+fn typed_response(schema_name: &str, description: String) -> Response {
+    let mut content = BTreeMap::new();
+    content.insert(
+        "application/json".to_string(),
+        MediaType {
+            schema: Some(SchemaRef::Ref(Reference::schema(schema_name))),
+            example: None,
+            examples: None,
+        },
+    );
+
+    Response {
+        description,
+        headers: None,
+        content: Some(content),
+    }
+}
+
+fn validation_error_response() -> Response {
+    let mut error_properties = BTreeMap::new();
+    error_properties.insert(
+        "path".to_string(),
+        SchemaRef::Inline(Box::new(Schema::string())),
+    );
+    error_properties.insert(
+        "message".to_string(),
+        SchemaRef::Inline(Box::new(Schema::string())),
+    );
+
+    let error_item = SchemaRef::Inline(Box::new(Schema {
+        schema_type: Some(SchemaType::Object),
+        properties: Some(error_properties),
+        required: Some(vec!["path".to_string(), "message".to_string()]),
+        ..Schema::default()
+    }));
+
+    let mut response_properties = BTreeMap::new();
+    response_properties.insert(
+        "errors".to_string(),
+        SchemaRef::Inline(Box::new(Schema {
+            schema_type: Some(SchemaType::Array),
+            items: Some(Box::new(error_item)),
+            ..Schema::default()
+        })),
+    );
+
+    let mut content = BTreeMap::new();
+    content.insert(
+        "application/json".to_string(),
+        MediaType {
+            schema: Some(SchemaRef::Inline(Box::new(Schema {
+                schema_type: Some(SchemaType::Object),
+                properties: Some(response_properties),
+                required: Some(vec!["errors".to_string()]),
+                ..Schema::default()
+            }))),
+            example: None,
+            examples: None,
+        },
+    );
+
+    Response {
+        description: "Validation failed".to_string(),
+        headers: None,
+        content: Some(content),
+    }
+}
+
+fn security_requirements(security: &[String]) -> Vec<HashMap<String, Vec<String>>> {
+    security
+        .iter()
+        .map(|scheme| HashMap::from([(scheme.clone(), Vec::new())]))
+        .collect()
 }
 
 #[cfg(test)]
@@ -250,8 +426,29 @@ mod tests {
             path,
             &HashSet::new(),
             &HashMap::new(),
-            error_status,
-            None,
+            OperationRouteConfig {
+                error_status,
+                ..OperationRouteConfig::default()
+            },
+        )
+    }
+
+    fn build_with_typed_responses(
+        sig_src: &str,
+        error_status: Option<&[u16]>,
+        typed_responses: &[(u16, String)],
+    ) -> Operation {
+        let sig: syn::Signature = syn::parse_str(sig_src).expect("signature parse failed");
+        build_operation_from_function(
+            &sig,
+            "/items/{id}",
+            &HashSet::new(),
+            &HashMap::new(),
+            OperationRouteConfig {
+                error_status,
+                typed_responses: Some(typed_responses),
+                ..OperationRouteConfig::default()
+            },
         )
     }
 
@@ -337,7 +534,52 @@ mod tests {
 
     fn build_with_tags(sig_src: &str, path: &str, tags: Option<&[String]>) -> Operation {
         let sig: syn::Signature = syn::parse_str(sig_src).expect("signature parse failed");
-        build_operation_from_function(&sig, path, &HashSet::new(), &HashMap::new(), None, tags)
+        build_operation_from_function(
+            &sig,
+            path,
+            &HashSet::new(),
+            &HashMap::new(),
+            OperationRouteConfig {
+                tags,
+                ..OperationRouteConfig::default()
+            },
+        )
+    }
+
+    fn build_with_security(sig_src: &str, path: &str, security: Option<&[String]>) -> Operation {
+        let sig: syn::Signature = syn::parse_str(sig_src).expect("signature parse failed");
+        build_operation_from_function(
+            &sig,
+            path,
+            &HashSet::new(),
+            &HashMap::new(),
+            OperationRouteConfig {
+                security,
+                ..OperationRouteConfig::default()
+            },
+        )
+    }
+
+    fn build_with_operation_metadata(
+        sig_src: &str,
+        path: &str,
+        operation_id: Option<&str>,
+        summary: Option<&str>,
+        deprecated: bool,
+    ) -> Operation {
+        let sig: syn::Signature = syn::parse_str(sig_src).expect("signature parse failed");
+        build_operation_from_function(
+            &sig,
+            path,
+            &HashSet::new(),
+            &HashMap::new(),
+            OperationRouteConfig {
+                operation_id,
+                summary,
+                deprecated,
+                ..OperationRouteConfig::default()
+            },
+        )
     }
 
     #[test]
@@ -357,6 +599,31 @@ mod tests {
     fn test_build_operation_operation_id() {
         let op = build("fn my_handler() -> String", "/test", None);
         assert_eq!(op.operation_id, Some("my_handler".to_string()));
+    }
+
+    #[test]
+    fn test_build_operation_operation_id_override() {
+        let op = build_with_operation_metadata(
+            "fn my_handler() -> String",
+            "/test",
+            Some("getUser"),
+            None,
+            false,
+        );
+        assert_eq!(op.operation_id, Some("getUser".to_string()));
+    }
+
+    #[test]
+    fn test_build_operation_summary_and_deprecated() {
+        let op = build_with_operation_metadata(
+            "fn my_handler() -> String",
+            "/test",
+            None,
+            Some("Get a user"),
+            true,
+        );
+        assert_eq!(op.summary, Some("Get a user".to_string()));
+        assert_eq!(op.deprecated, Some(true));
     }
 
     #[rstest]
@@ -493,6 +760,127 @@ mod tests {
         assert_params(&op, &expected_params);
         assert_body(&op, expected_body.as_ref());
         assert_responses(&op, &expected_resps);
+    }
+
+    #[test]
+    fn typed_responses_use_schema_refs_and_override_error_status() {
+        let typed = vec![(404, "NotFoundError".to_string())];
+        let op = build_with_typed_responses(
+            "fn get() -> Result<String, String>",
+            Some(&[404u16, 500u16]),
+            &typed,
+        );
+
+        let response = op.responses.get("404").expect("404 response");
+        let schema = response
+            .content
+            .as_ref()
+            .and_then(|content| content.get("application/json"))
+            .and_then(|media| media.schema.as_ref())
+            .expect("typed schema");
+        match schema {
+            SchemaRef::Ref(reference) => {
+                assert_eq!(reference.ref_path, "#/components/schemas/NotFoundError");
+            }
+            SchemaRef::Inline(_) => panic!("typed response must use schema ref"),
+        }
+        assert!(op.responses.contains_key("500"));
+    }
+
+    #[test]
+    fn validated_json_builds_request_body_and_422_response() {
+        let op = build(
+            "fn create(Validated(Json(req)): Validated<Json<CreateUser>>) -> String",
+            "/users",
+            None,
+        );
+
+        assert_body(
+            &op,
+            Some(&ExpectedBody {
+                content_type: "application/json",
+                schema: None,
+            }),
+        );
+        let response = op.responses.get("422").expect("422 response present");
+        assert_eq!(response.description, "Validation failed");
+        let schema = response
+            .content
+            .as_ref()
+            .and_then(|content| content.get("application/json"))
+            .and_then(|media| media.schema.as_ref())
+            .expect("422 json schema");
+        let SchemaRef::Inline(schema) = schema else {
+            panic!("validation response should be inline schema")
+        };
+        assert_eq!(schema.required, Some(vec!["errors".to_string()]));
+        assert!(schema.properties.as_ref().unwrap().contains_key("errors"));
+    }
+
+    #[test]
+    fn validated_path_uses_inner_path_type() {
+        let op = build(
+            "fn get(Validated(Path(id)): Validated<Path<i32>>) -> String",
+            "/users/{id}",
+            None,
+        );
+
+        assert_params(
+            &op,
+            &[ExpectedParam {
+                name: "id",
+                schema: Some(SchemaType::Integer),
+            }],
+        );
+        assert!(op.responses.contains_key("422"));
+    }
+
+    #[test]
+    fn duplicate_header_parameters_are_deduplicated_case_insensitively() {
+        let sig: syn::Signature =
+            syn::parse_str("fn traced(TypedHeader(x_trace_id): TypedHeader<XTraceId>) -> String")
+                .expect("signature parse failed");
+        let route_headers = vec![HeaderParam {
+            name: "x-trace-id".to_string(),
+            required: true,
+            description: Some("Route-site duplicate".to_string()),
+        }];
+
+        let op = build_operation_from_function(
+            &sig,
+            "/traced",
+            &HashSet::new(),
+            &HashMap::new(),
+            OperationRouteConfig {
+                headers: Some(&route_headers),
+                ..OperationRouteConfig::default()
+            },
+        );
+
+        let headers: Vec<_> = op
+            .parameters
+            .as_ref()
+            .expect("parameters present")
+            .iter()
+            .filter(|parameter| parameter.r#in == ParameterLocation::Header)
+            .collect();
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].name, "x-trace-id");
+    }
+
+    #[test]
+    fn typed_response_descriptions_match_status_class() {
+        let typed = vec![(200, "OkBody".to_string()), (404, "NotFound".to_string())];
+        let op = build_with_typed_responses("fn get() -> String", None, &typed);
+
+        assert_eq!(
+            op.responses.get("200").expect("200 response").description,
+            "Successful response"
+        );
+        assert_eq!(
+            op.responses.get("404").expect("404 response").description,
+            "Error response"
+        );
     }
 
     // ======== Tests for uncovered lines ========
@@ -661,8 +1049,7 @@ mod tests {
             "/search",
             &HashSet::new(),
             &struct_definitions,
-            None,
-            None,
+            OperationRouteConfig::default(),
         );
 
         // Query is not Path (line 85 returns false)
@@ -673,5 +1060,19 @@ mod tests {
         let params = op.parameters.unwrap();
         // Should have query param(s) and header param
         assert!(!params.is_empty());
+    }
+
+    #[test]
+    fn route_security_generates_requirement_objects_and_preserves_empty() {
+        let bearer = vec!["bearerAuth".to_string(), "apiKey".to_string()];
+        let op = build_with_security("fn secure() -> String", "/secure", Some(&bearer));
+        let requirements = op.security.expect("security present");
+        assert_eq!(requirements.len(), 2);
+        assert!(requirements[0].contains_key("bearerAuth"));
+        assert!(requirements[1].contains_key("apiKey"));
+
+        let empty: Vec<String> = Vec::new();
+        let op = build_with_security("fn public() -> String", "/public", Some(&empty));
+        assert_eq!(op.security, Some(Vec::new()));
     }
 }

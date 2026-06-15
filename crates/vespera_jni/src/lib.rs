@@ -108,6 +108,8 @@ macro_rules! jni_apps {
 #[cfg(not(tarpaulin_include))]
 mod daemon_env;
 #[cfg(not(tarpaulin_include))]
+mod jni_buf;
+#[cfg(not(tarpaulin_include))]
 mod jni_impl;
 #[cfg(not(tarpaulin_include))]
 mod streaming_closures;

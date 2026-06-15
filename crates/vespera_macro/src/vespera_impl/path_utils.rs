@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::error::{MacroResult, err_call_site};
 
@@ -27,8 +29,31 @@ pub fn find_folder_path(folder_name: &str) -> MacroResult<std::path::PathBuf> {
     Ok(Path::new(folder_name).to_path_buf())
 }
 
-/// Find the workspace root's target directory
-pub fn find_target_dir(manifest_path: &Path) -> std::path::PathBuf {
+thread_local! {
+    /// Resolved target dirs keyed by the manifest path that started the
+    /// walk.  The workspace layout is fixed within a build (and across
+    /// invocations in a long-lived proc-macro server), so a target dir
+    /// resolved once stays valid — this avoids re-walking ancestors and
+    /// re-reading each `Cargo.toml` on every `vespera!` / sidecar-path
+    /// call.  Mirrors `file_cache`'s process-lifetime `manifest_dir` cache.
+    static TARGET_DIR_CACHE: RefCell<HashMap<PathBuf, PathBuf>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Find the workspace root's target directory (cached per manifest path).
+pub fn find_target_dir(manifest_path: &Path) -> PathBuf {
+    if let Some(cached) = TARGET_DIR_CACHE.with(|c| c.borrow().get(manifest_path).cloned()) {
+        return cached;
+    }
+    let resolved = find_target_dir_uncached(manifest_path);
+    TARGET_DIR_CACHE.with(|c| {
+        c.borrow_mut()
+            .insert(manifest_path.to_path_buf(), resolved.clone());
+    });
+    resolved
+}
+
+fn find_target_dir_uncached(manifest_path: &Path) -> PathBuf {
     // Look for workspace root by finding a Cargo.toml with [workspace] section
     let mut current = Some(manifest_path);
     let mut last_with_lock = None;

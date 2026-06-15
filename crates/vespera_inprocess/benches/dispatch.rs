@@ -22,6 +22,7 @@
 //! - `body_kb`: 1 / 64 / 1024 KB request bodies (body-clone dominance).
 
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::sync::Mutex;
 
 use axum::{
@@ -407,6 +408,7 @@ fn bench_streaming_path(c: &mut Criterion) {
                     let mut sink = 0usize;
                     runtime.block_on(dispatch_streaming_async(wire.clone(), |chunk| {
                         sink += chunk.len();
+                        ControlFlow::Continue(())
                     }));
                     sink
                 });
@@ -439,6 +441,7 @@ fn bench_streaming_path(c: &mut Criterion) {
                         pull,
                         |chunk| {
                             sink += chunk.len();
+                            ControlFlow::Continue(())
                         },
                     ));
                     sink
@@ -469,6 +472,7 @@ fn bench_streaming_path(c: &mut Criterion) {
                         pull,
                         |chunk| {
                             sink += chunk.len();
+                            ControlFlow::Continue(())
                         },
                     ));
                     sink

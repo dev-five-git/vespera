@@ -1,7 +1,7 @@
 pub mod prefix;
 
 #[vespera::route(get, path = "/multi-path/{var1}")]
-pub async fn mod_file_with_test_struct(
+pub async fn mod_file_with_multi_path_single(
     vespera::axum::extract::Path(var1): vespera::axum::extract::Path<String>,
 ) -> &'static str {
     println!("var1: {}", var1);

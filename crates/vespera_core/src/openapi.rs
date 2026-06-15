@@ -175,18 +175,23 @@ impl OpenApi {
             if let Some(other_security_schemes) = other_components.security_schemes {
                 let self_security_schemes = self_components
                     .security_schemes
-                    .get_or_insert_with(HashMap::new);
+                    .get_or_insert_with(BTreeMap::new);
                 for (name, scheme) in other_security_schemes {
                     self_security_schemes.entry(name).or_insert(scheme);
                 }
             }
         }
 
-        // Merge tags (deduplicate by name)
+        // Merge tags (deduplicate by name).  A HashSet of seen names makes
+        // this O(existing + incoming) instead of O(existing × incoming);
+        // insertion order — and thus the merged tag order — is preserved
+        // because tags are still pushed in `other_tags` iteration order.
         if let Some(other_tags) = other.tags {
             let self_tags = self.tags.get_or_insert_with(Vec::new);
+            let mut seen: std::collections::HashSet<String> =
+                self_tags.iter().map(|t| t.name.clone()).collect();
             for tag in other_tags {
-                if !self_tags.iter().any(|t| t.name == tag.name) {
+                if seen.insert(tag.name.clone()) {
                     self_tags.push(tag);
                 }
             }
@@ -232,6 +237,7 @@ mod tests {
                 request_body: None,
                 responses: BTreeMap::new(),
                 security: None,
+                deprecated: None,
             }),
             ..Default::default()
         }
@@ -338,7 +344,7 @@ mod tests {
     #[test]
     fn test_merge_security_schemes() {
         let mut base = create_base_openapi();
-        let mut base_security_schemes = HashMap::new();
+        let mut base_security_schemes = BTreeMap::new();
         base_security_schemes.insert(
             "bearerAuth".to_string(),
             SecurityScheme {
@@ -361,7 +367,7 @@ mod tests {
         });
 
         let mut other = create_base_openapi();
-        let mut other_security_schemes = HashMap::new();
+        let mut other_security_schemes = BTreeMap::new();
         other_security_schemes.insert(
             "apiKey".to_string(),
             SecurityScheme {

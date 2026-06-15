@@ -1018,9 +1018,24 @@ async fn test_openapi_memo_detail_same_file_relation_adapter_schema() {
     );
 
     let memo_detail = &schemas["MemoDetailResponse"];
+    // B6: the same-file relation adapter exposes its OWN schema, so the spec
+    // matches what the handler actually serializes (UserInMemoDetail's 3 fields)
+    // instead of over-promising the base UserSchema's 5 fields.
     assert_eq!(
         memo_detail["properties"]["user"]["$ref"],
-        "#/components/schemas/UserSchema"
+        "#/components/schemas/UserInMemoDetail"
+    );
+    // The referenced adapter schema must carry exactly the adapter's fields —
+    // not the base model's createdAt/updatedAt, which never reach the wire.
+    let user_props = schemas["UserInMemoDetail"]["properties"]
+        .as_object()
+        .expect("UserInMemoDetail schema present");
+    assert!(user_props.contains_key("id"));
+    assert!(user_props.contains_key("email"));
+    assert!(user_props.contains_key("name"));
+    assert!(
+        !user_props.contains_key("createdAt") && !user_props.contains_key("updatedAt"),
+        "adapter schema must not over-promise base-model timestamp fields"
     );
     assert_eq!(
         memo_detail["properties"]["memoComments"]["items"]["$ref"],
@@ -1926,4 +1941,98 @@ async fn test_missing_multiple_required_fields() {
         body.contains("Missing field"),
         "Expected MissingField error, got: {body}"
     );
+}
+
+/// Recursively collect every `$ref` string value in a JSON document.
+fn collect_schema_refs(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if key == "$ref" {
+                    if let Some(reference) = child.as_str() {
+                        out.push(reference.to_string());
+                    }
+                } else {
+                    collect_schema_refs(child, out);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_schema_refs(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Structural-integrity guard for the generated spec — a regression net for the
+/// "wrong data" hunt. Asserts: (1) no dangling component `$ref`, (2) unique
+/// `operationId`s, (3) every operation carries a non-empty `responses` object.
+/// Locks these invariants so future macro changes cannot silently corrupt the
+/// spec the way the original audit findings did.
+#[test]
+fn test_openapi_structural_integrity() {
+    use std::collections::{HashMap, HashSet};
+
+    let openapi: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string("openapi.json").unwrap()).unwrap();
+
+    let schema_names: HashSet<&str> = openapi["components"]["schemas"]
+        .as_object()
+        .expect("components.schemas object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+
+    // 1. No dangling component `$ref`.
+    let mut refs = Vec::new();
+    collect_schema_refs(&openapi, &mut refs);
+    for reference in &refs {
+        if let Some(name) = reference.strip_prefix("#/components/schemas/") {
+            assert!(
+                schema_names.contains(name),
+                "dangling $ref to undefined schema: {reference}"
+            );
+        }
+    }
+
+    // 2. Unique operationIds + 3. every operation has a non-empty `responses`.
+    const METHODS: [&str; 7] = ["get", "post", "put", "patch", "delete", "head", "options"];
+    let mut operation_ids: HashMap<String, String> = HashMap::new();
+    for (path, item) in openapi["paths"].as_object().expect("paths object") {
+        let item = item.as_object().expect("path item object");
+        for method in METHODS {
+            let Some(op) = item.get(method) else {
+                continue;
+            };
+            let here = format!("{} {path}", method.to_uppercase());
+
+            let responses = op.get("responses").and_then(serde_json::Value::as_object);
+            assert!(
+                responses.is_some_and(|r| !r.is_empty()),
+                "operation {here} has no responses"
+            );
+
+            if let Some(op_id) = op.get("operationId").and_then(serde_json::Value::as_str)
+                && let Some(prev) = operation_ids.insert(op_id.to_string(), here.clone())
+            {
+                panic!("duplicate operationId '{op_id}': {prev} and {here}");
+            }
+        }
+    }
+}
+
+#[test]
+fn decimal_serializes_as_string_at_runtime() {
+    // `rust_decimal`'s serde serializes `Decimal` as a JSON STRING (to preserve
+    // precision), so the OpenAPI mapping for `Decimal` must be
+    // `{type:string, format:decimal}`, not `number`. Locks that assumption so
+    // the spec cannot silently regress to lying about the wire type.
+    let value = serde_json::to_value(sea_orm::prelude::Decimal::new(1050, 2)).unwrap();
+    assert!(
+        value.is_string(),
+        "Decimal serialized as {value:?}, expected a JSON string"
+    );
+    assert_eq!(value, serde_json::json!("10.50"));
 }

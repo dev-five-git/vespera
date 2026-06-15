@@ -258,7 +258,9 @@ fn parse_type_impl(
                 })),
                 "f32" => number_with_format("float"),
                 "f64" => number_with_format("double"),
-                "Decimal" => number_with_format("decimal"),
+                // `rust_decimal` serializes `Decimal` as a JSON *string* (to
+                // preserve precision), so the wire type is string, not number.
+                "Decimal" => string_with_format("decimal"),
                 "bool" => SchemaRef::Inline(Box::new(Schema::boolean())),
                 "char" => string_with_format("char"),
                 "Uuid" => string_with_format("uuid"),

@@ -380,6 +380,82 @@ pub fn build_wire_header_bytes(
     out
 }
 
+/// `io::Write` adapter over a fixed `&mut [u8]`: copies the prefix that
+/// fits and *counts* the rest, so a serializer can fill the caller's
+/// buffer and still report the exact size it needed on overflow —
+/// without allocating or panicking.  `pos` is the running total of bytes
+/// the writer was asked to write (it may exceed `buf.len()`).
+struct SliceWriter<'a> {
+    buf: &'a mut [u8],
+    pos: usize,
+}
+
+impl<'a> SliceWriter<'a> {
+    fn new(buf: &'a mut [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+
+    fn put(&mut self, data: &[u8]) {
+        if self.pos < self.buf.len() {
+            let n = data.len().min(self.buf.len() - self.pos);
+            self.buf[self.pos..self.pos + n].copy_from_slice(&data[..n]);
+        }
+        self.pos += data.len();
+    }
+}
+
+impl std::io::Write for SliceWriter<'_> {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.put(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Write `[u32 BE header_len | JSON header]` **straight into `out`**,
+/// returning the exact total header byte count regardless of whether it
+/// fit.  The direct-write sibling of [`build_wire_header_bytes`] — no
+/// intermediate `Vec`, byte-identical output (same [`WireResponseHeader`]
+/// serialization).
+///
+/// When the header fits (`returned <= out.len()`) `out[0..returned]`
+/// holds the complete header.  When it does not fit, `out`'s contents are
+/// partial/undefined (per the direct-write `Overflow` contract) but the
+/// returned count is still exact, so the caller can report the precise
+/// required size.
+pub fn write_wire_header_into_slice(
+    out: &mut [u8],
+    status: u16,
+    headers: &http::HeaderMap,
+    metadata: &ResponseMetadata,
+) -> usize {
+    let view = WireResponseHeader {
+        v: WIRE_VERSION,
+        status,
+        headers: &WireHeaders(headers),
+        metadata,
+        validation_errors: None,
+    };
+    let header_total = {
+        let mut writer = SliceWriter::new(out);
+        // Reserve the 4-byte length prefix, then serialize the JSON body
+        // straight after it; backfilled below once the length is known.
+        writer.put(&[0u8; 4]);
+        serde_json::to_writer(&mut writer, &view)
+            .expect("WireResponseHeader serialization is infallible");
+        writer.pos
+    };
+    if header_total <= out.len() {
+        let json_len =
+            u32::try_from(header_total - 4).expect("response header JSON exceeds u32::MAX bytes");
+        out[0..4].copy_from_slice(&json_len.to_be_bytes());
+    }
+    header_total
+}
+
 /// Best-effort extract validation errors from a 422 JSON body.
 ///
 /// Returns `None` (silently) for:

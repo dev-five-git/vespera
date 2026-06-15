@@ -1,6 +1,7 @@
 //! Streaming dispatch variants: response streaming, header-callback
 //! streaming, and bidirectional (request + response) streaming.
 
+use std::ops::ControlFlow;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -82,7 +83,7 @@ impl std::error::Error for StreamAbort {}
 /// `on_chunk` is NOT called if the response body is empty.
 pub async fn dispatch_streaming_async<F>(input: Vec<u8>, mut on_chunk: F) -> Vec<u8>
 where
-    F: FnMut(&[u8]),
+    F: FnMut(&[u8]) -> ControlFlow<()>,
 {
     let (header_bytes, body_bytes) = match split_wire_request(input) {
         Ok(parts) => parts,
@@ -147,7 +148,7 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
     mut on_chunk: F,
 ) where
     H: FnMut(&[u8]),
-    F: FnMut(&[u8]),
+    F: FnMut(&[u8]) -> ControlFlow<()>,
 {
     let (header_bytes, body_bytes) = match split_wire_request(input) {
         Ok(parts) => parts,
@@ -201,11 +202,18 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
 
     on_header(&build_wire_header_bytes(status, &headers, &metadata));
 
-    while let Some(Ok(frame)) = body.frame().await {
-        if let Some(data) = frame.data_ref()
-            && !data.is_empty()
-        {
-            on_chunk(data.as_ref());
+    while let Some(frame_result) = body.frame().await {
+        match frame_result {
+            Ok(frame) => {
+                if let Some(data) = frame.data_ref()
+                    && !data.is_empty()
+                    && on_chunk(data.as_ref()).is_break()
+                {
+                    break;
+                }
+            }
+            // Known limitation: after the header is committed, a body-stream error cannot be signalled cleanly.
+            Err(_) => break,
         }
     }
 }
@@ -244,6 +252,12 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
 /// header / unknown version / no app / handler error → normal
 /// `error_wire(...)` response (with the message inside the returned
 /// bytes); neither callback is invoked in those paths.
+///
+/// This is the ergonomic form with **no request-source close hook** —
+/// the request producer is awaited to its natural completion.  Callers
+/// with a blocking request source that can park forever (e.g. a Java
+/// `InputStream` that never reaches EOF) should use
+/// [`dispatch_bidirectional_streaming_closing`] to supply a close hook.
 pub async fn dispatch_bidirectional_streaming<P, F>(
     input_header: Vec<u8>,
     pull_chunk: P,
@@ -251,12 +265,38 @@ pub async fn dispatch_bidirectional_streaming<P, F>(
 ) -> Vec<u8>
 where
     P: FnMut() -> RequestChunk + Send + 'static,
-    F: FnMut(&[u8]),
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+{
+    dispatch_bidirectional_streaming_closing(input_header, pull_chunk, on_chunk, || {}).await
+}
+
+/// **Bidirectional streaming with a request-source close hook** — the
+/// [`dispatch_bidirectional_streaming`] variant that takes a
+/// `request_close` callback.
+///
+/// `request_close` is invoked once, after the response body is fully
+/// drained, **only if** the request producer was started (the handler
+/// read at least one body chunk).  It must close/abort the request body
+/// source (e.g. the Java `InputStream`) so a producer parked in a
+/// blocking read is unblocked and this call cannot hang on a stuck upload
+/// that never reaches EOF.  It is a no-op for full reads (already at EOF)
+/// and is never called when the handler ignored the body.
+pub async fn dispatch_bidirectional_streaming_closing<P, F, C>(
+    input_header: Vec<u8>,
+    pull_chunk: P,
+    on_chunk: F,
+    request_close: C,
+) -> Vec<u8>
+where
+    P: FnMut() -> RequestChunk + Send + 'static,
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+    C: FnOnce(),
 {
     let mut header_bytes: Vec<u8> = Vec::with_capacity(4 + WIRE_HEADER_RESERVE);
     {
         let on_header = |h: &[u8]| header_bytes.extend_from_slice(h);
-        bidirectional_streaming_inner(input_header, pull_chunk, on_chunk, on_header).await;
+        bidirectional_streaming_inner(input_header, pull_chunk, on_chunk, on_header, request_close)
+            .await;
     }
     header_bytes
 }
@@ -272,6 +312,10 @@ where
 /// error). On any pre-dispatch / wire error the bytes passed to
 /// `on_header` are a normal `error_wire(...)` response and neither
 /// `pull_chunk` nor `on_chunk` is invoked beyond that point.
+///
+/// Ergonomic form with no request-source close hook; see
+/// [`dispatch_bidirectional_streaming_with_header_closing`] for the
+/// variant that supplies one.
 pub async fn dispatch_bidirectional_streaming_with_header<P, F, H>(
     input_header: Vec<u8>,
     pull_chunk: P,
@@ -279,21 +323,50 @@ pub async fn dispatch_bidirectional_streaming_with_header<P, F, H>(
     on_header: H,
 ) where
     P: FnMut() -> RequestChunk + Send + 'static,
-    F: FnMut(&[u8]),
+    F: FnMut(&[u8]) -> ControlFlow<()>,
     H: FnMut(&[u8]),
 {
-    bidirectional_streaming_inner(input_header, pull_chunk, on_chunk, on_header).await;
+    dispatch_bidirectional_streaming_with_header_closing(
+        input_header,
+        pull_chunk,
+        on_chunk,
+        on_header,
+        || {},
+    )
+    .await;
 }
 
-async fn bidirectional_streaming_inner<P, F, H>(
+/// **Bidirectional streaming with header callback and request-source
+/// close hook** — the [`dispatch_bidirectional_streaming_with_header`]
+/// variant that takes a `request_close` callback (see
+/// [`dispatch_bidirectional_streaming_closing`] for its contract).
+pub async fn dispatch_bidirectional_streaming_with_header_closing<P, F, H, C>(
+    input_header: Vec<u8>,
+    pull_chunk: P,
+    on_chunk: F,
+    on_header: H,
+    request_close: C,
+) where
+    P: FnMut() -> RequestChunk + Send + 'static,
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+    H: FnMut(&[u8]),
+    C: FnOnce(),
+{
+    bidirectional_streaming_inner(input_header, pull_chunk, on_chunk, on_header, request_close)
+        .await;
+}
+
+async fn bidirectional_streaming_inner<P, F, H, C>(
     input_header: Vec<u8>,
     pull_chunk: P,
     mut on_chunk: F,
     mut on_header: H,
+    request_close: C,
 ) where
     P: FnMut() -> RequestChunk + Send + 'static,
-    F: FnMut(&[u8]),
+    F: FnMut(&[u8]) -> ControlFlow<()>,
     H: FnMut(&[u8]),
+    C: FnOnce(),
 {
     let (header_bytes, _ignored_body) = match split_wire_request(input_header) {
         Ok(parts) => parts,
@@ -329,6 +402,16 @@ async fn bidirectional_streaming_inner<P, F, H>(
 
     let producer_handle: RequestProducerHandle = Arc::new(Mutex::new(None));
     let body = Body::new(ChannelBody::new(pull_chunk, Arc::clone(&producer_handle)));
+    // RAII guard: closes the request source iff the producer was started, on
+    // EVERY exit path — including a panic unwinding out of the handler or out
+    // of the response-body poll below. Without it, a handler that read part of
+    // the body (starting the producer) and then panicked would leave the
+    // producer parked forever in a blocking source read: the JNI boundary's
+    // `catch_unwind` turns the panic into a 500 but skips the explicit close,
+    // so the parked producer never gets unblocked. This is the panic-path
+    // sibling of the M3 hang.
+    let mut closer = RequestSourceCloser::new(Arc::clone(&producer_handle), request_close);
+
     let (status, headers, metadata, mut response_body) = match dispatch_and_split(
         router,
         &header.method,
@@ -342,6 +425,10 @@ async fn bidirectional_streaming_inner<P, F, H>(
     {
         Ok(parts) => parts,
         Err((status, msg)) => {
+            // Pre-dispatch failure (bad method/path → 405/400): the producer
+            // almost never started, but close defensively (no-op if it did
+            // not) before awaiting so we cannot hang here either.
+            closer.close_if_started();
             await_request_producer(&producer_handle).await;
             on_header(&error_wire(status, &msg));
             return;
@@ -350,15 +437,79 @@ async fn bidirectional_streaming_inner<P, F, H>(
 
     on_header(&build_wire_header_bytes(status, &headers, &metadata));
 
-    while let Some(Ok(frame)) = response_body.frame().await {
-        if let Some(data) = frame.data_ref()
-            && !data.is_empty()
-        {
-            on_chunk(data.as_ref());
+    while let Some(frame_result) = response_body.frame().await {
+        match frame_result {
+            Ok(frame) => {
+                if let Some(data) = frame.data_ref()
+                    && !data.is_empty()
+                    && on_chunk(data.as_ref()).is_break()
+                {
+                    break;
+                }
+            }
+            // Known limitation: after the header is committed, a body-stream error cannot be signalled cleanly.
+            Err(_) => break,
         }
     }
 
+    // The response is fully drained, so the handler has finished and will
+    // not read more of the request body. If the producer was started (the
+    // handler read at least one chunk) it may be parked in a blocking source
+    // read; close the request source to unblock it so the await below cannot
+    // hang on a stuck / slow upload that never reaches EOF. A full read
+    // already hit EOF (close is a no-op) and a producer that never started
+    // leaves the source untouched. `close_if_started` is idempotent, so the
+    // guard's Drop becomes a no-op on this happy path.
+    closer.close_if_started();
     await_request_producer(&producer_handle).await;
+}
+
+/// Whether the request producer task was started — i.e. the handler read
+/// at least one body chunk, which lazily spawns the producer.
+fn producer_was_started(producer_handle: &RequestProducerHandle) -> bool {
+    match producer_handle.lock() {
+        Ok(guard) => guard.is_some(),
+        Err(poisoned) => poisoned.into_inner().is_some(),
+    }
+}
+
+/// RAII guard that closes the request body source **exactly once** if the
+/// request producer was started. [`bidirectional_streaming_inner`] uses it so
+/// the close runs on every exit path, including a panic that unwinds out of
+/// the handler or the response-body poll — the JNI boundary's `catch_unwind`
+/// would otherwise turn the panic into a 500 and skip the explicit close,
+/// leaking a producer parked in a blocking source read.
+struct RequestSourceCloser<C: FnOnce()> {
+    producer_handle: RequestProducerHandle,
+    close: Option<C>,
+}
+
+impl<C: FnOnce()> RequestSourceCloser<C> {
+    fn new(producer_handle: RequestProducerHandle, close: C) -> Self {
+        Self {
+            producer_handle,
+            close: Some(close),
+        }
+    }
+
+    /// Close the request source iff the producer was started. Idempotent: the
+    /// close hook is consumed on the first call, so later calls (including the
+    /// one in `Drop`) are no-ops. If the producer never started the hook is
+    /// dropped uncalled — there is nothing to close.
+    fn close_if_started(&mut self) {
+        if let Some(close) = self.close.take()
+            && producer_was_started(&self.producer_handle)
+        {
+            close();
+        }
+    }
+}
+
+impl<C: FnOnce()> Drop for RequestSourceCloser<C> {
+    fn drop(&mut self) {
+        // Runs on unwind when the happy-path `close_if_started()` did not.
+        self.close_if_started();
+    }
 }
 
 type RequestProducerHandle = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;

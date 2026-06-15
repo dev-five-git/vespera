@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
+import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
@@ -94,8 +95,9 @@ public class VesperaProxyController {
         // the InputStream and leave the bidirectional path empty).
         switch (mode) {
             case SYNC:
-                return dispatchSync(appName, method, path, query, headers,
+                dispatchSync(response, appName, method, path, query, headers,
                         readBody(request));
+                return null;
             case ASYNC:
                 return dispatchAsyncFlow(appName, method, path, query, headers,
                         readBody(request));
@@ -117,27 +119,97 @@ public class VesperaProxyController {
     /** Shared empty body — avoids a {@code new byte[0]} per bodyless request. */
     private static final byte[] EMPTY_BODY = new byte[0];
 
+    /**
+     * Largest body for which {@link #readBody} trusts {@code
+     * Content-Length} enough to pre-allocate the exact array.  Beyond
+     * this (or for unknown length) it falls back to {@code readAllBytes},
+     * which grows with the bytes actually present — so a lying / huge
+     * {@code Content-Length} header cannot force a giant up-front
+     * allocation.
+     */
+    private static final int MAX_FIXED_BODY = 64 * 1024 * 1024;
+
     private static byte[] readBody(HttpServletRequest request) throws IOException {
         // Bodyless requests (explicit Content-Length: 0 — e.g. the
         // small/bodyless idempotent GETs the SmartDispatch resolver
         // routes through DIRECT) skip the InputStream + readAllBytes
-        // allocations entirely.  Chunked / unknown-length bodies
-        // (Content-Length == -1) still read through normally.
-        if (request.getContentLengthLong() == 0L) {
+        // allocations entirely.
+        long contentLength = request.getContentLengthLong();
+        if (contentLength == 0L) {
             return EMPTY_BODY;
         }
         try (InputStream in = request.getInputStream()) {
+            if (contentLength > 0 && contentLength <= MAX_FIXED_BODY) {
+                // Known, bounded length: one exact allocation filled in
+                // place, skipping readAllBytes()'s grow-by-doubling and
+                // its final trim copy.  readNBytes blocks until the
+                // buffer is full or EOF; the servlet container caps the
+                // stream at Content-Length, so a well-formed request
+                // returns exactly contentLength bytes (a short read
+                // yields a correctly-sized smaller array).
+                return in.readNBytes((int) contentLength);
+            }
+            // Unknown (-1) or oversized length: faithful incremental read.
             return in.readAllBytes();
         }
     }
 
-    private ResponseEntity<?> dispatchSync(
+    /**
+     * Synchronous dispatch — writes the wire response straight to the
+     * servlet response (status + headers via {@link WireHeaderReader},
+     * then the body region written directly from the wire array).  This
+     * drops both the body-sized {@code Arrays.copyOfRange} and the
+     * {@code ResponseEntity<byte[]>} object that the prior
+     * {@link #buildResponseEntityFromWire} path allocated per response.
+     * Mirrors {@link #dispatchDirectMode}; the async path still uses
+     * {@code buildResponseEntityFromWire} (Spring async completion).
+     */
+    private static void dispatchSync(
+            HttpServletResponse response,
             String appName, String method, String path, String query,
-            Map<String, String> headers, byte[] body) {
+            Map<String, String> headers, byte[] body) throws IOException {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
         byte[] wireResp = VesperaBridge.dispatchBytes(wireReq);
-        return buildResponseEntityFromWire(wireResp);
+        writeWireResponse(wireResp, response);
+    }
+
+    /**
+     * Write a complete wire response ({@code [u32 BE header_len | JSON
+     * header | body]}) straight to the servlet response: status + headers
+     * applied from the header region via the allocation-lean
+     * {@link WireHeaderReader}, then the body region written directly from
+     * {@code wire} with no {@code byte[]} slice copy.  The exact body
+     * length is known, so {@code Content-Length} is set when the wire
+     * header did not already carry it — preserving the prior
+     * {@code ResponseEntity<byte[]>} behaviour without the copy.
+     */
+    private static void writeWireResponse(byte[] wire, HttpServletResponse response)
+            throws IOException {
+        if (wire == null || wire.length < 4) {
+            throw new IllegalArgumentException(
+                    "wire response too short: "
+                            + (wire == null ? "null" : wire.length + " bytes"));
+        }
+        int headerLen = ((wire[0] & 0xFF) << 24) | ((wire[1] & 0xFF) << 16)
+                | ((wire[2] & 0xFF) << 8) | (wire[3] & 0xFF);
+        if (headerLen < 0 || (long) 4 + headerLen > wire.length) {
+            throw new IllegalArgumentException(
+                    "wire header_len " + headerLen
+                            + " overflows response (" + wire.length + " bytes)");
+        }
+        WireHeaderReader.apply(
+                ByteBuffer.wrap(wire), 4, headerLen,
+                response::setStatus, response::addHeader);
+        int bodyOff = 4 + headerLen;
+        int bodyLen = wire.length - bodyOff;
+        if (bodyLen > 0) {
+            if (!response.containsHeader("Content-Length")) {
+                response.setContentLength(bodyLen);
+            }
+            response.getOutputStream().write(wire, bodyOff, bodyLen);
+        }
+        response.getOutputStream().flush();
     }
 
     private CompletableFuture<ResponseEntity<?>> dispatchAsyncFlow(
@@ -240,23 +312,35 @@ public class VesperaProxyController {
         WireHeaderReader.apply(wireResp, 4, headerLen, response::setStatus, response::addHeader);
 
         // Stream the body region of the direct buffer straight out.
+        // Drain explicitly: WritableByteChannel.write() is contractually
+        // permitted to perform a partial write, so loop until the buffer
+        // is fully written rather than relying on the internal looping of
+        // Channels.newChannel(OutputStream).  A single channel is created
+        // and reused across the (normally one) iterations.  The channel
+        // wraps a blocking servlet OutputStream, so each write makes
+        // forward progress and the loop terminates.
         wireResp.position(4 + headerLen);
         if (wireResp.hasRemaining()) {
-            Channels.newChannel(response.getOutputStream()).write(wireResp);
+            WritableByteChannel bodyChannel =
+                    Channels.newChannel(response.getOutputStream());
+            while (wireResp.hasRemaining()) {
+                bodyChannel.write(wireResp);
+            }
         }
         response.getOutputStream().flush();
     }
 
     /** Idempotent per RFC 9110 — safe to re-run on DIRECT overflow retry. */
     private static boolean isIdempotent(String method) {
-        return switch (method == null ? "" : method.toUpperCase(Locale.ROOT)) {
-            case "GET", "HEAD", "PUT", "DELETE", "OPTIONS" -> true;
-            default -> false;
-        };
+        return HttpMethods.isIdempotent(method);
     }
 
     private static Map<String, String> collectHeaders(HttpServletRequest request) {
-        Map<String, String> headers = new LinkedHashMap<>();
+        // Pre-size for a typical request header count so the common case
+        // never resizes; keep LinkedHashMap (NOT HashMap) so insertion
+        // order — and thus the request header JSON field order — stays
+        // deterministic.
+        Map<String, String> headers = new LinkedHashMap<>(32);
         Enumeration<String> names = request.getHeaderNames();
         while (names.hasMoreElements()) {
             String name = names.nextElement();

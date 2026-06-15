@@ -9,7 +9,7 @@ use vespera_core::{
 use super::shared::{convert_to_inline_schema, is_known_type, is_primitive_or_like};
 use crate::{
     parser::schema::{
-        extract_field_rename, extract_rename_all, parse_struct_to_schema,
+        extract_default, extract_field_rename, extract_rename_all, parse_struct_to_schema,
         parse_type_to_schema_ref_with_schemas, rename_field,
     },
     schema_macro::type_utils::is_map_type as utils_is_map_type,
@@ -100,6 +100,9 @@ pub(super) fn parse_query_struct_to_parameters(
                             .first()
                             .is_some_and(|s| s.ident == "Option")
                 );
+                // #[serde(default)] fields are optional in request inputs even
+                // when the Rust type is non-Option (B4: request optional).
+                let has_default = extract_default(&field.attrs).is_some();
                 let mut field_schema = parse_type_to_schema_ref_with_schemas(
                     field_type,
                     known_schemas,
@@ -123,7 +126,7 @@ pub(super) fn parse_query_struct_to_parameters(
                     name: field_name,
                     r#in: ParameterLocation::Query,
                     description: None,
-                    required: Some(!is_optional),
+                    required: Some(!(is_optional || has_default)),
                     schema: Some(convert_to_inline_schema(field_schema, is_optional)),
                     example: None,
                 });
@@ -342,6 +345,30 @@ mod tests {
             Some(SchemaRef::Inline(s)) => assert_eq!(s.schema_type, Some(SchemaType::Integer)),
             _ => panic!("Expected inline integer schema"),
         }
+    }
+
+    #[test]
+    fn query_struct_serde_default_field_is_optional() {
+        // B4: #[serde(default)] makes a non-Option query field optional in
+        // request inputs (it can be omitted; the server fills the default).
+        let mut struct_definitions = HashMap::new();
+        struct_definitions.insert(
+            "Paged".to_string(),
+            r"pub struct Paged {
+                #[serde(default)]
+                pub page: i32,
+                pub q: String,
+            }"
+            .to_string(),
+        );
+        let ty: Type = syn::parse_str("Paged").unwrap();
+        let params = parse_query_struct_to_parameters(&ty, &HashSet::new(), &struct_definitions)
+            .expect("query should parse");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].name, "page");
+        assert_eq!(params[0].required, Some(false)); // default → optional
+        assert_eq!(params[1].name, "q");
+        assert_eq!(params[1].required, Some(true));
     }
 
     #[test]

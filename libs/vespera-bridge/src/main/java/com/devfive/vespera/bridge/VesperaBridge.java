@@ -10,6 +10,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.ref.SoftReference;
 import java.util.Objects;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -53,16 +54,40 @@ public class VesperaBridge {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final JsonFactory JSON_FACTORY = MAPPER.getFactory();
     private static final int WIRE_VERSION = 1;
+    /** Shared empty request body — avoids a {@code new byte[0]} per call. */
+    private static final byte[] EMPTY_BODY = new byte[0];
     /**
-     * Per-thread reusable byte buffer for {@link #serializeHeaderJson}.
+     * Per-thread reusable byte buffer for {@link #fillHeaderJson}.
      * Reset (size cleared, capacity preserved) per call; only the
      * buffer is pooled — a fresh {@link JsonGenerator} is created per
      * call because generators bind to stream state.  Virtual-thread
      * caveat as {@link #DIRECT_POOL}: each vthread gets its own ~256 B
      * buffer in Java 21+ and loses pooling until GC.
      */
-    private static final ThreadLocal<ByteArrayOutputStream> HEADER_BUF =
-            ThreadLocal.withInitial(() -> new ByteArrayOutputStream(256));
+    private static final ThreadLocal<ExposedByteArrayOutputStream> HEADER_BUF =
+            ThreadLocal.withInitial(() -> new ExposedByteArrayOutputStream(256));
+
+    /**
+     * {@link ByteArrayOutputStream} that exposes its backing array so the
+     * serialized header is copied straight into the wire (heap array or
+     * direct buffer) without {@link ByteArrayOutputStream#toByteArray()}
+     * first materialising a second, exact-sized copy per request.
+     *
+     * <p>Callers MUST read only {@code [0, size())}: the backing array is
+     * usually larger than the content (grow-by-doubling) and is reused
+     * across calls on the same thread, so the bytes must be consumed
+     * before the next {@link #fillHeaderJson} on that thread.
+     */
+    private static final class ExposedByteArrayOutputStream extends ByteArrayOutputStream {
+        ExposedByteArrayOutputStream(int size) {
+            super(size);
+        }
+
+        /** Backing buffer; valid content is {@code [0, size())} only. */
+        byte[] backingArray() {
+            return buf;
+        }
+    }
 
     private static volatile boolean loaded = false;
 
@@ -403,7 +428,7 @@ public class VesperaBridge {
                 Objects.requireNonNull(path, "path"),
                 query,
                 headers != null ? headers : java.util.Map.of(),
-                new byte[0]);
+                EMPTY_BODY);
     }
 
     /**
@@ -481,7 +506,35 @@ public class VesperaBridge {
             "vespera.direct.maxBufferBytes", 4 * 1024 * 1024);
 
     /**
+     * Per-thread <strong>hard retention cap</strong> for the pooled
+     * direct buffers (system property
+     * {@code vespera.direct.maxRetainedBytes}, default 256 KiB; clamped
+     * to [{@link #DIRECT_INITIAL_CAPACITY}, {@link #DIRECT_MAX_CAPACITY}]).
+     *
+     * <p>A buffer that a large dispatch grew beyond this cap is shrunk
+     * back to {@link #DIRECT_INITIAL_CAPACITY} at the start of the next
+     * dispatch on the same thread, so a single big response cannot pin
+     * multiple MiB of off-heap memory for the thread's whole lifetime.
+     * Transient growth up to {@link #DIRECT_MAX_CAPACITY} for an
+     * individual request is still allowed — only steady-state retention
+     * is capped.
+     */
+    private static final int DIRECT_RETAIN_CAPACITY = Math.max(
+            DIRECT_INITIAL_CAPACITY,
+            Math.min(DIRECT_MAX_CAPACITY,
+                    Integer.getInteger("vespera.direct.maxRetainedBytes", 256 * 1024)));
+
+    /**
      * Index 0 = request buffer, index 1 = response buffer.
+     *
+     * <p>Held through a {@link SoftReference} so the JVM can reclaim the
+     * off-heap direct buffers under memory pressure — the
+     * {@code DirectByteBuffer} Cleaner frees the native memory once the
+     * soft reference is cleared — instead of pinning up to {@code 2 ×}
+     * {@link #DIRECT_MAX_CAPACITY} per thread for the whole thread
+     * lifetime.  Under normal load the soft reference survives, so the
+     * pooling benefit is preserved; see {@link #directPool()} for the
+     * resolve + retention-cap logic.
      *
      * <p><strong>Virtual thread limitation:</strong> {@link ThreadLocal}
      * binds to the virtual thread (not the carrier) in Java 21+.  Each
@@ -489,10 +542,41 @@ public class VesperaBridge {
      * virtual-thread-per-request servers.  See
      * {@link #dispatchDirectPooled(byte[], boolean)} for mitigation.
      */
-    private static final ThreadLocal<ByteBuffer[]> DIRECT_POOL =
-            ThreadLocal.withInitial(() -> new ByteBuffer[] {
+    private static final ThreadLocal<SoftReference<ByteBuffer[]>> DIRECT_POOL =
+            new ThreadLocal<>();
+
+    /**
+     * Resolve the calling thread's pooled direct buffers, (re)allocating
+     * a baseline pair when the {@link SoftReference} has been cleared
+     * under memory pressure, and shrinking any buffer a prior large
+     * dispatch grew past {@link #DIRECT_RETAIN_CAPACITY} back to the
+     * baseline.
+     *
+     * <p>Shrinking here — at the <em>start</em> of a dispatch, before any
+     * request bytes are written into the pool — is safe with respect to
+     * the "view valid until the next dispatch" contract of
+     * {@link #dispatchDirectPooled(byte[], boolean)}: the previous
+     * response view's validity window has already ended by the time the
+     * next dispatch begins.
+     */
+    private static ByteBuffer[] directPool() {
+        SoftReference<ByteBuffer[]> ref = DIRECT_POOL.get();
+        ByteBuffer[] pool = ref == null ? null : ref.get();
+        if (pool == null) {
+            pool = new ByteBuffer[] {
                     ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY),
-                    ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY)});
+                    ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY)};
+            DIRECT_POOL.set(new SoftReference<>(pool));
+            return pool;
+        }
+        if (pool[0].capacity() > DIRECT_RETAIN_CAPACITY) {
+            pool[0] = ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY);
+        }
+        if (pool[1].capacity() > DIRECT_RETAIN_CAPACITY) {
+            pool[1] = ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY);
+        }
+        return pool;
+    }
 
     /**
      * Handle to {@code Thread.isVirtual()} (final API since Java 21),
@@ -525,7 +609,7 @@ public class VesperaBridge {
      * {@link #dispatchBytes(byte[])} path instead, automating the
      * mitigation the docs previously left to manual configuration.
      */
-    private static boolean currentThreadIsVirtual() {
+    static boolean currentThreadIsVirtual() {
         if (IS_VIRTUAL == null) {
             return false;
         }
@@ -642,7 +726,7 @@ public class VesperaBridge {
             // method because no dispatch has run yet.
             return ByteBuffer.wrap(dispatchBytes(wireRequest)).asReadOnlyBuffer();
         }
-        ByteBuffer[] pool = DIRECT_POOL.get();
+        ByteBuffer[] pool = directPool();
         if (pool[0].capacity() < wireRequest.length) {
             pool[0] = ByteBuffer.allocateDirect(grownCapacity(wireRequest.length));
         }
@@ -650,7 +734,7 @@ public class VesperaBridge {
         in.clear();
         in.put(wireRequest);
 
-        return dispatchViaPool(wireRequest.length, retryOnOverflow, () -> wireRequest);
+        return dispatchViaPool(pool, wireRequest.length, retryOnOverflow, () -> wireRequest);
     }
 
     /**
@@ -698,28 +782,35 @@ public class VesperaBridge {
             Map<String, String> headers,
             byte[] body,
             boolean retryOnOverflow) {
-        byte[] headerJson = serializeHeaderJson(appName, method, path, query, headers);
-        byte[] bodyBytes = body != null ? body : new byte[0];
-        int total = 4 + headerJson.length + bodyBytes.length;
+        byte[] bodyBytes = body != null ? body : EMPTY_BODY;
+        ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
+        int headerLen = hdr.size();
+        int total = 4 + headerLen + bodyBytes.length;
         if (currentThreadIsVirtual() || total > DIRECT_MAX_CAPACITY) {
             // Virtual thread: avoid the per-vthread off-heap direct buffer
             // accumulation — use the GC-managed heap path.  Oversized
             // request (> cap): byte[] fallback is safe for any method
-            // because no dispatch has run yet.
-            return ByteBuffer.wrap(dispatchBytes(assembleWire(headerJson, bodyBytes)))
+            // because no dispatch has run yet.  The reusable header buffer
+            // is consumed here, before any other fillHeaderJson call.
+            return ByteBuffer.wrap(
+                    dispatchBytes(assembleWire(hdr.backingArray(), headerLen, bodyBytes)))
                     .asReadOnlyBuffer();
         }
-        ByteBuffer[] pool = DIRECT_POOL.get();
+        ByteBuffer[] pool = directPool();
         if (pool[0].capacity() < total) {
             pool[0] = ByteBuffer.allocateDirect(grownCapacity(total));
         }
-        int written = encodeRequestInto(headerJson, bodyBytes, pool[0]);
+        // Consume the reusable header buffer into the pooled direct buffer
+        // now; dispatchViaPool's lazy wireFallback re-encodes from scratch
+        // rather than capturing the buffer, so buffer reuse cannot corrupt
+        // a deferred fallback.
+        int written = assembleInto(hdr.backingArray(), headerLen, bodyBytes, pool[0]);
         if (written != total) {
             throw new IllegalStateException(
-                    "encodeRequestInto wrote " + written + ", expected " + total);
+                    "assembleInto wrote " + written + ", expected " + total);
         }
-        return dispatchViaPool(total, retryOnOverflow,
-                () -> assembleWire(headerJson, bodyBytes));
+        return dispatchViaPool(pool, total, retryOnOverflow,
+                () -> encodeRequest(appName, method, path, query, headers, bodyBytes));
     }
 
     /**
@@ -730,8 +821,8 @@ public class VesperaBridge {
      * pool cap and must take the {@code dispatchBytes} path.
      */
     private static ByteBuffer dispatchViaPool(
-            int reqLen, boolean retryOnOverflow, java.util.function.Supplier<byte[]> wireFallback) {
-        ByteBuffer[] pool = DIRECT_POOL.get();
+            ByteBuffer[] pool, int reqLen, boolean retryOnOverflow,
+            java.util.function.Supplier<byte[]> wireFallback) {
         int n = dispatchDirect(pool[0], reqLen, pool[1]);
         if (n < 0 && n != Integer.MIN_VALUE) {
             int required = -n;
@@ -792,20 +883,20 @@ public class VesperaBridge {
             byte[] body,
             ByteBuffer target) {
         Objects.requireNonNull(target, "target");
-        byte[] headerJson = serializeHeaderJson(appName, method, path, query, headers);
-        return encodeRequestInto(headerJson, body != null ? body : new byte[0], target);
+        ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
+        return assembleInto(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY, target);
     }
 
-    /** Internal: write {@code [u32 BE len | headerJson | body]} at position 0. */
-    private static int encodeRequestInto(byte[] headerJson, byte[] body, ByteBuffer target) {
-        int total = 4 + headerJson.length + body.length;
+    /** Internal: write {@code [u32 BE len | headerJson[0..headerLen] | body]} at position 0. */
+    private static int assembleInto(byte[] headerJson, int headerLen, byte[] body, ByteBuffer target) {
+        int total = 4 + headerLen + body.length;
         if (target.capacity() < total) {
             return -total;
         }
         target.clear();
         target.order(ByteOrder.BIG_ENDIAN);
-        target.putInt(headerJson.length);
-        target.put(headerJson);
+        target.putInt(headerLen);
+        target.put(headerJson, 0, headerLen);
         if (body.length > 0) {
             target.put(body);
         }
@@ -813,8 +904,7 @@ public class VesperaBridge {
     }
 
     /** Internal: assemble a heap wire array from pre-serialised parts. */
-    private static byte[] assembleWire(byte[] headerJson, byte[] body) {
-        int headerLen = headerJson.length;
+    private static byte[] assembleWire(byte[] headerJson, int headerLen, byte[] body) {
         byte[] wire = new byte[4 + headerLen + body.length];
         // Write the u32 BE length prefix directly — avoids the
         // HeapByteBuffer wrapper object that
@@ -885,8 +975,8 @@ public class VesperaBridge {
             String query,
             Map<String, String> headers,
             byte[] body) {
-        byte[] headerJson = serializeHeaderJson(appName, method, path, query, headers);
-        return assembleWire(headerJson, body != null ? body : new byte[0]);
+        ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
+        return assembleWire(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY);
     }
 
     /**
@@ -902,9 +992,9 @@ public class VesperaBridge {
      * <em>slower</em>, 656 vs 487 ns/op; the generator writes bytes
      * directly, so this rewrite keeps that win and drops the tree.)
      */
-    private static byte[] serializeHeaderJson(String appName, String method,
+    private static ExposedByteArrayOutputStream fillHeaderJson(String appName, String method,
             String path, String query, Map<String, String> headers) {
-        ByteArrayOutputStream buf = HEADER_BUF.get();
+        ExposedByteArrayOutputStream buf = HEADER_BUF.get();
         buf.reset();
         try (JsonGenerator gen = JSON_FACTORY.createGenerator(buf)) {
             gen.writeStartObject();
@@ -928,7 +1018,7 @@ public class VesperaBridge {
         } catch (IOException e) {
             throw new IllegalStateException("encodeRequest serialisation failed", e);
         }
-        return buf.toByteArray();
+        return buf;
     }
 
     /**

@@ -1,9 +1,9 @@
 /// Extract path parameters from a path string
 pub fn extract_path_parameters(path: &str) -> Vec<String> {
     let mut params = Vec::new();
-    let segments: Vec<&str> = path.split('/').collect();
 
-    for segment in segments {
+    // Iterate the split lazily — no intermediate `Vec<&str>` allocation.
+    for segment in path.split('/') {
         if segment.starts_with('{') && segment.ends_with('}') {
             let param = segment.trim_start_matches('{').trim_end_matches('}');
             params.push(param.to_string());

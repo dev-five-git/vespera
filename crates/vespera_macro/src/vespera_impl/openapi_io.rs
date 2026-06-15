@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::Path};
 use crate::{
     error::{MacroResult, err_call_site},
     metadata::CollectedMetadata,
-    openapi_generator::generate_openapi_doc_with_metadata,
+    openapi_generator::{OpenApiSecurity, generate_openapi_doc_with_metadata},
     route_impl::StoredRouteInfo,
     router_codegen::ProcessedVesperaInput,
 };
@@ -13,6 +13,19 @@ use super::path_utils::{current_crate_tag, find_target_dir};
 
 /// Docs info tuple type alias for cleaner signatures
 pub type DocsInfo = (Option<String>, Option<String>, Option<String>);
+
+/// Whether `path` already holds exactly `content`.
+///
+/// A cheap `metadata().len()` pre-check skips the full `read_to_string`
+/// whenever the byte length alone proves the content changed (the common
+/// case when a regenerated spec differs) — only an exact length match
+/// falls back to the full read + compare.  Missing or unreadable files
+/// count as "changed", so the caller writes — exactly like the previous
+/// `read_to_string(...).map_or(true, |e| e != content)` this replaces.
+fn content_unchanged(path: &Path, content: &str) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.len() == content.len() as u64)
+        && std::fs::read_to_string(path).is_ok_and(|existing| existing == content)
+}
 
 /// Generate `OpenAPI` JSON and write to files, returning docs info
 pub fn generate_and_write_openapi(
@@ -30,6 +43,11 @@ pub fn generate_and_write_openapi(
         input.title.clone(),
         input.version.clone(),
         input.servers.clone(),
+        Some(OpenApiSecurity {
+            security_schemes: input.security_schemes.clone(),
+            security: input.security.clone(),
+            tag_descriptions: input.tag_descriptions.clone(),
+        }),
         metadata,
         Some(file_asts),
         route_storage,
@@ -77,8 +95,7 @@ pub fn generate_and_write_openapi(
             if let Some(parent) = file_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| err_call_site(format!("OpenAPI output: failed to create directory '{}'. Error: {}. Ensure the path is valid and writable.", parent.display(), e)))?;
             }
-            let should_write =
-                std::fs::read_to_string(file_path).map_or(true, |existing| existing != json_pretty);
+            let should_write = !content_unchanged(file_path, &json_pretty);
             if should_write {
                 std::fs::write(file_path, &json_pretty).map_err(|e| err_call_site(format!("OpenAPI output: failed to write file '{openapi_file_name}'. Error: {e}. Ensure the file path is writable.")))?;
             }
@@ -105,8 +122,7 @@ pub fn ensure_openapi_files_from_cache(
     };
     for openapi_file_name in openapi_file_names {
         let file_path = Path::new(openapi_file_name);
-        let should_write =
-            std::fs::read_to_string(file_path).map_or(true, |existing| existing != *pretty);
+        let should_write = !content_unchanged(file_path, pretty);
         if should_write {
             if let Some(parent) = file_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| {
@@ -216,7 +232,7 @@ pub(super) fn write_pretty_sidecar(spec_pretty: Option<&str>) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let should_write = std::fs::read_to_string(&path).map_or(true, |existing| existing != pretty);
+    let should_write = !content_unchanged(&path, pretty);
     if should_write {
         let _ = std::fs::write(&path, pretty);
     }
@@ -242,8 +258,7 @@ pub(super) fn write_spec_for_embedding(
             )
         })?;
     }
-    let should_write =
-        std::fs::read_to_string(&spec_file).map_or(true, |existing| existing != json);
+    let should_write = !content_unchanged(&spec_file, &json);
     if should_write {
         std::fs::write(&spec_file, &json).map_err(|e| {
             syn::Error::new(
@@ -277,6 +292,9 @@ mod tests {
             docs_url: None,
             redoc_url: None,
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
@@ -298,6 +316,9 @@ mod tests {
             docs_url: Some("/docs".to_string()),
             redoc_url: None,
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
@@ -323,6 +344,9 @@ mod tests {
             docs_url: None,
             redoc_url: Some("/redoc".to_string()),
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
@@ -345,6 +369,9 @@ mod tests {
             docs_url: Some("/docs".to_string()),
             redoc_url: Some("/redoc".to_string()),
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
@@ -369,6 +396,9 @@ mod tests {
             docs_url: None,
             redoc_url: None,
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
@@ -396,6 +426,9 @@ mod tests {
             docs_url: None,
             redoc_url: None,
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
@@ -417,6 +450,9 @@ mod tests {
             docs_url: Some("/docs".to_string()),
             redoc_url: None,
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![syn::parse_quote!(app::TestApp)], // Has merge but no valid manifest dir
         };
         let metadata = CollectedMetadata::new();
@@ -453,6 +489,9 @@ mod tests {
             docs_url: Some("/docs".to_string()),
             redoc_url: None,
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![syn::parse_quote!(child::ChildApp)],
         };
         let metadata = CollectedMetadata::new();
@@ -485,6 +524,9 @@ mod tests {
             docs_url: None,
             redoc_url: None,
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();

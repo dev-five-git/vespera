@@ -130,6 +130,13 @@ pub fn process_vespera_macro(
             .map_err(|msg| syn::Error::new(Span::call_site(), format!("vespera! macro: {msg}")))?;
         stage("metadata merge");
 
+        // B2: reject same-file extractor structs that lack `#[derive(Schema)]`
+        // before they silently vanish from the generated spec. Runs only here
+        // (cache miss) — a cache hit is byte-identical source that already
+        // passed, so the check would be redundant.
+        crate::parser::validate_schema_backed_extractors(&metadata)?;
+        stage("validate_schema_backed_extractors");
+
         let (_, _, spec_json) =
             generate_and_write_openapi(processed, &metadata, file_asts, route_storage)?;
         stage("generate_and_write_openapi");
@@ -269,8 +276,13 @@ pub fn process_export_app(
         .check_duplicate_schema_names()
         .map_err(|msg| syn::Error::new(Span::call_site(), format!("export_app! macro: {msg}")))?;
 
+    // B2: same-file extractor structs without `#[derive(Schema)]` would be
+    // silently dropped from the spec — reject them at compile time.
+    crate::parser::validate_schema_backed_extractors(&metadata)?;
+
     // Generate OpenAPI spec JSON string
     let openapi_doc = generate_openapi_doc_with_metadata(
+        None,
         None,
         None,
         None,
@@ -349,6 +361,9 @@ mod tests {
             docs_url: None,
             redoc_url: None,
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![],
         };
         let result = process_vespera_macro(&processed, &HashMap::new(), &[]);
@@ -372,6 +387,9 @@ mod tests {
             docs_url: None,
             redoc_url: None,
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![],
         };
 
@@ -404,6 +422,9 @@ mod tests {
             docs_url: Some("/docs".to_string()),
             redoc_url: Some("/redoc".to_string()),
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![],
         };
 
@@ -459,6 +480,9 @@ mod tests {
             docs_url: None,
             redoc_url: None,
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![],
         };
 
@@ -652,6 +676,9 @@ mod tests {
             docs_url: None,
             redoc_url: None,
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![],
         };
 
@@ -679,6 +706,9 @@ mod tests {
             docs_url: None,
             redoc_url: None,
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![],
         };
 
@@ -756,6 +786,9 @@ mod tests {
             docs_url: Some("/docs".to_string()),
             redoc_url: None,
             servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
             merge: vec![],
         };
 
