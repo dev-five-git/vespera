@@ -12,7 +12,10 @@ name = "rust-jni-demo"
 path = "src/main.rs"
 
 [dependencies]
-vespera = { path = "../../crates/vespera", features = ["jni", "mimalloc"] }
+# mimalloc is default-on for JNI cdylibs (it rides vespera's default
+# features), so `["jni"]` alone already wires up the faster global
+# allocator — pass `default-features = false` to bring your own.
+vespera = { path = "../../crates/vespera", features = ["jni"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }

@@ -11,6 +11,13 @@ repository.workspace = true
 # `impl garde::Validate` blocks and the `Validated<T>` extractor is
 # available.  Opt out with `default-features = false` if you need a
 # leaner build without the `garde` runtime dependency.
+#
+# `mimalloc` is also default-on, but it is a **weak no-op unless the
+# `jni` feature is also enabled** (see the `mimalloc` feature below): a
+# pure axum/OpenAPI build never compiles the mimalloc C library.  JNI
+# cdylib builds get the faster global allocator automatically (~9–14%
+# on the dispatch hot path); set `default-features = false` to supply
+# your own `#[global_allocator]` instead.
 default = [
     "axum-extra/typed-header",
     "axum-extra/form",
@@ -18,12 +25,17 @@ default = [
     "axum-extra/multipart",
     "axum-extra/cookie",
     "validation",
+    "mimalloc",
 ]
 cron = ["dep:tokio-cron-scheduler"]
 inprocess = ["dep:vespera_inprocess"]
 jni = ["inprocess", "dep:vespera_jni"]
 # mimalloc as the cdylib's global allocator (see vespera_jni docs).
-# Weak dep syntax: only applies when the `jni` feature enables vespera_jni.
+# Default-on, but the `vespera_jni?/mimalloc` weak-dep syntax means it
+# only does anything when the `jni` feature has pulled in vespera_jni —
+# so non-JNI builds neither set a global allocator nor compile the
+# mimalloc C library.  Disable via `default-features = false` to bring
+# your own allocator in a JNI cdylib.
 mimalloc = ["vespera_jni?/mimalloc"]
 # Runtime validation: `#[derive(Schema)]` additionally emits
 # `impl garde::Validate` and the `Validated<T>` extractor is enabled.
