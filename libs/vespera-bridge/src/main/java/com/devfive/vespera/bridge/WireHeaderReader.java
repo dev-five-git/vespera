@@ -52,11 +52,11 @@ final class WireHeaderReader {
         int status = 500;
         if (r.peek() == '{') {
             r.beginObject();
-            String name;
-            while ((name = r.nextKey()) != null) {
-                switch (name) {
-                    case "status" -> status = r.readInt();
-                    case "headers" -> {
+            int key;
+            while ((key = r.nextRootKey()) != KEY_END) {
+                switch (key) {
+                    case KEY_STATUS -> status = r.readInt();
+                    case KEY_HEADERS -> {
                         if (r.isObjectStart()) {
                             r.beginObject();
                             String k;
@@ -74,6 +74,8 @@ final class WireHeaderReader {
                             r.skipValue();
                         }
                     }
+                    // KEY_OTHER: "v", "metadata", "validation_errors", … —
+                    // matched by bytes, value skipped, never materialised.
                     default -> r.skipValue();
                 }
             }
@@ -135,6 +137,97 @@ final class WireHeaderReader {
         return key;
     }
 
+    // Root-member-key codes for the allocation-free root-key matcher used
+    // by apply(): the only root keys the reader acts on are "status" and
+    // "headers"; every other key ("v", "metadata", "validation_errors", …)
+    // is matched by length+bytes and its value skipped — never materialised
+    // as a String.
+    private static final int KEY_END = -2;
+    private static final int KEY_OTHER = -1;
+    private static final int KEY_STATUS = 0;
+    private static final int KEY_HEADERS = 1;
+
+    /**
+     * Advance past the next root member key WITHOUT allocating a String for
+     * it, returning a {@code KEY_*} code ({@code KEY_END} at object end).
+     * The allocation-free counterpart of {@link #nextKey()} for the fixed
+     * root schema; header keys (delivered to the sink) still use
+     * {@link #nextKey()}.
+     */
+    int nextRootKey() {
+        skipWs();
+        int c = cur();
+        if (c == ',') {
+            pos++;
+            skipWs();
+            c = cur();
+        }
+        if (c == '}') {
+            pos++;
+            return KEY_END;
+        }
+        int code = matchRootKey();
+        expect(':');
+        return code;
+    }
+
+    /**
+     * Consume a quoted root key, returning {@code KEY_STATUS} /
+     * {@code KEY_HEADERS} when its bytes equal those literals, else
+     * {@code KEY_OTHER} — all without allocating.  An escaped key (never
+     * emitted for the fixed root field names) is consumed and reported as
+     * {@code KEY_OTHER}.
+     */
+    private int matchRootKey() {
+        skipWs();
+        if (cur() != '"') {
+            throw err("expected string");
+        }
+        pos++;
+        int start = pos;
+        boolean simple = true;
+        while (pos < end) {
+            int b = buf.get(pos) & 0xFF;
+            if (b == '"') {
+                break;
+            }
+            if (b == '\\') {
+                simple = false;
+                pos++;
+                if (pos < end) {
+                    pos++;
+                }
+                continue;
+            }
+            pos++;
+        }
+        if (pos >= end) {
+            throw err("unterminated string");
+        }
+        int contentLen = pos - start;
+        pos++; // consume closing quote
+        if (!simple) {
+            return KEY_OTHER;
+        }
+        if (contentLen == 6 && regionEquals(start, "status")) {
+            return KEY_STATUS;
+        }
+        if (contentLen == 7 && regionEquals(start, "headers")) {
+            return KEY_HEADERS;
+        }
+        return KEY_OTHER;
+    }
+
+    /** Whether {@code buf[s .. s+lit.length())} equals the ASCII literal. */
+    private boolean regionEquals(int s, String lit) {
+        for (int i = 0; i < lit.length(); i++) {
+            if ((buf.get(s + i) & 0xFF) != lit.charAt(i)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void beginArray() {
         expect('[');
     }
@@ -175,10 +268,26 @@ final class WireHeaderReader {
         // decode loop below.
         int simpleLen = simpleAsciiRun();
         if (simpleLen >= 0) {
-            byte[] tmp = new byte[simpleLen];
-            buf.get(pos, tmp, 0, simpleLen); // absolute bulk get (Java 13+); position untouched
+            String s;
+            if (buf.hasArray()) {
+                // Heap-backed buffer (ByteBuffer.wrap on the SYNC / streaming
+                // / async paths): build the String straight from the backing
+                // array — one copy, no intermediate byte[].  Direct buffers
+                // (the DIRECT dispatch path) have no accessible array and keep
+                // the absolute bulk-get copy below.
+                s =
+                        new String(
+                                buf.array(),
+                                buf.arrayOffset() + pos,
+                                simpleLen,
+                                java.nio.charset.StandardCharsets.US_ASCII);
+            } else {
+                byte[] tmp = new byte[simpleLen];
+                buf.get(pos, tmp, 0, simpleLen); // absolute bulk get (Java 13+); position untouched
+                s = new String(tmp, java.nio.charset.StandardCharsets.US_ASCII);
+            }
             pos += simpleLen + 1; // consume the run + the closing quote
-            return new String(tmp, java.nio.charset.StandardCharsets.US_ASCII);
+            return s;
         }
         StringBuilder sb = new StringBuilder();
         while (pos < end) {
@@ -313,19 +422,8 @@ final class WireHeaderReader {
     void skipValue() {
         int c = peek();
         switch (c) {
-            case '{' -> {
-                beginObject();
-                while (nextKey() != null) {
-                    skipValue();
-                }
-            }
-            case '[' -> {
-                beginArray();
-                while (hasNextElement()) {
-                    skipValue();
-                }
-            }
-            case '"' -> readString();
+            case '"' -> skipStringRaw();
+            case '{', '[' -> skipContainerRaw();
             case 't', 'f', 'n' -> skipLiteral();
             default -> {
                 if (c == '-' || (c >= '0' && c <= '9')) {
@@ -335,6 +433,63 @@ final class WireHeaderReader {
                 }
             }
         }
+    }
+
+    /**
+     * Consume a JSON string token (pos at the opening quote) without
+     * allocating — the skip path never needs the decoded text, so unlike
+     * {@link #readString()} it builds no {@code String}.
+     */
+    private void skipStringRaw() {
+        pos++; // opening quote (peek() guarantees cur() == '"')
+        while (pos < end) {
+            int b = buf.get(pos++) & 0xFF;
+            if (b == '"') {
+                return;
+            }
+            if (b == '\\' && pos < end) {
+                pos++; // skip the escaped char (so \" is not seen as the close)
+            }
+        }
+        throw err("unterminated string");
+    }
+
+    /**
+     * Consume a balanced {@code {...}} / {@code [...]} (pos at the opening
+     * bracket), string-literal aware, without allocating — replaces the
+     * prior recursive skip that materialised every nested key and value of
+     * skipped fields ({@code metadata}, {@code validation_errors}, …).
+     */
+    private void skipContainerRaw() {
+        int depth = 0;
+        while (pos < end) {
+            int b = buf.get(pos++) & 0xFF;
+            switch (b) {
+                case '"' -> {
+                    // Skip a nested string so its braces/brackets don't count.
+                    while (pos < end) {
+                        int x = buf.get(pos++) & 0xFF;
+                        if (x == '"') {
+                            break;
+                        }
+                        if (x == '\\' && pos < end) {
+                            pos++;
+                        }
+                    }
+                }
+                case '{', '[' -> depth++;
+                case '}', ']' -> {
+                    depth--;
+                    if (depth == 0) {
+                        return;
+                    }
+                }
+                default -> {
+                    // ordinary byte inside the container — skip
+                }
+            }
+        }
+        throw err("unterminated container");
     }
 
     private void skipLiteral() {

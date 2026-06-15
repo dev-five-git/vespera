@@ -13,10 +13,25 @@ class WireHeaderReaderTest {
 
     private record Captured(int status, List<String> headers) {}
 
-    /** Parse {@code headerJson} from a direct buffer laid out as the wire is. */
+    /**
+     * Parse {@code headerJson} through BOTH a direct buffer (the DIRECT
+     * dispatch path, no backing array) and a heap buffer (the SYNC /
+     * streaming / async {@code ByteBuffer.wrap} paths, which hit
+     * {@code readString}'s backing-array fast path), asserting the two
+     * agree.  Returns the (identical) result.
+     */
     private static Captured run(String headerJson) {
+        Captured direct = runWith(headerJson, true);
+        Captured heap = runWith(headerJson, false);
+        assertEquals(direct.status(), heap.status(), "direct vs heap status mismatch");
+        assertEquals(direct.headers(), heap.headers(), "direct vs heap headers mismatch");
+        return direct;
+    }
+
+    private static Captured runWith(String headerJson, boolean direct) {
         byte[] hb = headerJson.getBytes(StandardCharsets.UTF_8);
-        ByteBuffer buf = ByteBuffer.allocateDirect(4 + hb.length);
+        ByteBuffer buf =
+                direct ? ByteBuffer.allocateDirect(4 + hb.length) : ByteBuffer.allocate(4 + hb.length);
         buf.putInt(hb.length);
         buf.put(hb);
         int[] status = {-1};
