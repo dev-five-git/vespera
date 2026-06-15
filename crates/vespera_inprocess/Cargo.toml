@@ -20,6 +20,10 @@ tokio = { version = "1", features = ["rt"] }
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# `FutureExt::catch_unwind` for the `async_spawn_pattern` bench, which
+# A/Bs the vespera_jni `dispatchAsync` spawn-mechanism change (inner
+# `tokio::spawn` vs in-place `catch_unwind`).
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [[bench]]
 name = "dispatch"

@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 use std::ops::ControlFlow;
+use std::panic::AssertUnwindSafe;
 use std::sync::Mutex;
 
 use axum::{
@@ -32,6 +33,7 @@ use axum::{
     routing::{get, post},
 };
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 use vespera_inprocess::{
@@ -485,6 +487,61 @@ fn bench_streaming_path(c: &mut Criterion) {
     drop(runtime);
 }
 
+/// #2 isolation: the `vespera_jni::dispatchAsync` spawn mechanism.
+///
+/// Both variants run the dispatch task on a shared multi-thread runtime
+/// (the outer `tokio::spawn`, common to both) and differ only in how a
+/// panic in the dispatch future is isolated:
+///
+/// - `double_spawn_pre`: a **second** `tokio::spawn` (panic → `JoinError`),
+///   the pre-#2 shape — one extra task allocation + scheduler hop.
+/// - `single_spawn_catch_unwind_post`: `FutureExt::catch_unwind` in place,
+///   the post-#2 shape — same panic → fallback, no second task.
+///
+/// The inner future is trivial so the spawn/catch_unwind overhead is the
+/// dominant cost and the delta isolates exactly what #2 removes per async
+/// dispatch (independent of the dispatch payload size).
+fn bench_async_spawn_pattern(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("multi-thread runtime");
+    let mut group = c.benchmark_group("async_spawn_pattern");
+
+    group.bench_function("double_spawn_pre", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                tokio::spawn(async move {
+                    tokio::spawn(async { vec![0u8; 64] })
+                        .await
+                        .unwrap_or_else(|_| vec![1u8; 16])
+                })
+                .await
+                .unwrap()
+            })
+        });
+    });
+
+    group.bench_function("single_spawn_catch_unwind_post", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                tokio::spawn(async move {
+                    AssertUnwindSafe(async { vec![0u8; 64] })
+                        .catch_unwind()
+                        .await
+                        .unwrap_or_else(|_| vec![1u8; 16])
+                })
+                .await
+                .unwrap()
+            })
+        });
+    });
+
+    group.finish();
+    drop(runtime);
+}
+
 criterion_group!(
     benches,
     bench_router_path,
@@ -493,6 +550,7 @@ criterion_group!(
     bench_resolve_path,
     bench_contended_path,
     bench_headers_path,
-    bench_streaming_path
+    bench_streaming_path,
+    bench_async_spawn_pattern
 );
 criterion_main!(benches);

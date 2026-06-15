@@ -1,5 +1,6 @@
 use std::{cell::RefCell, future::Future, sync::LazyLock};
 
+use futures_util::FutureExt;
 use jni::EnvUnowned;
 use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{Global, JByteArray, JByteBuffer, JClass, JObject};
@@ -568,16 +569,27 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
             }
         };
 
-        // The inner task converts Rust panics into JoinError, preserving
-        // always-complete semantics for the Java future.  Scheduling
-        // itself is wrapped in `catch_unwind` so a failure to build or
-        // schedule on the shared runtime completes the future (with a
-        // 500) instead of leaving the Java caller hanging.
+        // A panic in the dispatch future is caught **in place** with
+        // `FutureExt::catch_unwind` instead of isolating it in a second
+        // `tokio::spawn` task — same panic → 500 wire fallback (preserving
+        // always-complete semantics for the Java future), but one fewer
+        // task allocation + scheduler hop per async dispatch.  The inner
+        // spawn never bought parallelism here (the outer task awaited it
+        // immediately), so it was pure overhead.  `AssertUnwindSafe` is
+        // sound: a panic drops the half-run dispatch and we return a fresh
+        // `error_wire`; the registered `Router` is `Arc`-shared and is not
+        // left observably inconsistent.  The outer `catch_unwind` still
+        // guards `RUNTIME.spawn` itself so a scheduling failure completes
+        // the future (with a 500) instead of leaving the Java caller
+        // hanging.
         let scheduled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             RUNTIME.spawn(async move {
-                let response = tokio::spawn(vespera_inprocess::dispatch_from_bytes_async(input))
-                    .await
-                    .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
+                let response = std::panic::AssertUnwindSafe(
+                    vespera_inprocess::dispatch_from_bytes_async(input),
+                )
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
 
                 let _ = with_cached_daemon_env(&jvm, |env| -> jni::errors::Result<()> {
                     complete_future(env, &future_for_task, &response)

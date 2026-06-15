@@ -247,14 +247,29 @@ struct WireHeaders<'a>(&'a http::HeaderMap);
 impl Serialize for WireHeaders<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        // `HeaderMap::keys` yields each distinct name exactly once;
-        // pre-size to the exact distinct-key count so the collect never
-        // reallocates.
-        let mut names: Vec<&str> = Vec::with_capacity(self.0.keys_len());
-        names.extend(self.0.keys().map(http::HeaderName::as_str));
+        // `HeaderMap::keys` yields each distinct name exactly once.  The
+        // overwhelmingly common response carries only a handful of header
+        // names, so sort them in a stack buffer and skip the per-response
+        // heap `Vec`; header sets larger than the stack cap fall back to a
+        // heap `Vec`.  Output is byte-identical either way (same sorted
+        // order over the same names), as locked by tests/wire_contract.rs.
+        const STACK_CAP: usize = 32;
+        let key_count = self.0.keys_len();
+        let mut stack_names: [&str; STACK_CAP] = [""; STACK_CAP];
+        let mut heap_names: Vec<&str>;
+        let names: &mut [&str] = if key_count <= STACK_CAP {
+            for (slot, name) in stack_names.iter_mut().zip(self.0.keys()) {
+                *slot = name.as_str();
+            }
+            &mut stack_names[..key_count]
+        } else {
+            heap_names = Vec::with_capacity(key_count);
+            heap_names.extend(self.0.keys().map(http::HeaderName::as_str));
+            &mut heap_names[..]
+        };
         names.sort_unstable();
         let mut map = serializer.serialize_map(Some(names.len()))?;
-        for name in names {
+        for &name in names.iter() {
             let mut values = self.0.get_all(name).iter();
             let first = values
                 .next()
