@@ -20,6 +20,8 @@ use super::{
 pub struct OperationRouteConfig<'a> {
     pub error_status: Option<&'a [u16]>,
     pub typed_responses: Option<&'a [(u16, String)]>,
+    /// Declared non-200 success status from `status = <u16>` (validated 2xx).
+    pub success_status: Option<u16>,
     pub tags: Option<&'a [String]>,
     pub security: Option<&'a [String]>,
     pub headers: Option<&'a [HeaderParam]>,
@@ -253,6 +255,25 @@ pub fn build_operation_from_function(
         }
     }
 
+    // Feature 1: explicit error declarations are authoritative. When a route
+    // declares any explicit error response (via `responses` and/or
+    // `error_status`), drop the auto-default `400` that `parse_return_type`
+    // infers for `Result<_, E>` — unless `400` is itself among the declared
+    // codes. The inferred success (200) response is unaffected.
+    let declares_errors = config.typed_responses.is_some_and(|r| !r.is_empty())
+        || config.error_status.is_some_and(|s| !s.is_empty());
+    if declares_errors {
+        let declares_400 = config
+            .typed_responses
+            .is_some_and(|typed| typed.iter().any(|(code, _)| *code == 400))
+            || config
+                .error_status
+                .is_some_and(|codes| codes.contains(&400));
+        if !declares_400 {
+            responses.remove("400");
+        }
+    }
+
     if has_validated_extractor {
         responses
             .entry("422".to_string())
@@ -266,6 +287,19 @@ pub fn build_operation_from_function(
         for media in content.values_mut() {
             media.example = Some(example.clone());
         }
+    }
+
+    // Feature 2: re-key the inferred success response under the declared
+    // non-200 status (`status = <u16>`). No-body success statuses (204 No
+    // Content, 304 Not Modified) must not carry a response body.
+    if let Some(success) = config.success_status
+        && success != 200
+        && let Some(mut response) = responses.remove("200")
+    {
+        if matches!(success, 204 | 304) {
+            response.content = None;
+        }
+        responses.insert(success.to_string(), response);
     }
 
     Operation {
@@ -735,6 +769,9 @@ mod tests {
             ExpectedResp { status: "500", schema: Some(SchemaType::String) },
         ]
     )]
+    // Feature 1: declaring `error_status = [401, 402]` makes the explicit error
+    // set authoritative, so the auto-inferred 400 for `Result<_, E>` is dropped
+    // (400 is not among the declared codes). The 200 success response is intact.
     #[case(
         "fn create() -> Result<String, String>",
         "/create",
@@ -743,7 +780,6 @@ mod tests {
         None,
         vec![
             ExpectedResp { status: "200", schema: Some(SchemaType::String) },
-            ExpectedResp { status: "400", schema: Some(SchemaType::String) },
             ExpectedResp { status: "401", schema: Some(SchemaType::String) },
             ExpectedResp { status: "402", schema: Some(SchemaType::String) },
         ]
@@ -785,6 +821,151 @@ mod tests {
             SchemaRef::Inline(_) => panic!("typed response must use schema ref"),
         }
         assert!(op.responses.contains_key("500"));
+    }
+
+    fn build_with_success_status(
+        sig_src: &str,
+        success_status: Option<u16>,
+        error_status: Option<&[u16]>,
+        typed_responses: Option<&[(u16, String)]>,
+    ) -> Operation {
+        let sig: syn::Signature = syn::parse_str(sig_src).expect("signature parse failed");
+        build_operation_from_function(
+            &sig,
+            "/items/{id}",
+            &HashSet::new(),
+            &HashMap::new(),
+            OperationRouteConfig {
+                error_status,
+                typed_responses,
+                success_status,
+                ..OperationRouteConfig::default()
+            },
+        )
+    }
+
+    // ======== Feature 1: explicit error declarations suppress the auto-400 ========
+
+    #[test]
+    fn error_status_declaration_suppresses_auto_400() {
+        // `Result<_, E>` infers a default 400; declaring `error_status = [500]`
+        // makes the explicit error set authoritative, dropping the auto-400.
+        let op = build(
+            "fn create() -> Result<String, String>",
+            "/create",
+            Some(&[500u16]),
+        );
+        assert!(op.responses.contains_key("200"), "200 success is preserved");
+        assert!(op.responses.contains_key("500"));
+        assert!(
+            !op.responses.contains_key("400"),
+            "auto-400 must be suppressed when an explicit error set is declared"
+        );
+    }
+
+    #[test]
+    fn typed_responses_declaration_suppresses_auto_400() {
+        let typed = vec![(500u16, "ServerError".to_string())];
+        let op = build_with_success_status(
+            "fn create() -> Result<String, (StatusCode, String)>",
+            None,
+            None,
+            Some(&typed),
+        );
+        assert!(op.responses.contains_key("200"));
+        assert!(op.responses.contains_key("500"));
+        assert!(
+            !op.responses.contains_key("400"),
+            "auto-400 must be suppressed when `responses` is declared"
+        );
+    }
+
+    #[test]
+    fn declared_400_is_kept_via_error_status() {
+        // When 400 is itself among the declared codes, it survives.
+        let op = build(
+            "fn create() -> Result<String, String>",
+            "/create",
+            Some(&[400u16, 404u16]),
+        );
+        assert!(
+            op.responses.contains_key("400"),
+            "declared 400 must be kept"
+        );
+        assert!(op.responses.contains_key("404"));
+    }
+
+    #[test]
+    fn declared_400_is_kept_via_typed_responses() {
+        let typed = vec![(400u16, "BadRequest".to_string())];
+        let op = build_with_success_status(
+            "fn create() -> Result<String, String>",
+            None,
+            None,
+            Some(&typed),
+        );
+        assert!(
+            op.responses.contains_key("400"),
+            "declared 400 must be kept"
+        );
+    }
+
+    #[test]
+    fn no_declaration_keeps_inferred_400_backward_compatible() {
+        // A plain `Result<_, E>` with no annotations keeps the inferred 400.
+        let op = build("fn create() -> Result<String, String>", "/create", None);
+        assert!(op.responses.contains_key("200"));
+        assert!(
+            op.responses.contains_key("400"),
+            "without explicit declarations the inferred 400 stays (backward compatible)"
+        );
+    }
+
+    // ======== Feature 2: `status = <u16>` re-keys the success response ========
+
+    #[test]
+    fn success_status_rekeys_200_and_preserves_body() {
+        let op = build_with_success_status("fn create() -> String", Some(201), None, None);
+        assert!(op.responses.contains_key("201"));
+        assert!(!op.responses.contains_key("200"), "200 is re-keyed to 201");
+        assert!(
+            op.responses.get("201").unwrap().content.is_some(),
+            "201 keeps the inferred body"
+        );
+    }
+
+    #[test]
+    fn success_status_204_drops_body() {
+        let op = build_with_success_status("fn create() -> String", Some(204), None, None);
+        let resp = op.responses.get("204").expect("204 response");
+        assert!(
+            resp.content.is_none(),
+            "204 No Content must not carry a response body"
+        );
+        assert!(!op.responses.contains_key("200"));
+    }
+
+    #[test]
+    fn success_status_204_with_error_status_yields_only_204_and_404() {
+        // Mirrors the example `/error/status-code/{id}`:
+        // `status = 204, error_status = [404]` on `Result<StatusCode, (StatusCode, String)>`.
+        let op = build_with_success_status(
+            "fn del() -> Result<StatusCode, (StatusCode, String)>",
+            Some(204),
+            Some(&[404u16]),
+            None,
+        );
+        assert!(op.responses.contains_key("204"));
+        assert!(op.responses.contains_key("404"));
+        assert!(!op.responses.contains_key("200"), "no spurious 200");
+        assert!(!op.responses.contains_key("400"), "no spurious 400");
+        assert!(op.responses.get("204").unwrap().content.is_none());
+    }
+
+    #[test]
+    fn success_status_200_is_noop() {
+        let op = build_with_success_status("fn create() -> String", Some(200), None, None);
+        assert!(op.responses.contains_key("200"));
     }
 
     #[test]

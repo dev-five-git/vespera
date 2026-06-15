@@ -360,6 +360,7 @@ mod tests {
             tags: None,
             security: None,
             headers: Vec::new(),
+            success_status: None,
             operation_id: None,
             summary: None,
             request_example: None,

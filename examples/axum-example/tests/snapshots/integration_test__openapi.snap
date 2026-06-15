@@ -292,7 +292,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               }
             }
           },
-          "400": {
+          "500": {
             "description": "Error response",
             "content": {
               "application/json": {
@@ -350,7 +350,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               }
             }
           },
-          "400": {
+          "500": {
             "description": "Error response",
             "content": {
               "application/json": {
@@ -373,26 +373,6 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "text/plain": {
                 "schema": {
                   "type": "string"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Error response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse2"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Error response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse2"
                 }
               }
             }
@@ -424,7 +404,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               }
             }
           },
-          "400": {
+          "500": {
             "description": "Error response",
             "content": {
               "application/json": {
@@ -512,10 +492,10 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           }
         ],
         "responses": {
-          "200": {
+          "204": {
             "description": "Successful response"
           },
-          "400": {
+          "404": {
             "description": "Error response",
             "content": {
               "text/plain": {

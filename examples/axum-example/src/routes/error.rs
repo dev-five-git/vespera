@@ -23,15 +23,18 @@ impl IntoResponse for ErrorResponse2 {
     }
 }
 
-#[vespera::route()]
-pub async fn error_endpoint() -> Result<&'static str, Json<ErrorResponse>> {
-    Err(Json(ErrorResponse {
-        error: "Internal server error".to_string(),
-        code: 500,
-    }))
+#[vespera::route(responses = [(500, ErrorResponse)])]
+pub async fn error_endpoint() -> Result<&'static str, (StatusCode, Json<ErrorResponse>)> {
+    Err((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse {
+            error: "Internal server error".to_string(),
+            code: 500,
+        }),
+    ))
 }
 
-#[vespera::route(path = "/error-with-status")]
+#[vespera::route(path = "/error-with-status", responses = [(500, ErrorResponse)])]
 pub async fn error_endpoint_with_status_code()
 -> Result<&'static str, (StatusCode, Json<ErrorResponse>)> {
     Err((
@@ -43,7 +46,7 @@ pub async fn error_endpoint_with_status_code()
     ))
 }
 
-#[vespera::route(path = "/error2")]
+#[vespera::route(path = "/error2", responses = [(500, ErrorResponse2)])]
 pub async fn error_endpoint2() -> Result<&'static str, ErrorResponse2> {
     Err(ErrorResponse2 {
         error: "Internal server error".to_string(),
@@ -51,7 +54,7 @@ pub async fn error_endpoint2() -> Result<&'static str, ErrorResponse2> {
     })
 }
 
-#[vespera::route(path = "/error-with-status2", error_status = [500, 400, 404])]
+#[vespera::route(path = "/error-with-status2", error_status = [500])]
 pub async fn error_endpoint_with_status_code2() -> Result<&'static str, (StatusCode, ErrorResponse2)>
 {
     Err((
@@ -81,7 +84,7 @@ pub async fn header_map_endpoint2() -> Result<(StatusCode, HeaderMap, &'static s
 }
 
 /// Delete endpoint that returns just a StatusCode
-#[vespera::route(delete, path = "/status-code/{id}", tags = ["error"])]
+#[vespera::route(delete, path = "/status-code/{id}", tags = ["error"], status = 204, error_status = [404])]
 pub async fn status_code_endpoint(
     vespera::axum::extract::Path(id): vespera::axum::extract::Path<i64>,
 ) -> Result<StatusCode, (StatusCode, String)> {

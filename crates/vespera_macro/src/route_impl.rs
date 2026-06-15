@@ -53,6 +53,8 @@ pub struct StoredRouteInfo {
     /// Custom path from `path = "/{id}"`.  Used by the collector to
     /// derive the full route URL when present.
     pub custom_path: Option<String>,
+    /// Declared non-200 success status from `status = <u16>` (validated 2xx).
+    pub success_status: Option<u16>,
     /// Additional error status codes from `error_status = [400, 404]`.
     pub error_status: Option<Vec<u16>>,
     /// Typed error responses from `responses = [(404, NotFoundError)]`.
@@ -225,6 +227,7 @@ pub fn process_route_attribute(
         fn_name: item_fn.sig.ident.to_string(),
         method: route_args.method.as_ref().map(syn::Ident::to_string),
         custom_path: route_args.path.as_ref().map(syn::LitStr::value),
+        success_status: route_args.success_status,
         error_status: route_args
             .error_status
             .as_ref()

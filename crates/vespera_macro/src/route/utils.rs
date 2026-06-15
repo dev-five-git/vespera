@@ -37,6 +37,7 @@ pub fn extract_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
 pub struct RouteInfo {
     pub method: String,
     pub path: Option<String>,
+    pub success_status: Option<u16>,
     pub error_status: Option<Vec<u16>>,
     pub typed_responses: Option<Vec<(u16, String)>>,
     pub tags: Option<Vec<String>>,
@@ -112,6 +113,7 @@ fn build_route_info_from_args(route_args: &RouteArgs) -> RouteInfo {
     RouteInfo {
         method,
         path,
+        success_status: route_args.success_status,
         error_status,
         typed_responses,
         tags,
@@ -268,6 +270,7 @@ fn try_extract_from_meta(meta: &syn::Meta) -> Option<RouteInfo> {
             Some(RouteInfo {
                 method: method_str,
                 path: None,
+                success_status: None,
                 error_status: None,
                 typed_responses: None,
                 tags: None,
@@ -285,6 +288,7 @@ fn try_extract_from_meta(meta: &syn::Meta) -> Option<RouteInfo> {
         syn::Meta::Path(_) => Some(RouteInfo {
             method: "get".to_string(),
             path: None,
+            success_status: None,
             error_status: None,
             typed_responses: None,
             tags: None,

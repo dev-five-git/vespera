@@ -355,6 +355,37 @@ that status. `error_status = [400, 404]` remains available for schema-less extra
 error statuses; when both are present, a typed `responses` entry wins for the
 same status code.
 
+#### Explicit error responses are authoritative (no auto-`400`)
+
+By default a handler returning `Result<_, E>` (or `Result<_, (StatusCode, E)>`)
+infers a single `400` error response, because the macro cannot read the runtime
+`StatusCode`. **As soon as you declare any explicit error response** — via
+`responses = [(code, Type)]` and/or `error_status = [code, ...]` — that explicit
+set becomes authoritative and the inferred `400` is dropped (the success
+response is untouched), *unless* `400` is itself among the declared codes:
+
+```rust
+// Handler returns (StatusCode::INTERNAL_SERVER_ERROR, Json<ErrorResponse>).
+// Declaring responses = [(500, ...)] yields exactly { 200, 500 } — no spurious 400.
+#[vespera::route(responses = [(500, ErrorResponse)])]
+pub async fn fail() -> Result<&'static str, (StatusCode, Json<ErrorResponse>)> { ... }
+```
+
+A plain `Result<_, E>` with **no** error annotations keeps the inferred `400`,
+so existing routes are unaffected.
+
+#### Non-`200` success status (`status = <u16>`)
+
+Use `status = <u16>` to override the inferred `200` success key with any `2xx`
+code (a non-`2xx` value is a compile error). No-body statuses (`204`, `304`)
+emit a success response with no `content`:
+
+```rust
+// 204 success + 404 error (text/plain) — no 200, no 400.
+#[vespera::route(delete, path = "/{id}", status = 204, error_status = [404])]
+pub async fn delete_item(Path(id): Path<i64>) -> Result<StatusCode, (StatusCode, String)> { ... }
+```
+
 ---
 
 ## `vespera!` Macro Reference
@@ -394,8 +425,9 @@ let app = vespera!(
 | `operation_id` | OpenAPI operationId override, e.g. `operation_id = "getUser"`; defaults to the Rust function name |
 | `summary` | OpenAPI operation summary, e.g. `summary = "Get a user"` |
 | `description` | OpenAPI operation description; otherwise doc comments are used |
-| `error_status` | Extra error status codes to include in OpenAPI responses |
-| `responses` | Typed error responses, e.g. `responses = [(404, NotFoundError), (400, crate::errors::BadRequestError)]` |
+| `status` | Success-response status override (must be `2xx`), e.g. `status = 204`; re-keys the inferred `200` response (no body for `204`/`304`) |
+| `error_status` | Extra error status codes to include in OpenAPI responses; declaring any makes the explicit error set authoritative (see below) |
+| `responses` | Typed error responses, e.g. `responses = [(404, NotFoundError), (400, crate::errors::BadRequestError)]`; declaring any makes the explicit error set authoritative (see below) |
 | `security` | Per-operation security requirements, e.g. `security = ["bearerAuth"]`; `security = []` emits explicit no auth |
 | `headers` | Header parameters consumed by custom extractors, e.g. `headers = [{ name = "Authorization", required = true, description = "Bearer token" }]`; `required` defaults to `false` |
 | `request_example` | Operation-level request body example as a JSON string; invalid JSON is emitted as a JSON string value |

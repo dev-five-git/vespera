@@ -28,6 +28,9 @@ pub struct RouteMetadata {
     /// File path
     pub file_path: String,
 
+    /// Declared non-200 success status from the `status` attribute.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub success_status: Option<u16>,
     /// Additional error status codes from `error_status` attribute
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_status: Option<Vec<u16>>,

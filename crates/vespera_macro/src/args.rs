@@ -1,12 +1,14 @@
 use crate::http::is_http_method;
 use crate::metadata::HeaderParam;
-use syn::{LitBool, LitStr, bracketed};
+use syn::{LitBool, LitInt, LitStr, bracketed};
 
 pub struct RouteArgs {
     pub method: Option<syn::Ident>,
     pub path: Option<syn::LitStr>,
     pub error_status: Option<syn::ExprArray>,
     pub responses: Option<syn::ExprArray>,
+    /// Declared non-200 success status from `status = <u16>` (validated 2xx).
+    pub success_status: Option<u16>,
     pub tags: Option<syn::ExprArray>,
     pub security: Option<syn::ExprArray>,
     pub headers: Option<Vec<HeaderParam>>,
@@ -19,11 +21,13 @@ pub struct RouteArgs {
 }
 
 impl syn::parse::Parse for RouteArgs {
+    #[allow(clippy::too_many_lines)]
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut method: Option<syn::Ident> = None;
         let mut path: Option<syn::LitStr> = None;
         let mut error_status: Option<syn::ExprArray> = None;
         let mut responses: Option<syn::ExprArray> = None;
+        let mut success_status: Option<u16> = None;
         let mut tags: Option<syn::ExprArray> = None;
         let mut security: Option<syn::ExprArray> = None;
         let mut headers: Option<Vec<HeaderParam>> = None;
@@ -56,6 +60,17 @@ impl syn::parse::Parse for RouteArgs {
                     input.parse::<syn::Token![=]>()?;
                     let array: syn::ExprArray = input.parse()?;
                     responses = Some(array);
+                } else if ident_str == "status" {
+                    input.parse::<syn::Token![=]>()?;
+                    let lit: LitInt = input.parse()?;
+                    let code = lit.base10_parse::<u16>()?;
+                    if !(200..300).contains(&code) {
+                        return Err(syn::Error::new(
+                            lit.span(),
+                            "#[route] `status` must be a 2xx success status code (200-299).",
+                        ));
+                    }
+                    success_status = Some(code);
                 } else if ident_str == "tags" {
                     input.parse::<syn::Token![=]>()?;
                     let array: syn::ExprArray = input.parse()?;
@@ -108,6 +123,7 @@ impl syn::parse::Parse for RouteArgs {
             path,
             error_status,
             responses,
+            success_status,
             tags,
             security,
             headers,
@@ -633,5 +649,44 @@ mod tests {
             route_args.response_example.as_ref().map(syn::LitStr::value),
             expected_response.map(str::to_string)
         );
+    }
+
+    #[rstest]
+    // Valid 2xx success statuses
+    #[case("status = 200", true, Some(200))]
+    #[case("status = 201", true, Some(201))]
+    #[case("status = 204", true, Some(204))]
+    #[case("status = 299", true, Some(299))]
+    #[case("get, status = 204", true, Some(204))]
+    #[case("delete, path = \"/x\", status = 204", true, Some(204))]
+    // Non-2xx status codes are rejected with a compile error
+    #[case("status = 199", false, None)]
+    #[case("status = 300", false, None)]
+    #[case("status = 404", false, None)]
+    #[case("status = 500", false, None)]
+    // Malformed: missing value / non-integer / out of u16 range
+    #[case("status", false, None)]
+    #[case("status =", false, None)]
+    #[case("status = \"204\"", false, None)]
+    #[case("status = 70000", false, None)]
+    fn test_route_args_parse_status(
+        #[case] input: &str,
+        #[case] should_parse: bool,
+        #[case] expected_status: Option<u16>,
+    ) {
+        let result = syn::parse_str::<RouteArgs>(input);
+        match (should_parse, result) {
+            (true, Ok(route_args)) => {
+                assert_eq!(
+                    route_args.success_status, expected_status,
+                    "status mismatch for input: {input}"
+                );
+            }
+            (false, Err(_)) => {}
+            (true, Err(e)) => {
+                panic!("Expected successful parse but got error: {e} for input: {input}")
+            }
+            (false, Ok(_)) => panic!("Expected parse error but got success for input: {input}"),
+        }
     }
 }
