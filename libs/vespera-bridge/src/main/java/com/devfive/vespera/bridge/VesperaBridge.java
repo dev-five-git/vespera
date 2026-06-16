@@ -534,21 +534,33 @@ public class VesperaBridge {
     /**
      * Per-thread <strong>hard retention cap</strong> for the pooled
      * direct buffers (system property
-     * {@code vespera.direct.maxRetainedBytes}, default 256 KiB; clamped
+     * {@code vespera.direct.maxRetainedBytes}, default 2 MiB; clamped
      * to [{@link #DIRECT_INITIAL_CAPACITY}, {@link #DIRECT_MAX_CAPACITY}]).
      *
      * <p>A buffer that a large dispatch grew beyond this cap is shrunk
      * back to {@link #DIRECT_INITIAL_CAPACITY} at the start of the next
      * dispatch on the same thread, so a single big response cannot pin
-     * multiple MiB of off-heap memory for the thread's whole lifetime.
-     * Transient growth up to {@link #DIRECT_MAX_CAPACITY} for an
-     * individual request is still allowed — only steady-state retention
-     * is capped.
+     * off-heap memory for the thread's whole lifetime.  Transient growth
+     * up to {@link #DIRECT_MAX_CAPACITY} for an individual request is
+     * still allowed — only steady-state retention is capped.
+     *
+     * <p><strong>Default raised from 256 KiB to 2 MiB (measured 2026-06).</strong>
+     * Bodyless requests (the common GET) always take DIRECT regardless of
+     * response size, so when the cap sat below the response size every such
+     * dispatch shrank the buffer, overflowed, regrew, and <em>re-ran the
+     * handler</em> — measured 6&ndash;8&times; slower than streaming for
+     * 256 KiB&ndash;1.5 MiB responses (e.g. a {@code GET} download).  At
+     * 2 MiB DIRECT instead beats streaming by 1.7&ndash;2.7&times; across
+     * that range.  The cost is self-targeting: only threads that actually
+     * handle large responses retain more (small-response threads keep the
+     * 64 KiB baseline), and the pool is {@link SoftReference}-backed so the
+     * JVM reclaims it under memory pressure.  Memory-sensitive deployments
+     * dial it back via {@code vespera.direct.maxRetainedBytes}.
      */
     private static final int DIRECT_RETAIN_CAPACITY = Math.max(
             DIRECT_INITIAL_CAPACITY,
             Math.min(DIRECT_MAX_CAPACITY,
-                    Integer.getInteger("vespera.direct.maxRetainedBytes", 256 * 1024)));
+                    Integer.getInteger("vespera.direct.maxRetainedBytes", 2 * 1024 * 1024)));
 
     /**
      * Index 0 = request buffer, index 1 = response buffer.

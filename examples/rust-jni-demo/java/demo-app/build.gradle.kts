@@ -42,6 +42,8 @@ tasks.test {
         "vespera.streaming.chunkBytes",
         "vespera.streaming.channelCapacity",
         "vespera.runtime.workerThreads",
+        "vespera.direct.maxRetainedBytes",
+        "vespera.direct.maxBufferBytes",
     ).forEach { key ->
         System.getProperty(key)?.let { systemProperty(key, it) }
     }
