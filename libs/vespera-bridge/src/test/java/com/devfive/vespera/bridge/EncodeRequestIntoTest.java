@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -36,6 +37,21 @@ class EncodeRequestIntoTest {
         assertEquals(expected.length, written, "written length");
         assertArrayEquals(expected, drain(target, written),
                 "encodeRequestInto must be byte-identical to encodeRequest");
+    }
+
+    private static VesperaBridge.HeaderSource sourceFrom(Map<String, String> headers) {
+        return sink -> headers.forEach(sink::put);
+    }
+
+    private static void assertHeaderSourceEquivalent(
+            String appName, String method, String path, String query,
+            Map<String, String> headers, byte[] body) {
+        byte[] expected = VesperaBridge.encodeRequest(
+                appName, method, path, query, headers, body);
+        byte[] actual = VesperaBridge.encodeRequest(
+                appName, method, path, query, sourceFrom(headers), body);
+        assertArrayEquals(expected, actual,
+                "HeaderSource encodeRequest must be byte-identical to Map encodeRequest");
     }
 
     @Test
@@ -91,5 +107,51 @@ class EncodeRequestIntoTest {
         byte[] out = new byte[written];
         heap.get(0, out);
         assertArrayEquals(expected, out);
+    }
+
+    @Test
+    void headerSourceEmptyHeadersByteIdentical() {
+        assertHeaderSourceEquivalent(null, "GET", "/empty", null, Map.of(), null);
+    }
+
+    @Test
+    void headerSourceOneHeaderByteIdentical() {
+        assertHeaderSourceEquivalent(null, "GET", "/one", null,
+                Map.of("accept", "application/json"), null);
+    }
+
+    @Test
+    void headerSourceSeveralHeadersByteIdentical() {
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("host", "example.test");
+        headers.put("content-type", "application/json");
+        headers.put("x-custom-trace", "01HV2N3M4P5Q6R7S8T9V0W1X2Y");
+        headers.put("accept-encoding", "gzip, br");
+        assertHeaderSourceEquivalent(null, "POST", "/several", null,
+                headers, "{}".getBytes(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void headerSourceSpecialHeaderValuesByteIdentical() {
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("x-quote", "a\"b\\c");
+        headers.put("x-control", "line\n tab\t nul\u0000 end");
+        headers.put("x-utf8", "안녕 🌙");
+        assertHeaderSourceEquivalent(null, "GET", "/special", null, headers, null);
+    }
+
+    @Test
+    void headerSourceAppNameAndQueryByteIdentical() {
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("accept", "application/json");
+        headers.put("x-app", "admin");
+        assertHeaderSourceEquivalent(" admin ", "GET", "/dashboard", "q=rust&sort=desc",
+                headers, null);
+    }
+
+    @Test
+    void headerSourceNoAppNameWithQueryByteIdentical() {
+        assertHeaderSourceEquivalent(null, "GET", "/search", "q=vespera",
+                Map.of("accept", "application/json"), null);
     }
 }

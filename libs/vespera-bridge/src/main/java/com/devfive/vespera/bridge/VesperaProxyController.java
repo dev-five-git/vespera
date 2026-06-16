@@ -82,7 +82,7 @@ public class VesperaProxyController {
         final String method = request.getMethod();
         final String path = request.getRequestURI();
         final String query = Objects.toString(request.getQueryString(), "");
-        final Map<String, String> headers = collectHeaders(request);
+        final VesperaBridge.HeaderSource headers = sink -> forEachRequestHeader(request, sink);
 
         if (log.isDebugEnabled()) {
             log.debug("-> Rust  {} {} app={} mode={}", method, path, appName, mode);
@@ -171,7 +171,7 @@ public class VesperaProxyController {
     private static void dispatchSync(
             HttpServletResponse response,
             String appName, String method, String path, String query,
-            Map<String, String> headers, byte[] body) throws IOException {
+            VesperaBridge.HeaderSource headers, byte[] body) throws IOException {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
         byte[] wireResp = VesperaBridge.dispatchBytes(wireReq);
@@ -218,7 +218,7 @@ public class VesperaProxyController {
 
     private CompletableFuture<ResponseEntity<?>> dispatchAsyncFlow(
             String appName, String method, String path, String query,
-            Map<String, String> headers, byte[] body) {
+            VesperaBridge.HeaderSource headers, byte[] body) {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
         return VesperaBridge.dispatch(wireReq)
@@ -234,7 +234,7 @@ public class VesperaProxyController {
     private void dispatchStreaming(
             HttpServletResponse response,
             String appName, String method, String path, String query,
-            Map<String, String> headers, byte[] body) throws IOException {
+            VesperaBridge.HeaderSource headers, byte[] body) throws IOException {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
         VesperaBridge.dispatchStreamingWithHeader(
@@ -254,7 +254,7 @@ public class VesperaProxyController {
     private void dispatchBidirectional(
             HttpServletRequest request, HttpServletResponse response,
             String appName, String method, String path, String query,
-            Map<String, String> headers) throws IOException {
+            VesperaBridge.HeaderSource headers) throws IOException {
         byte[] wireHeader = VesperaBridge.encodeRequestHeader(
                 appName, method, path, query, headers);
         VesperaBridge.dispatchFullStreamingWithHeader(
@@ -283,7 +283,7 @@ public class VesperaProxyController {
     private static void dispatchDirectMode(
             HttpServletResponse response,
             String appName, String method, String path, String query,
-            Map<String, String> headers, byte[] body) throws IOException {
+            VesperaBridge.HeaderSource headers, byte[] body) throws IOException {
         ByteBuffer wireResp;
         try {
             // Encodes straight into the pooled direct buffer — no
@@ -347,12 +347,16 @@ public class VesperaProxyController {
         // order — and thus the request header JSON field order — stays
         // deterministic.
         Map<String, String> headers = new LinkedHashMap<>(32);
+        forEachRequestHeader(request, headers::put);
+        return headers;
+    }
+
+    static void forEachRequestHeader(HttpServletRequest request, VesperaBridge.HeaderSink sink) {
         Enumeration<String> names = request.getHeaderNames();
         while (names.hasMoreElements()) {
             String name = names.nextElement();
-            headers.put(toLowerCaseAscii(name), joinHeaderValues(name, request));
+            sink.put(toLowerCaseAscii(name), joinHeaderValues(name, request));
         }
-        return headers;
     }
 
     /**

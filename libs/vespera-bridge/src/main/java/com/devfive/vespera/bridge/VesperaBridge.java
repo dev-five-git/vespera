@@ -43,6 +43,16 @@ import java.util.function.Consumer;
  */
 public class VesperaBridge {
 
+    @FunctionalInterface
+    public interface HeaderSink {
+        void put(String lowerName, String value);
+    }
+
+    @FunctionalInterface
+    public interface HeaderSource {
+        void writeTo(HeaderSink sink);
+    }
+
     /** Lowercase hex digits for the JSON C0 control-character escapes. */
     private static final byte[] HEX = {
         '0', '1', '2', '3', '4', '5', '6', '7',
@@ -112,6 +122,28 @@ public class VesperaBridge {
             for (int i = 0; i < n; i++) {
                 buf[count++] = (byte) lit.charAt(i);
             }
+        }
+    }
+
+    private static final class HeaderJsonSink implements HeaderSink {
+        private final ExposedByteArrayOutputStream buf;
+        private boolean started;
+
+        HeaderJsonSink(ExposedByteArrayOutputStream buf) {
+            this.buf = buf;
+        }
+
+        @Override
+        public void put(String lowerName, String value) {
+            if (started) {
+                buf.put(',');
+            } else {
+                buf.putAscii(",\"headers\":{");
+                started = true;
+            }
+            writeJsonString(buf, lowerName);
+            buf.put(':');
+            writeJsonString(buf, value);
         }
     }
 
@@ -454,6 +486,14 @@ public class VesperaBridge {
         return encodeRequestHeader(null, method, path, query, headers);
     }
 
+    public static byte[] encodeRequestHeader(
+            String method,
+            String path,
+            String query,
+            HeaderSource headers) {
+        return encodeRequestHeader(null, method, path, query, headers);
+    }
+
     /**
      * Same as {@link #encodeRequestHeader(String, String, String, java.util.Map)}
      * but with an explicit app name for multi-app routing.  See
@@ -472,6 +512,21 @@ public class VesperaBridge {
                 Objects.requireNonNull(path, "path"),
                 query,
                 headers != null ? headers : java.util.Map.of(),
+                EMPTY_BODY);
+    }
+
+    public static byte[] encodeRequestHeader(
+            String appName,
+            String method,
+            String path,
+            String query,
+            HeaderSource headers) {
+        return encodeRequest(
+                appName,
+                Objects.requireNonNull(method, "method"),
+                Objects.requireNonNull(path, "path"),
+                query,
+                headers,
                 EMPTY_BODY);
     }
 
@@ -869,6 +924,36 @@ public class VesperaBridge {
                 () -> encodeRequest(appName, method, path, query, headers, bodyBytes));
     }
 
+    public static ByteBuffer dispatchDirectPooled(
+            String appName,
+            String method,
+            String path,
+            String query,
+            HeaderSource headers,
+            byte[] body,
+            boolean retryOnOverflow) {
+        byte[] bodyBytes = body != null ? body : EMPTY_BODY;
+        ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
+        int headerLen = hdr.size();
+        int total = 4 + headerLen + bodyBytes.length;
+        if (currentThreadIsVirtual() || total > DIRECT_MAX_CAPACITY) {
+            return ByteBuffer.wrap(
+                    dispatchBytes(assembleWire(hdr.backingArray(), headerLen, bodyBytes)))
+                    .asReadOnlyBuffer();
+        }
+        ByteBuffer[] pool = directPool();
+        if (pool[0].capacity() < total) {
+            pool[0] = ByteBuffer.allocateDirect(grownCapacity(total));
+        }
+        int written = assembleInto(hdr.backingArray(), headerLen, bodyBytes, pool[0]);
+        if (written != total) {
+            throw new IllegalStateException(
+                    "assembleInto wrote " + written + ", expected " + total);
+        }
+        return dispatchViaPool(pool, total, retryOnOverflow,
+                () -> encodeRequest(appName, method, path, query, headers, bodyBytes));
+    }
+
     /**
      * Dispatch the request already prepared in the pooled in-buffer
      * ({@code pool[0][0..reqLen]}) and apply the response-overflow
@@ -943,6 +1028,19 @@ public class VesperaBridge {
         return assembleInto(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY, target);
     }
 
+    public static int encodeRequestInto(
+            String appName,
+            String method,
+            String path,
+            String query,
+            HeaderSource headers,
+            byte[] body,
+            ByteBuffer target) {
+        Objects.requireNonNull(target, "target");
+        ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
+        return assembleInto(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY, target);
+    }
+
     /** Internal: write {@code [u32 BE len | headerJson[0..headerLen] | body]} at position 0. */
     private static int assembleInto(byte[] headerJson, int headerLen, byte[] body, ByteBuffer target) {
         int total = 4 + headerLen + body.length;
@@ -1005,6 +1103,15 @@ public class VesperaBridge {
         return encodeRequest(null, method, path, query, headers, body);
     }
 
+    public static byte[] encodeRequest(
+            String method,
+            String path,
+            String query,
+            HeaderSource headers,
+            byte[] body) {
+        return encodeRequest(null, method, path, query, headers, body);
+    }
+
     /**
      * Encode a request into the binary wire format with an explicit
      * app name for multi-app routing.
@@ -1030,6 +1137,17 @@ public class VesperaBridge {
             String path,
             String query,
             Map<String, String> headers,
+            byte[] body) {
+        ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
+        return assembleWire(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY);
+    }
+
+    public static byte[] encodeRequest(
+            String appName,
+            String method,
+            String path,
+            String query,
+            HeaderSource headers,
             byte[] body) {
         ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
         return assembleWire(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY);
@@ -1077,6 +1195,36 @@ public class VesperaBridge {
                 writeJsonString(buf, e.getValue());
             }
             buf.put('}');
+        }
+        if (appName != null && !appName.isBlank()) {
+            buf.putAscii(",\"app\":");
+            writeJsonString(buf, appName.trim());
+        }
+        buf.put('}');
+        return buf;
+    }
+
+    private static ExposedByteArrayOutputStream fillHeaderJson(String appName, String method,
+            String path, String query, HeaderSource headers) {
+        ExposedByteArrayOutputStream buf = HEADER_BUF.get();
+        buf.reset();
+        // {"v":<WIRE_VERSION>, ...} — WIRE_VERSION is a single decimal digit.
+        buf.putAscii("{\"v\":");
+        buf.put('0' + WIRE_VERSION);
+        buf.putAscii(",\"method\":");
+        writeJsonString(buf, method);
+        buf.putAscii(",\"path\":");
+        writeJsonString(buf, path);
+        if (query != null && !query.isEmpty()) {
+            buf.putAscii(",\"query\":");
+            writeJsonString(buf, query);
+        }
+        if (headers != null) {
+            HeaderJsonSink sink = new HeaderJsonSink(buf);
+            headers.writeTo(sink);
+            if (sink.started) {
+                buf.put('}');
+            }
         }
         if (appName != null && !appName.isBlank()) {
             buf.putAscii(",\"app\":");

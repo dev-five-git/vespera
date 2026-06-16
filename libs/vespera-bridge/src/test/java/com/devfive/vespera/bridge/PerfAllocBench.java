@@ -4,6 +4,7 @@ import com.sun.management.ThreadMXBean;
 import java.lang.management.ManagementFactory;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.function.IntConsumer;
 import org.junit.jupiter.api.Assumptions;
@@ -113,5 +114,63 @@ class PerfAllocBench {
                 "VESPERA_ALLOC p1_readBody_bodyless bytes_per_op=%d"
                         + " (incl. constant MockHttpServletRequest alloc; sink=%d)%n",
                 bytesPerOp, sink);
+    }
+
+    @Test
+    void proxyHeaderEncode_bytesPerOp() {
+        ThreadMXBean tmx = threadMx();
+        long tid = Thread.currentThread().getId();
+        MockHttpServletRequest req = realisticHeaderRequest();
+        long sink = 0;
+
+        for (int i = 0; i < WARMUP; i++) {
+            Map<String, String> headers = VesperaProxyController.collectHeaders(req);
+            sink += VesperaBridge.encodeRequest(null, "GET", "/x", null, headers, null).length;
+        }
+        long oldBefore = tmx.getThreadAllocatedBytes(tid);
+        for (int i = 0; i < MEASURE; i++) {
+            Map<String, String> headers = VesperaProxyController.collectHeaders(req);
+            sink += VesperaBridge.encodeRequest(null, "GET", "/x", null, headers, null).length;
+        }
+        long oldAfter = tmx.getThreadAllocatedBytes(tid);
+        long oldBytesPerOp = (oldAfter - oldBefore) / MEASURE;
+
+        for (int i = 0; i < WARMUP; i++) {
+            sink += VesperaBridge.encodeRequest(null, "GET", "/x", null,
+                    (VesperaBridge.HeaderSource) (s -> VesperaProxyController.forEachRequestHeader(req, s)),
+                    null).length;
+        }
+        long newBefore = tmx.getThreadAllocatedBytes(tid);
+        for (int i = 0; i < MEASURE; i++) {
+            sink += VesperaBridge.encodeRequest(null, "GET", "/x", null,
+                    (VesperaBridge.HeaderSource) (s -> VesperaProxyController.forEachRequestHeader(req, s)),
+                    null).length;
+        }
+        long newAfter = tmx.getThreadAllocatedBytes(tid);
+        long newBytesPerOp = (newAfter - newBefore) / MEASURE;
+
+        System.out.printf(
+                "VESPERA_ALLOC proxy_header_encode_old bytes_per_op=%d (sink=%d)%n",
+                oldBytesPerOp, sink);
+        System.out.printf(
+                "VESPERA_ALLOC proxy_header_encode_new bytes_per_op=%d (sink=%d)%n",
+                newBytesPerOp, sink);
+    }
+
+    private static MockHttpServletRequest realisticHeaderRequest() {
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
+        req.addHeader("Host", "api.example.test");
+        req.addHeader("User-Agent", "Mozilla/5.0 vespera-bench");
+        req.addHeader("Accept", "application/json");
+        req.addHeader("Accept-Encoding", "gzip, br");
+        req.addHeader("Accept-Language", "en-US,en;q=0.9");
+        req.addHeader("Cache-Control", "no-cache");
+        req.addHeader("Cookie", "sid=abc");
+        req.addHeader("Cookie", "theme=dark");
+        req.addHeader("X-Request-Id", "01HV2N3M4P5Q6R7S8T9V0W1X2Y");
+        req.addHeader("X-Forwarded-For", "203.0.113.10");
+        req.addHeader("X-Forwarded-Proto", "https");
+        req.addHeader("X-Vespera-App", "admin");
+        return req;
     }
 }
