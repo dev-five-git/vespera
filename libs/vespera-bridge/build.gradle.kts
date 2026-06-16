@@ -43,6 +43,10 @@ dependencies {
 
 tasks.named<Test>("test") {
     useJUnitPlatform()
+    // Opt-in micro-benchmarks (PerfAllocBench, gated by @EnabledIfSystemProperty)
+    // read this property; propagate it from the Gradle CLI into the forked test
+    // JVM — same pattern as the rust-jni-demo demo-app.
+    System.getProperty("vespera.bench")?.let { systemProperty("vespera.bench", it) }
 }
 
 // Gate Maven Central signing on the presence of in-memory signing
