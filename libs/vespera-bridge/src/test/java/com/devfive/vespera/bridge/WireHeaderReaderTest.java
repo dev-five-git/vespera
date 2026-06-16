@@ -1,6 +1,7 @@
 package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -103,4 +104,33 @@ class WireHeaderReaderTest {
         assertEquals(List.of(), c.headers());
     }
 
+    /**
+     * P3: {@code apply()} now routes common header names through the shared
+     * {@code CANONICAL_KEYS} table (the same allocation-free path {@code
+     * decode()} uses), so the key String it hands back is the interned
+     * instance — not a freshly allocated one per request. Asserting identity
+     * ({@code assertSame}) against {@code decode()}'s key locks that in.
+     */
+    @Test
+    void applyReusesCanonicalKeyInstances() {
+        String json = "{\"status\":200,\"headers\":{\"content-type\":\"x\"}}";
+        byte[] hb = json.getBytes(StandardCharsets.UTF_8);
+
+        ByteBuffer buf = ByteBuffer.allocate(4 + hb.length);
+        buf.putInt(hb.length);
+        buf.put(hb);
+        String[] applyKey = {null};
+        WireHeaderReader.apply(buf, 4, hb.length, s -> {}, (k, v) -> applyKey[0] = k);
+
+        ByteBuffer buf2 = ByteBuffer.allocate(4 + hb.length);
+        buf2.putInt(hb.length);
+        buf2.put(hb);
+        WireHeaderReader.Decoded decoded = WireHeaderReader.decode(buf2, 4, hb.length);
+        String decodeKey = decoded.headers.keySet().iterator().next();
+
+        assertSame(
+                decodeKey,
+                applyKey[0],
+                "apply() must hand back the same canonical key instance decode() uses");
+    }
 }

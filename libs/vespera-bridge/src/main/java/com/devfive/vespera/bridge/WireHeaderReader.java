@@ -64,7 +64,12 @@ final class WireHeaderReader {
                         if (r.isObjectStart()) {
                             r.beginObject();
                             String k;
-                            while ((k = r.nextKey()) != null) {
+                            // Canonical keys reuse one shared String per common
+                            // header name (content-type, content-length, …) —
+                            // the same allocation-free path decode() uses, so
+                            // the per-request DIRECT/streaming apply() no longer
+                            // allocates a fresh key String for each header.
+                            while ((k = r.nextKeyCanonical()) != null) {
                                 if (r.isArrayStart()) {
                                     r.beginArray();
                                     while (r.hasNextElement()) {

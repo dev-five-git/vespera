@@ -132,7 +132,7 @@ pub struct OpenApi {
     pub components: Option<Components>,
     /// Security requirements
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub security: Option<Vec<HashMap<String, Vec<String>>>>,
+    pub security: Option<Vec<BTreeMap<String, Vec<String>>>>,
     /// Tag definitions
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<Tag>>,
@@ -141,17 +141,36 @@ pub struct OpenApi {
     pub external_docs: Option<ExternalDocumentation>,
 }
 
+/// Merge `other` map entries into `self_map` with self-wins on key
+/// conflicts, allocating the target map only when `other` has entries.
+fn merge_component_map<V>(
+    self_map: &mut Option<BTreeMap<String, V>>,
+    other_map: Option<BTreeMap<String, V>>,
+) {
+    let Some(other_map) = other_map else { return };
+    let target = self_map.get_or_insert_with(BTreeMap::new);
+    for (name, value) in other_map {
+        target.entry(name).or_insert(value);
+    }
+}
+
 impl OpenApi {
     /// Merge another `OpenAPI` document into this one.
-    /// Paths, schemas, and tags from `other` are added to `self`.
-    /// If there are conflicts, `self` takes precedence.
+    ///
+    /// All `paths`, `components` (schemas, responses, parameters,
+    /// examples, request bodies, headers, security schemes), and `tags`
+    /// from `other` are added to `self`. Top-level `servers`, `security`,
+    /// and `external_docs` are adopted from `other` only when `self` has
+    /// not set its own. On any key/field conflict, `self` takes precedence.
     pub fn merge(&mut self, other: Self) {
         // Merge paths (self takes precedence on conflict)
         for (path, item) in other.paths {
             self.paths.entry(path).or_insert(item);
         }
 
-        // Merge components
+        // Merge components (every reusable component kind, self-wins on
+        // key conflict) — previously only `schemas` + `security_schemes`
+        // were merged, silently dropping the rest.
         if let Some(other_components) = other.components {
             let self_components = self.components.get_or_insert(Components {
                 schemas: None,
@@ -163,23 +182,31 @@ impl OpenApi {
                 security_schemes: None,
             });
 
-            // Merge schemas
-            if let Some(other_schemas) = other_components.schemas {
-                let self_schemas = self_components.schemas.get_or_insert_with(BTreeMap::new);
-                for (name, schema) in other_schemas {
-                    self_schemas.entry(name).or_insert(schema);
-                }
-            }
+            merge_component_map(&mut self_components.schemas, other_components.schemas);
+            merge_component_map(&mut self_components.responses, other_components.responses);
+            merge_component_map(&mut self_components.parameters, other_components.parameters);
+            merge_component_map(&mut self_components.examples, other_components.examples);
+            merge_component_map(
+                &mut self_components.request_bodies,
+                other_components.request_bodies,
+            );
+            merge_component_map(&mut self_components.headers, other_components.headers);
+            merge_component_map(
+                &mut self_components.security_schemes,
+                other_components.security_schemes,
+            );
+        }
 
-            // Merge security schemes
-            if let Some(other_security_schemes) = other_components.security_schemes {
-                let self_security_schemes = self_components
-                    .security_schemes
-                    .get_or_insert_with(BTreeMap::new);
-                for (name, scheme) in other_security_schemes {
-                    self_security_schemes.entry(name).or_insert(scheme);
-                }
-            }
+        // Merge top-level servers / security / external_docs (self wins:
+        // adopt other's only when self has not set its own).
+        if self.servers.is_none() {
+            self.servers = other.servers;
+        }
+        if self.security.is_none() {
+            self.security = other.security;
+        }
+        if self.external_docs.is_none() {
+            self.external_docs = other.external_docs;
         }
 
         // Merge tags (deduplicate by name).  A HashSet of seen names makes
@@ -473,5 +500,116 @@ mod tests {
         assert_eq!(base.paths.len(), 1);
         assert!(base.paths.contains_key("/users"));
         assert_eq!(base.tags.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_merge_components_responses_and_parameters() {
+        use crate::route::{Parameter, ParameterLocation, Response};
+
+        let response = |desc: &str| Response {
+            description: desc.to_string(),
+            headers: None,
+            content: None,
+        };
+
+        let mut base = create_base_openapi();
+        base.components = Some(Components {
+            schemas: None,
+            responses: Some(BTreeMap::from([("NotFound".to_string(), response("base"))])),
+            parameters: None,
+            examples: None,
+            request_bodies: None,
+            headers: None,
+            security_schemes: None,
+        });
+
+        let mut other = create_base_openapi();
+        other.components = Some(Components {
+            schemas: None,
+            responses: Some(BTreeMap::from([
+                ("NotFound".to_string(), response("other-dup")),
+                ("ServerError".to_string(), response("other")),
+            ])),
+            parameters: Some(BTreeMap::from([(
+                "PageParam".to_string(),
+                Parameter {
+                    name: "page".to_string(),
+                    r#in: ParameterLocation::Query,
+                    description: None,
+                    required: None,
+                    schema: None,
+                    example: None,
+                },
+            )])),
+            examples: None,
+            request_bodies: None,
+            headers: None,
+            security_schemes: None,
+        });
+
+        base.merge(other);
+
+        let comps = base.components.as_ref().unwrap();
+        let responses = comps.responses.as_ref().unwrap();
+        // other's non-conflicting response is merged in (previously dropped).
+        assert!(responses.contains_key("NotFound"));
+        assert!(responses.contains_key("ServerError"));
+        // self wins on conflict.
+        assert_eq!(responses.get("NotFound").unwrap().description, "base");
+        // parameters adopted from other (base had none) — previously dropped.
+        assert!(comps.parameters.as_ref().unwrap().contains_key("PageParam"));
+    }
+
+    #[test]
+    fn test_merge_top_level_servers_security_external_docs() {
+        use crate::schema::ExternalDocumentation;
+
+        // base sets none of the three → adopts other's.
+        let mut base = create_base_openapi();
+        let mut other = create_base_openapi();
+        other.servers = Some(vec![Server {
+            url: "https://api.example.com".to_string(),
+            description: None,
+            variables: None,
+        }]);
+        other.security = Some(vec![BTreeMap::from([(
+            "bearerAuth".to_string(),
+            Vec::new(),
+        )])]);
+        other.external_docs = Some(ExternalDocumentation {
+            description: None,
+            url: "https://docs.example.com".to_string(),
+        });
+
+        base.merge(other);
+
+        assert_eq!(
+            base.servers.as_ref().unwrap()[0].url,
+            "https://api.example.com"
+        );
+        assert!(base.security.is_some());
+        assert_eq!(
+            base.external_docs.as_ref().unwrap().url,
+            "https://docs.example.com"
+        );
+
+        // self-wins: base already has servers → other's ignored.
+        let mut base2 = create_base_openapi();
+        base2.servers = Some(vec![Server {
+            url: "https://self.example.com".to_string(),
+            description: None,
+            variables: None,
+        }]);
+        let mut other2 = create_base_openapi();
+        other2.servers = Some(vec![Server {
+            url: "https://other.example.com".to_string(),
+            description: None,
+            variables: None,
+        }]);
+        base2.merge(other2);
+        assert_eq!(
+            base2.servers.as_ref().unwrap()[0].url,
+            "https://self.example.com"
+        );
     }
 }

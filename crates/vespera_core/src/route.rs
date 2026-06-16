@@ -1,7 +1,7 @@
 //! Route-related structure definitions
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use crate::SchemaRef;
 
@@ -122,7 +122,7 @@ pub struct MediaType {
     pub example: Option<serde_json::Value>,
     /// Examples
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub examples: Option<HashMap<String, Example>>,
+    pub examples: Option<BTreeMap<String, Example>>,
 }
 
 /// Example definition
@@ -148,7 +148,7 @@ pub struct Response {
     pub description: String,
     /// Header definitions
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub headers: Option<HashMap<String, Header>>,
+    pub headers: Option<BTreeMap<String, Header>>,
     /// Schema per Content-Type
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<BTreeMap<String, MediaType>>,
@@ -192,7 +192,7 @@ pub struct Operation {
     pub responses: BTreeMap<String, Response>,
     /// Security requirements
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub security: Option<Vec<HashMap<String, Vec<String>>>>,
+    pub security: Option<Vec<BTreeMap<String, Vec<String>>>>,
     /// Whether this operation is deprecated
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deprecated: Option<bool>,

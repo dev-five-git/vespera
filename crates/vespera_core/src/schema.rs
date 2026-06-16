@@ -1,7 +1,7 @@
 //! Schema-related structure definitions
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 /// Schema reference or inline schema
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -362,19 +362,19 @@ pub struct Components {
     pub schemas: Option<BTreeMap<String, Schema>>,
     /// Response definitions
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub responses: Option<HashMap<String, crate::route::Response>>,
+    pub responses: Option<BTreeMap<String, crate::route::Response>>,
     /// Parameter definitions
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub parameters: Option<HashMap<String, crate::route::Parameter>>,
+    pub parameters: Option<BTreeMap<String, crate::route::Parameter>>,
     /// Example definitions
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub examples: Option<HashMap<String, crate::route::Example>>,
+    pub examples: Option<BTreeMap<String, crate::route::Example>>,
     /// Request body definitions
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub request_bodies: Option<HashMap<String, crate::route::RequestBody>>,
+    pub request_bodies: Option<BTreeMap<String, crate::route::RequestBody>>,
     /// Header definitions
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub headers: Option<HashMap<String, crate::route::Header>>,
+    pub headers: Option<BTreeMap<String, crate::route::Header>>,
     /// Security scheme definitions
     #[serde(skip_serializing_if = "Option::is_none")]
     pub security_schemes: Option<BTreeMap<String, SecurityScheme>>,
@@ -386,6 +386,9 @@ pub struct Components {
 pub enum SecuritySchemeType {
     ApiKey,
     Http,
+    /// OpenAPI's canonical wire name is `mutualTLS` (not the `camelCase`
+    /// `mutualTls` the container rule would produce).
+    #[serde(rename = "mutualTLS")]
     MutualTls,
     OAuth2,
     OpenIdConnect,

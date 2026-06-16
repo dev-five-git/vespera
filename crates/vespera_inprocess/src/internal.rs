@@ -38,33 +38,7 @@ pub async fn dispatch_parts<'h>(
     headers: impl Iterator<Item = (&'h str, &'h str)>,
     body_bytes: Bytes,
 ) -> Result<ResponseParts, (u16, String)> {
-    let Ok(http_method) = method_str.parse::<Method>() else {
-        return Err((
-            405,
-            format!("Method Not Allowed: '{method_str}' is not a valid HTTP method"),
-        ));
-    };
-
-    let mut builder = request_builder(http_method, path, query);
-    // Case-insensitive Content-Type detection (RFC 7230 §3.2),
-    // tracked inside the single header pass.
-    let mut has_content_type = false;
-    for (name, value) in headers {
-        has_content_type = has_content_type || name.eq_ignore_ascii_case("content-type");
-        builder = builder.header(name, value);
-    }
-    if !body_bytes.is_empty() && !has_content_type {
-        builder = builder.header("content-type", "application/json");
-    }
-
-    // A malformed wire `path` (e.g. a raw space → not a valid
-    // `http::Uri`) or an invalid header name/value surfaces here as a
-    // builder error; convert it to a 400 so the contract "every failure
-    // returns a wire response" holds instead of panicking.
-    let request = match builder.body(Body::from(body_bytes)) {
-        Ok(req) => req,
-        Err(e) => return Err((400, format!("invalid request: {e}"))),
-    };
+    let request = build_request_from_bytes(method_str, path, query, headers, body_bytes)?;
 
     let response = router
         .oneshot(request)
@@ -90,6 +64,47 @@ fn request_builder(method: Method, path: &str, query: &str) -> http::request::Bu
     }
 }
 
+/// Build the axum request shared by the buffered ([`dispatch_parts`]) and
+/// response-streaming ([`dispatch_response_streaming`]) paths — both take a
+/// fully-buffered [`Bytes`] body and default a missing `Content-Type`.
+///
+/// One borrowed-iterator pass applies every header while detecting
+/// `Content-Type` (case-insensitive, RFC 7230 §3.2); a non-empty body with
+/// no `Content-Type` defaults to `application/json`.  Returns `Err((405, _))`
+/// for an unparseable method and `Err((400, _))` for a malformed path / header
+/// that `http`'s builder rejects, upholding the "every failure returns a wire
+/// response" contract.  `#[inline]` so the two call sites keep the previous
+/// inlined single-pass codegen.
+#[inline]
+fn build_request_from_bytes<'h>(
+    method_str: &str,
+    path: &str,
+    query: &str,
+    headers: impl Iterator<Item = (&'h str, &'h str)>,
+    body_bytes: Bytes,
+) -> Result<Request<Body>, (u16, String)> {
+    let Ok(http_method) = method_str.parse::<Method>() else {
+        return Err((
+            405,
+            format!("Method Not Allowed: '{method_str}' is not a valid HTTP method"),
+        ));
+    };
+    let mut builder = request_builder(http_method, path, query);
+    // Case-insensitive Content-Type detection (RFC 7230 §3.2), tracked
+    // inside the single header pass.
+    let mut has_content_type = false;
+    for (name, value) in headers {
+        has_content_type = has_content_type || name.eq_ignore_ascii_case("content-type");
+        builder = builder.header(name, value);
+    }
+    if !body_bytes.is_empty() && !has_content_type {
+        builder = builder.header("content-type", "application/json");
+    }
+    builder
+        .body(Body::from(body_bytes))
+        .map_err(|e| (400, format!("invalid request: {e}")))
+}
+
 /// Drive a [`Router`] and stream response body chunks through
 /// `on_chunk`, returning the status/headers/metadata once the body
 /// stream finishes.
@@ -113,31 +128,7 @@ pub async fn dispatch_response_streaming<'h, F>(
 where
     F: FnMut(&[u8]) -> ControlFlow<()>,
 {
-    let Ok(http_method) = method_str.parse::<Method>() else {
-        return Err((
-            405,
-            format!("Method Not Allowed: '{method_str}' is not a valid HTTP method"),
-        ));
-    };
-
-    let mut builder = request_builder(http_method, path, query);
-    let mut has_content_type = false;
-    for (name, value) in headers {
-        has_content_type = has_content_type || name.eq_ignore_ascii_case("content-type");
-        builder = builder.header(name, value);
-    }
-    if !body_bytes.is_empty() && !has_content_type {
-        builder = builder.header("content-type", "application/json");
-    }
-
-    // A malformed wire `path` (e.g. a raw space → not a valid
-    // `http::Uri`) or an invalid header name/value surfaces here as a
-    // builder error; convert it to a 400 so the contract "every failure
-    // returns a wire response" holds instead of panicking.
-    let request = match builder.body(Body::from(body_bytes)) {
-        Ok(req) => req,
-        Err(e) => return Err((400, format!("invalid request: {e}"))),
-    };
+    let request = build_request_from_bytes(method_str, path, query, headers, body_bytes)?;
 
     let response = router
         .oneshot(request)

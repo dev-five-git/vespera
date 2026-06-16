@@ -129,15 +129,19 @@ public class VesperaProxyController {
      */
     private static final int MAX_FIXED_BODY = 64 * 1024 * 1024;
 
-    private static byte[] readBody(HttpServletRequest request) throws IOException {
-        // Bodyless requests (explicit Content-Length: 0 — e.g. the
-        // small/bodyless idempotent GETs the SmartDispatch resolver
-        // routes through DIRECT) skip the InputStream + readAllBytes
-        // allocations entirely.
-        long contentLength = request.getContentLengthLong();
-        if (contentLength == 0L) {
+    // Package-private (not private) so unit tests can exercise the
+    // bodyless fast path and length-based reads with MockHttpServletRequest.
+    static byte[] readBody(HttpServletRequest request) throws IOException {
+        // Provably bodyless requests skip the servlet InputStream
+        // acquisition + readAllBytes allocations entirely. This covers
+        // both Content-Length: 0 AND length-less GET/HEAD/OPTIONS (the
+        // hottest path — the small idempotent GETs the SmartDispatch
+        // resolver routes through DIRECT, which previously still paid a
+        // getInputStream()+readAllBytes() round-trip on an empty body).
+        if (DispatchModeResolver.definitelyBodyless(request)) {
             return EMPTY_BODY;
         }
+        long contentLength = request.getContentLengthLong();
         try (InputStream in = request.getInputStream()) {
             if (contentLength > 0 && contentLength <= MAX_FIXED_BODY) {
                 // Known, bounded length: one exact allocation filled in
@@ -335,7 +339,9 @@ public class VesperaProxyController {
         return HttpMethods.isIdempotent(method);
     }
 
-    private static Map<String, String> collectHeaders(HttpServletRequest request) {
+    // Package-private (not private) so unit tests can verify duplicate-header
+    // joining (B4) with MockHttpServletRequest.
+    static Map<String, String> collectHeaders(HttpServletRequest request) {
         // Pre-size for a typical request header count so the common case
         // never resizes; keep LinkedHashMap (NOT HashMap) so insertion
         // order — and thus the request header JSON field order — stays
@@ -344,9 +350,38 @@ public class VesperaProxyController {
         Enumeration<String> names = request.getHeaderNames();
         while (names.hasMoreElements()) {
             String name = names.nextElement();
-            headers.put(toLowerCaseAscii(name), request.getHeader(name));
+            headers.put(toLowerCaseAscii(name), joinHeaderValues(name, request));
         }
         return headers;
+    }
+
+    /**
+     * Combine every value of a repeated request header so duplicates are
+     * not silently dropped before Rust sees them (the prior
+     * {@code request.getHeader(name)} returned only the first value).
+     *
+     * <p>The single-value case — the overwhelming majority of headers —
+     * returns the lone value with no allocation.  Multiple same-name
+     * values are combined per RFC 7230 §3.2.2 with {@code ", "}, except
+     * {@code Cookie}, whose values themselves contain commas and must be
+     * joined with {@code "; "} per RFC 6265bis §5.4 so the Rust cookie
+     * parser still receives a valid cookie string.
+     */
+    private static String joinHeaderValues(String name, HttpServletRequest request) {
+        Enumeration<String> values = request.getHeaders(name);
+        if (values == null || !values.hasMoreElements()) {
+            return request.getHeader(name);
+        }
+        String first = values.nextElement();
+        if (!values.hasMoreElements()) {
+            return first;
+        }
+        String separator = name.equalsIgnoreCase("cookie") ? "; " : ", ";
+        StringBuilder sb = new StringBuilder(first);
+        do {
+            sb.append(separator).append(values.nextElement());
+        } while (values.hasMoreElements());
+        return sb.toString();
     }
 
     /**

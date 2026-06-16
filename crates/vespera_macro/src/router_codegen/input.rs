@@ -256,10 +256,10 @@ fn parse_security_values(input: ParseStream) -> syn::Result<Vec<String>> {
     Ok(entries.into_iter().map(|entry| entry.value()).collect())
 }
 
-fn security_requirements(schemes: Vec<String>) -> Vec<HashMap<String, Vec<String>>> {
+fn security_requirements(schemes: Vec<String>) -> Vec<BTreeMap<String, Vec<String>>> {
     schemes
         .into_iter()
-        .map(|scheme| HashMap::from([(scheme, Vec::new())]))
+        .map(|scheme| BTreeMap::from([(scheme, Vec::new())]))
         .collect()
 }
 
@@ -544,7 +544,7 @@ pub struct ProcessedVesperaInput {
     pub redoc_url: Option<String>,
     pub servers: Option<Vec<Server>>,
     pub security_schemes: Option<BTreeMap<String, SecurityScheme>>,
-    pub security: Option<Vec<HashMap<String, Vec<String>>>>,
+    pub security: Option<Vec<BTreeMap<String, Vec<String>>>>,
     pub tag_descriptions: Option<HashMap<String, String>>,
     /// Apps to merge (`syn::Path` for code generation)
     pub merge: Vec<syn::Path>,

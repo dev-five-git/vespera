@@ -90,7 +90,7 @@ fn is_non_body_type(ty: &Type) -> bool {
 /// Non-body types (`StatusCode`, `HeaderMap`, `CookieJar`) are filtered out.
 /// The last remaining element is treated as the response body.
 /// Any presence of `HeaderMap` in the tuple marks headers as present.
-fn extract_ok_payload_and_headers(ok_ty: &Type) -> (Type, Option<HashMap<String, Header>>) {
+fn extract_ok_payload_and_headers(ok_ty: &Type) -> (Type, Option<BTreeMap<String, Header>>) {
     if let Type::Tuple(tuple) = ok_ty {
         // Find the body type: last element that is NOT a non-body type
         let payload_ty = tuple
@@ -106,7 +106,7 @@ fn extract_ok_payload_and_headers(ok_ty: &Type) -> (Type, Option<HashMap<String,
                 .iter()
                 .any(|ty| is_keyword_type(ty, &KeywordType::HeaderMap))
             {
-                Some(HashMap::new())
+                Some(BTreeMap::new())
             } else {
                 None
             };

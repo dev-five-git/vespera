@@ -23,7 +23,7 @@ use paths::build_path_items;
 #[derive(Default)]
 pub struct OpenApiSecurity {
     pub security_schemes: Option<BTreeMap<String, SecurityScheme>>,
-    pub security: Option<Vec<HashMap<String, Vec<String>>>>,
+    pub security: Option<Vec<BTreeMap<String, Vec<String>>>>,
     pub tag_descriptions: Option<HashMap<String, String>>,
 }
 
@@ -248,7 +248,7 @@ mod tests {
                 bearer_format: Some("JWT".to_string()),
             },
         )]);
-        let global_security = Some(vec![HashMap::from([(
+        let global_security = Some(vec![BTreeMap::from([(
             "bearerAuth".to_string(),
             Vec::new(),
         )])]);

@@ -1,5 +1,7 @@
 package com.devfive.vespera.bridge;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -56,6 +58,9 @@ import org.springframework.context.annotation.Configuration;
 @EnableConfigurationProperties(VesperaBridgeProperties.class)
 public class VesperaBridgeAutoConfiguration {
 
+    private static final Logger log =
+            LoggerFactory.getLogger(VesperaBridgeAutoConfiguration.class);
+
     @Bean
     @ConditionalOnMissingBean
     public AppNameResolver vesperaBridgeAppNameResolver(VesperaBridgeProperties props) {
@@ -110,7 +115,20 @@ public class VesperaBridgeAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
-    public DispatchModeResolver vesperaBridgeDispatchModeResolver() {
+    public DispatchModeResolver vesperaBridgeDispatchModeResolver(VesperaBridgeProperties props) {
+        // This default bean is created for `dispatch-mode=smart` AND for any
+        // unrecognized value (the `bidirectional-streaming` opt-out has its own
+        // @ConditionalOnProperty bean above). Surface a typo instead of letting
+        // it silently change dispatch semantics to smart.
+        String mode = props.getDispatchMode();
+        if (mode != null
+                && !mode.equalsIgnoreCase("smart")
+                && !mode.equalsIgnoreCase("bidirectional-streaming")) {
+            log.warn(
+                    "Unrecognized vespera.bridge.dispatch-mode '{}' — falling back to "
+                    + "'smart'. Valid values: 'smart' (default), 'bidirectional-streaming'.",
+                    mode);
+        }
         return new SmartDispatchModeResolver();
     }
 

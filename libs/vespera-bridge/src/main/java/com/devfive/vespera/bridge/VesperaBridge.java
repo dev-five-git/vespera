@@ -116,6 +116,9 @@ public class VesperaBridge {
     }
 
     private static volatile boolean loaded = false;
+    /** Name passed to the first successful {@link #init(String)} — used to
+     *  reject a later re-init with a <em>different</em> library name. */
+    private static String loadedLibraryName;
 
     private static volatile Integer pendingChunkBytes = null;
     private static volatile Integer pendingChannelCapacity = null;
@@ -208,7 +211,21 @@ public class VesperaBridge {
      * @param libraryName Cargo crate name (e.g. {@code "rust_jni_demo"})
      */
     public static synchronized void init(String libraryName) {
-        if (loaded) return;
+        Objects.requireNonNull(libraryName, "libraryName");
+        if (loaded) {
+            // Re-init with the SAME library is a no-op (friendly for test
+            // harness resets / repeated Spring context starts). A DIFFERENT
+            // name is a bug — a JVM process loads exactly one vespera cdylib
+            // for its lifetime — so surface it instead of silently keeping
+            // the first library and dispatching to the wrong Rust app.
+            if (!loadedLibraryName.equals(libraryName)) {
+                throw new IllegalStateException(
+                        "VesperaBridge is already initialised with native library '"
+                        + loadedLibraryName + "' and cannot be re-initialised with a "
+                        + "different library '" + libraryName + "'.");
+            }
+            return;
+        }
         try {
             loadBundled(libraryName);
         } catch (UnsatisfiedLinkError e) {
@@ -236,6 +253,7 @@ public class VesperaBridge {
             // the VESPERA_RUNTIME_WORKERS env var / Tokio's default.
         }
         loaded = true;
+        loadedLibraryName = libraryName;
     }
 
     /**
@@ -1130,6 +1148,21 @@ public class VesperaBridge {
                 out.put(0x80 | ((cp >> 12) & 0x3F));
                 out.put(0x80 | ((cp >> 6) & 0x3F));
                 out.put(0x80 | (cp & 0x3F));
+            } else if (Character.isSurrogate(c)) {
+                // Unpaired UTF-16 surrogate (a lone high surrogate not
+                // followed by a low surrogate, or a lone low surrogate).
+                // UTF-8 must never encode surrogate code points, so emit a
+                // six-character JSON escape (backslash, u, four hex digits)
+                // instead of the invalid 3-byte sequence the BMP branch
+                // below would produce — this keeps the wire header valid
+                // UTF-8 / RFC 8259 JSON and round-trips losslessly through
+                // serde_json on the Rust side.
+                out.put('\\');
+                out.put('u');
+                out.put(HEX[(c >> 12) & 0xF]);
+                out.put(HEX[(c >> 8) & 0xF]);
+                out.put(HEX[(c >> 4) & 0xF]);
+                out.put(HEX[c & 0xF]);
             } else {
                 out.put(0xE0 | (c >> 12));
                 out.put(0x80 | ((c >> 6) & 0x3F));

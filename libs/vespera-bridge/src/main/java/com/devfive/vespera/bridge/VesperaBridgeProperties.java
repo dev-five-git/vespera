@@ -47,8 +47,8 @@ public class VesperaBridgeProperties {
      *
      * <ul>
      *   <li>{@code smart} (default since 0.2.0) — small bounded
-     *       idempotent requests (Content-Length known and &le; 256
-     *       KiB; GET/HEAD/PUT/DELETE/OPTIONS) take the pooled
+     *       idempotent requests (Content-Length absent/bodyless or
+     *       &le; 1 MiB; GET/HEAD/PUT/DELETE/OPTIONS) take the pooled
      *       direct-buffer path, skipping JNI array copies and
      *       per-request stream setup; small non-idempotent requests
      *       (POST/PATCH) take heap-buffered SYNC; everything else

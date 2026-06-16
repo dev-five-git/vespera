@@ -78,7 +78,9 @@ public enum DispatchMode {
      * <p>Selected by the autoconfigured
      * {@link SmartDispatchModeResolver} (default since 0.2.0) for
      * small, bounded, idempotent requests (GET/HEAD/PUT/DELETE/
-     * OPTIONS with {@code Content-Length} absent or &le; 256 KiB).
+     * OPTIONS with {@code Content-Length} absent or &le; 1 MiB —
+     * the DIRECT gate {@code DEFAULT_MAX_DIRECT_BYTES}; the 256 KiB
+     * figure is the separate {@link #SYNC} gate).
      * The idempotency gate matters because a response that overflows
      * the pooled direct buffer re-runs the Rust handler once.  Never
      * selected by the conservative opt-out

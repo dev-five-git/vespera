@@ -94,6 +94,19 @@ class VesperaBridgeAutoConfigurationTest {
                 .run(ctx -> assertTrue(ctx.getBeansOfType(VesperaProxyController.class).isEmpty()));
     }
 
+    @Test
+    void unknownDispatchModeFallsBackToSmart() {
+        // Q7: a typo'd dispatch-mode no longer silently changes semantics —
+        // it falls back to smart (with a logged warning), not bidirectional.
+        runner.withPropertyValues("vespera.bridge.dispatch-mode=not-a-real-mode")
+                .run(
+                        ctx ->
+                                assertInstanceOf(
+                                        SmartDispatchModeResolver.class,
+                                        ctx.getBean(DispatchModeResolver.class),
+                                        "unrecognized dispatch-mode must fall back to smart"));
+    }
+
     static final class CustomResolver implements DispatchModeResolver {
         @Override
         public DispatchMode resolveMode(jakarta.servlet.http.HttpServletRequest request) {

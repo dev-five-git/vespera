@@ -496,23 +496,24 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for tempfile::NamedTempFile {
     ) -> Result<Self, TypedMultipartError> {
         let field_name = field.name().unwrap_or_default().to_string();
 
-        // Temp-file creation is a blocking syscall — keep it off the
-        // async worker.  `NamedTempFile` (not `tokio::fs::File`) is
-        // retained so cleanup-on-drop semantics survive.
-        let temp = tokio::task::spawn_blocking(Self::new)
-            .await
-            .map_err(|e| TypedMultipartError::Other {
-                source: e.to_string(),
-            })?
-            .map_err(|e| TypedMultipartError::Other {
-                source: e.to_string(),
-            })?;
-
-        // Write through an independent async handle to the same file
-        // (tokio::fs routes writes to the blocking pool) so large
-        // uploads never stall the async executor.  `temp` keeps
-        // ownership of the path + delete-on-drop guard.
-        let std_file = temp.reopen().map_err(|e| TypedMultipartError::Other {
+        // Temp-file creation AND reopen() are both blocking syscalls —
+        // run them together on the blocking pool so neither stalls the
+        // async worker (the reopen previously ran inline on the async
+        // task).  `NamedTempFile` (not `tokio::fs::File`) is retained so
+        // cleanup-on-drop semantics survive; the reopened std handle is
+        // wrapped in `tokio::fs` below so large writes also route to the
+        // blocking pool.  `temp` keeps ownership of the path + delete-on-
+        // drop guard.
+        let (temp, std_file) = tokio::task::spawn_blocking(|| {
+            let temp = Self::new()?;
+            let std_file = temp.reopen()?;
+            Ok::<_, std::io::Error>((temp, std_file))
+        })
+        .await
+        .map_err(|e| TypedMultipartError::Other {
+            source: e.to_string(),
+        })?
+        .map_err(|e| TypedMultipartError::Other {
             source: e.to_string(),
         })?;
         let mut file = tokio::fs::File::from_std(std_file);
