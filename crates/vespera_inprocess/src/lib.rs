@@ -98,3 +98,18 @@ pub use streaming::{
     dispatch_streaming_with_header_async,
 };
 pub use wire::error_wire;
+
+/// Bench-only surface for the same-run hand-rolled vs `serde_json` A/B in
+/// `benches/dispatch.rs` (the `wire_header_serde` criterion group).
+///
+/// **Not a stable public API** — these thin wrappers exist purely so the
+/// criterion harness (a separate compilation target that can only see
+/// `pub` items) can call both the hand-rolled and the retained
+/// `serde_json` wire-header paths in the same measurement run.  Hidden
+/// from docs; do not depend on it.
+#[doc(hidden)]
+pub mod bench_support {
+    pub use crate::wire::{
+        bench_parse_hand, bench_parse_serde, bench_write_hand, bench_write_serde,
+    };
+}

@@ -12,11 +12,28 @@ use serde::{Deserialize, Serialize};
 use crate::envelope::ResponseMetadata;
 use crate::internal::ResponseParts;
 
+/// Hand-rolled request-header parser (byte-compatible replacement for
+/// the `serde_json` derive path; the serde version is retained as
+/// [`parse_wire_header_serde`] for the criterion A/B).
+mod header_read;
+/// Hand-rolled response-header serializer (byte-identical to the
+/// `serde_json` path retained as [`write_wire_header_into_slice_serde`]
+/// for the criterion A/B).
+mod header_write;
+
+use header_write::JsonSink;
+
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
 
-    use super::{parse_wire_header, split_wire_request};
+    use crate::envelope::ResponseMetadata;
+
+    use super::{
+        ValidationErrorItem, WIRE_VERSION, WireHeaders, WireRequestHeader, WireResponseHeader,
+        parse_wire_header, parse_wire_header_serde, split_wire_request, write_wire_header_into,
+        write_wire_header_into_slice, write_wire_header_into_slice_serde,
+    };
 
     /// Pins the zero-copy contract: the returned body must point into
     /// the original input allocation (no memcpy of the tail).
@@ -69,6 +86,204 @@ mod tests {
             header_value("x-b").map(std::convert::AsRef::as_ref),
             Some("esc\"aped")
         );
+    }
+
+    // ── hand-rolled vs serde_json round-trip (value / byte identity) ──
+
+    /// Owned, comparable projection of a parsed header — the borrow vs
+    /// owned `Cow` distinction does not affect VALUE equality.
+    type OwnedHeader = (
+        u8,
+        String,
+        String,
+        String,
+        Option<String>,
+        Vec<(String, String)>,
+    );
+
+    fn owned(h: &WireRequestHeader<'_>) -> OwnedHeader {
+        (
+            h.v,
+            h.method.to_string(),
+            h.path.to_string(),
+            h.query.to_string(),
+            h.app.as_ref().map(ToString::to_string),
+            h.headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
+    }
+
+    /// The hand-rolled request parser must produce the SAME values as
+    /// `serde_json` across arbitrary key order, ignored unknown keys,
+    /// escapes (quote / backslash / control), `\uXXXX` + surrogate pairs,
+    /// non-ASCII UTF-8, escaped keys, duplicate header names, and
+    /// string-or-null `app`.
+    #[test]
+    fn hand_parse_matches_serde_parse() {
+        let cases: &[&[u8]] = &[
+            br#"{"v":1,"method":"GET","path":"/health"}"#,
+            // arbitrary key order + query
+            br#"{"method":"POST","path":"/users","v":1,"query":"a=1&b=2"}"#,
+            // escaped values: quote, backslash, newline, tab
+            br#"{"v":1,"method":"GET","path":"/p","headers":{"x-q":"he said \"hi\"","x-bs":"a\\b","x-nl":"l1\nl2\ttab"}}"#,
+            // escaped key (\u0065 == 'e') -> owned key
+            br#"{"v":1,"method":"GET","path":"/p","headers":{"x-\u0065sc":"v"}}"#,
+            // non-ASCII / UTF-8 (borrowed) path + emoji value
+            "{\"v\":1,\"method\":\"GET\",\"path\":\"/café\",\"headers\":{\"x-emoji\":\"😀\"}}".as_bytes(),
+            // \uXXXX BMP + UTF-16 surrogate pair
+            br#"{"v":1,"method":"GET","path":"/p","headers":{"x-smile":"\uD83D\uDE00","x-e":"\u00e9"}}"#,
+            // app: null and app: trimmed string
+            br#"{"v":1,"method":"GET","path":"/p","app":null}"#,
+            br#"{"v":1,"method":"GET","path":"/p","app":"  admin  "}"#,
+            // unknown fields (object / array / number / bool / null) ignored
+            br#"{"v":1,"method":"GET","path":"/p","extra":{"nested":[1,2,3]},"flag":true,"n":42,"z":null}"#,
+            // empty headers object + duplicate header NAMES preserved
+            br#"{"v":1,"method":"GET","path":"/p","headers":{}}"#,
+            br#"{"v":1,"method":"GET","path":"/p","headers":{"x-a":"1","x-a":"2"}}"#,
+        ];
+        for case in cases {
+            match (parse_wire_header(case), parse_wire_header_serde(case)) {
+                (Ok(hand), Ok(serde)) => assert_eq!(
+                    owned(&hand),
+                    owned(&serde),
+                    "value drift on {}",
+                    String::from_utf8_lossy(case)
+                ),
+                (Err(_), Err(_)) => {}
+                (hand, serde) => panic!(
+                    "accept/reject divergence on {}: hand_ok={} serde_ok={}",
+                    String::from_utf8_lossy(case),
+                    hand.is_ok(),
+                    serde.is_ok()
+                ),
+            }
+        }
+    }
+
+    /// Malformed inputs the serde derive rejects must also be rejected by
+    /// the hand-rolled parser (and never panic).
+    #[test]
+    fn hand_parse_rejects_what_serde_rejects() {
+        let bad: &[&[u8]] = &[
+            b"not json",
+            br#"{"v":1,"path":"/p"}"#,                  // missing method
+            br#"{"v":1,"method":"GET"}"#,               // missing path
+            br#"{"v":1,"method":"GET","path":"/p"}x"#,  // trailing chars
+            br#"{"v":1,"method":42,"path":"/p"}"#,      // method not a string
+            br#"{"v":300,"method":"GET","path":"/p"}"#, // v out of u8 range
+            br#"{"v":1,"v":1,"method":"GET","path":"/p"}"#, // duplicate known field
+            br#"{"v":1,"method":"GET","path":"/p","headers":{"x":1}}"#, // header value not string
+            br#"{"v":1,"method":"GET","path":"/p","app":7}"#, // app not string/null
+            br#"{"v":1,"method":"GET","path":"/p","headers":[]}"#, // headers not object
+        ];
+        for case in bad {
+            assert!(
+                parse_wire_header(case).is_err(),
+                "hand parser must reject {}",
+                String::from_utf8_lossy(case)
+            );
+            assert!(
+                parse_wire_header_serde(case).is_err(),
+                "serde parser must reject {}",
+                String::from_utf8_lossy(case)
+            );
+        }
+    }
+
+    /// Fresh `validation_errors` table exercising the full escape set
+    /// (quote, backslash, newline, a `\u0001` control, tab, non-ASCII)
+    /// plus the skip-if-none `code`/`message` fields.
+    fn validation_items() -> Vec<ValidationErrorItem> {
+        vec![
+            ValidationErrorItem {
+                path: "user\"name".to_owned(),
+                code: Some("E\\01".to_owned()),
+                message: Some("bad\nvalue\u{1}\tré".to_owned()),
+            },
+            ValidationErrorItem {
+                path: "tags".to_owned(),
+                code: None,
+                message: None,
+            },
+        ]
+    }
+
+    /// The hand-rolled response serializer must produce BYTE-IDENTICAL
+    /// output to `serde_json` across statuses, the optional
+    /// `validation_errors` array, sorted single/multi headers, non-UTF-8
+    /// values (rendered `""`), and the full string escape set — proven by
+    /// both the `Vec` path and the `&mut [u8]` slice path.
+    #[test]
+    fn hand_serialize_matches_serde_serialize() {
+        use http::{HeaderMap, HeaderName, HeaderValue};
+
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        headers.insert("content-length", HeaderValue::from_static("42"));
+        headers.insert("x-quote", HeaderValue::from_bytes(b"a\"b").unwrap());
+        headers.insert("x-backslash", HeaderValue::from_bytes(b"a\\b").unwrap());
+        // Valid UTF-8 obs-text passes through verbatim (no `/` escaping).
+        headers.insert(
+            "x-utf8",
+            HeaderValue::from_bytes("ré sumé/path".as_bytes()).unwrap(),
+        );
+        // Invalid UTF-8 value -> rendered as "" by both paths.
+        headers.insert("x-binary", HeaderValue::from_bytes(&[0xFF, 0xFE]).unwrap());
+        let cookie = HeaderName::from_static("set-cookie");
+        headers.append(cookie.clone(), HeaderValue::from_static("a=1"));
+        headers.append(cookie.clone(), HeaderValue::from_static("b=2; Path=/"));
+        headers.append(cookie, HeaderValue::from_bytes(b"c=\"q\"").unwrap());
+
+        let metadata = ResponseMetadata::current();
+
+        for status in [200u16, 404, 422] {
+            for with_ve in [false, true] {
+                let hand_items = with_ve.then(validation_items);
+                let mut hand = Vec::new();
+                write_wire_header_into(
+                    &mut hand,
+                    status,
+                    &headers,
+                    &metadata,
+                    hand_items.as_deref(),
+                );
+
+                let serde_view = WireResponseHeader {
+                    v: WIRE_VERSION,
+                    status,
+                    headers: &WireHeaders(&headers),
+                    metadata: &metadata,
+                    validation_errors: with_ve.then(validation_items),
+                };
+                let serde_bytes = serde_json::to_vec(&serde_view).expect("serde serialize");
+
+                assert_eq!(
+                    &hand[4..],
+                    serde_bytes.as_slice(),
+                    "Vec-path byte drift (status={status}, with_ve={with_ve})"
+                );
+                // Length prefix must equal the JSON byte length.
+                assert_eq!(
+                    u32::from_be_bytes(hand[..4].try_into().unwrap()) as usize,
+                    serde_bytes.len()
+                );
+            }
+
+            // Slice path (always None validation_errors): hand vs serde.
+            let mut hand_slice = vec![0u8; 4096];
+            let n_hand = write_wire_header_into_slice(&mut hand_slice, status, &headers, &metadata);
+            let mut serde_slice = vec![0u8; 4096];
+            let n_serde =
+                write_wire_header_into_slice_serde(&mut serde_slice, status, &headers, &metadata);
+            assert_eq!(n_hand, n_serde, "slice length drift (status={status})");
+            assert_eq!(
+                &hand_slice[..n_hand],
+                &serde_slice[..n_serde],
+                "slice-path byte drift (status={status})"
+            );
+        }
     }
 }
 
@@ -299,17 +514,26 @@ impl Serialize for WireHeaderValues<'_> {
 }
 
 /// Append `[u32 BE header_len | header JSON]` to `out`, serializing
-/// the header view **directly into the output buffer** — no
-/// intermediate `Vec` and no second memcpy of the header JSON.
+/// the header **directly into the output buffer** with the hand-rolled
+/// [`header_write`] serializer — no intermediate `Vec` and no second
+/// memcpy of the header JSON.  Byte-identical to the previous
+/// `serde_json::to_writer(WireResponseHeader { .. })` path (locked by
+/// tests/wire_contract.rs).
 ///
 /// Typical wire headers are well under this reservation, so the
 /// serializer usually writes without reallocating.
 pub const WIRE_HEADER_RESERVE: usize = 192;
 
-fn write_wire_header_into<H: Serialize>(out: &mut Vec<u8>, view: &WireResponseHeader<'_, H>) {
+fn write_wire_header_into(
+    out: &mut Vec<u8>,
+    status: u16,
+    headers: &http::HeaderMap,
+    metadata: &ResponseMetadata,
+    validation_errors: Option<&[ValidationErrorItem]>,
+) {
     out.extend_from_slice(&[0u8; 4]);
     let start = out.len();
-    serde_json::to_writer(&mut *out, view).expect("WireResponseHeader serialization is infallible");
+    header_write::write_response_header(out, status, headers, metadata, validation_errors);
     let header_len =
         u32::try_from(out.len() - start).expect("response header JSON exceeds u32::MAX bytes");
     out[start - 4..start].copy_from_slice(&header_len.to_be_bytes());
@@ -363,15 +587,14 @@ pub fn to_wire_bytes(parts: ResponseParts) -> Vec<u8> {
     } else {
         None
     };
-    let header = WireResponseHeader {
-        v: WIRE_VERSION,
-        status,
-        headers: &WireHeaders(&headers),
-        metadata: &metadata,
-        validation_errors,
-    };
     let mut out = Vec::with_capacity(4 + WIRE_HEADER_RESERVE + body_bytes.len());
-    write_wire_header_into(&mut out, &header);
+    write_wire_header_into(
+        &mut out,
+        status,
+        &headers,
+        &metadata,
+        validation_errors.as_deref(),
+    );
     out.extend_from_slice(&body_bytes);
     out
 }
@@ -383,15 +606,8 @@ pub fn build_wire_header_bytes(
     headers: &http::HeaderMap,
     metadata: &ResponseMetadata,
 ) -> Vec<u8> {
-    let view = WireResponseHeader {
-        v: WIRE_VERSION,
-        status,
-        headers: &WireHeaders(headers),
-        metadata,
-        validation_errors: None,
-    };
     let mut out = Vec::with_capacity(4 + WIRE_HEADER_RESERVE);
-    write_wire_header_into(&mut out, &view);
+    write_wire_header_into(&mut out, status, headers, metadata, None);
     out
 }
 
@@ -430,11 +646,13 @@ impl std::io::Write for SliceWriter<'_> {
     }
 }
 
-/// Write `[u32 BE header_len | JSON header]` **straight into `out`**,
-/// returning the exact total header byte count regardless of whether it
-/// fit.  The direct-write sibling of [`build_wire_header_bytes`] — no
-/// intermediate `Vec`, byte-identical output (same [`WireResponseHeader`]
-/// serialization).
+/// Write `[u32 BE header_len | JSON header]` **straight into `out`**
+/// with the hand-rolled [`header_write`] serializer, returning the exact
+/// total header byte count regardless of whether it fit.  The
+/// direct-write sibling of [`build_wire_header_bytes`] — no intermediate
+/// `Vec`, byte-identical output to the previous `serde_json` path
+/// (retained as [`write_wire_header_into_slice_serde`] for the criterion
+/// A/B).
 ///
 /// When the header fits (`returned <= out.len()`) `out[0..returned]`
 /// holds the complete header.  When it does not fit, `out`'s contents are
@@ -442,6 +660,33 @@ impl std::io::Write for SliceWriter<'_> {
 /// returned count is still exact, so the caller can report the precise
 /// required size.
 pub fn write_wire_header_into_slice(
+    out: &mut [u8],
+    status: u16,
+    headers: &http::HeaderMap,
+    metadata: &ResponseMetadata,
+) -> usize {
+    let header_total = {
+        let mut sink = header_write::SliceSink::new(out);
+        // Reserve the 4-byte length prefix, then serialize the JSON body
+        // straight after it; backfilled below once the length is known.
+        sink.put(&[0u8; 4]);
+        header_write::write_response_header(&mut sink, status, headers, metadata, None);
+        sink.pos
+    };
+    if header_total <= out.len() {
+        let json_len =
+            u32::try_from(header_total - 4).expect("response header JSON exceeds u32::MAX bytes");
+        out[0..4].copy_from_slice(&json_len.to_be_bytes());
+    }
+    header_total
+}
+
+/// `serde_json`-backed twin of [`write_wire_header_into_slice`], retained
+/// **only** as the "before" arm of the criterion A/B in
+/// `benches/dispatch.rs` (via [`crate::bench_support`]) so hand-rolled vs
+/// `serde_json` are measured in the same run.  Not part of the public
+/// API and not used on any production path.
+fn write_wire_header_into_slice_serde(
     out: &mut [u8],
     status: u16,
     headers: &http::HeaderMap,
@@ -456,8 +701,6 @@ pub fn write_wire_header_into_slice(
     };
     let header_total = {
         let mut writer = SliceWriter::new(out);
-        // Reserve the 4-byte length prefix, then serialize the JSON body
-        // straight after it; backfilled below once the length is known.
         writer.put(&[0u8; 4]);
         serde_json::to_writer(&mut writer, &view)
             .expect("WireResponseHeader serialization is infallible");
@@ -582,7 +825,86 @@ pub fn split_wire_borrowed(input: &[u8]) -> Result<(&[u8], &[u8]), String> {
 
 /// Deserialize the wire request header, borrowing every string from
 /// `header_json` where possible (see [`WireRequestHeader`]).
+///
+/// Uses the hand-rolled [`header_read`] parser — byte-behaviour-identical
+/// to the previous `serde_json` derive path (retained as
+/// [`parse_wire_header_serde`] for the criterion A/B): any key order,
+/// unknown keys ignored, plain strings borrowed / escaped strings owned.
 #[inline]
 pub fn parse_wire_header(header_json: &[u8]) -> Result<WireRequestHeader<'_>, String> {
+    header_read::parse(header_json).map_err(|e| format!("wire header JSON parse error: {e}"))
+}
+
+/// `serde_json`-backed twin of [`parse_wire_header`], retained **only**
+/// as the "before" arm of the criterion A/B in `benches/dispatch.rs`
+/// (via [`crate::bench_support`]) so hand-rolled vs `serde_json` are
+/// measured in the same run.  Not part of the public API and not used on
+/// any production path.
+fn parse_wire_header_serde(header_json: &[u8]) -> Result<WireRequestHeader<'_>, String> {
     serde_json::from_slice(header_json).map_err(|e| format!("wire header JSON parse error: {e}"))
+}
+
+// ── Criterion A/B bench surface (doc-hidden, not a public API) ────────
+//
+// These thin wrappers expose the hand-rolled and `serde_json` paths to
+// `benches/dispatch.rs` (re-exported via `crate::bench_support`) so both
+// are measured in the SAME criterion run — the noise-robust same-run A/B
+// the existing `direct_write_path/bodyless_*` group uses.  Each parse
+// wrapper sums every decoded field length so the optimiser cannot elide
+// any field's materialisation (representative of the full production
+// parse), and returns a plain `usize` so no borrowed/private type leaks
+// into the (hidden) public surface.
+
+/// Bench A/B: full hand-rolled request-header parse cost.
+#[doc(hidden)]
+#[must_use]
+pub fn bench_parse_hand(header_json: &[u8]) -> usize {
+    parse_wire_header(header_json).map_or(usize::MAX, |h| header_field_len_sum(&h))
+}
+
+/// Bench A/B: full `serde_json` request-header parse cost.
+#[doc(hidden)]
+#[must_use]
+pub fn bench_parse_serde(header_json: &[u8]) -> usize {
+    parse_wire_header_serde(header_json).map_or(usize::MAX, |h| header_field_len_sum(&h))
+}
+
+/// Sum of every decoded field's byte length — forces materialisation of
+/// each `Cow` (UTF-8 validation / escape decode) so neither A/B arm can
+/// be optimised down to a partial parse.  Takes the header by reference;
+/// the owned value is still dropped inside the timed `bench_parse_*` call.
+fn header_field_len_sum(header: &WireRequestHeader<'_>) -> usize {
+    let mut acc = header.method.len()
+        + header.path.len()
+        + header.query.len()
+        + header.app.as_deref().map_or(0, str::len)
+        + usize::from(header.v);
+    for (name, value) in &header.headers {
+        acc += name.len() + value.len();
+    }
+    acc
+}
+
+/// Bench A/B: hand-rolled response-header slice serialize cost.
+#[doc(hidden)]
+#[must_use]
+pub fn bench_write_hand(
+    out: &mut [u8],
+    status: u16,
+    headers: &http::HeaderMap,
+    metadata: &ResponseMetadata,
+) -> usize {
+    write_wire_header_into_slice(out, status, headers, metadata)
+}
+
+/// Bench A/B: `serde_json` response-header slice serialize cost.
+#[doc(hidden)]
+#[must_use]
+pub fn bench_write_serde(
+    out: &mut [u8],
+    status: u16,
+    headers: &http::HeaderMap,
+    metadata: &ResponseMetadata,
+) -> usize {
+    write_wire_header_into_slice_serde(out, status, headers, metadata)
 }

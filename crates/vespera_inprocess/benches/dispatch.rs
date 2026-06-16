@@ -665,6 +665,82 @@ fn bench_async_spawn_pattern(c: &mut Criterion) {
     drop(runtime);
 }
 
+/// Hand-rolled wire-header serde vs `serde_json` (within-run A/B).
+///
+/// Gates the Oracle-ranked #2 change: replacing `serde_json` on the
+/// FIXED-SCHEMA wire header with a hand-rolled parser/writer.  Both arms
+/// run in the SAME criterion run (noise-robust, like the
+/// `direct_write_path/bodyless_*` group), so the hand vs serde delta is
+/// read directly without cross-run drift.
+///
+/// - `request_parse_*`: full header parse of a realistic small
+///   `GET /health`-shaped header (the SmartDispatch DIRECT sweet spot) —
+///   `parse_wire_header` (hand) vs `parse_wire_header_serde`.
+/// - `response_serialize_*`: slice-serialize of a many-header response
+///   (10 single-value + 3-value `set-cookie` + content-type/length) —
+///   `write_wire_header_into_slice` (hand) vs the `serde_json` twin.
+fn bench_wire_header_serde(c: &mut Criterion) {
+    use vespera_inprocess::ResponseMetadata;
+    use vespera_inprocess::bench_support::{
+        bench_parse_hand, bench_parse_serde, bench_write_hand, bench_write_serde,
+    };
+
+    // Request-parse fixture: exactly the JSON object `parse_wire_header`
+    // receives (no length prefix) for a small idempotent GET.
+    let request_header: &[u8] = br#"{"v":1,"method":"GET","path":"/health","headers":{"accept":"*/*","user-agent":"bench/1.0","host":"localhost:3000"}}"#;
+
+    // Response-serialize fixture: the realistic many-header response shape
+    // (mirrors `handler_many_headers`) plus content-type / content-length.
+    let mut resp_headers = HeaderMap::new();
+    for (name, value) in [
+        ("cache-control", "no-store"),
+        ("etag", "\"abc123def456\""),
+        ("vary", "accept-encoding"),
+        ("x-content-type-options", "nosniff"),
+        ("x-frame-options", "DENY"),
+        ("x-request-id", "01HV2N3M4P5Q6R7S8T9V0W1X2Y"),
+        ("x-trace-id", "4bf92f3577b34da6a3ce929d0e0e4736"),
+        ("access-control-allow-origin", "*"),
+        ("strict-transport-security", "max-age=63072000"),
+        ("content-language", "en"),
+        ("content-type", "application/json"),
+        ("content-length", "1024"),
+    ] {
+        resp_headers.insert(
+            HeaderName::from_static(name),
+            value.parse().expect("static header value"),
+        );
+    }
+    let cookie = HeaderName::from_static("set-cookie");
+    resp_headers.append(cookie.clone(), "session=s1; HttpOnly".parse().unwrap());
+    resp_headers.append(cookie.clone(), "theme=dark; Path=/".parse().unwrap());
+    resp_headers.append(cookie, "lang=en; Path=/".parse().unwrap());
+    let metadata = ResponseMetadata::current();
+
+    let mut group = c.benchmark_group("wire_header_serde");
+
+    group.bench_function("request_parse_hand", |b| {
+        b.iter(|| bench_parse_hand(std::hint::black_box(request_header)));
+    });
+    group.bench_function("request_parse_serde", |b| {
+        b.iter(|| bench_parse_serde(std::hint::black_box(request_header)));
+    });
+
+    // Size the out buffer once (outside the timed loop) and reuse it,
+    // mirroring the pooled direct buffer the JNI bridge hands in.
+    let required = bench_write_hand(&mut [0u8; 1024], 200, &resp_headers, &metadata);
+    group.bench_function("response_serialize_hand", |b| {
+        let mut out = vec![0u8; required];
+        b.iter(|| bench_write_hand(&mut out, 200, &resp_headers, &metadata));
+    });
+    group.bench_function("response_serialize_serde", |b| {
+        let mut out = vec![0u8; required];
+        b.iter(|| bench_write_serde(&mut out, 200, &resp_headers, &metadata));
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_router_path,
@@ -676,6 +752,7 @@ criterion_group!(
     bench_contended_path,
     bench_headers_path,
     bench_streaming_path,
-    bench_async_spawn_pattern
+    bench_async_spawn_pattern,
+    bench_wire_header_serde
 );
 criterion_main!(benches);
