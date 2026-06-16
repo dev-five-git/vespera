@@ -555,6 +555,31 @@ pub fn split_wire_request(input: Vec<u8>) -> Result<(Bytes, Bytes), String> {
     Ok((header_json, body))
 }
 
+/// Borrowing sibling of [`split_wire_request`]: returns the header-JSON
+/// region and body region as **sub-slices of `input`** — zero allocation,
+/// zero refcount (unlike [`split_wire_request`], which wraps the input in
+/// a `Bytes`).  The caller MUST keep `input` alive for as long as the
+/// returned slices — and anything borrowing from them — are used.
+pub fn split_wire_borrowed(input: &[u8]) -> Result<(&[u8], &[u8]), String> {
+    if input.len() < 4 {
+        return Err(format!(
+            "wire input too short: {} bytes, need at least 4",
+            input.len()
+        ));
+    }
+    let mut len_bytes = [0u8; 4];
+    len_bytes.copy_from_slice(&input[..4]);
+    let header_len = u32::from_be_bytes(len_bytes) as usize;
+    let total_header_end = 4usize.saturating_add(header_len);
+    if total_header_end > input.len() {
+        return Err(format!(
+            "wire header_len ({header_len}) exceeds remaining input ({} bytes)",
+            input.len() - 4
+        ));
+    }
+    Ok((&input[4..total_header_end], &input[total_header_end..]))
+}
+
 /// Deserialize the wire request header, borrowing every string from
 /// `header_json` where possible (see [`WireRequestHeader`]).
 #[inline]

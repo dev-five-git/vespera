@@ -85,7 +85,7 @@ pub use config::{
 };
 pub use dispatch::{
     DirectWriteResult, dispatch, dispatch_from_bytes, dispatch_from_bytes_async, dispatch_into,
-    dispatch_into_async, dispatch_owned, dispatch_typed,
+    dispatch_into_async, dispatch_into_async_borrowed, dispatch_owned, dispatch_typed,
 };
 pub use envelope::{
     HeaderValue, RequestEnvelope, ResponseEnvelope, ResponseMetadata, error_envelope,

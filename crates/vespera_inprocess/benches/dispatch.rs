@@ -38,8 +38,8 @@ use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 use vespera_inprocess::{
     DirectWriteResult, RequestChunk, RequestEnvelope, dispatch_bidirectional_streaming,
-    dispatch_from_bytes, dispatch_into, dispatch_owned, dispatch_streaming_async, dispatch_typed,
-    register_app,
+    dispatch_from_bytes, dispatch_into, dispatch_into_async_borrowed, dispatch_owned,
+    dispatch_streaming_async, dispatch_typed, register_app,
 };
 
 // Bench under mimalloc to match the shipped JNI cdylib (which enables mimalloc
@@ -336,6 +336,29 @@ fn bench_direct_write_path(c: &mut Criterion) {
 
     let runtime = Runtime::new().expect("tokio runtime");
     let mut group = c.benchmark_group("direct_write_path");
+
+    // Bodyless GET — the #3 borrowed-input sweet spot. Same-run A/B:
+    // `bodyless_owned` clones the wire into a `Vec` (mirrors the JNI
+    // `dispatchDirect0` `.to_vec()` copy of the direct buffer), while
+    // `bodyless_borrowed` reads the wire in place and builds an empty body,
+    // copying nothing. The delta isolates the eliminated input copy.
+    {
+        let wire = assemble_wire("GET", "/r0", None, &[]);
+        let required = {
+            let mut probe = vec![0u8; 4096];
+            match dispatch_into(wire.clone(), &mut probe, &runtime) {
+                DirectWriteResult::Complete(n) | DirectWriteResult::Overflow(n) => n,
+            }
+        };
+        group.bench_function("bodyless_owned_dispatch_into", |b| {
+            let mut out = vec![0u8; required];
+            b.iter(|| dispatch_into(wire.clone(), &mut out, &runtime));
+        });
+        group.bench_function("bodyless_borrowed_dispatch_into", |b| {
+            let mut out = vec![0u8; required];
+            b.iter(|| runtime.block_on(dispatch_into_async_borrowed(&wire, &mut out)));
+        });
+    }
 
     for &body_kb in &[64_usize, 1024, 4096] {
         let payload = vec![0xA5u8; body_kb * 1024];

@@ -397,13 +397,15 @@ fn write_response_to_out(out_addr: *mut u8, out_cap: usize, response: &[u8]) -> 
 /// Compared with `dispatchBytes`, this path removes BOTH JNI
 /// region copies (Java `byte[]` ↔ Rust), the per-call Java heap
 /// array allocations, AND — via
-/// [`vespera_inprocess::dispatch_into_async`] — the intermediate
-/// response `Vec`: on the success path the wire header and each
-/// body frame are written straight into `out_buf`.  One plain
-/// native memcpy remains on the request side (axum's `Body`
-/// requires `'static` ownership), plus the per-frame copies of the
-/// response body.  `422` responses are materialised internally to
-/// preserve `validation_errors` hoisting.
+/// [`vespera_inprocess::dispatch_into_async_borrowed`] — the
+/// intermediate response `Vec` AND the request-side input copy: the
+/// wire header is parsed **in place** from the borrowed `in_buf`, and
+/// only a non-empty request body is copied into an owned `Bytes`
+/// (axum's `Body` requires `'static` ownership), so a bodyless `GET`
+/// copies nothing on the request side.  On the success path the wire
+/// header and each body frame are written straight into `out_buf`.
+/// `422` responses are materialised internally to preserve
+/// `validation_errors` hoisting.
 ///
 /// # Safety invariants (comment-locked)
 ///
@@ -413,9 +415,11 @@ fn write_response_to_out(out_addr: *mut u8, out_cap: usize, response: &[u8]) -> 
 /// 2. The raw addresses derived from them are used **only within
 ///    this function body** — never captured by closures, spawned
 ///    tasks, or returned structs.
-/// 3. The input slice is copied into a Rust-owned `Vec` *before*
-///    dispatch, so nothing borrowed from the buffer outlives the
-///    read.
+/// 3. The input is read through a **borrowed** slice for the duration
+///    of the synchronous `block_on` (no `Vec` copy).  Invariant 1
+///    keeps the backing memory valid throughout and the borrow never
+///    escapes the `block_on`, so nothing borrowed from the buffer
+///    outlives the call.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDirect0<'local>(
     mut unowned_env: EnvUnowned<'local>,
@@ -437,12 +441,8 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
             // Validate in_len against the buffer's real capacity —
             // all failures still produce a valid wire response in
             // `out_buf`, per the dispatch* family contract.
-            let input = match usize::try_from(in_len) {
-                Ok(len) if len <= in_cap => {
-                    // SAFETY: invariants 1–3 above; `len <= in_cap`
-                    // bounds the read inside the direct buffer.
-                    unsafe { std::slice::from_raw_parts(in_addr, len) }.to_vec()
-                }
+            let in_len = match usize::try_from(in_len) {
+                Ok(len) if len <= in_cap => len,
                 _ => {
                     let err = vespera_inprocess::error_wire(
                         400,
@@ -453,14 +453,17 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
             };
 
             let dispatched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                // SAFETY: invariants 1–2 above — `out_addr` points
-                // to `out_cap` writable bytes of a direct buffer
-                // pinned by the live `out_buf` local ref; the Java
-                // caller is blocked for the whole call, so the
-                // region is exclusively ours; the slice never
-                // escapes this closure.
+                // SAFETY: invariants 1–3 above.  `in_addr..in_addr+in_len`
+                // (`in_len <= in_cap`) is a readable region and
+                // `out_addr..out_addr+out_cap` a writable region, both of
+                // direct buffers pinned by their live `in_buf` / `out_buf`
+                // local refs; the Java caller is blocked for the whole call,
+                // so both stay valid throughout.  The borrowed `input` slice
+                // is read in place (no `Vec` copy) and never escapes this
+                // synchronous `block_on`.
+                let input = unsafe { std::slice::from_raw_parts(in_addr, in_len) };
                 let out = unsafe { std::slice::from_raw_parts_mut(out_addr, out_cap) };
-                block_on_sync_runtime(vespera_inprocess::dispatch_into_async(input, out))
+                block_on_sync_runtime(vespera_inprocess::dispatch_into_async_borrowed(input, out))
             }));
 
             let code = match dispatched {

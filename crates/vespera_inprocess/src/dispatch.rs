@@ -12,8 +12,8 @@ use crate::envelope::{RequestEnvelope, ResponseEnvelope, ResponseMetadata};
 use crate::internal::{dispatch_and_split, dispatch_parts, to_response_envelope_text};
 use crate::registry::resolve_app_router;
 use crate::wire::{
-    WIRE_VERSION, error_wire, parse_wire_header, split_wire_request, to_wire_bytes,
-    write_wire_header_into_slice,
+    WIRE_VERSION, error_wire, parse_wire_header, split_wire_borrowed, split_wire_request,
+    to_wire_bytes, write_wire_header_into_slice,
 };
 
 // ── Dispatch (direct API — backward compatible) ──────────────────────
@@ -269,7 +269,7 @@ pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteR
             .iter()
             .any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
 
-    let (status, headers, metadata, mut body) = match dispatch_and_split(
+    let (status, headers, metadata, body) = match dispatch_and_split(
         router,
         &header.method,
         &header.path,
@@ -284,6 +284,115 @@ pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteR
         Err((status, msg)) => return write_wire_into(out, &error_wire(status, &msg)),
     };
 
+    finish_direct_write(out, status, headers, metadata, body).await
+}
+
+/// Dispatch a wire request from a **borrowed** input slice, writing the
+/// wire response directly into `out` — the zero-input-copy sibling of
+/// [`dispatch_into_async`].
+///
+/// Where [`dispatch_into_async`] takes an owned `Vec<u8>`, this borrows
+/// `input` for the whole call: the wire header is parsed **in place** (no
+/// copy) and only the request **body** region is copied into an owned
+/// [`Bytes`] (axum's `Body` requires `'static` ownership).  A **bodyless**
+/// request — the common DIRECT `GET` — therefore copies nothing at all,
+/// and any request saves the header-region copy `dispatch_into_async`'s
+/// owned `Vec` pays.
+///
+/// # Safety / lifetime
+///
+/// The returned future borrows `input`; the caller MUST keep `input`
+/// valid until the future completes.  The JNI direct-buffer caller
+/// satisfies this by pinning the source `ByteBuffer` (a live local ref)
+/// for the entire `block_on`.
+///
+/// Byte-identical to [`dispatch_into_async`] for the same wire bytes; all
+/// the same error / `422` / overflow semantics apply.
+pub async fn dispatch_into_async_borrowed(input: &[u8], out: &mut [u8]) -> DirectWriteResult {
+    // Ingress cap (defense-in-depth) — same policy as `dispatch_into_async`.
+    if crate::config::request_exceeds_limit(input.len()) {
+        return write_wire_into(
+            out,
+            &error_wire(
+                413,
+                &format!(
+                    "request size {} bytes exceeds configured maximum of {} bytes",
+                    input.len(),
+                    crate::config::max_request_bytes()
+                ),
+            ),
+        );
+    }
+    let (header_bytes, body_bytes) = match split_wire_borrowed(input) {
+        Ok(parts) => parts,
+        Err(msg) => return write_wire_into(out, &error_wire(400, &msg)),
+    };
+    let header = match parse_wire_header(header_bytes) {
+        Ok(h) => h,
+        Err(msg) => return write_wire_into(out, &error_wire(400, &msg)),
+    };
+    if header.v != WIRE_VERSION {
+        return write_wire_into(
+            out,
+            &error_wire(
+                400,
+                &format!(
+                    "unsupported wire version: got {}, expected {WIRE_VERSION}",
+                    header.v
+                ),
+            ),
+        );
+    }
+    let router = match resolve_app_router(&header) {
+        Ok(r) => r,
+        Err(wire) => return write_wire_into(out, &wire),
+    };
+
+    let default_json_content_type = !body_bytes.is_empty()
+        && !header
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
+
+    // Borrowed path: the header is parsed in place (borrowing `input`);
+    // only the body region is copied into an owned `Bytes`.  An empty
+    // body (the common bodyless GET) allocates nothing.
+    let body = if body_bytes.is_empty() {
+        Body::empty()
+    } else {
+        Body::from(Bytes::copy_from_slice(body_bytes))
+    };
+
+    let (status, headers, metadata, resp_body) = match dispatch_and_split(
+        router,
+        &header.method,
+        &header.path,
+        &header.query,
+        header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
+        body,
+        default_json_content_type,
+    )
+    .await
+    {
+        Ok(parts) => parts,
+        Err((status, msg)) => return write_wire_into(out, &error_wire(status, &msg)),
+    };
+
+    finish_direct_write(out, status, headers, metadata, resp_body).await
+}
+
+/// Shared tail of the direct-write dispatchers ([`dispatch_into_async`]
+/// and [`dispatch_into_async_borrowed`]): `422` responses are materialised
+/// so `validation_errors` hoisting is preserved byte-for-byte; every other
+/// status streams status + headers + body frames straight into `out`,
+/// reporting the exact required size on overflow.
+async fn finish_direct_write(
+    out: &mut [u8],
+    status: u16,
+    headers: http::HeaderMap,
+    metadata: ResponseMetadata,
+    mut body: Body,
+) -> DirectWriteResult {
     if status == 422 {
         // Materialise to preserve validation_errors hoisting in the
         // wire header — identical bytes to dispatch_from_bytes.

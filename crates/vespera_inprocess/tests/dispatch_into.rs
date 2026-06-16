@@ -11,7 +11,10 @@ use axum::routing::{get, post};
 use bytes::Bytes;
 use serde_json::{Value, json};
 use tokio::runtime::Builder;
-use vespera_inprocess::{DirectWriteResult, dispatch_from_bytes, dispatch_into, register_app};
+use vespera_inprocess::{
+    DirectWriteResult, dispatch_from_bytes, dispatch_into, dispatch_into_async_borrowed,
+    register_app,
+};
 
 async fn ping() -> &'static str {
     "pong"
@@ -230,4 +233,34 @@ fn body_without_content_type_matches_byte_path() {
         &reference[..],
         "direct path must apply the same content-type defaulting as the byte path"
     );
+}
+
+#[test]
+fn borrowed_matches_byte_path_bodyless_with_body_and_422() {
+    // The borrowed direct-write path (the JNI dispatchDirect0 entry) must be
+    // byte-identical to the owned byte path across: a bodyless GET (zero input
+    // copy), a POST with a body (body-only copy), and a 422 (validation_errors
+    // hoisting through the shared finish_direct_write tail).
+    install();
+    let rt = runtime();
+    for (method, path, body) in [
+        ("GET", "/ping", Vec::new()),
+        ("POST", "/echo", vec![0x5Au8; 4096]),
+        ("POST", "/reject", b"{}".to_vec()),
+    ] {
+        let wire = encode(method, path, &body);
+        let reference = dispatch_from_bytes(wire.clone(), &rt);
+        let mut out = vec![0u8; reference.len() + 64];
+        let result = rt.block_on(dispatch_into_async_borrowed(&wire, &mut out));
+        assert_eq!(
+            result,
+            DirectWriteResult::Complete(reference.len()),
+            "{method} {path}: borrowed must complete with the byte-path length"
+        );
+        assert_eq!(
+            &out[..reference.len()],
+            &reference[..],
+            "{method} {path}: borrowed direct-write must be byte-identical to the byte path"
+        );
+    }
 }
