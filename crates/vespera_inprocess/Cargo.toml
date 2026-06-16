@@ -19,6 +19,15 @@ tokio = { version = "1", features = ["rt"] }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
+# The criterion bench runs under mimalloc (set as its `#[global_allocator]`
+# in benches/dispatch.rs) to match the SHIPPED JNI cdylib, which enables
+# mimalloc by default.  Measured 2026-06: the default Windows system heap
+# routes per-request `Vec` allocations >= ~1 MiB through a slow
+# VirtualAlloc commit/decommit path (e.g. 1 MiB `dispatch_from_bytes`
+# materialise = 311 us system-heap vs 30 us mimalloc — a ~10x cliff that is
+# pure harness artifact, never seen by the cdylib).  Benching under mimalloc
+# keeps the large-body absolute numbers representative of production.
+mimalloc = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # `FutureExt::catch_unwind` for the `async_spawn_pattern` bench, which
 # A/Bs the vespera_jni `dispatchAsync` spawn-mechanism change (inner

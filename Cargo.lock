@@ -3925,6 +3925,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "mimalloc",
  "serde",
  "serde_json",
  "tokio",

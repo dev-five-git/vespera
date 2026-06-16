@@ -239,4 +239,144 @@ class VesperaWireTest {
 
         assertArrayEquals(reqBody, decoded.bodyBytes());
     }
+
+    /** Build a wire response whose headers map is supplied verbatim (so a
+     * value may be a JSON array → multi-valued header). */
+    private static byte[] buildWireResponseWithHeaders(
+            int status, Map<String, Object> headers, byte[] body) throws Exception {
+        Map<String, Object> headerMap = new LinkedHashMap<>();
+        headerMap.put("v", 1);
+        headerMap.put("status", status);
+        headerMap.put("headers", headers);
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("version", "0.1.51");
+        headerMap.put("metadata", metadata);
+
+        byte[] headerJson = MAPPER.writeValueAsBytes(headerMap);
+        ByteBuffer buf = ByteBuffer.allocate(4 + headerJson.length + body.length)
+                .order(ByteOrder.BIG_ENDIAN);
+        buf.putInt(headerJson.length);
+        buf.put(headerJson);
+        buf.put(body);
+        return buf.array();
+    }
+
+    @Test
+    void decodeResponse_parses_multi_value_header_as_list() throws Exception {
+        // Repeated header names (e.g. set-cookie) arrive as a JSON array on
+        // the wire and must decode to a List<String>, not a String.
+        Map<String, Object> headers = new LinkedHashMap<>();
+        headers.put("content-type", "text/plain");
+        headers.put("set-cookie", List.of("a=1; Path=/", "b=2; HttpOnly"));
+
+        byte[] wire = buildWireResponseWithHeaders(
+                200, headers, "ok".getBytes(StandardCharsets.UTF_8));
+        DecodedResponse decoded = VesperaBridge.decodeResponse(wire);
+
+        assertEquals(200, decoded.status());
+        assertEquals("text/plain", decoded.headers().get("content-type"));
+        Object setCookie = decoded.headers().get("set-cookie");
+        assertTrue(setCookie instanceof List, "multi-valued header must decode to a List");
+        assertEquals(List.of("a=1; Path=/", "b=2; HttpOnly"), setCookie);
+    }
+
+    @Test
+    void decodeResponse_handles_escaped_and_non_ascii_header_values() throws Exception {
+        // The header value carries a JSON-escaped quote and multi-byte UTF-8,
+        // exercising the reader's escape + UTF-8 decode path (not the plain
+        // ASCII fast path).
+        Map<String, Object> headers = new LinkedHashMap<>();
+        headers.put("x-note", "say \"hi\" 한글");
+
+        byte[] wire = buildWireResponseWithHeaders(200, headers, new byte[0]);
+        DecodedResponse decoded = VesperaBridge.decodeResponse(wire);
+
+        assertEquals("say \"hi\" 한글", decoded.headers().get("x-note"));
+    }
+
+    @Test
+    void encodeRequest_escapes_special_and_unicode_in_values() throws Exception {
+        // Lock the byte-direct encoder's escaping: quote, backslash, tab and
+        // newline (C0 short escapes), 3-byte UTF-8 (한글), and a 4-byte
+        // supplementary char via surrogate pair (😀, U+1F600) — in path,
+        // query, and header values.  The produced bytes must be valid JSON
+        // that parses back to the exact originals (the contract the Rust
+        // serde_json side relies on).
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("x-quote", "a\"b\\c\td\ne");
+        headers.put("x-unicode", "한글-😀");
+
+        byte[] wire = VesperaBridge.encodeRequest(
+                "POST", "/p\"a\\th/한글", "q=\"x\"&한=글", headers, new byte[0]);
+
+        int headerLen = ByteBuffer.wrap(wire).order(ByteOrder.BIG_ENDIAN).getInt();
+        byte[] headerJson = new byte[headerLen];
+        System.arraycopy(wire, 4, headerJson, 0, headerLen);
+        JsonNode h = MAPPER.readTree(headerJson);
+
+        assertEquals("POST", h.path("method").asText());
+        assertEquals("/p\"a\\th/한글", h.path("path").asText());
+        assertEquals("q=\"x\"&한=글", h.path("query").asText());
+        assertEquals("a\"b\\c\td\ne", h.path("headers").path("x-quote").asText());
+        assertEquals("한글-😀", h.path("headers").path("x-unicode").asText());
+    }
+
+    @Test
+    void decodeResponse_canonical_and_custom_header_keys_both_parse() throws Exception {
+        // content-type is a canonical (interned, allocation-free) key;
+        // x-custom-trace is not and must still parse via the readString
+        // fallback — both values, and the canonical metadata "version" key,
+        // round-trip exactly.  Guards the peek/consume cursor bookkeeping.
+        Map<String, Object> headers = new LinkedHashMap<>();
+        headers.put("content-type", "application/json");
+        headers.put("x-custom-trace", "abc-123");
+
+        byte[] wire = buildWireResponseWithHeaders(
+                200, headers, "ok".getBytes(StandardCharsets.UTF_8));
+        DecodedResponse decoded = VesperaBridge.decodeResponse(wire);
+
+        assertEquals("application/json", decoded.headers().get("content-type"));
+        assertEquals("abc-123", decoded.headers().get("x-custom-trace"));
+        assertEquals("0.1.51", decoded.metadata().get("version"));
+    }
+
+    @Test
+    void decodeResponse_multi_entry_metadata_parses_all_keys() throws Exception {
+        // Metadata with 2 keys (the rare path): canonical "version" plus a
+        // custom "build" key.  Both must round-trip — exercises the
+        // LinkedHashMap fallback in readStringMap (single-entry uses Map.of).
+        Map<String, Object> headerMap = new LinkedHashMap<>();
+        headerMap.put("v", 1);
+        headerMap.put("status", 200);
+        headerMap.put("headers", new LinkedHashMap<>());
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("version", "0.1.51");
+        metadata.put("build", "deadbeef");
+        headerMap.put("metadata", metadata);
+
+        byte[] headerJson = MAPPER.writeValueAsBytes(headerMap);
+        ByteBuffer buf = ByteBuffer.allocate(4 + headerJson.length).order(ByteOrder.BIG_ENDIAN);
+        buf.putInt(headerJson.length);
+        buf.put(headerJson);
+
+        DecodedResponse decoded = VesperaBridge.decodeResponse(buf.array());
+        assertEquals(2, decoded.metadata().size());
+        assertEquals("0.1.51", decoded.metadata().get("version"));
+        assertEquals("deadbeef", decoded.metadata().get("build"));
+    }
+
+    @Test
+    void decodeResponse_empty_headers_yields_empty_map() throws Exception {
+        // Headers object present but empty -> readHeaderMap returns null ->
+        // decodeResponse substitutes the shared empty map.  (Single-header
+        // responses take the Map.of path, covered by the status/headers/body
+        // test; 2+ headers take the LinkedHashMap path, covered by the
+        // multi-value header test.)
+        byte[] wire = buildWireResponseWithHeaders(
+                200, new LinkedHashMap<>(), "ok".getBytes(StandardCharsets.UTF_8));
+        DecodedResponse decoded = VesperaBridge.decodeResponse(wire);
+
+        assertEquals(200, decoded.status());
+        assertTrue(decoded.headers().isEmpty(), "empty headers object yields an empty map");
+    }
 }

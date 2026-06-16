@@ -42,6 +42,15 @@ use vespera_inprocess::{
     register_app,
 };
 
+// Bench under mimalloc to match the shipped JNI cdylib (which enables mimalloc
+// by default).  Without this, the default Windows system heap routes the
+// per-request `Vec` allocations these benches stress (input `wire.clone()`,
+// response materialisation) through a slow VirtualAlloc commit/decommit path
+// for blocks >= ~1 MiB, producing a ~10x large-body "cliff" that no shipped
+// build ever pays.  See the `mimalloc` dev-dependency note in Cargo.toml.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 // ── Test fixtures ────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize)]

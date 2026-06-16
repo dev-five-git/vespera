@@ -1,11 +1,5 @@
 package com.devfive.vespera.bridge;
 
-import com.fasterxml.jackson.core.JsonFactory;
-import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.core.JsonToken;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -17,8 +11,6 @@ import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -51,18 +43,20 @@ import java.util.function.Consumer;
  */
 public class VesperaBridge {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final JsonFactory JSON_FACTORY = MAPPER.getFactory();
+    /** Lowercase hex digits for the JSON C0 control-character escapes. */
+    private static final byte[] HEX = {
+        '0', '1', '2', '3', '4', '5', '6', '7',
+        '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'
+    };
     private static final int WIRE_VERSION = 1;
     /** Shared empty request body — avoids a {@code new byte[0]} per call. */
     private static final byte[] EMPTY_BODY = new byte[0];
     /**
      * Per-thread reusable byte buffer for {@link #fillHeaderJson}.
-     * Reset (size cleared, capacity preserved) per call; only the
-     * buffer is pooled — a fresh {@link JsonGenerator} is created per
-     * call because generators bind to stream state.  Virtual-thread
-     * caveat as {@link #DIRECT_POOL}: each vthread gets its own ~256 B
-     * buffer in Java 21+ and loses pooling until GC.
+     * Reset (size cleared, capacity preserved) per call and filled
+     * byte-direct — no per-call encoder object.  Virtual-thread caveat
+     * as {@link #DIRECT_POOL}: each vthread gets its own ~256 B buffer
+     * in Java 21+ and loses pooling until GC.
      */
     private static final ThreadLocal<ExposedByteArrayOutputStream> HEADER_BUF =
             ThreadLocal.withInitial(() -> new ExposedByteArrayOutputStream(256));
@@ -86,6 +80,38 @@ public class VesperaBridge {
         /** Backing buffer; valid content is {@code [0, size())} only. */
         byte[] backingArray() {
             return buf;
+        }
+
+        /**
+         * Append one byte WITHOUT the inherited {@code synchronized} —
+         * {@link #HEADER_BUF} is thread-local, so the monitor is pure
+         * overhead on this single-threaded encode hot path.  Grows the
+         * backing array by doubling, mirroring {@link ByteArrayOutputStream}.
+         */
+        void put(int b) {
+            if (count == buf.length) {
+                buf = java.util.Arrays.copyOf(buf, buf.length << 1);
+            }
+            buf[count++] = (byte) b;
+        }
+
+        /**
+         * Append the bytes of an ASCII literal (caller guarantees every
+         * char is {@code < 0x80}) — used for the fixed JSON structure
+         * (keys, braces, colons).  Non-synchronized, single bulk reserve.
+         */
+        void putAscii(String lit) {
+            int n = lit.length();
+            if (count + n > buf.length) {
+                int cap = buf.length;
+                while (cap < count + n) {
+                    cap <<= 1;
+                }
+                buf = java.util.Arrays.copyOf(buf, cap);
+            }
+            for (int i = 0; i < n; i++) {
+                buf[count++] = (byte) lit.charAt(i);
+            }
         }
     }
 
@@ -980,45 +1006,125 @@ public class VesperaBridge {
     }
 
     /**
-     * Internal: serialise the wire request header JSON via Jackson's
-     * streaming {@link JsonGenerator} writing directly into the
-     * per-thread {@link #HEADER_BUF}.  Byte-identical to the prior
-     * {@code createObjectNode() + writeValueAsBytes()} path: same
-     * field order ({@code v}, {@code method}, {@code path}, optional
-     * {@code query}/{@code headers}/{@code app}), same omission rules,
-     * same {@code UTF8JsonGenerator} emitter — the {@code ObjectNode}
-     * tree and {@code writeValueAsBytes} scratch buffer go away.
-     * (A 3-pass {@code StringBuilder} encoder was previously measured
-     * <em>slower</em>, 656 vs 487 ns/op; the generator writes bytes
-     * directly, so this rewrite keeps that win and drops the tree.)
+     * Internal: serialise the wire request header JSON
+     * <strong>byte-direct</strong> into the per-thread {@link #HEADER_BUF}
+     * — no Jackson generator (and its per-call object + scratch buffer)
+     * is allocated.  Emits the same shape and field order the prior
+     * {@code JsonGenerator} path did ({@code v}, {@code method},
+     * {@code path}, optional {@code query}/{@code headers}/{@code app}),
+     * with the same omission rules.  String values are escaped + UTF-8
+     * encoded by {@link #writeJsonString} using exactly the escape set
+     * Jackson's {@code UTF8JsonGenerator} produced (the quote, the
+     * backslash, and the C0 controls; {@code /} and non-ASCII pass
+     * through), so the bytes stay valid JSON the Rust {@code serde_json}
+     * side parses identically.
      */
     private static ExposedByteArrayOutputStream fillHeaderJson(String appName, String method,
             String path, String query, Map<String, String> headers) {
         ExposedByteArrayOutputStream buf = HEADER_BUF.get();
         buf.reset();
-        try (JsonGenerator gen = JSON_FACTORY.createGenerator(buf)) {
-            gen.writeStartObject();
-            gen.writeNumberField("v", WIRE_VERSION);
-            gen.writeStringField("method", method);
-            gen.writeStringField("path", path);
-            if (query != null && !query.isEmpty()) {
-                gen.writeStringField("query", query);
-            }
-            if (headers != null && !headers.isEmpty()) {
-                gen.writeObjectFieldStart("headers");
-                for (Map.Entry<String, String> e : headers.entrySet()) {
-                    gen.writeStringField(e.getKey(), e.getValue());
-                }
-                gen.writeEndObject();
-            }
-            if (appName != null && !appName.isBlank()) {
-                gen.writeStringField("app", appName.trim());
-            }
-            gen.writeEndObject();
-        } catch (IOException e) {
-            throw new IllegalStateException("encodeRequest serialisation failed", e);
+        // {"v":<WIRE_VERSION>, ...} — WIRE_VERSION is a single decimal digit.
+        buf.putAscii("{\"v\":");
+        buf.put('0' + WIRE_VERSION);
+        buf.putAscii(",\"method\":");
+        writeJsonString(buf, method);
+        buf.putAscii(",\"path\":");
+        writeJsonString(buf, path);
+        if (query != null && !query.isEmpty()) {
+            buf.putAscii(",\"query\":");
+            writeJsonString(buf, query);
         }
+        if (headers != null && !headers.isEmpty()) {
+            buf.putAscii(",\"headers\":{");
+            boolean first = true;
+            for (Map.Entry<String, String> e : headers.entrySet()) {
+                if (!first) {
+                    buf.put(',');
+                }
+                first = false;
+                writeJsonString(buf, e.getKey());
+                buf.put(':');
+                writeJsonString(buf, e.getValue());
+            }
+            buf.put('}');
+        }
+        if (appName != null && !appName.isBlank()) {
+            buf.putAscii(",\"app\":");
+            writeJsonString(buf, appName.trim());
+        }
+        buf.put('}');
         return buf;
+    }
+
+    /**
+     * Append {@code s} as a quoted JSON string straight into {@code out}
+     * as UTF-8, escaping only the JSON-mandatory characters — the quote,
+     * the backslash, and the C0 controls (short {@code \b \t \n \f \r}
+     * forms, four-hex escapes otherwise) — exactly the set the prior
+     * Jackson {@code UTF8JsonGenerator} emitted (it does not escape
+     * {@code /} or non-ASCII).  Single pass, no per-string {@code byte[]}:
+     * printable ASCII is written verbatim, the rest UTF-8 encoded inline
+     * (surrogate pairs become 4-byte sequences).
+     */
+    private static void writeJsonString(ExposedByteArrayOutputStream out, String s) {
+        out.put('"');
+        int n = s.length();
+        for (int i = 0; i < n; i++) {
+            char c = s.charAt(i);
+            if (c >= 0x20 && c < 0x80) {
+                if (c == '"' || c == '\\') {
+                    out.put('\\');
+                }
+                out.put(c);
+            } else if (c < 0x20) {
+                switch (c) {
+                    case '\b' -> {
+                        out.put('\\');
+                        out.put('b');
+                    }
+                    case '\t' -> {
+                        out.put('\\');
+                        out.put('t');
+                    }
+                    case '\n' -> {
+                        out.put('\\');
+                        out.put('n');
+                    }
+                    case '\f' -> {
+                        out.put('\\');
+                        out.put('f');
+                    }
+                    case '\r' -> {
+                        out.put('\\');
+                        out.put('r');
+                    }
+                    default -> {
+                        out.put('\\');
+                        out.put('u');
+                        out.put('0');
+                        out.put('0');
+                        out.put(HEX[(c >> 4) & 0xF]);
+                        out.put(HEX[c & 0xF]);
+                    }
+                }
+            } else if (c < 0x800) {
+                out.put(0xC0 | (c >> 6));
+                out.put(0x80 | (c & 0x3F));
+            } else if (Character.isHighSurrogate(c)
+                    && i + 1 < n
+                    && Character.isLowSurrogate(s.charAt(i + 1))) {
+                int cp = Character.toCodePoint(c, s.charAt(++i));
+                out.put(0xF0 | (cp >> 18));
+                out.put(0x80 | ((cp >> 12) & 0x3F));
+                out.put(0x80 | ((cp >> 6) & 0x3F));
+                out.put(0x80 | (cp & 0x3F));
+            } else {
+                out.put(0xE0 | (c >> 12));
+                out.put(0x80 | ((c >> 6) & 0x3F));
+                out.put(0x80 | (c & 0x3F));
+            }
+        }
+        out.put('"');
     }
 
     /**
@@ -1039,74 +1145,21 @@ public class VesperaBridge {
                     "wire header_len " + headerLen
                             + " overflows response (" + wire.length + " bytes)");
         }
-        // Streaming decode via JsonParser (no JsonNode tree); defaults match
-        // the readTree path, unknown fields (incl. "v") are skipChildren'd.
-        int status = 500;
-        Map<String, Object> headers = null;
-        // Pre-size to the actual occupancy: the wire metadata object
-        // carries only a handful of keys (typically just "version"), so a
-        // capacity-4 table (Node[4]) is allocated instead of the default
-        // capacity-16 (Node[16]) on the first put — a deterministic
-        // per-response heap saving with no behavioural change.
-        Map<String, String> metadata = new LinkedHashMap<>(4);
-        List<Map<String, Object>> validationErrors = null;
-        try (JsonParser p = JSON_FACTORY.createParser(wire, 4, headerLen)) {
-            if (p.nextToken() == JsonToken.START_OBJECT) {
-                while (p.nextToken() == JsonToken.FIELD_NAME) {
-                    String name = p.currentName();
-                    JsonToken t = p.nextToken();
-                    switch (name) {
-                        case "status" -> status = p.getValueAsInt(500);
-                        case "headers" -> {
-                            if (t != JsonToken.START_OBJECT) { p.skipChildren(); break; }
-                            while (p.nextToken() == JsonToken.FIELD_NAME) {
-                                String k = p.currentName();
-                                // Pre-size for a typical response header count
-                                // (content-type, content-length, a few more):
-                                // capacity-8 table holds up to 6 entries before
-                                // resizing, vs the default capacity-16 — a
-                                // deterministic per-response heap saving.
-                                if (headers == null) headers = new LinkedHashMap<>(8);
-                                if (p.nextToken() == JsonToken.START_ARRAY) {
-                                    List<String> list = new ArrayList<>();
-                                    while (p.nextToken() != JsonToken.END_ARRAY) list.add(p.getValueAsString());
-                                    headers.put(k, list);
-                                } else {
-                                    headers.put(k, p.getValueAsString());
-                                }
-                            }
-                        }
-                        case "metadata" -> {
-                            if (t != JsonToken.START_OBJECT) { p.skipChildren(); break; }
-                            while (p.nextToken() == JsonToken.FIELD_NAME) {
-                                String k = p.currentName();
-                                p.nextToken();
-                                metadata.put(k, p.getValueAsString());
-                            }
-                        }
-                        case "validation_errors" -> {
-                            if (t != JsonToken.START_ARRAY) { p.skipChildren(); break; }
-                            validationErrors = new ArrayList<>();
-                            while (p.nextToken() == JsonToken.START_OBJECT) {
-                                Map<String, Object> entry = new LinkedHashMap<>();
-                                while (p.nextToken() == JsonToken.FIELD_NAME) {
-                                    String k = p.currentName();
-                                    p.nextToken();
-                                    entry.put(k, p.getValueAsString());
-                                }
-                                validationErrors.add(entry);
-                            }
-                        }
-                        default -> p.skipChildren();
-                    }
-                }
-            }
-        } catch (IOException e) {
-            throw new IllegalArgumentException("wire header JSON parse failed", e);
-        }
+        // Manual decode via the allocation-lean WireHeaderReader tokenizer
+        // (the same parser the DIRECT / streaming header callbacks use)
+        // instead of a Jackson JsonParser — drops the per-response parser +
+        // IOContext allocation.  Output is shape-identical: status (default
+        // 500), headers (String | List<String>), metadata (pre-sized),
+        // validation_errors, and unknown fields (incl. "v") skipped.
+        WireHeaderReader.Decoded d =
+                WireHeaderReader.decode(ByteBuffer.wrap(wire), 4, headerLen);
         ByteBuffer body = ByteBuffer.wrap(wire, 4 + headerLen, wire.length - 4 - headerLen);
         return new DecodedResponse(
-                status, headers == null ? Map.of() : headers, metadata, body, validationErrors);
+                d.status,
+                d.headers == null ? Map.of() : d.headers,
+                d.metadata,
+                body,
+                d.validationErrors);
     }
 
     private static void loadBundled(String libraryName) {

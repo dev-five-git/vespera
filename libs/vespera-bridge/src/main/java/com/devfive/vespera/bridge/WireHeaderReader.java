@@ -1,6 +1,10 @@
 package com.devfive.vespera.bridge;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.function.IntConsumer;
 
@@ -83,6 +87,139 @@ final class WireHeaderReader {
         statusSink.accept(status);
     }
 
+    /** Decoded response-header components (see {@link #decode}). */
+    static final class Decoded {
+        int status = 500;
+        Map<String, Object> headers;
+        // Defaults to the shared empty immutable map; overwritten by decode()
+        // when a metadata object is present — a single-entry Map.of for the
+        // common {"version":...} shape (no hash table), a LinkedHashMap only
+        // for the rare 2+ key case.
+        Map<String, String> metadata = Map.of();
+        List<Map<String, Object>> validationErrors;
+    }
+
+    /**
+     * Full decode of the response wire header for
+     * {@link VesperaBridge#decodeResponse(byte[])} — {@code status},
+     * {@code headers} ({@link String} or {@link List}&lt;String&gt; for
+     * multi-valued names), {@code metadata}, and {@code validation_errors}
+     * — reusing this reader's tested tokenizer instead of allocating a
+     * Jackson {@code JsonParser} + {@code IOContext} per response.
+     *
+     * <p>Output is shape-identical to the prior Jackson path for the
+     * well-formed, fixed-schema header the Rust {@code serde_json} side
+     * emits: status defaults to {@code 500} when absent; {@code headers}
+     * stays {@code null} when no header field is present; {@code metadata}
+     * is always a (possibly empty) map; {@code validationErrors} is
+     * {@code null} unless the {@code validation_errors} field is present;
+     * unknown fields (incl. {@code v}) are skipped without materialising.
+     */
+    static Decoded decode(ByteBuffer buf, int off, int len) {
+        WireHeaderReader r = new WireHeaderReader(buf, off, len);
+        Decoded out = new Decoded();
+        if (r.peek() == '{') {
+            r.beginObject();
+            int key;
+            while ((key = r.nextRootKey()) != KEY_END) {
+                switch (key) {
+                    case KEY_STATUS -> out.status = r.readInt();
+                    case KEY_HEADERS -> {
+                        if (r.isObjectStart()) {
+                            r.beginObject();
+                            String k;
+                            while ((k = r.nextKeyCanonical()) != null) {
+                                if (out.headers == null) {
+                                    // Pre-size for a typical response header
+                                    // count (content-type, content-length, …).
+                                    out.headers = new LinkedHashMap<>(8);
+                                }
+                                if (r.isArrayStart()) {
+                                    r.beginArray();
+                                    List<String> list = new ArrayList<>();
+                                    while (r.hasNextElement()) {
+                                        list.add(r.readString());
+                                    }
+                                    out.headers.put(k, list);
+                                } else {
+                                    out.headers.put(k, r.readString());
+                                }
+                            }
+                        } else {
+                            r.skipValue();
+                        }
+                    }
+                    case KEY_METADATA -> {
+                        if (r.isObjectStart()) {
+                            r.beginObject();
+                            out.metadata = r.readStringMap();
+                        } else {
+                            r.skipValue();
+                        }
+                    }
+                    case KEY_VALIDATION -> {
+                        if (r.isArrayStart()) {
+                            r.beginArray();
+                            out.validationErrors = new ArrayList<>();
+                            while (r.hasNextElement()) {
+                                if (!r.isObjectStart()) {
+                                    // Fixed schema is an array of objects; a
+                                    // non-object element (only on malformed
+                                    // input) is skipped so the cursor still
+                                    // reaches the array end cleanly.
+                                    r.skipValue();
+                                    continue;
+                                }
+                                r.beginObject();
+                                Map<String, Object> entry = new LinkedHashMap<>(4);
+                                String k;
+                                while ((k = r.nextKeyCanonical()) != null) {
+                                    entry.put(k, r.readString());
+                                }
+                                out.validationErrors.add(entry);
+                            }
+                        } else {
+                            r.skipValue();
+                        }
+                    }
+                    // KEY_OTHER: "v" and any unknown field — value skipped,
+                    // never materialised.
+                    default -> r.skipValue();
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Read a string→string object (the {@code metadata} shape) into the
+     * smallest map: {@link Map#of()} when empty, a single-entry immutable
+     * {@link Map#of(Object, Object)} for the overwhelmingly common one-key
+     * case ({@code {"version":...}}) — no hash table allocated — and a
+     * mutable {@link LinkedHashMap} only for the rare 2+ key case (which
+     * also tolerates duplicate keys, last-wins, like the prior map).
+     * Assumes the object was already entered ({@link #beginObject}).
+     */
+    Map<String, String> readStringMap() {
+        String k0 = nextKeyCanonical();
+        if (k0 == null) {
+            return Map.of();
+        }
+        String v0 = readString();
+        String k1 = nextKeyCanonical();
+        if (k1 == null) {
+            return Map.of(k0, v0);
+        }
+        Map<String, String> m = new LinkedHashMap<>(8);
+        m.put(k0, v0);
+        m.put(k1, readString());
+        String k;
+        while ((k = nextKeyCanonical()) != null) {
+            m.put(k, readString());
+        }
+        return m;
+    }
+
     private void skipWs() {
         while (pos < end) {
             int c = buf.get(pos) & 0xFF;
@@ -137,6 +274,93 @@ final class WireHeaderReader {
         return key;
     }
 
+    /**
+     * Well-known response wire keys, kept as shared (interned string-literal)
+     * instances so the per-response header / metadata / validation maps reuse
+     * one canonical key String instead of allocating a fresh one each call —
+     * the allocation Jackson's symbol table used to elide.  Plain ASCII by
+     * construction (HTTP field names + the fixed metadata / validation keys).
+     */
+    private static final String[] CANONICAL_KEYS = {
+        "content-type", "content-length", "content-encoding",
+        "content-disposition", "cache-control", "set-cookie", "location",
+        "etag", "date", "vary", "access-control-allow-origin",
+        "version", "path", "code", "message",
+    };
+
+    /**
+     * Shared canonical instance for {@code buf[start .. start+len]} when it
+     * equals a {@link #CANONICAL_KEYS} entry, else {@code null}.  Linear scan
+     * with a length pre-check — the list is tiny, so the per-key cost is a
+     * handful of byte comparisons.
+     */
+    private String canonicalKey(int start, int len) {
+        for (String k : CANONICAL_KEYS) {
+            if (k.length() == len && regionEquals(start, k)) {
+                return k;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * If the upcoming quoted member key is a plain-ASCII {@link #CANONICAL_KEYS}
+     * entry, consume it (key + closing quote) and return the shared instance;
+     * otherwise leave {@code pos} untouched and return {@code null} so the
+     * caller falls back to {@link #readString()} — escaped / non-ASCII /
+     * unknown keys still allocate exactly as before.
+     */
+    private String peekCanonicalKey() {
+        if (cur() != '"') {
+            return null;
+        }
+        int p = pos + 1;
+        int start = p;
+        while (p < end) {
+            int b = buf.get(p) & 0xFF;
+            if (b == '"') {
+                break;
+            }
+            if (b == '\\' || b >= 0x80) {
+                return null;
+            }
+            p++;
+        }
+        if (p >= end) {
+            return null;
+        }
+        String canon = canonicalKey(start, p - start);
+        if (canon != null) {
+            pos = p + 1;
+            return canon;
+        }
+        return null;
+    }
+
+    /**
+     * {@link #nextKey()} that returns a shared canonical key for the common
+     * wire keys (allocation-free) and falls back to {@link #readString()} for
+     * the rest — used by {@link #decode} for the header / metadata /
+     * validation member keys.
+     */
+    String nextKeyCanonical() {
+        skipWs();
+        int c = cur();
+        if (c == ',') {
+            pos++;
+            skipWs();
+            c = cur();
+        }
+        if (c == '}') {
+            pos++;
+            return null;
+        }
+        String canon = peekCanonicalKey();
+        String key = (canon != null) ? canon : readString();
+        expect(':');
+        return key;
+    }
+
     // Root-member-key codes for the allocation-free root-key matcher used
     // by apply(): the only root keys the reader acts on are "status" and
     // "headers"; every other key ("v", "metadata", "validation_errors", …)
@@ -146,6 +370,10 @@ final class WireHeaderReader {
     private static final int KEY_OTHER = -1;
     private static final int KEY_STATUS = 0;
     private static final int KEY_HEADERS = 1;
+    // Recognised additionally by the full decode() path (apply() skips these
+    // as KEY_OTHER); matched allocation-free by length + bytes like the rest.
+    private static final int KEY_METADATA = 2;
+    private static final int KEY_VALIDATION = 3;
 
     /**
      * Advance past the next root member key WITHOUT allocating a String for
@@ -214,6 +442,12 @@ final class WireHeaderReader {
         }
         if (contentLen == 7 && regionEquals(start, "headers")) {
             return KEY_HEADERS;
+        }
+        if (contentLen == 8 && regionEquals(start, "metadata")) {
+            return KEY_METADATA;
+        }
+        if (contentLen == 17 && regionEquals(start, "validation_errors")) {
+            return KEY_VALIDATION;
         }
         return KEY_OTHER;
     }
