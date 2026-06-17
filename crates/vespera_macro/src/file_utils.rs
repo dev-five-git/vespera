@@ -54,8 +54,8 @@ pub fn collect_files(folder_path: &Path) -> io::Result<Vec<PathBuf>> {
         .collect())
 }
 
-/// Recursively collect files together with their mtimes (secs since
-/// `UNIX_EPOCH`; `0` when unavailable).
+/// Recursively collect files together with their mtime fingerprints
+/// (nanoseconds since `UNIX_EPOCH`; `0` when unavailable).
 ///
 /// One walk serves both route discovery and cache fingerprinting —
 /// previously the folder was walked twice and every file paid an
@@ -65,6 +65,27 @@ pub fn collect_files_with_mtimes(folder_path: &Path) -> io::Result<Vec<(PathBuf,
     let mut files = Vec::new();
     collect_with_mtimes_into(folder_path, &mut files)?;
     Ok(files)
+}
+
+/// Compile-time cache fingerprint for a source file's modification time.
+///
+/// Uses **nanosecond** resolution rather than whole seconds: two edits to
+/// the same file within one wall-clock second — routine under fast
+/// incremental rebuilds and long-lived rust-analyzer processes — still
+/// yield distinct fingerprints, so a stale router / OpenAPI spec is never
+/// served from the route cache.  Returns `0` when the mtime is
+/// unavailable.  Truncating the u128 nanos-since-epoch to `u64` preserves
+/// every sub-second bit (the value only exceeds `u64` past the year ~2554,
+/// saturated to `u64::MAX`); the fingerprint is only ever compared for
+/// equality, so the absolute units never matter.
+fn mtime_fingerprint(modified: Option<std::time::SystemTime>) -> u64 {
+    modified.map_or(0, |t| {
+        let nanos = t
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        u64::try_from(nanos).unwrap_or(u64::MAX)
+    })
 }
 
 fn collect_with_mtimes_into(folder_path: &Path, out: &mut Vec<(PathBuf, u64)>) -> io::Result<()> {
@@ -81,15 +102,7 @@ fn collect_with_mtimes_into(folder_path: &Path, out: &mut Vec<(PathBuf, u64)>) -
             // file at compile time; the entry still keeps its place in the
             // list with mtime `0` (never read for non-`.rs` paths).
             let mtime = if path.extension().is_some_and(|e| e == "rs") {
-                entry
-                    .metadata()
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .map_or(0, |t| {
-                        t.duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs()
-                    })
+                mtime_fingerprint(entry.metadata().ok().and_then(|m| m.modified().ok()))
             } else {
                 0
             };
@@ -330,5 +343,34 @@ mod tests {
         assert!(result[0].ends_with("deep_file.rs"));
 
         temp_dir.close().expect("Failed to close temp dir");
+    }
+
+    #[test]
+    fn mtime_fingerprint_distinguishes_subsecond_edits() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        // Two mtimes in the SAME wall-clock second, 1 ms apart (1 ms is
+        // safely above the 100 ns `SystemTime`/FILETIME resolution on
+        // Windows, so the delta is actually representable): the prior
+        // seconds-only fingerprint collapsed these to one value (the
+        // stale-cache bug); the nanosecond fingerprint MUST tell them apart
+        // so a same-second edit always invalidates the route cache.
+        let base = UNIX_EPOCH + Duration::new(1_700_000_000, 0);
+        let same_second_later = base + Duration::from_millis(1);
+        assert_ne!(
+            mtime_fingerprint(Some(base)),
+            mtime_fingerprint(Some(same_second_later)),
+            "same-second edits must produce distinct cache fingerprints"
+        );
+
+        // A whole-second difference is of course still distinguished.
+        let next_second = base + Duration::from_secs(1);
+        assert_ne!(
+            mtime_fingerprint(Some(base)),
+            mtime_fingerprint(Some(next_second))
+        );
+
+        // Unavailable mtime collapses to 0 (unchanged contract).
+        assert_eq!(mtime_fingerprint(None), 0);
     }
 }

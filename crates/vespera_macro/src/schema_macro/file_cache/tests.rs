@@ -403,10 +403,10 @@ fn manifest_dir_revalidates_across_epochs() {
 #[serial_test::serial]
 #[test]
 fn h1_single_file_add_reextracts_only_changed_file() {
+    const N: usize = 20;
     let temp_dir = TempDir::new().unwrap();
     let src_dir = temp_dir.path();
 
-    const N: usize = 20;
     for i in 0..N {
         std::fs::write(
             src_dir.join(format!("model_{i}.rs")),

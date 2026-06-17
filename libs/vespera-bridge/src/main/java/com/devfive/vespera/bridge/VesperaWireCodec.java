@@ -217,9 +217,32 @@ final class VesperaWireCodec {
         return assembleInto(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY, target);
     }
 
+    /**
+     * Total wire length {@code 4 + headerLen + bodyLen}, computed in
+     * {@code long} and validated against {@code Integer.MAX_VALUE}.
+     *
+     * <p>A body approaching the ~2 GiB Java array limit would otherwise
+     * overflow the {@code int} addition into a negative / small value,
+     * corrupting capacity checks ({@code target.capacity() < total}) and
+     * array sizing ({@code new byte[...]} → {@code NegativeArraySizeException}).
+     * A buffered wire request cannot exceed 2 GiB on the JVM regardless, so
+     * an overflow is a hard, explanatory {@link IllegalArgumentException}
+     * pointing the caller at streaming dispatch — never a silent corruption.
+     */
+    static int wireTotalLength(int headerLen, int bodyLen) {
+        long total = 4L + headerLen + bodyLen;
+        if (total > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(
+                    "wire request exceeds 2 GiB (4 + headerLen=" + headerLen
+                            + " + bodyLen=" + bodyLen + " = " + total
+                            + " bytes); use streaming dispatch for payloads this large");
+        }
+        return (int) total;
+    }
+
     /** Internal: write {@code [u32 BE len | headerJson[0..headerLen] | body]} at position 0. */
     static int assembleInto(byte[] headerJson, int headerLen, byte[] body, ByteBuffer target) {
-        int total = 4 + headerLen + body.length;
+        int total = wireTotalLength(headerLen, body.length);
         if (target.capacity() < total) {
             return -total;
         }
@@ -235,7 +258,7 @@ final class VesperaWireCodec {
 
     /** Internal: assemble a heap wire array from pre-serialised parts. */
     static byte[] assembleWire(byte[] headerJson, int headerLen, byte[] body) {
-        byte[] wire = new byte[4 + headerLen + body.length];
+        byte[] wire = new byte[wireTotalLength(headerLen, body.length)];
         // Write the u32 BE length prefix directly — avoids the
         // HeapByteBuffer wrapper object that
         // ByteBuffer.allocate(...).array() allocates per request; the

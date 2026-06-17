@@ -276,10 +276,14 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_configureSt
 /// `com.devfive.vespera.bridge.VesperaBridge.dispatchBytes(byte[]) -> byte[]`
 ///
 /// **Synchronous** binary wire-format JNI entry point.  Blocks the
-/// calling thread until the Rust dispatch completes.  Wraps the
-/// entire pipeline in `catch_unwind` so a panic anywhere produces
-/// a valid wire-format `500` response with a plain-text body —
-/// JVM never sees an unwinding stack across the FFI boundary.
+/// calling thread until the Rust dispatch completes.  The request-array
+/// read AND the dispatch run inside a single `catch_unwind`, so a panic
+/// anywhere in that work (including an allocation failure in the ingress
+/// read) degrades to a valid wire-format `500` response rather than
+/// surfacing as a thrown Java exception.  The only step outside the guard
+/// is the final `byte_array_from_slice` that hands the bytes back, itself
+/// covered by the `with_env`/`resolve` FFI boundary — so a panic can never
+/// unwind across the `extern "system"` boundary into the JVM.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchBytes<'local>(
     mut unowned_env: EnvUnowned<'local>,
@@ -288,13 +292,16 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchByt
 ) -> jbyteArray {
     unowned_env
         .with_env(|env| -> jni::errors::Result<JObject<'local>> {
-            let input = match read_request_byte_array(env, &request_bytes) {
-                Ok(buf) => buf,
-                Err(err) => return Ok(env.byte_array_from_slice(&err)?.into()),
-            };
-
+            // Read + dispatch under ONE guard: a panic in the ingress read
+            // (e.g. allocation failure for an unbounded request) now also
+            // degrades to a wire `500` instead of a thrown Java exception.
             let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                block_on_sync_runtime(vespera_inprocess::dispatch_from_bytes_async(input))
+                match read_request_byte_array(env, &request_bytes) {
+                    Ok(input) => {
+                        block_on_sync_runtime(vespera_inprocess::dispatch_from_bytes_async(input))
+                    }
+                    Err(err_wire) => err_wire,
+                }
             }))
             .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
 
@@ -715,15 +722,14 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
 ) -> jbyteArray {
     unowned_env
         .with_env(|env| -> jni::errors::Result<JObject<'local>> {
-            let Ok(header_input) = env.convert_byte_array(&header_bytes) else {
-                // A failed conversion (e.g. null array) may leave a pending
-                // Java exception; clear it before the follow-up JNI calls.
-                clear_pending_exception(env);
-                let err = vespera_inprocess::error_wire(
-                    400,
-                    "invalid header byte array (JNI conversion failed)",
-                );
-                return Ok(env.byte_array_from_slice(&err)?.into());
+            // Read the header byte[] through the shared ingress contract
+            // (length cap honoured + pending-exception scrub on failure)
+            // rather than a raw `convert_byte_array`, so an oversized header
+            // byte[] is rejected before a full Rust-side copy — parity with
+            // the buffered dispatch symbols.
+            let header_input = match read_request_byte_array(env, &header_bytes) {
+                Ok(buf) => buf,
+                Err(err) => return Ok(env.byte_array_from_slice(&err)?.into()),
             };
 
             let input_global: Global<JObject<'static>> = env.new_global_ref(&input_stream)?;
@@ -897,16 +903,18 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
     // JNI-03: whole-body panic guard (see `guard_void_symbol`).
     guard_void_symbol(|| {
         let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
-            let Ok(header_input) = env.convert_byte_array(&header_bytes_in) else {
-                // A failed conversion (e.g. null array) may leave a pending
-                // Java exception; clear it before the follow-up JNI calls.
-                clear_pending_exception(env);
-                let err = vespera_inprocess::error_wire(
-                    400,
-                    "invalid header byte array (JNI conversion failed)",
-                );
-                let _ = call_header_consumer(env, &env.new_global_ref(&header_consumer)?, &err);
-                return Ok(());
+            // Read the header byte[] through the shared ingress contract
+            // (length cap honoured + pending-exception scrub on failure)
+            // rather than a raw `convert_byte_array`, so an oversized header
+            // byte[] is rejected before a full Rust-side copy — parity with
+            // the buffered dispatch symbols.  The wire error is delivered
+            // through the header callback (this is a void symbol).
+            let header_input = match read_request_byte_array(env, &header_bytes_in) {
+                Ok(buf) => buf,
+                Err(err) => {
+                    let _ = call_header_consumer(env, &env.new_global_ref(&header_consumer)?, &err);
+                    return Ok(());
+                }
             };
 
             let header_global: Global<JObject<'static>> = env.new_global_ref(&header_consumer)?;

@@ -785,6 +785,14 @@ fn write_wire_header_into_slice_serde(
     header_total
 }
 
+/// Upper bound on a `422` response body that [`try_hoist_validation_errors`]
+/// will reparse to hoist validation errors into the wire header.  A
+/// canonical validation envelope is at most a few KiB even with many field
+/// errors; beyond this the (cold-path) hoist is skipped and the body is
+/// surfaced verbatim, so a large 422 body never forces a full
+/// `serde_json::Value` reparse.
+const MAX_HOIST_BODY_BYTES: usize = 64 * 1024;
+
 /// Best-effort extract validation errors from a 422 JSON body.
 ///
 /// Returns `None` (silently) for:
@@ -813,6 +821,13 @@ fn try_hoist_validation_errors(
     if !is_json {
         return None;
     }
+    // Cold-path guard: a 422 validation envelope is framework-generated and
+    // tiny.  For an unexpectedly large body, skip the full `serde_json`
+    // reparse + per-item owned-`String` allocations rather than churning heap
+    // on it; the original body is still surfaced verbatim on the wire.
+    if body_bytes.len() > MAX_HOIST_BODY_BYTES {
+        return None;
+    }
     let parsed: serde_json::Value = serde_json::from_slice(body_bytes).ok()?;
     let errors = parsed.get("errors")?.as_array()?;
     let items: Vec<ValidationErrorItem> = errors
@@ -837,6 +852,27 @@ fn try_hoist_validation_errors(
     if items.is_empty() { None } else { Some(items) }
 }
 
+/// Hard upper bound on the wire header-JSON region, enforced **before**
+/// any parse or allocation work.  The header carries method/path/query
+/// plus the request headers as JSON; a legitimate header set is at most a
+/// few tens of KiB, so 1 MiB is generous headroom while bounding the parse
+/// work + header-vector allocation an attacker-controlled `header_len` can
+/// force on a direct FFI caller (the Spring proxy is already
+/// servlet-header-capped upstream).  An oversized header is rejected with a
+/// wire `400` rather than parsed.
+const MAX_WIRE_HEADER_BYTES: usize = 1024 * 1024;
+
+/// Reject a decoded `header_len` that exceeds [`MAX_WIRE_HEADER_BYTES`]
+/// before the header region is sliced or parsed.
+fn check_header_len(header_len: usize) -> Result<(), String> {
+    if header_len > MAX_WIRE_HEADER_BYTES {
+        return Err(format!(
+            "wire header_len ({header_len}) exceeds maximum of {MAX_WIRE_HEADER_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
 /// Split a wire-format request into its header-JSON region and body —
 /// both true zero-copy O(1) refcount views of the input allocation
 /// (unlike `Vec::split_off`, which allocates a new vector and memcpys
@@ -856,6 +892,7 @@ pub fn split_wire_request(input: Vec<u8>) -> Result<(Bytes, Bytes), String> {
     let mut len_bytes = [0u8; 4];
     len_bytes.copy_from_slice(&input[..4]);
     let header_len = u32::from_be_bytes(len_bytes) as usize;
+    check_header_len(header_len)?;
     let total_header_end = 4usize.saturating_add(header_len);
     if total_header_end > input.len() {
         return Err(format!(
@@ -884,6 +921,7 @@ pub fn split_wire_borrowed(input: &[u8]) -> Result<(&[u8], &[u8]), String> {
     let mut len_bytes = [0u8; 4];
     len_bytes.copy_from_slice(&input[..4]);
     let header_len = u32::from_be_bytes(len_bytes) as usize;
+    check_header_len(header_len)?;
     let total_header_end = 4usize.saturating_add(header_len);
     if total_header_end > input.len() {
         return Err(format!(

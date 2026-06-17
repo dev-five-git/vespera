@@ -118,15 +118,16 @@ pub(super) fn parse_component_schemas(
     let mut ast_backed: Vec<(&crate::metadata::StructMetadata, &syn::File)> = Vec::new();
     let mut parallel_jobs: Vec<&crate::metadata::StructMetadata> = Vec::new();
     for struct_meta in metadata.structs.iter().filter(|s| s.include_in_openapi) {
+        // Use ONLY the struct's own indexed file AST for Priority-2
+        // (`#[serde(default = "fn")]`) default extraction.  The former
+        // fallback to `metadata.routes.first()`'s AST could resolve a
+        // same-named default fn from an UNRELATED route file and emit a
+        // wrong OpenAPI default; a struct whose file is not indexed now
+        // simply forgoes Priority-2 extraction (other default sources still
+        // apply) rather than risking an incorrect value.
         let file_ast = struct_file_index
             .get(&struct_meta.name)
-            .and_then(|path| file_cache.get(*path))
-            .or_else(|| {
-                metadata
-                    .routes
-                    .first()
-                    .and_then(|r| file_cache.get(&r.file_path))
-            });
+            .and_then(|path| file_cache.get(*path));
         match file_ast {
             Some(ast) => ast_backed.push((struct_meta, ast)),
             None => parallel_jobs.push(struct_meta),

@@ -425,11 +425,20 @@ async fn finish_direct_write(
                     let len = data.len();
                     // Write only while the output is still contiguous
                     // (`written == required` ⇒ nothing has been skipped yet).
-                    if written == required && written + len <= out.len() {
+                    // `checked_add` guards the bounds test against a
+                    // pathological frame length wrapping `usize`; `written`
+                    // then stays ≤ `out.len()` so the in-place add cannot
+                    // overflow.
+                    if written == required
+                        && written.checked_add(len).is_some_and(|end| end <= out.len())
+                    {
                         out[written..written + len].copy_from_slice(data);
                         written += len;
                     }
-                    required += len;
+                    // Saturating so an (impossible-in-practice) cumulative
+                    // overflow reports `Overflow(usize::MAX)` rather than
+                    // wrapping to a bogus small required size.
+                    required = required.saturating_add(len);
                 }
             }
             // Response body aborted mid-stream. Nothing has been committed to

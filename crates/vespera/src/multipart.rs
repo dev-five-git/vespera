@@ -132,6 +132,25 @@ impl fmt::Display for TypedMultipartError {
 
 impl std::error::Error for TypedMultipartError {}
 
+impl TypedMultipartError {
+    /// The offending field name when the error carries one — used as the
+    /// `path` in the JSON error envelope.
+    fn field_name(&self) -> Option<&str> {
+        match self {
+            Self::MissingField { field_name }
+            | Self::WrongFieldType { field_name, .. }
+            | Self::DuplicateField { field_name }
+            | Self::UnknownField { field_name }
+            | Self::InvalidEnumValue { field_name, .. }
+            | Self::FieldTooLarge { field_name, .. } => Some(field_name),
+            Self::InvalidRequest { .. }
+            | Self::InvalidRequestBody { .. }
+            | Self::NamelessField
+            | Self::Other { .. } => None,
+        }
+    }
+}
+
 impl IntoResponse for TypedMultipartError {
     fn into_response(self) -> Response {
         let status = match &self {
@@ -149,7 +168,16 @@ impl IntoResponse for TypedMultipartError {
             Self::FieldTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Other { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        (status, self.to_string()).into_response()
+        // Canonical JSON error envelope — the SAME shape `Validated<T>`
+        // emits ({"errors":[{"path","message"}]}), so multipart failures are
+        // consumed uniformly across the API instead of as ad-hoc plain text;
+        // under JNI a 422 body is additionally hoisted into the wire header
+        // exactly like a `Validated` rejection.  `path` is the offending
+        // field name when known, else empty.
+        let path = self.field_name().unwrap_or("").to_owned();
+        let message = self.to_string();
+        let body = serde_json::json!({ "errors": [{ "path": path, "message": message }] });
+        (status, axum::Json(body)).into_response()
     }
 }
 
@@ -401,15 +429,28 @@ fn str_to_bool(s: &str) -> Option<bool> {
 
 // ─── String ─────────────────────────────────────────────────────────────────
 
+/// Default buffering cap for an **unannotated** `String` multipart field.
+///
+/// Generous enough for any realistic text field (form text, JSON blobs,
+/// small base64) yet converts the former *unbounded* accumulation into a
+/// bounded one — closing a per-request memory-exhaustion vector where a
+/// client could stream gigabytes into a single text field.  Opt out per
+/// field with `#[form_data(limit = "unlimited")]`, or raise / lower it with
+/// an explicit `#[form_data(limit = "...")]`.
+const DEFAULT_STRING_FIELD_LIMIT_BYTES: usize = 1024 * 1024; // 1 MiB
+
 impl<S: Send + Sync> TryFromFieldWithState<S> for String {
     async fn try_from_field_with_state(
         field: Field<'_>,
         limit_bytes: Option<usize>,
         _state: &S,
     ) -> Result<Self, TypedMultipartError> {
-        // Strings intentionally keep the previous effectively-unbounded default
-        // for backwards compatibility; explicit per-field limits still win.
-        let (field, data) = read_field_data(field, limit_bytes).await?;
+        // An ABSENT limit (`None`) applies the generous default cap; an
+        // explicit `#[form_data(limit = "unlimited")]` arrives as
+        // `Some(usize::MAX)` (set by the derive macro) and stays unbounded;
+        // an explicit byte size wins as `Some(n)`.
+        let limit = limit_bytes.unwrap_or(DEFAULT_STRING_FIELD_LIMIT_BYTES);
+        let (field, data) = read_field_data(field, Some(limit)).await?;
         Self::from_utf8(data).map_err(|e| TypedMultipartError::WrongFieldType {
             field_name: field.name().unwrap_or_default().to_string(),
             wanted: Cow::Borrowed("String"),

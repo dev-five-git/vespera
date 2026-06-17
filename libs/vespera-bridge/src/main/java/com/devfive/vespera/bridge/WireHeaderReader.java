@@ -804,6 +804,26 @@ final class WireHeaderReader {
         }
     }
 
+    /**
+     * Consume a JSON number token (sign, integer digits, optional fraction
+     * and exponent) WITHOUT parsing it to an {@code int}.  The skip path
+     * discards unknown-field values, so an unknown numeric that is large
+     * (beyond {@code int} range) or a decimal must NOT fail decode the way
+     * {@link #readInt} — used for the known, overflow-checked {@code status}
+     * field — would.  Forward-compatibility for newer / custom wire headers.
+     */
+    private void skipNumberRaw() {
+        skipWs();
+        if (cur() == '-') {
+            pos++;
+        }
+        int digitsStart = pos;
+        skipNumberTail();
+        if (pos == digitsStart) {
+            throw err("expected number");
+        }
+    }
+
     void skipValue() {
         int c = peek();
         switch (c) {
@@ -812,7 +832,7 @@ final class WireHeaderReader {
             case 't', 'f', 'n' -> skipLiteral();
             default -> {
                 if (c == '-' || (c >= '0' && c <= '9')) {
-                    readInt();
+                    skipNumberRaw();
                 } else {
                     throw err("unexpected value");
                 }

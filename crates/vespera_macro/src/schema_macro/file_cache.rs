@@ -456,10 +456,10 @@ fn get_file_struct_names(cache: &mut FileCache, path: &Path) -> Arc<[String]> {
         return Arc::clone(names);
     }
 
-    let names: Arc<[String]> = match get_file_content_inner(cache, path) {
-        Some(content) => extract_struct_names(&content).into(),
-        None => Vec::new().into(),
-    };
+    let names: Arc<[String]> = get_file_content_inner(cache, path).map_or_else(
+        || Vec::new().into(),
+        |content| extract_struct_names(&content).into(),
+    );
 
     if let Some(mtime) = current_mtime {
         cache

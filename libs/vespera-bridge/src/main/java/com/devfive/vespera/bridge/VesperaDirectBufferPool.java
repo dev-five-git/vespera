@@ -219,7 +219,7 @@ final class VesperaDirectBufferPool {
         ExposedByteArrayOutputStream hdr =
                 VesperaWireCodec.fillHeaderJson(appName, method, path, query, headers);
         int headerLen = hdr.size();
-        int total = 4 + headerLen + bodyBytes.length;
+        int total = VesperaWireCodec.wireTotalLength(headerLen, bodyBytes.length);
         if (currentThreadIsVirtual() || total > DIRECT_MAX_CAPACITY) {
             // Virtual thread: avoid the per-vthread off-heap direct buffer
             // accumulation — use the GC-managed heap path.  Oversized
@@ -260,7 +260,7 @@ final class VesperaDirectBufferPool {
         ExposedByteArrayOutputStream hdr =
                 VesperaWireCodec.fillHeaderJson(appName, method, path, query, headers);
         int headerLen = hdr.size();
-        int total = 4 + headerLen + bodyBytes.length;
+        int total = VesperaWireCodec.wireTotalLength(headerLen, bodyBytes.length);
         if (currentThreadIsVirtual() || total > DIRECT_MAX_CAPACITY) {
             return ByteBuffer.wrap(
                     VesperaBridge.dispatchBytes(

@@ -400,10 +400,30 @@ impl Schema {
     /// The input is always valid JSON (the macro just serialized it via
     /// `serde_json`), so a parse failure is unreachable in practice; it
     /// degrades to [`Schema::default`] rather than panicking inside
-    /// generated user code.
+    /// generated user code.  A failure would silently drop a component
+    /// schema, so it is surfaced via `debug_assert!` (caught in
+    /// development / CI) while release builds still degrade gracefully — a
+    /// macro/serde drift never goes unnoticed but never panics in
+    /// downstream user code either.
     #[must_use]
     pub fn from_compiled_json(json: &str) -> Self {
-        serde_json::from_str(json).unwrap_or_default()
+        match serde_json::from_str(json) {
+            Ok(schema) => schema,
+            Err(e) => {
+                // Surface the (in-practice-unreachable) macro/serde drift in
+                // debug / CI builds while degrading gracefully in release.
+                // `debug_assert!` keeps `e` referenced in both profiles (its
+                // release expansion is a dead `if false` branch), so there is
+                // no unused-binding warning.
+                debug_assert!(
+                    false,
+                    "vespera: Schema::from_compiled_json failed to parse macro-emitted \
+                     JSON ({e}); falling back to Schema::default(). This indicates a \
+                     vespera bug — the macro serialized a Schema that cannot round-trip."
+                );
+                Self::default()
+            }
+        }
     }
 }
 

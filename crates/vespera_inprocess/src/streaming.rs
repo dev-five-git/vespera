@@ -420,13 +420,26 @@ async fn bidirectional_streaming_inner<P, F, H, C>(
     H: FnMut(&[u8]),
     C: FnOnce(),
 {
-    let (header_bytes, _ignored_body) = match split_wire_request(input_header) {
+    let (header_bytes, body_tail) = match split_wire_request(input_header) {
         Ok(parts) => parts,
         Err(msg) => {
             on_header(&error_wire(400, &msg));
             return;
         }
     };
+    // `input_header` MUST be header-only on the bidirectional path — the
+    // request body arrives via `pull_chunk`.  A non-empty tail means the
+    // caller mis-built the frame; reject it (400) instead of silently
+    // retaining (then discarding) a full body allocation, which would also
+    // violate the advertised O(chunk) memory contract.
+    if !body_tail.is_empty() {
+        on_header(&error_wire(
+            400,
+            "bidirectional streaming input_header must be header-only \
+             (no trailing body bytes); send the request body via pull_chunk",
+        ));
+        return;
+    }
     let header = match parse_wire_header(&header_bytes) {
         Ok(h) => h,
         Err(msg) => {
@@ -464,6 +477,17 @@ async fn bidirectional_streaming_inner<P, F, H, C>(
     // sibling of the M3 hang.
     let mut closer = RequestSourceCloser::new(Arc::clone(&producer_handle), request_close);
 
+    // Content-Type parity with the buffered / direct / response-streaming
+    // paths: a request with no explicit Content-Type defaults to
+    // `application/json`.  The streamed body's emptiness is unknowable up
+    // front (unlike the buffered paths, which gate on a non-empty body), so
+    // default whenever the header is absent — matching sibling behaviour for
+    // the bodyful bidirectional requests that are this path's reason to
+    // exist, instead of leaving extractor behaviour mode-dependent.
+    let default_json_content_type = !header
+        .headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
     let (status, headers, metadata, mut response_body) = match dispatch_and_split(
         router,
         &header.method,
@@ -471,7 +495,7 @@ async fn bidirectional_streaming_inner<P, F, H, C>(
         &header.query,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         body,
-        false,
+        default_json_content_type,
     )
     .await
     {

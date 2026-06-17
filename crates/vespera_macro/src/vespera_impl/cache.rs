@@ -133,10 +133,35 @@ pub(super) fn compute_config_hash(processed: &ProcessedVesperaInput) -> u64 {
             descriptions[name].hash(&mut hasher);
         }
     }
+    // Merge children: hash each child app's NAME *and* its exported
+    // OpenAPI sidecar content, so a change to a child's spec invalidates
+    // the parent's cached merged document — the path name alone cannot
+    // detect a child whose routes / schemas changed between builds.
+    // Mirrors the sidecar resolution in `generate_and_write_openapi`
+    // (`vespera_dir / <LastSegment>.openapi.json`).
+    let merge_dir = merge_spec_dir();
     for merge_path in &processed.merge {
         quote!(#merge_path).to_string().hash(&mut hasher);
+        if let (Some(dir), Some(last)) = (merge_dir.as_ref(), merge_path.segments.last()) {
+            let spec_file = dir.join(format!("{}.openapi.json", last.ident));
+            match std::fs::read_to_string(&spec_file) {
+                Ok(content) => content.hash(&mut hasher),
+                // Absent / unreadable child sidecar → stable marker so the
+                // hashed state still differs from a present spec.
+                Err(_) => "child-spec:absent".hash(&mut hasher),
+            }
+        }
     }
     hasher.finish()
+}
+
+/// Directory holding child apps' exported OpenAPI sidecars
+/// (`<AppName>.openapi.json`), used by [`compute_config_hash`] to fold a
+/// merged child's spec content into the parent cache key.  Mirrors the
+/// resolution `generate_and_write_openapi` uses when merging child specs.
+fn merge_spec_dir() -> Option<std::path::PathBuf> {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+    Some(find_target_dir(Path::new(&manifest_dir)).join("vespera"))
 }
 
 /// Get the path to this crate's routes cache file.

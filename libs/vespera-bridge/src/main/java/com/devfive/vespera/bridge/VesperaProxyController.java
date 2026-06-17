@@ -104,7 +104,11 @@ public class VesperaProxyController {
         final String appName = appResolver.resolveAppName(request);
         final DispatchMode mode = modeResolver.resolveMode(request);
         final String method = request.getMethod();
-        final String path = request.getRequestURI();
+        // Path RELATIVE to the servlet context: a Spring app deployed under
+        // a non-root context (e.g. server.servlet.context-path=/api) must
+        // still forward `/health` — not `/api/health` — so the Rust router
+        // sees exactly the URL published in the generated openapi.json.
+        final String path = pathWithinApplication(request);
         final String query = Objects.toString(request.getQueryString(), "");
         final VesperaBridge.HeaderSource headers = sink -> forEachRequestHeader(request, sink);
 
@@ -126,8 +130,13 @@ public class VesperaProxyController {
                 return dispatchAsyncFlow(appName, method, path, query, headers,
                         readBody(request, maxBufferedRequestBytes));
             case STREAMING:
+                // STREAMING materialises the REQUEST body (only the response
+                // streams), so it must honour the same buffered-request cap
+                // as SYNC/ASYNC/DIRECT — otherwise a custom resolver routing
+                // a bodyful request here would bypass
+                // vespera.bridge.max-buffered-request-bytes.
                 dispatchStreaming(response, appName, method, path, query,
-                        headers, readBody(request));
+                        headers, readBody(request, maxBufferedRequestBytes));
                 return null;
             case DIRECT:
                 dispatchDirectMode(response, appName, method, path, query, headers,
@@ -138,6 +147,35 @@ public class VesperaProxyController {
                 dispatchBidirectional(request, response, appName, method, path, query, headers);
                 return null;
         }
+    }
+
+    /**
+     * Resolve the request path RELATIVE to the servlet context path so a
+     * Spring app deployed under a non-root context
+     * ({@code server.servlet.context-path=/api}) still forwards the
+     * context-relative URL the Rust router and the generated
+     * {@code openapi.json} know — {@code /api/health} on the wire becomes
+     * {@code /health}.  At the root context ({@code getContextPath()}
+     * empty) the request URI is returned unchanged; a request to the bare
+     * context root collapses to {@code "/"}.
+     *
+     * <p>Package-private so unit tests can verify it directly with
+     * {@code MockHttpServletRequest}.
+     */
+    static String pathWithinApplication(HttpServletRequest request) {
+        String uri = request.getRequestURI();
+        String context = request.getContextPath();
+        if (context == null || context.isEmpty() || !uri.startsWith(context)) {
+            return uri;
+        }
+        // Only strip when the context is a whole leading path segment — the
+        // servlet container guarantees this, but guard against a degenerate
+        // `/apixyz` being mis-stripped against context `/api`.
+        if (uri.length() > context.length() && uri.charAt(context.length()) != '/') {
+            return uri;
+        }
+        String stripped = uri.substring(context.length());
+        return stripped.isEmpty() ? "/" : stripped;
     }
 
     /**
@@ -380,11 +418,35 @@ public class VesperaProxyController {
         response.getOutputStream().flush();
     }
 
+    /**
+     * Read and validate the wire header length prefix against the actual
+     * buffer length BEFORE {@link WireHeaderReader#apply} indexes into it.
+     * The direct / streaming callback paths receive these bytes straight
+     * from native Rust; a malformed length (negative, or overrunning the
+     * buffer) must surface as a clear {@link IllegalArgumentException}
+     * rather than an {@link IndexOutOfBoundsException} escaping mid-response.
+     * Mirrors the guard the heap {@code byte[]} paths
+     * ({@link #writeWireResponse}, {@link #buildResponseEntityFromWire})
+     * already apply.
+     */
+    static int readValidatedHeaderLen(ByteBuffer wire) {
+        int limit = wire.limit();
+        if (limit < 4) {
+            throw new IllegalArgumentException("wire response too short: " + limit + " bytes");
+        }
+        int headerLen = wire.getInt(0);
+        if (headerLen < 0 || (long) 4 + headerLen > limit) {
+            throw new IllegalArgumentException(
+                    "wire header_len " + headerLen + " overflows response (" + limit + " bytes)");
+        }
+        return headerLen;
+    }
+
     // Package-private so tests can verify DIRECT header/body-length behavior
     // without invoking the native dispatchDirect JNI symbol.
     static int applyDirectHeaderAndPositionBody(
             ByteBuffer wireResp, HttpServletResponse response) {
-        int headerLen = wireResp.getInt(0);
+        int headerLen = readValidatedHeaderLen(wireResp);
         WireHeaderReader.apply(wireResp, 4, headerLen, response::setStatus, response::addHeader);
         int bodyOff = 4 + headerLen;
         int bodyLen = wireResp.limit() - bodyOff;
@@ -506,7 +568,7 @@ public class VesperaProxyController {
         // header's first value and appends for multi-valued headers
         // (e.g. set-cookie), preserving the prior semantics.
         ByteBuffer buf = ByteBuffer.wrap(headerBytes);
-        int headerLen = buf.getInt(0);
+        int headerLen = readValidatedHeaderLen(buf);
         WireHeaderReader.apply(buf, 4, headerLen, response::setStatus, response::addHeader);
     }
 

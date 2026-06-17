@@ -395,10 +395,15 @@ pub fn call_header_consumer(
     env.with_local_frame::<_, _, jni::errors::Error>(8, |env| {
         let arr = env.byte_array_from_slice(header_bytes)?;
         let arr_obj: JObject = arr.into();
-        call_consumer_accept(env, consumer, &arr_obj)?;
+        let result = call_consumer_accept(env, consumer, &arr_obj);
+        // Scrub a pending Java exception on BOTH success and failure: if
+        // `Consumer.accept` threw, the bare `?` previously returned BEFORE
+        // the clear, leaking the pending exception into the (often
+        // result-ignoring) caller's next JNI call on this thread.
         if env.exception_check() {
             env.exception_clear();
         }
+        result?;
         Ok(())
     })
 }
@@ -421,15 +426,19 @@ pub fn complete_future_local(
 ) -> jni::errors::Result<()> {
     let arr = env.byte_array_from_slice(bytes)?;
     let arr_obj: JObject = arr.into();
-    env.call_method(
+    let result = env.call_method(
         future,
         jni_str!("complete"),
         jni_sig!("(Ljava/lang/Object;)Z"),
         &[JValue::Object(&arr_obj)],
-    )?;
+    );
+    // Scrub a pending Java exception on BOTH success and failure: a throwing
+    // `CompletableFuture.complete` must not leave the exception set for the
+    // caller's next JNI call (the result here is a cold-path best effort).
     if env.exception_check() {
         env.exception_clear();
     }
+    result?;
     Ok(())
 }
 

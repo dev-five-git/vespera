@@ -135,6 +135,21 @@ class WireHeaderReaderTest {
         assertEquals(List.of(), c.headers());
     }
 
+    @Test
+    void skipsUnknownLargeAndDecimalNumericFields() {
+        // Forward-compat: an UNKNOWN numeric field beyond int range, or a
+        // decimal / exponent, must be skipped as a raw token — NOT parsed
+        // and overflow-rejected like the known `status` field (which the
+        // prior readInt-based skip did, failing decode of an otherwise-valid
+        // header).  The known `status` is still parsed normally.
+        Captured c =
+                run(
+                        "{\"status\":200,\"ts\":1700000000000000000,\"ratio\":-3.14e2,"
+                                + "\"headers\":{\"content-type\":\"text/plain\"}}");
+        assertEquals(200, c.status());
+        assertEquals(List.of("content-type=text/plain"), c.headers());
+    }
+
     /**
      * P3: {@code apply()} now routes common header names through the shared
      * {@code CANONICAL_KEYS} table (the same allocation-free path {@code

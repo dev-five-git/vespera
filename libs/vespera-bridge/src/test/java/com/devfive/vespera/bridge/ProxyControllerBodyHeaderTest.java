@@ -110,6 +110,42 @@ class ProxyControllerBodyHeaderTest {
         assertEquals(5, VesperaProxyController.readBody(req, 0).length);
     }
 
+    // ── Context-path stripping: Rust sees the context-relative path ──────
+
+    @Test
+    void pathWithinApplicationStripsContextPath() {
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/api/health");
+        req.setContextPath("/api");
+        req.setRequestURI("/api/health");
+        // A non-root deployment must forward `/health`, matching openapi.json.
+        assertEquals("/health", VesperaProxyController.pathWithinApplication(req));
+    }
+
+    @Test
+    void pathWithinApplicationRootContextUnchanged() {
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/health");
+        req.setContextPath("");
+        req.setRequestURI("/health");
+        assertEquals("/health", VesperaProxyController.pathWithinApplication(req));
+    }
+
+    @Test
+    void pathWithinApplicationBareContextRootCollapsesToSlash() {
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/api");
+        req.setContextPath("/api");
+        req.setRequestURI("/api");
+        assertEquals("/", VesperaProxyController.pathWithinApplication(req));
+    }
+
+    @Test
+    void pathWithinApplicationDoesNotStripPartialSegmentMatch() {
+        // Context `/api` must NOT mis-strip a `/apixyz/...` URI.
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/apixyz/foo");
+        req.setContextPath("/api");
+        req.setRequestURI("/apixyz/foo");
+        assertEquals("/apixyz/foo", VesperaProxyController.pathWithinApplication(req));
+    }
+
     @Test
     void directHeaderSynthesizesContentLengthWhenMissing() {
         MockHttpServletResponse response = new MockHttpServletResponse();

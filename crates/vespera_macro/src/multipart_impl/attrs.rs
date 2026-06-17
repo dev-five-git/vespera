@@ -84,7 +84,15 @@ pub(super) fn extract_limit_tokens(attrs: &[syn::Attribute]) -> TokenStream {
             });
             if let Some(s) = limit_str {
                 if s == "unlimited" {
-                    return quote! { std::option::Option::None };
+                    // `usize::MAX` is the explicit unbounded sentinel: every
+                    // limit check (`total > limit`) is byte-for-byte
+                    // equivalent to the former `None` (never triggers), but
+                    // it is DISTINGUISHABLE from an ABSENT attribute (which
+                    // stays `None` below).  That lets the runtime apply a
+                    // default cap to unannotated text fields (`String`) while
+                    // an explicit `limit = "unlimited"` opt-out stays
+                    // genuinely unbounded.
+                    return quote! { std::option::Option::Some(usize::MAX) };
                 }
                 if let Some(bytes) = parse_byte_unit(&s) {
                     return quote! { std::option::Option::Some(#bytes) };
@@ -380,10 +388,13 @@ mod tests {
 
     #[test]
     fn test_extract_limit_tokens_unlimited() {
+        // `"unlimited"` now emits the `usize::MAX` unbounded sentinel (not
+        // `None`) so the runtime can tell an explicit opt-out apart from an
+        // absent attribute and still apply a default cap to the latter.
         let attrs = parse_attrs(r#"#[form_data(limit = "unlimited")] pub x: String"#);
         assert_eq!(
             extract_limit_tokens(&attrs).to_string(),
-            "std :: option :: Option :: None"
+            "std :: option :: Option :: Some (usize :: MAX)"
         );
     }
 
