@@ -212,6 +212,57 @@ mod tests {
         }
     }
 
+    /// A very deeply nested unknown-field value must be walked by the
+    /// ITERATIVE skip (no native recursion) so it can never overflow the
+    /// stack and crash the host JVM across the JNI boundary — and it must
+    /// stay accept/reject-identical to `serde_json`, whose `ignore_value` is
+    /// likewise iterative and imposes NO recursion cap on ignored values
+    /// (so a well-formed deep value is *accepted*, not rejected).  The test
+    /// completing at all proves neither path blew the stack.
+    #[test]
+    fn hand_parse_handles_deep_unknown_nesting_without_overflow() {
+        // Depth far beyond any native recursion limit (a recursive skip would
+        // overflow the stack here).
+        let depth = 50_000usize;
+
+        // Well-formed deep nesting under an unknown key: both ACCEPT (serde's
+        // iterative ignore imposes no cap), value-identical (no fields stored).
+        let mut ok = br#"{"v":1,"method":"GET","path":"/p","z":"#.to_vec();
+        ok.extend(std::iter::repeat_n(b'[', depth));
+        ok.extend(std::iter::repeat_n(b']', depth));
+        ok.push(b'}');
+        assert_eq!(
+            parse_wire_header(&ok).is_ok(),
+            parse_wire_header_serde(&ok).is_ok(),
+            "hand vs serde accept/reject must match on deep well-formed nesting"
+        );
+        assert!(
+            parse_wire_header(&ok).is_ok(),
+            "well-formed deep unknown nesting must be accepted (matches serde)"
+        );
+
+        // Deep UNCLOSED nesting: both REJECT (grammar error), still no overflow.
+        let mut bad = br#"{"v":1,"method":"GET","path":"/p","z":"#.to_vec();
+        bad.extend(std::iter::repeat_n(b'[', depth)); // never closed
+        assert!(parse_wire_header(&bad).is_err());
+        assert!(parse_wire_header_serde(&bad).is_err());
+    }
+
+    /// A shallow unknown-field value (well within the depth cap) carrying
+    /// escaped strings, a `\uXXXX` BMP escape, a UTF-16 surrogate pair, and a
+    /// nested array must still PARSE via the non-allocating skip path, with
+    /// the known fields intact and value-identical to serde — locking the
+    /// `skip_string` / `validate_*` twins against the decoding `read_string`.
+    #[test]
+    fn hand_parse_accepts_shallow_unknown_with_escapes() {
+        let json = br#"{"v":1,"method":"GET","path":"/p","x-meta":{"trace":"a\"b\nc\td","u":"\u00e9\uD83D\uDE00"},"flags":[true,null,42,-3.14e2]}"#;
+        let hand = parse_wire_header(json).expect("hand accepts forward-compat unknown fields");
+        let serde = parse_wire_header_serde(json).expect("serde accepts the same input");
+        assert_eq!(owned(&hand), owned(&serde), "value drift on unknown-skip path");
+        assert_eq!(hand.method.as_ref(), "GET");
+        assert_eq!(hand.path.as_ref(), "/p");
+    }
+
     /// Fresh `validation_errors` table exercising the full escape set
     /// (quote, backslash, newline, a `\u0001` control, tab, non-ASCII)
     /// plus the skip-if-none `code`/`message` fields.

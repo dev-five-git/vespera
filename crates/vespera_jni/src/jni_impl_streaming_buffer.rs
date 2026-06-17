@@ -47,24 +47,61 @@ struct CachedStreamingChunkBuffer {
     checked_out: bool,
 }
 
-// Released explicitly only after the streaming future returns normally.  If a
-// panic unwinds through a bidirectional dispatch while the request producer may
-// still be in `InputStream.read`, the cache stays checked out and future
-// dispatches allocate fresh buffers instead of aliasing the Java array.
+// Released after the streaming future returns normally via
+// [`Self::mark_reusable`], which flips `checked_out` back to `false`.
+//
+// If a panic instead unwinds through a dispatch — while the request producer
+// may STILL be parked in `InputStream.read` on a `spawn_blocking` thread — the
+// lease is dropped WITHOUT `mark_reusable`, and its [`Drop`] DISCARDS the
+// cached slot entirely.  The prior behaviour left the slot `checked_out`
+// forever, which permanently disabled pooling on that OS thread: every later
+// stream on a panic-touched (pooled servlet) thread then allocated a throwaway
+// Java array.  Discarding instead lets pooling recover on the next dispatch.
+//
+// Discarding is safe against the still-running producer: the in-flight closure
+// holds its OWN `Global<JByteArray>` to the same array (a separate global ref
+// taken at checkout), so dropping the cache's reference cannot free the array
+// out from under the producer, and the next dispatch installs a brand-new
+// buffer that can never alias the one still in flight.
 pub struct StreamingChunkBufferLease {
     role: StreamingBufferRole,
+    released: bool,
 }
 
 impl StreamingChunkBufferLease {
     const fn new(role: StreamingBufferRole) -> Self {
-        Self { role }
+        Self {
+            role,
+            released: false,
+        }
     }
 
-    fn mark_reusable(self) {
+    /// Release the lease after a dispatch that returned normally: the cached
+    /// buffer is free for reuse by the next dispatch on this thread.
+    fn mark_reusable(mut self) {
         self.role.with_cache(|cache| {
             if let Some(cached) = cache.borrow_mut().as_mut() {
                 cached.checked_out = false;
             }
+        });
+        // Mark released so the `Drop` below is a no-op for this clean release.
+        self.released = true;
+    }
+}
+
+impl Drop for StreamingChunkBufferLease {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        // Dropped WITHOUT `mark_reusable` — a panic unwound through the
+        // streaming dispatch.  Discard the cached slot (see the type doc) so
+        // the next dispatch reinstalls a fresh pooled buffer instead of
+        // forever allocating throwaways; the in-flight closure's own global
+        // ref keeps the array alive, so clearing the cache reference here can
+        // never alias or free a buffer still in flight.
+        self.role.with_cache(|cache| {
+            *cache.borrow_mut() = None;
         });
     }
 }

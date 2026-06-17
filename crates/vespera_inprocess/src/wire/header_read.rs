@@ -23,6 +23,17 @@ use std::borrow::Cow;
 
 use super::{CowPairs, WireRequestHeader};
 
+/// Container-nesting levels tracked **inline** (zero-allocation) while
+/// skipping the value of an unknown (forward-compat) header field, before
+/// the rare deep-nesting spill to a heap `Vec`.  128 covers every realistic
+/// forward-compat value; the unknown-value skip is *iterative* (see
+/// [`Parser::skip_value`]) so deeper nesting is still accepted exactly as
+/// `serde_json`'s iterative `ignore_value` does — never via native
+/// recursion, so hostile depth can never overflow the stack and crash the
+/// host JVM across the JNI boundary (a stack overflow is NOT catchable by
+/// the `catch_unwind` guards at the JNI entry points).
+const INLINE_SKIP_DEPTH: usize = 128;
+
 /// Parse the request wire header, borrowing every plain string straight
 /// from `input`.  Returns a bare error message; the caller
 /// ([`super::parse_wire_header`]) adds the `wire header JSON parse
@@ -109,6 +120,8 @@ impl<'a> Parser<'a> {
                         app = self.read_opt_string()?;
                         app_seen = true;
                     }
+                    // Unknown (forward-compat) key: iteratively
+                    // validate-and-skip its value (no native recursion).
                     _ => self.skip_value()?,
                 }
                 self.skip_ws();
@@ -365,85 +378,179 @@ impl<'a> Parser<'a> {
         u8::try_from(value).map_err(|_| "`v` out of range for u8".to_owned())
     }
 
-    /// Consume **and validate** an arbitrary JSON value (for unknown
-    /// keys), enforcing `serde_json`'s grammar so a malformed value under
-    /// an ignored key is rejected rather than silently skipped.  No
-    /// allocation for the common plain-string / scalar cases.
-    fn skip_value(&mut self) -> Result<(), String> {
-        self.skip_ws();
-        match self.cur() {
-            Some(b'"') => self.skip_string(),
-            Some(b'{') => self.skip_object(),
-            Some(b'[') => self.skip_array(),
-            Some(b't') => self.expect_literal(b"true"),
-            Some(b'f') => self.expect_literal(b"false"),
-            Some(b'n') => self.expect_literal(b"null"),
-            Some(b'-' | b'0'..=b'9') => self.skip_number(),
-            _ => Err("unexpected value".to_owned()),
-        }
-    }
-
-    /// Validate-and-skip a JSON string (cursor at the opening quote).
+    /// Iteratively **validate-and-skip** one JSON value — the value of an
+    /// unknown (forward-compat) header field — enforcing `serde_json`'s full
+    /// grammar (including bracket matching) so a malformed value under an
+    /// ignored key is rejected, not silently skipped.
     ///
-    /// Delegates to [`Self::read_string`] so the escape set, unescaped
-    /// control-character rejection, and UTF-8 validation are byte-for-byte
-    /// identical to a real string field — the decoded value is discarded.
-    /// A plain (unescaped) string allocates nothing; only an escaped
-    /// string (rare under an unknown key) pays a throwaway decode.
+    /// Matches `serde_json`'s `ignore_value`: nesting is walked with an
+    /// explicit container-type stack ([`ContainerStack`]) instead of native
+    /// recursion, so an arbitrarily deep value is accepted/rejected exactly
+    /// as serde does WITHOUT ever overflowing the native stack (which would
+    /// crash the host JVM across the JNI boundary, uncatchable by
+    /// `catch_unwind`).  Allocates nothing for the common shallow value: the
+    /// stack is inline for the first [`INLINE_SKIP_DEPTH`] levels and the
+    /// non-allocating [`Self::skip_string`] is used throughout.
+    fn skip_value(&mut self) -> Result<(), String> {
+        let mut stack = ContainerStack::new();
+        loop {
+            // ── Parse one value at the current position. ──
+            self.skip_ws();
+            match self.cur() {
+                Some(b'{') => {
+                    self.pos += 1;
+                    self.skip_ws();
+                    if self.cur() == Some(b'}') {
+                        self.pos += 1; // empty object: a complete value
+                    } else {
+                        stack.push(true);
+                        self.skip_string()?; // first key
+                        self.expect(b':')?;
+                        continue; // descend to parse its value
+                    }
+                }
+                Some(b'[') => {
+                    self.pos += 1;
+                    self.skip_ws();
+                    if self.cur() == Some(b']') {
+                        self.pos += 1; // empty array: a complete value
+                    } else {
+                        stack.push(false);
+                        continue; // descend to parse the first element
+                    }
+                }
+                Some(b'"') => self.skip_string()?,
+                Some(b't') => self.expect_literal(b"true")?,
+                Some(b'f') => self.expect_literal(b"false")?,
+                Some(b'n') => self.expect_literal(b"null")?,
+                Some(b'-' | b'0'..=b'9') => self.skip_number()?,
+                _ => return Err("unexpected value".to_owned()),
+            }
+            // ── A complete value was parsed.  Ascend: step past commas to
+            // the next sibling, or pop finished containers.  An empty stack
+            // means the whole top-level value is done. ──
+            loop {
+                let Some(is_object) = stack.top() else {
+                    return Ok(());
+                };
+                self.skip_ws();
+                match self.cur() {
+                    Some(b',') => {
+                        self.pos += 1;
+                        if is_object {
+                            self.skip_ws();
+                            self.skip_string()?; // next key
+                            self.expect(b':')?;
+                        }
+                        break; // parse the next value / element
+                    }
+                    Some(b'}') if is_object => {
+                        self.pos += 1;
+                        stack.pop();
+                    }
+                    Some(b']') if !is_object => {
+                        self.pos += 1;
+                        stack.pop();
+                    }
+                    _ => {
+                        return Err(if is_object {
+                            "expected ',' or '}' in object".to_owned()
+                        } else {
+                            "expected ',' or ']' in array".to_owned()
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Validate-and-skip a JSON string (cursor at the opening quote)
+    /// **without allocating** — the byte-for-byte accept/reject twin of
+    /// [`Self::read_string`] (escape set, unescaped control-character
+    /// rejection, UTF-8 validation, surrogate-pair rules) that discards the
+    /// value instead of decoding it into a `String`.
+    ///
+    /// The previous implementation delegated to `read_string`, paying a
+    /// throwaway heap `String` decode for an escaped string under an ignored
+    /// key.  This scans in place: every unescaped run is UTF-8-validated
+    /// against the source bytes (a multi-byte UTF-8 sequence never straddles
+    /// a `\`-escape, so per-run validation equals validating the whole
+    /// decoded string) and every escape is validated, never decoded.
     fn skip_string(&mut self) -> Result<(), String> {
-        self.read_string().map(|_| ())
-    }
-
-    /// Validate-and-skip a JSON object (cursor at the opening `{`).
-    /// Keys must be JSON strings; values recurse through
-    /// [`Self::skip_value`] so the whole subtree is grammar-checked.
-    fn skip_object(&mut self) -> Result<(), String> {
-        self.pos += 1; // consume '{'
         self.skip_ws();
-        if self.cur() == Some(b'}') {
-            self.pos += 1;
-            return Ok(());
+        if self.cur() != Some(b'"') {
+            return Err("expected string".to_owned());
         }
+        self.pos += 1;
+        let input = self.input;
+        // Start of the current unescaped byte run, UTF-8-validated when it
+        // ends (at the closing quote or the next escape).
+        let mut run_start = self.pos;
         loop {
-            self.skip_ws();
-            // Object keys are JSON strings — validated like any other.
-            self.skip_string()?;
-            self.expect(b':')?;
-            self.skip_value()?;
-            self.skip_ws();
-            match self.cur() {
-                Some(b',') => self.pos += 1,
-                Some(b'}') => {
+            match input.get(self.pos) {
+                None => return Err("unterminated string".to_owned()),
+                Some(&b'"') => {
+                    std::str::from_utf8(&input[run_start..self.pos])
+                        .map_err(|_| "invalid UTF-8 in string".to_owned())?;
                     self.pos += 1;
                     return Ok(());
                 }
-                _ => return Err("expected ',' or '}' in object".to_owned()),
+                Some(&b'\\') => {
+                    std::str::from_utf8(&input[run_start..self.pos])
+                        .map_err(|_| "invalid UTF-8 in string".to_owned())?;
+                    self.pos += 1;
+                    self.validate_escape()?;
+                    run_start = self.pos;
+                }
+                Some(&b) if b < 0x20 => {
+                    return Err("control character in string".to_owned());
+                }
+                Some(_) => self.pos += 1,
             }
         }
     }
 
-    /// Validate-and-skip a JSON array (cursor at the opening `[`).
-    /// Elements recurse through [`Self::skip_value`]; a `]` can only close
-    /// an array (no `}`/`]` interchange), so a mismatched bracket is
-    /// rejected exactly as `serde_json` rejects it.
-    fn skip_array(&mut self) -> Result<(), String> {
-        self.pos += 1; // consume '['
-        self.skip_ws();
-        if self.cur() == Some(b']') {
-            self.pos += 1;
-            return Ok(());
+    /// Validate (but do not decode) the escape sequence whose backslash has
+    /// already been consumed — the non-allocating twin of
+    /// [`Self::decode_escape`], used by [`Self::skip_string`].
+    fn validate_escape(&mut self) -> Result<(), String> {
+        let escape = self
+            .input
+            .get(self.pos)
+            .copied()
+            .ok_or_else(|| "dangling escape".to_owned())?;
+        self.pos += 1;
+        match escape {
+            b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => Ok(()),
+            b'u' => self.validate_unicode_escape(),
+            _ => Err("invalid escape".to_owned()),
         }
-        loop {
-            self.skip_value()?;
-            self.skip_ws();
-            match self.cur() {
-                Some(b',') => self.pos += 1,
-                Some(b']') => {
-                    self.pos += 1;
-                    return Ok(());
-                }
-                _ => return Err("expected ',' or ']' in array".to_owned()),
+    }
+
+    /// Validate a `\uXXXX` escape (the `\u` already consumed), enforcing the
+    /// same surrogate-pair rules as [`Self::decode_unicode_escape`] without
+    /// computing the code point.  A validated high+low pair always forms a
+    /// scalar (`<= 0x10FFFF`) and a non-surrogate BMP unit is always a
+    /// scalar, so the decoder's `char::from_u32` check can never reject here
+    /// — accept/reject parity with `decode_unicode_escape` is preserved.
+    fn validate_unicode_escape(&mut self) -> Result<(), String> {
+        let hi = self.read_hex4()?;
+        if (0xD800..=0xDBFF).contains(&hi) {
+            if self.input.get(self.pos) != Some(&b'\\')
+                || self.input.get(self.pos + 1) != Some(&b'u')
+            {
+                return Err("unpaired surrogate in unicode escape".to_owned());
             }
+            self.pos += 2;
+            let lo = self.read_hex4()?;
+            if !(0xDC00..=0xDFFF).contains(&lo) {
+                return Err("invalid low surrogate in unicode escape".to_owned());
+            }
+            Ok(())
+        } else if (0xDC00..=0xDFFF).contains(&hi) {
+            Err("lone low surrogate in unicode escape".to_owned())
+        } else {
+            Ok(())
         }
     }
 
@@ -534,6 +641,73 @@ impl<'a> Parser<'a> {
             Ok(())
         } else {
             Err("invalid literal".to_owned())
+        }
+    }
+}
+
+/// Explicit open-container stack for the iterative unknown-value skip in
+/// [`Parser::skip_value`]: one bit per open container (`true` = object,
+/// `false` = array) so a `]` is validated to close an array and a `}` an
+/// object (matching `serde_json`'s grammar).
+///
+/// The first [`INLINE_SKIP_DEPTH`] levels live in an inline bitset, so the
+/// overwhelmingly common shallow value skips **without allocating**; only
+/// pathologically deep nesting (reachable solely from hostile input) spills
+/// to the heap `overflow` vec — and even then the walk stays iterative, so
+/// the native stack is never at risk.
+struct ContainerStack {
+    inline: [u64; INLINE_SKIP_DEPTH / 64],
+    depth: usize,
+    overflow: Vec<bool>,
+}
+
+impl ContainerStack {
+    fn new() -> Self {
+        Self {
+            inline: [0; INLINE_SKIP_DEPTH / 64],
+            depth: 0,
+            overflow: Vec::new(),
+        }
+    }
+
+    /// Push a newly-opened container (`is_object` selects `{` vs `[`).
+    fn push(&mut self, is_object: bool) {
+        if self.depth < INLINE_SKIP_DEPTH {
+            let (word, bit) = (self.depth / 64, self.depth % 64);
+            if is_object {
+                self.inline[word] |= 1u64 << bit;
+            } else {
+                self.inline[word] &= !(1u64 << bit);
+            }
+        } else {
+            self.overflow.push(is_object);
+        }
+        self.depth += 1;
+    }
+
+    /// Pop the innermost container (no-op when already empty).
+    fn pop(&mut self) {
+        if self.depth == 0 {
+            return;
+        }
+        self.depth -= 1;
+        if self.depth >= INLINE_SKIP_DEPTH {
+            self.overflow.pop();
+        }
+    }
+
+    /// The innermost open container's type (`Some(true)` = object,
+    /// `Some(false)` = array), or `None` when the stack is empty.
+    fn top(&self) -> Option<bool> {
+        if self.depth == 0 {
+            return None;
+        }
+        let idx = self.depth - 1;
+        if idx < INLINE_SKIP_DEPTH {
+            let (word, bit) = (idx / 64, idx % 64);
+            Some(self.inline[word] & (1u64 << bit) != 0)
+        } else {
+            self.overflow.last().copied()
         }
     }
 }

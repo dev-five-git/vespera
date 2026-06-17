@@ -68,6 +68,19 @@ impl std::error::Error for StreamAbort {}
 /// is delivered through the callback while the dispatch is in flight,
 /// so a 1 GiB response is never resident in memory.
 ///
+/// # Header ordering (important)
+///
+/// The returned header bytes become available only **after** the body has
+/// been fully drained through `on_chunk`: the status + headers are read off
+/// the response after its body stream completes.  This variant therefore
+/// suits sinks that buffer the body, or callers that can backfill the
+/// status/headers afterwards (the JNI `dispatchStreaming` bridge returns the
+/// header to Java only once the native call returns).  Callers that must
+/// commit the response status/headers **before** the first body byte — e.g.
+/// a Spring `HttpServletResponse` controller streaming straight to the
+/// client — MUST instead use [`dispatch_streaming_with_header_async`], which
+/// fires a dedicated header callback before any `on_chunk` invocation.
+///
 /// `on_chunk` is invoked one or more times in arrival order; the
 /// borrowed slice is valid only for the duration of each call and the
 /// callback should treat it as ephemeral (e.g. write it to an

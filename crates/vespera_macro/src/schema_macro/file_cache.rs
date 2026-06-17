@@ -379,18 +379,14 @@ fn ensure_file_list(cache: &mut FileCache, src_dir: &Path) -> Arc<[PathBuf]> {
 
     let (files_vec, fp) = walk_and_fingerprint(cache, src_dir);
 
-    if let Some(entry) = cache.file_lists.get(src_dir) {
+    if let Some(entry) = cache.file_lists.get_mut(src_dir) {
         if entry.fingerprint == fp {
-            let files = Arc::clone(&entry.files);
-            cache.file_lists.insert(
-                src_dir.to_path_buf(),
-                DirEntry {
-                    fingerprint: fp,
-                    last_epoch_validated: current_epoch,
-                    files: Arc::clone(&files),
-                },
-            );
-            return files;
+            // Unchanged directory: refresh the validation epoch IN PLACE and
+            // hand back a single `Arc::clone`.  The previous code rebuilt the
+            // whole `DirEntry` (a `to_path_buf` key allocation) and cloned the
+            // `Arc` twice — once for the cache, once to return.
+            entry.last_epoch_validated = current_epoch;
+            return Arc::clone(&entry.files);
         }
         // Directory changed: the dependent index is now stale.
         cache.struct_index.remove(src_dir);

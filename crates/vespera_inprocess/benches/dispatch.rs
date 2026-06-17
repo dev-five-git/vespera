@@ -785,6 +785,14 @@ fn bench_wire_header_serde(c: &mut Criterion) {
     // receives (no length prefix) for a small idempotent GET.
     let request_header: &[u8] = br#"{"v":1,"method":"GET","path":"/health","headers":{"accept":"*/*","user-agent":"bench/1.0","host":"localhost:3000"}}"#;
 
+    // Forward-compat fixture: the same small GET plus UNKNOWN header fields
+    // (an object with escaped-string values + nesting, and an array). These
+    // are ignored by both parsers via the value-skip path — the input shape
+    // a newer client / custom FFI caller can legitimately send. Isolates the
+    // unknown-value skip cost (escaped-string skip allocation + the recursion
+    // depth guard) that the standard `request_header` fixture never exercises.
+    let request_header_unknown: &[u8] = br#"{"v":1,"method":"GET","path":"/health","headers":{"accept":"*/*"},"x-meta":{"trace":"a\"b\nc\td","span":"00f0\u00e9","nested":{"k":[1,2,"v\u00e9"]}},"flags":[true,null,42,-3.14e2]}"#;
+
     // Response-serialize fixture: the realistic many-header response shape
     // (mirrors `handler_many_headers`) plus content-type / content-length.
     let mut resp_headers = HeaderMap::new();
@@ -820,6 +828,16 @@ fn bench_wire_header_serde(c: &mut Criterion) {
     });
     group.bench_function("request_parse_serde", |b| {
         b.iter(|| bench_parse_serde(std::hint::black_box(request_header)));
+    });
+
+    // Forward-compat unknown-field skip path (escaped-string skip + depth
+    // guard). Standard `request_parse_hand` never enters `skip_value`, so this
+    // is where the non-allocating escaped-string skip shows up.
+    group.bench_function("request_parse_unknown_hand", |b| {
+        b.iter(|| bench_parse_hand(std::hint::black_box(request_header_unknown)));
+    });
+    group.bench_function("request_parse_unknown_serde", |b| {
+        b.iter(|| bench_parse_serde(std::hint::black_box(request_header_unknown)));
     });
 
     // Size the out buffer once (outside the timed loop) and reuse it,
