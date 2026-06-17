@@ -200,8 +200,12 @@ fn build_validation_response(report: &::garde::Report) -> Response {
     // to axum as raw bytes (content-type is overridden to
     // application/json below regardless).  Byte-identical to the previous
     // `to_string` body.
-    let body = ::serde_json::to_vec(&ValidationEnvelope { report })
-        .expect("serializing the 422 validation envelope is infallible");
+    // Serializing the envelope is practically infallible (no I/O, string
+    // keys), but this is a request-time boundary: on the unreachable failure
+    // path emit a minimal valid 422 envelope rather than panicking.
+    let body = ::serde_json::to_vec(&ValidationEnvelope { report }).unwrap_or_else(|_| {
+        br#"{"errors":[{"path":"","message":"request validation failed"}]}"#.to_vec()
+    });
 
     let mut response = (StatusCode::UNPROCESSABLE_ENTITY, body).into_response();
     response.headers_mut().insert(

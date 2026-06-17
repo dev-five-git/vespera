@@ -184,34 +184,6 @@ pub fn extract_flatten(attrs: &[syn::Attribute]) -> bool {
     false
 }
 
-/// Extract `skip_serializing_if` attribute from field attributes
-/// Returns true if #[`serde(skip_serializing_if` = "...")] is present
-pub fn extract_skip_serializing_if(attrs: &[syn::Attribute]) -> bool {
-    for attr in attrs {
-        if attr.path().is_ident("serde")
-            && let syn::Meta::List(meta_list) = &attr.meta
-        {
-            let mut found = false;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("skip_serializing_if") {
-                    found = true;
-                }
-                Ok(())
-            });
-            if found {
-                return true;
-            }
-
-            // Fallback: check tokens string for complex attribute combinations
-            let tokens = meta_list.tokens.to_string();
-            if tokens.contains("skip_serializing_if") {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// Check whether the `"default"` substring at index `start` of `tokens`
 /// Extract default attribute from field attributes
 /// Returns:
@@ -382,26 +354,6 @@ mod tests {
         if let syn::Fields::Named(fields) = &item.fields {
             let field = fields.named.first().unwrap();
             let result = extract_flatten(&field.attrs);
-            assert_eq!(result, expected, "Failed for: {field_src}");
-        }
-    }
-
-    // Tests for extract_skip_serializing_if function
-    #[rstest]
-    #[case(
-        r#"#[serde(skip_serializing_if = "Option::is_none")] field: i32"#,
-        true
-    )]
-    #[case(r#"#[serde(skip_serializing_if = "is_zero")] field: i32"#, true)]
-    #[case(r"#[serde(default)] field: i32", false)]
-    #[case(r"#[serde(skip)] field: i32", false)]
-    #[case(r"field: i32", false)]
-    fn test_extract_skip_serializing_if(#[case] field_src: &str, #[case] expected: bool) {
-        let struct_src = format!("struct Foo {{ {field_src} }}");
-        let item: syn::ItemStruct = syn::parse_str(&struct_src).unwrap();
-        if let syn::Fields::Named(fields) = &item.fields {
-            let field = fields.named.first().unwrap();
-            let result = extract_skip_serializing_if(&field.attrs);
             assert_eq!(result, expected, "Failed for: {field_src}");
         }
     }

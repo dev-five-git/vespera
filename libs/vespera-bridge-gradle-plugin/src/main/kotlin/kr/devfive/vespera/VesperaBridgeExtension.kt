@@ -12,7 +12,7 @@ import org.gradle.api.provider.Property
  *     crateName.set("my_rust_lib")
      *     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
      *     cargoSourceRoots.add("apps/native")
-     *     bridgeVersion.set("0.0.15")
+     *     bridgeVersion.set("<bridge-version>")
      *     autoBuildCargo.set(false) // default: opt-in
      * }
  * ```

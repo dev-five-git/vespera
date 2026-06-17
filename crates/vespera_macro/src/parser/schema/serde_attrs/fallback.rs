@@ -122,14 +122,6 @@ mod tests {
         assert_eq!(result.as_deref(), Some("myField"));
     }
 
-    /// Test extract_skip_serializing_if with fallback token check
-    #[test]
-    fn test_extract_skip_serializing_if_fallback_path() {
-        let attrs = get_field_attrs(r#"skip_serializing_if = "Option::is_none""#);
-        let result = extract_skip_serializing_if(&attrs);
-        assert!(result);
-    }
-
     /// Test extract_default standalone fallback
     #[test]
     fn test_extract_default_standalone_fallback_path() {
@@ -311,14 +303,6 @@ mod tests {
         assert_eq!(result, Some(Some("Default::default".to_string())));
     }
 
-    /// Test extract_skip_serializing_if with complex path
-    #[test]
-    fn test_extract_skip_serializing_if_complex_path() {
-        let attrs = get_field_attrs(r#"skip_serializing_if = "Vec::is_empty""#);
-        let result = extract_skip_serializing_if(&attrs);
-        assert!(result);
-    }
-
     /// Test extract_rename_all with all supported formats
     #[rstest]
     #[case("camelCase")]
@@ -428,15 +412,6 @@ mod tests {
         assert_eq!(result, Some(Some("my_fn".to_string())));
     }
 
-    /// Test extract_skip_serializing_if with programmatic tokens
-    #[test]
-    fn test_extract_skip_serializing_if_programmatic() {
-        let tokens = quote!(skip_serializing_if = "is_none");
-        let attr = create_attr_with_raw_tokens(tokens);
-        let result = extract_skip_serializing_if(&[attr]);
-        assert!(result);
-    }
-
     /// Test extract_skip via programmatic tokens
     #[test]
     fn test_extract_skip_programmatic() {
@@ -463,11 +438,9 @@ mod tests {
 
         let rename_result = extract_field_rename(std::slice::from_ref(&attr));
         let default_result = extract_default(std::slice::from_ref(&attr));
-        let skip_if_result = extract_skip_serializing_if(std::slice::from_ref(&attr));
 
         assert_eq!(rename_result.as_deref(), Some("myField"));
         assert_eq!(default_result, Some(None));
-        assert!(skip_if_result);
     }
 
     /// Test extract_rename_all fallback parsing

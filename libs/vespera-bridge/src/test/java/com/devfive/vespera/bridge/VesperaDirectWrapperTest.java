@@ -72,6 +72,15 @@ class VesperaDirectWrapperTest {
     }
 
     @Test
+    void readOnlyInBufferRejectedBeforeJni() {
+        ByteBuffer readOnlyIn = ByteBuffer.allocateDirect(64).asReadOnlyBuffer();
+        IllegalArgumentException e = assertThrows(
+                IllegalArgumentException.class,
+                () -> VesperaBridge.dispatchDirect(readOnlyIn, 4, DIRECT));
+        assertTrue(e.getMessage().contains("writable"), e.getMessage());
+    }
+
+    @Test
     void bufferTooSmallExceptionCarriesRequiredSize() {
         VesperaBridge.BufferTooSmallException e =
                 new VesperaBridge.BufferTooSmallException(123_456);

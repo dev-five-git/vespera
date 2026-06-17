@@ -43,9 +43,24 @@ const MAX_RUNTIME_WORKERS: usize = 1024;
 
 static RUNTIME_WORKER_THREADS: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
 
+/// Cap on each per-thread sync runtime's blocking pool.
+///
+/// [`block_on_sync_runtime`] builds ONE current-thread runtime per calling
+/// OS thread. A JVM host with a large servlet pool (e.g. 200 Tomcat threads)
+/// would otherwise get 200 runtimes each able to spawn Tokio's default 512
+/// blocking threads — a worst case approaching 100k threads if handlers use
+/// `spawn_blocking` (the multipart extractor's temp-file I/O does). Capping
+/// the per-runtime blocking pool bounds that multiplication. Sync dispatch is
+/// for small requests; a handler that exceeds the cap simply runs its
+/// blocking tasks in batches — no deadlock, because `block_on` keeps driving
+/// the runtime. Detached `tokio::spawn` is still unsupported on this path
+/// (see [`block_on_sync_runtime`]).
+const SYNC_RUNTIME_MAX_BLOCKING_THREADS: usize = 4;
+
 thread_local! {
     static SYNC_RUNTIME: tokio::runtime::Runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
+        .max_blocking_threads(SYNC_RUNTIME_MAX_BLOCKING_THREADS)
         .build()
         .expect("failed to create per-thread Tokio runtime");
 }

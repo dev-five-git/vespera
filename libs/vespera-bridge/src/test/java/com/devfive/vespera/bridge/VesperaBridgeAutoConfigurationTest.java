@@ -1,8 +1,12 @@
 package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.concurrent.Executor;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
@@ -95,6 +99,31 @@ class VesperaBridgeAutoConfigurationTest {
     }
 
     @Test
+    void directRetryOnOverflowDefaultsToTrueAndCanBeDisabled() {
+        runner.run(ctx -> assertTrue(ctx.getBean(VesperaBridgeProperties.class).isDirectRetryOnOverflow()));
+        runner.withPropertyValues("vespera.bridge.direct-retry-on-overflow=false")
+                .run(ctx -> assertFalse(
+                        ctx.getBean(VesperaBridgeProperties.class).isDirectRetryOnOverflow()));
+    }
+
+    @Test
+    void maxBufferedRequestBytesDefaultsToUnlimitedAndCanBeConfigured() {
+        runner.run(ctx -> assertEquals(0L,
+                ctx.getBean(VesperaBridgeProperties.class).getMaxBufferedRequestBytes()));
+        runner.withPropertyValues("vespera.bridge.max-buffered-request-bytes=12345")
+                .run(ctx -> assertEquals(12345L,
+                        ctx.getBean(VesperaBridgeProperties.class).getMaxBufferedRequestBytes()));
+    }
+
+    @Test
+    void asyncResponseExecutorBeanIsReplaceableByName() {
+        runner.withUserConfiguration(CustomExecutorConfig.class)
+                .run(ctx -> assertSame(
+                        CustomExecutorConfig.EXECUTOR,
+                        ctx.getBean("vesperaBridgeAsyncResponseExecutor", Executor.class)));
+    }
+
+    @Test
     void unknownDispatchModeFallsBackToSmart() {
         // Q7: a typo'd dispatch-mode no longer silently changes semantics —
         // it falls back to smart (with a logged warning), not bidirectional.
@@ -119,6 +148,16 @@ class VesperaBridgeAutoConfigurationTest {
         @Bean
         DispatchModeResolver customResolver() {
             return new CustomResolver();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomExecutorConfig {
+        static final Executor EXECUTOR = Runnable::run;
+
+        @Bean("vesperaBridgeAsyncResponseExecutor")
+        Executor vesperaBridgeAsyncResponseExecutor() {
+            return EXECUTOR;
         }
     }
 }

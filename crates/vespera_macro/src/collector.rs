@@ -34,22 +34,31 @@ pub fn collect_metadata(
     route_storage: &[StoredRouteInfo],
 ) -> MacroResult<(CollectedMetadata, HashMap<String, syn::File>)> {
     let files = collect_files(folder_path).map_err(|e| err_call_site(format!("vespera! macro: failed to scan route folder '{}': {}. Verify the folder exists and is readable.", folder_path.display(), e)))?;
-    collect_metadata_from_files(&files, folder_path, folder_name, route_storage)
+    collect_metadata_from_files(
+        files.iter().map(std::path::PathBuf::as_path),
+        folder_path,
+        folder_name,
+        route_storage,
+    )
 }
 
 /// [`collect_metadata`] over a **pre-scanned** file list — lets
 /// `vespera!` reuse the single directory walk it already performed
 /// for cache fingerprinting instead of walking the folder twice.
 #[allow(clippy::option_if_let_else, clippy::too_many_lines)]
-pub fn collect_metadata_from_files(
-    files: &[std::path::PathBuf],
+pub fn collect_metadata_from_files<'a>(
+    files: impl IntoIterator<Item = &'a Path>,
     folder_path: &Path,
     folder_name: &str,
     route_storage: &[StoredRouteInfo],
 ) -> MacroResult<(CollectedMetadata, HashMap<String, syn::File>)> {
     let mut metadata = CollectedMetadata::new();
 
-    let mut file_asts = HashMap::with_capacity(files.len());
+    // Borrows the caller's path source (slice or pre-scanned `(path, mtime)`
+    // pairs) by `&Path`, so neither `vespera!` (cache miss) nor
+    // `collect_metadata` needs to clone the path list. `file_asts` only holds
+    // slow-path (non-ROUTE_STORAGE) parses, so a default-capacity map is fine.
+    let mut file_asts = HashMap::new();
 
     // Index ROUTE_STORAGE entries by **canonicalized** file path for O(1)
     // lookup.  `#[route]` records `Span::local_file()`, which rustc

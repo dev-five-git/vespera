@@ -27,6 +27,10 @@ use ::vespera_inprocess::{dispatch_from_bytes, register_app};
 #[allow(dead_code)]
 struct UploadReq {
     name: String,
+    // This round-trip test intentionally accepts any size (it exercises the
+    // 256 KiB tempfile path with the body limit disabled), so it opts out of
+    // the now-mandatory file-field cap explicitly rather than inheriting one.
+    #[form_data(limit = "unlimited")]
     file: FieldData<NamedTempFile>,
 }
 

@@ -45,10 +45,9 @@ pub fn find_fk_column_from_target_entity(
     let file_paths = candidate_file_paths(&src_dir, &module_segments);
 
     for file_path in file_paths {
-        if !file_path.exists() {
-            continue;
-        }
-
+        // No `exists()` preflight: `get_struct_definition` returns `None` for
+        // a missing/unreadable file via its mtime-validated cache, so the
+        // stat is redundant (and TOCTOU-prone).
         let Some(model_def) =
             crate::schema_macro::file_cache::get_struct_definition(&file_path, "Model")
         else {

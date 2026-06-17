@@ -179,6 +179,12 @@ public class VesperaBridge {
         } catch (UnsatisfiedLinkError e) {
             System.loadLibrary(libraryName);
         }
+        // Mark the native library as loaded immediately after System.load /
+        // System.loadLibrary succeeds. Optional post-load configuration hooks
+        // below may still throw (for example, a native-side panic surfaced as an
+        // Error), but a later init() must not try to load the same cdylib again.
+        loaded = true;
+        loadedLibraryName = libraryName;
         // Apply pending streaming config (set via configureStreaming before init).
         // Pending values beat system properties (Rust-side setter > env > default).
         try {
@@ -200,8 +206,6 @@ public class VesperaBridge {
             // Same guard as above — older native libraries fall back to
             // the VESPERA_RUNTIME_WORKERS env var / Tokio's default.
         }
-        loaded = true;
-        loadedLibraryName = libraryName;
     }
 
     /**
@@ -545,7 +549,7 @@ public class VesperaBridge {
      * @param inLen number of valid request bytes in {@code in}
      * @param out   direct buffer that receives the wire response
      * @return bytes written, or the negative protocol codes above
-     * @throws IllegalArgumentException if either buffer is not direct,
+     * @throws IllegalArgumentException if either buffer is not direct, read-only,
      *         {@code inLen} is negative, or exceeds {@code in.capacity()}
      */
     public static int dispatchDirect(ByteBuffer in, int inLen, ByteBuffer out) {
@@ -554,6 +558,10 @@ public class VesperaBridge {
         if (!in.isDirect() || !out.isDirect()) {
             throw new IllegalArgumentException(
                     "dispatchDirect requires direct ByteBuffers (use ByteBuffer.allocateDirect)");
+        }
+        if (in.isReadOnly()) {
+            throw new IllegalArgumentException(
+                    "dispatchDirect requires a writable in ByteBuffer (got a read-only buffer)");
         }
         // SEC-2: the native side writes the wire response straight into
         // `out` via a `&mut [u8]`; a read-only direct buffer (e.g. a

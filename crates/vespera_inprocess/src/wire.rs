@@ -142,6 +142,12 @@ mod tests {
             // empty headers object + duplicate header NAMES preserved
             br#"{"v":1,"method":"GET","path":"/p","headers":{}}"#,
             br#"{"v":1,"method":"GET","path":"/p","headers":{"x-a":"1","x-a":"2"}}"#,
+            // VALID but complex values under an UNKNOWN key — the strict
+            // skip must still ACCEPT every JSON-legal form (negative /
+            // float / exponent numbers, escaped strings, nested arrays and
+            // objects, the three literals) so forward-compat fields aren't
+            // over-rejected.
+            br#"{"v":1,"method":"GET","path":"/p","a":-3.14e10,"b":"esc\"d\n","c":[true,null,{"x":1}],"d":0}"#,
         ];
         for case in cases {
             match (parse_wire_header(case), parse_wire_header_serde(case)) {
@@ -177,6 +183,20 @@ mod tests {
             br#"{"v":1,"method":"GET","path":"/p","headers":{"x":1}}"#, // header value not string
             br#"{"v":1,"method":"GET","path":"/p","app":7}"#, // app not string/null
             br#"{"v":1,"method":"GET","path":"/p","headers":[]}"#, // headers not object
+            // Malformed values under UNKNOWN keys must still be rejected
+            // (the skip path validates the full JSON grammar, matching
+            // serde_json — not the prior permissive skip that accepted them).
+            br#"{"v":1,"method":"GET","path":"/p","x":"\q"}"#, // invalid string escape
+            b"{\"v\":1,\"method\":\"GET\",\"path\":\"/p\",\"x\":\"\x01\"}", // unescaped control char
+            br#"{"v":1,"method":"GET","path":"/p","x":tru}"#,               // truncated literal
+            br#"{"v":1,"method":"GET","path":"/p","x":nul}"#,               // truncated null
+            br#"{"v":1,"method":"GET","path":"/p","x":1e+}"#, // exponent without digit
+            br#"{"v":1,"method":"GET","path":"/p","x":1.}"#,  // fraction without digit
+            br#"{"v":1,"method":"GET","path":"/p","x":01}"#,  // leading zero
+            br#"{"v":1,"method":"GET","path":"/p","x":[}"#,   // mismatched container open
+            br#"{"v":1,"method":"GET","path":"/p","x":[1,2}"#, // array closed by '}'
+            br#"{"v":1,"method":"GET","path":"/p","x":{"a":1,}}"#, // trailing comma in object
+            br#"{"v":01,"method":"GET","path":"/p"}"#,        // leading zero in `v`
         ];
         for case in bad {
             assert!(

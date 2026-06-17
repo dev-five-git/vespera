@@ -51,6 +51,14 @@ pub fn extract_schema_name_attr(attrs: &[syn::Attribute]) -> Option<String> {
                     let value = meta.value()?;
                     let lit: syn::LitStr = value.parse()?;
                     custom_name = Some(lit.value());
+                } else if let Ok(value) = meta.value() {
+                    // Consume (and discard) other `key = <lit>` items — e.g.
+                    // `ref`, or any field-level constraint key — so
+                    // `parse_nested_meta` does NOT bail before reaching a
+                    // later `name`. Those keys are handled by their own
+                    // parsers; here we only extract `name`. Bare flags have no
+                    // `= value` and are simply skipped.
+                    let _ = value.parse::<syn::Lit>();
                 }
                 Ok(())
             });
@@ -374,14 +382,17 @@ mod tests {
 
     #[test]
     fn test_extract_schema_name_attr_schema_with_unknown_key_value() {
-        // #[schema(other = "x", name = "MyName")] — parse_nested_meta bails on unhandled
-        // key=value (other = "x") since the value isn't consumed. Error is silently ignored.
+        // `#[schema(other = "x", name = "MyName")]` — the unknown `other`
+        // key's value is now consumed so `parse_nested_meta` reaches `name`
+        // instead of bailing early; the custom name is no longer lost.
         let attrs: Vec<syn::Attribute> = syn::parse_quote! {
             #[schema(other = "x", name = "MyName")]
         };
-        let result = extract_schema_name_attr(&attrs);
-        // parse_nested_meta fails at `other = "x"` (value not consumed), so `name` is never reached
-        assert_eq!(result, None);
+        assert_eq!(
+            extract_schema_name_attr(&attrs),
+            Some("MyName".to_string()),
+            "a `name` after an unknown key must still be extracted"
+        );
     }
 
     #[test]

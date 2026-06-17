@@ -8,6 +8,10 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
 
 /**
  * Spring Boot autoconfigure entry point for vespera-bridge.
@@ -43,6 +47,9 @@ import org.springframework.context.annotation.Configuration;
  *       set {@code vespera.bridge.controller-enabled=false} and
  *       provide your own {@code @RestController} that calls the
  *       {@link VesperaBridge} native methods directly.</li>
+ *   <li><strong>Async response continuation executor</strong>:
+ *       replace the {@code vesperaBridgeAsyncResponseExecutor} bean.
+ *       The default is {@link ForkJoinPool#commonPool()}.</li>
  * </ul>
  *
  * <p><strong>0.2.0 behavior change:</strong> the autoconfigured
@@ -132,6 +139,12 @@ public class VesperaBridgeAutoConfiguration {
         return new SmartDispatchModeResolver();
     }
 
+    @Bean("vesperaBridgeAsyncResponseExecutor")
+    @ConditionalOnMissingBean(name = "vesperaBridgeAsyncResponseExecutor")
+    public Executor vesperaBridgeAsyncResponseExecutor() {
+        return ForkJoinPool.commonPool();
+    }
+
     @Bean
     @ConditionalOnProperty(
         prefix = "vespera.bridge",
@@ -141,7 +154,14 @@ public class VesperaBridgeAutoConfiguration {
     @ConditionalOnMissingBean
     public VesperaProxyController vesperaProxyController(
             AppNameResolver appResolver,
-            DispatchModeResolver modeResolver) {
-        return new VesperaProxyController(appResolver, modeResolver);
+            DispatchModeResolver modeResolver,
+            @Qualifier("vesperaBridgeAsyncResponseExecutor") Executor asyncResponseExecutor,
+            VesperaBridgeProperties props) {
+        return new VesperaProxyController(
+                appResolver,
+                modeResolver,
+                asyncResponseExecutor,
+                props.isDirectRetryOnOverflow(),
+                props.getMaxBufferedRequestBytes());
     }
 }

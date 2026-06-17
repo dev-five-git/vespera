@@ -558,12 +558,25 @@ final class WireHeaderReader {
             } else if (b < 0x80) {
                 sb.append((char) b);
             } else if (b < 0xE0) {
+                if (b < 0xC2) {
+                    throw err("bad UTF-8");
+                }
                 sb.append((char) (((b & 0x1F) << 6) | nextCont()));
             } else if (b < 0xF0) {
-                sb.append((char) (((b & 0x0F) << 12) | (nextCont() << 6) | nextCont()));
-            } else {
-                int cp = ((b & 0x07) << 18) | (nextCont() << 12) | (nextCont() << 6) | nextCont();
+                int c1 = nextContByte();
+                if ((b == 0xE0 && c1 < 0xA0) || (b == 0xED && c1 >= 0xA0)) {
+                    throw err("bad UTF-8");
+                }
+                sb.append((char) (((b & 0x0F) << 12) | ((c1 & 0x3F) << 6) | nextCont()));
+            } else if (b < 0xF5) {
+                int c1 = nextContByte();
+                if ((b == 0xF0 && c1 < 0x90) || (b == 0xF4 && c1 > 0x8F)) {
+                    throw err("bad UTF-8");
+                }
+                int cp = ((b & 0x07) << 18) | ((c1 & 0x3F) << 12) | (nextCont() << 6) | nextCont();
                 sb.appendCodePoint(cp);
+            } else {
+                throw err("bad UTF-8");
             }
         }
         throw err("unterminated string");
@@ -709,10 +722,18 @@ final class WireHeaderReader {
     }
 
     private int nextCont() {
+        return nextContByte() & 0x3F;
+    }
+
+    private int nextContByte() {
         if (pos >= end) {
             throw err("truncated UTF-8");
         }
-        return buf.get(pos++) & 0x3F;
+        int b = buf.get(pos++) & 0xFF;
+        if ((b & 0xC0) != 0x80) {
+            throw err("bad UTF-8 continuation");
+        }
+        return b;
     }
 
     private char readHex4() {
@@ -746,12 +767,16 @@ final class WireHeaderReader {
         }
         boolean any = false;
         long v = 0;
+        long limit = neg ? 2147483648L : Integer.MAX_VALUE;
         while (pos < end) {
             int d = buf.get(pos) & 0xFF;
             if (d < '0' || d > '9') {
                 break;
             }
             v = v * 10 + (d - '0');
+            if (v > limit) {
+                throw err("integer overflow");
+            }
             pos++;
             any = true;
         }

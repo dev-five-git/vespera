@@ -73,15 +73,26 @@ fn collect_with_mtimes_into(folder_path: &Path, out: &mut Vec<(PathBuf, u64)>) -
         let file_type = entry.file_type()?;
         let path = entry.path();
         if file_type.is_file() {
-            let mtime = entry
-                .metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .map_or(0, |t| {
-                    t.duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs()
-                });
+            // Only `.rs` files feed route discovery and cache
+            // fingerprinting — both consumers (`collect_metadata_from_files`
+            // and `fingerprints_from_scan`) filter by extension — so skip
+            // the `metadata()` stat for every other file (fixtures, JSON,
+            // uploads, …).  On Unix that is one `stat` saved per non-Rust
+            // file at compile time; the entry still keeps its place in the
+            // list with mtime `0` (never read for non-`.rs` paths).
+            let mtime = if path.extension().is_some_and(|e| e == "rs") {
+                entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map_or(0, |t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs()
+                    })
+            } else {
+                0
+            };
             out.push((path, mtime));
         } else if file_type.is_dir() {
             collect_with_mtimes_into(&path, out)?;

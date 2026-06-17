@@ -290,8 +290,17 @@ fn emit_rule_blocks(
                 static #static_ident: ::std::sync::LazyLock<
                     ::vespera::__validation::garde::rules::pattern::regex::Regex,
                 > = ::std::sync::LazyLock::new(|| {
+                    // The pattern is a user-supplied string literal; an invalid
+                    // regex fails loud (a silently-skipped validator would be a
+                    // correctness/security hole) with an actionable message
+                    // naming the offending pattern.
                     ::vespera::__validation::garde::rules::pattern::regex::Regex::new(#pattern)
-                        .expect("regex literal validated at vespera::Schema derive time")
+                        .unwrap_or_else(|__e| {
+                            ::std::panic!(
+                                "vespera: `#[schema(pattern = {:?})]` is not a valid regex: {__e}",
+                                #pattern
+                            )
+                        })
                 });
                 if let ::std::result::Result::Err(__garde_error) =
                     (::vespera::__validation::garde::rules::pattern::apply)(

@@ -70,7 +70,7 @@ Why `smart` as the default mode (since 0.2.0)? Measured on a small `GET /health`
 
 Trade-offs the new default makes on your behalf:
 
-- **DIRECT** writes the wire response straight into a pooled direct `ByteBuffer` (per-thread, 64 KiB → `vespera.direct.maxBufferBytes` default 4 MiB). On responses larger than the pooled buffer the Java side **retries once with a bigger buffer**, which re-runs the Rust handler. This is why DIRECT is gated on idempotent methods only.
+- **DIRECT** writes the wire response straight into a pooled direct `ByteBuffer` (per-thread, 64 KiB → `vespera.direct.maxBufferBytes` default 4 MiB). On responses larger than the pooled buffer the Java side **retries once with a bigger buffer** by default, which re-runs the Rust handler. This is why DIRECT is gated on idempotent methods only. Set `vespera.bridge.direct-retry-on-overflow=false` to surface the overflow instead of automatically retrying.
 - **SYNC** fully buffers the response on the JVM heap. The 256 KiB request-size gate keeps the response size reasonable for JSON-RPC-shaped traffic; large or unknown-length bodies still stream.
 - **`BIDIRECTIONAL_STREAMING`** is unchanged for large/unknown-length bodies — multi-GB upload + multi-GB download still runs chunk-bounded, ~32 KiB resident each side.
 
@@ -95,7 +95,21 @@ vespera:
   bridge:
     app-header: X-My-App        # change the header that selects the app
     controller-enabled: true     # set false to disable our controller
+    direct-retry-on-overflow: true # set false to avoid DIRECT retry double-execution
+    max-buffered-request-bytes: 0 # 0 = unlimited; cap SYNC/ASYNC/DIRECT request buffering
 ```
+
+`vespera.bridge.direct-retry-on-overflow` defaults to `true` for backward
+compatibility with the 0.2.x DIRECT fast path.  When `false`, a DIRECT response
+overflow raises the existing `BufferTooSmallException` path in the proxy (HTTP
+500 with the required size) instead of growing the response buffer and re-running
+the Rust handler.
+
+`vespera.bridge.max-buffered-request-bytes` defaults to `0` (unlimited) for
+backward compatibility, matching the Rust-side `VESPERA_MAX_REQUEST_BYTES`
+convention.  Set it to a positive byte count to reject SYNC/ASYNC/DIRECT
+requests whose buffered body exceeds the cap with HTTP 413.  Bidirectional
+streaming is exempt and remains the path for large or unknown-size uploads.
 
 ### 2. Custom app-selection strategy
 
@@ -160,6 +174,21 @@ public class MyController {
         DecodedResponse d = VesperaBridge.decodeResponse(resp);
         return ResponseEntity.status(d.status()).body(d.bodyBytes());
     }
+}
+```
+
+### 5. Custom async response executor
+
+The ASYNC proxy path completes the native dispatch future from a Rust/Tokio
+worker thread, then parses the wire response on a JVM-managed executor.  The
+default bean is `vesperaBridgeAsyncResponseExecutor`, backed by
+`ForkJoinPool.commonPool()`.  Replace that bean by name to use an application
+executor:
+
+```java
+@Bean("vesperaBridgeAsyncResponseExecutor")
+public Executor vesperaBridgeAsyncResponseExecutor() {
+    return Executors.newFixedThreadPool(4);
 }
 ```
 
@@ -276,7 +305,10 @@ property, default 4 MiB) and returns a read-only view of the response
 valid until the next dispatch on the same thread.  On response
 overflow it throws `BufferTooSmallException(requiredSize)` unless
 `retryOnOverflow` is `true` — pass `true` only for idempotent
-requests, because the retry dispatches again.
+requests, because the retry dispatches again.  In the Spring proxy,
+`retryOnOverflow` is additionally gated by
+`vespera.bridge.direct-retry-on-overflow` (default `true`; set `false`
+to keep DIRECT from automatically double-executing any handler).
 
 The fastest variant skips the intermediate wire `byte[]` entirely —
 `dispatchDirectPooled(appName, method, path, query, headers, body,
@@ -311,10 +343,11 @@ vespera:
 
 The idempotency gate on DIRECT matters because a response that
 overflows the pooled buffer (`vespera.direct.maxBufferBytes`, default
-4 MiB) is retried — which re-runs the Rust handler once.  SYNC never
-re-runs the handler (safe for POST), but buffers the full response on
-the heap, which the request-size gate keeps reasonable for
-JSON-RPC-shaped traffic.
+4 MiB) is retried by default — which re-runs the Rust handler once.
+Set `vespera.bridge.direct-retry-on-overflow=false` to surface the
+overflow instead.  SYNC never re-runs the handler (safe for POST), but
+buffers the full response on the JVM heap, which the request-size gate
+keeps reasonable for JSON-RPC-shaped traffic.
 
 Custom policies can still register the bean directly (the property is
 ignored when a user `DispatchModeResolver` bean exists):

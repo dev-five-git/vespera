@@ -26,13 +26,13 @@ import java.io.File
  *
  * ```kotlin
  * plugins {
- *     id("kr.devfive.vespera-bridge") version "0.0.15"
+ *     id("kr.devfive.vespera-bridge") version "<plugin-version>"
  * }
  *
  * vespera {
  *     crateName.set("my_rust_lib")
  *     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
- *     bridgeVersion.set("0.0.15")
+ *     bridgeVersion.set("<bridge-version>")
  * }
  * ```
  */
@@ -134,7 +134,7 @@ class VesperaBridgePlugin : Plugin<Project> {
                 val version = ext.bridgeVersion.orNull
                     ?: error(
                         "vespera.bridgeVersion must be set explicitly. " +
-                            "Example: vespera { bridgeVersion.set(\"0.0.15\") }"
+                            "Example: vespera { bridgeVersion.set(\"<bridge-version>\") }"
                     )
                 p.dependencies.add(
                     "implementation",

@@ -3,14 +3,51 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Schema reference or inline schema
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Schema reference or inline schema.
+///
+/// Serializes untagged — a bare `{"$ref": ...}` object for
+/// [`SchemaRef::Ref`], the schema object for [`SchemaRef::Inline`].
+///
+/// Deserialization is a hand-written impl rather than
+/// `#[serde(untagged)]`: an untagged `Ref`-first enum greedily matched
+/// **any** object carrying a `$ref` key and silently dropped its
+/// siblings (e.g. a nullable reference's `"nullable": true`).  The
+/// custom impl treats only a *pure* `{"$ref": <string>}` object as a
+/// reference; a `$ref` accompanied by any sibling keyword
+/// (`nullable`, `description`, …) is an inline [`Schema`], so those
+/// siblings survive the round-trip instead of being discarded.
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum SchemaRef {
     /// Schema reference (e.g., "#/components/schemas/User")
     Ref(Reference),
     /// Inline schema
     Inline(Box<Schema>),
+}
+
+impl<'de> Deserialize<'de> for SchemaRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+        // OpenAPI is always JSON; buffer the node so a *pure* reference
+        // can be distinguished from a `$ref` carrying sibling keywords.
+        let value = serde_json::Value::deserialize(deserializer)?;
+        // Pure reference: an object whose ONLY key is `$ref` with a string
+        // value.  A `$ref` with any sibling (`nullable`, `description`, …)
+        // is an inline schema, so the siblings are preserved instead of
+        // being dropped by the prior untagged `Ref`-first match.
+        if let serde_json::Value::Object(map) = &value
+            && map.len() == 1
+            && let Some(serde_json::Value::String(ref_path)) = map.get("$ref")
+        {
+            return Ok(Self::Ref(Reference::new(ref_path.clone())));
+        }
+        serde_json::from_value::<Schema>(value)
+            .map(|schema| Self::Inline(Box::new(schema)))
+            .map_err(D::Error::custom)
+    }
 }
 
 /// Reference definition
@@ -274,73 +311,40 @@ pub struct Schema {
 }
 
 impl Schema {
-    /// Create a new schema
+    /// Create a new schema of the given type.
+    ///
+    /// Every other field starts at its [`Default`] (`None`/empty), so a newly
+    /// added `Schema` field is auto-defaulted here instead of having to be
+    /// appended to a ~40-field manual initializer that drifts out of sync.
     #[must_use]
-    pub const fn new(schema_type: SchemaType) -> Self {
+    pub fn new(schema_type: SchemaType) -> Self {
         Self {
-            ref_path: None,
             schema_type: Some(schema_type),
-            format: None,
-            title: None,
-            description: None,
-            default: None,
-            example: None,
-            examples: None,
-            minimum: None,
-            maximum: None,
-            exclusive_minimum: None,
-            exclusive_maximum: None,
-            multiple_of: None,
-            min_length: None,
-            max_length: None,
-            pattern: None,
-            items: None,
-            prefix_items: None,
-            min_items: None,
-            max_items: None,
-            unique_items: None,
-            properties: None,
-            required: None,
-            additional_properties: None,
-            min_properties: None,
-            max_properties: None,
-            r#enum: None,
-            all_of: None,
-            any_of: None,
-            one_of: None,
-            not: None,
-            discriminator: None,
-            nullable: None,
-            read_only: None,
-            write_only: None,
-            external_docs: None,
-            defs: None,
-            dynamic_anchor: None,
-            dynamic_ref: None,
+            ..Self::default()
         }
     }
 
     /// Create a string schema
     #[must_use]
-    pub const fn string() -> Self {
+    pub fn string() -> Self {
         Self::new(SchemaType::String)
     }
 
     /// Create an integer schema
     #[must_use]
-    pub const fn integer() -> Self {
+    pub fn integer() -> Self {
         Self::new(SchemaType::Integer)
     }
 
     /// Create a number schema
     #[must_use]
-    pub const fn number() -> Self {
+    pub fn number() -> Self {
         Self::new(SchemaType::Number)
     }
 
     /// Create a boolean schema
     #[must_use]
-    pub const fn boolean() -> Self {
+    pub fn boolean() -> Self {
         Self::new(SchemaType::Boolean)
     }
 
@@ -381,6 +385,26 @@ impl Schema {
             ..Self::new(SchemaType::Object)
         }
     }
+
+    /// Reconstruct a [`Schema`] from a compile-time-serialized JSON spec.
+    ///
+    /// This is the bridge the `schema!` proc-macro uses to emit a runtime
+    /// `Schema` value that is **identical** to the one the OpenAPI
+    /// generator produces for the same type: the macro builds the schema
+    /// through the shared `parse_struct_to_schema` path, serializes it to
+    /// JSON at compile time, and emits a call to this constructor — so the
+    /// `schema!` result can never drift from the documented component
+    /// schema (required-by-nullability, doc descriptions,
+    /// flatten/transparent, field constraints, `$ref` references).
+    ///
+    /// The input is always valid JSON (the macro just serialized it via
+    /// `serde_json`), so a parse failure is unreachable in practice; it
+    /// degrades to [`Schema::default`] rather than panicking inside
+    /// generated user code.
+    #[must_use]
+    pub fn from_compiled_json(json: &str) -> Self {
+        serde_json::from_str(json).unwrap_or_default()
+    }
 }
 
 /// External documentation reference
@@ -409,7 +433,7 @@ pub struct Discriminator {
 }
 
 /// `OpenAPI` Components (reusable components)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Components {
     /// Schema definitions
@@ -690,5 +714,67 @@ mod tests {
             !json.contains("\"type\":"),
             "a nullable reference must not also emit a type: {json}"
         );
+    }
+
+    // ── SchemaRef: $ref-sibling preservation ─────────────────────────
+    //
+    // The prior `#[serde(untagged)]` `Ref`-first enum greedily matched
+    // ANY object with a `$ref` key and silently dropped its siblings
+    // (e.g. a nullable reference's `"nullable": true`).  The custom
+    // `Deserialize` treats only a *pure* `{"$ref": <string>}` as a
+    // reference; a `$ref` with any sibling becomes an inline `Schema`
+    // so the siblings round-trip intact.
+
+    #[test]
+    fn schema_ref_pure_ref_deserializes_as_ref() {
+        let v: SchemaRef =
+            serde_json::from_str(r##"{"$ref":"#/components/schemas/User"}"##).unwrap();
+        match v {
+            SchemaRef::Ref(r) => assert_eq!(r.ref_path, "#/components/schemas/User"),
+            SchemaRef::Inline(_) => panic!("a pure $ref must deserialize as SchemaRef::Ref"),
+        }
+    }
+
+    #[test]
+    fn schema_ref_with_nullable_sibling_preserves_fields() {
+        let v: SchemaRef =
+            serde_json::from_str(r##"{"$ref":"#/components/schemas/User","nullable":true}"##)
+                .unwrap();
+        match v {
+            SchemaRef::Inline(schema) => {
+                assert_eq!(
+                    schema.ref_path.as_deref(),
+                    Some("#/components/schemas/User"),
+                    "the $ref must survive as an inline ref_path"
+                );
+                assert_eq!(
+                    schema.nullable,
+                    Some(true),
+                    "the nullable sibling must not be dropped"
+                );
+            }
+            SchemaRef::Ref(_) => panic!("$ref with a sibling must not be matched as a bare Ref"),
+        }
+    }
+
+    #[test]
+    fn schema_ref_inline_object_deserializes_as_inline() {
+        let v: SchemaRef = serde_json::from_str(r#"{"type":"string"}"#).unwrap();
+        assert!(matches!(v, SchemaRef::Inline(_)));
+    }
+
+    #[test]
+    fn schema_ref_nullable_reference_roundtrips() {
+        // Build → serialize → deserialize must keep BOTH `$ref` and `nullable`.
+        let original = Schema::nullable_reference("#/components/schemas/User".to_owned());
+        let json = serde_json::to_string(&SchemaRef::Inline(Box::new(original))).unwrap();
+        let back: SchemaRef = serde_json::from_str(&json).unwrap();
+        match back {
+            SchemaRef::Inline(s) => {
+                assert_eq!(s.ref_path.as_deref(), Some("#/components/schemas/User"));
+                assert_eq!(s.nullable, Some(true));
+            }
+            SchemaRef::Ref(_) => panic!("a nullable reference must round-trip as inline"),
+        }
     }
 }

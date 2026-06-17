@@ -19,6 +19,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *   bridge:
  *     app-header: X-My-App        # override the default header name
  *     controller-enabled: false   # disable our controller (BYO controller)
+ *     direct-retry-on-overflow: false # surface DIRECT overflow instead of retrying
+ *     max-buffered-request-bytes: 10485760 # cap SYNC/ASYNC/DIRECT request buffering
  * }</pre>
  */
 @ConfigurationProperties(prefix = "vespera.bridge")
@@ -68,6 +70,26 @@ public class VesperaBridgeProperties {
      */
     private String dispatchMode = "smart";
 
+    /**
+     * Whether the Spring proxy may retry a DIRECT response-buffer overflow
+     * for idempotent methods.  Default {@code true} preserves the 0.2.x
+     * behavior (grow the direct response buffer once and re-run the Rust
+     * handler). Set {@code false} to surface
+     * {@link VesperaBridge.BufferTooSmallException} as a 500 instead,
+     * avoiding any automatic double execution.
+     */
+    private boolean directRetryOnOverflow = true;
+
+    /**
+     * Maximum request-body bytes the Spring proxy may buffer for
+     * SYNC/ASYNC/DIRECT dispatch modes.  Default {@code 0} means unlimited
+     * for backward compatibility and mirrors Rust-side
+     * {@code VESPERA_MAX_REQUEST_BYTES} convention.  Streaming modes are
+     * exempt because they do not fully buffer the request body for
+     * bidirectional dispatch.
+     */
+    private long maxBufferedRequestBytes = 0;
+
     public String getAppHeader() {
         return appHeader;
     }
@@ -90,5 +112,21 @@ public class VesperaBridgeProperties {
 
     public void setDispatchMode(String dispatchMode) {
         this.dispatchMode = dispatchMode;
+    }
+
+    public boolean isDirectRetryOnOverflow() {
+        return directRetryOnOverflow;
+    }
+
+    public void setDirectRetryOnOverflow(boolean directRetryOnOverflow) {
+        this.directRetryOnOverflow = directRetryOnOverflow;
+    }
+
+    public long getMaxBufferedRequestBytes() {
+        return maxBufferedRequestBytes;
+    }
+
+    public void setMaxBufferedRequestBytes(long maxBufferedRequestBytes) {
+        this.maxBufferedRequestBytes = maxBufferedRequestBytes;
     }
 }

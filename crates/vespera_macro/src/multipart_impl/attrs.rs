@@ -95,6 +95,35 @@ pub(super) fn extract_limit_tokens(attrs: &[syn::Attribute]) -> TokenStream {
     quote! { std::option::Option::None }
 }
 
+/// Whether the field carries an explicit, VALID `#[form_data(limit = ...)]`
+/// — either `"unlimited"` or a parseable byte size (e.g. `"10MiB"`).
+///
+/// An absent attribute, a non-`limit` `form_data` key, or an unparseable
+/// value all return `false`. The `Multipart` derive treats that as a
+/// missing limit on a file field and emits a compile error, so an unbounded
+/// upload is never accepted silently.
+pub(super) fn has_explicit_limit(attrs: &[syn::Attribute]) -> bool {
+    for attr in attrs {
+        if attr.path().is_ident("form_data") {
+            let mut valid = false;
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("limit")
+                    && let Ok(value) = meta.value()
+                    && let Ok(lit) = value.parse::<syn::LitStr>()
+                {
+                    let s = lit.value();
+                    valid = s == "unlimited" || parse_byte_unit(&s).is_some();
+                }
+                Ok(())
+            });
+            if valid {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Resolve the default behavior for a field.
 ///
 /// Priority:
@@ -366,5 +395,44 @@ mod tests {
             extract_limit_tokens(&attrs).to_string(),
             format!("std :: option :: Option :: Some ({expected}usize)")
         );
+    }
+
+    #[test]
+    fn test_has_explicit_limit_size() {
+        assert!(has_explicit_limit(&parse_attrs(
+            r#"#[form_data(limit = "10MiB")] pub x: String"#
+        )));
+        assert!(has_explicit_limit(&parse_attrs(
+            r#"#[form_data(limit = "100")] pub x: String"#
+        )));
+    }
+
+    #[test]
+    fn test_has_explicit_limit_unlimited() {
+        assert!(has_explicit_limit(&parse_attrs(
+            r#"#[form_data(limit = "unlimited")] pub x: String"#
+        )));
+    }
+
+    #[test]
+    fn test_has_explicit_limit_absent() {
+        assert!(!has_explicit_limit(&parse_attrs("pub x: String")));
+    }
+
+    #[test]
+    fn test_has_explicit_limit_invalid_value() {
+        // An unparseable size is NOT a valid limit — treated as missing so a
+        // file field with `limit = "garbage"` still fails the derive check.
+        assert!(!has_explicit_limit(&parse_attrs(
+            r#"#[form_data(limit = "garbage")] pub x: String"#
+        )));
+    }
+
+    #[test]
+    fn test_has_explicit_limit_other_form_data_key() {
+        // A `form_data` attr without a `limit` key does not count.
+        assert!(!has_explicit_limit(&parse_attrs(
+            r#"#[form_data(field_name = "x")] pub x: String"#
+        )));
     }
 }

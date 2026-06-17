@@ -1,230 +1,149 @@
-//! Code generation utilities for schema macros
+//! Code generation for the `schema!` macro.
 //!
-//! Provides functions to convert schema structures to `TokenStream` for code generation.
+//! `schema!(Type, pick/omit)` must return a runtime [`Schema`] that is
+//! **identical** to the OpenAPI component schema generated for `Type`.
+//! To guarantee that, this module does NOT re-implement schema
+//! construction: it calls the shared [`parse_struct_to_schema`] path (the
+//! single source of truth the OpenAPI generator also uses), applies the
+//! `pick`/`omit` field filter, serializes the resulting [`Schema`] to JSON
+//! at compile time, and emits a [`Schema::from_compiled_json`] call.  The
+//! runtime value is reconstructed byte-for-byte from that spec, so
+//! `schema!` can never drift from the documented component schema
+//! (required-by-nullability, doc descriptions, `flatten`/`transparent`
+//! composition, field constraints, and `$ref` references).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use vespera_core::schema::{Schema, SchemaRef, SchemaType};
+use vespera_core::schema::Schema;
 
-use super::type_utils::is_option_type;
 use crate::{
     metadata::StructMetadata,
     parser::{
-        extract_default, extract_field_rename, extract_rename_all, extract_skip,
-        extract_skip_serializing_if, parse_type_to_schema_ref, rename_field,
-        strip_raw_prefix_owned,
+        extract_field_rename, extract_rename_all, extract_skip, parse_struct_to_schema,
+        rename_field, strip_raw_prefix_owned,
     },
 };
 
-/// Generate Schema construction code with field filtering
-#[allow(clippy::option_if_let_else)]
+/// Generate a `schema!` expression: a runtime [`Schema`] identical to the
+/// OpenAPI component schema for `struct_item`, after applying `pick`/`omit`.
+///
+/// The schema is built through the shared [`parse_struct_to_schema`] path,
+/// serialized at compile time, and reconstructed at runtime via
+/// [`Schema::from_compiled_json`] — so the `schema!` result and the
+/// generated OpenAPI component schema can never diverge.
 pub fn generate_filtered_schema(
     struct_item: &syn::ItemStruct,
     omit_set: &HashSet<String>,
     pick_set: &HashSet<String>,
-    schema_storage: &std::collections::HashMap<String, StructMetadata>,
+    schema_storage: &HashMap<String, StructMetadata>,
 ) -> TokenStream {
-    let rename_all = extract_rename_all(&struct_item.attrs);
+    let schema = build_filtered_schema(struct_item, omit_set, pick_set, schema_storage);
+    // Serialize at compile time; the runtime value is reconstructed from
+    // this spec so it cannot diverge from the OpenAPI component schema.
+    let json = serde_json::to_string(&schema).expect("Schema serialization is infallible");
+    quote! {
+        vespera::schema::Schema::from_compiled_json(#json)
+    }
+}
 
-    // Build known_schemas and struct_definitions for type resolution
+/// Build the filtered [`Schema`] value for `schema!` — the OpenAPI
+/// component schema for `struct_item` with the `pick`/`omit` field filter
+/// applied.
+///
+/// Split out from [`generate_filtered_schema`] so the filtering semantics
+/// are unit-testable on the produced value (rather than on the emitted
+/// token string).
+fn build_filtered_schema(
+    struct_item: &syn::ItemStruct,
+    omit_set: &HashSet<String>,
+    pick_set: &HashSet<String>,
+    schema_storage: &HashMap<String, StructMetadata>,
+) -> Schema {
+    // Same resolution context the OpenAPI component path builds: every
+    // known schema name (for `$ref` resolution) and its source definition
+    // (for generic expansion).
     let known_schemas: HashSet<String> = schema_storage.keys().cloned().collect();
-    let struct_definitions: std::collections::HashMap<String, String> = schema_storage
+    let struct_definitions: HashMap<String, String> = schema_storage
         .values()
         .map(|s| (s.name.clone(), s.definition.clone()))
         .collect();
 
-    let mut property_tokens = Vec::new();
-    let mut required_fields = Vec::new();
+    // Single source of truth — identical logic to OpenAPI generation
+    // (required-by-nullability, doc descriptions, flatten/transparent,
+    // field constraints, `$ref` references).
+    let mut schema = parse_struct_to_schema(struct_item, &known_schemas, &struct_definitions);
 
+    // `schema!` layers field filtering on top: keep only the picked /
+    // non-omitted properties (matched against BOTH the Rust identifier and
+    // the serde-renamed JSON name, as the prior hand-rolled walk did).
+    if let Some(keep) = compute_kept_json_names(struct_item, omit_set, pick_set) {
+        filter_schema_fields(&mut schema, &keep);
+    }
+
+    schema
+}
+
+/// Compute the set of serde-renamed JSON field names that survive the
+/// `pick`/`omit` filter, or `None` when no filtering is requested (both
+/// sets empty → keep every field).
+///
+/// Mirrors the OpenAPI field walk: `#[serde(skip)]` fields never qualify,
+/// and a name matches `omit`/`pick` against EITHER its Rust identifier or
+/// its serde-renamed JSON name.
+fn compute_kept_json_names(
+    struct_item: &syn::ItemStruct,
+    omit_set: &HashSet<String>,
+    pick_set: &HashSet<String>,
+) -> Option<HashSet<String>> {
+    if omit_set.is_empty() && pick_set.is_empty() {
+        return None;
+    }
+    let rename_all = extract_rename_all(&struct_item.attrs);
+    let mut keep = HashSet::new();
     if let syn::Fields::Named(fields_named) = &struct_item.fields {
         for field in &fields_named.named {
-            // Skip if serde(skip)
             if extract_skip(&field.attrs) {
                 continue;
             }
-
             let rust_field_name = field.ident.as_ref().map_or_else(
                 || "unknown".to_string(),
                 |i| strip_raw_prefix_owned(i.to_string()),
             );
-
-            // Apply rename
             let field_name = extract_field_rename(&field.attrs)
                 .unwrap_or_else(|| rename_field(&rust_field_name, rename_all.as_deref()));
-
-            // Apply omit filter (check both rust name and json name)
             if !omit_set.is_empty()
                 && (omit_set.contains(&rust_field_name) || omit_set.contains(&field_name))
             {
                 continue;
             }
-
-            // Apply pick filter (check both rust name and json name)
             if !pick_set.is_empty()
                 && !pick_set.contains(&rust_field_name)
                 && !pick_set.contains(&field_name)
             {
                 continue;
             }
-
-            let field_type = &field.ty;
-
-            // Generate schema for field type
-            let schema_ref =
-                parse_type_to_schema_ref(field_type, &known_schemas, &struct_definitions);
-            let schema_ref_tokens = schema_ref_to_tokens(&schema_ref);
-
-            property_tokens.push(quote! {
-                properties.insert(#field_name.to_string(), #schema_ref_tokens);
-            });
-
-            // Check if field is required (not Option, no default, no skip_serializing_if)
-            let has_default = extract_default(&field.attrs).is_some();
-            let has_skip_serializing_if = extract_skip_serializing_if(&field.attrs);
-            let is_optional = is_option_type(field_type);
-
-            if !is_optional && !has_default && !has_skip_serializing_if {
-                required_fields.push(field_name.clone());
-            }
+            keep.insert(field_name);
         }
     }
-
-    let required_tokens = if required_fields.is_empty() {
-        quote! { None }
-    } else {
-        let required_strs: Vec<&str> = required_fields
-            .iter()
-            .map(std::string::String::as_str)
-            .collect();
-        quote! { Some(vec![#(#required_strs.to_string()),*]) }
-    };
-
-    quote! {
-        {
-            let mut properties = std::collections::BTreeMap::new();
-            #(#property_tokens)*
-            vespera::schema::Schema {
-                schema_type: Some(vespera::schema::SchemaType::Object),
-                properties: if properties.is_empty() { None } else { Some(properties) },
-                required: #required_tokens,
-                ..vespera::schema::Schema::default()
-            }
-        }
-    }
+    Some(keep)
 }
 
-/// Convert `SchemaType` enum variant to its `TokenStream` representation.
-///
-/// `SchemaType` is a unit enum that derives `Copy`, so taking it by value
-/// is strictly cheaper than borrowing (satisfies
-/// `clippy::trivially_copy_pass_by_ref`).
-fn schema_type_to_tokens(st: SchemaType) -> TokenStream {
-    let variant = match st {
-        SchemaType::String => "String",
-        SchemaType::Number => "Number",
-        SchemaType::Integer => "Integer",
-        SchemaType::Boolean => "Boolean",
-        SchemaType::Array => "Array",
-        SchemaType::Object => "Object",
-        SchemaType::Null => "Null",
-    };
-    let ident = syn::Ident::new(variant, proc_macro2::Span::call_site());
-    quote! { vespera::schema::SchemaType::#ident }
-}
-
-/// Convert `SchemaRef` to `TokenStream` for code generation
-pub fn schema_ref_to_tokens(schema_ref: &SchemaRef) -> TokenStream {
-    match schema_ref {
-        SchemaRef::Ref(reference) => {
-            let ref_path = &reference.ref_path;
-            quote! {
-                vespera::schema::SchemaRef::Ref(vespera::schema::Reference::new(#ref_path.to_string()))
-            }
-        }
-        SchemaRef::Inline(schema) => {
-            let schema_tokens = schema_to_tokens(schema);
-            quote! {
-                vespera::schema::SchemaRef::Inline(Box::new(#schema_tokens))
-            }
+/// Retain only `keep` properties (and matching `required` entries) on
+/// `schema`, normalizing an emptied `properties`/`required` back to `None`
+/// to match [`parse_struct_to_schema`]'s own representation.
+fn filter_schema_fields(schema: &mut Schema, keep: &HashSet<String>) {
+    if let Some(properties) = &mut schema.properties {
+        properties.retain(|name, _| keep.contains(name));
+        if properties.is_empty() {
+            schema.properties = None;
         }
     }
-}
-
-/// Convert Schema to `TokenStream` for code generation.
-///
-/// Only emits non-None fields, using `..Default::default()` for the rest.
-/// This reduces generated code volume by ~70% for typical schemas
-/// (e.g., a String field: 3 tokens instead of 10).
-pub fn schema_to_tokens(schema: &Schema) -> TokenStream {
-    let mut fields: Vec<TokenStream> = Vec::with_capacity(4);
-
-    // schema_type
-    if let Some(st) = schema.schema_type {
-        let st_tokens = schema_type_to_tokens(st);
-        fields.push(quote! { schema_type: Some(#st_tokens) });
-    }
-
-    // ref_path
-    if let Some(rp) = &schema.ref_path {
-        fields.push(quote! { ref_path: Some(#rp.to_string()) });
-    }
-
-    // format
-    if let Some(f) = &schema.format {
-        fields.push(quote! { format: Some(#f.to_string()) });
-    }
-
-    // nullable
-    if let Some(n) = schema.nullable {
-        fields.push(quote! { nullable: Some(#n) });
-    }
-
-    // items
-    if let Some(items) = &schema.items {
-        let inner = schema_ref_to_tokens(items);
-        fields.push(quote! { items: Some(#inner) });
-    }
-
-    // properties
-    if let Some(props) = &schema.properties {
-        let entries: Vec<_> = props
-            .iter()
-            .map(|(k, v)| {
-                let v_tokens = schema_ref_to_tokens(v);
-                quote! { (#k.to_string(), #v_tokens) }
-            })
-            .collect();
-        fields.push(quote! {
-            properties: Some({
-                let mut map = std::collections::BTreeMap::new();
-                #(map.insert(#entries.0, #entries.1);)*
-                map
-            })
-        });
-    }
-
-    // required
-    if let Some(req) = &schema.required {
-        let req_strs: Vec<_> = req.iter().map(std::string::String::as_str).collect();
-        fields.push(quote! { required: Some(vec![#(#req_strs.to_string()),*]) });
-    }
-
-    // minimum
-    if let Some(min) = schema.minimum {
-        fields.push(quote! { minimum: Some(#min) });
-    }
-
-    // maximum
-    if let Some(max) = schema.maximum {
-        fields.push(quote! { maximum: Some(#max) });
-    }
-
-    quote! {
-        vespera::schema::Schema {
-            #(#fields,)*
-            ..vespera::schema::Schema::default()
+    if let Some(required) = &mut schema.required {
+        required.retain(|name| keep.contains(name));
+        if required.is_empty() {
+            schema.required = None;
         }
     }
 }
@@ -233,254 +152,153 @@ pub fn schema_to_tokens(schema: &Schema) -> TokenStream {
 mod tests {
     use std::collections::{HashMap, HashSet};
 
-    use vespera_core::schema::{Reference, Schema, SchemaRef, SchemaType};
+    use crate::metadata::StructMetadata;
 
-    use super::*;
+    use super::{build_filtered_schema, generate_filtered_schema};
 
-    #[test]
-    fn test_generate_filtered_schema_empty_properties() {
-        let struct_item: syn::ItemStruct = syn::parse_str("pub struct Empty {}").unwrap();
-        let omit_set = HashSet::new();
-        let pick_set = HashSet::new();
-        let output = generate_filtered_schema(&struct_item, &omit_set, &pick_set, &HashMap::new())
-            .to_string();
-        assert!(output.contains("properties"));
+    fn empty_storage() -> HashMap<String, StructMetadata> {
+        HashMap::new()
     }
 
-    #[test]
-    fn test_generate_filtered_schema_with_default_field() {
-        let struct_item: syn::ItemStruct = syn::parse_str(
-            r"
-            pub struct WithDefault {
-                #[serde(default)]
-                pub field: String,
-            }
-        ",
-        )
-        .unwrap();
-        let omit_set = HashSet::new();
-        let pick_set = HashSet::new();
-        let output = generate_filtered_schema(&struct_item, &omit_set, &pick_set, &HashMap::new())
-            .to_string();
-        assert!(output.contains("None"));
+    fn parse(src: &str) -> syn::ItemStruct {
+        syn::parse_str(src).expect("valid struct source")
     }
 
+    /// Regression for the schema!↔OpenAPI drift: a `#[serde(default)]`
+    /// non-`Option` field must be REQUIRED (required is nullability-only,
+    /// identical to the OpenAPI component schema).  The prior `schema!`
+    /// path wrongly excluded defaulted / `skip_serializing_if` fields.
     #[test]
-    fn test_generate_filtered_schema_with_skip_serializing_if() {
-        let struct_item: syn::ItemStruct = syn::parse_str(
-            r#"
-            pub struct WithSkip {
-                #[serde(skip_serializing_if = "Option::is_none")]
-                pub field: String,
-            }
-        "#,
-        )
-        .unwrap();
-        let omit_set = HashSet::new();
-        let pick_set = HashSet::new();
-        let _output = generate_filtered_schema(&struct_item, &omit_set, &pick_set, &HashMap::new());
-    }
-
-    #[test]
-    fn test_generate_filtered_schema_tuple_struct() {
-        let struct_item: syn::ItemStruct =
-            syn::parse_str("pub struct Tuple(i32, String);").unwrap();
-        let omit_set = HashSet::new();
-        let pick_set = HashSet::new();
-        let _output = generate_filtered_schema(&struct_item, &omit_set, &pick_set, &HashMap::new());
-    }
-
-    #[test]
-    fn test_schema_ref_to_tokens_ref_variant() {
-        let schema_ref = SchemaRef::Ref(Reference::new("#/components/schemas/User".to_string()));
-        let tokens = schema_ref_to_tokens(&schema_ref);
-        let output = tokens.to_string();
-        assert!(output.contains("SchemaRef :: Ref"));
-        assert!(output.contains("Reference :: new"));
-    }
-
-    #[test]
-    fn test_schema_ref_to_tokens_inline_variant() {
-        let schema = Schema::new(SchemaType::String);
-        let schema_ref = SchemaRef::Inline(Box::new(schema));
-        let tokens = schema_ref_to_tokens(&schema_ref);
-        let output = tokens.to_string();
-        assert!(output.contains("SchemaRef :: Inline"));
-        assert!(output.contains("Box :: new"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_string_type() {
-        let schema = Schema::new(SchemaType::String);
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        assert!(output.contains("SchemaType :: String"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_integer_type() {
-        let schema = Schema::new(SchemaType::Integer);
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        assert!(output.contains("SchemaType :: Integer"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_number_type() {
-        let schema = Schema::new(SchemaType::Number);
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        assert!(output.contains("SchemaType :: Number"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_boolean_type() {
-        let schema = Schema::new(SchemaType::Boolean);
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        assert!(output.contains("SchemaType :: Boolean"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_array_type() {
-        let schema = Schema::new(SchemaType::Array);
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        assert!(output.contains("SchemaType :: Array"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_object_type() {
-        let schema = Schema::new(SchemaType::Object);
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        assert!(output.contains("SchemaType :: Object"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_null_type() {
-        let schema = Schema::new(SchemaType::Null);
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        assert!(output.contains("SchemaType :: Null"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_none_type() {
-        let schema = Schema {
-            schema_type: None,
-            ..Default::default()
-        };
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        // With conditional emission, schema_type is omitted when None
-        // (..Default::default() provides None)
-        assert!(!output.contains("schema_type"));
-        assert!(output.contains("default"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_with_format() {
-        let mut schema = Schema::new(SchemaType::String);
-        schema.format = Some("date-time".to_string());
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        assert!(output.contains("date-time"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_with_nullable() {
-        let mut schema = Schema::new(SchemaType::String);
-        schema.nullable = Some(true);
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        assert!(output.contains("Some (true)"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_nullable_false() {
-        let mut schema = Schema::new(SchemaType::String);
-        schema.nullable = Some(false);
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        assert!(output.contains("Some (false)"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_with_ref_path() {
-        let mut schema = Schema::new(SchemaType::Object);
-        schema.ref_path = Some("#/components/schemas/User".to_string());
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        assert!(output.contains("#/components/schemas/User"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_with_items() {
-        let mut schema = Schema::new(SchemaType::Array);
-        let item_schema = Schema::new(SchemaType::String);
-        schema.items = Some(SchemaRef::Inline(Box::new(item_schema)));
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        assert!(output.contains("items"));
-        // `items` is now emitted as `Some(<SchemaRef>)` (no outer Box —
-        // CORE-02); the inner `SchemaRef::Inline` still carries its own
-        // `Box::new`.
-        assert!(output.contains("SchemaRef :: Inline"));
-        assert!(output.contains("Box :: new"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_with_properties() {
-        use std::collections::BTreeMap;
-
-        let mut schema = Schema::new(SchemaType::Object);
-        let mut props = BTreeMap::new();
-        props.insert(
-            "name".to_string(),
-            SchemaRef::Inline(Box::new(Schema::new(SchemaType::String))),
-        );
-        schema.properties = Some(props);
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        assert!(output.contains("properties"));
-        assert!(output.contains("name"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_with_required() {
-        let mut schema = Schema::new(SchemaType::Object);
-        schema.required = Some(vec!["id".to_string(), "name".to_string()]);
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        assert!(output.contains("required"));
-        assert!(output.contains("id"));
-        assert!(output.contains("name"));
-    }
-
-    #[test]
-    fn test_schema_to_tokens_with_minimum() {
-        let mut schema = Schema::new(SchemaType::Integer);
-        schema.minimum = Some(0.0);
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
+    fn default_field_is_required_matching_openapi() {
+        let item = parse(r"pub struct WithDefault { #[serde(default)] pub field: String }");
+        let schema =
+            build_filtered_schema(&item, &HashSet::new(), &HashSet::new(), &empty_storage());
+        let required = schema.required.expect("required set present");
         assert!(
-            output.contains("minimum"),
-            "should contain minimum: {output}"
+            required.iter().any(|f| f == "field"),
+            "a defaulted non-Option field must be required, got {required:?}"
         );
-        assert!(output.contains("Some"), "should contain Some: {output}");
     }
 
     #[test]
-    fn test_schema_to_tokens_with_maximum() {
-        let mut schema = Schema::new(SchemaType::Integer);
-        schema.maximum = Some(255.0);
-        let tokens = schema_to_tokens(&schema);
-        let output = tokens.to_string();
-        assert!(
-            output.contains("maximum"),
-            "should contain maximum: {output}"
+    fn skip_serializing_if_field_is_required() {
+        let item = parse(
+            r#"pub struct WithSkip { #[serde(skip_serializing_if = "Option::is_none")] pub field: String }"#,
         );
-        assert!(output.contains("Some"), "should contain Some: {output}");
+        let schema =
+            build_filtered_schema(&item, &HashSet::new(), &HashSet::new(), &empty_storage());
+        assert!(
+            schema
+                .required
+                .expect("required present")
+                .iter()
+                .any(|f| f == "field"),
+            "skip_serializing_if must not affect required (nullability-only)"
+        );
+    }
+
+    #[test]
+    fn option_field_is_not_required() {
+        let item = parse(r"pub struct WithOpt { pub field: Option<String> }");
+        let schema =
+            build_filtered_schema(&item, &HashSet::new(), &HashSet::new(), &empty_storage());
+        let still_required = schema
+            .required
+            .as_ref()
+            .is_some_and(|r| r.iter().any(|f| f == "field"));
+        assert!(!still_required, "an Option<T> field must not be required");
+    }
+
+    #[test]
+    fn omit_excludes_field_from_properties_and_required() {
+        let item = parse(r"pub struct S { pub a: String, pub b: i32 }");
+        let mut omit = HashSet::new();
+        omit.insert("b".to_string());
+        let schema = build_filtered_schema(&item, &omit, &HashSet::new(), &empty_storage());
+        let props = schema.properties.expect("properties present");
+        assert!(props.contains_key("a"));
+        assert!(!props.contains_key("b"), "omitted field must be gone");
+        assert!(
+            !schema.required.unwrap_or_default().iter().any(|f| f == "b"),
+            "omitted field must not remain required"
+        );
+    }
+
+    #[test]
+    fn pick_keeps_only_selected_fields() {
+        let item = parse(r"pub struct S { pub a: String, pub b: i32, pub c: bool }");
+        let mut pick = HashSet::new();
+        pick.insert("a".to_string());
+        let schema = build_filtered_schema(&item, &HashSet::new(), &pick, &empty_storage());
+        let props = schema.properties.expect("properties present");
+        assert_eq!(props.len(), 1);
+        assert!(props.contains_key("a"));
+    }
+
+    #[test]
+    fn serde_skip_field_excluded() {
+        let item = parse(r"pub struct S { pub a: String, #[serde(skip)] pub hidden: i32 }");
+        let schema =
+            build_filtered_schema(&item, &HashSet::new(), &HashSet::new(), &empty_storage());
+        let props = schema.properties.expect("properties present");
+        assert!(props.contains_key("a"));
+        assert!(!props.contains_key("hidden"), "serde(skip) field excluded");
+    }
+
+    #[test]
+    fn pick_matches_renamed_json_name() {
+        let item = parse(
+            r#"#[serde(rename_all = "camelCase")] pub struct S { pub user_name: String, pub age: i32 }"#,
+        );
+        let mut pick = HashSet::new();
+        pick.insert("userName".to_string());
+        let schema = build_filtered_schema(&item, &HashSet::new(), &pick, &empty_storage());
+        let props = schema.properties.expect("properties present");
+        assert!(props.contains_key("userName"));
+        assert!(!props.contains_key("age"));
+    }
+
+    #[test]
+    fn omit_matches_rust_name_even_when_renamed() {
+        let item = parse(
+            r#"#[serde(rename_all = "camelCase")] pub struct S { pub user_name: String, pub age: i32 }"#,
+        );
+        let mut omit = HashSet::new();
+        omit.insert("user_name".to_string()); // Rust identifier, not the JSON name
+        let schema = build_filtered_schema(&item, &omit, &HashSet::new(), &empty_storage());
+        let props = schema.properties.expect("properties present");
+        assert!(!props.contains_key("userName"), "omit by Rust name works");
+        assert!(props.contains_key("age"));
+    }
+
+    #[test]
+    fn empty_struct_has_no_properties() {
+        let item = parse("pub struct Empty {}");
+        let schema =
+            build_filtered_schema(&item, &HashSet::new(), &HashSet::new(), &empty_storage());
+        assert!(schema.properties.is_none());
+    }
+
+    #[test]
+    fn tuple_struct_produces_no_properties() {
+        let item = parse("pub struct Tuple(i32, String);");
+        let schema =
+            build_filtered_schema(&item, &HashSet::new(), &HashSet::new(), &empty_storage());
+        assert!(schema.properties.is_none());
+    }
+
+    #[test]
+    fn generate_emits_from_compiled_json_call() {
+        let item = parse(r"pub struct S { pub a: String }");
+        let output =
+            generate_filtered_schema(&item, &HashSet::new(), &HashSet::new(), &empty_storage())
+                .to_string();
+        assert!(
+            output.contains("from_compiled_json"),
+            "schema! must emit a from_compiled_json reconstruction, got: {output}"
+        );
+        // The serialized spec carries the property + required set.
+        assert!(output.contains("properties"), "spec must carry properties");
+        assert!(output.contains("required"), "spec must carry required");
     }
 }

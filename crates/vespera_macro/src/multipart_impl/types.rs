@@ -27,6 +27,29 @@ pub(super) fn is_vec_type(ty: &Type) -> bool {
     matches_type_name(ty, &["Vec", "std::vec::Vec"])
 }
 
+/// Whether `ty` is — or wraps via one `Option<_>` / `Vec<_>` layer — a
+/// multipart file field (`FieldData<T>`).
+///
+/// File uploads are the unbounded-memory risk that multipart limits guard,
+/// so the `Multipart` derive requires an explicit `#[form_data(limit = ...)]`
+/// on them (see [`super::attrs::has_explicit_limit`]).
+pub(super) fn is_file_field_type(ty: &Type) -> bool {
+    let inner = if is_option_type(ty) || is_vec_type(ty) {
+        extract_inner_generic(ty)
+    } else {
+        None
+    };
+    let target = inner.as_ref().unwrap_or(ty);
+    matches_type_name(
+        target,
+        &[
+            "FieldData",
+            "multipart::FieldData",
+            "vespera::multipart::FieldData",
+        ],
+    )
+}
+
 /// Check if a type's path matches any of the given names.
 fn matches_type_name(ty: &Type, names: &[&str]) -> bool {
     let path = match ty {
@@ -160,6 +183,29 @@ mod tests {
         assert!(!is_vec_type(&ty));
         let ty: syn::Type = syn::parse_str("String").unwrap();
         assert!(!is_vec_type(&ty));
+    }
+
+    #[test]
+    fn test_is_file_field_type() {
+        // Bare, Option-wrapped, Vec-wrapped, and fully-qualified FieldData.
+        for src in [
+            "FieldData<NamedTempFile>",
+            "Option<FieldData<NamedTempFile>>",
+            "Vec<FieldData<NamedTempFile>>",
+            "vespera::multipart::FieldData<NamedTempFile>",
+            "Option<vespera::multipart::FieldData<NamedTempFile>>",
+        ] {
+            let ty: syn::Type = syn::parse_str(src).unwrap();
+            assert!(is_file_field_type(&ty), "should be a file field: {src}");
+        }
+        // Non-file fields must NOT trigger the limit requirement.
+        for src in ["String", "Option<String>", "Vec<u8>", "i32", "Vec<String>"] {
+            let ty: syn::Type = syn::parse_str(src).unwrap();
+            assert!(
+                !is_file_field_type(&ty),
+                "should not be a file field: {src}"
+            );
+        }
     }
 
     #[test]

@@ -116,9 +116,9 @@ pub fn process_vespera_macro(
 
         (metadata, sidecars.spec_tokens)
     } else {
-        let scanned_files: Vec<std::path::PathBuf> =
-            scanned.iter().map(|(path, _)| path.clone()).collect();
-        let (mut metadata, file_asts) = crate::collector::collect_metadata_from_files(&scanned_files, &folder_path, &processed.folder_name, route_storage).map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", processed.folder_name, e)))?;
+        // Borrow the pre-scanned `(path, mtime)` pairs as `&Path` — no
+        // PathBuf clone of the whole file list per cache-miss expansion.
+        let (mut metadata, file_asts) = crate::collector::collect_metadata_from_files(scanned.iter().map(|(path, _)| path.as_path()), &folder_path, &processed.folder_name, route_storage).map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: failed to scan route folder '{}'. Error: {}. Check that all .rs files have valid Rust syntax.", processed.folder_name, e)))?;
         stage("collect_metadata");
 
         // Clone metadata before extending (cache stores file-only structs)

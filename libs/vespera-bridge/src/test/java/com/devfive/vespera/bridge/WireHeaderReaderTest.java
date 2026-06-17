@@ -2,6 +2,7 @@ package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -31,6 +32,10 @@ class WireHeaderReaderTest {
 
     private static Captured runWith(String headerJson, boolean direct) {
         byte[] hb = headerJson.getBytes(StandardCharsets.UTF_8);
+        return runWith(hb, direct);
+    }
+
+    private static Captured runWith(byte[] hb, boolean direct) {
         ByteBuffer buf =
                 direct ? ByteBuffer.allocateDirect(4 + hb.length) : ByteBuffer.allocate(4 + hb.length);
         buf.putInt(hb.length);
@@ -40,6 +45,11 @@ class WireHeaderReaderTest {
         WireHeaderReader.apply(
                 buf, 4, hb.length, s -> status[0] = s, (k, v) -> headers.add(k + "=" + v));
         return new Captured(status[0], headers);
+    }
+
+    private static void assertRejected(byte[] headerBytes) {
+        assertThrows(IllegalArgumentException.class, () -> runWith(headerBytes, true));
+        assertThrows(IllegalArgumentException.class, () -> runWith(headerBytes, false));
     }
 
     @Test
@@ -66,9 +76,30 @@ class WireHeaderReaderTest {
     void handlesEscapesAndUtf8InValues() {
         Captured c =
                 run(
-                        "{\"status\":200,\"headers\":{\"x-q\":\"a\\\"b\\\\c\\n\",\"x-u\":\"caf\u00e9\"}}");
+                        "{\"status\":200,\"headers\":{\"x-q\":\"a\\\"b\\\\c\\n\",\"x-u\":\"caf\u00e9\"," 
+                                + "\"x-emoji\":\"\uD83D\uDE80\"}}");
         assertEquals(200, c.status());
-        assertEquals(List.of("x-q=a\"b\\c\n", "x-u=caf\u00e9"), c.headers());
+        assertEquals(List.of("x-q=a\"b\\c\n", "x-u=caf\u00e9", "x-emoji=\uD83D\uDE80"), c.headers());
+    }
+
+    @Test
+    void rejectsStatusIntegerOverflow() {
+        assertRejected("{\"status\":2147483648}".getBytes(StandardCharsets.UTF_8));
+        assertRejected("{\"status\":-2147483649}".getBytes(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void rejectsMalformedUtf8ContinuationAndOverlongSequences() {
+        assertRejected(new byte[] {
+            '{', '"', 's', 't', 'a', 't', 'u', 's', '"', ':', '2', '0', '0', ',',
+            '"', 'h', 'e', 'a', 'd', 'e', 'r', 's', '"', ':', '{', '"', 'x', '"', ':', '"',
+            (byte) 0xC3, '(', '"', '}', '}'
+        });
+        assertRejected(new byte[] {
+            '{', '"', 's', 't', 'a', 't', 'u', 's', '"', ':', '2', '0', '0', ',',
+            '"', 'h', 'e', 'a', 'd', 'e', 'r', 's', '"', ':', '{', '"', 'x', '"', ':', '"',
+            (byte) 0xC0, (byte) 0x80, '"', '}', '}'
+        });
     }
 
     @Test

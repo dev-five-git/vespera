@@ -188,15 +188,7 @@ impl OpenApi {
         if let Some(other_components) = other.components
             && has_any_component_map(&other_components)
         {
-            let self_components = self.components.get_or_insert(Components {
-                schemas: None,
-                responses: None,
-                parameters: None,
-                examples: None,
-                request_bodies: None,
-                headers: None,
-                security_schemes: None,
-            });
+            let self_components = self.components.get_or_insert_with(Components::default);
 
             merge_component_map(&mut self_components.schemas, other_components.schemas);
             merge_component_map(&mut self_components.responses, other_components.responses);
@@ -229,15 +221,16 @@ impl OpenApi {
         // with the existing tag names and grows as incoming tags are appended,
         // so an incoming tag is kept only when its name collides with neither
         // an existing tag nor an already-appended incoming one (first-wins,
-        // incoming insertion order preserved).  Tag merging runs at compile
-        // time over a handful of tags, so owning the names (one clone each)
-        // is cheaper to read than the prior borrow-juggling two-pass flag Vec.
+        // incoming insertion order preserved).  A name is cloned only when the
+        // tag is actually kept — a duplicate is detected by borrow and skipped
+        // without cloning.
         if let Some(other_tags) = other.tags {
             let self_tags = self.tags.get_or_insert_with(Vec::new);
             let mut seen: std::collections::HashSet<String> =
                 self_tags.iter().map(|tag| tag.name.clone()).collect();
             for tag in other_tags {
-                if seen.insert(tag.name.clone()) {
+                if !seen.contains(tag.name.as_str()) {
+                    seen.insert(tag.name.clone());
                     self_tags.push(tag);
                 }
             }

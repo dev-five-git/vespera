@@ -94,9 +94,9 @@ pub fn find_struct_from_path(
     let file_paths = candidate_file_paths(&src_dir, &module_segments);
 
     for file_path in file_paths {
-        if !file_path.exists() {
-            continue;
-        }
+        // No `exists()` preflight: `get_struct_definition` reads through the
+        // mtime-validated cache and returns `None` for a missing/unreadable
+        // file, so the extra stat (and its TOCTOU window) is pure overhead.
         if let Some(definition) =
             crate::schema_macro::file_cache::get_struct_definition(&file_path, &struct_name)
         {
@@ -336,9 +336,9 @@ pub fn find_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
     let file_paths = candidate_file_paths(&src_dir, &module_segments);
 
     for file_path in file_paths {
-        if !file_path.exists() {
-            continue;
-        }
+        // No `exists()` preflight: the mtime-validated cache read returns
+        // `None` for a missing/unreadable file, so the stat is redundant
+        // (and TOCTOU-prone).
         if let Some(definition) =
             crate::schema_macro::file_cache::get_struct_definition(&file_path, &struct_name)
         {
@@ -384,9 +384,9 @@ pub fn find_model_from_schema_path(schema_path_str: &str) -> Option<StructMetada
     let file_paths = candidate_file_paths(&src_dir, &module_segments);
 
     for file_path in file_paths {
-        if !file_path.exists() {
-            continue;
-        }
+        // No `exists()` preflight: the mtime-validated cache read returns
+        // `None` for a missing/unreadable file, so the stat is redundant
+        // (and TOCTOU-prone).
         if let Some(definition) =
             crate::schema_macro::file_cache::get_struct_definition(&file_path, "Model")
         {

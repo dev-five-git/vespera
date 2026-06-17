@@ -328,14 +328,18 @@ impl<'a> Parser<'a> {
     }
 
     /// Read the `v` field as a `u8` — a non-negative JSON integer in
-    /// `[0, 255]`.  Rejects a leading `-`, a fractional/exponent tail,
-    /// out-of-range values, and non-numeric tokens (matching serde's
-    /// `u8` deserialization decisions).
+    /// `[0, 255]`.  Rejects a leading `-`, a **leading zero** (`01`, `00`
+    /// — JSON forbids them, only a bare `0` is legal), a
+    /// fractional/exponent tail, out-of-range values, and non-numeric
+    /// tokens (matching serde's `u8` deserialization decisions).
     fn read_u8(&mut self) -> Result<u8, String> {
         self.skip_ws();
         if self.cur() == Some(b'-') {
             return Err("invalid negative value for `v`".to_owned());
         }
+        // JSON forbids leading zeros: a `0` may only stand alone, never be
+        // followed by another digit.  `serde_json` rejects `01`/`00`.
+        let first_is_zero = self.cur() == Some(b'0');
         let mut value: u32 = 0;
         let mut digits = 0u32;
         while let Some(&byte) = self.input.get(self.pos) {
@@ -352,99 +356,140 @@ impl<'a> Parser<'a> {
         if digits == 0 {
             return Err("expected integer for `v`".to_owned());
         }
+        if first_is_zero && digits > 1 {
+            return Err("invalid leading zero in `v`".to_owned());
+        }
         if matches!(self.cur(), Some(b'.' | b'e' | b'E')) {
             return Err("invalid non-integer value for `v`".to_owned());
         }
         u8::try_from(value).map_err(|_| "`v` out of range for u8".to_owned())
     }
 
-    /// Consume an arbitrary JSON value (for unknown keys) without
-    /// allocating — string-aware so braces/brackets inside strings do
-    /// not affect container nesting.
+    /// Consume **and validate** an arbitrary JSON value (for unknown
+    /// keys), enforcing `serde_json`'s grammar so a malformed value under
+    /// an ignored key is rejected rather than silently skipped.  No
+    /// allocation for the common plain-string / scalar cases.
     fn skip_value(&mut self) -> Result<(), String> {
         self.skip_ws();
         match self.cur() {
             Some(b'"') => self.skip_string(),
-            Some(b'{' | b'[') => self.skip_container(),
-            Some(b't' | b'f' | b'n') => {
-                self.skip_literal();
-                Ok(())
-            }
+            Some(b'{') => self.skip_object(),
+            Some(b'[') => self.skip_array(),
+            Some(b't') => self.expect_literal(b"true"),
+            Some(b'f') => self.expect_literal(b"false"),
+            Some(b'n') => self.expect_literal(b"null"),
             Some(b'-' | b'0'..=b'9') => self.skip_number(),
             _ => Err("unexpected value".to_owned()),
         }
     }
 
-    /// Skip a JSON string token (cursor at the opening quote).
+    /// Validate-and-skip a JSON string (cursor at the opening quote).
+    ///
+    /// Delegates to [`Self::read_string`] so the escape set, unescaped
+    /// control-character rejection, and UTF-8 validation are byte-for-byte
+    /// identical to a real string field — the decoded value is discarded.
+    /// A plain (unescaped) string allocates nothing; only an escaped
+    /// string (rare under an unknown key) pays a throwaway decode.
     fn skip_string(&mut self) -> Result<(), String> {
-        self.pos += 1; // opening quote
-        while let Some(&byte) = self.input.get(self.pos) {
+        self.read_string().map(|_| ())
+    }
+
+    /// Validate-and-skip a JSON object (cursor at the opening `{`).
+    /// Keys must be JSON strings; values recurse through
+    /// [`Self::skip_value`] so the whole subtree is grammar-checked.
+    fn skip_object(&mut self) -> Result<(), String> {
+        self.pos += 1; // consume '{'
+        self.skip_ws();
+        if self.cur() == Some(b'}') {
             self.pos += 1;
-            if byte == b'"' {
-                return Ok(());
-            }
-            if byte == b'\\' && self.input.get(self.pos).is_some() {
-                self.pos += 1;
+            return Ok(());
+        }
+        loop {
+            self.skip_ws();
+            // Object keys are JSON strings — validated like any other.
+            self.skip_string()?;
+            self.expect(b':')?;
+            self.skip_value()?;
+            self.skip_ws();
+            match self.cur() {
+                Some(b',') => self.pos += 1,
+                Some(b'}') => {
+                    self.pos += 1;
+                    return Ok(());
+                }
+                _ => return Err("expected ',' or '}' in object".to_owned()),
             }
         }
-        Err("unterminated string".to_owned())
     }
 
-    /// Skip a balanced `{...}` / `[...]` container (cursor at the opening
-    /// bracket), string-literal aware.
-    fn skip_container(&mut self) -> Result<(), String> {
-        let mut depth = 0usize;
-        while let Some(&byte) = self.input.get(self.pos) {
+    /// Validate-and-skip a JSON array (cursor at the opening `[`).
+    /// Elements recurse through [`Self::skip_value`]; a `]` can only close
+    /// an array (no `}`/`]` interchange), so a mismatched bracket is
+    /// rejected exactly as `serde_json` rejects it.
+    fn skip_array(&mut self) -> Result<(), String> {
+        self.pos += 1; // consume '['
+        self.skip_ws();
+        if self.cur() == Some(b']') {
             self.pos += 1;
-            match byte {
-                b'"' => {
-                    // Skip a nested string so its braces don't count.
-                    while let Some(&inner) = self.input.get(self.pos) {
-                        self.pos += 1;
-                        if inner == b'"' {
-                            break;
-                        }
-                        if inner == b'\\' && self.input.get(self.pos).is_some() {
-                            self.pos += 1;
-                        }
-                    }
-                }
-                b'{' | b'[' => depth += 1,
-                b'}' | b']' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Ok(());
-                    }
-                }
-                _ => {}
-            }
+            return Ok(());
         }
-        Err("unterminated container".to_owned())
-    }
-
-    /// Skip a JSON literal run (`true` / `false` / `null`).
-    fn skip_literal(&mut self) {
-        while let Some(&byte) = self.input.get(self.pos) {
-            if byte.is_ascii_lowercase() {
-                self.pos += 1;
-            } else {
-                break;
+        loop {
+            self.skip_value()?;
+            self.skip_ws();
+            match self.cur() {
+                Some(b',') => self.pos += 1,
+                Some(b']') => {
+                    self.pos += 1;
+                    return Ok(());
+                }
+                _ => return Err("expected ',' or ']' in array".to_owned()),
             }
         }
     }
 
-    /// Skip a JSON number run.
+    /// Validate-and-skip a JSON number, enforcing the JSON number grammar
+    /// `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?` so malformed
+    /// numbers like `1e+`, `1.`, or a leading-zero `01` are rejected the
+    /// same way `serde_json` rejects them.  (A leading-zero integer such
+    /// as `01` consumes the `0` and leaves the `1`, so the surrounding
+    /// container's delimiter check rejects it — matching serde.)
     fn skip_number(&mut self) -> Result<(), String> {
-        let start = self.pos;
-        while let Some(&byte) = self.input.get(self.pos) {
-            if byte.is_ascii_digit() || matches!(byte, b'-' | b'+' | b'.' | b'e' | b'E') {
+        if self.cur() == Some(b'-') {
+            self.pos += 1;
+        }
+        // Integer part: a bare `0`, or `[1-9][0-9]*` (no leading zero).
+        match self.cur() {
+            Some(b'0') => self.pos += 1,
+            Some(b'1'..=b'9') => {
                 self.pos += 1;
-            } else {
-                break;
+                while matches!(self.cur(), Some(b'0'..=b'9')) {
+                    self.pos += 1;
+                }
+            }
+            _ => return Err("invalid number: expected a digit".to_owned()),
+        }
+        // Optional fraction: `.` then at least one digit.
+        if self.cur() == Some(b'.') {
+            self.pos += 1;
+            if !matches!(self.cur(), Some(b'0'..=b'9')) {
+                return Err("invalid number: expected a digit after '.'".to_owned());
+            }
+            while matches!(self.cur(), Some(b'0'..=b'9')) {
+                self.pos += 1;
             }
         }
-        if self.pos == start {
-            return Err("expected number".to_owned());
+        // Optional exponent: `e`/`E`, optional sign, at least one digit.
+        if matches!(self.cur(), Some(b'e' | b'E')) {
+            self.pos += 1;
+            if matches!(self.cur(), Some(b'+' | b'-')) {
+                self.pos += 1;
+            }
+            if !matches!(self.cur(), Some(b'0'..=b'9')) {
+                return Err("invalid number: expected a digit in the exponent".to_owned());
+            }
+            while matches!(self.cur(), Some(b'0'..=b'9')) {
+                self.pos += 1;
+            }
         }
         Ok(())
     }
