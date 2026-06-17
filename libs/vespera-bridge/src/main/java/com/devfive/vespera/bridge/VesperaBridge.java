@@ -1,23 +1,33 @@
 package com.devfive.vespera.bridge;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.lang.ref.SoftReference;
-import java.util.Objects;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.security.DigestInputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
 /**
  * JNI bridge to any Rust cdylib built with vespera's JNI feature.
+ *
+ * <p>This class owns only the pieces that must stay bound to the
+ * {@code com.devfive.vespera.bridge.VesperaBridge} symbol name — the
+ * {@code native} methods (whose JNI symbols are
+ * {@code Java_com_devfive_vespera_bridge_VesperaBridge_*}), native-library
+ * loading, and the public dispatch API.  The pure-Java helpers live in
+ * sibling classes: wire request encoding / response decoding in
+ * {@link VesperaWireCodec}, and the per-thread direct-buffer pool in
+ * {@link VesperaDirectBufferPool}.  The public methods here delegate to
+ * them, so callers see an unchanged surface.
  *
  * <p><strong>Wire format</strong> — both request and response use the
  * same layout:
@@ -51,111 +61,6 @@ public class VesperaBridge {
     @FunctionalInterface
     public interface HeaderSource {
         void writeTo(HeaderSink sink);
-    }
-
-    /** Lowercase hex digits for the JSON C0 control-character escapes. */
-    private static final byte[] HEX = {
-        '0', '1', '2', '3', '4', '5', '6', '7',
-        '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'
-    };
-    private static final int WIRE_VERSION = 1;
-    /** Shared empty request body — avoids a {@code new byte[0]} per call. */
-    private static final byte[] EMPTY_BODY = new byte[0];
-    private static final int HEADER_INITIAL_CAPACITY = 256;
-    private static final int HEADER_RETAIN_CAPACITY = 32 * 1024;
-
-    /**
-     * Per-thread reusable byte buffer for {@link #fillHeaderJson}.
-     * Reset (size cleared, capacity preserved) per call and filled
-     * byte-direct — no per-call encoder object.  If one request grows
-     * the backing array past {@link #HEADER_RETAIN_CAPACITY}, the next
-     * use on that thread drops it back to {@link #HEADER_INITIAL_CAPACITY}
-     * so oversized cookies/headers do not pin a large array for the
-     * servlet-thread lifetime.  Virtual-thread caveat as {@link #DIRECT_POOL}:
-     * each vthread gets its own ~256 B buffer in Java 21+ and loses pooling
-     * until GC.
-     */
-    private static final ThreadLocal<ExposedByteArrayOutputStream> HEADER_BUF =
-            ThreadLocal.withInitial(() -> new ExposedByteArrayOutputStream(HEADER_INITIAL_CAPACITY));
-
-    /**
-     * {@link ByteArrayOutputStream} that exposes its backing array so the
-     * serialized header is copied straight into the wire (heap array or
-     * direct buffer) without {@link ByteArrayOutputStream#toByteArray()}
-     * first materialising a second, exact-sized copy per request.
-     *
-     * <p>Callers MUST read only {@code [0, size())}: the backing array is
-     * usually larger than the content (grow-by-doubling) and is reused
-     * across calls on the same thread, so the bytes must be consumed
-     * before the next {@link #fillHeaderJson} on that thread.
-     */
-    private static final class ExposedByteArrayOutputStream extends ByteArrayOutputStream {
-        ExposedByteArrayOutputStream(int size) {
-            super(size);
-        }
-
-        /** Backing buffer; valid content is {@code [0, size())} only. */
-        byte[] backingArray() {
-            return buf;
-        }
-
-        int capacity() {
-            return buf.length;
-        }
-
-        /**
-         * Append one byte WITHOUT the inherited {@code synchronized} —
-         * {@link #HEADER_BUF} is thread-local, so the monitor is pure
-         * overhead on this single-threaded encode hot path.  Grows the
-         * backing array by doubling, mirroring {@link ByteArrayOutputStream}.
-         */
-        void put(int b) {
-            if (count == buf.length) {
-                buf = java.util.Arrays.copyOf(buf, buf.length << 1);
-            }
-            buf[count++] = (byte) b;
-        }
-
-        /**
-         * Append the bytes of an ASCII literal (caller guarantees every
-         * char is {@code < 0x80}) — used for the fixed JSON structure
-         * (keys, braces, colons).  Non-synchronized, single bulk reserve.
-         */
-        void putAscii(String lit) {
-            int n = lit.length();
-            if (count + n > buf.length) {
-                int cap = buf.length;
-                while (cap < count + n) {
-                    cap <<= 1;
-                }
-                buf = java.util.Arrays.copyOf(buf, cap);
-            }
-            for (int i = 0; i < n; i++) {
-                buf[count++] = (byte) lit.charAt(i);
-            }
-        }
-    }
-
-    private static final class HeaderJsonSink implements HeaderSink {
-        private final ExposedByteArrayOutputStream buf;
-        private boolean started;
-
-        HeaderJsonSink(ExposedByteArrayOutputStream buf) {
-            this.buf = buf;
-        }
-
-        @Override
-        public void put(String lowerName, String value) {
-            if (started) {
-                buf.put(',');
-            } else {
-                buf.putAscii(",\"headers\":{");
-                started = true;
-            }
-            writeJsonString(buf, lowerName);
-            buf.put(':');
-            writeJsonString(buf, value);
-        }
     }
 
     private static volatile boolean loaded = false;
@@ -523,7 +428,7 @@ public class VesperaBridge {
                 Objects.requireNonNull(path, "path"),
                 query,
                 headers != null ? headers : java.util.Map.of(),
-                EMPTY_BODY);
+                VesperaWireCodec.EMPTY_BODY);
     }
 
     public static byte[] encodeRequestHeader(
@@ -538,7 +443,7 @@ public class VesperaBridge {
                 Objects.requireNonNull(path, "path"),
                 query,
                 headers,
-                EMPTY_BODY);
+                VesperaWireCodec.EMPTY_BODY);
     }
 
     /**
@@ -600,174 +505,6 @@ public class VesperaBridge {
         /** Exact out-buffer capacity needed for a successful retry. */
         public int requiredSize() {
             return requiredSize;
-        }
-    }
-
-    /** Initial per-thread direct buffer capacity (64 KiB). */
-    private static final int DIRECT_INITIAL_CAPACITY = 64 * 1024;
-
-    /**
-     * Maximum per-thread direct buffer capacity (default 4 MiB,
-     * overridable via the {@code vespera.direct.maxBufferBytes} system
-     * property, clamped to 64 KiB–256 MiB). Payloads beyond the cap fall
-     * back to {@link #dispatchBytes(byte[])}.
-     */
-    private static final int DIRECT_MAX_HARD_CAPACITY = 256 * 1024 * 1024;
-    private static final int DIRECT_MAX_CAPACITY = directMaxCapacity();
-
-    private static int directMaxCapacity() {
-        int configured = Integer.getInteger("vespera.direct.maxBufferBytes", 4 * 1024 * 1024);
-        return Math.max(DIRECT_INITIAL_CAPACITY, Math.min(DIRECT_MAX_HARD_CAPACITY, configured));
-    }
-
-    /**
-     * Per-thread <strong>hard retention cap</strong> for the pooled
-     * direct buffers (system property
-     * {@code vespera.direct.maxRetainedBytes}, default 2 MiB; clamped
-     * to [{@link #DIRECT_INITIAL_CAPACITY}, {@link #DIRECT_MAX_CAPACITY}]).
-     *
-     * <p>A buffer that a large dispatch grew beyond this cap is shrunk
-     * back to {@link #DIRECT_INITIAL_CAPACITY} <strong>adaptively</strong>
-     * — only after {@link #DIRECT_SHRINK_IDLE_DISPATCHES} consecutive
-     * dispatches stayed under the cap (so a repeatedly-large idempotent
-     * endpoint keeps its buffer instead of shrink/overflow/re-run on
-     * every call), yet a thread that stops handling large responses
-     * still releases the off-heap memory.  Transient growth up to
-     * {@link #DIRECT_MAX_CAPACITY} for an individual request is always
-     * allowed — only steady-state retention is capped.
-     *
-     * <p><strong>Default raised from 256 KiB to 2 MiB (measured 2026-06).</strong>
-     * Bodyless requests (the common GET) always take DIRECT regardless of
-     * response size, so when the cap sat below the response size every such
-     * dispatch shrank the buffer, overflowed, regrew, and <em>re-ran the
-     * handler</em> — measured 6&ndash;8&times; slower than streaming for
-     * 256 KiB&ndash;1.5 MiB responses (e.g. a {@code GET} download).  At
-     * 2 MiB DIRECT instead beats streaming by 1.7&ndash;2.7&times; across
-     * that range.  The cost is self-targeting: only threads that actually
-     * handle large responses retain more (small-response threads keep the
-     * 64 KiB baseline), and the pool is {@link SoftReference}-backed so the
-     * JVM reclaims it under memory pressure.  Memory-sensitive deployments
-     * dial it back via {@code vespera.direct.maxRetainedBytes}.
-     */
-    private static final int DIRECT_RETAIN_CAPACITY = Math.max(
-            DIRECT_INITIAL_CAPACITY,
-            Math.min(DIRECT_MAX_CAPACITY,
-                    Integer.getInteger("vespera.direct.maxRetainedBytes", 2 * 1024 * 1024)));
-
-    /**
-     * Index 0 = request buffer, index 1 = response buffer.
-     *
-     * <p>Held through a {@link SoftReference} so the JVM can reclaim the
-     * off-heap direct buffers under memory pressure — the
-     * {@code DirectByteBuffer} Cleaner frees the native memory once the
-     * soft reference is cleared — instead of pinning up to {@code 2 ×}
-     * {@link #DIRECT_MAX_CAPACITY} per thread for the whole thread
-     * lifetime.  Under normal load the soft reference survives, so the
-     * pooling benefit is preserved; see {@link #directPool()} for the
-     * resolve + retention-cap logic.
-     *
-     * <p><strong>Virtual thread limitation:</strong> {@link ThreadLocal}
-     * binds to the virtual thread (not the carrier) in Java 21+.  Each
-     * virtual thread gets its own pool, losing the pooling benefit in
-     * virtual-thread-per-request servers.  See
-     * {@link #dispatchDirectPooled(byte[], boolean)} for mitigation.
-     */
-    private static final ThreadLocal<SoftReference<ByteBuffer[]>> DIRECT_POOL =
-            new ThreadLocal<>();
-
-    /**
-     * Resolve the calling thread's pooled direct buffers, (re)allocating
-     * a baseline pair when the {@link SoftReference} has been cleared
-     * under memory pressure.
-     *
-     * <p>Retention is adaptive rather than start-of-next-call eager: a
-     * buffer that grew above {@link #DIRECT_RETAIN_CAPACITY} is kept while
-     * this thread continues to see large successful requests/responses, so
-     * repeated 2&ndash;4 MiB idempotent endpoints do not shrink, overflow,
-     * allocate, and re-run the handler on every dispatch.  Shrink back to
-     * {@link #DIRECT_INITIAL_CAPACITY} happens only after
-     * {@link #DIRECT_SHRINK_IDLE_DISPATCHES} consecutive successful pooled
-     * dispatches whose request and response both fit under the retain cap.
-     * This preserves {@code vespera.direct.maxBufferBytes}: buffers still
-     * never grow beyond that hard cap, and beyond-cap retries still fall
-     * back to the heap path.
-     */
-    private static ByteBuffer[] directPool() {
-        SoftReference<ByteBuffer[]> ref = DIRECT_POOL.get();
-        ByteBuffer[] pool = ref == null ? null : ref.get();
-        if (pool == null) {
-            pool = new ByteBuffer[] {
-                    ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY),
-                    ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY)};
-            DIRECT_POOL.set(new SoftReference<>(pool));
-            DIRECT_UNDER_RETAIN_STREAK.set(0);
-            return pool;
-        }
-        return pool;
-    }
-
-    private static final int DIRECT_SHRINK_IDLE_DISPATCHES = 8;
-    private static final ThreadLocal<Integer> DIRECT_UNDER_RETAIN_STREAK =
-            ThreadLocal.withInitial(() -> 0);
-
-    private static void recordDirectPoolUse(ByteBuffer[] pool, int requestLen, int responseLen) {
-        if (requestLen > DIRECT_RETAIN_CAPACITY || responseLen > DIRECT_RETAIN_CAPACITY) {
-            DIRECT_UNDER_RETAIN_STREAK.set(0);
-            return;
-        }
-        int streak = DIRECT_UNDER_RETAIN_STREAK.get() + 1;
-        if (streak < DIRECT_SHRINK_IDLE_DISPATCHES) {
-            DIRECT_UNDER_RETAIN_STREAK.set(streak);
-            return;
-        }
-        if (pool[0].capacity() > DIRECT_RETAIN_CAPACITY) {
-            pool[0] = ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY);
-        }
-        if (pool[1].capacity() > DIRECT_RETAIN_CAPACITY) {
-            pool[1] = ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY);
-        }
-        DIRECT_UNDER_RETAIN_STREAK.set(0);
-    }
-
-    /**
-     * Handle to {@code Thread.isVirtual()} (final API since Java 21),
-     * resolved reflectively so this library still compiles and runs on
-     * the Java 17 baseline.  {@code null} on pre-21 runtimes, where no
-     * thread is ever virtual.
-     */
-    private static final java.lang.invoke.MethodHandle IS_VIRTUAL = resolveIsVirtual();
-
-    private static java.lang.invoke.MethodHandle resolveIsVirtual() {
-        try {
-            return java.lang.invoke.MethodHandles.lookup()
-                    .findVirtual(Thread.class, "isVirtual",
-                            java.lang.invoke.MethodType.methodType(boolean.class));
-        } catch (ReflectiveOperationException pre21Runtime) {
-            return null;
-        }
-    }
-
-    /**
-     * Whether the calling thread is a virtual thread (Java 21+); always
-     * {@code false} on the Java 17 baseline runtime.
-     *
-     * <p>The pooled direct-buffer fast path is backed by
-     * {@link ThreadLocal}, which binds to the <em>virtual</em> thread
-     * (not its carrier) in Java 21+ — so on a virtual-thread-per-request
-     * server every dispatch would allocate a fresh direct buffer and
-     * accumulate off-heap memory until GC.  {@link #dispatchDirectPooled}
-     * detects this and routes virtual threads to the GC-managed heap
-     * {@link #dispatchBytes(byte[])} path instead, automating the
-     * mitigation the docs previously left to manual configuration.
-     */
-    static boolean currentThreadIsVirtual() {
-        if (IS_VIRTUAL == null) {
-            return false;
-        }
-        try {
-            return (boolean) IS_VIRTUAL.invokeExact(Thread.currentThread());
-        } catch (Throwable ignoredFallBackToPooled) {
-            return false;
         }
     }
 
@@ -835,6 +572,17 @@ public class VesperaBridge {
     }
 
     /**
+     * Whether the calling thread is a virtual thread (Java 21+); always
+     * {@code false} on the Java 17 baseline.  Delegates to
+     * {@link VesperaDirectBufferPool#currentThreadIsVirtual()} — used by
+     * {@link SmartDispatchModeResolver} to keep pooled direct-buffer work
+     * off virtual threads.
+     */
+    static boolean currentThreadIsVirtual() {
+        return VesperaDirectBufferPool.currentThreadIsVirtual();
+    }
+
+    /**
      * Pooled convenience around {@link #dispatchDirect(ByteBuffer, int,
      * ByteBuffer)} using per-thread reusable direct buffers (64 KiB
      * initial, doubling up to {@code vespera.direct.maxBufferBytes},
@@ -851,10 +599,9 @@ public class VesperaBridge {
      * Java 21+ semantics.  In a virtual-thread-per-request server, each
      * virtual thread allocates a fresh direct buffer and loses all
      * pooling benefit; direct memory accumulates until the virtual thread
-     * is garbage-collected.  For virtual-thread deployments, prefer
-     * {@link #dispatchBytes(byte[])}, {@link #dispatchStreaming}, or
-     * {@link #dispatchFullStreaming}, or run dispatch on a bounded
-     * platform-thread executor, or lower {@code vespera.direct.maxBufferBytes}.
+     * is garbage-collected.  {@link VesperaDirectBufferPool} detects this
+     * and routes virtual threads to the GC-managed heap
+     * {@link #dispatchBytes(byte[])} path.
      *
      * <p>Fallback / overflow policy:
      * <ul>
@@ -877,51 +624,16 @@ public class VesperaBridge {
      *         0 with {@code limit()} = response length
      */
     public static ByteBuffer dispatchDirectPooled(byte[] wireRequest, boolean retryOnOverflow) {
-        Objects.requireNonNull(wireRequest, "wireRequest");
-        if (currentThreadIsVirtual() || wireRequest.length > DIRECT_MAX_CAPACITY) {
-            // Virtual thread: the per-thread direct buffer pool would
-            // accumulate off-heap memory per vthread (ThreadLocal binds to
-            // the vthread, not the carrier) — use the GC-managed heap path.
-            // Oversized request (> cap): byte[] fallback is safe for any
-            // method because no dispatch has run yet.
-            return ByteBuffer.wrap(dispatchBytes(wireRequest)).asReadOnlyBuffer();
-        }
-        ByteBuffer[] pool = directPool();
-        if (pool[0].capacity() < wireRequest.length) {
-            pool[0] = ByteBuffer.allocateDirect(grownCapacity(wireRequest.length));
-        }
-        ByteBuffer in = pool[0];
-        in.clear();
-        in.put(wireRequest);
-
-        return dispatchViaPool(pool, wireRequest.length, retryOnOverflow, () -> wireRequest);
+        return VesperaDirectBufferPool.dispatchDirectPooled(wireRequest, retryOnOverflow);
     }
 
     /**
      * Encode-and-dispatch convenience that skips the intermediate
      * wire-sized {@code byte[]} entirely: the wire request is encoded
-     * <strong>straight into the pooled direct in-buffer</strong> via
-     * {@link #encodeRequestInto}, so the body bytes are copied
-     * heap→direct exactly once (the {@code byte[]}-based overload
-     * assembles a full wire array first and then copies it again).
-     *
-     * <p>Same pooling, fallback, overflow, and view-validity semantics
-     * as {@link #dispatchDirectPooled(byte[], boolean)}.  Note the two
-     * distinct retry concepts: <em>encoding</em> growth (request bigger
-     * than the pooled buffer) happens before any dispatch and is always
-     * safe; <em>response-overflow</em> retry re-runs the Rust handler
-     * and is gated by {@code retryOnOverflow}.
-     *
-     * <p><strong>Virtual thread (Project Loom) limitation:</strong> The
-     * per-thread buffer pool is backed by {@link ThreadLocal}, which
-     * binds to the <em>virtual thread</em> (not the carrier thread) in
-     * Java 21+ semantics.  In a virtual-thread-per-request server, each
-     * virtual thread allocates a fresh direct buffer and loses all
-     * pooling benefit; direct memory accumulates until the virtual thread
-     * is garbage-collected.  For virtual-thread deployments, prefer
-     * {@link #dispatchBytes(byte[])}, {@link #dispatchStreaming}, or
-     * {@link #dispatchFullStreaming}, or run dispatch on a bounded
-     * platform-thread executor, or lower {@code vespera.direct.maxBufferBytes}.
+     * <strong>straight into the pooled direct in-buffer</strong>, so the
+     * body bytes are copied heap→direct exactly once.  Same pooling,
+     * fallback, overflow, and view-validity semantics as
+     * {@link #dispatchDirectPooled(byte[], boolean)}.
      *
      * @param appName target app name (may be {@code null} for default)
      * @param method  HTTP method (uppercase)
@@ -942,35 +654,8 @@ public class VesperaBridge {
             Map<String, String> headers,
             byte[] body,
             boolean retryOnOverflow) {
-        byte[] bodyBytes = body != null ? body : EMPTY_BODY;
-        ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
-        int headerLen = hdr.size();
-        int total = 4 + headerLen + bodyBytes.length;
-        if (currentThreadIsVirtual() || total > DIRECT_MAX_CAPACITY) {
-            // Virtual thread: avoid the per-vthread off-heap direct buffer
-            // accumulation — use the GC-managed heap path.  Oversized
-            // request (> cap): byte[] fallback is safe for any method
-            // because no dispatch has run yet.  The reusable header buffer
-            // is consumed here, before any other fillHeaderJson call.
-            return ByteBuffer.wrap(
-                    dispatchBytes(assembleWire(hdr.backingArray(), headerLen, bodyBytes)))
-                    .asReadOnlyBuffer();
-        }
-        ByteBuffer[] pool = directPool();
-        if (pool[0].capacity() < total) {
-            pool[0] = ByteBuffer.allocateDirect(grownCapacity(total));
-        }
-        // Consume the reusable header buffer into the pooled direct buffer
-        // now; dispatchViaPool's lazy wireFallback re-encodes from scratch
-        // rather than capturing the buffer, so buffer reuse cannot corrupt
-        // a deferred fallback.
-        int written = assembleInto(hdr.backingArray(), headerLen, bodyBytes, pool[0]);
-        if (written != total) {
-            throw new IllegalStateException(
-                    "assembleInto wrote " + written + ", expected " + total);
-        }
-        return dispatchViaPool(pool, total, retryOnOverflow,
-                () -> encodeRequest(appName, method, path, query, headers, bodyBytes));
+        return VesperaDirectBufferPool.dispatchDirectPooled(
+                appName, method, path, query, headers, body, retryOnOverflow);
     }
 
     public static ByteBuffer dispatchDirectPooled(
@@ -981,70 +666,12 @@ public class VesperaBridge {
             HeaderSource headers,
             byte[] body,
             boolean retryOnOverflow) {
-        byte[] bodyBytes = body != null ? body : EMPTY_BODY;
-        ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
-        int headerLen = hdr.size();
-        int total = 4 + headerLen + bodyBytes.length;
-        if (currentThreadIsVirtual() || total > DIRECT_MAX_CAPACITY) {
-            return ByteBuffer.wrap(
-                    dispatchBytes(assembleWire(hdr.backingArray(), headerLen, bodyBytes)))
-                    .asReadOnlyBuffer();
-        }
-        ByteBuffer[] pool = directPool();
-        if (pool[0].capacity() < total) {
-            pool[0] = ByteBuffer.allocateDirect(grownCapacity(total));
-        }
-        int written = assembleInto(hdr.backingArray(), headerLen, bodyBytes, pool[0]);
-        if (written != total) {
-            throw new IllegalStateException(
-                    "assembleInto wrote " + written + ", expected " + total);
-        }
-        return dispatchViaPool(pool, total, retryOnOverflow,
-                () -> encodeRequest(appName, method, path, query, headers, bodyBytes));
+        return VesperaDirectBufferPool.dispatchDirectPooled(
+                appName, method, path, query, headers, body, retryOnOverflow);
     }
 
     /**
-     * Dispatch the request already prepared in the pooled in-buffer
-     * ({@code pool[0][0..reqLen]}) and apply the response-overflow
-     * policy.  {@code wireFallback} supplies the equivalent wire bytes
-     * lazily — only materialised when a permitted retry exceeds the
-     * pool cap and must take the {@code dispatchBytes} path.
-     */
-    private static ByteBuffer dispatchViaPool(
-            ByteBuffer[] pool, int reqLen, boolean retryOnOverflow,
-            java.util.function.Supplier<byte[]> wireFallback) {
-        int n = dispatchDirect(pool[0], reqLen, pool[1]);
-        if (n < 0 && n != Integer.MIN_VALUE) {
-            int required = -n;
-            if (!retryOnOverflow) {
-                throw new BufferTooSmallException(required);
-            }
-            if (required > DIRECT_MAX_CAPACITY) {
-                // Retry permitted; beyond the pool cap use the byte[] path.
-                return ByteBuffer.wrap(dispatchBytes(wireFallback.get())).asReadOnlyBuffer();
-            }
-            pool[1] = ByteBuffer.allocateDirect(grownCapacity(required));
-            n = dispatchDirect(pool[0], reqLen, pool[1]);
-        }
-        if (n < 0 && n != Integer.MIN_VALUE) {
-            // A second overflow is legitimate: the retry re-ran the
-            // handler, and a non-deterministic handler may produce a
-            // larger response this time.  Surface the new exact size
-            // instead of retrying unboundedly.
-            throw new BufferTooSmallException(-n);
-        }
-        if (n < 0) {
-            throw new IllegalStateException(
-                    "dispatchDirect protocol violation: return code " + n + " after retry");
-        }
-        ByteBuffer view = pool[1].asReadOnlyBuffer();
-        view.position(0).limit(n);
-        recordDirectPoolUse(pool, reqLen, n);
-        return view;
-    }
-
-    /**
-     * Encode a wire request <strong>directly into</strong> {@code target}
+     * Encode a request <strong>directly into</strong> {@code target}
      * starting at position 0 — no intermediate wire-sized {@code byte[]}.
      *
      * <p>On success the wire bytes occupy {@code target[0..returned]}
@@ -1074,8 +701,7 @@ public class VesperaBridge {
             byte[] body,
             ByteBuffer target) {
         Objects.requireNonNull(target, "target");
-        ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
-        return assembleInto(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY, target);
+        return VesperaWireCodec.encodeRequestInto(appName, method, path, query, headers, body, target);
     }
 
     public static int encodeRequestInto(
@@ -1087,51 +713,7 @@ public class VesperaBridge {
             byte[] body,
             ByteBuffer target) {
         Objects.requireNonNull(target, "target");
-        ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
-        return assembleInto(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY, target);
-    }
-
-    /** Internal: write {@code [u32 BE len | headerJson[0..headerLen] | body]} at position 0. */
-    private static int assembleInto(byte[] headerJson, int headerLen, byte[] body, ByteBuffer target) {
-        int total = 4 + headerLen + body.length;
-        if (target.capacity() < total) {
-            return -total;
-        }
-        target.clear();
-        target.order(ByteOrder.BIG_ENDIAN);
-        target.putInt(headerLen);
-        target.put(headerJson, 0, headerLen);
-        if (body.length > 0) {
-            target.put(body);
-        }
-        return total;
-    }
-
-    /** Internal: assemble a heap wire array from pre-serialised parts. */
-    private static byte[] assembleWire(byte[] headerJson, int headerLen, byte[] body) {
-        byte[] wire = new byte[4 + headerLen + body.length];
-        // Write the u32 BE length prefix directly — avoids the
-        // HeapByteBuffer wrapper object that
-        // ByteBuffer.allocate(...).array() allocates per request; the
-        // arraycopy intrinsics handle the header + body.  Byte-identical
-        // to the prior ByteBuffer path.
-        wire[0] = (byte) (headerLen >>> 24);
-        wire[1] = (byte) (headerLen >>> 16);
-        wire[2] = (byte) (headerLen >>> 8);
-        wire[3] = (byte) headerLen;
-        System.arraycopy(headerJson, 0, wire, 4, headerLen);
-        System.arraycopy(body, 0, wire, 4 + headerLen, body.length);
-        return wire;
-    }
-
-    /** Smallest power-of-two-ish growth ≥ {@code needed}, capped. */
-    private static int grownCapacity(int needed) {
-        int cap = DIRECT_INITIAL_CAPACITY;
-        while (cap < needed) {
-            cap = Math.min(cap * 2, DIRECT_MAX_CAPACITY);
-            if (cap == DIRECT_MAX_CAPACITY) break;
-        }
-        return Math.max(cap, needed);
+        return VesperaWireCodec.encodeRequestInto(appName, method, path, query, headers, body, target);
     }
 
     /**
@@ -1150,7 +732,7 @@ public class VesperaBridge {
             String query,
             Map<String, String> headers,
             byte[] body) {
-        return encodeRequest(null, method, path, query, headers, body);
+        return VesperaWireCodec.encodeRequest(null, method, path, query, headers, body);
     }
 
     public static byte[] encodeRequest(
@@ -1159,7 +741,7 @@ public class VesperaBridge {
             String query,
             HeaderSource headers,
             byte[] body) {
-        return encodeRequest(null, method, path, query, headers, body);
+        return VesperaWireCodec.encodeRequest(null, method, path, query, headers, body);
     }
 
     /**
@@ -1188,8 +770,7 @@ public class VesperaBridge {
             String query,
             Map<String, String> headers,
             byte[] body) {
-        ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
-        return assembleWire(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY);
+        return VesperaWireCodec.encodeRequest(appName, method, path, query, headers, body);
     }
 
     public static byte[] encodeRequest(
@@ -1199,184 +780,7 @@ public class VesperaBridge {
             String query,
             HeaderSource headers,
             byte[] body) {
-        ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
-        return assembleWire(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY);
-    }
-
-    /**
-     * Internal: serialise the wire request header JSON
-     * <strong>byte-direct</strong> into the per-thread {@link #HEADER_BUF}
-     * — no Jackson generator (and its per-call object + scratch buffer)
-     * is allocated.  Emits the same shape and field order the prior
-     * {@code JsonGenerator} path did ({@code v}, {@code method},
-     * {@code path}, optional {@code query}/{@code headers}/{@code app}),
-     * with the same omission rules.  String values are escaped + UTF-8
-     * encoded by {@link #writeJsonString} using exactly the escape set
-     * Jackson's {@code UTF8JsonGenerator} produced (the quote, the
-     * backslash, and the C0 controls; {@code /} and non-ASCII pass
-     * through), so the bytes stay valid JSON the Rust {@code serde_json}
-     * side parses identically.
-     */
-    private static ExposedByteArrayOutputStream fillHeaderJson(String appName, String method,
-            String path, String query, Map<String, String> headers) {
-        ExposedByteArrayOutputStream buf = reusableHeaderBuffer();
-        // {"v":<WIRE_VERSION>, ...} — WIRE_VERSION is a single decimal digit.
-        buf.putAscii("{\"v\":");
-        buf.put('0' + WIRE_VERSION);
-        buf.putAscii(",\"method\":");
-        writeJsonString(buf, method);
-        buf.putAscii(",\"path\":");
-        writeJsonString(buf, path);
-        if (query != null && !query.isEmpty()) {
-            buf.putAscii(",\"query\":");
-            writeJsonString(buf, query);
-        }
-        if (headers != null && !headers.isEmpty()) {
-            buf.putAscii(",\"headers\":{");
-            boolean first = true;
-            for (Map.Entry<String, String> e : headers.entrySet()) {
-                if (!first) {
-                    buf.put(',');
-                }
-                first = false;
-                writeJsonString(buf, e.getKey());
-                buf.put(':');
-                writeJsonString(buf, e.getValue());
-            }
-            buf.put('}');
-        }
-        if (appName != null && !appName.isBlank()) {
-            buf.putAscii(",\"app\":");
-            writeJsonString(buf, appName.trim());
-        }
-        buf.put('}');
-        return buf;
-    }
-
-    private static ExposedByteArrayOutputStream fillHeaderJson(String appName, String method,
-            String path, String query, HeaderSource headers) {
-        ExposedByteArrayOutputStream buf = reusableHeaderBuffer();
-        // {"v":<WIRE_VERSION>, ...} — WIRE_VERSION is a single decimal digit.
-        buf.putAscii("{\"v\":");
-        buf.put('0' + WIRE_VERSION);
-        buf.putAscii(",\"method\":");
-        writeJsonString(buf, method);
-        buf.putAscii(",\"path\":");
-        writeJsonString(buf, path);
-        if (query != null && !query.isEmpty()) {
-            buf.putAscii(",\"query\":");
-            writeJsonString(buf, query);
-        }
-        if (headers != null) {
-            HeaderJsonSink sink = new HeaderJsonSink(buf);
-            headers.writeTo(sink);
-            if (sink.started) {
-                buf.put('}');
-            }
-        }
-        if (appName != null && !appName.isBlank()) {
-            buf.putAscii(",\"app\":");
-            writeJsonString(buf, appName.trim());
-        }
-        buf.put('}');
-        return buf;
-    }
-
-    private static ExposedByteArrayOutputStream reusableHeaderBuffer() {
-        ExposedByteArrayOutputStream buf = HEADER_BUF.get();
-        if (buf.capacity() > HEADER_RETAIN_CAPACITY) {
-            buf = new ExposedByteArrayOutputStream(HEADER_INITIAL_CAPACITY);
-            HEADER_BUF.set(buf);
-        } else {
-            buf.reset();
-        }
-        return buf;
-    }
-
-    /**
-     * Append {@code s} as a quoted JSON string straight into {@code out}
-     * as UTF-8, escaping only the JSON-mandatory characters — the quote,
-     * the backslash, and the C0 controls (short {@code \b \t \n \f \r}
-     * forms, four-hex escapes otherwise) — exactly the set the prior
-     * Jackson {@code UTF8JsonGenerator} emitted (it does not escape
-     * {@code /} or non-ASCII).  Single pass, no per-string {@code byte[]}:
-     * printable ASCII is written verbatim, the rest UTF-8 encoded inline
-     * (surrogate pairs become 4-byte sequences).
-     */
-    private static void writeJsonString(ExposedByteArrayOutputStream out, String s) {
-        out.put('"');
-        int n = s.length();
-        for (int i = 0; i < n; i++) {
-            char c = s.charAt(i);
-            if (c >= 0x20 && c < 0x80) {
-                if (c == '"' || c == '\\') {
-                    out.put('\\');
-                }
-                out.put(c);
-            } else if (c < 0x20) {
-                switch (c) {
-                    case '\b' -> {
-                        out.put('\\');
-                        out.put('b');
-                    }
-                    case '\t' -> {
-                        out.put('\\');
-                        out.put('t');
-                    }
-                    case '\n' -> {
-                        out.put('\\');
-                        out.put('n');
-                    }
-                    case '\f' -> {
-                        out.put('\\');
-                        out.put('f');
-                    }
-                    case '\r' -> {
-                        out.put('\\');
-                        out.put('r');
-                    }
-                    default -> {
-                        out.put('\\');
-                        out.put('u');
-                        out.put('0');
-                        out.put('0');
-                        out.put(HEX[(c >> 4) & 0xF]);
-                        out.put(HEX[c & 0xF]);
-                    }
-                }
-            } else if (c < 0x800) {
-                out.put(0xC0 | (c >> 6));
-                out.put(0x80 | (c & 0x3F));
-            } else if (Character.isHighSurrogate(c)
-                    && i + 1 < n
-                    && Character.isLowSurrogate(s.charAt(i + 1))) {
-                int cp = Character.toCodePoint(c, s.charAt(++i));
-                out.put(0xF0 | (cp >> 18));
-                out.put(0x80 | ((cp >> 12) & 0x3F));
-                out.put(0x80 | ((cp >> 6) & 0x3F));
-                out.put(0x80 | (cp & 0x3F));
-            } else if (Character.isSurrogate(c)) {
-                // Unpaired UTF-16 surrogate (a lone high surrogate not
-                // followed by a low surrogate, or a lone low surrogate).
-                // UTF-8 must never encode surrogate code points, so emit a
-                // six-character JSON escape (backslash, u, four hex digits)
-                // instead of the invalid 3-byte sequence the BMP branch
-                // below would produce — this keeps the wire header valid
-                // UTF-8 / RFC 8259 JSON and round-trips losslessly through
-                // serde_json on the Rust side.
-                out.put('\\');
-                out.put('u');
-                out.put(HEX[(c >> 12) & 0xF]);
-                out.put(HEX[(c >> 8) & 0xF]);
-                out.put(HEX[(c >> 4) & 0xF]);
-                out.put(HEX[c & 0xF]);
-            } else {
-                out.put(0xE0 | (c >> 12));
-                out.put(0x80 | ((c >> 6) & 0x3F));
-                out.put(0x80 | (c & 0x3F));
-            }
-        }
-        out.put('"');
+        return VesperaWireCodec.encodeRequest(appName, method, path, query, headers, body);
     }
 
     /**
@@ -1385,33 +789,7 @@ public class VesperaBridge {
      * @throws IllegalArgumentException if the wire bytes are malformed
      */
     public static DecodedResponse decodeResponse(byte[] wire) {
-        if (wire == null || wire.length < 4) {
-            throw new IllegalArgumentException(
-                    "wire response too short: "
-                            + (wire == null ? "null" : wire.length + " bytes"));
-        }
-        int headerLen = ((wire[0] & 0xFF) << 24) | ((wire[1] & 0xFF) << 16)
-                | ((wire[2] & 0xFF) << 8) | (wire[3] & 0xFF);
-        if (headerLen < 0 || (long) 4 + headerLen > wire.length) {
-            throw new IllegalArgumentException(
-                    "wire header_len " + headerLen
-                            + " overflows response (" + wire.length + " bytes)");
-        }
-        // Manual decode via the allocation-lean WireHeaderReader tokenizer
-        // (the same parser the DIRECT / streaming header callbacks use)
-        // instead of a Jackson JsonParser — drops the per-response parser +
-        // IOContext allocation.  Output is shape-identical: status (default
-        // 500), headers (String | List<String>), metadata (pre-sized),
-        // validation_errors, and unknown fields (incl. "v") skipped.
-        WireHeaderReader.Decoded d =
-                WireHeaderReader.decode(ByteBuffer.wrap(wire), 4, headerLen);
-        ByteBuffer body = ByteBuffer.wrap(wire, 4 + headerLen, wire.length - 4 - headerLen);
-        return new DecodedResponse(
-                d.status,
-                d.headers == null ? Map.of() : d.headers,
-                d.metadata,
-                body,
-                d.validationErrors);
+        return VesperaWireCodec.decodeResponse(wire);
     }
 
     private static void loadBundled(String libraryName) {
@@ -1419,6 +797,17 @@ public class VesperaBridge {
         String arch = detectArch();
         String filename = mapLibraryName(os, libraryName);
         String resourcePath = "native/" + os + "-" + arch + "/" + filename;
+
+        MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException sha256Missing) {
+            // SHA-256 is mandated for every conformant JRE; its absence is a
+            // fatal environment fault, not a reason to skip the check silently.
+            throw new UnsatisfiedLinkError(
+                    "SHA-256 unavailable for native library verification: "
+                            + sha256Missing.getMessage());
+        }
 
         try (InputStream in =
                 VesperaBridge.class.getClassLoader().getResourceAsStream(resourcePath)) {
@@ -1428,11 +817,45 @@ public class VesperaBridge {
             String suffix = filename.substring(filename.lastIndexOf('.'));
             Path temp = Files.createTempFile("vespera-", suffix);
             temp.toFile().deleteOnExit();
-            Files.copy(in, temp, StandardCopyOption.REPLACE_EXISTING);
+
+            // Hash the trusted classpath resource as it is extracted, then
+            // re-hash the file actually written to the (owner-only) temp path
+            // and compare.  Defense-in-depth integrity check: it rejects a
+            // corrupted / truncated extraction and a temp file swapped between
+            // write and load before that image reaches System.load — the
+            // native loader cannot recover from a bad library image.  (This is
+            // not tamper-proofing: the resource itself is the trust root and a
+            // same-user attacker has stronger options; it catches corruption
+            // and casual interference.)
+            try (DigestInputStream din = new DigestInputStream(in, digest)) {
+                Files.copy(din, temp, StandardCopyOption.REPLACE_EXISTING);
+            }
+            byte[] resourceDigest = digest.digest(); // finalises and resets `digest`
+            byte[] extractedDigest = digestOfFile(temp, digest);
+            if (!MessageDigest.isEqual(resourceDigest, extractedDigest)) {
+                throw new UnsatisfiedLinkError(
+                        "Native library integrity check failed for " + resourcePath
+                                + ": extracted file does not match the bundled resource "
+                                + "(corrupted or modified extraction).");
+            }
+
             System.load(temp.toAbsolutePath().toString());
         } catch (IOException e) {
             throw new UnsatisfiedLinkError("Extract failed: " + e.getMessage());
         }
+    }
+
+    /** Compute the SHA-256 of {@code file}, resetting the supplied digest first. */
+    private static byte[] digestOfFile(Path file, MessageDigest digest) throws IOException {
+        digest.reset();
+        try (InputStream fin = Files.newInputStream(file)) {
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = fin.read(buf)) != -1) {
+                digest.update(buf, 0, n);
+            }
+        }
+        return digest.digest();
     }
 
     private static String detectOs() {

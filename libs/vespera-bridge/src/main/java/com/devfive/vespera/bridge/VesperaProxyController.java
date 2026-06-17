@@ -115,9 +115,6 @@ public class VesperaProxyController {
         }
     }
 
-    /** Shared empty body — avoids a {@code new byte[0]} per bodyless request. */
-    private static final byte[] EMPTY_BODY = new byte[0];
-
     /**
      * Largest body for which {@link #readBody} trusts {@code
      * Content-Length} enough to pre-allocate the exact array.  Beyond
@@ -143,7 +140,7 @@ public class VesperaProxyController {
         // resolver routes through DIRECT, which previously still paid a
         // getInputStream()+readAllBytes() round-trip on an empty body).
         if (DispatchModeResolver.definitelyBodyless(request)) {
-            return EMPTY_BODY;
+            return VesperaWireCodec.EMPTY_BODY;
         }
         long contentLength = request.getContentLengthLong();
         try (InputStream in = request.getInputStream()) {

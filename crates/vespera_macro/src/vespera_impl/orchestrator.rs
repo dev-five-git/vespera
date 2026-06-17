@@ -29,6 +29,7 @@ pub fn process_vespera_macro(
     processed: &ProcessedVesperaInput,
     schema_storage: &HashMap<String, StructMetadata>,
     route_storage: &[StoredRouteInfo],
+    folder_span: Span,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let profile_start = if std::env::var("VESPERA_PROFILE").is_ok() {
         eprintln!(
@@ -55,7 +56,7 @@ pub fn process_vespera_macro(
     let folder_path = find_folder_path(&processed.folder_name)?;
     if !folder_path.exists() {
         return Err(syn::Error::new(
-            Span::call_site(),
+            folder_span,
             format!(
                 "vespera! macro: route folder '{}' not found. Create src/{} or specify a different folder with `dir = \"your_folder\"`.",
                 processed.folder_name, processed.folder_name
@@ -251,6 +252,7 @@ pub fn process_export_app(
     schema_storage: &HashMap<String, StructMetadata>,
     manifest_dir: &str,
     route_storage: &[StoredRouteInfo],
+    folder_span: Span,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let profile_start = if std::env::var("VESPERA_PROFILE").is_ok() {
         Some(std::time::Instant::now())
@@ -261,7 +263,7 @@ pub fn process_export_app(
     let folder_path = find_folder_path(folder_name)?;
     if !folder_path.exists() {
         return Err(syn::Error::new(
-            Span::call_site(),
+            folder_span,
             format!(
                 "export_app! macro: route folder '{folder_name}' not found. Create src/{folder_name} or specify a different folder with `dir = \"your_folder\"`.",
             ),
@@ -365,7 +367,7 @@ mod tests {
             tag_descriptions: None,
             merge: vec![],
         };
-        let result = process_vespera_macro(&processed, &HashMap::new(), &[]);
+        let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("route folder") && err.contains("not found"));
@@ -393,7 +395,7 @@ mod tests {
         };
 
         // This exercises the collect_metadata path (which handles parse errors gracefully)
-        let result = process_vespera_macro(&processed, &HashMap::new(), &[]);
+        let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
         // Result may succeed or fail depending on how collect_metadata handles invalid files
         let _ = result;
     }
@@ -428,7 +430,7 @@ mod tests {
         };
 
         // This exercises the schema_storage extend path
-        let result = process_vespera_macro(&processed, &schema_storage, &[]);
+        let result = process_vespera_macro(&processed, &schema_storage, &[], Span::call_site());
         // We only care about exercising the code path
         let _ = result;
     }
@@ -486,7 +488,7 @@ mod tests {
         };
 
         // This exercises the CRON_STORAGE → CronMetadata derivation path
-        let result = process_vespera_macro(&processed, &HashMap::new(), &[]);
+        let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
         assert!(
             result.is_ok(),
             "Should succeed with cron storage: {result:?}"
@@ -522,6 +524,7 @@ mod tests {
             &HashMap::new(),
             &temp_dir.path().to_string_lossy(),
             &[],
+            Span::call_site(),
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -545,6 +548,7 @@ mod tests {
             &HashMap::new(),
             &temp_dir.path().to_string_lossy(),
             &[],
+            Span::call_site(),
         );
         // We only care about exercising the code path
         let _ = result;
@@ -574,6 +578,7 @@ mod tests {
             &schema_storage,
             &temp_dir.path().to_string_lossy(),
             &[],
+            Span::call_site(),
         );
         // Exercises the schema_storage.extend path
         let _ = result;
@@ -596,6 +601,7 @@ mod tests {
             &HashMap::new(),
             &temp_dir.path().to_string_lossy(),
             &[],
+            Span::call_site(),
         );
 
         assert!(result.is_err());
@@ -625,6 +631,7 @@ mod tests {
             &HashMap::new(),
             &temp_dir.path().to_string_lossy(),
             &[],
+            Span::call_site(),
         );
 
         assert!(result.is_err());
@@ -656,6 +663,7 @@ mod tests {
             &HashMap::new(),
             &temp_dir.path().to_string_lossy(),
             &[],
+            Span::call_site(),
         );
 
         assert!(result.is_err());
@@ -681,7 +689,7 @@ mod tests {
             merge: vec![],
         };
 
-        let result = process_vespera_macro(&processed, &HashMap::new(), &[]);
+        let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
         assert!(
             result.is_ok(),
             "Should succeed with no openapi output configured"
@@ -711,7 +719,7 @@ mod tests {
             merge: vec![],
         };
 
-        let result = process_vespera_macro(&processed, &HashMap::new(), &[]);
+        let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
 
         // Restore
         unsafe {
@@ -743,6 +751,7 @@ mod tests {
             &HashMap::new(),
             &temp_dir.path().to_string_lossy(),
             &[],
+            Span::call_site(),
         );
 
         // Restore
@@ -792,7 +801,7 @@ mod tests {
         };
 
         // First call: cache MISS — scans files, generates spec, writes cache
-        let result1 = process_vespera_macro(&processed, &HashMap::new(), &[]);
+        let result1 = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
         assert!(
             result1.is_ok(),
             "First call (cache miss) should succeed: {:?}",
@@ -804,7 +813,7 @@ mod tests {
         );
 
         // Second call: cache HIT — exercises lines 320-324, 327, 329
-        let result2 = process_vespera_macro(&processed, &HashMap::new(), &[]);
+        let result2 = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
         assert!(
             result2.is_ok(),
             "Second call (cache hit) should succeed: {:?}",

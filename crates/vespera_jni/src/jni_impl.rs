@@ -17,7 +17,8 @@ use crate::streaming_closures::{
 #[path = "jni_impl_streaming_buffer.rs"]
 mod streaming_buffer;
 use streaming_buffer::{
-    StreamingBufferRole, checkout_streaming_chunk_buffer, mark_streaming_buffer_reusable,
+    PullPushBuffers, StreamingBufferRole, checkout_pull_push_buffers,
+    checkout_streaming_chunk_buffer, mark_streaming_buffer_reusable,
 };
 
 /// Multi-threaded Tokio runtime shared across all JNI calls.
@@ -719,17 +720,14 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
             let jvm = env.get_java_vm()?;
 
             // Pull and push run concurrently on different threads, so each
-            // direction checks out its own per-thread cached buffer.
-            let (pull_buf, pull_buf_lease) =
-                checkout_streaming_chunk_buffer(env, StreamingBufferRole::Pull)?;
-            let (push_buf, push_buf_lease) =
-                match checkout_streaming_chunk_buffer(env, StreamingBufferRole::Push) {
-                    Ok(checked_out) => checked_out,
-                    Err(err) => {
-                        mark_streaming_buffer_reusable(pull_buf_lease);
-                        return Err(err);
-                    }
-                };
+            // direction checks out its own per-thread cached buffer (the
+            // pull lease is released for us if the push checkout fails).
+            let PullPushBuffers {
+                pull_buf,
+                pull_buf_lease,
+                push_buf,
+                push_buf_lease,
+            } = checkout_pull_push_buffers(env)?;
 
             // Closures capture clones of the JavaVM and Globals;
             // both types are Send+Sync.
@@ -904,17 +902,14 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
             let output_global: Global<JObject<'static>> = env.new_global_ref(&output_stream)?;
             let jvm = env.get_java_vm()?;
 
-            // Pull and push run concurrently on different threads.
-            let (pull_buf, pull_buf_lease) =
-                checkout_streaming_chunk_buffer(env, StreamingBufferRole::Pull)?;
-            let (push_buf, push_buf_lease) =
-                match checkout_streaming_chunk_buffer(env, StreamingBufferRole::Push) {
-                    Ok(checked_out) => checked_out,
-                    Err(err) => {
-                        mark_streaming_buffer_reusable(pull_buf_lease);
-                        return Err(err);
-                    }
-                };
+            // Pull and push run concurrently on different threads (the pull
+            // lease is released for us if the push checkout fails).
+            let PullPushBuffers {
+                pull_buf,
+                pull_buf_lease,
+                push_buf,
+                push_buf_lease,
+            } = checkout_pull_push_buffers(env)?;
 
             let pull_jvm = jvm.clone();
             let pull_global = input_global;

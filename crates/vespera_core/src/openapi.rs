@@ -225,25 +225,19 @@ impl OpenApi {
             self.external_docs = other.external_docs;
         }
 
-        // Merge tags (deduplicate by borrowed name). HashSets of borrowed
-        // names avoid cloning existing tag names or incoming names solely for
-        // indexing, while preserving first-wins and incoming insertion order.
+        // Merge tags, de-duplicating by name in a single pass.  `seen` starts
+        // with the existing tag names and grows as incoming tags are appended,
+        // so an incoming tag is kept only when its name collides with neither
+        // an existing tag nor an already-appended incoming one (first-wins,
+        // incoming insertion order preserved).  Tag merging runs at compile
+        // time over a handful of tags, so owning the names (one clone each)
+        // is cheaper to read than the prior borrow-juggling two-pass flag Vec.
         if let Some(other_tags) = other.tags {
             let self_tags = self.tags.get_or_insert_with(Vec::new);
-            let existing_names: std::collections::HashSet<&str> =
-                self_tags.iter().map(|tag| tag.name.as_str()).collect();
-            let mut incoming_names = std::collections::HashSet::new();
-            let append_flags: Vec<_> = other_tags
-                .iter()
-                .map(|tag| {
-                    let name = tag.name.as_str();
-                    !existing_names.contains(name) && incoming_names.insert(name)
-                })
-                .collect();
-            drop((existing_names, incoming_names));
-
-            for (tag, should_append) in other_tags.into_iter().zip(append_flags) {
-                if should_append {
+            let mut seen: std::collections::HashSet<String> =
+                self_tags.iter().map(|tag| tag.name.clone()).collect();
+            for tag in other_tags {
+                if seen.insert(tag.name.clone()) {
                     self_tags.push(tag);
                 }
             }

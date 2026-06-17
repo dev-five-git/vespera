@@ -156,14 +156,16 @@ fn emit_field_block(
     }
 
     let field_name_str = field_ident.to_string();
-    let numeric_kind = rust_numeric_kind(peel_option(field_ty).unwrap_or(field_ty));
+    let numeric_kind = rust_numeric_kind(
+        crate::schema_macro::type_utils::option_inner(field_ty).unwrap_or(field_ty),
+    );
     let rule_blocks = emit_rule_blocks(c, &field_name_str, numeric_kind.as_deref());
     let dive_block = emit_dive_block(c);
     if rule_blocks.is_empty() && dive_block.is_empty() {
         return None;
     }
 
-    let block = if is_option_type(field_ty) {
+    let block = if crate::schema_macro::type_utils::is_option_type(field_ty) {
         // `field_ident` is `&Option<T>` after the `let Self { .. } = self` destructure.
         // Match ergonomics make `inner` end up as `&T`.
         quote! {
@@ -395,16 +397,6 @@ fn numeric_some(value: Option<f64>, numeric_kind: Option<&str>) -> TokenStream {
             }
         },
     )
-}
-
-#[cfg(feature = "validation")]
-fn is_option_type(ty: &Type) -> bool {
-    crate::schema_macro::type_utils::option_inner(ty).is_some()
-}
-
-#[cfg(feature = "validation")]
-fn peel_option(ty: &Type) -> Option<&Type> {
-    crate::schema_macro::type_utils::option_inner(ty)
 }
 
 #[cfg(feature = "validation")]

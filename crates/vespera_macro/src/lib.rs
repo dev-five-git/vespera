@@ -344,6 +344,14 @@ pub fn vespera(input: TokenStream) -> TokenStream {
     schema_macro::file_cache::bump_epoch();
 
     let input = syn::parse_macro_input!(input as AutoRouterInput);
+    // Capture the `dir = "..."` literal span (or the macro call site when
+    // `dir` is omitted) before `process_vespera_input` consumes `input`, so a
+    // "route folder not found" diagnostic points at the offending argument
+    // rather than the whole `vespera!` invocation.
+    let folder_span = input
+        .dir
+        .as_ref()
+        .map_or_else(proc_macro2::Span::call_site, syn::LitStr::span);
     let processed = process_vespera_input(input);
     let schema_storage = SCHEMA_STORAGE
         .lock()
@@ -352,7 +360,7 @@ pub fn vespera(input: TokenStream) -> TokenStream {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    match process_vespera_macro(&processed, &schema_storage, &route_storage) {
+    match process_vespera_macro(&processed, &schema_storage, &route_storage, folder_span) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
     }
@@ -386,6 +394,12 @@ pub fn export_app(input: TokenStream) -> TokenStream {
     schema_macro::file_cache::bump_epoch();
 
     let ExportAppInput { name, dir } = syn::parse_macro_input!(input as ExportAppInput);
+    // Capture the `dir = "..."` literal span (or the macro call site when
+    // `dir` is omitted) before `dir` is consumed below, so a "route folder
+    // not found" diagnostic points at the offending argument.
+    let folder_span = dir
+        .as_ref()
+        .map_or_else(proc_macro2::Span::call_site, syn::LitStr::span);
     let folder_name = dir
         .map(|d| d.value())
         .or_else(|| std::env::var("VESPERA_DIR").ok())
@@ -407,6 +421,7 @@ pub fn export_app(input: TokenStream) -> TokenStream {
         &schema_storage,
         &manifest_dir,
         &route_storage,
+        folder_span,
     ) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),

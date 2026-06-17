@@ -27,7 +27,13 @@ pub const PRIMITIVE_TYPE_NAMES: &[&str] = &[
 #[inline]
 pub fn normalize_token_str(displayable: &impl std::fmt::Display) -> String {
     let s = displayable.to_string();
-    if s.contains(|c: char| c.is_ascii_whitespace()) {
+    // Allocation profile: the `to_string` is unavoidable (`Display` -> owned
+    // `String`); a second allocation happens only when whitespace is actually
+    // present and must be stripped.  The fast-path gate scans raw bytes rather
+    // than chars — every ASCII whitespace byte is a standalone code unit in
+    // valid UTF-8, so the byte scan is equivalent to a char scan but skips the
+    // per-char UTF-8 decode on the common (whitespace-free) path.
+    if s.bytes().any(|b| b.is_ascii_whitespace()) {
         s.replace(|c: char| c.is_ascii_whitespace(), "")
     } else {
         s

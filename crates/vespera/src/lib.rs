@@ -84,7 +84,16 @@ impl<S> VesperaRouter<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    /// Create a new `VesperaRouter` with a base router and routers to merge
+    /// Create a `VesperaRouter` from a base router and the child-app router
+    /// factories to merge into it.
+    ///
+    /// This is invoked by the `vespera!` macro when the `merge = [...]`
+    /// parameter is used; it is rarely constructed directly. Both the merge of
+    /// the child routers and any [`layer`](Self::layer) added afterwards are
+    /// **deferred** until [`with_state`](Self::with_state): Axum can only merge
+    /// routers that share a state type, so the base router's state must be
+    /// applied first. When a `vespera!` app has no `merge` entries the macro
+    /// returns a plain `axum::Router` instead of this wrapper.
     #[must_use]
     pub fn new(base: axum::Router<S>, merge_fns: Vec<fn() -> axum::Router<()>>) -> Self {
         Self {
