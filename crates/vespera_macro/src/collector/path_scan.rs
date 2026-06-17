@@ -31,7 +31,6 @@ pub fn fingerprints_from_scan(scanned: &[(std::path::PathBuf, u64)]) -> HashMap<
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod tests {
     use std::fs;
 

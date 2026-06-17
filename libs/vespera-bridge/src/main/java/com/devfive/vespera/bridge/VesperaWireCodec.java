@@ -45,6 +45,16 @@ final class VesperaWireCodec {
     static final byte[] EMPTY_BODY = new byte[0];
     private static final int HEADER_INITIAL_CAPACITY = 256;
     private static final int HEADER_RETAIN_CAPACITY = 32 * 1024;
+    /**
+     * Hard ceiling on the per-thread header encode buffer (64 MiB). The wire
+     * request header only ever carries method/path/query/headers/app — never
+     * the body, which is appended separately in {@link #assembleWire} /
+     * {@link #assembleInto} — and servlet containers already cap inbound header
+     * sizes orders of magnitude below this. It is pure defense-in-depth: a
+     * pathological header that tried to grow the buffer past the ceiling fails
+     * fast with an exception instead of doubling toward an OutOfMemoryError.
+     */
+    private static final int MAX_HEADER_BUFFER_BYTES = 64 * 1024 * 1024;
 
     /**
      * Per-thread reusable byte buffer for {@link #fillHeaderJson}.
@@ -93,7 +103,7 @@ final class VesperaWireCodec {
          */
         void put(int b) {
             if (count == buf.length) {
-                buf = java.util.Arrays.copyOf(buf, buf.length << 1);
+                buf = java.util.Arrays.copyOf(buf, growCap(buf.length, count + 1));
             }
             buf[count++] = (byte) b;
         }
@@ -106,15 +116,34 @@ final class VesperaWireCodec {
         void putAscii(String lit) {
             int n = lit.length();
             if (count + n > buf.length) {
-                int cap = buf.length;
-                while (cap < count + n) {
-                    cap <<= 1;
-                }
-                buf = java.util.Arrays.copyOf(buf, cap);
+                buf = java.util.Arrays.copyOf(buf, growCap(buf.length, count + n));
             }
             for (int i = 0; i < n; i++) {
                 buf[count++] = (byte) lit.charAt(i);
             }
+        }
+
+        /**
+         * Smallest power-of-two growth of {@code current} that holds
+         * {@code needed} bytes, capped at {@link #MAX_HEADER_BUFFER_BYTES}.
+         * The cap is only ever consulted on a (rare) reallocation, so the
+         * encode hot path pays nothing. A {@code needed} beyond the ceiling —
+         * only reachable by a pathological header far larger than any servlet
+         * container admits — fails fast instead of doubling toward an OOM.
+         */
+        private static int growCap(int current, int needed) {
+            if (needed > MAX_HEADER_BUFFER_BYTES) {
+                throw new IllegalArgumentException(
+                        "wire header exceeds " + MAX_HEADER_BUFFER_BYTES + " bytes");
+            }
+            int cap = current < 1 ? 1 : current;
+            while (cap < needed) {
+                cap <<= 1;
+                if (cap < 0 || cap > MAX_HEADER_BUFFER_BYTES) {
+                    return MAX_HEADER_BUFFER_BYTES;
+                }
+            }
+            return cap;
         }
     }
 

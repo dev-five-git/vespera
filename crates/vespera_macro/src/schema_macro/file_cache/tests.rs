@@ -388,3 +388,70 @@ fn manifest_dir_revalidates_across_epochs() {
         "manifest dir must revalidate when the epoch advances"
     );
 }
+
+/// H1 benchmark + regression: when a single file is added to a directory
+/// (the common rust-analyzer edit between two macro invocations), the
+/// struct-index rebuild must re-tokenise ONLY the changed file — not every
+/// file in the directory.
+///
+/// `extract_struct_names` (the per-file source tokeniser) is the dominant
+/// cost of the rebuild that fires whenever the directory fingerprint changes.
+/// Before the per-file name cache the rebuild re-tokenised all N files on
+/// every edit; after it, only the new/changed file is re-scanned. The
+/// tokenisation count is deterministic, so it is the noise-free signal for
+/// this compile-time win (printed as `VESPERA_H1 ...`).
+#[serial_test::serial]
+#[test]
+fn h1_single_file_add_reextracts_only_changed_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let src_dir = temp_dir.path();
+
+    const N: usize = 20;
+    for i in 0..N {
+        std::fs::write(
+            src_dir.join(format!("model_{i}.rs")),
+            format!("pub struct Model{i} {{ pub id: i32 }}"),
+        )
+        .unwrap();
+    }
+
+    // Cold index build — tokenises every file once (both before and after
+    // the fix; the win is on the incremental rebuild below).
+    reset_extract_struct_names_count();
+    bump_epoch();
+    let first = get_struct_candidates(src_dir, "Model0");
+    assert_eq!(first.len(), 1, "Model0 must be indexed");
+    let initial_build = extract_struct_names_count();
+
+    // Add ONE new file and advance the epoch: the directory fingerprint
+    // changes, so the struct index is dropped and rebuilt on the next query.
+    std::fs::write(
+        src_dir.join("model_new.rs"),
+        "pub struct ModelNew { pub id: i32 }",
+    )
+    .unwrap();
+    reset_extract_struct_names_count();
+    bump_epoch();
+    let added = get_struct_candidates(src_dir, "ModelNew");
+    let rebuild = extract_struct_names_count();
+
+    eprintln!(
+        "VESPERA_H1 N={N} initial_build_tokenisations={initial_build} \
+         single_add_rebuild_tokenisations={rebuild}"
+    );
+
+    assert_eq!(added.len(), 1, "newly added ModelNew must be indexed");
+    // Correctness: pre-existing structs survive the rebuild.
+    assert_eq!(
+        get_struct_candidates(src_dir, "Model0").len(),
+        1,
+        "Model0 must remain reachable after the rebuild"
+    );
+    // The win: only the newly added file is re-tokenised, not all N+1.
+    assert_eq!(
+        rebuild, 1,
+        "rebuild after a single-file add must re-tokenise only the new file \
+         (got {rebuild}; pre-fix this re-tokenised all N+1 = {} files)",
+        N + 1
+    );
+}

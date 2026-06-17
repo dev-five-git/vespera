@@ -367,13 +367,13 @@ pub fn snake_to_pascal_case(s: &str) -> String {
 
 /// Check if a type is `HashMap` or `BTreeMap`
 pub fn is_map_type(ty: &Type) -> bool {
-    if let Type::Path(type_path) = ty {
-        let path = &type_path.path;
-        if !path.segments.is_empty() {
-            let segment = path.segments.last().unwrap();
-            let ident_str = segment.ident.to_string();
-            return ident_str == "HashMap" || ident_str == "BTreeMap";
-        }
+    // `segments.last()` yields `None` for an empty path, so the let-chain
+    // both replaces the prior `is_empty()` guard + `unwrap()` and skips the
+    // per-call `ident.to_string()` allocation (`Ident: PartialEq<str>`).
+    if let Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+    {
+        return segment.ident == "HashMap" || segment.ident == "BTreeMap";
     }
     false
 }

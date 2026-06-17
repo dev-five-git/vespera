@@ -9,18 +9,16 @@ use crate::parser::is_keyword_type::{KeywordType, is_keyword_type, is_keyword_ty
 /// Unwrap Json<T> to get T
 /// Handles both Json<T> and `vespera::axum::Json`<T> by checking the last segment
 fn unwrap_json(ty: &Type) -> &Type {
-    if let Type::Path(type_path) = ty {
-        let path = &type_path.path;
-        if !path.segments.is_empty() {
-            // Check the last segment (handles both Json<T> and vespera::axum::Json<T>)
-            let segment = path.segments.last().unwrap();
-            if segment.ident == "Json"
-                && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-                && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
-            {
-                return inner_ty;
-            }
-        }
+    // Check the last segment (handles both `Json<T>` and
+    // `vespera::axum::Json<T>`). `segments.last()` is `None` for an empty
+    // path, so the let-chain replaces the prior `is_empty()` guard + `unwrap()`.
+    if let Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+        && segment.ident == "Json"
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+    {
+        return inner_ty;
     }
     ty
 }

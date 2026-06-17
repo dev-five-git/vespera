@@ -52,6 +52,27 @@ pub fn metadata_call_count() -> usize {
     METADATA_CALL_COUNT.with(std::cell::Cell::get)
 }
 
+// Test-only thread-local counter: number of `extract_struct_names`
+// tokenisation passes (the per-file source scan). Lets the H1 regression
+// benchmark prove that a single-file edit re-tokenises only the changed
+// file instead of every file in the directory.
+#[cfg(test)]
+thread_local! {
+    static EXTRACT_STRUCT_NAMES_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Reset the test-only `extract_struct_names` call counter for this thread.
+#[cfg(test)]
+pub fn reset_extract_struct_names_count() {
+    EXTRACT_STRUCT_NAMES_COUNT.with(|c| c.set(0));
+}
+
+/// Current value of the test-only `extract_struct_names` call counter.
+#[cfg(test)]
+pub fn extract_struct_names_count() -> usize {
+    EXTRACT_STRUCT_NAMES_COUNT.with(std::cell::Cell::get)
+}
+
 use super::circular::CircularAnalysis;
 use super::file_lookup::collect_rs_files_recursive;
 use crate::metadata::StructMetadata;
@@ -105,6 +126,19 @@ struct FileCache {
     /// O(N×M) for N struct lookups across M files. The index is O(M)
     /// tokenisation passes to build, then O(1) per lookup.
     struct_index: HashMap<PathBuf, HashMap<String, Arc<[PathBuf]>>>,
+
+    /// Per-file mtime-validated cache of the struct names defined in each
+    /// `.rs` file (the [`extract_struct_names`] tokenisation result).
+    ///
+    /// The `struct_index` above is dropped wholesale whenever a directory's
+    /// fingerprint changes (any file added / removed / modified — the common
+    /// rust-analyzer edit). Without this per-file layer the rebuild
+    /// re-tokenised **every** file in the directory; with it, a file whose
+    /// mtime is unchanged returns its cached names in O(1), so only the
+    /// genuinely changed file pays the O(file_size) tokenisation. The index
+    /// rebuild then costs one tokenisation per *edited* file instead of one
+    /// per file in the directory.
+    file_struct_names: HashMap<PathBuf, (SystemTime, Arc<[String]>)>,
 
     // NOTE: We CANNOT cache `syn::File` or `syn::ItemStruct` across proc-macro
     // invocations. Both `syn` and `proc_macro2` types contain `proc_macro::Span`
@@ -185,6 +219,7 @@ thread_local! {
         file_lists: HashMap::with_capacity(4),
         file_contents: HashMap::with_capacity(32),
         struct_index: HashMap::with_capacity(4),
+        file_struct_names: HashMap::with_capacity(32),
         file_disk_reads: 0,
         content_cache_hits: 0,
         struct_parses: 0,
@@ -384,6 +419,8 @@ fn ensure_file_list(cache: &mut FileCache, src_dir: &Path) -> Arc<[PathBuf]> {
 /// keywords inside string literals are exceedingly rare in real source
 /// and false negatives are not possible for any actually-defined struct.
 fn extract_struct_names(content: &str) -> Vec<String> {
+    #[cfg(test)]
+    EXTRACT_STRUCT_NAMES_COUNT.with(|c| c.set(c.get() + 1));
     let mut names = Vec::new();
     let mut tokens = content
         .split(|c: char| !(c == '_' || c.is_ascii_alphanumeric()))
@@ -399,6 +436,39 @@ fn extract_struct_names(content: &str) -> Vec<String> {
         {
             names.push(name.to_string());
         }
+    }
+
+    names
+}
+
+/// Struct names defined in `path`, served from a per-file mtime-validated
+/// cache so the directory struct-index rebuild re-tokenises only files whose
+/// mtime actually changed.
+///
+/// On an mtime match the cached `Arc<[String]>` is cloned (O(1), no source
+/// scan); otherwise the file content is read (via the mtime-validated content
+/// cache) and re-tokenised once, then cached. A file that cannot be read
+/// yields an empty name list — the caller simply contributes no candidates
+/// for it, matching the prior inline `continue`-on-read-miss behaviour.
+fn get_file_struct_names(cache: &mut FileCache, path: &Path) -> Arc<[String]> {
+    let current_mtime = get_mtime_cached(cache, path);
+
+    if let Some(mtime) = current_mtime
+        && let Some((cached_mtime, names)) = cache.file_struct_names.get(path)
+        && *cached_mtime == mtime
+    {
+        return Arc::clone(names);
+    }
+
+    let names: Arc<[String]> = match get_file_content_inner(cache, path) {
+        Some(content) => extract_struct_names(&content).into(),
+        None => Vec::new().into(),
+    };
+
+    if let Some(mtime) = current_mtime {
+        cache
+            .file_struct_names
+            .insert(path.to_path_buf(), (mtime, Arc::clone(&names)));
     }
 
     names
@@ -431,11 +501,12 @@ pub fn get_struct_candidates(src_dir: &Path, struct_name: &str) -> Arc<[PathBuf]
         if !cache.struct_index.contains_key(src_dir) {
             let mut grouped: HashMap<String, Vec<PathBuf>> = HashMap::new();
             for path in files.iter() {
-                let Some(content) = get_file_content_inner(&mut cache, path) else {
-                    continue;
-                };
-                for name in extract_struct_names(&content) {
-                    grouped.entry(name).or_default().push(path.clone());
+                // Per-file mtime-validated names: unchanged files return their
+                // cached tokenisation (O(1)); only an added/modified file pays
+                // the source scan, so this rebuild costs one tokenisation per
+                // *edited* file instead of one per file in the directory.
+                for name in get_file_struct_names(&mut cache, path).iter() {
+                    grouped.entry(name.clone()).or_default().push(path.clone());
                 }
             }
             let index: HashMap<String, Arc<[PathBuf]>> = grouped
