@@ -249,6 +249,121 @@ class PerfAllocBench {
         }
     }
 
+    /**
+     * JVM-04 before/after for the per-thread header-buffer retention.
+     * The buffer is a private heap {@code byte[]} only exercised through
+     * the native dispatch path, so this models the two retention
+     * policies over a representative request sequence and measures the
+     * RETAINED capacity (the memory-footprint signal, not allocation
+     * rate). Production constants verified: {@code HEADER_INITIAL=256},
+     * {@code HEADER_RETAIN=32 KiB}. {@code before} grows and never
+     * shrinks; {@code after} drops back to 256 once it exceeds 32 KiB.
+     */
+    @Test
+    void headerBufRetention_retainedBytes() {
+        final int initial = 256;
+        final int retainCap = 32 * 1024;
+        final int hugeHeader = 64 * 1024; // one fat cookie/header burst
+        final int normalHeader = 256;
+        final int normalRequests = 1000;
+
+        // BEFORE: monotonic grow, never shrink — one fat request pins the
+        // backing array for the rest of that servlet thread's life.
+        int beforeCap = initial;
+        beforeCap = Math.max(beforeCap, hugeHeader);
+        for (int i = 0; i < normalRequests; i++) {
+            beforeCap = Math.max(beforeCap, normalHeader);
+        }
+
+        // AFTER: reset to initial whenever capacity exceeds the retain cap.
+        int afterCap = initial;
+        afterCap = Math.max(afterCap, hugeHeader);
+        if (afterCap > retainCap) {
+            afterCap = initial;
+        }
+        for (int i = 0; i < normalRequests; i++) {
+            afterCap = Math.max(afterCap, normalHeader);
+            if (afterCap > retainCap) {
+                afterCap = initial;
+            }
+        }
+
+        System.out.printf(
+                "VESPERA_ALLOC header_buf_retained_before bytes=%d (pinned after one 64 KiB header)%n",
+                beforeCap);
+        System.out.printf(
+                "VESPERA_ALLOC header_buf_retained_after  bytes=%d (reset below 32 KiB cap)%n",
+                afterCap);
+    }
+
+    /**
+     * JVM-05 before/after for the direct-buffer pool retention. The
+     * pooled buffers are off-heap direct {@link ByteBuffer}s only
+     * exercised through the native dispatch path, so this models the two
+     * policies over a repeated-large-response sequence and counts the
+     * multi-MiB direct (re)allocations — each {@code before} realloc also
+     * forces a Rust handler re-run on the overflow retry. Production
+     * constants verified: {@code DIRECT_INITIAL=64 KiB},
+     * {@code DIRECT_SHRINK_IDLE_DISPATCHES=8}. {@code before} shrinks to
+     * initial at the start of every dispatch; {@code after} keeps the
+     * grown buffer while it stays in use.
+     */
+    @Test
+    void directPoolRetention_reallocations() {
+        // Production defaults: DIRECT_INITIAL 64 KiB, DIRECT_RETAIN 2 MiB,
+        // DIRECT_MAX 4 MiB.  The modelled response must exceed the retain
+        // cap (so the policies diverge) yet fit within the max cap (so it
+        // stays on the pooled direct path instead of the heap fallback) —
+        // 3 MiB satisfies both.
+        final int initial = 64 * 1024;
+        final int retainCap = 2 * 1024 * 1024;
+        final int reqSize = 3 * 1024 * 1024; // repeated 3 MiB idempotent response
+        final int dispatches = 50;
+
+        // BEFORE: eager shrink at the start of each dispatch → every
+        // dispatch re-grows (reallocates) the big buffer AND re-runs the
+        // Rust handler on the overflow retry.
+        int beforeReallocs = 0;
+        int beforeRehandlers = 0;
+        int beforeCap = initial;
+        for (int i = 0; i < dispatches; i++) {
+            if (beforeCap > retainCap) {
+                beforeCap = initial; // eager shrink
+            }
+            if (beforeCap < reqSize) {
+                beforeCap = reqSize;
+                beforeReallocs++;
+                beforeRehandlers++; // overflow → retry re-runs the handler
+            }
+        }
+
+        // AFTER: adaptive — keep the grown buffer while repeatedly used;
+        // shrink only after 8 consecutive under-retain dispatches.
+        int afterReallocs = 0;
+        int afterRehandlers = 0;
+        int afterCap = initial;
+        int idle = 0;
+        for (int i = 0; i < dispatches; i++) {
+            if (idle >= 8 && afterCap > retainCap) {
+                afterCap = initial;
+                idle = 0;
+            }
+            if (afterCap < reqSize) {
+                afterCap = reqSize;
+                afterReallocs++;
+                afterRehandlers++;
+            }
+            idle = (reqSize <= retainCap) ? idle + 1 : 0;
+        }
+
+        System.out.printf(
+                "VESPERA_ALLOC direct_pool_reallocs_before count=%d handler_reruns=%d (%d dispatches, %d MiB each)%n",
+                beforeReallocs, beforeRehandlers, dispatches, reqSize / (1024 * 1024));
+        System.out.printf(
+                "VESPERA_ALLOC direct_pool_reallocs_after  count=%d handler_reruns=%d%n",
+                afterReallocs, afterRehandlers);
+    }
+
     private static MockHttpServletRequest realisticHeaderRequest() {
         MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
         req.addHeader("Host", "api.example.test");

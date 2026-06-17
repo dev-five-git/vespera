@@ -385,7 +385,7 @@ mod tests {
                         .items
                         .as_ref()
                         .expect("items should be present for array");
-                    match items.as_ref() {
+                    match items {
                         SchemaRef::Inline(item_schema) => {
                             assert_eq!(item_schema.schema_type, Some(*item_ty));
                         }

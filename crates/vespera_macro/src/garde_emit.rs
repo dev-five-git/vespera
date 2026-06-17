@@ -892,10 +892,13 @@ mod tests {
 
     #[test]
     fn bare_option_without_angle_brackets_falls_through_peel() {
-        // `Option` with no type argument hits the PathArguments::None
-        // branch inside peel_option.  is_option_type still returns
-        // true (last segment is `Option`), so the rule block wraps in
-        // `if let Some`.
+        // A bare `Option` with no type argument (invalid Rust, but the
+        // macro must still handle it gracefully without panicking).
+        // Detection now goes through `option_inner`, which extracts the
+        // inner type from `Option<T>`; a bare `Option` has no inner type,
+        // so `is_option_type` returns false and the field is NOT treated
+        // as a peelable option.  The rule is therefore applied directly
+        // (`else` branch) rather than wrapped in `if let Some`.
         let s: DeriveInput = parse_quote! {
             struct BareOption {
                 #[schema(min_length = 3)]
@@ -903,7 +906,10 @@ mod tests {
             }
         };
         let out = emit_to_string(s);
-        assert!(out.contains("if let :: std :: option :: Option :: Some"));
+        // No panic; not peeled, so no `if let Some` wrap …
+        assert!(!out.contains("if let :: std :: option :: Option :: Some"));
+        // … but the length rule is still emitted (applied directly).
+        assert!(out.contains("length :: chars :: apply"));
     }
 
     #[test]

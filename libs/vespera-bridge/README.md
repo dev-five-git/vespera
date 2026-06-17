@@ -56,7 +56,7 @@ Out of the box the autoconfigure module wires up:
 | Concern | Default | Override |
 |---|---|---|
 | **App selection** | Read `X-Vespera-App` request header; absent → default app | Property `vespera.bridge.app-header`, or custom [`AppNameResolver`](src/main/java/com/devfive/vespera/bridge/AppNameResolver.java) bean |
-| **Dispatch mode** | [`SmartDispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/SmartDispatchModeResolver.java) since 0.2.0 — picks per request: [`DIRECT`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) (pooled direct buffers, no JNI array copies) for small/bodyless idempotent requests (GET/HEAD/PUT/DELETE/OPTIONS, Content-Length absent or ≤ 256 KiB) ~2.2 µs; `SYNC` (heap-buffered) for small non-idempotent (POST/PATCH ≤ 256 KiB) ~3.2 µs; `BIDIRECTIONAL_STREAMING` for the rest ~24.1 µs | Property `vespera.bridge.dispatch-mode: bidirectional-streaming` (opt out, restore pre-0.2.0 default), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
+| **Dispatch mode** | [`SmartDispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/SmartDispatchModeResolver.java) since 0.2.0 — picks per request: [`DIRECT`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) (pooled direct buffers, no JNI array copies) for small/bodyless idempotent requests (GET/HEAD/PUT/DELETE/OPTIONS, Content-Length absent or ≤ 1 MiB) ~2.2 µs; `SYNC` (heap-buffered) for small non-idempotent (POST/PATCH ≤ 256 KiB) ~3.2 µs; `BIDIRECTIONAL_STREAMING` for the rest ~24.1 µs | Property `vespera.bridge.dispatch-mode: bidirectional-streaming` (opt out, restore pre-0.2.0 default), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
 | **URL pattern** | Single `@RequestMapping("/**")` catch-all — every vespera router URL exactly mirrors the published OpenAPI path | Set `vespera.bridge.controller-enabled: false` and supply your own controller |
 | **Body handling** | Servlet `InputStream` straight through to Rust (no buffering) for streaming modes; full read for sync/async | (encoded by the chosen `DispatchMode`) |
 
@@ -64,7 +64,7 @@ Why `smart` as the default mode (since 0.2.0)? Measured on a small `GET /health`
 
 | Request shape | Mode | ns/round-trip |
 |---|---|---|
-| Small/bodyless + idempotent (GET/HEAD/PUT/DELETE/OPTIONS, Content-Length absent or ≤ 256 KiB) | `DIRECT` | ~2,200 |
+| Small/bodyless + idempotent (GET/HEAD/PUT/DELETE/OPTIONS, Content-Length absent or ≤ 1 MiB) | `DIRECT` | ~2,200 |
 | Small (≤ 256 KiB Content-Length) + non-idempotent (POST/PATCH) | `SYNC` | ~3,200 |
 | Large or unknown-length body | `BIDIRECTIONAL_STREAMING` | ~24,100 |
 
@@ -606,7 +606,7 @@ Pre-0.2.0 the autoconfigured default was [`BidirectionalStreamingDispatchModeRes
 
 | Request shape | Pre-0.2.0 mode | 0.2.0+ mode |
 |---|---|---|
-| Small/bodyless idempotent (GET/HEAD/PUT/DELETE/OPTIONS, ≤ 256 KiB CL or no CL) | `STREAMING` / `BIDIRECTIONAL_STREAMING` | `DIRECT` |
+| Small/bodyless idempotent (GET/HEAD/PUT/DELETE/OPTIONS, ≤ 1 MiB CL or no CL) | `STREAMING` / `BIDIRECTIONAL_STREAMING` | `DIRECT` |
 | Small non-idempotent (POST/PATCH, ≤ 256 KiB CL) | `BIDIRECTIONAL_STREAMING` | `SYNC` |
 | Large or unknown-length body | `BIDIRECTIONAL_STREAMING` | `BIDIRECTIONAL_STREAMING` |
 

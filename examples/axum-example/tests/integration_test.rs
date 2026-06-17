@@ -394,18 +394,47 @@ async fn test_openapi_contains_third_app_schemas() {
 // Test VesperaRouter::layer functionality
 #[tokio::test]
 async fn test_app_with_layer() {
+    use axum::http::header::{ACCESS_CONTROL_ALLOW_ORIGIN, ORIGIN};
+
     let app = create_app_with_layer().await;
     let server = TestServer::new(app);
 
-    // Test that routes still work with the layer applied
-    let response = server.get("/health").await;
+    // Base route works AND the CORS layer is applied (sanity).
+    let response = server
+        .get("/health")
+        .add_header(ORIGIN, "https://example.test")
+        .await;
     response.assert_status_ok();
     response.assert_text("ok");
+    assert_eq!(
+        response
+            .headers()
+            .get(ACCESS_CONTROL_ALLOW_ORIGIN)
+            .and_then(|v| v.to_str().ok()),
+        Some("*"),
+        "CORS layer should be applied to base routes"
+    );
 
-    // Test merged routes also work with layer
-    let response = server.get("/third").await;
+    // VESPERA-01 regression lock: the layer must ALSO wrap MERGED child
+    // routes.  The original bug applied `layer()` only to the base
+    // router, so `/third` (merged from `ThirdApp`) still WORKED but had
+    // NO CORS header — a status/text-only test would pass even with the
+    // bug.  Asserting the CORS response header on the merged route is
+    // what actually proves the fix.
+    let response = server
+        .get("/third")
+        .add_header(ORIGIN, "https://example.test")
+        .await;
     response.assert_status_ok();
     response.assert_text("third app root endpoint");
+    assert_eq!(
+        response
+            .headers()
+            .get(ACCESS_CONTROL_ALLOW_ORIGIN)
+            .and_then(|v| v.to_str().ok()),
+        Some("*"),
+        "CORS layer must apply to MERGED routes too (VESPERA-01)"
+    );
 }
 
 #[tokio::test]
@@ -1716,7 +1745,7 @@ async fn test_numeric_field_invalid_value() {
         .add_text("initial", "A");
 
     let response = server.post("/numeric-char-test").multipart(form).await;
-    response.assert_status(axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]
@@ -1731,7 +1760,7 @@ async fn test_float_field_invalid_value() {
         .add_text("initial", "A");
 
     let response = server.post("/numeric-char-test").multipart(form).await;
-    response.assert_status(axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]
@@ -1746,7 +1775,7 @@ async fn test_char_field_multiple_chars() {
         .add_text("initial", "AB");
 
     let response = server.post("/numeric-char-test").multipart(form).await;
-    response.assert_status(axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]
@@ -1761,7 +1790,7 @@ async fn test_char_field_empty_string() {
         .add_text("initial", "");
 
     let response = server.post("/numeric-char-test").multipart(form).await;
-    response.assert_status(axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 // ─── serde(default) struct-level tests ──────────────────────────────────────
@@ -1873,7 +1902,7 @@ async fn test_numeric_field_non_utf8_bytes() {
         .add_text("initial", "A");
 
     let response = server.post("/numeric-char-test").multipart(form).await;
-    response.assert_status(axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    response.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]

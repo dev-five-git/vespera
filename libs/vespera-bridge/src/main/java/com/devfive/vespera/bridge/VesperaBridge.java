@@ -627,11 +627,14 @@ public class VesperaBridge {
      * to [{@link #DIRECT_INITIAL_CAPACITY}, {@link #DIRECT_MAX_CAPACITY}]).
      *
      * <p>A buffer that a large dispatch grew beyond this cap is shrunk
-     * back to {@link #DIRECT_INITIAL_CAPACITY} at the start of the next
-     * dispatch on the same thread, so a single big response cannot pin
-     * off-heap memory for the thread's whole lifetime.  Transient growth
-     * up to {@link #DIRECT_MAX_CAPACITY} for an individual request is
-     * still allowed — only steady-state retention is capped.
+     * back to {@link #DIRECT_INITIAL_CAPACITY} <strong>adaptively</strong>
+     * — only after {@link #DIRECT_SHRINK_IDLE_DISPATCHES} consecutive
+     * dispatches stayed under the cap (so a repeatedly-large idempotent
+     * endpoint keeps its buffer instead of shrink/overflow/re-run on
+     * every call), yet a thread that stops handling large responses
+     * still releases the off-heap memory.  Transient growth up to
+     * {@link #DIRECT_MAX_CAPACITY} for an individual request is always
+     * allowed — only steady-state retention is capped.
      *
      * <p><strong>Default raised from 256 KiB to 2 MiB (measured 2026-06).</strong>
      * Bodyless requests (the common GET) always take DIRECT regardless of
@@ -814,6 +817,15 @@ public class VesperaBridge {
         if (!in.isDirect() || !out.isDirect()) {
             throw new IllegalArgumentException(
                     "dispatchDirect requires direct ByteBuffers (use ByteBuffer.allocateDirect)");
+        }
+        // SEC-2: the native side writes the wire response straight into
+        // `out` via a `&mut [u8]`; a read-only direct buffer (e.g. a
+        // read-only MappedByteBuffer) is backed by read-only pages, so
+        // writing to it is undefined behavior / a process crash.  Reject
+        // it here — the native code cannot recover from a write fault.
+        if (out.isReadOnly()) {
+            throw new IllegalArgumentException(
+                    "dispatchDirect requires a writable out ByteBuffer (got a read-only buffer)");
         }
         if (inLen < 0 || inLen > in.capacity()) {
             throw new IllegalArgumentException(

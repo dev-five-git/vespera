@@ -42,15 +42,15 @@ static APP_ROUTERS: LazyLock<ArcSwap<HashMap<String, Router>>> =
 ///
 /// The overwhelmingly common dispatch case is a wire header without
 /// an `"app"` field — routing to [`DEFAULT_APP_NAME`].  Resolving it
-/// through `APP_ROUTERS` costs an `RwLock` read acquisition per
-/// request, which parks threads under high concurrency.  This
-/// `OnceLock` mirror is set (exactly once, inside the registration
-/// write lock so it can never diverge from the map) by the first
-/// successful `_default` registration and read with a single atomic
-/// load + `Router::clone` (`Arc` refcount bump) on every dispatch.
+/// through `APP_ROUTERS` still costs an `ArcSwap` load + hash lookup
+/// per request.  This `OnceLock` mirror is set (exactly once, by the
+/// first successful `_default` registration so it can never diverge
+/// from the map) and read with a single atomic load + `Router::clone`
+/// (`Arc` refcount bump) on every dispatch — skipping even the hash
+/// lookup.
 ///
-/// Named apps keep using the `RwLock<HashMap>` — they are the rare
-/// multi-app case and can be registered at any time.
+/// Named apps resolve through the lock-free [`ArcSwap`] load — they are
+/// the rare multi-app case and can be registered at any time.
 static DEFAULT_ROUTER: OnceLock<Router> = OnceLock::new();
 
 /// Validate an app name for registration / lookup.
@@ -119,9 +119,9 @@ where
 ///
 /// # Panic safety
 ///
-/// The `factory` closure is invoked **outside** the internal
-/// `RwLock`'s write guard.  A panic in `factory` cannot poison the
-/// map; the registration is simply discarded and the slot remains
+/// The `factory` closure is invoked **outside** the [`ArcSwap`]
+/// copy-on-write update.  A panic in `factory` cannot corrupt the
+/// registry; the registration is simply discarded and the slot remains
 /// available for retry.
 ///
 /// # Invalid names

@@ -617,4 +617,78 @@ mod tests {
             "must not contain 2.0: {json}"
         );
     }
+
+    // ── CORE-04: typed `additionalProperties` (untagged) ─────────────
+    //
+    // The untagged enum MUST serialize to the bare JSON Schema wire form
+    // (a `true`/`false` or the schema object/`$ref`) — byte-identical to
+    // the previous `serde_json::Value` representation — and round-trip
+    // back to the right variant.  Untagged deserialization is
+    // order-sensitive, so these lock the contract.
+
+    #[test]
+    fn additional_properties_bool_serializes_bare() {
+        let schema = Schema {
+            additional_properties: Some(AdditionalProperties::Bool(false)),
+            ..Schema::object()
+        };
+        let json = serde_json::to_string(&schema).unwrap();
+        assert!(
+            json.contains("\"additionalProperties\":false"),
+            "bool must serialize as a bare boolean, got: {json}"
+        );
+    }
+
+    #[test]
+    fn additional_properties_schema_ref_serializes_as_ref() {
+        let schema = Schema {
+            additional_properties: Some(AdditionalProperties::Schema(SchemaRef::Ref(
+                Reference::schema("User"),
+            ))),
+            ..Schema::object()
+        };
+        let json = serde_json::to_string(&schema).unwrap();
+        assert!(
+            json.contains("\"additionalProperties\":{\"$ref\":\"#/components/schemas/User\"}"),
+            "schema-ref must serialize as a bare $ref object, got: {json}"
+        );
+    }
+
+    #[test]
+    fn additional_properties_roundtrips_each_variant() {
+        // bool → Bool
+        let v: AdditionalProperties = serde_json::from_str("true").unwrap();
+        assert!(matches!(v, AdditionalProperties::Bool(true)));
+        // {"$ref":...} → Schema(Ref)
+        let v: AdditionalProperties =
+            serde_json::from_str(r##"{"$ref":"#/components/schemas/X"}"##).unwrap();
+        assert!(matches!(v, AdditionalProperties::Schema(SchemaRef::Ref(_))));
+        // inline schema object → Schema(Inline)
+        let v: AdditionalProperties = serde_json::from_str(r#"{"type":"string"}"#).unwrap();
+        assert!(matches!(
+            v,
+            AdditionalProperties::Schema(SchemaRef::Inline(_))
+        ));
+    }
+
+    // ── CORE-03: nullable-reference constructor ──────────────────────
+
+    #[test]
+    fn nullable_reference_emits_ref_plus_nullable_only() {
+        let schema = Schema::nullable_reference("#/components/schemas/User".to_owned());
+        let json = serde_json::to_string(&schema).unwrap();
+        assert!(
+            json.contains("\"$ref\":\"#/components/schemas/User\""),
+            "must carry the $ref: {json}"
+        );
+        assert!(
+            json.contains("\"nullable\":true"),
+            "must be nullable: {json}"
+        );
+        // schema_type stays None so no stray `"type"` is emitted alongside.
+        assert!(
+            !json.contains("\"type\":"),
+            "a nullable reference must not also emit a type: {json}"
+        );
+    }
 }

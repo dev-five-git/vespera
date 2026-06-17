@@ -12,6 +12,7 @@ mod tests {
 
     use rstest::rstest;
     use syn::Type;
+    use vespera_core::schema::AdditionalProperties;
     use vespera_core::schema::SchemaRef;
     use vespera_core::schema::SchemaType;
 
@@ -165,7 +166,10 @@ mod tests {
                     .additional_properties
                     .as_ref()
                     .expect("additional_properties missing");
-                assert_eq!(additional.get("$ref").unwrap(), expected);
+                let AdditionalProperties::Schema(SchemaRef::Ref(reference)) = additional else {
+                    panic!("expected a schema-ref additionalProperties for {ty_src}");
+                };
+                assert_eq!(reference.ref_path, expected);
             }
             None => match schema_ref {
                 SchemaRef::Inline(schema) => {
@@ -318,7 +322,7 @@ mod tests {
                 // Should be array type
                 assert_eq!(schema.schema_type, Some(SchemaType::Array));
                 // Items should be ref to CommentSchema
-                if let Some(SchemaRef::Ref(items_ref)) = schema.items.as_deref() {
+                if let Some(SchemaRef::Ref(items_ref)) = schema.items.as_ref() {
                     assert_eq!(items_ref.ref_path, "#/components/schemas/Comment");
                 } else {
                     panic!("Expected items to be a $ref");
@@ -337,7 +341,7 @@ mod tests {
             SchemaRef::Inline(schema) => {
                 assert_eq!(schema.schema_type, Some(SchemaType::Array));
                 // Items should be inline object
-                if let Some(SchemaRef::Inline(items)) = schema.items.as_deref() {
+                if let Some(SchemaRef::Inline(items)) = schema.items.as_ref() {
                     assert_eq!(items.schema_type, Some(SchemaType::Object));
                 } else {
                     panic!("Expected inline items for HasMany fallback");
@@ -547,7 +551,7 @@ mod tests {
 
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Array));
-            if let Some(SchemaRef::Inline(items)) = schema.items.as_deref() {
+            if let Some(SchemaRef::Inline(items)) = schema.items.as_ref() {
                 assert_eq!(items.schema_type, Some(SchemaType::String));
                 assert_eq!(items.format, Some("date-time".to_string()));
             } else {

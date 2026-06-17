@@ -61,6 +61,17 @@ class VesperaDirectWrapperTest {
     }
 
     @Test
+    void readOnlyOutBufferRejectedBeforeJni() {
+        // SEC-2: a read-only direct out buffer would crash the native
+        // write; the wrapper must reject it before crossing JNI.
+        ByteBuffer readOnlyOut = ByteBuffer.allocateDirect(64).asReadOnlyBuffer();
+        IllegalArgumentException e = assertThrows(
+                IllegalArgumentException.class,
+                () -> VesperaBridge.dispatchDirect(DIRECT, 4, readOnlyOut));
+        assertTrue(e.getMessage().contains("writable"), e.getMessage());
+    }
+
+    @Test
     void bufferTooSmallExceptionCarriesRequiredSize() {
         VesperaBridge.BufferTooSmallException e =
                 new VesperaBridge.BufferTooSmallException(123_456);

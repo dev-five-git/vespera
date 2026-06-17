@@ -402,7 +402,7 @@ fn bench_direct_write_path(c: &mut Criterion) {
 
 /// P2 isolation (within-run A/B): default-app resolution via the
 /// lock-free `OnceLock` fast path vs named-app resolution through the
-/// `RwLock<HashMap>` slow path.  Identical router, identical wire
+/// lock-free `ArcSwap` load (INP-07).  Identical router, identical wire
 /// request shape — the only difference is the `"app"` header field.
 fn bench_resolve_path(c: &mut Criterion) {
     static INIT_NAMED: std::sync::Once = std::sync::Once::new();
@@ -434,11 +434,14 @@ fn bench_resolve_path(c: &mut Criterion) {
 /// many OS threads against one shared multi-thread runtime.
 ///
 /// `default` resolves through the lock-free `OnceLock` fast path;
-/// `named` goes through the `RwLock<HashMap>`.  Under reader pressure
-/// the RwLock path can park threads — the delta between the two
-/// captures exactly what the single-threaded `resolve_path` group
-/// cannot.  Excluded from the CI regression gate (heavily
-/// scheduler-dependent); run locally for the numbers.
+/// `named` resolves through the lock-free `ArcSwap` load (INP-07).
+/// Both stay lock-free under reader pressure — the residual delta is
+/// the `OnceLock` single-atomic-load advantage over the `ArcSwap`
+/// load-plus-hash-lookup, which the single-threaded `resolve_path`
+/// group cannot isolate.  See `registry_ab` for the RwLock-vs-ArcSwap
+/// before/after.
+/// Excluded from the CI regression gate (heavily scheduler-dependent);
+/// run locally for the numbers.
 fn bench_contended_path(c: &mut Criterion) {
     static INIT_NAMED: std::sync::Once = std::sync::Once::new();
 

@@ -502,9 +502,9 @@ mod tests {
         let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Array));
-            if let Some(SchemaRef::Inline(inner)) = schema.items.as_deref() {
+            if let Some(SchemaRef::Inline(inner)) = schema.items.as_ref() {
                 assert_eq!(inner.schema_type, Some(SchemaType::Array));
-                if let Some(SchemaRef::Inline(innermost)) = inner.items.as_deref() {
+                if let Some(SchemaRef::Inline(innermost)) = inner.items.as_ref() {
                     assert_eq!(innermost.schema_type, Some(SchemaType::String));
                 } else {
                     panic!("Expected innermost inline schema");
@@ -524,7 +524,7 @@ mod tests {
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Array));
             assert_eq!(schema.nullable, Some(true));
-            if let Some(SchemaRef::Inline(items)) = schema.items.as_deref() {
+            if let Some(SchemaRef::Inline(items)) = schema.items.as_ref() {
                 assert_eq!(items.schema_type, Some(SchemaType::Integer));
             } else {
                 panic!("Expected inline items");
@@ -557,7 +557,10 @@ mod tests {
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Object));
             let additional = schema.additional_properties.as_ref().unwrap();
-            assert_eq!(additional.get("$ref").unwrap(), "#/components/schemas/User");
+            let AdditionalProperties::Schema(SchemaRef::Ref(reference)) = additional else {
+                panic!("expected a schema-ref additionalProperties, got {additional:?}");
+            };
+            assert_eq!(reference.ref_path, "#/components/schemas/User");
         } else {
             panic!("Expected inline schema for HashMap<String, User>");
         }
@@ -570,8 +573,11 @@ mod tests {
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Object));
             let additional = schema.additional_properties.as_ref().unwrap();
-            // Value should be an array schema serialized
-            assert_eq!(additional.get("type").unwrap(), "array");
+            // Value should be an inline array schema.
+            let AdditionalProperties::Schema(SchemaRef::Inline(value_schema)) = additional else {
+                panic!("expected an inline-schema additionalProperties, got {additional:?}");
+            };
+            assert_eq!(value_schema.schema_type, Some(SchemaType::Array));
         } else {
             panic!("Expected inline schema for BTreeMap with Vec value");
         }
@@ -615,7 +621,7 @@ mod tests {
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Array));
             assert_eq!(schema.unique_items, Some(true));
-            if let Some(SchemaRef::Inline(items)) = schema.items.as_deref() {
+            if let Some(SchemaRef::Inline(items)) = schema.items.as_ref() {
                 assert_eq!(items.schema_type, Some(SchemaType::String));
             } else {
                 panic!("Expected inline string items for HashSet<String>");
@@ -632,7 +638,7 @@ mod tests {
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Array));
             assert_eq!(schema.unique_items, Some(true));
-            if let Some(SchemaRef::Inline(items)) = schema.items.as_deref() {
+            if let Some(SchemaRef::Inline(items)) = schema.items.as_ref() {
                 assert_eq!(items.schema_type, Some(SchemaType::Integer));
             } else {
                 panic!("Expected inline integer items for BTreeSet<i32>");
@@ -650,7 +656,7 @@ mod tests {
             assert_eq!(schema.schema_type, Some(SchemaType::Array));
             assert_eq!(schema.unique_items, Some(true));
             assert_eq!(schema.nullable, Some(true));
-            if let Some(SchemaRef::Inline(items)) = schema.items.as_deref() {
+            if let Some(SchemaRef::Inline(items)) = schema.items.as_ref() {
                 assert_eq!(items.schema_type, Some(SchemaType::Integer));
             } else {
                 panic!("Expected inline integer items for Option<HashSet<i64>>");

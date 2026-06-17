@@ -315,6 +315,17 @@ const _: () = assert!(DIRECT_UNREPRESENTABLE < -i32::MAX);
 /// `out_addr` must point to a writable region of at least `out_cap`
 /// bytes that stays valid for the duration of this call (a JNI
 /// direct buffer pinned by the live `JByteBuffer` local ref).
+/// Whether `[a0, a0+a_len)` and `[b0, b0+b_len)` overlap (addresses as
+/// `usize`).  Used to reject aliasing `in_buf` / `out_buf` direct-buffer
+/// ranges in [`Java_..._dispatchDirect0`] before creating a shared `&[u8]`
+/// and an exclusive `&mut [u8]` over them (SEC-1).  `saturating_add`
+/// keeps the bound arithmetic panic-free for any address.
+fn ranges_overlap(a0: usize, a_len: usize, b0: usize, b_len: usize) -> bool {
+    let a1 = a0.saturating_add(a_len);
+    let b1 = b0.saturating_add(b_len);
+    a0 < b1 && b0 < a1
+}
+
 fn write_response_to_out(out_addr: *mut u8, out_cap: usize, response: &[u8]) -> jint {
     if response.len() <= out_cap {
         // SAFETY: `response.len() <= out_cap` and the caller
@@ -383,6 +394,11 @@ fn write_response_to_out(out_addr: *mut u8, out_cap: usize, response: &[u8]) -> 
 ///    keeps the backing memory valid throughout and the borrow never
 ///    escapes the `block_on`, so nothing borrowed from the buffer
 ///    outlives the call.
+/// 4. `in_buf` and `out_buf` are proven **non-overlapping** (SEC-1)
+///    before the shared `&[u8]` / exclusive `&mut [u8]` are created, so
+///    they never alias the same memory; and `out_buf` is **writable**
+///    (the Java wrapper rejects read-only buffers — SEC-2), so the
+///    `&mut [u8]` write target is valid.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDirect0<'local>(
     mut unowned_env: EnvUnowned<'local>,
@@ -414,6 +430,23 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                     return Ok(write_response_to_out(out_addr, out_cap, &err));
                 }
             };
+
+            // SEC-1: reject overlapping `in_buf` / `out_buf` ranges.
+            // Below we create a shared `&[u8]` over the input and an
+            // exclusive `&mut [u8]` over the output; if they alias the
+            // same direct-buffer memory (the caller passed the same
+            // buffer, or overlapping `slice()`/`duplicate()` views) that
+            // is instant UB.  The Java wrapper cannot detect this (it has
+            // no native address), so the check lives here.  `out_buf` is
+            // writable by the wrapper's `isReadOnly()` guard (SEC-2), so
+            // writing the error response into it is sound.
+            if ranges_overlap(in_addr as usize, in_len, out_addr as usize, out_cap) {
+                let err = vespera_inprocess::error_wire(
+                    400,
+                    "in_buf and out_buf must not overlap (aliasing would be undefined behavior)",
+                );
+                return Ok(write_response_to_out(out_addr, out_cap, &err));
+            }
 
             let dispatched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 // SAFETY: invariants 1–3 above.  `in_addr..in_addr+in_len`
