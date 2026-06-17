@@ -7,47 +7,7 @@ use std::path::Path;
 
 use crate::error::{MacroResult, err_call_site};
 
-/// Normalize a path string into a comparison key **without touching
-/// the filesystem** (an earlier `fs::canonicalize` version cost one
-/// syscall per lookup — ~130ms for a 300-file project on Windows).
-///
-/// `#[route]` records `Span::local_file()`, which rustc reports
-/// relative to its invocation directory, while the collector walks
-/// `{CARGO_MANIFEST_DIR}/src/{folder}` producing absolute paths with
-/// platform separators.  This key makes both comparable:
-/// - relative paths are absolutized against `cwd` (the same process
-///   working directory rustc resolved the span path from)
-/// - `.`/`..` components are folded
-/// - separators normalize to `/`, the Windows `\\?\` verbatim prefix
-///   is stripped, and (Windows only) the drive letter case is folded
-pub fn normalize_path_key(path: &str, cwd: &Path) -> String {
-    use std::path::Component;
-
-    let p = Path::new(path);
-    let abs = if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        cwd.join(p)
-    };
-    let mut folded = std::path::PathBuf::new();
-    for comp in abs.components() {
-        match comp {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                folded.pop();
-            }
-            other => folded.push(other),
-        }
-    }
-    let mut key = folded.display().to_string().replace('\\', "/");
-    if let Some(stripped) = key.strip_prefix("//?/") {
-        key = stripped.to_owned();
-    }
-    if cfg!(windows) {
-        key.make_ascii_lowercase();
-    }
-    key
-}
+pub use crate::file_utils::normalize_path_key;
 
 /// Single directory walk returning `(path, mtime)` pairs — the shared
 /// scan that both cache fingerprinting and route collection consume.
@@ -186,7 +146,7 @@ mod tests {
             response_example: None,
             deprecated: false,
             description: None,
-            fn_item_str: "pub async fn get_users() -> String { String::new() }".to_string(),
+            fn_sig_str: "async fn get_users() -> String".to_string(),
             file_path: Some(relative_stored_path),
         }];
 
@@ -231,7 +191,7 @@ mod tests {
             response_example: None,
             deprecated: false,
             description: None,
-            fn_item_str: "pub async fn list_items() -> String { String::new() }".to_string(),
+            fn_sig_str: "async fn list_items() -> String".to_string(),
             file_path: Some(file_path.display().to_string()),
         }];
 
@@ -281,7 +241,7 @@ mod tests {
             response_example: None,
             deprecated: false,
             description: Some("Get all users".to_string()),
-            fn_item_str: "pub async fn get_users() -> String { \"users\".to_string() }".to_string(),
+            fn_sig_str: "async fn get_users() -> String".to_string(),
             file_path: Some(file_path_str.clone()),
         }];
 
@@ -339,8 +299,7 @@ mod tests {
             response_example: None,
             deprecated: false,
             description: None,
-            fn_item_str: "pub async fn get_user(id: i32) -> String { \"user\".to_string() }"
-                .to_string(),
+            fn_sig_str: "async fn get_user(id: i32) -> String".to_string(),
             file_path: Some(file_path_str.clone()),
         }];
 
@@ -388,7 +347,7 @@ mod tests {
             response_example: None,
             deprecated: false,
             description: None,
-            fn_item_str: "pub async fn list_users() -> String { \"list\".to_string() }".to_string(),
+            fn_sig_str: "async fn list_users() -> String".to_string(),
             file_path: Some(file_path_str),
         }];
 
@@ -414,7 +373,7 @@ mod tests {
         // `#[route]` resolves the description (explicit attribute OR doc
         // comment) at expansion time — see `process_route_attribute`.
         // The collector fast path must pass it through verbatim WITHOUT
-        // re-parsing `fn_item_str`.
+        // re-parsing `fn_sig_str`.
         let route_storage = vec![StoredRouteInfo {
             fn_name: "get_items".to_string(),
             method: Some("get".to_string()),
@@ -431,7 +390,7 @@ mod tests {
             response_example: None,
             deprecated: false,
             description: Some("List all items".to_string()),
-            fn_item_str:
+            fn_sig_str:
                 "/// List all items\npub async fn get_items() -> String { \"items\".to_string() }"
                     .to_string(),
             file_path: Some(file_path_str.clone()),
@@ -446,7 +405,7 @@ mod tests {
         );
 
         // A storage entry with no description stays None — the fast path
-        // does NOT re-extract from fn_item_str (expansion already did).
+        // does NOT re-extract from fn_sig_str (expansion already did).
         let route_storage_none = vec![StoredRouteInfo {
             fn_name: "get_items".to_string(),
             method: Some("get".to_string()),
@@ -463,7 +422,7 @@ mod tests {
             response_example: None,
             deprecated: false,
             description: None,
-            fn_item_str: "pub async fn get_items() -> String { \"items\".to_string() }".to_string(),
+            fn_sig_str: "async fn get_items() -> String".to_string(),
             file_path: Some(file_path_str),
         }];
         let (metadata, _) =

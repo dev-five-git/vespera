@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use syn::Type;
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
 use super::super::{
@@ -10,6 +9,7 @@ use super::super::{
     },
     type_schema::parse_type_to_schema_ref,
 };
+use crate::schema_macro::type_utils::is_option_type;
 
 /// Build properties for a struct variant's fields
 pub(super) fn build_struct_variant_properties(
@@ -66,15 +66,7 @@ pub(super) fn build_struct_variant_properties(
         variant_properties.insert(field_name.clone(), schema_ref);
 
         // Check if field is Option<T>
-        let is_optional = matches!(
-            field_type,
-            Type::Path(type_path)
-                if type_path
-                    .path
-                    .segments
-                    .first()
-                    .is_some_and(|s| s.ident == "Option")
-        );
+        let is_optional = is_option_type(field_type);
 
         if !is_optional {
             variant_required.push(field_name);

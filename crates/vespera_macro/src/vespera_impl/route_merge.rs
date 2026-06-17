@@ -121,7 +121,7 @@ mod tests {
             response_example: None,
             deprecated: false,
             description: None,
-            fn_item_str: String::new(),
+            fn_sig_str: String::new(),
             file_path: file_path.map(str::to_string),
         }
     }
@@ -197,7 +197,7 @@ mod tests {
             response_example: None,
             deprecated: false,
             description: Some("List all users".to_string()),
-            fn_item_str: String::new(),
+            fn_sig_str: String::new(),
             file_path: None,
         }];
 
@@ -249,7 +249,7 @@ mod tests {
             response_example: None,
             deprecated: false,
             description: None,
-            fn_item_str: String::new(),
+            fn_sig_str: String::new(),
             file_path: None,
         }];
 
@@ -300,7 +300,7 @@ mod tests {
                 response_example: None,
                 deprecated: false,
                 description: None,
-                fn_item_str: String::new(),
+                fn_sig_str: String::new(),
                 file_path: None,
             },
             StoredRouteInfo {
@@ -319,7 +319,7 @@ mod tests {
                 response_example: None,
                 deprecated: false,
                 description: None,
-                fn_item_str: String::new(),
+                fn_sig_str: String::new(),
                 file_path: None,
             },
         ];
@@ -427,7 +427,7 @@ mod tests {
             response_example: None,
             deprecated: false,
             description: Some("New description".to_string()),
-            fn_item_str: String::new(),
+            fn_sig_str: String::new(),
             file_path: None,
         }];
 
@@ -481,7 +481,7 @@ mod tests {
             response_example: None,
             deprecated: false,
             description: None,
-            fn_item_str: String::new(),
+            fn_sig_str: String::new(),
             file_path: None,
         }];
 

@@ -85,6 +85,20 @@ pub async fn dispatch_streaming_async<F>(input: Vec<u8>, mut on_chunk: F) -> Vec
 where
     F: FnMut(&[u8]) -> ControlFlow<()>,
 {
+    // Response streaming still buffers the full REQUEST in memory
+    // (`input` is a complete `Vec`), so it gets the same ingress cap as
+    // the buffered entry points.  Only *bidirectional* streaming, which
+    // pulls the request body chunk-by-chunk, is exempt.
+    if crate::config::request_exceeds_limit(input.len()) {
+        return error_wire(
+            413,
+            &format!(
+                "request size {} bytes exceeds configured maximum of {} bytes",
+                input.len(),
+                crate::config::max_request_bytes()
+            ),
+        );
+    }
     let (header_bytes, body_bytes) = match split_wire_request(input) {
         Ok(parts) => parts,
         Err(msg) => return error_wire(400, &msg),
@@ -150,6 +164,21 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
     H: FnMut(&[u8]),
     F: FnMut(&[u8]) -> ControlFlow<()>,
 {
+    // Response streaming buffers the full request (see
+    // `dispatch_streaming_async`): apply the ingress cap, delivering the
+    // 413 through the header callback so the contract (header fires
+    // exactly once) holds.
+    if crate::config::request_exceeds_limit(input.len()) {
+        on_header(&error_wire(
+            413,
+            &format!(
+                "request size {} bytes exceeds configured maximum of {} bytes",
+                input.len(),
+                crate::config::max_request_bytes()
+            ),
+        ));
+        return;
+    }
     let (header_bytes, body_bytes) = match split_wire_request(input) {
         Ok(parts) => parts,
         Err(msg) => {
@@ -182,6 +211,16 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
         }
     };
 
+    // Mirror the buffered / response-streaming paths' Content-Type
+    // defaulting (INP-03): a non-empty body with no explicit
+    // `Content-Type` defaults to `application/json`, so this
+    // header-callback variant behaves identically to its siblings for
+    // the same wire request.  Computed before `body_bytes` is moved.
+    let default_json_content_type = !body_bytes.is_empty()
+        && !header
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
     let (status, headers, metadata, mut body) = match dispatch_and_split(
         router,
         &header.method,
@@ -189,7 +228,7 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
         &header.query,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         Body::from(body_bytes),
-        false,
+        default_json_content_type,
     )
     .await
     {

@@ -184,7 +184,7 @@ pub fn schema_to_tokens(schema: &Schema) -> TokenStream {
     // items
     if let Some(items) = &schema.items {
         let inner = schema_ref_to_tokens(items);
-        fields.push(quote! { items: Some(Box::new(#inner)) });
+        fields.push(quote! { items: Some(#inner) });
     }
 
     // properties
@@ -419,11 +419,15 @@ mod tests {
     fn test_schema_to_tokens_with_items() {
         let mut schema = Schema::new(SchemaType::Array);
         let item_schema = Schema::new(SchemaType::String);
-        schema.items = Some(Box::new(SchemaRef::Inline(Box::new(item_schema))));
+        schema.items = Some(SchemaRef::Inline(Box::new(item_schema)));
         let tokens = schema_to_tokens(&schema);
         let output = tokens.to_string();
         assert!(output.contains("items"));
-        assert!(output.contains("Some (Box :: new"));
+        // `items` is now emitted as `Some(<SchemaRef>)` (no outer Box —
+        // CORE-02); the inner `SchemaRef::Inline` still carries its own
+        // `Box::new`.
+        assert!(output.contains("SchemaRef :: Inline"));
+        assert!(output.contains("Box :: new"));
     }
 
     #[test]

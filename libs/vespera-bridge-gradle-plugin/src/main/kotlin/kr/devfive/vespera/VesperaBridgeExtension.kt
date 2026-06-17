@@ -1,6 +1,7 @@
 package kr.devfive.vespera
 
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 
 /**
@@ -9,10 +10,11 @@ import org.gradle.api.provider.Property
  * ```kotlin
  * vespera {
  *     crateName.set("my_rust_lib")
- *     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
- *     bridgeVersion.set("0.0.15")
- *     autoBuildCargo.set(false) // default: opt-in
- * }
+     *     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
+     *     cargoSourceRoots.add("apps/native")
+     *     bridgeVersion.set("0.0.15")
+     *     autoBuildCargo.set(false) // default: opt-in
+     * }
  * ```
  */
 abstract class VesperaBridgeExtension {
@@ -29,6 +31,16 @@ abstract class VesperaBridgeExtension {
      * `examples/<demo>/java/demo-app/` project layout.
      */
     abstract val cargoRoot: DirectoryProperty
+
+    /**
+     * Cargo source roots, relative to {@link #cargoRoot}, watched by the
+     * optional {@code cargoBuild} task. Each root contributes
+     * {@code <root>/**/*.rs}; the plugin also always watches every
+     * {@code Cargo.toml} and {@code Cargo.lock}. Defaults cover a single
+     * crate ({@code src}) plus this repository's workspace layout
+     * ({@code crates}, {@code examples}).
+     */
+    abstract val cargoSourceRoots: ListProperty<String>
 
     /**
      * Version of `kr.devfive:vespera-bridge` to add as an

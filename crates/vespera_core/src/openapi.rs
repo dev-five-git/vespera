@@ -3,7 +3,7 @@
 use crate::route::PathItem;
 use crate::schema::{Components, ExternalDocumentation};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 /// `OpenAPI` document version
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -95,9 +95,13 @@ pub struct Server {
     /// Server description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Server variables
+    /// Server variables.
+    ///
+    /// `BTreeMap` (not `HashMap`) so the generated OpenAPI output is
+    /// deterministic across runs/processes, consistent with the rest of
+    /// the document's ordered maps (CORE-01).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub variables: Option<HashMap<String, ServerVariable>>,
+    pub variables: Option<BTreeMap<String, ServerVariable>>,
 }
 
 /// Tag definition
@@ -154,6 +158,16 @@ fn merge_component_map<V>(
     }
 }
 
+fn has_any_component_map(components: &Components) -> bool {
+    components.schemas.is_some()
+        || components.responses.is_some()
+        || components.parameters.is_some()
+        || components.examples.is_some()
+        || components.request_bodies.is_some()
+        || components.headers.is_some()
+        || components.security_schemes.is_some()
+}
+
 impl OpenApi {
     /// Merge another `OpenAPI` document into this one.
     ///
@@ -171,7 +185,9 @@ impl OpenApi {
         // Merge components (every reusable component kind, self-wins on
         // key conflict) — previously only `schemas` + `security_schemes`
         // were merged, silently dropping the rest.
-        if let Some(other_components) = other.components {
+        if let Some(other_components) = other.components
+            && has_any_component_map(&other_components)
+        {
             let self_components = self.components.get_or_insert(Components {
                 schemas: None,
                 responses: None,
@@ -209,16 +225,25 @@ impl OpenApi {
             self.external_docs = other.external_docs;
         }
 
-        // Merge tags (deduplicate by name).  A HashSet of seen names makes
-        // this O(existing + incoming) instead of O(existing × incoming);
-        // insertion order — and thus the merged tag order — is preserved
-        // because tags are still pushed in `other_tags` iteration order.
+        // Merge tags (deduplicate by borrowed name). HashSets of borrowed
+        // names avoid cloning existing tag names or incoming names solely for
+        // indexing, while preserving first-wins and incoming insertion order.
         if let Some(other_tags) = other.tags {
             let self_tags = self.tags.get_or_insert_with(Vec::new);
-            let mut seen: std::collections::HashSet<String> =
-                self_tags.iter().map(|t| t.name.clone()).collect();
-            for tag in other_tags {
-                if seen.insert(tag.name.clone()) {
+            let existing_names: std::collections::HashSet<&str> =
+                self_tags.iter().map(|tag| tag.name.as_str()).collect();
+            let mut incoming_names = std::collections::HashSet::new();
+            let append_flags: Vec<_> = other_tags
+                .iter()
+                .map(|tag| {
+                    let name = tag.name.as_str();
+                    !existing_names.contains(name) && incoming_names.insert(name)
+                })
+                .collect();
+            drop((existing_names, incoming_names));
+
+            for (tag, should_append) in other_tags.into_iter().zip(append_flags) {
+                if should_append {
                     self_tags.push(tag);
                 }
             }

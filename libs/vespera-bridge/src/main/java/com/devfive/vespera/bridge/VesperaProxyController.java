@@ -5,7 +5,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -13,9 +13,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
-import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
@@ -128,6 +127,11 @@ public class VesperaProxyController {
      * allocation.
      */
     private static final int MAX_FIXED_BODY = 64 * 1024 * 1024;
+
+    private static final int DIRECT_BODY_COPY_CHUNK = 256 * 1024;
+    private static final int DIRECT_BODY_SCRATCH_RETAIN_CAPACITY = 1024 * 1024;
+    private static final ThreadLocal<byte[]> DIRECT_BODY_SCRATCH =
+            ThreadLocal.withInitial(() -> new byte[DIRECT_BODY_COPY_CHUNK]);
 
     // Package-private (not private) so unit tests can exercise the
     // bodyless fast path and length-based reads with MockHttpServletRequest.
@@ -315,23 +319,39 @@ public class VesperaProxyController {
         int headerLen = wireResp.getInt(0);
         WireHeaderReader.apply(wireResp, 4, headerLen, response::setStatus, response::addHeader);
 
-        // Stream the body region of the direct buffer straight out.
-        // Drain explicitly: WritableByteChannel.write() is contractually
-        // permitted to perform a partial write, so loop until the buffer
-        // is fully written rather than relying on the internal looping of
-        // Channels.newChannel(OutputStream).  A single channel is created
-        // and reused across the (normally one) iterations.  The channel
-        // wraps a blocking servlet OutputStream, so each write makes
-        // forward progress and the loop terminates.
+        // Stream the body region of the direct buffer with an explicit
+        // per-thread heap scratch.  Channels.newChannel(OutputStream)
+        // allocates its own temporary heap buffer for direct-buffer writes;
+        // keeping the scratch here makes the copy strategy predictable and
+        // avoids one allocation per DIRECT response.  Loop until the whole
+        // ByteBuffer region is consumed before flushing/committing.
         wireResp.position(4 + headerLen);
         if (wireResp.hasRemaining()) {
-            WritableByteChannel bodyChannel =
-                    Channels.newChannel(response.getOutputStream());
-            while (wireResp.hasRemaining()) {
-                bodyChannel.write(wireResp);
-            }
+            writeDirectBody(wireResp, response.getOutputStream());
         }
         response.getOutputStream().flush();
+    }
+
+    private static void writeDirectBody(ByteBuffer body, OutputStream out) throws IOException {
+        byte[] scratch = directBodyScratch(Math.min(body.remaining(), DIRECT_BODY_COPY_CHUNK));
+        while (body.hasRemaining()) {
+            int n = Math.min(body.remaining(), scratch.length);
+            body.get(scratch, 0, n);
+            out.write(scratch, 0, n);
+        }
+    }
+
+    private static byte[] directBodyScratch(int required) {
+        byte[] scratch = DIRECT_BODY_SCRATCH.get();
+        if (scratch.length > DIRECT_BODY_SCRATCH_RETAIN_CAPACITY) {
+            scratch = new byte[DIRECT_BODY_COPY_CHUNK];
+            DIRECT_BODY_SCRATCH.set(scratch);
+        }
+        if (scratch.length < required) {
+            scratch = new byte[Math.min(DIRECT_BODY_SCRATCH_RETAIN_CAPACITY, required)];
+            DIRECT_BODY_SCRATCH.set(scratch);
+        }
+        return scratch;
     }
 
     /** Idempotent per RFC 9110 — safe to re-run on DIRECT overflow retry. */
@@ -471,7 +491,7 @@ public class VesperaProxyController {
                 headerLen,
                 s -> statusHolder[0] = s,
                 httpHeaders::add);
-        HttpStatus status = HttpStatus.valueOf(statusHolder[0]);
+        HttpStatusCode status = HttpStatusCode.valueOf(statusHolder[0]);
         // Deliver the body as byte[] for every content type.  The wire
         // header already carries the exact Content-Type, and Spring's
         // ByteArrayHttpMessageConverter writes it verbatim — so this

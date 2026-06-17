@@ -9,7 +9,7 @@ use std::{
 };
 
 use syn::Type;
-use vespera_core::schema::{Reference, Schema, SchemaRef, SchemaType};
+use vespera_core::schema::{AdditionalProperties, Reference, Schema, SchemaRef, SchemaType};
 
 /// Maximum recursion depth for type-to-schema conversion.
 /// Prevents stack overflow from deeply nested or circular type references.
@@ -159,12 +159,9 @@ fn parse_type_impl(
                                 }
                                 SchemaRef::Ref(reference) => {
                                     // Wrap reference in an inline schema to attach nullable flag
-                                    return SchemaRef::Inline(Box::new(Schema {
-                                        ref_path: Some(reference.ref_path),
-                                        schema_type: None,
-                                        nullable: Some(true),
-                                        ..Schema::new(SchemaType::Object)
-                                    }));
+                                    return SchemaRef::Inline(Box::new(
+                                        Schema::nullable_reference(reference.ref_path),
+                                    ));
                                 }
                             }
                         }
@@ -175,12 +172,9 @@ fn parse_type_impl(
                         if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
                             && let Some(schema_name) = extract_schema_name_from_entity(inner_ty)
                         {
-                            return SchemaRef::Inline(Box::new(Schema {
-                                ref_path: Some(format!("#/components/schemas/{schema_name}")),
-                                schema_type: None,
-                                nullable: Some(true),
-                                ..Schema::new(SchemaType::Object)
-                            }));
+                            return SchemaRef::Inline(Box::new(Schema::nullable_reference(
+                                format!("#/components/schemas/{schema_name}"),
+                            )));
                         }
                         // Fallback: generic object
                         return SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)));
@@ -214,17 +208,16 @@ fn parse_type_impl(
                                 known_schemas,
                                 struct_definitions,
                             );
-                            // Convert SchemaRef to serde_json::Value for additional_properties
-                            let additional_props_value = match value_schema {
-                                SchemaRef::Ref(ref_ref) => {
-                                    serde_json::json!({ "$ref": ref_ref.ref_path })
-                                }
-                                SchemaRef::Inline(schema) => serde_json::to_value(&*schema)
-                                    .unwrap_or_else(|_| serde_json::json!({})),
-                            };
+                            // Carry the value schema directly as a typed
+                            // `AdditionalProperties::Schema` — no
+                            // `SchemaRef -> serde_json::Value` round-trip
+                            // (CORE-04).  Untagged serialization is
+                            // byte-identical to the prior JSON form.
                             return SchemaRef::Inline(Box::new(Schema {
                                 schema_type: Some(SchemaType::Object),
-                                additional_properties: Some(additional_props_value),
+                                additional_properties: Some(AdditionalProperties::Schema(
+                                    value_schema,
+                                )),
                                 ..Schema::object()
                             }));
                         }

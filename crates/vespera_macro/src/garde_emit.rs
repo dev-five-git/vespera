@@ -35,7 +35,7 @@ use proc_macro2::Span;
 #[cfg(feature = "validation")]
 use quote::{format_ident, quote};
 #[cfg(feature = "validation")]
-use syn::{Data, Fields, GenericArgument, PathArguments, Type};
+use syn::{Data, Fields, Type};
 
 #[cfg(feature = "validation")]
 use crate::parser::schema::schema_attrs::{SchemaConstraints, extract_schema_constraints};
@@ -399,31 +399,12 @@ fn numeric_some(value: Option<f64>, numeric_kind: Option<&str>) -> TokenStream {
 
 #[cfg(feature = "validation")]
 fn is_option_type(ty: &Type) -> bool {
-    let Type::Path(tp) = ty else {
-        return false;
-    };
-    tp.path
-        .segments
-        .last()
-        .is_some_and(|seg| seg.ident == "Option")
+    crate::schema_macro::type_utils::option_inner(ty).is_some()
 }
 
 #[cfg(feature = "validation")]
 fn peel_option(ty: &Type) -> Option<&Type> {
-    let Type::Path(tp) = ty else {
-        return None;
-    };
-    let last = tp.path.segments.last()?;
-    if last.ident != "Option" {
-        return None;
-    }
-    let PathArguments::AngleBracketed(args) = &last.arguments else {
-        return None;
-    };
-    args.args.iter().find_map(|arg| match arg {
-        GenericArgument::Type(t) => Some(t),
-        _ => None,
-    })
+    crate::schema_macro::type_utils::option_inner(ty)
 }
 
 #[cfg(feature = "validation")]

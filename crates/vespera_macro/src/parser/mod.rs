@@ -7,7 +7,7 @@ mod path;
 mod request_body;
 mod response;
 pub mod schema;
-pub use extractor_validation::validate_schema_backed_extractors;
+pub use extractor_validation::validate_schema_backed_extractors_with_cache;
 pub use operation::{OperationRouteConfig, build_operation_from_function};
 pub use schema::{
     extract_default, extract_field_rename, extract_rename_all, extract_skip,

@@ -61,15 +61,22 @@ public class VesperaBridge {
     private static final int WIRE_VERSION = 1;
     /** Shared empty request body — avoids a {@code new byte[0]} per call. */
     private static final byte[] EMPTY_BODY = new byte[0];
+    private static final int HEADER_INITIAL_CAPACITY = 256;
+    private static final int HEADER_RETAIN_CAPACITY = 32 * 1024;
+
     /**
      * Per-thread reusable byte buffer for {@link #fillHeaderJson}.
      * Reset (size cleared, capacity preserved) per call and filled
-     * byte-direct — no per-call encoder object.  Virtual-thread caveat
-     * as {@link #DIRECT_POOL}: each vthread gets its own ~256 B buffer
-     * in Java 21+ and loses pooling until GC.
+     * byte-direct — no per-call encoder object.  If one request grows
+     * the backing array past {@link #HEADER_RETAIN_CAPACITY}, the next
+     * use on that thread drops it back to {@link #HEADER_INITIAL_CAPACITY}
+     * so oversized cookies/headers do not pin a large array for the
+     * servlet-thread lifetime.  Virtual-thread caveat as {@link #DIRECT_POOL}:
+     * each vthread gets its own ~256 B buffer in Java 21+ and loses pooling
+     * until GC.
      */
     private static final ThreadLocal<ExposedByteArrayOutputStream> HEADER_BUF =
-            ThreadLocal.withInitial(() -> new ExposedByteArrayOutputStream(256));
+            ThreadLocal.withInitial(() -> new ExposedByteArrayOutputStream(HEADER_INITIAL_CAPACITY));
 
     /**
      * {@link ByteArrayOutputStream} that exposes its backing array so the
@@ -90,6 +97,10 @@ public class VesperaBridge {
         /** Backing buffer; valid content is {@code [0, size())} only. */
         byte[] backingArray() {
             return buf;
+        }
+
+        int capacity() {
+            return buf.length;
         }
 
         /**
@@ -598,11 +609,16 @@ public class VesperaBridge {
     /**
      * Maximum per-thread direct buffer capacity (default 4 MiB,
      * overridable via the {@code vespera.direct.maxBufferBytes} system
-     * property).  Payloads beyond the cap fall back to
-     * {@link #dispatchBytes(byte[])}.
+     * property, clamped to 64 KiB–256 MiB). Payloads beyond the cap fall
+     * back to {@link #dispatchBytes(byte[])}.
      */
-    private static final int DIRECT_MAX_CAPACITY = Integer.getInteger(
-            "vespera.direct.maxBufferBytes", 4 * 1024 * 1024);
+    private static final int DIRECT_MAX_HARD_CAPACITY = 256 * 1024 * 1024;
+    private static final int DIRECT_MAX_CAPACITY = directMaxCapacity();
+
+    private static int directMaxCapacity() {
+        int configured = Integer.getInteger("vespera.direct.maxBufferBytes", 4 * 1024 * 1024);
+        return Math.max(DIRECT_INITIAL_CAPACITY, Math.min(DIRECT_MAX_HARD_CAPACITY, configured));
+    }
 
     /**
      * Per-thread <strong>hard retention cap</strong> for the pooled
@@ -659,16 +675,19 @@ public class VesperaBridge {
     /**
      * Resolve the calling thread's pooled direct buffers, (re)allocating
      * a baseline pair when the {@link SoftReference} has been cleared
-     * under memory pressure, and shrinking any buffer a prior large
-     * dispatch grew past {@link #DIRECT_RETAIN_CAPACITY} back to the
-     * baseline.
+     * under memory pressure.
      *
-     * <p>Shrinking here — at the <em>start</em> of a dispatch, before any
-     * request bytes are written into the pool — is safe with respect to
-     * the "view valid until the next dispatch" contract of
-     * {@link #dispatchDirectPooled(byte[], boolean)}: the previous
-     * response view's validity window has already ended by the time the
-     * next dispatch begins.
+     * <p>Retention is adaptive rather than start-of-next-call eager: a
+     * buffer that grew above {@link #DIRECT_RETAIN_CAPACITY} is kept while
+     * this thread continues to see large successful requests/responses, so
+     * repeated 2&ndash;4 MiB idempotent endpoints do not shrink, overflow,
+     * allocate, and re-run the handler on every dispatch.  Shrink back to
+     * {@link #DIRECT_INITIAL_CAPACITY} happens only after
+     * {@link #DIRECT_SHRINK_IDLE_DISPATCHES} consecutive successful pooled
+     * dispatches whose request and response both fit under the retain cap.
+     * This preserves {@code vespera.direct.maxBufferBytes}: buffers still
+     * never grow beyond that hard cap, and beyond-cap retries still fall
+     * back to the heap path.
      */
     private static ByteBuffer[] directPool() {
         SoftReference<ByteBuffer[]> ref = DIRECT_POOL.get();
@@ -678,7 +697,25 @@ public class VesperaBridge {
                     ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY),
                     ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY)};
             DIRECT_POOL.set(new SoftReference<>(pool));
+            DIRECT_UNDER_RETAIN_STREAK.set(0);
             return pool;
+        }
+        return pool;
+    }
+
+    private static final int DIRECT_SHRINK_IDLE_DISPATCHES = 8;
+    private static final ThreadLocal<Integer> DIRECT_UNDER_RETAIN_STREAK =
+            ThreadLocal.withInitial(() -> 0);
+
+    private static void recordDirectPoolUse(ByteBuffer[] pool, int requestLen, int responseLen) {
+        if (requestLen > DIRECT_RETAIN_CAPACITY || responseLen > DIRECT_RETAIN_CAPACITY) {
+            DIRECT_UNDER_RETAIN_STREAK.set(0);
+            return;
+        }
+        int streak = DIRECT_UNDER_RETAIN_STREAK.get() + 1;
+        if (streak < DIRECT_SHRINK_IDLE_DISPATCHES) {
+            DIRECT_UNDER_RETAIN_STREAK.set(streak);
+            return;
         }
         if (pool[0].capacity() > DIRECT_RETAIN_CAPACITY) {
             pool[0] = ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY);
@@ -686,7 +723,7 @@ public class VesperaBridge {
         if (pool[1].capacity() > DIRECT_RETAIN_CAPACITY) {
             pool[1] = ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY);
         }
-        return pool;
+        DIRECT_UNDER_RETAIN_STREAK.set(0);
     }
 
     /**
@@ -990,6 +1027,7 @@ public class VesperaBridge {
         }
         ByteBuffer view = pool[1].asReadOnlyBuffer();
         view.position(0).limit(n);
+        recordDirectPoolUse(pool, reqLen, n);
         return view;
     }
 
@@ -1169,8 +1207,7 @@ public class VesperaBridge {
      */
     private static ExposedByteArrayOutputStream fillHeaderJson(String appName, String method,
             String path, String query, Map<String, String> headers) {
-        ExposedByteArrayOutputStream buf = HEADER_BUF.get();
-        buf.reset();
+        ExposedByteArrayOutputStream buf = reusableHeaderBuffer();
         // {"v":<WIRE_VERSION>, ...} — WIRE_VERSION is a single decimal digit.
         buf.putAscii("{\"v\":");
         buf.put('0' + WIRE_VERSION);
@@ -1206,8 +1243,7 @@ public class VesperaBridge {
 
     private static ExposedByteArrayOutputStream fillHeaderJson(String appName, String method,
             String path, String query, HeaderSource headers) {
-        ExposedByteArrayOutputStream buf = HEADER_BUF.get();
-        buf.reset();
+        ExposedByteArrayOutputStream buf = reusableHeaderBuffer();
         // {"v":<WIRE_VERSION>, ...} — WIRE_VERSION is a single decimal digit.
         buf.putAscii("{\"v\":");
         buf.put('0' + WIRE_VERSION);
@@ -1231,6 +1267,17 @@ public class VesperaBridge {
             writeJsonString(buf, appName.trim());
         }
         buf.put('}');
+        return buf;
+    }
+
+    private static ExposedByteArrayOutputStream reusableHeaderBuffer() {
+        ExposedByteArrayOutputStream buf = HEADER_BUF.get();
+        if (buf.capacity() > HEADER_RETAIN_CAPACITY) {
+            buf = new ExposedByteArrayOutputStream(HEADER_INITIAL_CAPACITY);
+            HEADER_BUF.set(buf);
+        } else {
+            buf.reset();
+        }
         return buf;
     }
 

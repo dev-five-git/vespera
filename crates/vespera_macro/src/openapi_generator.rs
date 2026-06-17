@@ -31,6 +31,7 @@ pub struct OpenApiSecurity {
 ///
 /// When `file_cache` is provided (from collector), skips file I/O entirely.
 /// When `None`, falls back to reading files from disk (used in tests).
+#[cfg(test)]
 pub fn generate_openapi_doc_with_metadata(
     title: Option<String>,
     version: Option<String>,
@@ -40,6 +41,29 @@ pub fn generate_openapi_doc_with_metadata(
     file_cache: Option<HashMap<String, syn::File>>,
     route_storage: &[StoredRouteInfo],
 ) -> OpenApi {
+    try_generate_openapi_doc_with_metadata(
+        title,
+        version,
+        servers,
+        security_config,
+        metadata,
+        file_cache,
+        route_storage,
+    )
+    .expect("vespera: OpenAPI generation failed")
+}
+
+/// Fallible OpenAPI document generation used by proc-macro entry points so
+/// worker diagnostics become compile errors instead of panics.
+pub fn try_generate_openapi_doc_with_metadata(
+    title: Option<String>,
+    version: Option<String>,
+    servers: Option<Vec<Server>>,
+    security_config: Option<OpenApiSecurity>,
+    metadata: &CollectedMetadata,
+    file_cache: Option<HashMap<String, syn::File>>,
+    route_storage: &[StoredRouteInfo],
+) -> syn::Result<OpenApi> {
     let profiling = std::env::var("VESPERA_PROFILE").is_ok();
     let mut stage_start = std::time::Instant::now();
     let mut stage = |name: &str| {
@@ -62,7 +86,7 @@ pub fn generate_openapi_doc_with_metadata(
         &struct_definitions,
         &file_cache,
         &struct_file_index,
-    );
+    )?;
     stage("component schemas");
     let (paths, all_tags) = build_path_items(
         metadata,
@@ -70,12 +94,12 @@ pub fn generate_openapi_doc_with_metadata(
         &struct_definitions,
         &file_cache,
         route_storage,
-    );
+    )?;
     stage("path items");
     let security_config = security_config.unwrap_or_default();
     let tags = build_tags(all_tags, security_config.tag_descriptions.as_ref());
 
-    OpenApi {
+    Ok(OpenApi {
         openapi: OpenApiVersion::V3_1_0,
         info: Info {
             title: title.unwrap_or_else(|| "API".to_string()),
@@ -106,7 +130,7 @@ pub fn generate_openapi_doc_with_metadata(
         security: security_config.security,
         tags,
         external_docs: None,
-    }
+    })
 }
 
 fn build_tags(
@@ -269,7 +293,7 @@ mod tests {
             deprecated: false,
             description: Some("A secured route".to_string()),
             file_path: None,
-            fn_item_str: "pub async fn secure_route() -> &'static str { \"ok\" }".to_string(),
+            fn_sig_str: "async fn secure_route() -> &'static str".to_string(),
         }];
 
         let doc = generate_openapi_doc_with_metadata(
@@ -391,7 +415,7 @@ mod tests {
             deprecated: true,
             description: None,
             file_path: None,
-            fn_item_str: "pub async fn get_user() -> &'static str { \"ok\" }".to_string(),
+            fn_sig_str: "async fn get_user() -> &'static str".to_string(),
         }];
 
         let doc = generate_openapi_doc_with_metadata(
@@ -454,7 +478,7 @@ mod tests {
             deprecated: false,
             description: None,
             file_path: None,
-            fn_item_str: "pub async fn get_user() -> &'static str { \"ok\" }".to_string(),
+            fn_sig_str: "async fn get_user() -> &'static str".to_string(),
         }];
 
         let doc = generate_openapi_doc_with_metadata(
@@ -528,7 +552,7 @@ mod tests {
             deprecated: false,
             description: None,
             file_path: None,
-            fn_item_str: "pub async fn create_user(vespera::axum::Json(user): vespera::axum::Json<User>) -> vespera::axum::Json<User> { vespera::axum::Json(user) }".to_string(),
+            fn_sig_str: "async fn create_user(vespera::axum::Json(user): vespera::axum::Json<User>) -> vespera::axum::Json<User>".to_string(),
         }];
 
         let doc = generate_openapi_doc_with_metadata(
@@ -586,7 +610,7 @@ mod tests {
             deprecated: false,
             description: None,
             file_path: None,
-            fn_item_str: "pub async fn list_users() -> &'static str { \"ok\" }".to_string(),
+            fn_sig_str: "async fn list_users() -> &'static str".to_string(),
         }];
 
         let doc = generate_openapi_doc_with_metadata(

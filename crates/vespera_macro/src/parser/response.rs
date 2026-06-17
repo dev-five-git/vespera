@@ -195,8 +195,107 @@ fn response_content_types(ty: &Type) -> (&'static str, &'static str) {
     }
 }
 
+fn content_for_type(
+    ty: &Type,
+    content_type: &str,
+    known_schemas: &HashSet<String>,
+    struct_definitions: &HashMap<String, String>,
+) -> Option<BTreeMap<String, MediaType>> {
+    if is_keyword_type(ty, &KeywordType::StatusCode) {
+        return None;
+    }
+
+    let schema = parse_type_to_schema_ref_with_schemas(ty, known_schemas, struct_definitions);
+    let mut content = BTreeMap::new();
+    content.insert(
+        content_type.to_string(),
+        MediaType {
+            schema: Some(schema),
+            example: None,
+            examples: None,
+        },
+    );
+    Some(content)
+}
+
+fn successful_response(
+    content: Option<BTreeMap<String, MediaType>>,
+    headers: Option<BTreeMap<String, Header>>,
+) -> Response {
+    Response {
+        description: "Successful response".to_string(),
+        headers,
+        content,
+    }
+}
+
+fn error_response(content: Option<BTreeMap<String, MediaType>>) -> Response {
+    Response {
+        description: "Error response".to_string(),
+        headers: None,
+        content,
+    }
+}
+
+fn insert_result_responses(
+    responses: &mut BTreeMap<String, Response>,
+    ok_ty: &Type,
+    err_ty: &Type,
+    ok_content_type: &str,
+    err_content_type: &str,
+    known_schemas: &HashSet<String>,
+    struct_definitions: &HashMap<String, String>,
+) {
+    let (ok_payload_ty, ok_headers) = extract_ok_payload_and_headers(ok_ty);
+    let ok_content = content_for_type(
+        &ok_payload_ty,
+        ok_content_type,
+        known_schemas,
+        struct_definitions,
+    );
+    responses.insert(
+        "200".to_string(),
+        successful_response(ok_content, ok_headers),
+    );
+
+    if let Some((status_code, error_type)) = extract_status_code_tuple(err_ty) {
+        let err_content = content_for_type(
+            &error_type,
+            err_content_type,
+            known_schemas,
+            struct_definitions,
+        );
+        responses.insert(status_code.to_string(), error_response(err_content));
+    } else {
+        let err_ty_unwrapped = unwrap_json(err_ty);
+        let err_content = content_for_type(
+            err_ty_unwrapped,
+            err_content_type,
+            known_schemas,
+            struct_definitions,
+        );
+        responses.insert("400".to_string(), error_response(err_content));
+    }
+}
+
+fn insert_plain_response(
+    responses: &mut BTreeMap<String, Response>,
+    ty: &Type,
+    content_type: &str,
+    known_schemas: &HashSet<String>,
+    struct_definitions: &HashMap<String, String>,
+) {
+    let unwrapped_ty = unwrap_json(ty);
+    let content = content_for_type(
+        unwrapped_ty,
+        content_type,
+        known_schemas,
+        struct_definitions,
+    );
+    responses.insert("200".to_string(), successful_response(content, None));
+}
+
 /// Analyze return type and convert to Responses map
-#[allow(clippy::too_many_lines)]
 pub fn parse_return_type(
     return_type: &ReturnType,
     known_schemas: &HashSet<String>,
@@ -218,129 +317,23 @@ pub fn parse_return_type(
         }
         ReturnType::Type(_, ty) => {
             let (ok_content_type, err_content_type) = response_content_types(ty);
-            // Check if it's a Result<T, E>
             if let Some((ok_ty, err_ty)) = extract_result_types(ty) {
-                // Handle success response (200)
-                let (ok_payload_ty, ok_headers) = extract_ok_payload_and_headers(&ok_ty);
-
-                // StatusCode alone means no response body — just the HTTP status code
-                let ok_content = if is_keyword_type(&ok_payload_ty, &KeywordType::StatusCode) {
-                    None
-                } else {
-                    let ok_schema = parse_type_to_schema_ref_with_schemas(
-                        &ok_payload_ty,
-                        known_schemas,
-                        struct_definitions,
-                    );
-                    let mut content = BTreeMap::new();
-                    content.insert(
-                        ok_content_type.to_string(),
-                        MediaType {
-                            schema: Some(ok_schema),
-                            example: None,
-                            examples: None,
-                        },
-                    );
-                    Some(content)
-                };
-
-                responses.insert(
-                    "200".to_string(),
-                    Response {
-                        description: "Successful response".to_string(),
-                        headers: ok_headers,
-                        content: ok_content,
-                    },
+                insert_result_responses(
+                    &mut responses,
+                    &ok_ty,
+                    &err_ty,
+                    ok_content_type,
+                    err_content_type,
+                    known_schemas,
+                    struct_definitions,
                 );
-
-                // Handle error response
-                // Check if error is (StatusCode, E) tuple
-                if let Some((status_code, error_type)) = extract_status_code_tuple(&err_ty) {
-                    // Use the status code from the tuple
-                    let err_schema = parse_type_to_schema_ref_with_schemas(
-                        &error_type,
-                        known_schemas,
-                        struct_definitions,
-                    );
-                    let mut err_content = BTreeMap::new();
-                    err_content.insert(
-                        err_content_type.to_string(),
-                        MediaType {
-                            schema: Some(err_schema),
-                            example: None,
-                            examples: None,
-                        },
-                    );
-
-                    responses.insert(
-                        status_code.to_string(),
-                        Response {
-                            description: "Error response".to_string(),
-                            headers: None,
-                            content: Some(err_content),
-                        },
-                    );
-                } else {
-                    // Regular error type - use default 400
-                    // Unwrap Json if present
-                    let err_ty_unwrapped = unwrap_json(&err_ty);
-                    let err_schema = parse_type_to_schema_ref_with_schemas(
-                        err_ty_unwrapped,
-                        known_schemas,
-                        struct_definitions,
-                    );
-                    let mut err_content = BTreeMap::new();
-                    err_content.insert(
-                        err_content_type.to_string(),
-                        MediaType {
-                            schema: Some(err_schema),
-                            example: None,
-                            examples: None,
-                        },
-                    );
-
-                    responses.insert(
-                        "400".to_string(),
-                        Response {
-                            description: "Error response".to_string(),
-                            headers: None,
-                            content: Some(err_content),
-                        },
-                    );
-                }
             } else {
-                // Not a Result type - regular response
-                // Unwrap Json<T> if present
-                let unwrapped_ty = unwrap_json(ty);
-
-                // StatusCode alone means no response body
-                let content = if is_keyword_type(unwrapped_ty, &KeywordType::StatusCode) {
-                    None
-                } else {
-                    let schema = parse_type_to_schema_ref_with_schemas(
-                        unwrapped_ty,
-                        known_schemas,
-                        struct_definitions,
-                    );
-                    let mut c = BTreeMap::new();
-                    c.insert(
-                        ok_content_type.to_string(),
-                        MediaType {
-                            schema: Some(schema),
-                            example: None,
-                            examples: None,
-                        },
-                    );
-                    Some(c)
-                };
-
-                responses.insert(
-                    "200".to_string(),
-                    Response {
-                        description: "Successful response".to_string(),
-                        headers: None,
-                        content,
-                    },
+                insert_plain_response(
+                    &mut responses,
+                    ty,
+                    ok_content_type,
+                    known_schemas,
+                    struct_definitions,
                 );
             }
         }

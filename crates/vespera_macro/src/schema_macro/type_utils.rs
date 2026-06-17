@@ -57,16 +57,31 @@ pub fn is_qualified_path(ty: &Type) -> bool {
     }
 }
 
-/// Check if a type is Option<T>
-pub fn is_option_type(ty: &Type) -> bool {
-    match ty {
-        Type::Path(type_path) => type_path
-            .path
-            .segments
-            .first()
-            .is_some_and(|s| s.ident == "Option"),
-        _ => false,
+/// Extract the inner `T` from `Option<T>`.
+///
+/// Uses the last path segment so qualified forms such as
+/// `std::option::Option<T>` and `core::option::Option<T>` are treated the same
+/// as a bare `Option<T>`.
+pub fn option_inner(ty: &Type) -> Option<&Type> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != "Option" {
+        return None;
     }
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|arg| match arg {
+        GenericArgument::Type(inner) => Some(inner),
+        _ => None,
+    })
+}
+
+/// Check if a type is `Option<T>`.
+pub fn is_option_type(ty: &Type) -> bool {
+    option_inner(ty).is_some()
 }
 
 /// Check if a type is a `SeaORM` relation type (`HasOne`, `HasMany`, `BelongsTo`)

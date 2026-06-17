@@ -7,6 +7,12 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Lock-free read snapshot for the multi-app router registry: named-app
+# dispatch (every request in a multi-app JNI deployment) resolves with a
+# single atomic load instead of an `RwLock` read acquisition, matching
+# the lock-free fast path the default app already enjoys.  Registration
+# (startup-only, first-wins) goes through copy-on-write `rcu`.
+arc-swap = "1"
 axum = "0.8"
 bytes = "1"
 http = "1"

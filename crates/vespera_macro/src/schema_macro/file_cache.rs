@@ -26,7 +26,8 @@
 //! invalidation semantics (important for rust-analyzer's long-lived server).
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -55,13 +56,32 @@ use super::circular::CircularAnalysis;
 use super::file_lookup::collect_rs_files_recursive;
 use crate::metadata::StructMetadata;
 
+/// Cached directory walk for a single `src_dir`.
+///
+/// `fingerprint` is a SipHash over the sorted `(path, mtime)` pairs of
+/// every `.rs` file under the directory. Within the same macro
+/// invocation (matched via `last_epoch_validated == cache.epoch`) the
+/// entry is trusted without rewalking; across invocations the directory
+/// is rewalked once and the fingerprint comparison decides whether the
+/// cached `files` (and the dependent `struct_index`) stay live.
+///
+/// Replaces the prior bare `Arc<[PathBuf]>` cache, which silently
+/// missed `.rs` files added in long-lived rust-analyzer proc-macro
+/// servers.
+#[derive(Clone)]
+struct DirEntry {
+    fingerprint: u64,
+    last_epoch_validated: u64,
+    files: Arc<[PathBuf]>,
+}
+
 /// Internal cache state.
 struct FileCache {
-    /// Cached `.rs` file lists per source directory.
+    /// Cached `.rs` file lists per source directory with a directory
+    /// fingerprint for cross-invocation invalidation.
     ///
-    /// `Arc<[PathBuf]>` so cache hits hand out an O(1) pointer clone
-    /// instead of cloning every path in the list.
-    file_lists: HashMap<PathBuf, Arc<[PathBuf]>>,
+    /// See [`DirEntry`] for the invalidation semantics.
+    file_lists: HashMap<PathBuf, DirEntry>,
 
     /// Cached file contents: file path → (mtime, content string).
     /// Mtime is checked to invalidate stale entries in long-lived processes.
@@ -72,10 +92,19 @@ struct FileCache {
     /// on insert; both become single-word `Arc::clone`s.
     file_contents: HashMap<PathBuf, (SystemTime, Arc<String>)>,
 
-    /// Struct name candidate index: (src_dir, struct_name) → files containing that name.
-    /// Built from cheap `String::contains` search, not full parsing.
-    /// `Arc<[PathBuf]>` for O(1) cache-hit clones.
-    struct_candidates: HashMap<(PathBuf, String), Arc<[PathBuf]>>,
+    /// Per-`src_dir` struct identifier index: struct name → files that
+    /// define it (as a top-level `struct <Name>` declaration found via
+    /// cheap source-text tokenisation in [`extract_struct_names`]).
+    ///
+    /// Built lazily on the first `get_struct_candidates` call for a
+    /// directory; dropped alongside its `file_lists` entry whenever the
+    /// directory fingerprint changes.
+    ///
+    /// Replaces the prior per-`(src_dir, name)` full-source
+    /// `String::contains` scan (`struct_candidates`), which was
+    /// O(N×M) for N struct lookups across M files. The index is O(M)
+    /// tokenisation passes to build, then O(1) per lookup.
+    struct_index: HashMap<PathBuf, HashMap<String, Arc<[PathBuf]>>>,
 
     // NOTE: We CANNOT cache `syn::File` or `syn::ItemStruct` across proc-macro
     // invocations. Both `syn` and `proc_macro2` types contain `proc_macro::Span`
@@ -140,7 +169,7 @@ thread_local! {
     static FILE_CACHE: RefCell<FileCache> = RefCell::new(FileCache {
         file_lists: HashMap::with_capacity(4),
         file_contents: HashMap::with_capacity(32),
-        struct_candidates: HashMap::with_capacity(32),
+        struct_index: HashMap::with_capacity(4),
         file_disk_reads: 0,
         content_cache_hits: 0,
         struct_parses: 0,
@@ -237,43 +266,163 @@ fn parse_file_cached(cache: &mut FileCache, path: &Path) -> Option<syn::File> {
     syn::parse_file(&content).ok()
 }
 
-/// Get candidate files that likely contain `struct_name`, using cache when available.
+/// Walk every `.rs` file under `dir` and produce a content-stable
+/// fingerprint of `(sorted path, mtime)` pairs.
 ///
-/// Performs a cheap text-based search (`String::contains`) on file contents.
-/// False positives are acceptable (struct name in comments/strings), but false
-/// negatives are not. Results are cached per `(src_dir, struct_name)` pair.
+/// The fingerprint is a `DefaultHasher` (SipHash) digest computed in
+/// path-sorted order so it is determinstic and stable across runs.  It
+/// changes iff a `.rs` file under `dir` is added, removed, or modified
+/// in a way that perturbs its mtime — which is exactly the trigger we
+/// need to invalidate the cached file list and the dependent struct
+/// identifier index.
+///
+/// `mtime` lookups reuse the per-epoch [`get_mtime_cached`] so this is
+/// effectively one `fs::metadata` per file per epoch, and zero subsequent
+/// `fs::metadata` calls for the same path within the same epoch.
+fn walk_and_fingerprint(cache: &mut FileCache, dir: &Path) -> (Vec<PathBuf>, u64) {
+    let mut files = Vec::new();
+    collect_rs_files_recursive(dir, &mut files);
+    files.sort();
+
+    let mut hasher = DefaultHasher::new();
+    for path in &files {
+        path.hash(&mut hasher);
+        if let Some(mtime) = get_mtime_cached(cache, path)
+            && let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH)
+        {
+            duration.as_secs().hash(&mut hasher);
+            duration.subsec_nanos().hash(&mut hasher);
+        }
+    }
+    (files, hasher.finish())
+}
+
+/// Validate (or build) the [`DirEntry`] for `src_dir` and return its file list.
+///
+/// * Same epoch (`last_epoch_validated == cache.epoch`) → trust cache,
+///   no rewalk, no `fs::metadata` calls — pure `Arc::clone`.
+/// * New epoch, identical fingerprint → refresh `last_epoch_validated`
+///   to suppress further work in the rest of the epoch; cached
+///   [`FileCache::struct_index`] entry stays live.
+/// * New epoch, different fingerprint → drop the dependent
+///   [`FileCache::struct_index`] entry; install a fresh `DirEntry`.
+fn ensure_file_list(cache: &mut FileCache, src_dir: &Path) -> Arc<[PathBuf]> {
+    let current_epoch = cache.epoch;
+
+    if let Some(entry) = cache.file_lists.get(src_dir)
+        && entry.last_epoch_validated == current_epoch
+    {
+        return Arc::clone(&entry.files);
+    }
+
+    let (files_vec, fp) = walk_and_fingerprint(cache, src_dir);
+
+    if let Some(entry) = cache.file_lists.get(src_dir) {
+        if entry.fingerprint == fp {
+            let files = Arc::clone(&entry.files);
+            cache.file_lists.insert(
+                src_dir.to_path_buf(),
+                DirEntry {
+                    fingerprint: fp,
+                    last_epoch_validated: current_epoch,
+                    files: Arc::clone(&files),
+                },
+            );
+            return files;
+        }
+        // Directory changed: the dependent index is now stale.
+        cache.struct_index.remove(src_dir);
+    }
+
+    let files: Arc<[PathBuf]> = files_vec.into();
+    cache.file_lists.insert(
+        src_dir.to_path_buf(),
+        DirEntry {
+            fingerprint: fp,
+            last_epoch_validated: current_epoch,
+            files: Arc::clone(&files),
+        },
+    );
+    files
+}
+
+/// Cheap source-text tokeniser: extract every `struct <Name>` identifier
+/// from `content`.
+///
+/// Splits on the standard Rust identifier-character class and walks the
+/// resulting token stream looking for the literal `struct` followed by
+/// a valid identifier.  This is intentionally lighter than `syn::parse_file`
+/// — false positives in comments or strings are acceptable (the eventual
+/// [`get_struct_definition`] still does the exact match), but `struct`
+/// keywords inside string literals are exceedingly rare in real source
+/// and false negatives are not possible for any actually-defined struct.
+fn extract_struct_names(content: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut tokens = content
+        .split(|c: char| !(c == '_' || c.is_ascii_alphanumeric()))
+        .filter(|token| !token.is_empty());
+
+    while let Some(token) = tokens.next() {
+        if token == "struct"
+            && let Some(name) = tokens.next()
+            && name
+                .chars()
+                .next()
+                .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+        {
+            names.push(name.to_string());
+        }
+    }
+
+    names
+}
+
+/// Get candidate files that likely contain `struct_name`.
+///
+/// Uses the per-`src_dir` struct identifier index built lazily on first
+/// access.  Once built, subsequent lookups for *any* struct name under
+/// the same `src_dir` are O(1) — replacing the prior per-name
+/// full-source `String::contains` scan (O(N×M) for N lookups across
+/// M files).
+///
+/// The index lives alongside the directory fingerprint in
+/// [`FileCache::file_lists`]; both are dropped together whenever the
+/// fingerprint changes (file added/removed/modified), so newly added
+/// `.rs` files become visible after the next `bump_epoch` in long-lived
+/// rust-analyzer servers.
 pub fn get_struct_candidates(src_dir: &Path, struct_name: &str) -> Arc<[PathBuf]> {
     FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let key = (src_dir.to_path_buf(), struct_name.to_string());
 
-        if let Some(candidates) = cache.struct_candidates.get(&key) {
-            return Arc::clone(candidates);
+        // Validate / build the `.rs` file list under fingerprint control
+        // (handles ADD/REMOVE/MODIFY invalidation across epochs).
+        let files = ensure_file_list(&mut cache, src_dir);
+
+        // Build the per-src_dir struct identifier index on first miss.
+        // Subsequent calls for any name under the same src_dir short
+        // circuit to an O(1) lookup.
+        if !cache.struct_index.contains_key(src_dir) {
+            let mut grouped: HashMap<String, Vec<PathBuf>> = HashMap::new();
+            for path in files.iter() {
+                let Some(content) = get_file_content_inner(&mut cache, path) else {
+                    continue;
+                };
+                for name in extract_struct_names(&content) {
+                    grouped.entry(name).or_default().push(path.clone());
+                }
+            }
+            let index: HashMap<String, Arc<[PathBuf]>> = grouped
+                .into_iter()
+                .map(|(name, paths)| (name, paths.into()))
+                .collect();
+            cache.struct_index.insert(src_dir.to_path_buf(), index);
         }
 
-        let files: Arc<[PathBuf]> = if let Some(files) = cache.file_lists.get(src_dir) {
-            Arc::clone(files)
-        } else {
-            let mut files = Vec::new();
-            collect_rs_files_recursive(src_dir, &mut files);
-            let files: Arc<[PathBuf]> = files.into();
-            cache
-                .file_lists
-                .insert(src_dir.to_path_buf(), Arc::clone(&files));
-            files
-        };
-
-        let candidates: Arc<[PathBuf]> = files
-            .iter()
-            .filter(|path| {
-                let content = get_file_content_inner(&mut cache, path);
-                content.is_some_and(|c| c.contains(struct_name))
-            })
-            .cloned()
-            .collect();
-
-        cache.struct_candidates.insert(key, Arc::clone(&candidates));
-        candidates
+        cache
+            .struct_index
+            .get(src_dir)
+            .and_then(|idx| idx.get(struct_name).cloned())
+            .unwrap_or_else(|| Vec::<PathBuf>::new().into())
     })
 }
 /// Ensure struct definitions are extracted and cached for the given file.
@@ -509,10 +658,10 @@ pub fn print_profile_summary() {
         eprintln!("  struct parses: {}", cache.struct_parses);
         eprintln!("  AST parses: {}", cache.ast_parses);
         eprintln!(
-            "  cache entries: {} file lists, {} file contents, {} struct candidates",
+            "  cache entries: {} file lists, {} file contents, {} struct index dirs",
             cache.file_lists.len(),
             cache.file_contents.len(),
-            cache.struct_candidates.len()
+            cache.struct_index.len()
         );
         eprintln!(
             "  circular analysis: {} cache hits, {} entries",
@@ -778,6 +927,115 @@ mod tests {
             metadata_call_count() - before_b,
             1,
             "invocation B: second access must NOT call metadata again"
+        );
+    }
+
+    /// Regression test for the original [`FileCache::file_lists`] bug: a
+    /// `.rs` file added to a `src_dir` between two epochs must become
+    /// visible to `get_struct_candidates` after the next [`bump_epoch`],
+    /// because the directory fingerprint changes.
+    ///
+    /// In the pre-fix world the file list was cached forever per `src_dir`
+    /// with no invalidation mechanism — long-lived rust-analyzer servers
+    /// silently missed newly added files. This test would have hit the
+    /// 0-length assertion on the post-bump query.
+    #[serial_test::serial]
+    #[test]
+    fn test_struct_index_invalidates_when_new_file_added() {
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path();
+
+        std::fs::write(src_dir.join("first.rs"), "pub struct First { pub id: i32 }").unwrap();
+
+        bump_epoch();
+        let first = get_struct_candidates(src_dir, "First");
+        assert_eq!(first.len(), 1, "first.rs must be picked up");
+        let missing = get_struct_candidates(src_dir, "Second");
+        assert_eq!(missing.len(), 0, "Second is not yet defined");
+
+        // Simulate a long-lived rust-analyzer session adding a new file
+        // between two top-level macro invocations.
+        std::fs::write(
+            src_dir.join("second.rs"),
+            "pub struct Second { pub name: String }",
+        )
+        .unwrap();
+        bump_epoch();
+
+        let second = get_struct_candidates(src_dir, "Second");
+        assert_eq!(
+            second.len(),
+            1,
+            "newly added second.rs must appear after the directory fingerprint changes",
+        );
+        // First.rs must still be reachable — the rebuild does not lose
+        // previously indexed structs.
+        let first_again = get_struct_candidates(src_dir, "First");
+        assert_eq!(first_again.len(), 1, "First must remain after rebuild");
+    }
+
+    /// Within a single epoch, repeated `get_struct_candidates` calls must
+    /// not rewalk the directory. The first call walks + builds; subsequent
+    /// calls in the same epoch reuse the cached `DirEntry` with no
+    /// `fs::metadata` syscalls.
+    #[serial_test::serial]
+    #[test]
+    fn test_file_list_skips_walk_within_same_epoch() {
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path();
+        std::fs::write(src_dir.join("a.rs"), "pub struct Alpha { pub id: i32 }").unwrap();
+        std::fs::write(src_dir.join("b.rs"), "pub struct Beta { pub name: String }").unwrap();
+
+        reset_metadata_call_count();
+        bump_epoch();
+        let before = metadata_call_count();
+
+        let _ = get_struct_candidates(src_dir, "Alpha");
+        let after_first = metadata_call_count();
+        assert!(
+            after_first > before,
+            "first call must walk the directory (mtime syscalls expected)",
+        );
+
+        // Subsequent calls in the same epoch reuse the validated
+        // `DirEntry` — zero new mtime syscalls for the file-list walk.
+        let _ = get_struct_candidates(src_dir, "Beta");
+        let _ = get_struct_candidates(src_dir, "Alpha");
+        assert_eq!(
+            metadata_call_count(),
+            after_first,
+            "same-epoch lookups must not rewalk the directory",
+        );
+    }
+
+    /// Sanity check: the struct identifier index returns *every* file
+    /// that defines a struct of the given name. Disambiguation by
+    /// schema-name hint happens in
+    /// [`super::file_lookup::find_struct_by_name_in_all_files`] *after*
+    /// the candidate set is returned, so this layer must not pre-filter.
+    #[serial_test::serial]
+    #[test]
+    fn test_struct_index_preserves_disambiguation_candidates() {
+        let temp_dir = TempDir::new().unwrap();
+        let src_dir = temp_dir.path();
+        std::fs::create_dir(src_dir.join("models")).unwrap();
+        std::fs::write(
+            src_dir.join("models").join("user.rs"),
+            "pub struct Model { pub id: i32, pub name: String }",
+        )
+        .unwrap();
+        std::fs::write(
+            src_dir.join("models").join("memo.rs"),
+            "pub struct Model { pub id: i32, pub title: String }",
+        )
+        .unwrap();
+
+        bump_epoch();
+        let candidates = get_struct_candidates(src_dir, "Model");
+        assert_eq!(
+            candidates.len(),
+            2,
+            "both files defining Model must be returned for the disambiguation layer",
         );
     }
 }

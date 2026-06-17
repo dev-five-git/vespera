@@ -80,6 +80,16 @@ tower = { version = "0.5", features = ["util"] }
 vespera_inprocess = { workspace = true }
 # Byte-snapshot testing for 422 validation envelope contract
 insta = "1.48"
+# `Validated<T>` 422-envelope serialization before/after A/B bench.
+criterion = { version = "0.8", features = ["html_reports"] }
+# `derive` for the `#[derive(Validate)]` fixture; `email`/`url` for its
+# field validators (the workspace `garde` is `default-features = false`).
+garde = { version = "0.23", features = ["derive", "email", "url"] }
+serde_json = "1"
+
+[[bench]]
+name = "validation"
+harness = false
 
 [lints]
 workspace = true

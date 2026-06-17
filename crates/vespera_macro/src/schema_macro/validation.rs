@@ -27,7 +27,42 @@
 //! schema_type!(BadSchema from Model, pick = ["nonexistent"]);
 //! ```
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
+
+fn sorted_source_fields(source_field_names: &HashSet<String>) -> Vec<&str> {
+    source_field_names
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn validate_fields_exist<'a>(
+    kind: &str,
+    fields: impl IntoIterator<Item = &'a str>,
+    source_field_names: &HashSet<String>,
+    source_type: &syn::Type,
+    source_type_name: &str,
+) -> Result<(), syn::Error> {
+    for field in fields {
+        if !source_field_names.contains(field) {
+            let prefix = if kind == "partial" {
+                "partial field"
+            } else {
+                "field"
+            };
+            return Err(syn::Error::new_spanned(
+                source_type,
+                format!(
+                    "{prefix} `{field}` does not exist in type `{source_type_name}`. Available fields: {:?}",
+                    sorted_source_fields(source_field_names)
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// Validates that all fields in `pick` exist in the source struct.
 ///
@@ -38,22 +73,13 @@ pub fn validate_pick_fields(
     source_type: &syn::Type,
     source_type_name: &str,
 ) -> Result<(), syn::Error> {
-    if let Some(fields) = pick_fields {
-        for field in fields {
-            if !source_field_names.contains(field) {
-                return Err(syn::Error::new_spanned(
-                    source_type,
-                    format!(
-                        "field `{}` does not exist in type `{}`. Available fields: {:?}",
-                        field,
-                        source_type_name,
-                        source_field_names.iter().collect::<Vec<_>>()
-                    ),
-                ));
-            }
-        }
-    }
-    Ok(())
+    validate_fields_exist(
+        "pick",
+        pick_fields.into_iter().flatten().map(String::as_str),
+        source_field_names,
+        source_type,
+        source_type_name,
+    )
 }
 
 /// Validates that all fields in `omit` exist in the source struct.
@@ -65,22 +91,13 @@ pub fn validate_omit_fields(
     source_type: &syn::Type,
     source_type_name: &str,
 ) -> Result<(), syn::Error> {
-    if let Some(fields) = omit_fields {
-        for field in fields {
-            if !source_field_names.contains(field) {
-                return Err(syn::Error::new_spanned(
-                    source_type,
-                    format!(
-                        "field `{}` does not exist in type `{}`. Available fields: {:?}",
-                        field,
-                        source_type_name,
-                        source_field_names.iter().collect::<Vec<_>>()
-                    ),
-                ));
-            }
-        }
-    }
-    Ok(())
+    validate_fields_exist(
+        "omit",
+        omit_fields.into_iter().flatten().map(String::as_str),
+        source_field_names,
+        source_type,
+        source_type_name,
+    )
 }
 
 /// Validates that all source fields in `rename` exist in the source struct.
@@ -92,22 +109,16 @@ pub fn validate_rename_fields(
     source_type: &syn::Type,
     source_type_name: &str,
 ) -> Result<(), syn::Error> {
-    if let Some(pairs) = rename_pairs {
-        for (from_field, _) in pairs {
-            if !source_field_names.contains(from_field) {
-                return Err(syn::Error::new_spanned(
-                    source_type,
-                    format!(
-                        "field `{}` does not exist in type `{}`. Available fields: {:?}",
-                        from_field,
-                        source_type_name,
-                        source_field_names.iter().collect::<Vec<_>>()
-                    ),
-                ));
-            }
-        }
-    }
-    Ok(())
+    validate_fields_exist(
+        "rename",
+        rename_pairs
+            .into_iter()
+            .flatten()
+            .map(|(from_field, _)| from_field.as_str()),
+        source_field_names,
+        source_type,
+        source_type_name,
+    )
 }
 
 /// Validates that all fields in `partial` (when specific fields are listed) exist in the source struct.
@@ -119,22 +130,13 @@ pub fn validate_partial_fields(
     source_type: &syn::Type,
     source_type_name: &str,
 ) -> Result<(), syn::Error> {
-    if let Some(fields) = partial_fields {
-        for field in fields {
-            if !source_field_names.contains(field) {
-                return Err(syn::Error::new_spanned(
-                    source_type,
-                    format!(
-                        "partial field `{}` does not exist in type `{}`. Available fields: {:?}",
-                        field,
-                        source_type_name,
-                        source_field_names.iter().collect::<Vec<_>>()
-                    ),
-                ));
-            }
-        }
-    }
-    Ok(())
+    validate_fields_exist(
+        "partial",
+        partial_fields.into_iter().flatten().map(String::as_str),
+        source_field_names,
+        source_type,
+        source_type_name,
+    )
 }
 
 /// Extracts all field names from a struct's named fields.

@@ -12,7 +12,7 @@ pub use path_scan::{fingerprints_from_scan, scan_route_folder};
 
 use crate::{
     error::{MacroResult, err_call_site},
-    file_utils::{collect_files, file_to_segments},
+    file_utils::{collect_files, file_to_segments, normalize_display_path},
     metadata::{CollectedMetadata, RouteMetadata},
     route::{extract_doc_comment, extract_route_info},
     route_impl::StoredRouteInfo,
@@ -78,7 +78,7 @@ pub fn collect_metadata_from_files(
             continue;
         }
 
-        let mut file_path = file.display().to_string();
+        let mut file_path = normalize_display_path(file);
 
         let segments = file
             .strip_prefix(folder_path)
@@ -119,7 +119,7 @@ pub fn collect_metadata_from_files(
                 // `#[route]` already resolved the description at expansion
                 // time (explicit attribute OR doc comment — see
                 // `process_route_attribute`), so `stored.description` is
-                // authoritative.  Re-parsing `fn_item_str` here could never
+                // authoritative.  Re-parsing `fn_sig_str` here could never
                 // find a doc comment the attribute macro didn't.
                 let description = stored.description.clone();
 

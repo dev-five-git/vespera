@@ -1,6 +1,7 @@
 package com.devfive.vespera.bridge;
 
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,6 +28,11 @@ import java.util.function.IntConsumer;
  * {@code metadata}, {@code validation_errors}, …) are skipped.
  */
 final class WireHeaderReader {
+
+    private static final int DIRECT_STRING_SCRATCH_INITIAL = 256;
+    private static final int DIRECT_STRING_SCRATCH_MAX = 8 * 1024;
+    private static final ThreadLocal<byte[]> DIRECT_STRING_SCRATCH =
+            ThreadLocal.withInitial(() -> new byte[DIRECT_STRING_SCRATCH_INITIAL]);
 
     private final ByteBuffer buf;
     private int pos;
@@ -179,7 +185,7 @@ final class WireHeaderReader {
                                 Map<String, Object> entry = new LinkedHashMap<>(4);
                                 String k;
                                 while ((k = r.nextKeyCanonical()) != null) {
-                                    entry.put(k, r.readString());
+                                    entry.put(k, r.readPrimitiveValue());
                                 }
                                 out.validationErrors.add(entry);
                             }
@@ -519,11 +525,9 @@ final class WireHeaderReader {
                                 buf.array(),
                                 buf.arrayOffset() + pos,
                                 simpleLen,
-                                java.nio.charset.StandardCharsets.US_ASCII);
+                                StandardCharsets.US_ASCII);
             } else {
-                byte[] tmp = new byte[simpleLen];
-                buf.get(pos, tmp, 0, simpleLen); // absolute bulk get (Java 13+); position untouched
-                s = new String(tmp, java.nio.charset.StandardCharsets.US_ASCII);
+                s = readDirectAsciiString(pos, simpleLen);
             }
             pos += simpleLen + 1; // consume the run + the closing quote
             return s;
@@ -563,6 +567,123 @@ final class WireHeaderReader {
             }
         }
         throw err("unterminated string");
+    }
+
+    private String readDirectAsciiString(int start, int len) {
+        if (len <= DIRECT_STRING_SCRATCH_MAX) {
+            byte[] scratch = directStringScratch(len);
+            buf.get(start, scratch, 0, len); // absolute bulk get; position untouched
+            return new String(scratch, 0, len, StandardCharsets.US_ASCII);
+        }
+        byte[] tmp = new byte[len];
+        buf.get(start, tmp, 0, len);
+        return new String(tmp, StandardCharsets.US_ASCII);
+    }
+
+    private static byte[] directStringScratch(int required) {
+        byte[] scratch = DIRECT_STRING_SCRATCH.get();
+        if (scratch.length < required) {
+            scratch = new byte[Math.min(DIRECT_STRING_SCRATCH_MAX, Math.max(required, scratch.length * 2))];
+            DIRECT_STRING_SCRATCH.set(scratch);
+        }
+        return scratch;
+    }
+
+    /**
+     * Read the primitive JSON values allowed inside validation error maps.
+     * Strings keep the established shape; numbers, booleans, and null are
+     * accepted so future Rust-side hoisted fields do not make Java decoding
+     * fail. Containers are still outside this fixed schema and are skipped.
+     */
+    Object readPrimitiveValue() {
+        int c = peek();
+        return switch (c) {
+            case '"' -> readString();
+            case 't' -> {
+                consumeLiteral("true");
+                yield Boolean.TRUE;
+            }
+            case 'f' -> {
+                consumeLiteral("false");
+                yield Boolean.FALSE;
+            }
+            case 'n' -> {
+                consumeLiteral("null");
+                yield null;
+            }
+            case '{', '[' -> {
+                skipContainerRaw();
+                yield null;
+            }
+            default -> {
+                if (c == '-' || (c >= '0' && c <= '9')) {
+                    yield readNumberValue();
+                }
+                throw err("unexpected primitive value");
+            }
+        };
+    }
+
+    private Object readNumberValue() {
+        skipWs();
+        int start = pos;
+        if (cur() == '-') {
+            pos++;
+        }
+        boolean anyDigit = readDigits();
+        boolean floating = false;
+        if (cur() == '.') {
+            floating = true;
+            pos++;
+            if (!readDigits()) {
+                throw err("expected digit after decimal point");
+            }
+        }
+        int c = cur();
+        if (c == 'e' || c == 'E') {
+            floating = true;
+            pos++;
+            c = cur();
+            if (c == '+' || c == '-') {
+                pos++;
+            }
+            if (!readDigits()) {
+                throw err("expected digit in exponent");
+            }
+        }
+        if (!anyDigit) {
+            pos = start;
+            throw err("expected number");
+        }
+        String token = asciiToken(start, pos - start);
+        try {
+            if (floating) {
+                return Double.valueOf(token);
+            }
+            return Long.valueOf(token);
+        } catch (NumberFormatException overflowOrNan) {
+            return Double.valueOf(token);
+        }
+    }
+
+    private boolean readDigits() {
+        boolean any = false;
+        while (pos < end) {
+            int d = buf.get(pos) & 0xFF;
+            if (d < '0' || d > '9') {
+                break;
+            }
+            pos++;
+            any = true;
+        }
+        return any;
+    }
+
+    private String asciiToken(int start, int len) {
+        if (buf.hasArray()) {
+            return new String(buf.array(), buf.arrayOffset() + start, len, StandardCharsets.US_ASCII);
+        }
+        return readDirectAsciiString(start, len);
     }
 
     /**
@@ -740,5 +861,14 @@ final class WireHeaderReader {
                 break;
             }
         }
+    }
+
+    private void consumeLiteral(String literal) {
+        for (int i = 0; i < literal.length(); i++) {
+            if (pos + i >= end || (buf.get(pos + i) & 0xFF) != literal.charAt(i)) {
+                throw err("expected " + literal);
+            }
+        }
+        pos += literal.length();
     }
 }

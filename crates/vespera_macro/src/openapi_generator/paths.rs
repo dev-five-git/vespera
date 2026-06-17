@@ -27,7 +27,7 @@ use crate::{
 };
 
 type FnIndex<'a> = HashMap<&'a str, HashMap<String, &'a syn::ItemFn>>;
-type StorageFnStrs<'a> = HashMap<(Option<String>, &'a str), Option<&'a str>>;
+type StorageFnSigs<'a> = HashMap<(Option<String>, &'a str), Option<&'a str>>;
 
 /// Build path items and collect tags from route metadata.
 ///
@@ -40,14 +40,14 @@ pub(super) fn build_path_items(
     struct_definitions: &HashMap<String, String>,
     file_cache: &HashMap<String, syn::File>,
     route_storage: &[StoredRouteInfo],
-) -> (BTreeMap<String, PathItem>, BTreeSet<String>) {
+) -> syn::Result<(BTreeMap<String, PathItem>, BTreeSet<String>)> {
     let mut paths = BTreeMap::new();
     let mut all_tags = BTreeSet::new();
 
     // Build the file-AST function index FIRST so the storage path
     // below can skip any function whose AST is already reachable through
     // `file_cache`.  `collector::collect_metadata` has already walked
-    // these files via `syn::parse_file`, so re-parsing `fn_item_str`
+    // these files via `syn::parse_file`, so re-parsing `fn_sig_str`
     // from ROUTE_STORAGE for the same function is pure duplicated work.
     let fn_index: HashMap<&str, HashMap<String, &syn::ItemFn>> = file_cache
         .iter()
@@ -67,14 +67,14 @@ pub(super) fn build_path_items(
         })
         .collect();
 
-    // ROUTE_STORAGE-backed function sources (skipped when the same
+    // ROUTE_STORAGE-backed function signatures (skipped when the same
     // function is already covered by `fn_index` — re-parsing would be
     // duplicated work).  These are plain *strings*, so the expensive
     // `syn::parse_str` + operation build runs on worker threads below;
     // `syn` ASTs are not `Send`, which is also why fn_index-backed
     // routes stay on this thread.
     let cwd = std::env::current_dir().unwrap_or_default();
-    let storage_fn_strs = build_storage_fn_strs(route_storage, &fn_index, &cwd);
+    let storage_fn_sigs = build_storage_fn_sigs(route_storage, &fn_index, &cwd);
 
     // Split routes by signature source. `idx` preserves the original
     // route order so PathItem operations are applied deterministically
@@ -89,13 +89,13 @@ pub(super) fn build_path_items(
             route_meta.function_name.as_str(),
         );
         let legacy_storage_key = (None, route_meta.function_name.as_str());
-        if let Some(fn_str) = storage_fn_strs
+        if let Some(fn_sig_str) = storage_fn_sigs
             .get(&storage_key)
             .copied()
             .flatten()
-            .or_else(|| storage_fn_strs.get(&legacy_storage_key).copied().flatten())
+            .or_else(|| storage_fn_sigs.get(&legacy_storage_key).copied().flatten())
         {
-            parallel_jobs.push((idx, route_meta, fn_str));
+            parallel_jobs.push((idx, route_meta, fn_sig_str));
         } else if let Some(fns) = fn_index.get(route_meta.file_path.as_str())
             && let Some(fn_item) = fns.get(&route_meta.function_name)
         {
@@ -105,13 +105,15 @@ pub(super) fn build_path_items(
 
     let build_one = |route_meta: &crate::metadata::RouteMetadata,
                      fn_sig: &syn::Signature|
-     -> Option<(HttpMethod, vespera_core::route::Operation)> {
+     -> syn::Result<Option<(HttpMethod, vespera_core::route::Operation)>> {
         let Ok(method) = HttpMethod::try_from(route_meta.method.as_str()) else {
-            eprintln!(
-                "vespera: skipping route '{}' \u{2014} unknown HTTP method '{}'",
-                route_meta.path, route_meta.method
-            );
-            return None;
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!(
+                    "vespera: route '{}' has unsupported HTTP method '{}'. Supported methods are GET, POST, PUT, PATCH, DELETE, HEAD, and OPTIONS.",
+                    route_meta.path, route_meta.method
+                ),
+            ));
         };
         let mut operation = build_operation_from_function(
             fn_sig,
@@ -133,7 +135,7 @@ pub(super) fn build_path_items(
             },
         );
         operation.description.clone_from(&route_meta.description);
-        Some((method, operation))
+        Ok(Some((method, operation)))
     };
 
     // Parse + build string-backed routes on worker threads.  Workers
@@ -141,10 +143,10 @@ pub(super) fn build_path_items(
     // data); `syn` parsing inside a worker uses proc-macro2's fallback
     // implementation, which is thread-safe.
     let mut results: Vec<(usize, HttpMethod, vespera_core::route::Operation)> =
-        run_route_jobs_parallel(&parallel_jobs, &build_one);
+        run_route_jobs_parallel(&parallel_jobs, &build_one)?;
 
     for (idx, route_meta, fn_sig) in ast_jobs {
-        if let Some((method, operation)) = build_one(route_meta, fn_sig) {
+        if let Some((method, operation)) = build_one(route_meta, fn_sig)? {
             results.push((idx, method, operation));
         }
     }
@@ -164,14 +166,14 @@ pub(super) fn build_path_items(
         path_item.set_operation(method, operation);
     }
 
-    (paths, all_tags)
+    Ok((paths, all_tags))
 }
 
-fn build_storage_fn_strs<'a>(
+fn build_storage_fn_sigs<'a>(
     route_storage: &'a [StoredRouteInfo],
     fn_index: &FnIndex<'_>,
     cwd: &std::path::Path,
-) -> StorageFnStrs<'a> {
+) -> StorageFnSigs<'a> {
     let mut storage = HashMap::with_capacity(route_storage.len());
     for s in route_storage {
         let already_in_ast = s
@@ -191,7 +193,7 @@ fn build_storage_fn_strs<'a>(
         storage
             .entry(key)
             .and_modify(|slot| *slot = None)
-            .or_insert(Some(s.fn_item_str.as_str()));
+            .or_insert(Some(s.fn_sig_str.as_str()));
     }
     storage
 }
@@ -203,7 +205,7 @@ fn build_storage_fn_strs<'a>(
 /// (zero new dependencies).
 pub(super) const PARALLEL_THRESHOLD: usize = 16;
 
-/// `(original route index, route metadata, fn item source)` job input.
+/// `(original route index, route metadata, fn signature source)` job input.
 pub(super) type RouteJob<'a> = (usize, &'a crate::metadata::RouteMetadata, &'a str);
 
 /// `(original route index, resolved method, built operation)` result.
@@ -213,7 +215,7 @@ pub(super) type BuiltOperation = (usize, HttpMethod, vespera_core::route::Operat
 pub(super) type OperationBuilder<'a> = dyn Fn(
         &crate::metadata::RouteMetadata,
         &syn::Signature,
-    ) -> Option<(HttpMethod, vespera_core::route::Operation)>
+    ) -> syn::Result<Option<(HttpMethod, vespera_core::route::Operation)>>
     + Sync
     + 'a;
 
@@ -230,10 +232,18 @@ impl Drop for FallbackGuard {
 fn run_route_jobs_parallel(
     jobs: &[RouteJob<'_>],
     build_one: &OperationBuilder<'_>,
-) -> Vec<BuiltOperation> {
-    parallel_filter_map(jobs, &|&(idx, route_meta, fn_str): &RouteJob<'_>| {
-        let fn_item = syn::parse_str::<syn::ItemFn>(fn_str).ok()?;
-        build_one(route_meta, &fn_item.sig).map(|(m, op)| (idx, m, op))
+) -> syn::Result<Vec<BuiltOperation>> {
+    parallel_filter_map(jobs, &|&(idx, route_meta, fn_sig_str): &RouteJob<'_>| {
+        let fn_sig = syn::parse_str::<syn::Signature>(fn_sig_str).map_err(|err| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!(
+                    "vespera: failed to parse stored signature for route '{}': {err}",
+                    route_meta.path
+                ),
+            )
+        })?;
+        Ok(build_one(route_meta, &fn_sig)?.map(|(m, op)| (idx, m, op)))
     })
 }
 
@@ -253,13 +263,13 @@ fn run_route_jobs_parallel(
 /// worker panics.
 pub(super) fn parallel_filter_map<T: Sync, R: Send>(
     jobs: &[T],
-    f: &(dyn Fn(&T) -> Option<R> + Sync),
-) -> Vec<R> {
+    f: &(dyn Fn(&T) -> syn::Result<Option<R>> + Sync),
+) -> syn::Result<Vec<R>> {
     let workers = std::thread::available_parallelism()
         .map_or(1, std::num::NonZero::get)
         .min(jobs.len().div_ceil(PARALLEL_THRESHOLD));
     if workers <= 1 || jobs.len() < PARALLEL_THRESHOLD {
-        return jobs.iter().filter_map(f).collect();
+        return jobs.iter().filter_map(|job| f(job).transpose()).collect();
     }
 
     proc_macro2::fallback::force();
@@ -269,15 +279,41 @@ pub(super) fn parallel_filter_map<T: Sync, R: Send>(
     std::thread::scope(|scope| {
         let handles: Vec<_> = jobs
             .chunks(chunk_size)
-            .map(|chunk| scope.spawn(move || chunk.iter().filter_map(f).collect()))
+            .map(|chunk| {
+                scope.spawn(move || {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        chunk.iter().filter_map(|job| f(job).transpose()).collect()
+                    }))
+                })
+            })
             .collect();
         let mut results: Vec<R> = Vec::with_capacity(jobs.len());
         for handle in handles {
-            let chunk_results: Vec<R> = handle.join().expect("parallel macro worker panicked");
-            results.extend(chunk_results);
+            let worker_result = handle
+                .join()
+                .map_err(|panic| worker_panic_error(panic.as_ref()))?;
+            let chunk_results: syn::Result<Vec<R>> =
+                worker_result.map_err(|panic| worker_panic_error(panic.as_ref()))?;
+            results.extend(chunk_results?);
         }
-        results
+        Ok(results)
     })
+}
+
+fn worker_panic_error(panic: &(dyn std::any::Any + Send)) -> syn::Error {
+    let message = panic.downcast_ref::<&str>().map_or_else(
+        || {
+            panic.downcast_ref::<String>().map_or_else(
+                || "parallel macro worker panicked".to_string(),
+                std::clone::Clone::clone,
+            )
+        },
+        |message| (*message).to_string(),
+    );
+    syn::Error::new(
+        proc_macro2::Span::call_site(),
+        format!("vespera: parallel OpenAPI worker failed: {message}"),
+    )
 }
 
 #[cfg(test)]
@@ -350,7 +386,7 @@ mod tests {
 
     #[test]
     fn route_storage_dedup_skips_already_in_ast() {
-        // When a route's `fn_item_str` was already discovered by parsing the
+        // When a route's `fn_sig_str` was already discovered by parsing the
         // source file via `file_cache`, the storage-parse step must skip
         // re-parsing it — exercises the `already_in_ast → return None`
         // branch inside `route_fn_cache` construction.
@@ -382,7 +418,7 @@ mod tests {
             deprecated: false,
             description: None,
             file_path: Some(route_file_path),
-            fn_item_str: route_src.to_string(),
+            fn_sig_str: route_src.to_string(),
         }];
 
         let doc = generate_openapi_doc_with_metadata(
@@ -434,7 +470,7 @@ mod tests {
             response_example: None,
             deprecated: false,
             description: None,
-            fn_item_str: "pub fn get_users() -> String { \"users\".to_string() }".to_string(),
+            fn_sig_str: "fn get_users() -> String".to_string(),
             file_path: None,
         }];
 
@@ -485,7 +521,7 @@ mod tests {
                 response_example: None,
                 deprecated: false,
                 description: None,
-                fn_item_str: "pub fn list() -> String { String::new() }".to_string(),
+                fn_sig_str: "fn list() -> String".to_string(),
                 file_path: Some(users_path),
             },
             StoredRouteInfo {
@@ -504,7 +540,7 @@ mod tests {
                 response_example: None,
                 deprecated: false,
                 description: None,
-                fn_item_str: "pub fn list() -> i32 { 1 }".to_string(),
+                fn_sig_str: "fn list() -> i32".to_string(),
                 file_path: Some(posts_path),
             },
         ];
@@ -593,7 +629,7 @@ mod tests {
                 response_example: None,
                 deprecated: false,
                 description: None,
-                fn_item_str: "pub fn list() -> bool { true }".to_string(),
+                fn_sig_str: "fn list() -> bool".to_string(),
                 file_path: None,
             },
             StoredRouteInfo {
@@ -612,7 +648,7 @@ mod tests {
                 response_example: None,
                 deprecated: false,
                 description: None,
-                fn_item_str: "pub fn list() -> bool { false }".to_string(),
+                fn_sig_str: "fn list() -> bool".to_string(),
                 file_path: None,
             },
         ];
@@ -829,7 +865,7 @@ User { id: 1, name: "Alice".to_string() }
     }
 
     #[test]
-    fn unknown_http_method_route_is_skipped() {
+    fn unknown_http_method_route_is_compile_error() {
         let temp_dir = TempDir::new().unwrap();
         let route_file = create_temp_file(
             &temp_dir,
@@ -845,19 +881,29 @@ User { id: 1, name: "Alice".to_string() }
             &route_file.to_string_lossy(),
         ));
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
+        let err = crate::openapi_generator::try_generate_openapi_doc_with_metadata(
+            None,
+            None,
+            None,
+            None,
+            &metadata,
+            None,
+            &[],
+        )
+        .expect_err("unknown method should fail OpenAPI generation");
 
-        assert!(doc.paths.is_empty(), "unknown method should be skipped");
+        assert!(err.to_string().contains("unsupported HTTP method"));
     }
 
     #[test]
-    fn unknown_method_skipped_valid_kept() {
+    fn unknown_method_fails_even_when_valid_route_exists() {
         let temp_dir = TempDir::new().unwrap();
         let route_file = create_temp_file(
             &temp_dir,
             "users.rs",
             r#"
-pub fn get_users() -> String { "users".to_string() }
+pub fn get_users() -> String
+{ "users".to_string() }
 
 pub fn create_users() -> String { "created".to_string() }
 "#,
@@ -872,11 +918,17 @@ pub fn create_users() -> String { "created".to_string() }
             .routes
             .push(route_meta("POST", "/users", "create_users", &file_path));
 
-        let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
+        let err = crate::openapi_generator::try_generate_openapi_doc_with_metadata(
+            None,
+            None,
+            None,
+            None,
+            &metadata,
+            None,
+            &[],
+        )
+        .expect_err("unknown method should fail OpenAPI generation");
 
-        assert_eq!(doc.paths.len(), 1);
-        let path_item = doc.paths.get("/users").unwrap();
-        assert!(path_item.post.is_some(), "valid POST present");
-        assert!(path_item.get.is_none(), "unknown method skipped");
+        assert!(err.to_string().contains("unsupported HTTP method"));
     }
 }

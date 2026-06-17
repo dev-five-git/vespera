@@ -2229,10 +2229,10 @@
             "properties": {},
             "required": [],
             "additionalProperties": {
+              "type": "array",
               "items": {
                 "$ref": "#/components/schemas/StructBodyWithOptional"
-              },
-              "type": "array"
+              }
             }
           }
         },
@@ -2321,10 +2321,10 @@
             "properties": {},
             "required": [],
             "additionalProperties": {
+              "type": "array",
               "items": {
                 "$ref": "#/components/schemas/StructBodyWithOptional"
-              },
-              "type": "array"
+              }
             }
           }
         },
@@ -2821,8 +2821,8 @@
                 "properties": {},
                 "required": [],
                 "additionalProperties": {
-                  "nullable": true,
-                  "type": "string"
+                  "type": "string",
+                  "nullable": true
                 }
               }
             },

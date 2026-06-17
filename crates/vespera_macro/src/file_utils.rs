@@ -3,6 +3,50 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Render a path for compile-time strings and diagnostics with `/` separators.
+pub fn normalize_display_path(path: impl AsRef<Path>) -> String {
+    path.as_ref().display().to_string().replace('\\', "/")
+}
+
+/// Normalize a path string into a comparison key **without touching the filesystem**.
+///
+/// Relative paths are absolutized against `cwd`, `.`/`..` components are folded,
+/// separators normalize to `/`, the Windows `\\?\` verbatim prefix is stripped,
+/// and (Windows only) the drive letter case is folded.
+pub fn normalize_path_key(path: &str, cwd: &Path) -> String {
+    use std::path::Component;
+
+    let p = Path::new(path);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        cwd.join(p)
+    };
+    let mut folded = PathBuf::new();
+    for comp in abs.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                folded.pop();
+            }
+            other => folded.push(other),
+        }
+    }
+    let mut key = normalize_display_path(&folded);
+    if let Some(stripped) = key.strip_prefix("//?/") {
+        key = stripped.to_owned();
+    }
+    if cfg!(windows) {
+        key.make_ascii_lowercase();
+    }
+    key
+}
+
+/// Render a path for use in `include_str!` literals.
+pub fn path_to_include_str_literal(path: impl AsRef<Path>) -> String {
+    normalize_display_path(path)
+}
+
 pub fn collect_files(folder_path: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(collect_files_with_mtimes(folder_path)?
         .into_iter()
@@ -47,10 +91,9 @@ fn collect_with_mtimes_into(folder_path: &Path, out: &mut Vec<(PathBuf, u64)>) -
 }
 
 pub fn file_to_segments(file: &Path, base_path: &Path) -> Vec<String> {
-    let file_stem = file.strip_prefix(base_path).map_or_else(
-        |_| file.display().to_string(),
-        |file_stem| file_stem.display().to_string(),
-    );
+    let file_stem = file
+        .strip_prefix(base_path)
+        .map_or_else(|_| normalize_display_path(file), normalize_display_path);
     let file_stem = file_stem.replace(".rs", "").replace('\\', "/");
     let mut segments: Vec<String> = file_stem
         .split('/')

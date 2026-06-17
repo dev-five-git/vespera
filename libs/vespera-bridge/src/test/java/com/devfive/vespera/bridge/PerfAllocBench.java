@@ -157,6 +157,98 @@ class PerfAllocBench {
                 newBytesPerOp, sink);
     }
 
+    /** Reusable per-thread scratch for the JVM-02 "after" path. */
+    private static final ThreadLocal<byte[]> DIRECT_SCRATCH = ThreadLocal.withInitial(() -> new byte[0]);
+
+    private static final int DIRECT_SCRATCH_CAP = 256 * 1024;
+
+    /**
+     * JVM-02 before/after allocation A/B for the DIRECT response body
+     * write. {@code before} bridges the direct {@link ByteBuffer} to the
+     * servlet {@link java.io.OutputStream} via a fresh
+     * {@link java.nio.channels.Channels#newChannel} per call (which
+     * allocates a channel object + an internal heap transfer buffer every
+     * time); {@code after} copies through a reusable per-thread
+     * {@code byte[]} scratch. Allocation-per-op is the deterministic,
+     * noise-free signal for this allocation-removal win.
+     */
+    @Test
+    void directResponseWrite_bytesPerOp() throws Exception {
+        ThreadMXBean tmx = threadMx();
+        long tid = Thread.currentThread().getId();
+
+        int payload = 8 * 1024;
+        ByteBuffer src = ByteBuffer.allocateDirect(payload);
+        for (int i = 0; i < payload; i++) {
+            src.put((byte) (i & 0x7f));
+        }
+        // Discarding sink — mirrors writing to a committed servlet
+        // OutputStream without measuring the servlet container itself.
+        java.io.OutputStream sink =
+                new java.io.OutputStream() {
+                    @Override
+                    public void write(int b) {}
+
+                    @Override
+                    public void write(byte[] b, int off, int len) {}
+
+                    @Override
+                    public void write(byte[] b) {}
+                };
+
+        for (int i = 0; i < WARMUP; i++) {
+            directWriteBefore(src, sink);
+        }
+        long ob = tmx.getThreadAllocatedBytes(tid);
+        for (int i = 0; i < MEASURE; i++) {
+            directWriteBefore(src, sink);
+        }
+        long oa = tmx.getThreadAllocatedBytes(tid);
+        long beforeBpo = (oa - ob) / MEASURE;
+
+        for (int i = 0; i < WARMUP; i++) {
+            directWriteAfter(src, sink);
+        }
+        long nb = tmx.getThreadAllocatedBytes(tid);
+        for (int i = 0; i < MEASURE; i++) {
+            directWriteAfter(src, sink);
+        }
+        long na = tmx.getThreadAllocatedBytes(tid);
+        long afterBpo = (na - nb) / MEASURE;
+
+        System.out.printf(
+                "VESPERA_ALLOC direct_resp_write_before bytes_per_op=%d (8 KiB direct body)%n",
+                beforeBpo);
+        System.out.printf(
+                "VESPERA_ALLOC direct_resp_write_after  bytes_per_op=%d (8 KiB direct body)%n",
+                afterBpo);
+    }
+
+    private static void directWriteBefore(ByteBuffer src, java.io.OutputStream out)
+            throws Exception {
+        src.clear();
+        java.nio.channels.WritableByteChannel ch = java.nio.channels.Channels.newChannel(out);
+        while (src.hasRemaining()) {
+            ch.write(src);
+        }
+    }
+
+    private static void directWriteAfter(ByteBuffer src, java.io.OutputStream out)
+            throws Exception {
+        src.clear();
+        int needed = Math.min(src.remaining(), DIRECT_SCRATCH_CAP);
+        byte[] scratch = DIRECT_SCRATCH.get();
+        if (scratch.length < needed) {
+            scratch = new byte[needed];
+            DIRECT_SCRATCH.set(scratch);
+        }
+        while (src.hasRemaining()) {
+            int chunk = Math.min(scratch.length, src.remaining());
+            src.get(scratch, 0, chunk);
+            out.write(scratch, 0, chunk);
+        }
+    }
+
     private static MockHttpServletRequest realisticHeaderRequest() {
         MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
         req.addHeader("Host", "api.example.test");

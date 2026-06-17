@@ -5,6 +5,7 @@ import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.Exec
+import org.gradle.language.jvm.tasks.ProcessResources
 import java.io.File
 
 /**
@@ -12,10 +13,9 @@ import java.io.File
  * application:
  *
  * 1. Registers a `bundleNativeLib` task that copies the cdylib from
- *    `<cargoRoot>/target/release/` into
- *    `build/resources/main/native/<os>-<arch>/` so
- *    `VesperaBridge.init(...)` can extract it at runtime.
- * 2. Wires `bundleNativeLib` into `processResources`.
+ *    `<cargoRoot>/target/release/` into a generated resources directory.
+ * 2. Wires those generated resources into `processResources` under
+ *    `native/<os>-<arch>/` so `VesperaBridge.init(...)` can extract it.
  * 3. Adds `kr.devfive:vespera-bridge:<bridgeVersion>` as an
  *    `implementation` dependency.
  * 4. Optionally (`autoBuildCargo = true`) registers a `cargoBuild`
@@ -41,11 +41,13 @@ class VesperaBridgePlugin : Plugin<Project> {
         val ext = project.extensions
             .create("vespera", VesperaBridgeExtension::class.java)
         ext.autoBuildCargo.convention(false)
+        ext.cargoSourceRoots.convention(listOf("src", "crates", "examples"))
 
         // Compute platform-derived values eagerly (host machine info).
         val os = detectOs()
         val arch = detectArch()
-        val targetSubdir = "resources/main/native/$os-$arch"
+        val generatedResourcesDir = project.layout.buildDirectory.dir("generated/vesperaNativeResources")
+        val targetSubdir = "native/$os-$arch"
 
         // Lazy file references — evaluated at task execution.
         val cdylibFile = project.provider {
@@ -63,13 +65,18 @@ class VesperaBridgePlugin : Plugin<Project> {
                     t.description = "Build the Rust cdylib via `cargo build --release`."
                     t.workingDir = ext.cargoRoot.get().asFile
                     t.commandLine("cargo", "build", "-p", ext.crateName.get(), "--release")
-                    // Up-to-date check: re-run on any .rs file or Cargo.lock change.
-                    val rustSources = project.fileTree(
-                        ext.cargoRoot.get().asFile.resolve("src")
-                    )
-                    rustSources.include("**/*.rs")
-                    t.inputs.files(rustSources)
-                    t.inputs.file(ext.cargoRoot.get().asFile.resolve("Cargo.lock"))
+                    // Up-to-date check: re-run on workspace manifests, Cargo.lock,
+                    // and Rust sources in configured roots. This repository keeps
+                    // Rust code under crates/* and examples/*, not only src/.
+                    val cargoRoot = ext.cargoRoot.get().asFile
+                    val cargoInputs = project.fileTree(cargoRoot)
+                    cargoInputs.include("Cargo.toml")
+                    cargoInputs.include("**/Cargo.toml")
+                    ext.cargoSourceRoots.get().forEach { root ->
+                        cargoInputs.include("${root.trimEnd('/', '\\')}/**/*.rs")
+                    }
+                    t.inputs.files(cargoInputs)
+                    t.inputs.file(cargoRoot.resolve("Cargo.lock")).optional()
                     t.outputs.file(cdylibFile)
                 }
             }
@@ -82,9 +89,9 @@ class VesperaBridgePlugin : Plugin<Project> {
                 override fun execute(t: Copy) {
                     t.group = "vespera"
                     t.description =
-                        "Copy the built cdylib into src/main/resources/native/<os>-<arch>/."
+                        "Copy the built cdylib into generated resources/native/<os>-<arch>/."
                     t.from(cdylibFile)
-                    t.into(project.layout.buildDirectory.dir(targetSubdir))
+                    t.into(generatedResourcesDir.map { it.dir(targetSubdir) })
                     t.doFirst(object : org.gradle.api.Action<Task> {
                         override fun execute(@Suppress("UNUSED_PARAMETER") task: Task) {
                             val src = cdylibFile.get()
@@ -113,7 +120,10 @@ class VesperaBridgePlugin : Plugin<Project> {
         // Hook into Java resource processing + dependency wiring.
         project.afterEvaluate(object : org.gradle.api.Action<Project> {
             override fun execute(p: Project) {
-                p.tasks.findByName("processResources")?.dependsOn(bundleTask)
+                p.tasks.withType(ProcessResources::class.java).configureEach {
+                    dependsOn(bundleTask)
+                    from(generatedResourcesDir)
+                }
 
                 // Repository configuration is intentionally left to
                 // the user's settings.gradle.kts (dependencyResolution

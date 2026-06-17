@@ -126,9 +126,15 @@ static MAX_REQUEST_BYTES: OnceLock<usize> = OnceLock::new();
 /// streaming) and feeds a multi-GB body straight into `dispatchBytes` /
 /// `dispatchAsync` / `dispatchDirect` would otherwise force a full
 /// resident copy.  When set, oversized requests get a `413` wire
-/// response **before** the body is allocated.  The **streaming**
-/// entry points are intentionally exempt — they are `O(chunk)` RAM and
-/// are the correct path for legitimately large payloads.
+/// response **before** the body is dispatched.
+///
+/// The cap also covers the **response-streaming** entry points
+/// (`dispatch_streaming_async`, `dispatch_streaming_with_header_async`)
+/// because they still buffer the full *request* in memory — only the
+/// *response* is streamed.  **Bidirectional** streaming
+/// (`dispatch_bidirectional_streaming*`), which pulls the request body
+/// chunk-by-chunk, is intentionally exempt: it is `O(chunk)` RAM and is
+/// the correct path for legitimately large payloads.
 #[must_use]
 #[inline]
 pub fn max_request_bytes() -> usize {

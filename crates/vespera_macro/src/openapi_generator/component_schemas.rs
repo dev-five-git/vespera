@@ -80,7 +80,7 @@ pub(super) fn parse_component_schemas(
     struct_definitions: &HashMap<String, String>,
     file_cache: &HashMap<String, syn::File>,
     struct_file_index: &HashMap<String, &str>,
-) -> BTreeMap<String, vespera_core::schema::Schema> {
+) -> syn::Result<BTreeMap<String, vespera_core::schema::Schema>> {
     // Parse a definition string and build its schema, applying the
     // default-value pipeline.  `file_ast` is only needed for the
     // `#[serde(default = "fn_name")]` fallback (Priority 2) — the
@@ -136,8 +136,8 @@ pub(super) fn parse_component_schemas(
     let mut schemas = BTreeMap::new();
     for (name, schema) in parallel_filter_map(
         &parallel_jobs,
-        &|meta: &&crate::metadata::StructMetadata| build_one(meta, None),
-    ) {
+        &|meta: &&crate::metadata::StructMetadata| Ok(build_one(meta, None)),
+    )? {
         schemas.insert(name, schema);
     }
     for (struct_meta, ast) in ast_backed {
@@ -146,7 +146,7 @@ pub(super) fn parse_component_schemas(
         }
     }
 
-    schemas
+    Ok(schemas)
 }
 
 #[cfg(test)]

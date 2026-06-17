@@ -33,6 +33,8 @@ use ::axum::{
     response::{IntoResponse, Response},
 };
 use ::garde::Validate;
+use ::serde::{Serialize, Serializer, ser::SerializeStruct};
+use std::fmt::Display;
 
 /// Extractor wrapper that validates the inner extractor's output via
 /// [`garde::Validate`] before handing it to the handler.
@@ -124,32 +126,82 @@ where
 /// The envelope shape is a public contract locked by snapshot tests and
 /// the JNI wire header hoisting logic in `vespera_inprocess`.
 fn build_validation_response(report: &::garde::Report) -> Response {
-    #[derive(serde::Serialize)]
-    struct ValidationErrorOut {
-        message: String,
-        path: String,
+    struct DisplayValue<T>(T);
+
+    impl<T> Serialize for DisplayValue<T>
+    where
+        T: Display,
+    {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            serializer.collect_str(&self.0)
+        }
     }
 
-    #[derive(serde::Serialize)]
-    struct ValidationEnvelope {
-        errors: Vec<ValidationErrorOut>,
+    struct ValidationEnvelope<'a> {
+        report: &'a ::garde::Report,
     }
 
-    let errors: Vec<ValidationErrorOut> = report
-        .iter()
-        .map(|(path, err)| ValidationErrorOut {
-            message: err.message().to_string(),
-            path: path.to_string(),
-        })
-        .collect();
+    impl Serialize for ValidationEnvelope<'_> {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let mut envelope = serializer.serialize_struct("ValidationEnvelope", 1)?;
+            envelope.serialize_field(
+                "errors",
+                &ValidationErrors {
+                    report: self.report,
+                },
+            )?;
+            envelope.end()
+        }
+    }
+
+    struct ValidationErrors<'a> {
+        report: &'a ::garde::Report,
+    }
+
+    impl Serialize for ValidationErrors<'_> {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            serializer.collect_seq(
+                self.report
+                    .iter()
+                    .map(|(path, err)| ValidationError { path, err }),
+            )
+        }
+    }
+
+    struct ValidationError<'a> {
+        path: &'a ::garde::Path,
+        err: &'a ::garde::Error,
+    }
+
+    impl Serialize for ValidationError<'_> {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let mut error = serializer.serialize_struct("ValidationError", 2)?;
+            // Keep field order byte-identical to the snapshot-locked envelope.
+            error.serialize_field("message", &DisplayValue(self.err.message()))?;
+            error.serialize_field("path", &DisplayValue(self.path))?;
+            error.end()
+        }
+    }
 
     // Serialize straight to bytes: skips the UTF-8 re-validation that
     // `to_string` performs over `to_vec`'s output, and the body is handed
     // to axum as raw bytes (content-type is overridden to
     // application/json below regardless).  Byte-identical to the previous
     // `to_string` body.
-    let body = ::serde_json::to_vec(&ValidationEnvelope { errors })
-        .unwrap_or_else(|_| br#"{"errors":[]}"#.to_vec());
+    let body = ::serde_json::to_vec(&ValidationEnvelope { report })
+        .expect("serializing the 422 validation envelope is infallible");
 
     let mut response = (StatusCode::UNPROCESSABLE_ENTITY, body).into_response();
     response.headers_mut().insert(

@@ -14,8 +14,7 @@
 //! the macro cannot prove `Schema` for types it cannot name-resolve, and a false
 //! positive there would be worse than the residual (cross-file) false negative.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
 
 use proc_macro2::Span;
 use syn::Type;
@@ -33,24 +32,13 @@ const REQUEST_EXTRACTORS: [&str; 4] = ["Query", "Json", "Form", "TypedMultipart"
 /// Only call sites with a parsed file AST (cache-miss / `export_app!`) run this;
 /// a cache hit means the source is byte-identical to a build that already
 /// passed, so re-validation is unnecessary.
-pub fn validate_schema_backed_extractors(metadata: &CollectedMetadata) -> syn::Result<()> {
-    // Resolve each unique route file's AST once. The collector fast path can
-    // leave the generator's AST map empty (routes are rebuilt from ROUTE_STORAGE
-    // strings instead), so we read through the shared parsed-file cache — the
-    // same source `build_file_cache` relies on — rather than trusting a map that
-    // may be empty at this point.
-    let unique_paths: BTreeSet<&str> = metadata
-        .routes
-        .iter()
-        .map(|r| r.file_path.as_str())
-        .collect();
-    let mut file_cache: HashMap<String, syn::File> = HashMap::with_capacity(unique_paths.len());
-    for path in unique_paths {
-        if let Some(ast) = crate::schema_macro::file_cache::get_parsed_file(Path::new(path)) {
-            file_cache.insert(path.to_string(), ast);
-        }
-    }
-    check_extractors(metadata, &file_cache)
+/// Validate schema-backed extractors using an invocation-local AST cache
+/// already produced by route collection.
+pub fn validate_schema_backed_extractors_with_cache(
+    metadata: &CollectedMetadata,
+    file_cache: &HashMap<String, syn::File>,
+) -> syn::Result<()> {
+    check_extractors(metadata, file_cache)
 }
 
 fn check_extractors(

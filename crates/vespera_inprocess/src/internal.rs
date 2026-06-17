@@ -40,12 +40,15 @@ pub async fn dispatch_parts<'h>(
 ) -> Result<ResponseParts, (u16, String)> {
     let request = build_request_from_bytes(method_str, path, query, headers, body_bytes)?;
 
-    let response = router
-        .oneshot(request)
-        .await
-        .expect("router error is Infallible");
+    let response = match router.oneshot(request).await {
+        Ok(response) => response,
+        // axum routers are `Service<_, Error = Infallible>`; the `Err`
+        // variant is uninhabited, so this match is exhaustive and emits
+        // no panic/unwind site on this FFI-adjacent hot path.
+        Err(err) => match err {},
+    };
 
-    Ok(collect_response_parts(response).await)
+    collect_response_parts(response).await
 }
 
 /// Start a request builder with method + URI.  When `query` is empty
@@ -130,10 +133,13 @@ where
 {
     let request = build_request_from_bytes(method_str, path, query, headers, body_bytes)?;
 
-    let response = router
-        .oneshot(request)
-        .await
-        .expect("router error is Infallible");
+    let response = match router.oneshot(request).await {
+        Ok(response) => response,
+        // axum routers are `Service<_, Error = Infallible>`; the `Err`
+        // variant is uninhabited, so this match is exhaustive and emits
+        // no panic/unwind site on this FFI-adjacent hot path.
+        Err(err) => match err {},
+    };
 
     let (parts, mut body) = response.into_parts();
 
@@ -197,21 +203,29 @@ fn collect_header_map(headers: &http::HeaderMap) -> BTreeMap<String, HeaderValue
 /// response.  Headers with repeated names are collapsed into
 /// [`HeaderValue::Multi`] so semantics (e.g. `set-cookie`) are
 /// preserved.
-async fn collect_response_parts(response: axum::response::Response) -> ResponseParts {
+///
+/// A body-stream error while collecting returns `Err((500, _))` instead
+/// of silently yielding an empty body — a truncated/failed response must
+/// never be reported as a clean success.  This mirrors the
+/// response-streaming path ([`dispatch_response_streaming`]), which
+/// already surfaces mid-stream body errors as a 500.
+async fn collect_response_parts(
+    response: axum::response::Response,
+) -> Result<ResponseParts, (u16, String)> {
     let (parts, body) = response.into_parts();
 
     let body_bytes = body
         .collect()
         .await
         .map(http_body_util::Collected::to_bytes)
-        .unwrap_or_default();
+        .map_err(|_| (500u16, "response body stream error".to_owned()))?;
 
-    (
+    Ok((
         parts.status.as_u16(),
         parts.headers,
         body_bytes,
         ResponseMetadata::current(),
-    )
+    ))
 }
 
 /// Adapter: response parts → text envelope.  Non-UTF-8 bodies become
@@ -277,10 +291,13 @@ pub async fn dispatch_and_split<'h>(
         Err(e) => return Err((400, format!("invalid request: {e}"))),
     };
 
-    let response = router
-        .oneshot(request)
-        .await
-        .expect("router error is Infallible");
+    let response = match router.oneshot(request).await {
+        Ok(response) => response,
+        // axum routers are `Service<_, Error = Infallible>`; the `Err`
+        // variant is uninhabited, so this match is exhaustive and emits
+        // no panic/unwind site on this FFI-adjacent hot path.
+        Err(err) => match err {},
+    };
 
     let (parts, body) = response.into_parts();
     Ok((

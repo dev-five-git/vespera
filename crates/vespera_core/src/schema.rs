@@ -41,6 +41,23 @@ impl Reference {
     }
 }
 
+/// `additionalProperties` value (JSON Schema / OpenAPI 3.1).
+///
+/// Either a boolean (`true`/`false` — allow or forbid extra properties)
+/// or a schema that every additional property must satisfy.  Untagged,
+/// so it serializes to exactly the JSON Schema wire form (a bare
+/// `true`/`false` or the schema object / `$ref`) with no wrapper —
+/// byte-identical to the previous `serde_json::Value` representation
+/// for the values vespera actually emits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AdditionalProperties {
+    /// `additionalProperties: true | false`.
+    Bool(bool),
+    /// `additionalProperties: <schema | $ref>`.
+    Schema(SchemaRef),
+}
+
 /// JSON Schema type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -90,7 +107,14 @@ where
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Schema {
-    /// Schema reference ($ref) - if present, other fields are ignored
+    /// Schema reference (`$ref`).
+    ///
+    /// A *pure* reference should be expressed as [`SchemaRef::Ref`].
+    /// This field exists only for the one legitimate mixed form OpenAPI
+    /// 3.1 permits — a **nullable reference** (`$ref` + `nullable`) —
+    /// which is best built through [`Schema::nullable_reference`] rather
+    /// than by hand, to avoid accidentally mixing `$ref` with unrelated
+    /// inline constraints (the invalid state flagged by CORE-03).
     #[serde(rename = "$ref")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ref_path: Option<String>,
@@ -155,9 +179,13 @@ pub struct Schema {
     pub pattern: Option<String>,
 
     // Array constraints
-    /// Array item schema
+    /// Array item schema.
+    ///
+    /// No outer `Box`: [`SchemaRef::Inline`] already boxes the nested
+    /// [`Schema`], so the recursive type is finite without a second
+    /// indirection (CORE-02).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub items: Option<Box<SchemaRef>>,
+    pub items: Option<SchemaRef>,
     /// Prefix items for tuple arrays (`OpenAPI` 3.1 / JSON Schema 2020-12)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prefix_items: Option<Vec<SchemaRef>>,
@@ -178,9 +206,14 @@ pub struct Schema {
     /// List of required properties
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<Vec<String>>,
-    /// Whether additional properties are allowed (can be boolean or `SchemaRef`)
+    /// `additionalProperties`: a boolean or a value-schema (CORE-04).
+    ///
+    /// Typed as [`AdditionalProperties`] (untagged) instead of a raw
+    /// `serde_json::Value`, so invalid shapes can't be constructed and
+    /// the value-schema case avoids the `SchemaRef -> serde_json::Value`
+    /// round-trip the parser previously paid.  Wire output is unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub additional_properties: Option<serde_json::Value>,
+    pub additional_properties: Option<AdditionalProperties>,
     /// Minimum number of properties
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_properties: Option<usize>,
@@ -201,9 +234,12 @@ pub struct Schema {
     /// Exactly one condition must be satisfied (XOR)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub one_of: Option<Vec<SchemaRef>>,
-    /// Condition must not be satisfied (NOT)
+    /// Condition must not be satisfied (NOT).
+    ///
+    /// No outer `Box` — [`SchemaRef::Inline`] already boxes the nested
+    /// schema (CORE-02).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub not: Option<Box<SchemaRef>>,
+    pub not: Option<SchemaRef>,
 
     /// Discriminator for polymorphic schemas (used with oneOf/anyOf/allOf)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -312,7 +348,7 @@ impl Schema {
     #[must_use]
     pub fn array(items: SchemaRef) -> Self {
         Self {
-            items: Some(Box::new(items)),
+            items: Some(items),
             ..Self::new(SchemaType::Array)
         }
     }
@@ -323,6 +359,25 @@ impl Schema {
         Self {
             properties: Some(BTreeMap::new()),
             required: Some(Vec::new()),
+            ..Self::new(SchemaType::Object)
+        }
+    }
+
+    /// Build a **nullable reference** schema — `{ "$ref": <path>,
+    /// "nullable": true }`.
+    ///
+    /// This is the single legitimate mixed `$ref` form (CORE-03): a
+    /// reference that is also allowed to be `null`.  Centralizing it
+    /// here keeps `ref_path` from being hand-mixed with unrelated inline
+    /// constraints at call sites.  `ref_path` is the full reference
+    /// path (e.g. `"#/components/schemas/User"`); `schema_type` stays
+    /// `None` so only `$ref` + `nullable` are emitted.
+    #[must_use]
+    pub fn nullable_reference(ref_path: String) -> Self {
+        Self {
+            ref_path: Some(ref_path),
+            schema_type: None,
+            nullable: Some(true),
             ..Self::new(SchemaType::Object)
         }
     }
@@ -438,7 +493,7 @@ mod tests {
 
         assert_eq!(schema.schema_type, Some(SchemaType::Array));
         let items = schema.items.expect("items should be set");
-        match *items {
+        match items {
             SchemaRef::Inline(inner) => {
                 assert_eq!(inner.schema_type, Some(SchemaType::Boolean));
             }

@@ -2,7 +2,9 @@
 //! `OnceLock` fast path for the default app.
 
 use std::collections::HashMap;
-use std::sync::{LazyLock, OnceLock, RwLock};
+use std::sync::{LazyLock, OnceLock};
+
+use arc_swap::ArcSwap;
 
 use crate::Router;
 use crate::wire::{WireRequestHeader, error_wire};
@@ -21,18 +23,20 @@ const MAX_APP_NAME_LEN: usize = 64;
 /// Per-name router cache.  Indexed by app name; the default app uses
 /// [`DEFAULT_APP_NAME`] (`"_default"`).
 ///
-/// Uses [`RwLock`] (not [`OnceLock`]) so multiple named apps can be
-/// registered after init time, while keeping dispatch reads
-/// contention-free.  The map is read on every dispatch and written
-/// only during `register_app*` calls (typically at process startup).
+/// Backed by [`ArcSwap`] so dispatch **reads are lock-free** — a named
+/// app resolves with a single atomic load + hash lookup, no lock
+/// acquisition and no reader parking under high concurrency (the same
+/// quality the default app already gets from its [`OnceLock`] mirror).
 ///
-/// Lock poisoning recovery: every read path uses
-/// `unwrap_or_else(|e| e.into_inner())` so a panic in a producer
-/// thread does not lock out the dispatch hot path.  Factory closures
-/// are also invoked **outside** the write lock so a factory panic
-/// cannot poison the map.
-static APP_ROUTERS: LazyLock<RwLock<HashMap<String, Router>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+/// The map is append-only with first-wins semantics and is written only
+/// during `register_app*` calls (typically at process startup).  Writes
+/// go through copy-on-write [`ArcSwap::rcu`]: clone the (small) map,
+/// `entry().or_insert` the new router, and atomically publish the new
+/// snapshot.  Factory closures are invoked **outside** the update, so a
+/// factory panic cannot corrupt the registry; there is no lock to
+/// poison.
+static APP_ROUTERS: LazyLock<ArcSwap<HashMap<String, Router>>> =
+    LazyLock::new(|| ArcSwap::from_pointee(HashMap::new()));
 
 /// Lock-free fast path for the **default** app.
 ///
@@ -134,32 +138,30 @@ where
         Ok(n) => n.to_owned(),
         Err(_) => return,
     };
-    // Fast path: existence check under a read lock.
-    {
-        let map = APP_ROUTERS
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if map.contains_key(&name) {
-            return;
-        }
+    // Fast path: already registered? Lock-free load + lookup.
+    if APP_ROUTERS.load().contains_key(&name) {
+        return;
     }
-    // Build the router OUTSIDE the write lock so a panicking factory
-    // cannot poison the map.
+    // Build the router OUTSIDE the copy-on-write update so a panicking
+    // factory cannot corrupt the registry; built once even if `rcu`
+    // retries under concurrent registration (it only re-clones the map
+    // and re-applies the same first-wins insert with this `router`).
     let router = factory();
     let is_default = name == DEFAULT_APP_NAME;
-    let mut map = APP_ROUTERS
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // Double-check: another thread may have inserted between our read
-    // and write.  First-wins still holds — use Entry to avoid the
-    // map.contains_key + map.insert double lookup.
-    let stored = map.entry(name).or_insert(router);
+    APP_ROUTERS.rcu(|current| {
+        let mut next: HashMap<String, Router> = (**current).clone();
+        // First-wins: `or_insert_with` leaves an existing entry (from a
+        // racing registration) untouched, so the first inserter wins.
+        next.entry(name.clone()).or_insert_with(|| router.clone());
+        next
+    });
     if is_default {
-        // Mirror the default app into the lock-free fast path.  Done
-        // under the write lock with the *stored* router (not our local
-        // candidate) so the mirror always equals the map's first-wins
-        // winner, even when two threads race the registration.
-        let _ = DEFAULT_ROUTER.set(stored.clone());
+        // Mirror the first-wins default winner into the lock-free
+        // OnceLock fast path.  The map is append-only, so the
+        // `_default` entry is stable once present.
+        if let Some(stored) = APP_ROUTERS.load().get(DEFAULT_APP_NAME) {
+            let _ = DEFAULT_ROUTER.set(stored.clone());
+        }
     }
 }
 
@@ -182,19 +184,16 @@ pub fn resolve_app_router(header: &WireRequestHeader) -> Result<Router, Vec<u8>>
         .filter(|s| !s.is_empty())
         .unwrap_or(DEFAULT_APP_NAME);
     // Lock-free fast path: default-app dispatch (the common case)
-    // resolves with one atomic load — no RwLock acquisition.
+    // resolves with one atomic load — no lock acquisition.
     if name == DEFAULT_APP_NAME
         && let Some(router) = DEFAULT_ROUTER.get()
     {
         return Ok(router.clone());
     }
-    {
-        let map = APP_ROUTERS
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(router) = map.get(name) {
-            return Ok(router.clone());
-        }
+    // Named-app resolution is also lock-free: a single `ArcSwap` load
+    // (atomic) + hash lookup, no reader parking under concurrency.
+    if let Some(router) = APP_ROUTERS.load().get(name) {
+        return Ok(router.clone());
     }
     // Miss: decide between 400 (invalid name) and 404 (unregistered).
     match validate_app_name(name) {

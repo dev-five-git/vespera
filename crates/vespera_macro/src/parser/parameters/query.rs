@@ -12,7 +12,7 @@ use crate::{
         extract_default, extract_field_rename, extract_rename_all, parse_struct_to_schema,
         parse_type_to_schema_ref_with_schemas, rename_field,
     },
-    schema_macro::type_utils::is_map_type as utils_is_map_type,
+    schema_macro::type_utils::{is_map_type as utils_is_map_type, is_option_type},
 };
 
 pub(super) fn parse_query_extractor(
@@ -91,15 +91,7 @@ pub(super) fn parse_query_struct_to_parameters(
                 let field_name = extract_field_rename(&field.attrs)
                     .unwrap_or_else(|| rename_field(&rust_field_name, rename_all.as_deref()));
                 let field_type = &field.ty;
-                let is_optional = matches!(
-                    field_type,
-                    Type::Path(type_path)
-                        if type_path
-                            .path
-                            .segments
-                            .first()
-                            .is_some_and(|s| s.ident == "Option")
-                );
+                let is_optional = is_option_type(field_type);
                 // #[serde(default)] fields are optional in request inputs even
                 // when the Rust type is non-Option (B4: request optional).
                 let has_default = extract_default(&field.attrs).is_some();

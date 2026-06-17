@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use syn::{Fields, Type};
+use syn::Fields;
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
 use super::{
@@ -17,6 +17,7 @@ use super::{
     },
     type_schema::parse_type_to_schema_ref,
 };
+use crate::schema_macro::type_utils::is_option_type;
 
 /// Parses a Rust struct into an `OpenAPI` Schema.
 ///
@@ -159,15 +160,7 @@ pub fn parse_struct_to_schema(
                 // Required is determined solely by nullability (Option<T>).
                 // Fields with #[serde(default)] still have defaults applied in
                 // openapi_generator, but that does NOT affect required status.
-                let is_optional = matches!(
-                    field_type,
-                    Type::Path(type_path)
-                        if type_path
-                            .path
-                            .segments
-                            .first()
-                            .is_some_and(|s| s.ident == "Option")
-                );
+                let is_optional = is_option_type(field_type);
 
                 if !is_optional {
                     required.push(field_name.clone());

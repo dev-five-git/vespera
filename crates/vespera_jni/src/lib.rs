@@ -49,8 +49,17 @@ macro_rules! jni_app {
             _vm: $crate::jni::JavaVM,
             _: *mut ::std::ffi::c_void,
         ) -> $crate::jni::sys::jint {
-            $crate::vespera_inprocess::register_app($factory);
-            $crate::jni::sys::JNI_VERSION_1_8
+            // The user factory runs here (router construction); a panic
+            // must never unwind across this `extern "system"` boundary
+            // into the JVM.  Catch it and fail library load with
+            // `JNI_ERR` instead of aborting the host process.
+            let loaded = ::std::panic::catch_unwind(|| {
+                $crate::vespera_inprocess::register_app($factory);
+            });
+            match loaded {
+                ::std::result::Result::Ok(()) => $crate::jni::sys::JNI_VERSION_1_8,
+                ::std::result::Result::Err(_) => $crate::jni::sys::JNI_ERR,
+            }
         }
     };
 }
@@ -96,10 +105,19 @@ macro_rules! jni_apps {
             _vm: $crate::jni::JavaVM,
             _: *mut ::std::ffi::c_void,
         ) -> $crate::jni::sys::jint {
-            $(
-                $crate::vespera_inprocess::register_app_named($name, $factory);
-            )+
-            $crate::jni::sys::JNI_VERSION_1_8
+            // Each user factory runs here (router construction); a panic
+            // must never unwind across this `extern "system"` boundary
+            // into the JVM.  Catch it and fail library load with
+            // `JNI_ERR` instead of aborting the host process.
+            let loaded = ::std::panic::catch_unwind(|| {
+                $(
+                    $crate::vespera_inprocess::register_app_named($name, $factory);
+                )+
+            });
+            match loaded {
+                ::std::result::Result::Ok(()) => $crate::jni::sys::JNI_VERSION_1_8,
+                ::std::result::Result::Err(_) => $crate::jni::sys::JNI_ERR,
+            }
         }
     };
 }

@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::Path};
 use crate::{
     error::{MacroResult, err_call_site},
     metadata::CollectedMetadata,
-    openapi_generator::{OpenApiSecurity, generate_openapi_doc_with_metadata},
+    openapi_generator::{OpenApiSecurity, try_generate_openapi_doc_with_metadata},
     route_impl::StoredRouteInfo,
     router_codegen::ProcessedVesperaInput,
 };
@@ -39,7 +39,7 @@ pub fn generate_and_write_openapi(
         return Ok((None, None, None));
     }
 
-    let mut openapi_doc = generate_openapi_doc_with_metadata(
+    let mut openapi_doc = try_generate_openapi_doc_with_metadata(
         input.title.clone(),
         input.version.clone(),
         input.servers.clone(),
@@ -51,7 +51,7 @@ pub fn generate_and_write_openapi(
         metadata,
         Some(file_asts),
         route_storage,
-    );
+    )?;
 
     // Merge specs from child apps at compile time
     if !input.merge.is_empty()
@@ -171,7 +171,7 @@ pub(super) fn pretty_sidecar_path() -> std::path::PathBuf {
 
 /// Build the `include_str!` tokens pointing at the embed sidecar.
 fn embed_tokens(spec_file: &Path) -> proc_macro2::TokenStream {
-    let path_str = spec_file.display().to_string().replace('\\', "/");
+    let path_str = crate::file_utils::path_to_include_str_literal(spec_file);
     quote::quote! { include_str!(#path_str) }
 }
 

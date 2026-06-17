@@ -144,12 +144,17 @@ impl<'a> Parser<'a> {
     /// `de_cow_pairs` `Vec` behaviour — no dedup).
     fn read_headers(&mut self) -> Result<CowPairs<'a>, String> {
         self.expect(b'{')?;
-        let mut out: CowPairs<'a> = Vec::new();
         self.skip_ws();
         if self.peek() == Some(b'}') {
+            // Zero-allocation fast path for the common bodyless /
+            // headerless request — no capacity is reserved for `{}`.
             self.pos += 1;
-            return Ok(out);
+            return Ok(Vec::new());
         }
+        // Pre-reserve for a typical request's header count so the first
+        // few pushes don't trigger the Vec's early doubling reallocations
+        // (the previous `Vec::new()` reallocated at 1, 2, 4, 8, ...).
+        let mut out: CowPairs<'a> = Vec::with_capacity(8);
         loop {
             let name = self.read_string()?;
             self.expect(b':')?;

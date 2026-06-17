@@ -11,14 +11,31 @@ repository = "https://github.com/dev-five-git/vespera"
 readme = "README.md"
 
 # Release profile tuned for the shipped artifacts (JNI cdylibs, server
-# binaries): thin LTO + single codegen unit trade longer release-build
-# time for faster/smaller production code.
+# binaries): FAT LTO + single codegen unit deliberately trade much
+# longer release-build time for maximum cross-crate inlining on the
+# runtime-critical paths (wire parse/serialize, dispatch, JNI
+# callbacks).  Runtime performance of the shipped artifact is
+# prioritized over build time by project policy.
+#
+# `strip = "debuginfo"` shrinks the artifact without touching the
+# exported JNI dynamic symbols (they live in `.dynsym`, not the
+# stripped debug/local symbol table).
 #
 # NEVER switch the panic strategy away from unwinding here — the JNI
 # bridge relies on `catch_unwind` to convert handler panics into `500`
 # wire responses; aborting would take down the host JVM instead.
 [profile.release]
-lto = "thin"
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"
+
+# Benchmarks must measure under the SAME codegen as the shipped release
+# artifacts (fat LTO + single codegen unit); otherwise the absolute
+# numbers reflect the default `bench` profile (no LTO, 16 codegen units)
+# instead of production.  Build time is intentionally traded for
+# representative measurements.
+[profile.bench]
+lto = "fat"
 codegen-units = 1
 
 [workspace.dependencies]

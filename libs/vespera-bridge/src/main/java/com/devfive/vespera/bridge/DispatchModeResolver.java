@@ -51,18 +51,17 @@ public interface DispatchModeResolver {
      * <ul>
      *   <li>{@code Content-Length: 0} — provably empty for any method
      *       and protocol.</li>
-     *   <li>No {@code Content-Length}, no {@code Transfer-Encoding},
-     *       and the method is GET / HEAD / OPTIONS — per RFC 9112
-     *       §6.3 such an HTTP/1.1 request has no body.  The method
-     *       restriction keeps HTTP/2 safe (h2 has no
-     *       {@code Transfer-Encoding} header, so a length-less POST
-     *       body cannot be ruled out there).</li>
+     *   <li>HTTP/1.x only: no {@code Content-Length}, no
+     *       {@code Transfer-Encoding}, and the method is GET / HEAD /
+     *       OPTIONS — per RFC 9112 §6.3 such a request has no body.
+     *       HTTP/2 is deliberately excluded because length-less DATA frames
+     *       can carry a GET body and h2 has no {@code Transfer-Encoding}
+     *       header.</li>
      * </ul>
      *
-     * <p>Even when this misjudges an exotic length-less GET-with-body
-     * (h2 only), correctness is preserved — the non-bidirectional
-     * modes read the servlet input stream fully and send the body
-     * inline; only the memory profile differs.
+     * <p>For protocols other than HTTP/1.x, absence of framing headers is
+     * treated as unknown rather than empty; callers that choose a
+     * non-bidirectional mode will still read the servlet input stream fully.
      */
     static boolean definitelyBodyless(HttpServletRequest request) {
         long contentLength = request.getContentLengthLong();
@@ -70,6 +69,10 @@ public interface DispatchModeResolver {
             return true;
         }
         if (contentLength > 0 || request.getHeader("Transfer-Encoding") != null) {
+            return false;
+        }
+        String protocol = request.getProtocol();
+        if (protocol == null || !protocol.regionMatches(true, 0, "HTTP/1.", 0, 7)) {
             return false;
         }
         String method = request.getMethod();

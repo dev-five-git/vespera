@@ -403,7 +403,7 @@ fn validation_error_response() -> Response {
         "errors".to_string(),
         SchemaRef::Inline(Box::new(Schema {
             schema_type: Some(SchemaType::Array),
-            items: Some(Box::new(error_item)),
+            items: Some(error_item),
             ..Schema::default()
         })),
     );

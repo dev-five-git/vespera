@@ -67,6 +67,17 @@ where
     base: axum::Router<S>,
     /// Routers to merge after `with_state()` is called
     merge_fns: Vec<fn() -> axum::Router<()>>,
+    /// Layers deferred until **after** child routers are merged.
+    ///
+    /// Axum's `Router::layer` only wraps the routes present at call
+    /// time, so applying a layer eagerly to `base` would leave
+    /// `merge`d child routes un-layered (CORS / auth / trace silently
+    /// skipped on merged routes).  Storing the layer as a closure and
+    /// replaying it in `with_state()` after the merge guarantees it
+    /// covers every route.  Each closure captures only the layer value
+    /// (`L: Send + Sync`), so the boxed trait object stays `Send + Sync`
+    /// and `VesperaRouter` keeps its previous auto-trait bounds.
+    layers: Vec<Box<dyn FnOnce(axum::Router) -> axum::Router + Send + Sync>>,
 }
 
 impl<S> VesperaRouter<S>
@@ -76,7 +87,11 @@ where
     /// Create a new `VesperaRouter` with a base router and routers to merge
     #[must_use]
     pub fn new(base: axum::Router<S>, merge_fns: Vec<fn() -> axum::Router<()>>) -> Self {
-        Self { base, merge_fns }
+        Self {
+            base,
+            merge_fns,
+            layers: Vec::new(),
+        }
     }
 
     /// Provide the state for the router and merge all child routers.
@@ -96,12 +111,24 @@ where
             router = router.merge(merge_fn());
         }
 
+        // Finally replay the deferred layers AFTER the merge so they wrap
+        // both the base routes and every merged child route.  Applied in
+        // insertion order, preserving Axum's "last layer is outermost"
+        // semantics identical to chained `Router::layer` calls.
+        for apply in self.layers {
+            router = apply(router);
+        }
+
         router
     }
 
     /// Add a layer to the router.
+    ///
+    /// The layer is **deferred** and applied in [`with_state`](Self::with_state)
+    /// after child routers are merged, so it covers merged routes as well as
+    /// the base router.
     #[must_use]
-    pub fn layer<L>(self, layer: L) -> Self
+    pub fn layer<L>(mut self, layer: L) -> Self
     where
         L: tower_layer::Layer<axum::routing::Route> + Clone + Send + Sync + 'static,
         L::Service: tower_service::Service<axum::extract::Request> + Clone + Send + Sync + 'static,
@@ -111,10 +138,9 @@ where
             Into<std::convert::Infallible> + 'static,
         <L::Service as tower_service::Service<axum::extract::Request>>::Future: Send + 'static,
     {
-        Self {
-            base: self.base.layer(layer),
-            merge_fns: self.merge_fns,
-        }
+        self.layers
+            .push(Box::new(move |router: axum::Router| router.layer(layer)));
+        self
     }
 }
 

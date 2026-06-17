@@ -420,7 +420,9 @@ fn bench_resolve_path(c: &mut Criterion) {
     });
 
     let wire_named = assemble_wire_for_app("GET", "/r0", None, Some("bench-named"), &[]);
-    group.bench_function("named_rwlock_slow_path", |b| {
+    // Named-app resolution now goes through the lock-free `ArcSwap` load
+    // (INP-07), not the former `RwLock<HashMap>`.
+    group.bench_function("named_arcswap_path", |b| {
         b.iter(|| dispatch_from_bytes(wire_named.clone(), &runtime));
     });
 
@@ -450,7 +452,7 @@ fn bench_contended_path(c: &mut Criterion) {
     for &threads in &[8_usize, 32] {
         for (label, app) in [
             ("default_oncelock", None),
-            ("named_rwlock", Some("bench-named")),
+            ("named_arcswap", Some("bench-named")),
         ] {
             let wire = assemble_wire_for_app("GET", "/r0", None, app, &[]);
             group.bench_with_input(BenchmarkId::new(label, threads), &threads, |b, &threads| {
@@ -477,6 +479,97 @@ fn bench_contended_path(c: &mut Criterion) {
                 });
             });
         }
+    }
+
+    group.finish();
+}
+
+/// INP-07 before/after A/B: named-app router resolution under
+/// concurrent reader pressure — the **previous** `RwLock<HashMap>`
+/// registry vs the **current** `ArcSwap<HashMap>` registry, both
+/// populated identically and both doing the exact `lookup +
+/// Router::clone` the dispatch read path performs.  The synchronization
+/// primitive is the only difference, so the delta is the pure
+/// lock-vs-lock-free read cost INP-07 buys.
+///
+/// The single-threaded `resolve_path` group cannot show this — the win
+/// is reader *scalability*, which only appears once many threads hammer
+/// the shared map (RwLock readers contend on one reader-count cache
+/// line; `ArcSwap` shards that away).  Heavily scheduler-dependent;
+/// run locally for the numbers.
+fn bench_registry_ab(c: &mut Criterion) {
+    use arc_swap::ArcSwap;
+    use std::collections::HashMap;
+    use std::sync::{Arc, RwLock};
+
+    let make_map = || {
+        let mut m: HashMap<String, Router> = HashMap::new();
+        m.insert("bench-named".to_owned(), build_router(100));
+        m
+    };
+    let rwlock: Arc<RwLock<HashMap<String, Router>>> = Arc::new(RwLock::new(make_map()));
+    let arcswap: Arc<ArcSwap<HashMap<String, Router>>> =
+        Arc::new(ArcSwap::from_pointee(make_map()));
+
+    let mut group = c.benchmark_group("registry_ab");
+
+    for &threads in &[8_usize, 32] {
+        // BEFORE — one RwLock read-lock acquisition per resolution.
+        let rwlock_b = Arc::clone(&rwlock);
+        group.bench_with_input(
+            BenchmarkId::new("rwlock_read_before", threads),
+            &threads,
+            |b, &threads| {
+                b.iter_custom(|iters| {
+                    let per_thread = usize::try_from(iters)
+                        .unwrap_or(usize::MAX)
+                        .div_ceil(threads);
+                    let start = std::time::Instant::now();
+                    std::thread::scope(|scope| {
+                        for _ in 0..threads {
+                            let rwlock = Arc::clone(&rwlock_b);
+                            scope.spawn(move || {
+                                for _ in 0..per_thread {
+                                    let guard = rwlock
+                                        .read()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    std::hint::black_box(guard.get("bench-named").cloned());
+                                }
+                            });
+                        }
+                    });
+                    start.elapsed()
+                });
+            },
+        );
+
+        // AFTER — one lock-free `ArcSwap` load per resolution.
+        let arcswap_a = Arc::clone(&arcswap);
+        group.bench_with_input(
+            BenchmarkId::new("arcswap_read_after", threads),
+            &threads,
+            |b, &threads| {
+                b.iter_custom(|iters| {
+                    let per_thread = usize::try_from(iters)
+                        .unwrap_or(usize::MAX)
+                        .div_ceil(threads);
+                    let start = std::time::Instant::now();
+                    std::thread::scope(|scope| {
+                        for _ in 0..threads {
+                            let arcswap = Arc::clone(&arcswap_a);
+                            scope.spawn(move || {
+                                for _ in 0..per_thread {
+                                    std::hint::black_box(
+                                        arcswap.load().get("bench-named").cloned(),
+                                    );
+                                }
+                            });
+                        }
+                    });
+                    start.elapsed()
+                });
+            },
+        );
     }
 
     group.finish();
@@ -750,6 +843,7 @@ criterion_group!(
     bench_direct_write_path,
     bench_resolve_path,
     bench_contended_path,
+    bench_registry_ab,
     bench_headers_path,
     bench_streaming_path,
     bench_async_spawn_pattern,

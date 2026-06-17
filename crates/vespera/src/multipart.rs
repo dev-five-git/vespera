@@ -13,7 +13,7 @@
 //! - [`TryFromMultipartWithState<S>`] — Trait for parsing a full multipart request
 //! - [`TryFromFieldWithState<S>`] — Trait for parsing a single multipart field
 
-use std::fmt;
+use std::{borrow::Cow, fmt};
 
 use axum::extract::multipart::{Field, MultipartError, MultipartRejection};
 use axum::extract::{FromRequest, Request};
@@ -47,7 +47,7 @@ pub enum TypedMultipartError {
         /// Name of the field.
         field_name: String,
         /// The expected type name.
-        wanted: String,
+        wanted: Cow<'static, str>,
         /// Description of the parse error.
         source: String,
     },
@@ -142,7 +142,10 @@ impl IntoResponse for TypedMultipartError {
             | Self::UnknownField { .. }
             | Self::InvalidEnumValue { .. }
             | Self::NamelessField => StatusCode::BAD_REQUEST,
-            Self::WrongFieldType { .. } => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            // Scalar conversion failures are malformed field values, not an
+            // unsupported multipart media type. Keep this aligned with
+            // `Validated<T>`'s validation-failure status.
+            Self::WrongFieldType { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Self::FieldTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Other { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -343,9 +346,7 @@ where
 async fn read_field_data(
     mut field: Field<'_>,
     limit: Option<usize>,
-) -> Result<(String, Vec<u8>), TypedMultipartError> {
-    let field_name = field.name().unwrap_or_default().to_string();
-
+) -> Result<(Field<'_>, Vec<u8>), TypedMultipartError> {
     // Pre-size up to 64 KiB when a limit is known: avoids repeated
     // doubling reallocations for typical fields without reserving huge
     // buffers for large limits.  Unbounded fields start empty and grow
@@ -359,14 +360,27 @@ async fn read_field_data(
             // buffer — same acceptance condition (total <= limit),
             // no wasted copy.
             return Err(TypedMultipartError::FieldTooLarge {
-                field_name,
+                field_name: field.name().unwrap_or_default().to_string(),
                 limit_bytes: limit,
             });
         }
         buf.extend_from_slice(&chunk);
     }
 
-    Ok((field_name, buf))
+    Ok((field, buf))
+}
+
+/// Default cap for tiny scalar multipart fields when no explicit
+/// `#[form_data(limit = "...")]` is supplied. 256 bytes is far beyond any
+/// legitimate bool/number/char payload while preventing unbounded buffering.
+const DEFAULT_TINY_SCALAR_LIMIT_BYTES: usize = 256;
+
+/// Resolve the buffering cap for a tiny scalar field: the explicit
+/// per-field `#[form_data(limit = "...")]` if present, otherwise the
+/// conservative [`DEFAULT_TINY_SCALAR_LIMIT_BYTES`] default.  A cap is
+/// always applied — scalars never buffer unbounded input.
+fn tiny_scalar_limit(limit_bytes: Option<usize>) -> usize {
+    limit_bytes.unwrap_or(DEFAULT_TINY_SCALAR_LIMIT_BYTES)
 }
 
 /// Parse a string as a boolean using clap-style conventions.
@@ -393,10 +407,12 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for String {
         limit_bytes: Option<usize>,
         _state: &S,
     ) -> Result<Self, TypedMultipartError> {
-        let (field_name, data) = read_field_data(field, limit_bytes).await?;
+        // Strings intentionally keep the previous effectively-unbounded default
+        // for backwards compatibility; explicit per-field limits still win.
+        let (field, data) = read_field_data(field, limit_bytes).await?;
         Self::from_utf8(data).map_err(|e| TypedMultipartError::WrongFieldType {
-            field_name,
-            wanted: "String".to_string(),
+            field_name: field.name().unwrap_or_default().to_string(),
+            wanted: Cow::Borrowed("String"),
             source: e.to_string(),
         })
     }
@@ -410,15 +426,15 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for bool {
         limit_bytes: Option<usize>,
         _state: &S,
     ) -> Result<Self, TypedMultipartError> {
-        let (field_name, data) = read_field_data(field, limit_bytes).await?;
+        let (field, data) = read_field_data(field, Some(tiny_scalar_limit(limit_bytes))).await?;
         let text = std::str::from_utf8(&data).map_err(|e| TypedMultipartError::WrongFieldType {
-            field_name: field_name.clone(),
-            wanted: "bool".to_string(),
+            field_name: field.name().unwrap_or_default().to_string(),
+            wanted: Cow::Borrowed("bool"),
             source: e.to_string(),
         })?;
         str_to_bool(text).ok_or_else(|| TypedMultipartError::WrongFieldType {
-            field_name,
-            wanted: "bool".to_string(),
+            field_name: field.name().unwrap_or_default().to_string(),
+            wanted: Cow::Borrowed("bool"),
             source: format!("invalid boolean value: `{text}`"),
         })
     }
@@ -435,18 +451,18 @@ macro_rules! impl_try_from_field_for_number {
                     limit_bytes: Option<usize>,
                     _state: &S,
                 ) -> Result<Self, TypedMultipartError> {
-                    let (field_name, data) = read_field_data(field, limit_bytes).await?;
+                    let (field, data) = read_field_data(field, Some(tiny_scalar_limit(limit_bytes))).await?;
                     let text = std::str::from_utf8(&data).map_err(|e| {
                         TypedMultipartError::WrongFieldType {
-                            field_name: field_name.clone(),
-                            wanted: stringify!($ty).to_string(),
+                            field_name: field.name().unwrap_or_default().to_string(),
+                            wanted: Cow::Borrowed(stringify!($ty)),
                             source: e.to_string(),
                         }
                     })?;
                     text.trim().parse::<$ty>().map_err(|e| {
                         TypedMultipartError::WrongFieldType {
-                            field_name,
-                            wanted: stringify!($ty).to_string(),
+                            field_name: field.name().unwrap_or_default().to_string(),
+                            wanted: Cow::Borrowed(stringify!($ty)),
                             source: e.to_string(),
                         }
                     })
@@ -468,18 +484,18 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for char {
         limit_bytes: Option<usize>,
         _state: &S,
     ) -> Result<Self, TypedMultipartError> {
-        let (field_name, data) = read_field_data(field, limit_bytes).await?;
+        let (field, data) = read_field_data(field, Some(tiny_scalar_limit(limit_bytes))).await?;
         let text = std::str::from_utf8(&data).map_err(|e| TypedMultipartError::WrongFieldType {
-            field_name: field_name.clone(),
-            wanted: "char".to_string(),
+            field_name: field.name().unwrap_or_default().to_string(),
+            wanted: Cow::Borrowed("char"),
             source: e.to_string(),
         })?;
         let mut chars = text.chars();
         match (chars.next(), chars.next()) {
             (Some(c), None) => Ok(c),
             _ => Err(TypedMultipartError::WrongFieldType {
-                field_name,
-                wanted: "char".to_string(),
+                field_name: field.name().unwrap_or_default().to_string(),
+                wanted: Cow::Borrowed("char"),
                 source: "expected exactly one character".to_string(),
             }),
         }
@@ -494,8 +510,6 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for tempfile::NamedTempFile {
         limit_bytes: Option<usize>,
         _state: &S,
     ) -> Result<Self, TypedMultipartError> {
-        let field_name = field.name().unwrap_or_default().to_string();
-
         // Temp-file creation AND reopen() are both blocking syscalls —
         // run them together on the blocking pool so neither stalls the
         // async worker (the reopen previously ran inline on the async
@@ -528,7 +542,7 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for tempfile::NamedTempFile {
                 && total > limit
             {
                 return Err(TypedMultipartError::FieldTooLarge {
-                    field_name,
+                    field_name: field.name().unwrap_or_default().to_string(),
                     limit_bytes: limit,
                 });
             }
@@ -599,7 +613,7 @@ mod tests {
 
         let err = TypedMultipartError::WrongFieldType {
             field_name: "age".to_string(),
-            wanted: "i32".to_string(),
+            wanted: Cow::Borrowed("i32"),
             source: "invalid digit".to_string(),
         };
         assert_eq!(
@@ -691,11 +705,11 @@ mod tests {
     fn test_into_response_wrong_field_type() {
         let err = TypedMultipartError::WrongFieldType {
             field_name: "age".to_string(),
-            wanted: "i32".to_string(),
+            wanted: Cow::Borrowed("i32"),
             source: "err".to_string(),
         };
         let resp = err.into_response();
-        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[test]

@@ -200,17 +200,25 @@ fn write_headers<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap) {
         let first = values
             .next()
             .expect("HeaderMap::keys yields only present names");
-        if values.next().is_none() {
-            write_json_string(sink, first.to_str().unwrap_or(""));
-        } else {
-            sink.put(b"[");
-            for (vidx, value) in headers.get_all(name).iter().enumerate() {
-                if vidx > 0 {
+        match values.next() {
+            // Single value: emit the scalar string.
+            None => write_json_string(sink, first.to_str().unwrap_or("")),
+            // Multiple values: emit a JSON array, reusing the already
+            // advanced iterator (first, second, then the rest) instead of
+            // re-iterating `get_all(name)` from the start — byte-identical
+            // output, no second hash lookup, important for repeated
+            // headers like `set-cookie`.
+            Some(second) => {
+                sink.put(b"[");
+                write_json_string(sink, first.to_str().unwrap_or(""));
+                sink.put(b",");
+                write_json_string(sink, second.to_str().unwrap_or(""));
+                for value in values {
                     sink.put(b",");
+                    write_json_string(sink, value.to_str().unwrap_or(""));
                 }
-                write_json_string(sink, value.to_str().unwrap_or(""));
+                sink.put(b"]");
             }
-            sink.put(b"]");
         }
     }
     sink.put(b"}");

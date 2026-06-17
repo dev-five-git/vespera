@@ -6,7 +6,6 @@ use quote::quote;
 use crate::{
     collector::collect_metadata,
     metadata::StructMetadata,
-    openapi_generator::generate_openapi_doc_with_metadata,
     route_impl::StoredRouteInfo,
     router_codegen::{ProcessedVesperaInput, generate_router_code},
 };
@@ -134,7 +133,7 @@ pub fn process_vespera_macro(
         // before they silently vanish from the generated spec. Runs only here
         // (cache miss) — a cache hit is byte-identical source that already
         // passed, so the check would be redundant.
-        crate::parser::validate_schema_backed_extractors(&metadata)?;
+        crate::parser::validate_schema_backed_extractors_with_cache(&metadata, &file_asts)?;
         stage("validate_schema_backed_extractors");
 
         let (_, _, spec_json) =
@@ -186,7 +185,7 @@ pub fn process_vespera_macro(
                 let p = std::path::PathBuf::from(d).join("src");
                 // Canonicalize for reliable prefix stripping
                 let canonical = p.canonicalize().unwrap_or(p);
-                canonical.display().to_string().replace('\\', "/")
+                crate::file_utils::normalize_display_path(canonical)
             })
             .unwrap_or_default();
         storage
@@ -278,10 +277,10 @@ pub fn process_export_app(
 
     // B2: same-file extractor structs without `#[derive(Schema)]` would be
     // silently dropped from the spec — reject them at compile time.
-    crate::parser::validate_schema_backed_extractors(&metadata)?;
+    crate::parser::validate_schema_backed_extractors_with_cache(&metadata, &file_asts)?;
 
     // Generate OpenAPI spec JSON string
-    let openapi_doc = generate_openapi_doc_with_metadata(
+    let openapi_doc = crate::openapi_generator::try_generate_openapi_doc_with_metadata(
         None,
         None,
         None,
@@ -289,7 +288,7 @@ pub fn process_export_app(
         &metadata,
         Some(file_asts),
         route_storage,
-    );
+    )?;
     let spec_json = serde_json::to_string(&openapi_doc).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to serialize OpenAPI spec to JSON. Error: {e}. Check that all schema types are serializable.")))?;
 
     // Write spec to temp file for compile-time merging by parent apps
@@ -300,7 +299,7 @@ pub fn process_export_app(
     std::fs::create_dir_all(&vespera_dir).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to create build cache directory '{}'. Error: {}. Ensure the target directory is writable.", vespera_dir.display(), e)))?;
     let spec_file = vespera_dir.join(format!("{name_str}.openapi.json"));
     std::fs::write(&spec_file, &spec_json).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to write OpenAPI spec file '{}'. Error: {}. Ensure the file path is writable.", spec_file.display(), e)))?;
-    let spec_path_str = spec_file.display().to_string().replace('\\', "/");
+    let spec_path_str = crate::file_utils::path_to_include_str_literal(&spec_file);
 
     // Generate router code (without docs routes, no merge)
     let router_code = generate_router_code(&metadata, None, None, None, &[], &[]);

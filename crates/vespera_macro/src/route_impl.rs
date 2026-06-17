@@ -80,11 +80,10 @@ pub struct StoredRouteInfo {
     /// Source file path from `Span::call_site().local_file()` (requires Rust 1.88+).
     /// `None` on older Rust — collector falls back to full file parsing.
     pub file_path: Option<String>,
-    /// Full function item as a string.  Re-parsed via `syn::parse_str()`
-    /// by both [`crate::collector`] and [`crate::openapi_generator`] so
-    /// the source file does not need to be opened from disk for routes
-    /// already known via `ROUTE_STORAGE`.
-    pub fn_item_str: String,
+    /// Function signature as a string. Re-parsed via `syn::parse_str()` by
+    /// [`crate::openapi_generator`] when the source file AST is unavailable.
+    /// Stores only `syn::Signature` tokens, not the handler body.
+    pub fn_sig_str: String,
 }
 
 /// Global storage for route metadata collected by `#[route]` attribute macros.
@@ -221,6 +220,7 @@ pub fn process_route_attribute(
     let route_args = syn::parse2::<args::RouteArgs>(attr)?;
     let item_fn: syn::ItemFn = syn::parse2(item.clone()).map_err(|e| syn::Error::new(e.span(), "#[route] attribute: can only be applied to functions, not other items. Move or remove the attribute."))?;
     validate_route_fn(&item_fn)?;
+    let fn_sig = &item_fn.sig;
 
     // Store route metadata for later consumption by vespera!() macro
     let stored = StoredRouteInfo {
@@ -255,7 +255,7 @@ pub fn process_route_attribute(
             .as_ref()
             .map(syn::LitStr::value)
             .or_else(|| crate::route::extract_doc_comment(&item_fn.attrs)),
-        fn_item_str: item.to_string(),
+        fn_sig_str: quote::quote!(#fn_sig).to_string(),
         file_path: proc_macro2::Span::call_site()
             .local_file()
             .map(|p| p.display().to_string()),
@@ -467,7 +467,7 @@ mod tests {
         assert_eq!(stored.description, Some("Get user by ID".to_string()));
         assert_eq!(stored.error_status, Some(vec![404]));
         assert!(stored.headers.is_empty());
-        assert!(stored.fn_item_str.contains("get_user_test_storage"));
+        assert!(stored.fn_sig_str.contains("get_user_test_storage"));
     }
 
     #[test]
