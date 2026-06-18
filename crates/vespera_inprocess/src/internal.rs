@@ -7,7 +7,7 @@ use std::ops::ControlFlow;
 
 use axum::body::Body;
 use bytes::Bytes;
-use http::{Method, Request};
+use http::{HeaderName, Method, Request, Uri, header::CONTENT_TYPE};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
@@ -67,6 +67,25 @@ fn request_builder(method: Method, path: &str, query: &str) -> http::request::Bu
     }
 }
 
+/// Parse the request [`Uri`] from `path` (+ optional `query`), mirroring
+/// [`request_builder`]'s borrowed-path optimization: an empty query parses
+/// `path` directly (no intermediate `String`); otherwise a single
+/// exact-capacity join is allocated.  A malformed path/query that `http`
+/// rejects becomes `Err((400, _))`, upholding the "every failure returns a
+/// wire response" contract.
+fn build_uri(path: &str, query: &str) -> Result<Uri, (u16, String)> {
+    let parsed = if query.is_empty() {
+        Uri::try_from(path)
+    } else {
+        let mut uri = String::with_capacity(path.len() + 1 + query.len());
+        uri.push_str(path);
+        uri.push('?');
+        uri.push_str(query);
+        Uri::try_from(uri)
+    };
+    parsed.map_err(|e| (400, format!("invalid request: {e}")))
+}
+
 /// Build the axum request shared by the buffered ([`dispatch_parts`]) and
 /// response-streaming ([`dispatch_response_streaming`]) paths — both take a
 /// fully-buffered [`Bytes`] body and default a missing `Content-Type`.
@@ -74,10 +93,21 @@ fn request_builder(method: Method, path: &str, query: &str) -> http::request::Bu
 /// One borrowed-iterator pass applies every header while detecting
 /// `Content-Type` (case-insensitive, RFC 7230 §3.2); a non-empty body with
 /// no `Content-Type` defaults to `application/json`.  Returns `Err((405, _))`
-/// for an unparseable method and `Err((400, _))` for a malformed path / header
-/// that `http`'s builder rejects, upholding the "every failure returns a wire
-/// response" contract.  `#[inline]` so the two call sites keep the previous
-/// inlined single-pass codegen.
+/// for an unparseable method and `Err((400, _))` for a malformed path / header,
+/// upholding the "every failure returns a wire response" contract.
+///
+/// Constructs the [`Request`] **directly** — `Request::new(body)` then
+/// in-place method / URI / header assignment — instead of threading the
+/// `http::request::Builder` state machine, which re-checks an internal
+/// `Result<Parts>` and is moved by value on every `.method`/`.uri`/`.header`
+/// call.  The `HeaderMap` is pre-reserved from the header count so insertion
+/// never triggers an incremental grow; a bodyless, headerless request
+/// reserves `0` and never allocates a bucket (preserving the DIRECT-`GET`
+/// zero-allocation sweet spot).  Header names/values are parsed with the same
+/// `HeaderName::from_bytes` / `HeaderValue::from_str` the builder used and are
+/// `append`ed (not `insert`ed), so the built request is byte-identical
+/// including duplicate-name multi-value semantics.  `#[inline]` so the two
+/// call sites keep inlined codegen.
 #[inline]
 fn build_request_from_bytes<'h>(
     method_str: &str,
@@ -92,9 +122,65 @@ fn build_request_from_bytes<'h>(
             format!("Method Not Allowed: '{method_str}' is not a valid HTTP method"),
         ));
     };
-    let mut builder = request_builder(http_method, path, query);
+    let uri = build_uri(path, query)?;
+    let body_is_empty = body_bytes.is_empty();
+
+    let mut request = Request::new(Body::from(body_bytes));
+    *request.method_mut() = http_method;
+    *request.uri_mut() = uri;
+
+    // Reserve exactly what we append: the wire headers plus, for a non-empty
+    // body, the possible default content-type.  A bodyless, headerless
+    // request reserves 0 and never allocates a HeaderMap bucket.
+    let reserve = headers
+        .size_hint()
+        .0
+        .saturating_add(usize::from(!body_is_empty));
+    let header_map = request.headers_mut();
+    if reserve > 0 {
+        header_map.reserve(reserve);
+    }
+
     // Case-insensitive Content-Type detection (RFC 7230 §3.2), tracked
     // inside the single header pass.
+    let mut has_content_type = false;
+    for (name, value) in headers {
+        has_content_type = has_content_type || name.eq_ignore_ascii_case("content-type");
+        let header_name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|e| (400, format!("invalid request: {e}")))?;
+        let header_value = http::HeaderValue::from_str(value)
+            .map_err(|e| (400, format!("invalid request: {e}")))?;
+        header_map.append(header_name, header_value);
+    }
+    if !body_is_empty && !has_content_type {
+        header_map.append(
+            CONTENT_TYPE,
+            http::HeaderValue::from_static("application/json"),
+        );
+    }
+    Ok(request)
+}
+
+/// **Bench-only** `http::request::Builder` twin of
+/// [`build_request_from_bytes`], retained solely as the "before" arm of the
+/// `request_build_ab` criterion A/B (same-run, noise-robust — mirroring the
+/// `wire_header_serde` group's hand-vs-`serde_json` twin).  Routes the request
+/// through the builder state machine the production path replaced; produces a
+/// byte-identical request.  Not used on any production path.
+fn build_request_from_bytes_builder_old<'h>(
+    method_str: &str,
+    path: &str,
+    query: &str,
+    headers: impl Iterator<Item = (&'h str, &'h str)>,
+    body_bytes: Bytes,
+) -> Result<Request<Body>, (u16, String)> {
+    let Ok(http_method) = method_str.parse::<Method>() else {
+        return Err((
+            405,
+            format!("Method Not Allowed: '{method_str}' is not a valid HTTP method"),
+        ));
+    };
+    let mut builder = request_builder(http_method, path, query);
     let mut has_content_type = false;
     for (name, value) in headers {
         has_content_type = has_content_type || name.eq_ignore_ascii_case("content-type");
@@ -106,6 +192,50 @@ fn build_request_from_bytes<'h>(
     builder
         .body(Body::from(body_bytes))
         .map_err(|e| (400, format!("invalid request: {e}")))
+}
+
+/// Sum a built request's method / path / query / header byte lengths so the
+/// `request_build_ab` A/B cannot be optimised down to a partial build.
+/// Bench-only.
+fn request_field_len_sum(req: &Request<Body>) -> usize {
+    let mut acc = req.method().as_str().len() + req.uri().path().len();
+    if let Some(query) = req.uri().query() {
+        acc += query.len();
+    }
+    for (name, value) in req.headers() {
+        acc += name.as_str().len() + value.len();
+    }
+    acc
+}
+
+/// Bench A/B: production direct-construction request build cost.  Returns a
+/// summed length so the optimiser cannot elide the build.  Bench-only.
+#[doc(hidden)]
+#[must_use]
+pub fn bench_build_request_new(
+    method: &str,
+    path: &str,
+    query: &str,
+    headers: &[(&str, &str)],
+    body: Bytes,
+) -> usize {
+    build_request_from_bytes(method, path, query, headers.iter().copied(), body)
+        .map_or(usize::MAX, |req| request_field_len_sum(&req))
+}
+
+/// Bench A/B: previous `http::request::Builder` request build cost.
+/// Bench-only.
+#[doc(hidden)]
+#[must_use]
+pub fn bench_build_request_old(
+    method: &str,
+    path: &str,
+    query: &str,
+    headers: &[(&str, &str)],
+    body: Bytes,
+) -> usize {
+    build_request_from_bytes_builder_old(method, path, query, headers.iter().copied(), body)
+        .map_or(usize::MAX, |req| request_field_len_sum(&req))
 }
 
 /// Drive a [`Router`] and stream response body chunks through
@@ -275,21 +405,41 @@ pub async fn dispatch_and_split<'h>(
             format!("Method Not Allowed: '{method_str}' is not a valid HTTP method"),
         ));
     };
+    // Same contract as dispatch_parts: a malformed path/header must surface as
+    // a 400 wire response, not a panic.
+    let uri = build_uri(path, query)?;
 
-    let mut builder = request_builder(http_method, path, query);
+    // Direct construction — see [`build_request_from_bytes`]: bypass the
+    // `http::request::Builder` state machine and pre-reserve the HeaderMap so
+    // header insertion never triggers an incremental grow.  Headers are
+    // `append`ed (multi-value preserving); the body is opaque here, so
+    // content-type defaulting follows the caller's `default_json_content_type`
+    // flag rather than body-emptiness detection.
+    let mut request = Request::new(body);
+    *request.method_mut() = http_method;
+    *request.uri_mut() = uri;
+
+    let reserve = headers
+        .size_hint()
+        .0
+        .saturating_add(usize::from(default_json_content_type));
+    let header_map = request.headers_mut();
+    if reserve > 0 {
+        header_map.reserve(reserve);
+    }
     for (name, value) in headers {
-        builder = builder.header(name, value);
+        let header_name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|e| (400, format!("invalid request: {e}")))?;
+        let header_value = http::HeaderValue::from_str(value)
+            .map_err(|e| (400, format!("invalid request: {e}")))?;
+        header_map.append(header_name, header_value);
     }
     if default_json_content_type {
-        builder = builder.header("content-type", "application/json");
+        header_map.append(
+            CONTENT_TYPE,
+            http::HeaderValue::from_static("application/json"),
+        );
     }
-
-    // Same contract as dispatch_parts: a malformed path/header must
-    // surface as a 400 wire response, not a panic.
-    let request = match builder.body(body) {
-        Ok(req) => req,
-        Err(e) => return Err((400, format!("invalid request: {e}"))),
-    };
 
     let response = match router.oneshot(request).await {
         Ok(response) => response,

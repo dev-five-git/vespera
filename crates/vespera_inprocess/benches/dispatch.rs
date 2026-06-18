@@ -855,6 +855,115 @@ fn bench_wire_header_serde(c: &mut Criterion) {
     group.finish();
 }
 
+/// Direct `Request<Body>` construction vs the `http::request::Builder` state
+/// machine (within-run A/B).  Both arms build a full request from the same
+/// method / path / query / headers / body in the SAME criterion run
+/// (noise-robust, like `wire_header_serde`), so the builder-vs-direct delta is
+/// read without cross-run drift.  Each arm sums the built request's field byte
+/// lengths so neither can be optimised down to a partial build.
+///
+/// Fixtures span the dispatch hot path's real request shapes: a bodyless `GET`
+/// (the DIRECT sweet spot), a `GET` with 3 headers, a small `POST` with
+/// `content-type`, and a `POST` with 8 realistic headers.
+fn bench_request_build_path(c: &mut Criterion) {
+    use vespera_inprocess::bench_support::{bench_build_request_new, bench_build_request_old};
+
+    type Fixture = (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static [(&'static str, &'static str)],
+        &'static str,
+    );
+    let fixtures: &[Fixture] = &[
+        ("bodyless_get", "GET", "/r0", "", &[], ""),
+        (
+            "get_3_headers",
+            "GET",
+            "/r0",
+            "",
+            &[
+                ("accept", "*/*"),
+                ("user-agent", "bench/1.0"),
+                ("host", "localhost:3000"),
+            ],
+            "",
+        ),
+        (
+            "post_content_type",
+            "POST",
+            "/echo",
+            "",
+            &[("content-type", "application/json")],
+            r#"{"body":"x"}"#,
+        ),
+        (
+            "post_8_headers",
+            "POST",
+            "/echo",
+            "",
+            &[
+                ("content-type", "application/json"),
+                ("accept", "*/*"),
+                ("user-agent", "bench/1.0"),
+                ("host", "localhost:3000"),
+                ("authorization", "Bearer abcdef0123456789"),
+                ("accept-encoding", "gzip, deflate, br"),
+                ("accept-language", "en-US,en;q=0.9"),
+                ("x-request-id", "01HV2N3M4P5Q6R7S8T9V0W1X2Y"),
+            ],
+            r#"{"body":"x"}"#,
+        ),
+    ];
+
+    let mut group = c.benchmark_group("request_build_ab");
+    for &(label, method, path, query, headers, body) in fixtures {
+        let body = bytes::Bytes::copy_from_slice(body.as_bytes());
+        group.bench_function(BenchmarkId::new("direct_new", label), |b| {
+            b.iter(|| bench_build_request_new(method, path, query, headers, body.clone()));
+        });
+        group.bench_function(BenchmarkId::new("builder_old", label), |b| {
+            b.iter(|| bench_build_request_old(method, path, query, headers, body.clone()));
+        });
+    }
+    group.finish();
+}
+
+/// Typed-deserialize vs `serde_json::Value` DOM for the 422 validation-error
+/// hoist (within-run A/B).  Both arms parse the same framework-generated
+/// `{"errors":[{"path","message"}]}` envelope in the SAME criterion run, so
+/// the DOM-removal delta is read without cross-run drift.  Each arm sums the
+/// hoisted field byte lengths so neither can be optimised to a partial parse.
+///
+/// Fixtures: a 1-error envelope (typical single-field failure) and a 5-error
+/// envelope (form-heavy request) — where the eliminated `Value` map/array/key
+/// allocations scale with error count.
+fn bench_hoist_422_path(c: &mut Criterion) {
+    use vespera_inprocess::bench_support::{bench_hoist_new, bench_hoist_old};
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("content-type"),
+        "application/json".parse().expect("static header value"),
+    );
+
+    let body_1: &str = r#"{"errors":[{"path":"email","message":"not a valid email"}]}"#;
+    let body_5: &str = r#"{"errors":[{"path":"username","message":"length is lower than 3"},{"path":"email","message":"not a valid email"},{"path":"age","message":"greater than 120"},{"path":"bio","message":"length is greater than 256"},{"path":"phone","message":"not a valid phone number"}]}"#;
+
+    let mut group = c.benchmark_group("hoist_422_ab");
+    for (label, body) in [("errors_1", body_1), ("errors_5", body_5)] {
+        let body = bytes::Bytes::copy_from_slice(body.as_bytes());
+        group.bench_function(BenchmarkId::new("typed_new", label), |b| {
+            b.iter(|| bench_hoist_new(&headers, &body));
+        });
+        group.bench_function(BenchmarkId::new("value_old", label), |b| {
+            b.iter(|| bench_hoist_old(&headers, &body));
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_router_path,
@@ -868,6 +977,8 @@ criterion_group!(
     bench_headers_path,
     bench_streaming_path,
     bench_async_spawn_pattern,
-    bench_wire_header_serde
+    bench_wire_header_serde,
+    bench_request_build_path,
+    bench_hoist_422_path
 );
 criterion_main!(benches);

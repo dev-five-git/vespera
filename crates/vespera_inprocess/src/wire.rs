@@ -793,13 +793,50 @@ fn write_wire_header_into_slice_serde(
 /// `serde_json::Value` reparse.
 const MAX_HOIST_BODY_BYTES: usize = 64 * 1024;
 
+/// First content-type value decides whether a 422 body is JSON for the
+/// validation-error hoist (matches the previous first-of-`Multi`
+/// behaviour).  Comparisons are case-insensitive in place — no
+/// lowercased copy.
+fn body_is_json(headers: &http::HeaderMap) -> bool {
+    headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|s| {
+            let mime = s.split(';').next().unwrap_or("").trim();
+            mime.eq_ignore_ascii_case("application/json")
+                || (mime.len() >= 5 && mime[mime.len() - 5..].eq_ignore_ascii_case("+json"))
+        })
+}
+
+/// Typed shape of the validation envelope, deserialized **directly** from the
+/// 422 body — skips building the intermediate `serde_json::Value` DOM (the
+/// object map + array vec + per-error maps + interned string keys) the
+/// previous reparse allocated, going straight to the `Vec<HoistErrorIn>` whose
+/// owned strings [`ValidationErrorItem`] needs anyway.  Unknown fields are
+/// ignored and every field is optional, so an odd error object never aborts
+/// the parse for a framework-generated (all-string-field) envelope.
+#[derive(Deserialize)]
+struct HoistEnvelope {
+    errors: Vec<HoistErrorIn>,
+}
+
+#[derive(Deserialize)]
+struct HoistErrorIn {
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
 /// Best-effort extract validation errors from a 422 JSON body.
 ///
 /// Returns `None` (silently) for:
 /// - non-JSON content-types (anything that doesn't end in `/json` or
 ///   `+json`)
-/// - body bytes that don't parse as JSON
-/// - JSON without an `errors` array, or with an empty array
+/// - body bytes that don't parse as the `{"errors":[...]}` envelope
+/// - an envelope whose hoistable errors (those carrying a `path`) are empty
 ///
 /// This is intentionally lenient — a malformed 422 body must never
 /// degrade to a 5xx; the original body is still surfaced verbatim.
@@ -807,24 +844,48 @@ fn try_hoist_validation_errors(
     headers: &http::HeaderMap,
     body_bytes: &Bytes,
 ) -> Option<Vec<ValidationErrorItem>> {
-    // First content-type value decides (matches the previous
-    // first-of-Multi behaviour).  Comparisons are case-insensitive
-    // in place — no lowercased copy.
-    let is_json = headers
-        .get(http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|s| {
-            let mime = s.split(';').next().unwrap_or("").trim();
-            mime.eq_ignore_ascii_case("application/json")
-                || (mime.len() >= 5 && mime[mime.len() - 5..].eq_ignore_ascii_case("+json"))
-        });
-    if !is_json {
+    if !body_is_json(headers) {
         return None;
     }
     // Cold-path guard: a 422 validation envelope is framework-generated and
-    // tiny.  For an unexpectedly large body, skip the full `serde_json`
-    // reparse + per-item owned-`String` allocations rather than churning heap
-    // on it; the original body is still surfaced verbatim on the wire.
+    // tiny.  For an unexpectedly large body, skip the parse + per-item owned
+    // allocations rather than churning heap on it; the original body is still
+    // surfaced verbatim on the wire.
+    if body_bytes.len() > MAX_HOIST_BODY_BYTES {
+        return None;
+    }
+    // Direct typed deserialize — no intermediate `serde_json::Value` DOM.
+    let envelope: HoistEnvelope = serde_json::from_slice(body_bytes).ok()?;
+    let items: Vec<ValidationErrorItem> = envelope
+        .errors
+        .into_iter()
+        .filter_map(|e| {
+            // Match the previous behaviour: an error with no `path` is
+            // skipped while the rest are still hoisted.
+            Some(ValidationErrorItem {
+                path: e.path?,
+                code: e.code,
+                message: e.message,
+            })
+        })
+        .collect();
+    if items.is_empty() { None } else { Some(items) }
+}
+
+/// **Bench-only** `serde_json::Value` twin of [`try_hoist_validation_errors`],
+/// retained as the "before" arm of the `hoist_422_ab` criterion A/B
+/// (same-run, noise-robust — mirroring the `wire_header_serde` /
+/// `request_build_ab` twins).  Parses the body into a full `Value` DOM then
+/// re-extracts each field — the allocation-heavier path the typed deserialize
+/// replaced; byte-identical result for the framework-generated envelope.  Not
+/// used on any production path.
+fn try_hoist_validation_errors_value_old(
+    headers: &http::HeaderMap,
+    body_bytes: &Bytes,
+) -> Option<Vec<ValidationErrorItem>> {
+    if !body_is_json(headers) {
+        return None;
+    }
     if body_bytes.len() > MAX_HOIST_BODY_BYTES {
         return None;
     }
@@ -976,6 +1037,36 @@ pub fn bench_parse_hand(header_json: &[u8]) -> usize {
 #[must_use]
 pub fn bench_parse_serde(header_json: &[u8]) -> usize {
     parse_wire_header_serde(header_json).map_or(usize::MAX, |h| header_field_len_sum(&h))
+}
+
+/// Sum every hoisted item's field byte lengths so neither `hoist_422_ab` arm
+/// can be optimised down to a partial parse.  `None` (no hoist) sums to 0.
+fn hoist_field_len_sum(items: Option<Vec<ValidationErrorItem>>) -> usize {
+    items.map_or(0, |v| {
+        v.iter()
+            .map(|i| {
+                i.path.len()
+                    + i.code.as_deref().map_or(0, str::len)
+                    + i.message.as_deref().map_or(0, str::len)
+            })
+            .sum()
+    })
+}
+
+/// Bench A/B: production typed-deserialize 422 validation hoist cost.
+/// Bench-only.
+#[doc(hidden)]
+#[must_use]
+pub fn bench_hoist_new(headers: &http::HeaderMap, body: &Bytes) -> usize {
+    hoist_field_len_sum(try_hoist_validation_errors(headers, body))
+}
+
+/// Bench A/B: previous `serde_json::Value` DOM 422 validation hoist cost.
+/// Bench-only.
+#[doc(hidden)]
+#[must_use]
+pub fn bench_hoist_old(headers: &http::HeaderMap, body: &Bytes) -> usize {
+    hoist_field_len_sum(try_hoist_validation_errors_value_old(headers, body))
 }
 
 /// Sum of every decoded field's byte length — forces materialisation of
