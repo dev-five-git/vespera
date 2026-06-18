@@ -173,6 +173,34 @@ fn assemble_wire_for_app(
     wire
 }
 
+/// `assemble_wire` with an arbitrary request-header set (used by the
+/// request-header-scan bench — the real-world multi-header shape the
+/// single-header `assemble_wire` cannot express).
+fn assemble_wire_with_headers(
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Vec<u8> {
+    let header_map: serde_json::Map<String, serde_json::Value> = headers
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), serde_json::Value::String((*v).to_owned())))
+        .collect();
+    let header = serde_json::json!({
+        "v": 1,
+        "method": method,
+        "path": path,
+        "headers": header_map,
+    });
+    let header_bytes = serde_json::to_vec(&header).unwrap();
+    let header_len = u32::try_from(header_bytes.len()).unwrap();
+    let mut wire = Vec::with_capacity(4 + header_bytes.len() + body.len());
+    wire.extend_from_slice(&header_len.to_be_bytes());
+    wire.extend_from_slice(&header_bytes);
+    wire.extend_from_slice(body);
+    wire
+}
+
 /// Wire-format request payload for the `dispatch_from_bytes` bench.
 fn make_wire_request(body_kb: usize) -> Vec<u8> {
     let body_str = serde_json::to_string(&Echo {
@@ -964,8 +992,60 @@ fn bench_hoist_422_path(c: &mut Criterion) {
     group.finish();
 }
 
+/// Request-header handling cost: a POST carrying a realistic multi-header
+/// set (the shape a real browser / reverse-proxy sends) dispatched
+/// end-to-end via `dispatch_from_bytes`.  The `wire_path` / `bytes_path`
+/// groups send only ONE request header (content-type), so they cannot
+/// surface the per-request header-scan cost; this group does, for 1 / 8 /
+/// 16 headers, isolating the content-type pre-scan that the dispatch path
+/// previously ran separately from the request-build header loop.
+fn bench_request_headers_path(c: &mut Criterion) {
+    install_bench_app();
+
+    let runtime = Runtime::new().expect("tokio runtime");
+    let mut group = c.benchmark_group("request_headers_path");
+
+    // Realistic request headers (browser / proxy shape).  content-type is
+    // present (so a POST extractor is satisfied) but sorts into the middle
+    // of the JSON object, mirroring how a real header set is scanned.
+    let all_headers: &[(&str, &str)] = &[
+        ("host", "api.example.com"),
+        ("user-agent", "Mozilla/5.0 (bench) Gecko/20100101"),
+        ("accept", "application/json, text/plain, */*"),
+        ("accept-encoding", "gzip, deflate, br"),
+        ("accept-language", "en-US,en;q=0.9"),
+        ("content-type", "application/json"),
+        (
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+        ),
+        ("x-request-id", "01HV2N3M4P5Q6R7S8T9V0W1X2Y"),
+        ("x-forwarded-for", "203.0.113.7"),
+        ("x-forwarded-proto", "https"),
+        ("referer", "https://app.example.com/dashboard"),
+        ("cookie", "session=abc123; theme=dark; lang=en"),
+        ("origin", "https://app.example.com"),
+        ("cache-control", "no-cache"),
+        ("connection", "keep-alive"),
+        ("dnt", "1"),
+    ];
+    let body = br#"{"body":"x"}"#;
+
+    for &n in &[1_usize, 8, 16] {
+        let headers = &all_headers[..n.min(all_headers.len())];
+        let wire = assemble_wire_with_headers("POST", "/echo", headers, body);
+        group.bench_with_input(BenchmarkId::new("dispatch_from_bytes", n), &n, |b, _| {
+            b.iter(|| dispatch_from_bytes(wire.clone(), &runtime));
+        });
+    }
+
+    group.finish();
+    drop(runtime);
+}
+
 criterion_group!(
     benches,
+    bench_request_headers_path,
     bench_router_path,
     bench_dispatch_path,
     bench_wire_path,

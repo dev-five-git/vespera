@@ -155,15 +155,11 @@ pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
         Err(wire) => return wire,
     };
 
-    // Mirror dispatch_parts' Content-Type defaulting (non-empty body with
-    // no explicit content-type → application/json) so the request built via
-    // dispatch_and_split is byte-identical to the previous dispatch_parts
-    // path.  Computed before `body_bytes` is moved into the request Body.
-    let default_json_content_type = !body_bytes.is_empty()
-        && !header
-            .headers
-            .iter()
-            .any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
+    // Content-Type defaulting (non-empty body with no explicit
+    // content-type → application/json) is applied inside dispatch_and_split,
+    // which detects the header during its build pass; we only signal that a
+    // non-empty body should default.  Computed before `body_bytes` is moved.
+    let default_json_when_absent = !body_bytes.is_empty();
 
     let (status, headers, metadata, body) = match dispatch_and_split(
         router,
@@ -172,7 +168,7 @@ pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
         &header.query,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         Body::from(body_bytes),
-        default_json_content_type,
+        default_json_when_absent,
     )
     .await
     {
@@ -336,17 +332,11 @@ pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteR
         Err(wire) => return write_wire_into(out, &wire),
     };
 
-    // Mirror dispatch_parts' Content-Type defaulting (body present, no
-    // content-type → application/json) so the direct-write path is
-    // request-compatible with dispatch_from_bytes.  The body's
-    // emptiness is known here (unlike the streaming callers), so the
-    // default is applied on the request builder — no map insert, no
-    // String allocations.
-    let default_json_content_type = !body_bytes.is_empty()
-        && !header
-            .headers
-            .iter()
-            .any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
+    // Content-Type defaulting (body present, no content-type →
+    // application/json) is applied inside dispatch_and_split, which detects
+    // the header during its build pass; the body's emptiness is known here,
+    // so we just signal that a non-empty body should default.
+    let default_json_when_absent = !body_bytes.is_empty();
 
     let (status, headers, metadata, body) = match dispatch_and_split(
         router,
@@ -355,7 +345,7 @@ pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteR
         &header.query,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         Body::from(body_bytes),
-        default_json_content_type,
+        default_json_when_absent,
     )
     .await
     {
@@ -427,11 +417,9 @@ pub async fn dispatch_into_async_borrowed(input: &[u8], out: &mut [u8]) -> Direc
         Err(wire) => return write_wire_into(out, &wire),
     };
 
-    let default_json_content_type = !body_bytes.is_empty()
-        && !header
-            .headers
-            .iter()
-            .any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
+    // dispatch_and_split detects Content-Type during its build pass; we
+    // only signal that a non-empty body should default to JSON.
+    let default_json_when_absent = !body_bytes.is_empty();
 
     // Borrowed path: the header is parsed in place (borrowing `input`);
     // only the body region is copied into an owned `Bytes`.  An empty
@@ -449,7 +437,7 @@ pub async fn dispatch_into_async_borrowed(input: &[u8], out: &mut [u8]) -> Direc
         &header.query,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         body,
-        default_json_content_type,
+        default_json_when_absent,
     )
     .await
     {

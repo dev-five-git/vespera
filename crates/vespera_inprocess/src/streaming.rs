@@ -224,16 +224,13 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
         }
     };
 
-    // Mirror the buffered / response-streaming paths' Content-Type
-    // defaulting (INP-03): a non-empty body with no explicit
-    // `Content-Type` defaults to `application/json`, so this
-    // header-callback variant behaves identically to its siblings for
-    // the same wire request.  Computed before `body_bytes` is moved.
-    let default_json_content_type = !body_bytes.is_empty()
-        && !header
-            .headers
-            .iter()
-            .any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
+    // Content-Type defaulting (INP-03): a non-empty body with no explicit
+    // `Content-Type` defaults to `application/json`.  dispatch_and_split
+    // detects the header during its build pass, so this variant stays
+    // identical to its siblings while skipping the separate pre-scan; we
+    // signal only that a non-empty body should default.  Computed before
+    // `body_bytes` is moved.
+    let default_json_when_absent = !body_bytes.is_empty();
     let (status, headers, metadata, mut body) = match dispatch_and_split(
         router,
         &header.method,
@@ -241,7 +238,7 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
         &header.query,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         Body::from(body_bytes),
-        default_json_content_type,
+        default_json_when_absent,
     )
     .await
     {
@@ -484,10 +481,12 @@ async fn bidirectional_streaming_inner<P, F, H, C>(
     // default whenever the header is absent — matching sibling behaviour for
     // the bodyful bidirectional requests that are this path's reason to
     // exist, instead of leaving extractor behaviour mode-dependent.
-    let default_json_content_type = !header
-        .headers
-        .iter()
-        .any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
+    // dispatch_and_split detects Content-Type during its build pass, so we
+    // pass `true` (default-when-absent) instead of running a separate
+    // pre-scan: the streamed body's emptiness is unknowable up front, so we
+    // default whenever no `Content-Type` header is present — byte-identical
+    // to the prior `!has_content_type` semantics.
+    let default_json_when_absent = true;
     let (status, headers, metadata, mut response_body) = match dispatch_and_split(
         router,
         &header.method,
@@ -495,7 +494,7 @@ async fn bidirectional_streaming_inner<P, F, H, C>(
         &header.query,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         body,
-        default_json_content_type,
+        default_json_when_absent,
     )
     .await
     {

@@ -182,7 +182,8 @@ pub struct PullPushBuffers {
 /// allocate a fresh array).  Centralising this cleanup keeps the invariant in
 /// one place instead of duplicating it across every bidirectional entry point.
 pub fn checkout_pull_push_buffers(env: &mut jni::Env<'_>) -> jni::errors::Result<PullPushBuffers> {
-    let (pull_buf, pull_buf_lease) = checkout_streaming_chunk_buffer(env, StreamingBufferRole::Pull)?;
+    let (pull_buf, pull_buf_lease) =
+        checkout_streaming_chunk_buffer(env, StreamingBufferRole::Pull)?;
     let (push_buf, push_buf_lease) =
         match checkout_streaming_chunk_buffer(env, StreamingBufferRole::Push) {
             Ok(checked_out) => checked_out,

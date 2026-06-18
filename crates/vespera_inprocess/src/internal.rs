@@ -385,11 +385,15 @@ pub fn to_response_envelope_text(parts: ResponseParts) -> ResponseEnvelope {
 /// Used by the `*_with_header` streaming variants which need to emit
 /// the wire-format header **before** body bytes start flowing.
 ///
-/// `default_json_content_type` adds `content-type: application/json`
-/// to the outgoing request (mirroring [`dispatch_parts`]'s defaulting)
-/// — only [`dispatch_into_async`] sets it, because streaming callers
-/// hand this function an opaque [`Body`] whose emptiness is
-/// unknowable up front.
+/// `default_json_when_absent` requests `content-type: application/json`
+/// defaulting (mirroring [`dispatch_parts`]'s defaulting).  This function
+/// detects whether the caller's `headers` already carry a `Content-Type`
+/// **during its single header-insertion pass** and appends the default
+/// only when the flag is set AND none was present — folding in the
+/// content-type detection each caller used to run as a separate pre-scan.
+/// Callers that know the body is non-empty pass `!body.is_empty()`;
+/// streaming callers whose body emptiness is unknowable up front pass
+/// `true` (default whenever absent).
 pub async fn dispatch_and_split<'h>(
     router: Router,
     method_str: &str,
@@ -397,7 +401,7 @@ pub async fn dispatch_and_split<'h>(
     query: &str,
     headers: impl Iterator<Item = (&'h str, &'h str)>,
     body: Body,
-    default_json_content_type: bool,
+    default_json_when_absent: bool,
 ) -> Result<(u16, http::HeaderMap, ResponseMetadata, Body), (u16, String)> {
     let Ok(http_method) = method_str.parse::<Method>() else {
         return Err((
@@ -422,19 +426,23 @@ pub async fn dispatch_and_split<'h>(
     let reserve = headers
         .size_hint()
         .0
-        .saturating_add(usize::from(default_json_content_type));
+        .saturating_add(usize::from(default_json_when_absent));
     let header_map = request.headers_mut();
     if reserve > 0 {
         header_map.reserve(reserve);
     }
+    // Detect Content-Type during the single insertion pass (RFC 7230 §3.2
+    // case-insensitive) instead of a separate caller-side pre-scan.
+    let mut has_content_type = false;
     for (name, value) in headers {
+        has_content_type = has_content_type || name.eq_ignore_ascii_case("content-type");
         let header_name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|e| (400, format!("invalid request: {e}")))?;
         let header_value = http::HeaderValue::from_str(value)
             .map_err(|e| (400, format!("invalid request: {e}")))?;
         header_map.append(header_name, header_value);
     }
-    if default_json_content_type {
+    if default_json_when_absent && !has_content_type {
         header_map.append(
             CONTENT_TYPE,
             http::HeaderValue::from_static("application/json"),
