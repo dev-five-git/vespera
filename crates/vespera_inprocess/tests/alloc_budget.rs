@@ -186,8 +186,10 @@ fn allocation_budgets() {
 
     // ── Case C: 16-header POST (borrowed). Locks the request-header
     // handling allocation count — guards the content-type-scan fusion and
-    // any future header-path allocation regression (incl. the header `Vec`
-    // growth realloc).
+    // any future header-path allocation regression.  The request-header pair
+    // `Vec` is now pre-reserved at `TYPICAL_HEADER_CAP` (16), so a 16-header
+    // request fills WITHOUT the realloc the previous capacity-8 reserve paid
+    // (40 alloc + 0 realloc; was 40 alloc + 1 realloc).
     let wire_hdrs = encode("POST", "/echo", HEADERS_16, br#"{"k":1}"#);
     let headers_post = measure(200, 2000, || {
         let _ = rt.block_on(dispatch_into_async_borrowed(&wire_hdrs, &mut out));
@@ -265,11 +267,12 @@ fn allocation_budgets() {
 // tokio `block_on` (framework), not vespera wire code — the gate guards
 // against ADDING to the per-dispatch floor.
 //
-// BUDGET_HEADERS_POST includes the 1 realloc from the request-header `Vec`
-// (pre-reserved for 8) growing once for the 16-header set, so an
-// under-reserve regression (extra reallocs) is also caught.
+// BUDGET_HEADERS_POST is now realloc-free: the request-header `Vec` is
+// pre-reserved at `TYPICAL_HEADER_CAP` (16), so the 16-header set fills
+// without the capacity-8 growth realloc it previously paid.  An under-reserve
+// regression (a re-introduced realloc, or extra allocs) trips this budget.
 const BUDGET_BODYLESS_BORROWED: usize = 14; // borrowed: no clone / no output Vec / no body copy
 const BUDGET_SMALL_POST: usize = 22; // borrowed: +1 body copy over bodyless
-const BUDGET_HEADERS_POST: usize = 41; // borrowed: 40 alloc + 1 realloc (header Vec growth)
+const BUDGET_HEADERS_POST: usize = 40; // borrowed: 40 alloc + 0 realloc (header Vec pre-reserved at 16)
 const BUDGET_MATERIALISE: usize = 18; // dispatch_from_bytes: +input clone +response Vec
 const BUDGET_DISPATCH_INTO: usize = 17; // dispatch_into: +input clone, reused out

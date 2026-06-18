@@ -145,11 +145,18 @@ fn build_request_from_bytes<'h>(
     // inside the single header pass.
     let mut has_content_type = false;
     for (name, value) in headers {
-        has_content_type = has_content_type || name.eq_ignore_ascii_case("content-type");
         let header_name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|e| (400, format!("invalid request: {e}")))?;
         let header_value = http::HeaderValue::from_str(value)
             .map_err(|e| (400, format!("invalid request: {e}")))?;
+        // `HeaderName::from_bytes` already ASCII-lowercased the name, so the
+        // `== CONTENT_TYPE` standard-header comparison replaces the raw
+        // `eq_ignore_ascii_case` byte-fold scan with a (typically) cheap
+        // standard-header discriminant compare.  Behaviour is identical: a
+        // name that case-insensitively equals "content-type" is always a
+        // valid token that `from_bytes` normalises to `CONTENT_TYPE`, and the
+        // comparison still happens before `append` consumes `header_name`.
+        has_content_type = has_content_type || header_name == CONTENT_TYPE;
         header_map.append(header_name, header_value);
     }
     if !body_is_empty && !has_content_type {
@@ -435,11 +442,18 @@ pub async fn dispatch_and_split<'h>(
     // case-insensitive) instead of a separate caller-side pre-scan.
     let mut has_content_type = false;
     for (name, value) in headers {
-        has_content_type = has_content_type || name.eq_ignore_ascii_case("content-type");
         let header_name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|e| (400, format!("invalid request: {e}")))?;
         let header_value = http::HeaderValue::from_str(value)
             .map_err(|e| (400, format!("invalid request: {e}")))?;
+        // `HeaderName::from_bytes` already ASCII-lowercased the name, so the
+        // `== CONTENT_TYPE` standard-header comparison replaces the raw
+        // `eq_ignore_ascii_case` byte-fold scan with a (typically) cheap
+        // standard-header discriminant compare.  Behaviour is identical: a
+        // name that case-insensitively equals "content-type" is always a
+        // valid token that `from_bytes` normalises to `CONTENT_TYPE`, and the
+        // comparison still happens before `append` consumes `header_name`.
+        has_content_type = has_content_type || header_name == CONTENT_TYPE;
         header_map.append(header_name, header_value);
     }
     if default_json_when_absent && !has_content_type {

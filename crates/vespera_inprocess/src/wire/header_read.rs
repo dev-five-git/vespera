@@ -34,6 +34,18 @@ use super::{CowPairs, WireRequestHeader};
 /// the `catch_unwind` guards at the JNI entry points).
 const INLINE_SKIP_DEPTH: usize = 128;
 
+/// Initial capacity for the request-header `(name, value)` pair `Vec`.
+///
+/// Sized for a realistic browser / reverse-proxy / API request header set
+/// (host, user-agent, accept*, content-type, authorization, cookie,
+/// forwarded / trace headers, cache-control, ...) so the common case fills
+/// without a single reallocation.  The previous capacity of `8` reallocated
+/// once at the 9th header — the exact realloc the 16-header
+/// `tests/alloc_budget.rs` Case C documented.  A small request transiently
+/// over-reserves a few hundred bytes (same alloc *count*); removing the
+/// realloc on the larger, common request shape is the priority (speed first).
+const TYPICAL_HEADER_CAP: usize = 16;
+
 /// Parse the request wire header, borrowing every plain string straight
 /// from `input`.  Returns a bare error message; the caller
 /// ([`super::parse_wire_header`]) adds the `wire header JSON parse
@@ -164,10 +176,11 @@ impl<'a> Parser<'a> {
             self.pos += 1;
             return Ok(Vec::new());
         }
-        // Pre-reserve for a typical request's header count so the first
-        // few pushes don't trigger the Vec's early doubling reallocations
-        // (the previous `Vec::new()` reallocated at 1, 2, 4, 8, ...).
-        let mut out: CowPairs<'a> = Vec::with_capacity(8);
+        // Pre-reserve for a typical request's header count so the pushes
+        // don't trigger the Vec's early doubling reallocations (the previous
+        // `Vec::new()` reallocated at 1, 2, 4, 8, ...).  See
+        // [`TYPICAL_HEADER_CAP`] for the chosen size and rationale.
+        let mut out: CowPairs<'a> = Vec::with_capacity(TYPICAL_HEADER_CAP);
         loop {
             let name = self.read_string()?;
             self.expect(b':')?;
