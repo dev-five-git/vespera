@@ -6,8 +6,8 @@ package com.devfive.vespera.bridge;
  *
  * <p>The autoconfigured default {@link DispatchModeResolver} since
  * vespera-bridge 0.2.0 is {@link SmartDispatchModeResolver}: small
- * bounded idempotent requests take {@link #DIRECT} (~2.2 µs), small
- * non-idempotent requests take {@link #SYNC} (~3.2 µs), everything
+ * bounded safe requests take {@link #DIRECT} (~2.2 µs), small
+ * unsafe requests take {@link #SYNC} (~3.2 µs), everything
  * else falls back to {@link #BIDIRECTIONAL_STREAMING} (~24 µs).  The
  * Spring side stays transparent to the vespera Rust router either
  * way — the routes published in the generated {@code openapi.json}
@@ -77,11 +77,11 @@ public enum DispatchMode {
      *
      * <p>Selected by the autoconfigured
      * {@link SmartDispatchModeResolver} (default since 0.2.0) for
-     * small, bounded, idempotent requests (GET/HEAD/PUT/DELETE/
-     * OPTIONS with {@code Content-Length} absent or &le; 1 MiB —
+     * small, bounded, safe requests (GET/HEAD/OPTIONS with
+     * {@code Content-Length} absent or &le; 1 MiB —
      * the DIRECT gate {@code DEFAULT_MAX_DIRECT_BYTES}; the 256 KiB
      * figure is the separate {@link #SYNC} gate).
-     * The idempotency gate matters because a response that overflows
+     * The safety gate matters because a response that overflows
      * the pooled direct buffer re-runs the Rust handler once.  Never
      * selected by the conservative opt-out
      * {@link BidirectionalStreamingDispatchModeResolver}; large or

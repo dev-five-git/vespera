@@ -26,7 +26,7 @@ use crate::{
     route_impl::StoredRouteInfo,
 };
 
-type FnIndex<'a> = HashMap<&'a str, HashMap<String, &'a syn::ItemFn>>;
+type FnIndex<'a> = HashMap<String, HashMap<String, &'a syn::ItemFn>>;
 type StorageFnSigs<'a> = HashMap<(Option<String>, &'a str), Option<&'a str>>;
 
 /// Build path items and collect tags from route metadata.
@@ -44,12 +44,23 @@ pub(super) fn build_path_items(
     let mut paths = BTreeMap::new();
     let mut all_tags = BTreeSet::new();
 
+    // Compute once: `cwd` anchors every path normalization below so the
+    // three path sources — `file_cache` keys (collector), route metadata
+    // spans, and ROUTE_STORAGE `#[route]` spans — compare in one canonical
+    // space (separator/relativity/case can differ, especially on Windows).
+    let cwd = std::env::current_dir().unwrap_or_default();
+
     // Build the file-AST function index FIRST so the storage path
     // below can skip any function whose AST is already reachable through
     // `file_cache`.  `collector::collect_metadata` has already walked
     // these files via `syn::parse_file`, so re-parsing `fn_sig_str`
     // from ROUTE_STORAGE for the same function is pure duplicated work.
-    let fn_index: HashMap<&str, HashMap<String, &syn::ItemFn>> = file_cache
+    //
+    // Keyed by the NORMALIZED path so the `already_in_ast` storage check
+    // and the main-loop AST lookup match regardless of path format — a raw
+    // key misses when the `#[route]` span path differs from the collector's
+    // `file_cache` key, needlessly re-parsing the signature on a worker.
+    let fn_index: FnIndex<'_> = file_cache
         .iter()
         .map(|(path, ast)| {
             let fns: HashMap<String, &syn::ItemFn> = ast
@@ -63,7 +74,7 @@ pub(super) fn build_path_items(
                     }
                 })
                 .collect();
-            (path.as_str(), fns)
+            (normalize_path_key(path, &cwd), fns)
         })
         .collect();
 
@@ -73,7 +84,6 @@ pub(super) fn build_path_items(
     // `syn::parse_str` + operation build runs on worker threads below;
     // `syn` ASTs are not `Send`, which is also why fn_index-backed
     // routes stay on this thread.
-    let cwd = std::env::current_dir().unwrap_or_default();
     let storage_fn_sigs = build_storage_fn_sigs(route_storage, &fn_index, &cwd);
 
     // Split routes by signature source. `idx` preserves the original
@@ -96,7 +106,7 @@ pub(super) fn build_path_items(
             .or_else(|| storage_fn_sigs.get(&legacy_storage_key).copied().flatten())
         {
             parallel_jobs.push((idx, route_meta, fn_sig_str));
-        } else if let Some(fns) = fn_index.get(route_meta.file_path.as_str())
+        } else if let Some(fns) = fn_index.get(&normalize_path_key(&route_meta.file_path, &cwd))
             && let Some(fn_item) = fns.get(&route_meta.function_name)
         {
             ast_jobs.push((idx, route_meta, &fn_item.sig));
@@ -179,7 +189,8 @@ fn build_storage_fn_sigs<'a>(
         let already_in_ast = s
             .file_path
             .as_deref()
-            .and_then(|fp| fn_index.get(fp))
+            .map(|fp| normalize_path_key(fp, cwd))
+            .and_then(|fp| fn_index.get(&fp))
             .is_some_and(|fns| fns.contains_key(&s.fn_name));
         if already_in_ast {
             continue;

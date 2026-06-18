@@ -48,18 +48,18 @@ public class VesperaBridgeProperties {
      * Dispatch-mode policy for the autoconfigured proxy.
      *
      * <ul>
-     *   <li>{@code smart} (default since 0.2.0) — small bounded
-     *       idempotent requests (Content-Length absent/bodyless or
-     *       &le; 1 MiB; GET/HEAD/PUT/DELETE/OPTIONS) take the pooled
+     *   <li>{@code smart} (default since 0.2.0) — small bounded safe
+     *       requests (Content-Length absent/bodyless or &le; 1 MiB;
+     *       GET/HEAD/OPTIONS) take the pooled
      *       direct-buffer path, skipping JNI array copies and
-     *       per-request stream setup; small non-idempotent requests
-     *       (POST/PATCH) take heap-buffered SYNC; everything else
+     *       per-request stream setup; small unsafe requests
+     *       (POST/PUT/PATCH/DELETE) take heap-buffered SYNC; everything else
      *       falls back to bidirectional streaming.  Measured 2.2 µs
      *       (DIRECT) / 3.2 µs (SYNC) vs 24.1 µs (bidirectional) on
      *       a small {@code GET /health} round-trip.  Trade-offs:
      *       DIRECT re-runs the handler when a response overflows the
      *       pooled buffer ({@code vespera.direct.maxBufferBytes},
-     *       default 4 MiB) — acceptable for idempotent requests
+     *       default 4 MiB) — acceptable for safe requests
      *       only; SYNC fully buffers the response on the JVM heap.</li>
      *   <li>{@code bidirectional-streaming} — opt-out, restores the
      *       pre-0.2.0 default: every request that may carry a body
@@ -72,7 +72,7 @@ public class VesperaBridgeProperties {
 
     /**
      * Whether the Spring proxy may retry a DIRECT response-buffer overflow
-     * for idempotent methods.  Default {@code true} preserves the 0.2.x
+     * for safe methods.  Default {@code true} preserves the 0.2.x
      * behavior (grow the direct response buffer once and re-run the Rust
      * handler). Set {@code false} to surface
      * {@link VesperaBridge.BufferTooSmallException} as a 500 instead,

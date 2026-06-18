@@ -9,11 +9,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.core.io.AbstractResource;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
@@ -53,7 +55,7 @@ import java.util.concurrent.ForkJoinPool;
  * <p>The autoconfigured defaults ({@link HeaderAppNameResolver} on
  * {@code X-Vespera-App} + {@link SmartDispatchModeResolver} since
  * 0.2.0) keep the proxy transparent for every payload size while
- * routing small bounded idempotent requests through the
+ * routing small bounded safe requests through the
  * direct-buffer fast path (DIRECT 2.2 µs / SYNC 3.2 µs vs streaming
  * 24.1 µs on a small {@code GET /health}).  Restore the pre-0.2.0
  * bidirectional default with
@@ -188,10 +190,11 @@ public class VesperaProxyController {
      */
     private static final int MAX_FIXED_BODY = 64 * 1024 * 1024;
 
-    private static final int DIRECT_BODY_COPY_CHUNK = 256 * 1024;
-    private static final int DIRECT_BODY_SCRATCH_RETAIN_CAPACITY = 1024 * 1024;
+    private static final int DIRECT_BODY_SCRATCH_INITIAL = 16 * 1024;
+    private static final int DIRECT_BODY_COPY_CHUNK = 1024 * 1024;
+    private static final int DIRECT_BODY_SCRATCH_RETAIN_CAPACITY = 256 * 1024;
     private static final ThreadLocal<byte[]> DIRECT_BODY_SCRATCH =
-            ThreadLocal.withInitial(() -> new byte[DIRECT_BODY_COPY_CHUNK]);
+            ThreadLocal.withInitial(() -> new byte[DIRECT_BODY_SCRATCH_INITIAL]);
 
     // Package-private (not private) so unit tests can exercise the
     // bodyless fast path and length-based reads with MockHttpServletRequest.
@@ -204,7 +207,7 @@ public class VesperaProxyController {
         // Provably bodyless requests skip the servlet InputStream
         // acquisition + readAllBytes allocations entirely. This covers
         // both Content-Length: 0 AND length-less GET/HEAD/OPTIONS (the
-        // hottest path — the small idempotent GETs the SmartDispatch
+        // hottest path — the small safe GETs the SmartDispatch
         // resolver routes through DIRECT, which previously still paid a
         // getInputStream()+readAllBytes() round-trip on an empty body).
         if (DispatchModeResolver.definitelyBodyless(request)) {
@@ -255,7 +258,8 @@ public class VesperaProxyController {
      * {@code ResponseEntity<byte[]>} object that the prior
      * {@link #buildResponseEntityFromWire} path allocated per response.
      * Mirrors {@link #dispatchDirectMode}; the async path still uses
-     * {@code buildResponseEntityFromWire} (Spring async completion).
+     * {@code buildResponseEntityFromWire} (Spring async completion), but
+     * returns a zero-copy {@code Resource} view over the wire body.
      */
     private static void dispatchSync(
             HttpServletResponse response,
@@ -459,25 +463,35 @@ public class VesperaProxyController {
     }
 
     private static void writeDirectBody(ByteBuffer body, OutputStream out) throws IOException {
-        byte[] scratch = directBodyScratch(Math.min(body.remaining(), DIRECT_BODY_COPY_CHUNK));
-        while (body.hasRemaining()) {
-            int n = Math.min(body.remaining(), scratch.length);
-            body.get(scratch, 0, n);
-            out.write(scratch, 0, n);
+        try {
+            byte[] scratch = directBodyScratch(Math.min(body.remaining(), DIRECT_BODY_COPY_CHUNK));
+            while (body.hasRemaining()) {
+                int n = Math.min(body.remaining(), scratch.length);
+                body.get(scratch, 0, n);
+                out.write(scratch, 0, n);
+            }
+        } finally {
+            shrinkDirectBodyScratchIfOversized();
         }
     }
 
     private static byte[] directBodyScratch(int required) {
         byte[] scratch = DIRECT_BODY_SCRATCH.get();
         if (scratch.length > DIRECT_BODY_SCRATCH_RETAIN_CAPACITY) {
-            scratch = new byte[DIRECT_BODY_COPY_CHUNK];
+            scratch = new byte[DIRECT_BODY_SCRATCH_INITIAL];
             DIRECT_BODY_SCRATCH.set(scratch);
         }
         if (scratch.length < required) {
-            scratch = new byte[Math.min(DIRECT_BODY_SCRATCH_RETAIN_CAPACITY, required)];
+            scratch = new byte[Math.min(DIRECT_BODY_COPY_CHUNK, required)];
             DIRECT_BODY_SCRATCH.set(scratch);
         }
         return scratch;
+    }
+
+    private static void shrinkDirectBodyScratchIfOversized() {
+        if (DIRECT_BODY_SCRATCH.get().length > DIRECT_BODY_SCRATCH_RETAIN_CAPACITY) {
+            DIRECT_BODY_SCRATCH.set(new byte[DIRECT_BODY_SCRATCH_INITIAL]);
+        }
     }
 
     /**
@@ -589,10 +603,8 @@ public class VesperaProxyController {
      *       {@link WireHeaderReader} (parses directly to {@link HttpHeaders} —
      *       no {@code DecodedResponse} graph: no {@code metadata} map, no
      *       intermediate headers map, no body {@code ByteBuffer} views), and</li>
-     *   <li><b>body</b> sliced once straight from the wire tail — for text this
-     *       drops the intermediate {@code byte[]} that {@code bodyBytes()} would
-     *       allocate (a body-sized copy avoided per text response, scaling with
-     *       payload).</li>
+     *   <li><b>body</b> exposed as a {@link org.springframework.core.io.Resource}
+     *       view over the wire tail — no body-sized {@code byte[]} slice copy.</li>
      * </ul>
      *
      * <p>{@link VesperaBridge#decodeResponse(byte[])} stays the public API for
@@ -620,19 +632,35 @@ public class VesperaProxyController {
                 s -> statusHolder[0] = s,
                 httpHeaders::add);
         HttpStatusCode status = HttpStatusCode.valueOf(statusHolder[0]);
-        // Deliver the body as byte[] for every content type.  The wire
-        // header already carries the exact Content-Type, and Spring's
-        // ByteArrayHttpMessageConverter writes it verbatim — so this
-        // drops, for text responses, both the intermediate String
-        // allocation AND the UTF-8 decode→re-encode round-trip that
-        // ResponseEntity<String> performed (the StringHttpMessageConverter
-        // would re-encode the just-decoded String straight back to UTF-8).
-        // One body-sized slice copy remains: ResponseEntity<byte[]> needs
-        // an owned array.  (BREAKING vs ≤0.2.0: text responses surface as
-        // ResponseEntity<byte[]> rather than ResponseEntity<String>; the
-        // bytes on the wire are identical.)
         int bodyOff = 4 + headerLen;
         return new ResponseEntity<>(
-                java.util.Arrays.copyOfRange(wire, bodyOff, wire.length), httpHeaders, status);
+                new WireBodyResource(wire, bodyOff, wire.length - bodyOff), httpHeaders, status);
+    }
+
+    static final class WireBodyResource extends AbstractResource {
+        private final byte[] wire;
+        private final int offset;
+        private final int length;
+
+        WireBodyResource(byte[] wire, int offset, int length) {
+            this.wire = Objects.requireNonNull(wire, "wire");
+            this.offset = offset;
+            this.length = length;
+        }
+
+        @Override
+        public InputStream getInputStream() {
+            return new ByteArrayInputStream(wire, offset, length);
+        }
+
+        @Override
+        public long contentLength() {
+            return length;
+        }
+
+        @Override
+        public String getDescription() {
+            return "vespera wire response body slice";
+        }
     }
 }

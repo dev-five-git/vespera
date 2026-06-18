@@ -124,16 +124,16 @@ class VesperaBridgeAutoConfigurationTest {
     }
 
     @Test
-    void unknownDispatchModeFallsBackToSmart() {
-        // Q7: a typo'd dispatch-mode no longer silently changes semantics —
-        // it falls back to smart (with a logged warning), not bidirectional.
+    void unknownDispatchModeFailsFast() {
+        // A production typo must fail at bean creation instead of silently
+        // enabling the smart DIRECT/SYNC policy.
         runner.withPropertyValues("vespera.bridge.dispatch-mode=not-a-real-mode")
-                .run(
-                        ctx ->
-                                assertInstanceOf(
-                                        SmartDispatchModeResolver.class,
-                                        ctx.getBean(DispatchModeResolver.class),
-                                        "unrecognized dispatch-mode must fall back to smart"));
+                .run(ctx -> {
+                    assertTrue(ctx.getStartupFailure() instanceof org.springframework.beans.factory.BeanCreationException);
+                    assertTrue(ctx.getStartupFailure().getMessage().contains("not-a-real-mode"));
+                    assertTrue(ctx.getStartupFailure().getMessage().contains("smart"));
+                    assertTrue(ctx.getStartupFailure().getMessage().contains("bidirectional-streaming"));
+                });
     }
 
     static final class CustomResolver implements DispatchModeResolver {

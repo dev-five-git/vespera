@@ -260,10 +260,19 @@ pub fn collect_rs_files_recursive(dir: &Path, files: &mut Vec<std::path::PathBuf
     };
 
     for entry in entries.flatten() {
+        // `entry.file_type()` reads the kind from the directory-entry data the
+        // OS already returned for this `read_dir` walk — no extra `metadata`
+        // stat per entry, unlike `path.is_dir()`.  Mirrors the established
+        // `file_utils::collect_with_mtimes_into` pattern (symlinks, which are
+        // neither file nor dir here, are skipped — never present in a `src/`
+        // tree this indexes).
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         let path = entry.path();
-        if path.is_dir() {
+        if file_type.is_dir() {
             collect_rs_files_recursive(&path, files);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
+        } else if file_type.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
             files.push(path);
         }
     }

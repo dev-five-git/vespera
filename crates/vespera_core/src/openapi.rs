@@ -168,6 +168,63 @@ fn has_any_component_map(components: &Components) -> bool {
         || components.security_schemes.is_some()
 }
 
+/// Merge `other`'s per-method operations into `into` with **self-wins**
+/// semantics: an operation (or path-level field) already present on `into`
+/// is kept; a slot empty on `into` is filled from `other`.
+///
+/// Applied on a path-key conflict so two apps that define the same path
+/// under different methods both keep their operations, instead of the
+/// incoming [`PathItem`] being dropped whole.  Destructuring `other` keeps
+/// this exhaustive — adding a `PathItem` field forces this to be updated.
+fn merge_path_item(into: &mut PathItem, other: PathItem) {
+    let PathItem {
+        get,
+        post,
+        put,
+        patch,
+        delete,
+        head,
+        options,
+        trace,
+        parameters,
+        summary,
+        description,
+    } = other;
+    if into.get.is_none() {
+        into.get = get;
+    }
+    if into.post.is_none() {
+        into.post = post;
+    }
+    if into.put.is_none() {
+        into.put = put;
+    }
+    if into.patch.is_none() {
+        into.patch = patch;
+    }
+    if into.delete.is_none() {
+        into.delete = delete;
+    }
+    if into.head.is_none() {
+        into.head = head;
+    }
+    if into.options.is_none() {
+        into.options = options;
+    }
+    if into.trace.is_none() {
+        into.trace = trace;
+    }
+    if into.parameters.is_none() {
+        into.parameters = parameters;
+    }
+    if into.summary.is_none() {
+        into.summary = summary;
+    }
+    if into.description.is_none() {
+        into.description = description;
+    }
+}
+
 impl OpenApi {
     /// Merge another `OpenAPI` document into this one.
     ///
@@ -177,9 +234,21 @@ impl OpenApi {
     /// and `external_docs` are adopted from `other` only when `self` has
     /// not set its own. On any key/field conflict, `self` takes precedence.
     pub fn merge(&mut self, other: Self) {
-        // Merge paths (self takes precedence on conflict)
+        // Merge paths.  On a path-key conflict, merge per HTTP method
+        // (self-wins per operation) instead of dropping the incoming
+        // `PathItem` wholesale: two merged apps that both define the same
+        // path under DIFFERENT methods (parent `GET /users`, child
+        // `POST /users`) must keep BOTH operations in the generated
+        // document — otherwise the spec under-documents what the merged
+        // router actually serves at runtime.
         for (path, item) in other.paths {
-            self.paths.entry(path).or_insert(item);
+            use std::collections::btree_map::Entry;
+            match self.paths.entry(path) {
+                Entry::Vacant(slot) => {
+                    slot.insert(item);
+                }
+                Entry::Occupied(mut slot) => merge_path_item(slot.get_mut(), item),
+            }
         }
 
         // Merge components (every reusable component kind, self-wins on
@@ -311,6 +380,81 @@ mod tests {
                 .unwrap()
                 .summary,
             Some("Get users".to_string())
+        );
+    }
+
+    fn create_post_path_item(summary: &str) -> PathItem {
+        PathItem {
+            post: Some(Operation {
+                summary: Some(summary.to_string()),
+                description: None,
+                operation_id: None,
+                tags: None,
+                parameters: None,
+                request_body: None,
+                responses: BTreeMap::new(),
+                security: None,
+                deprecated: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_merge_same_path_different_methods_are_combined() {
+        // Regression: a path-key conflict must merge per HTTP method, not
+        // drop the incoming PathItem wholesale.  Parent defines GET /users,
+        // child defines POST /users — the merged document must expose BOTH
+        // operations (otherwise the spec under-documents the merged router).
+        let mut base = create_base_openapi();
+        base.paths
+            .insert("/users".to_string(), create_path_item("List users")); // GET
+
+        let mut other = create_base_openapi();
+        other
+            .paths
+            .insert("/users".to_string(), create_post_path_item("Create user")); // POST
+
+        base.merge(other);
+
+        let users = base.paths.get("/users").expect("/users present");
+        // self-wins GET is preserved
+        assert_eq!(
+            users.get.as_ref().unwrap().summary,
+            Some("List users".to_string())
+        );
+        // incoming POST is merged in (previously dropped on the whole-item
+        // `or_insert`)
+        assert_eq!(
+            users.post.as_ref().unwrap().summary,
+            Some("Create user".to_string())
+        );
+    }
+
+    #[test]
+    fn test_merge_same_path_same_method_self_wins() {
+        // Same path AND same method on both sides: self's operation is kept,
+        // the incoming one is discarded.
+        let mut base = create_base_openapi();
+        base.paths
+            .insert("/users".to_string(), create_path_item("Base get"));
+
+        let mut other = create_base_openapi();
+        other
+            .paths
+            .insert("/users".to_string(), create_path_item("Other get"));
+
+        base.merge(other);
+
+        assert_eq!(
+            base.paths
+                .get("/users")
+                .unwrap()
+                .get
+                .as_ref()
+                .unwrap()
+                .summary,
+            Some("Base get".to_string())
         );
     }
 

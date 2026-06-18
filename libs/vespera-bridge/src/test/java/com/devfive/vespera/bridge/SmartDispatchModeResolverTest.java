@@ -23,14 +23,22 @@ class SmartDispatchModeResolverTest {
     }
 
     @Test
-    void smallIdempotentRequestUsesDirect() {
+    void smallSafeRequestUsesDirect() {
         assertEquals(DispatchMode.DIRECT,
                 resolver.resolveMode(request("GET", 128)));
         assertEquals(DispatchMode.DIRECT,
-                resolver.resolveMode(request("DELETE", 0)));
+                resolver.resolveMode(request("HEAD", 0)));
         assertEquals(DispatchMode.DIRECT,
-                resolver.resolveMode(request("PUT",
+                resolver.resolveMode(request("OPTIONS",
                         SmartDispatchModeResolver.DEFAULT_MAX_DIRECT_BYTES)));
+    }
+
+    @Test
+    void smallUnsafeIdempotentRequestsUseSyncNeverDirect() {
+        assertEquals(DispatchMode.SYNC,
+                resolver.resolveMode(request("PUT", 128)));
+        assertEquals(DispatchMode.SYNC,
+                resolver.resolveMode(request("DELETE", 128)));
     }
 
     @Test
@@ -72,6 +80,16 @@ class SmartDispatchModeResolverTest {
     }
 
     @Test
+    void oversizedUnsafeIdempotentRequestsFallBackToStreaming() {
+        assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING,
+                resolver.resolveMode(request("PUT",
+                        SmartDispatchModeResolver.DEFAULT_MAX_SYNC_BYTES + 1)));
+        assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING,
+                resolver.resolveMode(request("DELETE",
+                        SmartDispatchModeResolver.DEFAULT_MAX_SYNC_BYTES + 1)));
+    }
+
+    @Test
     void oversizedRequestFallsBackToStreaming() {
         assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING,
                 resolver.resolveMode(request("GET",
@@ -93,11 +111,9 @@ class SmartDispatchModeResolverTest {
     }
 
     @Test
-    void mediumIdempotentRequestUsesDirectAfterGateRaise() {
+    void mediumSafeRequestUsesDirectAfterGateRaise() {
         // Above the old 256 KiB gate, within the raised 1 MiB DIRECT gate:
         // with the 2 MiB retain cap, DIRECT beats streaming through 1 MiB.
-        assertEquals(DispatchMode.DIRECT,
-                resolver.resolveMode(request("PUT", 512 * 1024)));
         assertEquals(DispatchMode.DIRECT,
                 resolver.resolveMode(request("GET", 1024 * 1024)));
     }
@@ -118,12 +134,15 @@ class SmartDispatchModeResolverTest {
 
     @Test
     void independentDirectAndSyncGatesAreHonoured() {
-        // DIRECT gate 600 KiB (idempotent), SYNC gate 100 KiB (non-idempotent).
+        // DIRECT gate 600 KiB (safe), SYNC gate 100 KiB (unsafe).
         SmartDispatchModeResolver split =
                 new SmartDispatchModeResolver(600 * 1024, 100 * 1024);
         assertEquals(DispatchMode.DIRECT, split.resolveMode(request("GET", 600 * 1024)));
         assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING,
                 split.resolveMode(request("GET", 600 * 1024 + 1)));
+        assertEquals(DispatchMode.SYNC, split.resolveMode(request("PUT", 100 * 1024)));
+        assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING,
+                split.resolveMode(request("PUT", 100 * 1024 + 1)));
         assertEquals(DispatchMode.SYNC, split.resolveMode(request("POST", 100 * 1024)));
         assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING,
                 split.resolveMode(request("POST", 100 * 1024 + 1)));

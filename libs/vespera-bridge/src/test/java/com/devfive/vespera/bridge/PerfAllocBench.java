@@ -224,6 +224,31 @@ class PerfAllocBench {
                 afterBpo);
     }
 
+    /** Model DIRECT heap-scratch retained capacity before/after adaptive sizing. */
+    @Test
+    void directScratchRetention_retainedBytes() {
+        final int beforeInitial = 256 * 1024;
+        final int afterInitial = 16 * 1024;
+        final int afterRetainCap = 256 * 1024;
+        final int largeBody = 1024 * 1024;
+
+        int beforeCap = beforeInitial;
+        beforeCap = Math.max(beforeCap, largeBody);
+
+        int afterCap = afterInitial;
+        afterCap = Math.max(afterCap, largeBody);
+        if (afterCap > afterRetainCap) {
+            afterCap = afterInitial;
+        }
+
+        System.out.printf(
+                "VESPERA_ALLOC direct_scratch_retained_before bytes=%d (after one 1 MiB DIRECT body)%n",
+                beforeCap);
+        System.out.printf(
+                "VESPERA_ALLOC direct_scratch_retained_after  bytes=%d (shrunk to 16 KiB initial)%n",
+                afterCap);
+    }
+
     private static void directWriteBefore(ByteBuffer src, java.io.OutputStream out)
             throws Exception {
         src.clear();

@@ -7,9 +7,9 @@ import jakarta.servlet.http.HttpServletRequest;
  * incoming HTTP request.
  *
  * <p>The autoconfigured default since vespera-bridge 0.2.0 is
- * {@link SmartDispatchModeResolver}: small bounded idempotent
+ * {@link SmartDispatchModeResolver}: small bounded safe
  * requests take {@link DispatchMode#DIRECT} (~2.2 µs), small
- * non-idempotent requests take {@link DispatchMode#SYNC} (~3.2 µs),
+ * unsafe requests take {@link DispatchMode#SYNC} (~3.2 µs),
  * everything else falls back to
  * {@link DispatchMode#BIDIRECTIONAL_STREAMING} (~24 µs).  Spring
  * endpoints stay aligned with the URLs published in vespera's

@@ -30,6 +30,11 @@ public final class HeaderAppNameResolver implements AppNameResolver {
 
     @Override
     public String resolveAppName(HttpServletRequest request) {
-        return request.getHeader(headerName);
+        String value = request.getHeader(headerName);
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 }

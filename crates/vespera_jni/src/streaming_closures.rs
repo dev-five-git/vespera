@@ -451,10 +451,16 @@ pub fn close_input_stream(
     env: &mut jni::Env<'_>,
     stream: &Global<JObject<'static>>,
 ) -> jni::errors::Result<()> {
-    env.call_method(stream, jni_str!("close"), jni_sig!("()V"), &[])?;
+    let result = env.call_method(stream, jni_str!("close"), jni_sig!("()V"), &[]);
+    // Scrub a pending exception (e.g. an `IOException` from closing an
+    // already-broken stream) on BOTH success and failure — capturing the
+    // result and clearing BEFORE `?` so a throwing `close()` still leaves the
+    // thread clean, matching `complete_future{,_local}`'s self-contained
+    // contract (the prior `?`-before-clear returned early on a throw).
     if env.exception_check() {
         env.exception_clear();
     }
+    result?;
     Ok(())
 }
 

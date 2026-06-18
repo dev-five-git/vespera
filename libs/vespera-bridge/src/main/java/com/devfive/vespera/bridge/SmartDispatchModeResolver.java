@@ -9,14 +9,14 @@ import jakarta.servlet.http.HttpServletRequest;
  * streaming 24.1&nbsp;µs):
  *
  * <ul>
- *   <li>{@link DispatchMode#DIRECT} — idempotent requests
- *       (GET / HEAD / PUT / DELETE / OPTIONS per RFC 9110) up to the
- *       DIRECT gate ({@link #DEFAULT_MAX_DIRECT_BYTES}, 1 MiB), or
- *       provably bodyless ones of any declared length.  Idempotency
- *       matters because a DIRECT response overflow retries the
- *       dispatch, re-running the Rust handler.</li>
- *   <li>{@link DispatchMode#SYNC} — non-idempotent requests
- *       (POST / PATCH) up to the SYNC gate
+ *   <li>{@link DispatchMode#DIRECT} — safe requests
+ *       (GET / HEAD / OPTIONS per RFC 9110) up to the DIRECT gate
+ *       ({@link #DEFAULT_MAX_DIRECT_BYTES}, 1 MiB), or provably
+ *       bodyless ones of any declared length.  Safety matters because
+ *       a DIRECT response overflow retries the dispatch, re-running the
+ *       Rust handler.</li>
+ *   <li>{@link DispatchMode#SYNC} — unsafe requests
+ *       (POST / PUT / PATCH / DELETE) up to the SYNC gate
  *       ({@link #DEFAULT_MAX_SYNC_BYTES}, 256 KiB).  SYNC never re-runs
  *       the handler, so it is safe for any method, but it fully buffers
  *       the response on the heap — so its gate is kept lower than the
@@ -46,7 +46,7 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
 
     /**
      * Default DIRECT request-size gate: 1 MiB (raised from 256 KiB,
-     * measured 2026-06).  Idempotent requests up to this size dispatch
+     * measured 2026-06).  Safe requests up to this size dispatch
      * through pooled direct buffers — measured 1.7&ndash;2.7&times; faster
      * than streaming for 256 KiB&ndash;1 MiB bodies, provided
      * {@code vespera.direct.maxRetainedBytes} (2 MiB default) keeps the
@@ -55,7 +55,7 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
     public static final long DEFAULT_MAX_DIRECT_BYTES = 1024 * 1024L;
 
     /**
-     * Default SYNC request-size gate: 256 KiB.  Non-idempotent (POST/PATCH)
+     * Default SYNC request-size gate: 256 KiB.  Unsafe (POST/PUT/PATCH/DELETE)
      * requests up to this size use SYNC; above it they stream, because
      * SYNC fully buffers the response on the JVM heap, which loses to
      * streaming for larger bodies (measured: SYNC 174 µs vs streaming
@@ -86,9 +86,9 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
 
     /**
      * @param maxDirectBytes largest {@code Content-Length} eligible for
-     *                       DIRECT dispatch (idempotent methods)
+     *                       DIRECT dispatch (safe methods)
      * @param maxSyncBytes   largest {@code Content-Length} eligible for SYNC
-     *                       dispatch (non-idempotent methods); typically
+     *                       dispatch (unsafe methods); typically
      *                       lower than {@code maxDirectBytes}
      */
     public SmartDispatchModeResolver(long maxDirectBytes, long maxSyncBytes) {
@@ -108,10 +108,10 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
         boolean bodyless = DispatchModeResolver.definitelyBodyless(request);
         String method = request.getMethod();
 
-        if (HttpMethods.isIdempotent(method)) {
-            // Idempotent (GET/HEAD/PUT/DELETE/OPTIONS): DIRECT up to the
-            // (larger) DIRECT gate, else stream.  Idempotency matters because
-            // a DIRECT response overflow re-runs the Rust handler.
+        if (HttpMethods.isSafe(method)) {
+            // Safe (GET/HEAD/OPTIONS): DIRECT up to the (larger) DIRECT gate,
+            // else stream.  Safety matters because a DIRECT response overflow
+            // re-runs the Rust handler.
             boolean directSized =
                     bodyless || (contentLength >= 0 && contentLength <= maxDirectBytes);
             if (!directSized) {
@@ -132,7 +132,7 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
             return DispatchMode.DIRECT;
         }
 
-        // Non-idempotent (POST/PATCH): SYNC never re-runs the handler, but
+        // Unsafe (POST/PUT/PATCH/DELETE): SYNC never re-runs the handler, but
         // fully buffers the response on the JVM heap — which loses to
         // streaming above the (lower) SYNC gate.
         return syncSized(contentLength, bodyless)

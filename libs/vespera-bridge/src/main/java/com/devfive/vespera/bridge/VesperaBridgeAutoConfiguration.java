@@ -1,7 +1,5 @@
 package com.devfive.vespera.bridge;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -65,9 +63,6 @@ import java.util.concurrent.ForkJoinPool;
 @EnableConfigurationProperties(VesperaBridgeProperties.class)
 public class VesperaBridgeAutoConfiguration {
 
-    private static final Logger log =
-            LoggerFactory.getLogger(VesperaBridgeAutoConfiguration.class);
-
     @Bean
     @ConditionalOnMissingBean
     public AppNameResolver vesperaBridgeAppNameResolver(VesperaBridgeProperties props) {
@@ -103,15 +98,15 @@ public class VesperaBridgeAutoConfiguration {
      * Autoconfigured default since 0.2.0:
      * {@link SmartDispatchModeResolver} picks per request — DIRECT
      * (pooled direct buffers, no JNI array copies) for small/bodyless
-     * idempotent requests, SYNC for small non-idempotent requests,
+     * safe requests, SYNC for small unsafe requests,
      * BIDIRECTIONAL_STREAMING for everything else.
      *
      * <p>The two trade-offs callers accept on the new default:
      * <ul>
      *   <li>DIRECT retries (re-runs the Rust handler) once when a
      *       response exceeds {@code vespera.direct.maxBufferBytes}
-     *       (default 4 MiB). This is why DIRECT is restricted to
-     *       idempotent methods (GET/HEAD/PUT/DELETE/OPTIONS).</li>
+     *       (default 4 MiB). This is why DIRECT is restricted to safe
+     *       methods (GET/HEAD/OPTIONS).</li>
      *   <li>SYNC buffers the full response on the JVM heap. The
      *       256 KiB request-size gate keeps the response size
      *       reasonable for JSON-RPC-shaped traffic.</li>
@@ -131,10 +126,9 @@ public class VesperaBridgeAutoConfiguration {
         if (mode != null
                 && !mode.equalsIgnoreCase("smart")
                 && !mode.equalsIgnoreCase("bidirectional-streaming")) {
-            log.warn(
-                    "Unrecognized vespera.bridge.dispatch-mode '{}' — falling back to "
-                    + "'smart'. Valid values: 'smart' (default), 'bidirectional-streaming'.",
-                    mode);
+            throw new IllegalArgumentException(
+                    "Unrecognized vespera.bridge.dispatch-mode '" + mode
+                            + "'. Valid values: 'smart' (default), 'bidirectional-streaming'.");
         }
         return new SmartDispatchModeResolver();
     }

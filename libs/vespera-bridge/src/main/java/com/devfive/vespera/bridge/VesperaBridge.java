@@ -489,12 +489,12 @@ public class VesperaBridge {
     /**
      * Thrown by {@link #dispatchDirectPooled(byte[], boolean)} when the
      * response exceeds the out-buffer capacity and the caller disallowed
-     * automatic retry (non-idempotent requests).  Carries the exact
+     * automatic retry (unsafe requests).  Carries the exact
      * buffer size needed for a successful retry.
      *
      * <p><strong>Retrying re-runs the dispatch</strong> — the Rust
-     * handler executes again.  Only retry idempotent requests
-     * (GET/HEAD/PUT/DELETE) automatically; for POST/PATCH the caller
+     * handler executes again.  Only retry safe requests
+     * (GET/HEAD/OPTIONS) automatically; for unsafe methods the caller
      * must decide.
      */
     public static final class BufferTooSmallException extends RuntimeException {
@@ -619,7 +619,7 @@ public class VesperaBridge {
      *   <li>Response overflow with {@code retryOnOverflow == true} →
      *       grows the out buffer (or falls back to {@code dispatchBytes}
      *       beyond the cap) and dispatches again.  <strong>The handler
-     *       runs twice</strong> — only pass {@code true} for idempotent
+     *       runs twice</strong> — only pass {@code true} for safe
      *       requests.</li>
      *   <li>Response overflow with {@code retryOnOverflow == false} →
      *       throws {@link BufferTooSmallException}.</li>
@@ -627,7 +627,7 @@ public class VesperaBridge {
      *
      * @param wireRequest      length-prefixed binary wire request
      * @param retryOnOverflow  whether a response overflow may re-run the
-     *                         dispatch (idempotent requests only)
+     *                         dispatch (safe requests only)
      * @return read-only buffer view of the wire response, positioned at
      *         0 with {@code limit()} = response length
      */
@@ -650,7 +650,7 @@ public class VesperaBridge {
      * @param headers request headers
      * @param body    request body bytes (may be empty or {@code null})
      * @param retryOnOverflow whether a response overflow may re-run the
-     *                        dispatch (idempotent requests only)
+     *                        dispatch (safe requests only)
      * @return read-only buffer view of the wire response, valid until
      *         the next {@code dispatchDirect*} call on this thread
      */
