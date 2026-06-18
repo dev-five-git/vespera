@@ -55,10 +55,12 @@ impl syn::parse::Parse for RouteArgs {
                 } else if ident_str == "error_status" {
                     input.parse::<syn::Token![=]>()?;
                     let array: syn::ExprArray = input.parse()?;
+                    validate_error_status_array(&array)?;
                     error_status = Some(array);
                 } else if ident_str == "responses" {
                     input.parse::<syn::Token![=]>()?;
                     let array: syn::ExprArray = input.parse()?;
+                    validate_responses_array(&array)?;
                     responses = Some(array);
                 } else if ident_str == "status" {
                     input.parse::<syn::Token![=]>()?;
@@ -135,6 +137,87 @@ impl syn::parse::Parse for RouteArgs {
             description,
         })
     }
+}
+
+/// Validate `error_status = [<u16>, ...]`: every element must be an integer
+/// literal in the `u16` range.  A malformed entry is rejected with a
+/// span-attached compile error instead of being silently dropped by the
+/// downstream `filter_map` extraction (which would emit incomplete OpenAPI).
+fn validate_error_status_array(array: &syn::ExprArray) -> syn::Result<()> {
+    for elem in &array.elems {
+        let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(lit_int),
+            ..
+        }) = elem
+        else {
+            return Err(syn::Error::new_spanned(
+                elem,
+                "#[route] `error_status` entries must be integer status codes, \
+                 e.g. `error_status = [400, 404]`.",
+            ));
+        };
+        lit_int.base10_parse::<u16>().map_err(|_| {
+            syn::Error::new_spanned(
+                lit_int,
+                "#[route] `error_status` code must be in the u16 range (0-65535).",
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Validate `responses = [(<u16>, Type), ...]`: every element must be a
+/// `(status, Type)` tuple with a `u16` status literal and a type **path**.
+/// Malformed entries (a bare `(404)` parenthesized expr, a wrong-arity tuple,
+/// a non-integer status, or a non-path type) are rejected with a span-attached
+/// compile error instead of being silently dropped by the downstream
+/// `filter_map` extraction — which previously produced incomplete OpenAPI with
+/// no diagnostic (e.g. `responses = [(404)]` parsed "successfully" and emitted
+/// nothing).
+fn validate_responses_array(array: &syn::ExprArray) -> syn::Result<()> {
+    for elem in &array.elems {
+        let syn::Expr::Tuple(tuple) = elem else {
+            return Err(syn::Error::new_spanned(
+                elem,
+                "#[route] `responses` entries must be `(status, Type)` tuples, \
+                 e.g. `responses = [(404, NotFoundError)]`.",
+            ));
+        };
+        if tuple.elems.len() != 2 {
+            return Err(syn::Error::new_spanned(
+                tuple,
+                "#[route] `responses` entry must be a `(status, Type)` tuple with \
+                 exactly two elements, e.g. `(404, NotFoundError)`.",
+            ));
+        }
+        let status = &tuple.elems[0];
+        let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(lit_int),
+            ..
+        }) = status
+        else {
+            return Err(syn::Error::new_spanned(
+                status,
+                "#[route] `responses` status must be an integer literal, \
+                 e.g. `(404, NotFoundError)`.",
+            ));
+        };
+        lit_int.base10_parse::<u16>().map_err(|_| {
+            syn::Error::new_spanned(
+                lit_int,
+                "#[route] `responses` status must be in the u16 range (0-65535).",
+            )
+        })?;
+        let schema = &tuple.elems[1];
+        if !matches!(schema, syn::Expr::Path(_)) {
+            return Err(syn::Error::new_spanned(
+                schema,
+                "#[route] `responses` type must be a type path, \
+                 e.g. `(404, NotFoundError)` or `(400, crate::errors::BadRequestError)`.",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn parse_header_values(input: syn::parse::ParseStream) -> syn::Result<Vec<HeaderParam>> {
@@ -247,6 +330,11 @@ mod tests {
     #[case("invalid", false, None, None, None)]
     #[case("path", false, None, None, None)]
     #[case("error_status", false, None, None, None)]
+    // Malformed error_status entries are now span-attached compile errors:
+    #[case("error_status = [\"400\"]", false, None, None, None)] // not an integer
+    #[case("error_status = [400, \"404\"]", false, None, None, None)] // mixed
+    #[case("error_status = [70000]", false, None, None, None)] // out of u16 range
+    #[case("error_status = [NotFound]", false, None, None, None)] // path, not int
     #[case("get, invalid", false, None, None, None)]
     #[case("path =", false, None, None, None)]
     #[case("error_status =", false, None, None, None)]
@@ -493,7 +581,15 @@ mod tests {
     #[case("responses = [(400, crate::errors::BadRequestError)]", true, vec![(400, "BadRequestError")])]
     #[case("get, responses = [(404, NotFoundError), (400, crate::errors::BadRequestError)]", true, vec![(404, "NotFoundError"), (400, "BadRequestError")])]
     #[case("responses", false, vec![])]
-    #[case("responses = [(404)]", true, vec![])]
+    // Malformed entries are now a span-attached compile error (previously parsed
+    // "successfully" and silently emitted no response):
+    #[case("responses = [(404)]", false, vec![])] // bare paren expr, missing Type
+    #[case("responses = [(404, NotFoundError, Extra)]", false, vec![])] // wrong arity
+    #[case("responses = [404]", false, vec![])] // not a tuple
+    #[case("responses = [(\"404\", NotFoundError)]", false, vec![])] // status not int
+    #[case("responses = [(404, \"NotFoundError\")]", false, vec![])] // type not a path
+    #[case("responses = [(70000, NotFoundError)]", false, vec![])] // status out of u16
+    #[case("responses = []", true, vec![])] // empty is valid (no entries)
     fn test_route_args_parse_responses(
         #[case] input: &str,
         #[case] should_parse: bool,

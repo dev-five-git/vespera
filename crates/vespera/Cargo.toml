@@ -27,7 +27,7 @@ default = [
     "validation",
     "mimalloc",
 ]
-cron = ["dep:tokio-cron-scheduler"]
+cron = ["dep:tokio-cron-scheduler", "vespera_macro/cron"]
 inprocess = ["dep:vespera_inprocess"]
 jni = ["inprocess", "dep:vespera_jni"]
 # mimalloc as the cdylib's global allocator (see vespera_jni docs).
@@ -86,6 +86,10 @@ criterion = { version = "0.8", features = ["html_reports"] }
 # field validators (the workspace `garde` is `default-features = false`).
 garde = { version = "0.23", features = ["derive", "email", "url"] }
 serde_json = "1"
+# Compile-fail (UI) tests that assert the `#[route(responses=[...])]` and
+# `#[cron("...")]` macros reject malformed input with a clean compile error
+# instead of silently dropping it / panicking at runtime. See tests/ui/.
+trybuild = "1"
 
 [[bench]]
 name = "validation"

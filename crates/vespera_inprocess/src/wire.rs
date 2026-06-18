@@ -375,12 +375,19 @@ pub fn to_wire_bytes(parts: ResponseParts) -> Vec<u8> {
 
 /// Build wire-format header bytes (`[u32 BE header_len | JSON header]`)
 /// without a body — used by the `*_with_header` callback variants.
+///
+/// Sizes the buffer with the adaptive [`header_capacity_estimate`] (floored
+/// at [`WIRE_HEADER_RESERVE`] so small-header responses never reserve less
+/// than before), matching [`to_wire_bytes`] / `finish_buffered_wire`: a
+/// many-header streaming response now serializes its header without the
+/// mid-write reallocation the flat `WIRE_HEADER_RESERVE` reserve forced.
 pub fn build_wire_header_bytes(
     status: u16,
     headers: &http::HeaderMap,
     metadata: &ResponseMetadata,
 ) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + WIRE_HEADER_RESERVE);
+    let header_cap = header_capacity_estimate(headers, metadata).max(WIRE_HEADER_RESERVE);
+    let mut out = Vec::with_capacity(4 + header_cap);
     write_wire_header_into(&mut out, status, headers, metadata, None);
     out
 }

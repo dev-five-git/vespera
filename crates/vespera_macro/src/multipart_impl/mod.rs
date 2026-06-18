@@ -228,6 +228,20 @@ mod tests {
     }
 
     #[test]
+    fn test_process_derive_with_invalid_field_default_fn_emits_compile_error() {
+        // A malformed `#[serde(default = "...")]` function path must surface as
+        // a clean span-attached compile_error, NOT panic the macro. The test
+        // running to completion proves the former `.expect(...)` panic is gone.
+        let input: syn::DeriveInput = syn::parse_str(
+            r#"struct MyForm { #[serde(default = "1 not a path")] pub val: String }"#,
+        )
+        .unwrap();
+        let code = process_derive(&input).to_string();
+        assert!(code.contains("compile_error"));
+        assert!(code.contains("function path"));
+    }
+
+    #[test]
     fn test_process_derive_non_struct_errors() {
         let input: syn::DeriveInput = syn::parse_str("enum Foo { A, B }").unwrap();
         assert!(process_derive(&input).to_string().contains("compile_error"));

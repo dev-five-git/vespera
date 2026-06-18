@@ -205,11 +205,13 @@ async fn finish_buffered_wire(
     mut body: Body,
 ) -> Vec<u8> {
     if status == 422 {
-        let body_bytes = body
-            .collect()
-            .await
-            .map(http_body_util::Collected::to_bytes)
-            .unwrap_or_default();
+        let Ok(collected) = body.collect().await else {
+            // Body aborted mid-collect: a failed 422 must surface as a 500,
+            // never as a clean (empty-bodied) 422 — same contract as the
+            // non-422 path below and `collect_response_parts`.
+            return error_wire(500, "response body stream error");
+        };
+        let body_bytes = collected.to_bytes();
         return to_wire_bytes((status, headers, body_bytes, metadata));
     }
 
@@ -463,11 +465,14 @@ async fn finish_direct_write(
     if status == 422 {
         // Materialise to preserve validation_errors hoisting in the
         // wire header — identical bytes to dispatch_from_bytes.
-        let body_bytes = body
-            .collect()
-            .await
-            .map(http_body_util::Collected::to_bytes)
-            .unwrap_or_default();
+        let Ok(collected) = body.collect().await else {
+            // Body aborted mid-collect: a failed 422 must surface as a 500,
+            // never as a clean (empty-bodied) 422 — same "truncated/failed
+            // response is never a success" contract as the streaming path
+            // below and `collect_response_parts`.
+            return write_wire_into(out, &error_wire(500, "response body stream error"));
+        };
+        let body_bytes = collected.to_bytes();
         let wire = to_wire_bytes((status, headers, body_bytes, metadata));
         return write_wire_into(out, &wire);
     }

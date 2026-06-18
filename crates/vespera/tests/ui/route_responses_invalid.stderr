@@ -1,0 +1,5 @@
+error: #[route] `responses` entries must be `(status, Type)` tuples, e.g. `responses = [(404, NotFoundError)]`.
+ --> tests/ui/route_responses_invalid.rs:8:36
+  |
+8 | #[vespera::route(get, responses = [(404)])]
+  |                                    ^^^^^

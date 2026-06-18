@@ -143,10 +143,29 @@ fn push_post_loop<'a>(
                 .push(quote! { let #ident: #ty = #ident.unwrap_or_default(); });
         }
         DefaultKind::Function(fn_path) => {
-            let path: syn::ExprPath =
-                syn::parse_str(fn_path).expect("invalid default function path");
-            cg.post_loop
-                .push(quote! { let #ident: #ty = #ident.unwrap_or_else(#path); });
+            // A malformed user-supplied `default = "..."` path must surface as a
+            // clean, span-attached compile error at the field — not an internal
+            // macro panic (`.expect`) that prints no source location and aborts
+            // expansion of the whole derive.
+            match syn::parse_str::<syn::ExprPath>(fn_path) {
+                Ok(path) => cg
+                    .post_loop
+                    .push(quote! { let #ident: #ty = #ident.unwrap_or_else(#path); }),
+                Err(err) => {
+                    let compile_err = syn::Error::new_spanned(
+                        ident,
+                        format!("invalid `default` function path `{fn_path}`: {err}"),
+                    )
+                    .to_compile_error();
+                    // Emit the diagnostic and still bind `#ident` (unreachable
+                    // fallback) so the malformed default does not cascade into
+                    // spurious "cannot find value" errors downstream.
+                    cg.post_loop.push(quote! {
+                        #compile_err
+                        let #ident: #ty = #ident.unwrap_or_else(|| ::core::unreachable!());
+                    });
+                }
+            }
         }
         DefaultKind::None => {
             cg.post_loop.push(quote! {

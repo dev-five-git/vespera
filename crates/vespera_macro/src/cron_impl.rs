@@ -70,6 +70,12 @@ pub fn process_cron_attribute(
     item: proc_macro2::TokenStream,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let expression: syn::LitStr = syn::parse2(attr).map_err(|_| syn::Error::new(proc_macro2::Span::call_site(), "#[cron] attribute: expected a cron expression string. Example: #[cron(\"0 */5 * * * *\")]"))?;
+    // Compile-time cron-syntax validation (gated by the `cron` feature, enabled
+    // transitively by `vespera`'s `cron` feature). A malformed expression is a
+    // span-attached compile error here instead of a `JobScheduler` panic at app
+    // startup (see `router_codegen::generator`'s `Job::new_async(...).expect`).
+    #[cfg(feature = "cron")]
+    validate_cron_expression(&expression)?;
     let item_fn: syn::ItemFn = syn::parse2(item.clone()).map_err(|e| syn::Error::new(e.span(), "#[cron] attribute: can only be applied to functions, not other items. Move or remove the attribute."))?;
     validate_cron_fn(&item_fn)?;
 
@@ -86,6 +92,38 @@ pub fn process_cron_attribute(
         .push(stored);
 
     Ok(item)
+}
+
+/// Validate a cron expression at **compile time** using the SAME parser the
+/// runtime uses, so a malformed expression is a clean span-attached compile
+/// error instead of a `JobScheduler` panic at application startup.
+///
+/// Parity basis: `tokio-cron-scheduler`'s `Job::new_async` parses the schedule
+/// with `croner`'s `CronParser::builder().seconds(Seconds::Required).build()`.
+/// `vespera` enables `tokio-cron-scheduler` **without** its `english` feature,
+/// so the runtime `schedule_to_cron` step is an identity passthrough and the
+/// only parse is the 6-field (seconds-required) croner parse replicated here.
+/// The `croner` major version is pinned (in `Cargo.toml`) to the one
+/// `tokio-cron-scheduler` resolves, so compile-time acceptance exactly matches
+/// runtime acceptance.
+#[cfg(feature = "cron")]
+fn validate_cron_expression(expression: &syn::LitStr) -> syn::Result<()> {
+    use croner::parser::{CronParser, Seconds};
+    let expr = expression.value();
+    CronParser::builder()
+        .seconds(Seconds::Required)
+        .build()
+        .parse(&expr)
+        .map_err(|e| {
+            syn::Error::new_spanned(
+                expression,
+                format!(
+                    "#[cron] invalid cron expression `{expr}`: {e}. Expected a 6-field \
+                     expression `sec min hour day month weekday`, e.g. \"0 */5 * * * *\"."
+                ),
+            )
+        })?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -239,5 +277,52 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("must take no parameters"));
+    }
+
+    // ===== Compile-time cron-syntax validation (gated by the `cron` feature) =====
+
+    #[cfg(feature = "cron")]
+    #[test]
+    fn test_process_cron_attribute_valid_cron_syntax_passes() {
+        for expr in [
+            quote!("0 */5 * * * *"),
+            quote!("1/10 * * * * *"),
+            quote!("0 0 0 * * *"),
+            quote!("0 30 9 * * Mon-Fri"),
+        ] {
+            let item = quote!(
+                pub async fn my_job() {}
+            );
+            assert!(
+                process_cron_attribute(expr.clone(), item).is_ok(),
+                "expected valid cron `{expr}` to pass"
+            );
+        }
+    }
+
+    #[cfg(feature = "cron")]
+    #[test]
+    fn test_process_cron_attribute_invalid_cron_syntax_is_compile_error() {
+        // Each is rejected at compile time (was a runtime `JobScheduler` panic):
+        // 1-field, 5-field (missing seconds), out-of-range minute, garbage token.
+        for bad in [
+            quote!("invalid"),
+            quote!("* * * * *"),
+            quote!("0 99 * * * *"),
+            quote!("not a cron at all"),
+        ] {
+            let item = quote!(
+                pub async fn my_job() {}
+            );
+            let result = process_cron_attribute(bad.clone(), item);
+            assert!(result.is_err(), "expected invalid cron `{bad}` to error");
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("invalid cron expression"),
+                "expected `invalid cron expression` message for `{bad}`"
+            );
+        }
     }
 }
