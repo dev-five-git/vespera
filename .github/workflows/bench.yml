@@ -10,10 +10,16 @@ name: Bench
 #   double condition filters shared-runner noise).
 #
 # Gated groups are the stable per-request paths (wire_path,
-# headers_path, resolve_path, dispatch_path). The streaming and
-# contended groups are noisier (spawn_blocking / scheduler timing) and
-# the router_path setup micro-bench is low-signal, so those are
-# validated locally instead — see PERF_REPORT.md.
+# headers_path, request_headers_path, resolve_path, dispatch_path). The
+# streaming and contended groups are noisier (spawn_blocking / scheduler
+# timing) and the router_path setup micro-bench is low-signal, so those
+# are validated locally instead — see PERF_REPORT.md.
+#
+# This TIMING gate fires only at a loose ±10% (shared-runner drift), so it
+# catches BIG regressions. Small, deterministic ALLOCATION regressions are
+# caught noise-free by the `alloc_budget` integration test (a counting
+# global allocator asserting exact per-dispatch allocation budgets) in the
+# normal `cargo test` job — the two gates are complementary.
 
 on:
   push:
@@ -36,7 +42,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BENCH_FILTER: 'wire_path|headers_path|resolve_path|dispatch_path'
+  BENCH_FILTER: 'wire_path|headers_path|request_headers_path|resolve_path|dispatch_path'
 
 jobs:
   bench:
