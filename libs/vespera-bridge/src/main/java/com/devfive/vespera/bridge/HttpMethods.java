@@ -30,4 +30,25 @@ final class HttpMethods {
                 || method.equalsIgnoreCase("DELETE")
                 || method.equalsIgnoreCase("OPTIONS");
     }
+
+    /**
+     * Whether {@code method} is "safe" per RFC 9110 §9.2.1
+     * (GET / HEAD / OPTIONS) — read-only, so re-running it yields the
+     * <em>same response</em>, not merely the same server-state effect.
+     *
+     * <p>This is the correct gate for the DIRECT overflow retry, which
+     * re-runs the handler: an idempotent-but-unsafe method (PUT / DELETE)
+     * can legitimately return a <em>different</em> response on a second run
+     * (e.g. a {@code DELETE} returning {@code 204} then {@code 404}), which
+     * the retry would wrongly surface to the client. {@code null} is treated
+     * as unsafe.
+     */
+    static boolean isSafe(String method) {
+        if (method == null) {
+            return false;
+        }
+        return method.equalsIgnoreCase("GET")
+                || method.equalsIgnoreCase("HEAD")
+                || method.equalsIgnoreCase("OPTIONS");
+    }
 }

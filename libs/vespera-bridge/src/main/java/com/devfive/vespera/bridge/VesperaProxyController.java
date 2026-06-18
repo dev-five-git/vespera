@@ -365,11 +365,13 @@ public class VesperaProxyController {
      * the servlet output stream.
      *
      * <p>Overflow retry (which re-runs the Rust handler) is permitted
-     * only for idempotent methods; for others a
+     * only for <em>safe</em> methods (GET/HEAD/OPTIONS), whose re-run
+     * returns the same response; for every other method — including
+     * idempotent-but-unsafe PUT/DELETE, whose second run can return a
+     * different response (e.g. DELETE → 204 then 404) — a
      * {@link VesperaBridge.BufferTooSmallException} surfaces as a
-     * {@code 500} with the required size — the controller never
-     * double-executes a non-idempotent handler.  (The resolver should
-     * keep such requests off DIRECT in the first place.)
+     * {@code 500} with the required size, so the controller never
+     * double-executes a handler whose response could change.
      */
     private void dispatchDirectMode(
             HttpServletResponse response,
@@ -381,14 +383,13 @@ public class VesperaProxyController {
             // intermediate wire-sized byte[].
             wireResp = VesperaBridge.dispatchDirectPooled(
                     appName, method, path, query, headers, body,
-                    directRetryOnOverflow && isIdempotent(method));
+                    directRetryOnOverflow && isSafe(method));
         } catch (VesperaBridge.BufferTooSmallException overflow) {
-            // Non-idempotent + response larger than the pool: the first
-            // dispatch already ran; its result was discarded.  Serving
-            // via dispatchBytes would run the handler a second time, so
-            // surface the size to the operator instead of silently
-            // double-executing.  (The resolver should keep
-            // non-idempotent methods off DIRECT in the first place.)
+            // Unsafe method (or retry disabled) + response larger than the
+            // pool: the first dispatch already ran; its result was discarded.
+            // Re-running would risk a different response (e.g. DELETE → 204
+            // then 404), so surface the size to the operator instead of
+            // silently double-executing.
             response.setStatus(500);
             response.getOutputStream().write(
                     ("vespera DIRECT overflow: response needs "
@@ -479,9 +480,16 @@ public class VesperaProxyController {
         return scratch;
     }
 
-    /** Idempotent per RFC 9110 — safe to re-run on DIRECT overflow retry. */
-    private static boolean isIdempotent(String method) {
-        return HttpMethods.isIdempotent(method);
+    /**
+     * "Safe" per RFC 9110 (GET/HEAD/OPTIONS) — read-only, so re-running on a
+     * DIRECT overflow retry yields the SAME response. Idempotent-but-unsafe
+     * methods (PUT/DELETE) are intentionally excluded: their second run can
+     * return a different response (e.g. DELETE → 204 then 404), so on overflow
+     * they fail with {@link VesperaBridge.BufferTooSmallException} instead of
+     * auto-retrying and silently double-executing.
+     */
+    private static boolean isSafe(String method) {
+        return HttpMethods.isSafe(method);
     }
 
     // Package-private (not private) so unit tests can verify duplicate-header

@@ -16,8 +16,9 @@ proc-macro = true
 # constraints into garde's runtime validators.  The proc-macro itself
 # does NOT depend on `garde` — it only emits token streams that reference
 # the path; the user's `vespera = { features = ["validation"] }` is what
-# actually pulls in the runtime crate.
-validation = []
+# actually pulls in the runtime crate. `regex-syntax` is pulled in only
+# here, to validate `#[schema(pattern = "...")]` literals at compile time.
+validation = ["dep:regex-syntax"]
 
 [dependencies]
 quote = "1"
@@ -26,6 +27,11 @@ proc-macro2 = { version = "1", features = ["span-locations"] }
 vespera_core = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# Compile-time validation of `#[schema(pattern = "...")]` regex literals
+# (the exact parser `regex` uses) so an invalid pattern is a compile error
+# instead of a first-validation runtime panic. Optional: pulled in only by
+# the `validation` feature, which is what emits the pattern validator.
+regex-syntax = { version = "0.8", optional = true }
 
 [dev-dependencies]
 rstest = "0.26"

@@ -234,10 +234,20 @@ fn collect_rs_mtimes(dir: &Path, out: &mut Vec<(String, u64)>) {
         if file_type.is_dir() {
             collect_rs_mtimes(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs") {
+            // Nanosecond resolution (matching `file_utils::mtime_fingerprint`):
+            // whole-second granularity let two edits to the same file within one
+            // wall-clock second collide on the same fingerprint, so the route
+            // cache could serve a stale router / OpenAPI spec under fast
+            // incremental rebuilds. Truncating the u128 nanos-since-epoch to u64
+            // keeps every sub-second bit (only overflows past ~year 2554) and the
+            // fingerprint is only ever compared for equality.
             let mtime = entry.metadata().and_then(|m| m.modified()).map_or(0, |t| {
-                t.duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
+                u64::try_from(
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos(),
+                )
+                .unwrap_or(u64::MAX)
             });
             out.push((path.display().to_string(), mtime));
         }

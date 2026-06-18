@@ -284,34 +284,48 @@ fn emit_rule_blocks(
 
     // ── Pattern (pattern = "..." → static LazyLock<Regex>) ────────────
     if let Some(pattern) = &c.pattern {
-        let static_ident = format_ident!("__VESPERA_PATTERN_{}", field_name.to_ascii_uppercase());
-        blocks.push(quote! {
-            {
-                static #static_ident: ::std::sync::LazyLock<
-                    ::vespera::__validation::garde::rules::pattern::regex::Regex,
-                > = ::std::sync::LazyLock::new(|| {
-                    // The pattern is a user-supplied string literal; an invalid
-                    // regex fails loud (a silently-skipped validator would be a
-                    // correctness/security hole) with an actionable message
-                    // naming the offending pattern.
-                    ::vespera::__validation::garde::rules::pattern::regex::Regex::new(#pattern)
-                        .unwrap_or_else(|__e| {
-                            ::std::panic!(
-                                "vespera: `#[schema(pattern = {:?})]` is not a valid regex: {__e}",
-                                #pattern
-                            )
-                        })
-                });
-                if let ::std::result::Result::Err(__garde_error) =
-                    (::vespera::__validation::garde::rules::pattern::apply)(
-                        &*__garde_binding,
-                        (&*#static_ident,),
-                    )
+        // Validate the user-supplied regex at MACRO-EXPANSION time with
+        // `regex-syntax` (the exact parser `regex` uses), so an invalid
+        // pattern becomes a COMPILE error naming the field instead of a
+        // first-validation runtime panic. Only a syntactically valid pattern
+        // reaches codegen; the runtime `Regex::new` fallback below is retained
+        // solely for the rare case a valid pattern exceeds `regex`'s compiled
+        // size limit (which `regex-syntax` parsing does not enforce).
+        if let Err(__err) = regex_syntax::Parser::new().parse(pattern) {
+            let msg = format!(
+                "vespera: `#[schema(pattern = {pattern:?})]` on field `{field_name}` is not a valid regex: {__err}"
+            );
+            blocks.push(quote! { ::std::compile_error!(#msg); });
+        } else {
+            let static_ident =
+                format_ident!("__VESPERA_PATTERN_{}", field_name.to_ascii_uppercase());
+            blocks.push(quote! {
                 {
-                    __garde_report.append(__garde_path(), __garde_error);
+                    static #static_ident: ::std::sync::LazyLock<
+                        ::vespera::__validation::garde::rules::pattern::regex::Regex,
+                    > = ::std::sync::LazyLock::new(|| {
+                        // Pattern syntax was validated at macro expansion; this
+                        // fallback only trips on the rare compiled-size-limit
+                        // case, with an actionable message naming the pattern.
+                        ::vespera::__validation::garde::rules::pattern::regex::Regex::new(#pattern)
+                            .unwrap_or_else(|__e| {
+                                ::std::panic!(
+                                    "vespera: `#[schema(pattern = {:?})]` is not a valid regex: {__e}",
+                                    #pattern
+                                )
+                            })
+                    });
+                    if let ::std::result::Result::Err(__garde_error) =
+                        (::vespera::__validation::garde::rules::pattern::apply)(
+                            &*__garde_binding,
+                            (&*#static_ident,),
+                        )
+                    {
+                        __garde_report.append(__garde_path(), __garde_error);
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     // ── Format-driven rules (email / uri / ipv4 / ipv6 / ip) ──────────
@@ -483,6 +497,44 @@ mod tests {
         // single length::chars::apply call carrying both bounds
         let occurrences = out.matches("length :: chars :: apply").count();
         assert_eq!(occurrences, 1);
+    }
+
+    #[test]
+    fn invalid_pattern_emits_compile_error_not_runtime_panic() {
+        // An unbalanced group is a regex SYNTAX error: it must be caught at
+        // macro expansion (compile_error!), not deferred to a runtime panic.
+        let s: DeriveInput = parse_quote! {
+            struct User {
+                #[schema(pattern = "(")]
+                pub name: String,
+            }
+        };
+        let out = emit_to_string(s);
+        assert!(
+            out.contains("compile_error"),
+            "invalid pattern should emit compile_error, got: {out}"
+        );
+        assert!(
+            !out.contains("LazyLock"),
+            "invalid pattern must not emit a runtime regex validator: {out}"
+        );
+    }
+
+    #[test]
+    fn valid_pattern_emits_regex_validator() {
+        let s: DeriveInput = parse_quote! {
+            struct User {
+                #[schema(pattern = "^[a-z0-9_]+$")]
+                pub name: String,
+            }
+        };
+        let out = emit_to_string(s);
+        assert!(
+            out.contains("LazyLock"),
+            "valid pattern should emit a regex validator: {out}"
+        );
+        assert!(out.contains("pattern :: apply"));
+        assert!(!out.contains("compile_error"));
     }
 
     #[test]

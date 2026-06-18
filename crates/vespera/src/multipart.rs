@@ -149,6 +149,23 @@ impl TypedMultipartError {
             | Self::Other { .. } => None,
         }
     }
+
+    /// Public-facing message for the JSON error envelope.
+    ///
+    /// `Other` wraps internal I/O / blocking-task failures whose source
+    /// string can leak implementation details (temp-file paths, OS error
+    /// text); it is the only `500` variant, so it returns a stable, generic
+    /// message. Every other variant returns its `Display` (already safe —
+    /// it describes a client-supplied field problem). The full `Display`
+    /// (including `Other`'s `source`) stays available for server-side
+    /// logging via the `std::error::Error` impl.
+    fn response_message(&self) -> String {
+        if matches!(self, Self::Other { .. }) {
+            "internal error while processing multipart request".to_owned()
+        } else {
+            self.to_string()
+        }
+    }
 }
 
 impl IntoResponse for TypedMultipartError {
@@ -175,7 +192,7 @@ impl IntoResponse for TypedMultipartError {
         // exactly like a `Validated` rejection.  `path` is the offending
         // field name when known, else empty.
         let path = self.field_name().unwrap_or("").to_owned();
-        let message = self.to_string();
+        let message = self.response_message();
         let body = serde_json::json!({ "errors": [{ "path": path, "message": message }] });
         (status, axum::Json(body)).into_response()
     }
@@ -669,6 +686,30 @@ mod tests {
             field_name: "email".to_string(),
         };
         assert_eq!(err.to_string(), "Duplicate field: `email`");
+    }
+
+    #[test]
+    fn other_error_response_message_hides_internal_source() {
+        // The internal source (e.g. a temp-file path / OS error) must NOT
+        // leak into the public 500 response message.
+        let err = TypedMultipartError::Other {
+            source: "/tmp/vespera-upload-7f3a.part: No such file or directory".to_string(),
+        };
+        assert_eq!(
+            err.response_message(),
+            "internal error while processing multipart request"
+        );
+        assert!(
+            !err.response_message().contains("/tmp/"),
+            "internal source path leaked into response message"
+        );
+        // Display still exposes the source for server-side logging.
+        assert!(err.to_string().contains("/tmp/"));
+        // Non-Other variants keep their (client-safe) Display message.
+        let missing = TypedMultipartError::MissingField {
+            field_name: "avatar".to_string(),
+        };
+        assert_eq!(missing.response_message(), "Missing field: `avatar`");
     }
 
     #[test]

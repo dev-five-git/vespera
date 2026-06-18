@@ -595,6 +595,28 @@ impl Serialize for WireHeaderValues<'_> {
 /// serializer usually writes without reallocating.
 pub const WIRE_HEADER_RESERVE: usize = 192;
 
+/// Cheap upper-ish estimate of the serialized response wire-header JSON
+/// byte length (excluding the 4-byte length prefix), so the response
+/// `Vec` can be sized to serialize a header-heavy response **without
+/// reallocating**.  Counts the fixed JSON scaffolding + version string +
+/// each header's `"name":"value",` rendering (a repeated name is counted
+/// once per value — a safe over-estimate).  Escape-heavy values can still
+/// exceed it (rare → one growth); this only sets capacity, never the
+/// emitted bytes.  Always combined with a [`WIRE_HEADER_RESERVE`] floor by
+/// callers, so a small-header response never reserves less than before.
+pub fn header_capacity_estimate(
+    headers: &http::HeaderMap,
+    metadata: &ResponseMetadata,
+) -> usize {
+    // {"v":1,"status":NNN,"headers":{},"metadata":{"version":""}} scaffold.
+    const SCAFFOLD: usize = 56;
+    let mut est = SCAFFOLD + metadata.version.len();
+    for (name, value) in headers {
+        est += name.as_str().len() + value.len() + 8;
+    }
+    est
+}
+
 fn write_wire_header_into(
     out: &mut Vec<u8>,
     status: u16,
@@ -608,6 +630,21 @@ fn write_wire_header_into(
     let header_len =
         u32::try_from(out.len() - start).expect("response header JSON exceeds u32::MAX bytes");
     out[start - 4..start].copy_from_slice(&header_len.to_be_bytes());
+}
+
+/// Append `[u32 BE header_len | header JSON]` (no `validation_errors`)
+/// straight into `out` — the `Vec`-appending sibling of
+/// [`write_wire_header_into_slice`], used by the buffered direct-streaming
+/// response assembler (`dispatch::finish_buffered_wire`).  Wraps the
+/// private [`write_wire_header_into`] so the internal [`ValidationErrorItem`]
+/// type stays out of the crate-visible surface.
+pub fn write_wire_header_into_vec(
+    out: &mut Vec<u8>,
+    status: u16,
+    headers: &http::HeaderMap,
+    metadata: &ResponseMetadata,
+) {
+    write_wire_header_into(out, status, headers, metadata, None);
 }
 
 /// One entry in the wire header's `validation_errors` array.  Fields
@@ -658,7 +695,8 @@ pub fn to_wire_bytes(parts: ResponseParts) -> Vec<u8> {
     } else {
         None
     };
-    let mut out = Vec::with_capacity(4 + WIRE_HEADER_RESERVE + body_bytes.len());
+    let header_cap = header_capacity_estimate(&headers, &metadata).max(WIRE_HEADER_RESERVE);
+    let mut out = Vec::with_capacity(4 + header_cap + body_bytes.len());
     write_wire_header_into(
         &mut out,
         status,

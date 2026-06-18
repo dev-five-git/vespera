@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use axum::body::Body;
 use bytes::Bytes;
+use http_body::Body as HttpBody;
 use http_body_util::BodyExt;
 
 use crate::Router;
@@ -12,8 +13,9 @@ use crate::envelope::{RequestEnvelope, ResponseEnvelope, ResponseMetadata};
 use crate::internal::{dispatch_and_split, dispatch_parts, to_response_envelope_text};
 use crate::registry::resolve_app_router;
 use crate::wire::{
-    WIRE_VERSION, error_wire, parse_wire_header, split_wire_borrowed, split_wire_request,
-    to_wire_bytes, write_wire_header_into_slice,
+    WIRE_HEADER_RESERVE, WIRE_VERSION, error_wire, header_capacity_estimate, parse_wire_header,
+    split_wire_borrowed, split_wire_request, to_wire_bytes, write_wire_header_into_slice,
+    write_wire_header_into_vec,
 };
 
 // ── Dispatch (direct API — backward compatible) ──────────────────────
@@ -152,20 +154,97 @@ pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
         Ok(r) => r,
         Err(wire) => return wire,
     };
-    let parts = match dispatch_parts(
+
+    // Mirror dispatch_parts' Content-Type defaulting (non-empty body with
+    // no explicit content-type → application/json) so the request built via
+    // dispatch_and_split is byte-identical to the previous dispatch_parts
+    // path.  Computed before `body_bytes` is moved into the request Body.
+    let default_json_content_type = !body_bytes.is_empty()
+        && !header
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
+
+    let (status, headers, metadata, body) = match dispatch_and_split(
         router,
         &header.method,
         &header.path,
         &header.query,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
-        body_bytes,
+        Body::from(body_bytes),
+        default_json_content_type,
     )
     .await
     {
         Ok(parts) => parts,
         Err((status, msg)) => return error_wire(status, &msg),
     };
-    to_wire_bytes(parts)
+
+    finish_buffered_wire(status, headers, metadata, body).await
+}
+
+/// Buffered sibling of [`finish_direct_write`]: assemble the full wire
+/// response `Vec` by streaming the response body **frames straight into
+/// the final buffer**, instead of collecting the body into an intermediate
+/// `Bytes` (via `http_body_util::Collected::to_bytes`) and copying it again
+/// in [`to_wire_bytes`].
+///
+/// * Single-frame body (the common `Json`/`Bytes`/`String` response): the
+///   emitted bytes and the single body copy are identical to the previous
+///   `collect()` + `to_wire_bytes` path, minus the `Collected` / `to_bytes`
+///   layer.
+/// * Multi-frame body: also removes the `to_bytes` concatenation copy and
+///   keeps peak memory at ~one body (the growing `Vec`) instead of
+///   body-plus-collected.
+///
+/// `status == 422` keeps the materialise path so the `validation_errors`
+/// hoisting into the wire header is preserved byte-for-byte (validation
+/// failures are tiny + cold).  A body-stream error mid-drain discards the
+/// partial buffer and returns `error_wire(500, ...)`, matching the previous
+/// [`crate::internal::dispatch_parts`] 500-on-body-error contract.
+async fn finish_buffered_wire(
+    status: u16,
+    headers: http::HeaderMap,
+    metadata: ResponseMetadata,
+    mut body: Body,
+) -> Vec<u8> {
+    if status == 422 {
+        let body_bytes = body
+            .collect()
+            .await
+            .map(http_body_util::Collected::to_bytes)
+            .unwrap_or_default();
+        return to_wire_bytes((status, headers, body_bytes, metadata));
+    }
+
+    // Size the final buffer up front: 4-byte length prefix + adaptive header
+    // estimate (floored at WIRE_HEADER_RESERVE so small-header responses
+    // never reserve less than before) + the body's exact size when the body
+    // reports one (Full bodies do), so a single-frame response serializes
+    // with zero reallocations.
+    let header_cap = header_capacity_estimate(&headers, &metadata).max(WIRE_HEADER_RESERVE);
+    let body_cap = usize::try_from(body.size_hint().exact().unwrap_or(0)).unwrap_or(0);
+    let mut out = Vec::with_capacity(4 + header_cap + body_cap);
+    write_wire_header_into_vec(&mut out, status, &headers, &metadata);
+
+    loop {
+        match body.frame().await {
+            Some(Ok(frame)) => {
+                if let Some(data) = frame.data_ref()
+                    && !data.is_empty()
+                {
+                    out.extend_from_slice(data);
+                }
+            }
+            // Body aborted mid-stream: nothing has been handed to the caller
+            // yet (we return only at the end), so discard the partial buffer
+            // and emit a 500 rather than a truncated body — mirrors the
+            // collect_response_parts 500-on-body-error contract.
+            Some(Err(_)) => return error_wire(500, "response body stream error"),
+            None => break,
+        }
+    }
+    out
 }
 
 /// Outcome of [`dispatch_into_async`] / [`dispatch_into`].
