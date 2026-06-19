@@ -312,8 +312,17 @@ fn parse_type_impl(
                     };
 
                     if known_schemas.contains(&resolved_name) {
-                        if let Some(def) = struct_definitions.get(&resolved_name)
-                            && let Ok(parsed_struct) = syn::parse_str::<syn::ItemStruct>(def)
+                        // Parse the struct definition ONCE (when present) and reuse it for
+                        // BOTH the `#[schema(ref=...)]` override check and the
+                        // generic-substitution path below.  `syn::parse_str::<ItemStruct>`
+                        // tokenises + parses the whole definition string, so this single
+                        // parse replaces the two that the override branch and the generic
+                        // branch each used to run for a generic schema type.
+                        let parsed_def = struct_definitions
+                            .get(&resolved_name)
+                            .and_then(|def| syn::parse_str::<syn::ItemStruct>(def).ok());
+
+                        if let Some(parsed_struct) = &parsed_def
                             && let Some((schema_name, nullable)) =
                                 extract_schema_ref_override(&parsed_struct.attrs)
                         {
@@ -329,9 +338,7 @@ fn parse_type_impl(
                         if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                             // This is a concrete generic type like GenericStruct<String>
                             // Inline the schema by substituting generic parameters with concrete types
-                            if let Some(base_def) = struct_definitions.get(&resolved_name)
-                                && let Ok(mut parsed) = syn::parse_str::<syn::ItemStruct>(base_def)
-                            {
+                            if let Some(mut parsed) = parsed_def {
                                 // Extract generic parameter names from the struct definition
                                 let generic_params: Vec<String> = parsed
                                     .generics

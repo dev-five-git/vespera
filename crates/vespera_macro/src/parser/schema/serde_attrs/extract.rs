@@ -8,8 +8,8 @@ pub fn extract_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
         if attr.path().is_ident("serde") {
             // Try using parse_nested_meta for robust parsing
             let mut found_rename_all = None;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("rename_all")
+            let parsed = attr.parse_nested_meta(|meta| {
+                if meta.path.segments.last().is_some_and(|seg| seg.ident == "rename_all")
                     && let Ok(value) = meta.value()
                     && let Ok(syn::Expr::Lit(syn::ExprLit {
                         lit: syn::Lit::Str(s),
@@ -24,14 +24,22 @@ pub fn extract_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
                 return found_rename_all;
             }
 
-            // Fallback: manual token parsing for complex attribute combinations
-            let Ok(tokens) = attr.meta.require_list() else {
-                continue;
-            };
-            let token_str = tokens.tokens.to_string();
+            // Fallback ONLY when structured parsing FAILED: a successful
+            // parse_nested_meta visited every nested meta, so it cannot have
+            // missed a present `rename_all` — skip the throwaway token-string
+            // allocation + scan in that (common) case.  An `Err` means an
+            // unhandled key/value aborted the walk early (e.g.
+            // `skip_serializing_if = "..."` before `rename_all`), which is
+            // exactly when the manual scan is still needed.
+            if parsed.is_err() {
+                let Ok(tokens) = attr.meta.require_list() else {
+                    continue;
+                };
+                let token_str = tokens.tokens.to_string();
 
-            if let Some(value) = quoted_value_after_key(&token_str, "rename_all") {
-                return Some(value);
+                if let Some(value) = quoted_value_after_key(&token_str, "rename_all") {
+                    return Some(value);
+                }
             }
         }
     }
@@ -69,8 +77,8 @@ pub fn extract_field_rename(attrs: &[syn::Attribute]) -> Option<String> {
         {
             // Use parse_nested_meta to parse nested attributes
             let mut found_rename = None;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("rename")
+            let parsed = attr.parse_nested_meta(|meta| {
+                if meta.path.segments.last().is_some_and(|seg| seg.ident == "rename")
                     && let Ok(value) = meta.value()
                     && let Ok(syn::Expr::Lit(syn::ExprLit {
                         lit: syn::Lit::Str(s),
@@ -85,10 +93,14 @@ pub fn extract_field_rename(attrs: &[syn::Attribute]) -> Option<String> {
                 return Some(rename_value);
             }
 
-            // Fallback: manual token parsing for complex attribute combinations
-            let tokens = meta_list.tokens.to_string();
-            if let Some(value) = quoted_value_after_key(&tokens, "rename") {
-                return Some(value);
+            // Fallback ONLY when structured parsing FAILED (see extract_rename_all):
+            // a successful walk cannot have missed a present `rename`, so skip the
+            // throwaway token-string allocation + scan in the common case.
+            if parsed.is_err() {
+                let tokens = meta_list.tokens.to_string();
+                if let Some(value) = quoted_value_after_key(&tokens, "rename") {
+                    return Some(value);
+                }
             }
         }
     }
@@ -126,12 +138,16 @@ pub fn extract_skip(attrs: &[syn::Attribute]) -> bool {
             let mut has_skip = false;
             let mut has_skip_serializing = false;
             let mut has_skip_deserializing = false;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("skip") {
+            let parsed = attr.parse_nested_meta(|meta| {
+                // Match by the path's LAST segment (see extract_flatten) so a
+                // qualified `module::skip` is caught by the structured parser,
+                // leaving the fallback as a pure parse-error recovery path.
+                let last = meta.path.segments.last().map(|seg| &seg.ident);
+                if last.is_some_and(|id| id == "skip") {
                     has_skip = true;
-                } else if meta.path.is_ident("skip_serializing") {
+                } else if last.is_some_and(|id| id == "skip_serializing") {
                     has_skip_serializing = true;
-                } else if meta.path.is_ident("skip_deserializing") {
+                } else if last.is_some_and(|id| id == "skip_deserializing") {
                     has_skip_deserializing = true;
                 }
                 Ok(())
@@ -140,15 +156,20 @@ pub fn extract_skip(attrs: &[syn::Attribute]) -> bool {
                 return true;
             }
 
-            let syn::Meta::List(meta_list) = &attr.meta else {
-                continue;
-            };
-            let tokens = meta_list.tokens.to_string();
-            if contains_standalone_word(&tokens, "skip")
-                || (contains_standalone_word(&tokens, "skip_serializing")
-                    && contains_standalone_word(&tokens, "skip_deserializing"))
-            {
-                return true;
+            // Fallback ONLY when structured parsing FAILED (see extract_rename_all):
+            // a successful walk already determined skip is absent, so skip the
+            // throwaway token-string allocation + scan in the common case.
+            if parsed.is_err() {
+                let syn::Meta::List(meta_list) = &attr.meta else {
+                    continue;
+                };
+                let tokens = meta_list.tokens.to_string();
+                if contains_standalone_word(&tokens, "skip")
+                    || (contains_standalone_word(&tokens, "skip_serializing")
+                        && contains_standalone_word(&tokens, "skip_deserializing"))
+                {
+                    return true;
+                }
             }
         }
     }
@@ -162,8 +183,13 @@ pub fn extract_flatten(attrs: &[syn::Attribute]) -> bool {
         if attr.path().is_ident("serde") {
             // Try using parse_nested_meta for robust parsing
             let mut found = false;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("flatten") {
+            let parsed = attr.parse_nested_meta(|meta| {
+                // Match the keyword by the path's LAST segment so a qualified
+                // `module::flatten` is recognised by the structured parser
+                // itself; the manual fallback below then only covers the genuine
+                // parse-error case (an unhandled `key = value` aborting the
+                // walk), not "key present but written as a qualified path".
+                if meta.path.segments.last().is_some_and(|seg| seg.ident == "flatten") {
                     found = true;
                 }
                 Ok(())
@@ -172,8 +198,12 @@ pub fn extract_flatten(attrs: &[syn::Attribute]) -> bool {
                 return true;
             }
 
-            // Fallback: manual token parsing for complex attribute combinations
-            if let syn::Meta::List(meta_list) = &attr.meta {
+            // Fallback ONLY when structured parsing FAILED (see extract_rename_all):
+            // a successful walk already determined flatten is absent, so skip the
+            // throwaway token-string allocation + scan in the common case.
+            if parsed.is_err()
+                && let syn::Meta::List(meta_list) = &attr.meta
+            {
                 let tokens = meta_list.tokens.to_string();
                 if contains_standalone_word(&tokens, "flatten") {
                     return true;
@@ -197,8 +227,10 @@ pub fn extract_default(attrs: &[syn::Attribute]) -> Option<Option<String>> {
             && let syn::Meta::List(meta_list) = &attr.meta
         {
             let mut found_default: Option<Option<String>> = None;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("default") {
+            let parsed = attr.parse_nested_meta(|meta| {
+                // Match by the path's LAST segment (see extract_flatten) so a
+                // qualified `module::default` is caught by the structured parser.
+                if meta.path.segments.last().is_some_and(|seg| seg.ident == "default") {
                     // Check if it has a value (default = "function_name")
                     if let Ok(value) = meta.value() {
                         if let Ok(syn::Expr::Lit(syn::ExprLit {
@@ -215,8 +247,10 @@ pub fn extract_default(attrs: &[syn::Attribute]) -> Option<Option<String>> {
                 }
                 Ok(())
             });
-            if found_default.is_none() {
-                // Fallback: manual token parsing for complex attribute combinations
+            // Fallback ONLY when structured parsing FAILED (see extract_rename_all):
+            // a successful walk already determined whether `default` is present, so
+            // skip the throwaway token-string allocation + scan in the common case.
+            if found_default.is_none() && parsed.is_err() {
                 found_default = scan_default_from_raw_tokens(&meta_list.tokens.to_string());
             }
             if let Some(default_value) = found_default {
