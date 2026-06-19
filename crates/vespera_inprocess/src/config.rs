@@ -109,6 +109,45 @@ pub fn set_streaming_channel_capacity(slots: usize) -> bool {
         .is_ok()
 }
 
+/// Hard ceiling on the peak request-body bytes buffered in the
+/// bidirectional-streaming mpsc channel at any instant. The channel holds up
+/// to `channel_capacity` chunks, each up to `chunk_bytes`, so peak buffered
+/// memory is `chunk_bytes * channel_capacity`. With BOTH knobs at their
+/// maxima (8 MiB * 1024) that product is **8 GiB** — which defeats streaming's
+/// `O(chunk)` RAM goal and can OOM a host under concurrent uploads.
+/// [`effective_streaming_channel_capacity`] clamps the in-flight slot count so
+/// this product is never exceeded.
+const MAX_STREAMING_BUFFERED_BYTES: usize = 64 * 1024 * 1024;
+
+/// Effective in-flight slot count for the bidirectional request-body channel:
+/// [`streaming_channel_capacity`] clamped so that
+/// `chunk_bytes * slots <= MAX_STREAMING_BUFFERED_BYTES`.
+///
+/// This adapts to the configured chunk size — a large chunk yields fewer
+/// slots — so peak buffered request memory per stream stays bounded no matter
+/// how the two knobs are set. The configured capacity is honoured unchanged
+/// when it is already within budget (the common default 256 KiB * 16 = 4 MiB
+/// is far under the 64 MiB ceiling). The floor is 1 slot so streaming always
+/// makes progress even with an 8 MiB chunk.
+#[must_use]
+#[inline]
+pub fn effective_streaming_channel_capacity() -> usize {
+    cap_channel_slots(
+        streaming_channel_capacity(),
+        streaming_chunk_bytes(),
+        MAX_STREAMING_BUFFERED_BYTES,
+    )
+}
+
+/// Pure product-cap math behind [`effective_streaming_channel_capacity`],
+/// split out so the clamp behaviour is unit-testable without the
+/// process-global `OnceLock` config (which can only be set once per process).
+fn cap_channel_slots(configured: usize, chunk_bytes: usize, max_buffered: usize) -> usize {
+    let chunk = chunk_bytes.max(1);
+    let budget_slots = (max_buffered / chunk).max(1);
+    configured.min(budget_slots)
+}
+
 // ── Request-size ingress cap ─────────────────────────────────────────
 
 static MAX_REQUEST_BYTES: OnceLock<usize> = OnceLock::new();
@@ -139,10 +178,26 @@ static MAX_REQUEST_BYTES: OnceLock<usize> = OnceLock::new();
 #[inline]
 pub fn max_request_bytes() -> usize {
     *MAX_REQUEST_BYTES.get_or_init(|| {
+        // Absent (or non-Unicode) env → unlimited, the documented default.
         std::env::var("VESPERA_MAX_REQUEST_BYTES")
             .ok()
-            .and_then(|s| s.trim().parse::<usize>().ok())
-            .unwrap_or(0)
+            .map_or(0, |raw| {
+                raw.trim().parse::<usize>().unwrap_or_else(|_| {
+                    // Present but unparseable: a typo here (e.g. "10MB", "abc")
+                    // would otherwise silently fall through to `0` (unlimited),
+                    // disabling the DoS ingress cap with NO signal. Emit a one-time
+                    // stderr warning — this `OnceLock` initializer runs at most once
+                    // per process — so the misconfiguration is observable, then
+                    // preserve the documented unlimited default rather than guessing
+                    // an arbitrary numeric cap that could reject legitimate traffic.
+                    eprintln!(
+                        "vespera: ignoring invalid VESPERA_MAX_REQUEST_BYTES={raw:?} \
+                         (expected a non-negative integer in bytes); the request-size \
+                         ingress cap stays unlimited"
+                    );
+                    0
+                })
+            })
     })
 }
 
@@ -210,6 +265,49 @@ mod tests {
         assert_eq!(
             parse_config_value(Some("999999999"), 262_144, 4096, 8 << 20),
             8 << 20
+        );
+    }
+
+    use super::{MAX_STREAMING_BUFFERED_BYTES, cap_channel_slots};
+
+    #[test]
+    fn channel_slots_unchanged_when_within_budget() {
+        // Default config (256 KiB chunk * 16 slots = 4 MiB) is well under the
+        // 64 MiB ceiling, so the configured capacity passes through unchanged.
+        assert_eq!(
+            cap_channel_slots(16, 256 * 1024, MAX_STREAMING_BUFFERED_BYTES),
+            16
+        );
+    }
+
+    #[test]
+    fn channel_slots_capped_for_pathological_max_config() {
+        // 8 MiB chunk * 1024 slots would buffer 8 GiB; the product cap clamps
+        // the slots to 64 MiB / 8 MiB = 8 (64 MiB peak), not 1024.
+        assert_eq!(
+            cap_channel_slots(1024, 8 * 1024 * 1024, MAX_STREAMING_BUFFERED_BYTES),
+            8
+        );
+    }
+
+    #[test]
+    fn channel_slots_floor_is_one_and_zero_chunk_is_safe() {
+        // A chunk larger than the whole budget still yields >= 1 slot so the
+        // stream makes progress (peak = one chunk).
+        assert_eq!(
+            cap_channel_slots(1024, 128 * 1024 * 1024, MAX_STREAMING_BUFFERED_BYTES),
+            1
+        );
+        // Defensive: a 0 chunk size must never divide by zero.
+        assert_eq!(cap_channel_slots(16, 0, MAX_STREAMING_BUFFERED_BYTES), 16);
+    }
+
+    #[test]
+    fn channel_slots_small_chunk_keeps_full_capacity() {
+        // 4 KiB chunk * 1024 slots = 4 MiB, under budget → full capacity kept.
+        assert_eq!(
+            cap_channel_slots(1024, 4 * 1024, MAX_STREAMING_BUFFERED_BYTES),
+            1024
         );
     }
 }

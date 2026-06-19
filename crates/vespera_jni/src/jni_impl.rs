@@ -14,8 +14,8 @@ use jni::sys::{jbyteArray, jint};
 
 use crate::daemon_env::with_cached_daemon_env;
 use crate::streaming_closures::{
-    call_header_consumer, close_input_stream, complete_future, complete_future_local,
-    make_pull_closure, make_push_closure,
+    call_header_consumer, call_header_consumer_local, close_input_stream, complete_future,
+    complete_future_local, make_pull_closure, make_push_closure,
 };
 
 // Per-thread reusable Java chunk buffers for the streaming paths live in
@@ -23,8 +23,8 @@ use crate::streaming_closures::{
 #[path = "jni_impl_streaming_buffer.rs"]
 mod streaming_buffer;
 use streaming_buffer::{
-    PullPushBuffers, StreamingBufferRole, checkout_pull_push_buffers,
-    checkout_streaming_chunk_buffer, mark_streaming_buffer_reusable,
+    PullPushBuffers, StreamingBufferRole, StreamingChunkBuffer, StreamingChunkBufferLease,
+    checkout_pull_push_buffers, checkout_streaming_chunk_buffer, mark_streaming_buffer_reusable,
 };
 
 /// Multi-threaded Tokio runtime shared across all JNI calls.
@@ -152,15 +152,28 @@ fn read_request_byte_array(
         return Err(err);
     }
     // Read straight into uninitialised capacity — no zero-fill that
-    // `get_region` would immediately overwrite.
-    let Ok(buf) = crate::jni_buf::read_byte_array_region(env, request_bytes, len) else {
-        clear_pending_exception(env);
-        return Err(vespera_inprocess::error_wire(
-            400,
-            "invalid input byte array (JNI conversion failed)",
-        ));
-    };
-    Ok(buf)
+    // `get_region` would immediately overwrite.  The reservation inside
+    // `read_byte_array_region` is fallible, so an oversized request that
+    // slipped past a loose / unlimited ingress cap reports `NoMemory` and
+    // degrades to a wire `413` instead of aborting the host JVM.
+    match crate::jni_buf::read_byte_array_region(env, request_bytes, len) {
+        Ok(buf) => Ok(buf),
+        Err(jni::errors::Error::JniCall(jni::errors::JniError::NoMemory)) => {
+            // try_reserve failed before any JNI call, so there is no pending
+            // exception to scrub here.
+            Err(vespera_inprocess::error_wire(
+                413,
+                &format!("request body of {len} bytes could not be allocated"),
+            ))
+        }
+        Err(_) => {
+            clear_pending_exception(env);
+            Err(vespera_inprocess::error_wire(
+                400,
+                "invalid input byte array (JNI conversion failed)",
+            ))
+        }
+    }
 }
 
 /// Run a **void** JNI symbol's body under `catch_unwind` so a panic
@@ -207,6 +220,77 @@ fn push_unless_header_failed(
     } else {
         push(chunk)
     }
+}
+
+/// Promoted refs + a checked-out chunk buffer for a response
+/// streaming-with-header dispatch.  Aliased so the helper return type stays
+/// under clippy's `type_complexity` cap.
+type StreamHeaderSetup = (
+    Global<JObject<'static>>,
+    Global<JObject<'static>>,
+    jni::JavaVM,
+    StreamingChunkBuffer,
+    Option<StreamingChunkBufferLease>,
+);
+
+/// Promote the header-consumer + output-stream refs and check out the chunk
+/// buffer for [`Java_..._dispatchStreamingWithHeader`].  Split out so the
+/// dispatcher handles a (rare, OOM-driven) setup failure with a `let ... else`
+/// that fires the header consumer exactly once, instead of a silently-ignored
+/// `?` that would leave the Java caller hanging.
+fn setup_stream_with_header(
+    env: &mut jni::Env<'_>,
+    header_consumer: &JObject<'_>,
+    output_stream: &JObject<'_>,
+) -> jni::errors::Result<StreamHeaderSetup> {
+    let header_global: Global<JObject<'static>> = env.new_global_ref(header_consumer)?;
+    let stream_global: Global<JObject<'static>> = env.new_global_ref(output_stream)?;
+    let jvm = env.get_java_vm()?;
+    // One per-thread reusable Java chunk buffer for the whole stream.
+    let (push_buf, push_buf_lease) =
+        checkout_streaming_chunk_buffer(env, StreamingBufferRole::Push)?;
+    Ok((header_global, stream_global, jvm, push_buf, push_buf_lease))
+}
+
+/// Promoted refs + both chunk buffers for a bidirectional
+/// streaming-with-header dispatch.  Aliased to stay under `type_complexity`.
+type FullStreamHeaderSetup = (
+    Global<JObject<'static>>,
+    Global<JObject<'static>>,
+    Global<JObject<'static>>,
+    Global<JObject<'static>>,
+    jni::JavaVM,
+    PullPushBuffers,
+);
+
+/// Promote the refs and check out both chunk buffers for
+/// [`Java_..._dispatchFullStreamingWithHeader`].  Split out both to keep that
+/// dispatcher under the line cap and so a setup failure is handled with a
+/// `let ... else` that fires the header consumer exactly once.
+fn setup_full_stream_with_header(
+    env: &mut jni::Env<'_>,
+    header_consumer: &JObject<'_>,
+    input_stream: &JObject<'_>,
+    output_stream: &JObject<'_>,
+) -> jni::errors::Result<FullStreamHeaderSetup> {
+    let header_global: Global<JObject<'static>> = env.new_global_ref(header_consumer)?;
+    let input_global: Global<JObject<'static>> = env.new_global_ref(input_stream)?;
+    // Second InputStream ref for the post-response close (the first is moved
+    // into the pull closure; `Global` is not `Clone`).
+    let input_for_close: Global<JObject<'static>> = env.new_global_ref(input_stream)?;
+    let output_global: Global<JObject<'static>> = env.new_global_ref(output_stream)?;
+    let jvm = env.get_java_vm()?;
+    // Pull and push run concurrently on different threads (the pull lease is
+    // released for us if the push checkout fails).
+    let buffers = checkout_pull_push_buffers(env)?;
+    Ok((
+        header_global,
+        input_global,
+        input_for_close,
+        output_global,
+        jvm,
+        buffers,
+    ))
 }
 
 /// Worker thread count for the shared [`RUNTIME`], resolved once
@@ -693,18 +777,27 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
             let input = match read_request_byte_array(env, &request_bytes) {
                 Ok(buf) => buf,
                 Err(err) => {
-                    let _ = call_header_consumer(env, &env.new_global_ref(&header_consumer)?, &err);
+                    // Deliver the wire error through the LOCAL consumer ref — no
+                    // global-ref promotion to fail first, so the single header
+                    // callback fires even under the failure that triggered this.
+                    let _ = call_header_consumer_local(env, &header_consumer, &err);
                     return Ok(());
                 }
             };
 
-            let header_global: Global<JObject<'static>> = env.new_global_ref(&header_consumer)?;
-            let stream_global: Global<JObject<'static>> = env.new_global_ref(&output_stream)?;
-            let jvm = env.get_java_vm()?;
-
-            // One per-thread reusable Java chunk buffer for the whole stream.
-            let (push_buf, push_buf_lease) =
-                checkout_streaming_chunk_buffer(env, StreamingBufferRole::Push)?;
+            // Promote refs + check out the chunk buffer. On ANY setup failure
+            // (global-ref / VM promotion or buffer alloc — all rare, OOM-driven)
+            // fire the header consumer once with a 500 via the still-valid LOCAL
+            // ref, so the "header consumer invoked exactly once on every code
+            // path" contract holds and the Java caller never hangs waiting for a
+            // header that will never arrive. The previous bare `?` here returned
+            // an ignored `Err` from `with_env`, exiting silently.
+            let Ok((header_global, stream_global, jvm, push_buf, push_buf_lease)) =
+                setup_stream_with_header(env, &header_consumer, &output_stream)
+            else {
+                let _ = call_header_consumer_local(env, &header_consumer, &panic_wire());
+                return Ok(());
+            };
 
             // Panic safety: catch_unwind absorbs Rust panics so the JVM
             // never sees an unwinding stack across the FFI boundary.
@@ -811,27 +904,32 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
             let header_input = match read_request_byte_array(env, &header_bytes_in) {
                 Ok(buf) => buf,
                 Err(err) => {
-                    let _ = call_header_consumer(env, &env.new_global_ref(&header_consumer)?, &err);
+                    // Deliver the wire error through the LOCAL consumer ref — no
+                    // global-ref promotion to fail first, so the single header
+                    // callback fires even under the failure that triggered this.
+                    let _ = call_header_consumer_local(env, &header_consumer, &err);
                     return Ok(());
                 }
             };
 
-            let header_global: Global<JObject<'static>> = env.new_global_ref(&header_consumer)?;
-            let input_global: Global<JObject<'static>> = env.new_global_ref(&input_stream)?;
-            // Second InputStream ref for the post-response close (the first is
-            // moved into the pull closure; `Global` is not `Clone`).
-            let input_for_close: Global<JObject<'static>> = env.new_global_ref(&input_stream)?;
-            let output_global: Global<JObject<'static>> = env.new_global_ref(&output_stream)?;
-            let jvm = env.get_java_vm()?;
-
-            // Pull and push run concurrently on different threads (the pull
-            // lease is released for us if the push checkout fails).
+            // Promote refs + check out both chunk buffers. On ANY setup failure
+            // (rare, OOM-driven) fire the header consumer once with a 500 via
+            // the still-valid LOCAL ref so the "header consumer invoked exactly
+            // once on every code path" contract holds and the Java caller never
+            // hangs. The previous bare `?` here returned an ignored `Err` from
+            // `with_env`, exiting silently without the callback.
+            let Ok((header_global, input_global, input_for_close, output_global, jvm, buffers)) =
+                setup_full_stream_with_header(env, &header_consumer, &input_stream, &output_stream)
+            else {
+                let _ = call_header_consumer_local(env, &header_consumer, &panic_wire());
+                return Ok(());
+            };
             let PullPushBuffers {
                 pull_buf,
                 pull_buf_lease,
                 push_buf,
                 push_buf_lease,
-            } = checkout_pull_push_buffers(env)?;
+            } = buffers;
 
             let pull_jvm = jvm.clone();
             let pull_global = input_global;

@@ -107,14 +107,6 @@ pub fn extract_type_name(ty: &Type) -> Result<String, syn::Error> {
     }
 }
 
-/// Check if a type is a qualified path (has multiple segments like `crate::models::User`)
-pub fn is_qualified_path(ty: &Type) -> bool {
-    match ty {
-        Type::Path(type_path) => type_path.path.segments.len() > 1,
-        _ => false,
-    }
-}
-
 /// Extract the inner `T` from `Option<T>`.
 ///
 /// Uses the last path segment so qualified forms such as
@@ -538,24 +530,6 @@ mod tests {
         let ty: syn::Type = syn::parse_str("&str").unwrap();
         let result = extract_type_name(&ty);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_is_qualified_path_simple() {
-        let ty: syn::Type = syn::parse_str("User").unwrap();
-        assert!(!is_qualified_path(&ty));
-    }
-
-    #[test]
-    fn test_is_qualified_path_crate_path() {
-        let ty: syn::Type = syn::parse_str("crate::models::User").unwrap();
-        assert!(is_qualified_path(&ty));
-    }
-
-    #[test]
-    fn test_is_qualified_path_non_path_type() {
-        let ty: syn::Type = syn::parse_str("&str").unwrap();
-        assert!(!is_qualified_path(&ty));
     }
 
     #[test]

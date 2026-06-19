@@ -30,7 +30,7 @@ use super::transformation::{
     should_wrap_in_option,
 };
 use super::type_utils::{
-    extract_module_path, extract_type_name, is_option_type, is_qualified_path, is_seaorm_model,
+    extract_module_path, extract_type_name, is_option_type, is_seaorm_model,
     is_seaorm_relation_type,
 };
 use super::validation::{
@@ -58,53 +58,31 @@ pub fn generate_schema_type_code(
 
     // Find struct definition - check SCHEMA_STORAGE first (no file I/O),
     // fall back to file lookup for types not registered (e.g., SeaORM Model).
+    //
+    // The storage-then-file-lookup resolution is identical for qualified
+    // (`crate::models::user::Model`) and simple (`Model`) source paths, so a
+    // single branch serves both and `find_struct_from_path_detailed` is called
+    // exactly once and matched. The previous `else if let Ok(..) else match ..`
+    // shape re-ran the full directory candidate scan + file parse a SECOND time
+    // on a lookup miss purely to surface the error — wasted work that doubled
+    // the cost of every "struct not found" compile error.
+    //
+    // When the struct is found via the file, the module path derived from the
+    // actual file location overrides `source_module_path` so relative relation
+    // paths like `super::user::Entity` resolve correctly (crucial for simple
+    // names, more accurate than the parsed path for qualified ones).
     let struct_def_owned: StructMetadata;
     let schema_name_hint = input.schema_name.as_deref();
-    let struct_def = if is_qualified_path(&input.source_type) {
-        // Qualified path: try storage first (avoids parse_file for Schema-derived types),
-        // then file lookup for non-Schema types (e.g., SeaORM Model)
-        if let Some(found) = schema_storage.get(&source_type_name) {
-            found
-        } else if let Ok((found, module_path)) =
-            find_struct_from_path_detailed(&input.source_type, schema_name_hint)
-        {
-            struct_def_owned = found;
-            // Use the module path from file lookup for qualified paths
-            // The file lookup derives module path from actual file location, which is more accurate
-            // for resolving relative paths like `super::user::Entity`
-            source_module_path = module_path;
-            &struct_def_owned
-        } else {
-            match find_struct_from_path_detailed(&input.source_type, schema_name_hint) {
-                Ok((found, module_path)) => {
-                    struct_def_owned = found;
-                    source_module_path = module_path;
-                    &struct_def_owned
-                }
-                Err(err) => return Err(err.to_syn_error(&input.source_type)),
-            }
-        }
+    let struct_def = if let Some(found) = schema_storage.get(&source_type_name) {
+        found
     } else {
-        // Simple name: try storage first (for same-file structs), then file lookup with schema name hint
-        if let Some(found) = schema_storage.get(&source_type_name) {
-            found
-        } else if let Ok((found, module_path)) =
-            find_struct_from_path_detailed(&input.source_type, schema_name_hint)
-        {
-            struct_def_owned = found;
-            // For simple names, we MUST use the inferred module path from the file location
-            // This is crucial for resolving relative paths like `super::user::Entity`
-            source_module_path = module_path;
-            &struct_def_owned
-        } else {
-            match find_struct_from_path_detailed(&input.source_type, schema_name_hint) {
-                Ok((found, module_path)) => {
-                    struct_def_owned = found;
-                    source_module_path = module_path;
-                    &struct_def_owned
-                }
-                Err(err) => return Err(err.to_syn_error(&input.source_type)),
+        match find_struct_from_path_detailed(&input.source_type, schema_name_hint) {
+            Ok((found, module_path)) => {
+                struct_def_owned = found;
+                source_module_path = module_path;
+                &struct_def_owned
             }
+            Err(err) => return Err(err.to_syn_error(&input.source_type)),
         }
     };
 
@@ -173,9 +151,21 @@ pub fn generate_schema_type_code(
 
     // Generate new struct with filtered fields
     let new_type_name = &input.new_type;
-    let mut field_tokens = Vec::new();
+    // Pre-size the two dense per-field codegen vectors from the source field
+    // count so a many-field struct fills them without the Vec's early doubling
+    // reallocations (the previous `Vec::new()` reallocated at 1, 2, 4, 8, ...).
+    // The sparser relation / inline / default / override vectors below stay
+    // `Vec::new()`: they hold only the subset of fields that are relations or
+    // carry SeaORM defaults, so sizing them to the full field count would
+    // over-allocate for the common struct that has neither.
+    let field_capacity = match &parsed_struct.fields {
+        syn::Fields::Named(fields_named) => fields_named.named.len(),
+        _ => 0,
+    };
+    let mut field_tokens = Vec::with_capacity(field_capacity);
     // Track field mappings for From impl: (new_field_ident, source_field_ident, wrapped_in_option, is_relation)
-    let mut field_mappings: Vec<(syn::Ident, syn::Ident, bool, bool)> = Vec::new();
+    let mut field_mappings: Vec<(syn::Ident, syn::Ident, bool, bool)> =
+        Vec::with_capacity(field_capacity);
     // Track relation field info for from_model generation
     let mut relation_fields: Vec<RelationFieldInfo> = Vec::new();
     // Track inline types that need to be generated for circular relations

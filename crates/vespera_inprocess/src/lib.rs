@@ -79,9 +79,10 @@ mod wire;
 /// Re-export `axum::Router` so consumers don't need a direct axum dependency.
 pub use axum::Router;
 pub use config::{
-    DEFAULT_STREAMING_CHANNEL_CAPACITY, DEFAULT_STREAMING_CHUNK_BYTES, max_request_bytes,
-    request_exceeds_limit, set_max_request_bytes, set_streaming_channel_capacity,
-    set_streaming_chunk_bytes, streaming_channel_capacity, streaming_chunk_bytes,
+    DEFAULT_STREAMING_CHANNEL_CAPACITY, DEFAULT_STREAMING_CHUNK_BYTES,
+    effective_streaming_channel_capacity, max_request_bytes, request_exceeds_limit,
+    set_max_request_bytes, set_streaming_channel_capacity, set_streaming_chunk_bytes,
+    streaming_channel_capacity, streaming_chunk_bytes,
 };
 pub use dispatch::{
     DirectWriteResult, dispatch, dispatch_from_bytes, dispatch_from_bytes_async, dispatch_into,
@@ -90,7 +91,7 @@ pub use dispatch::{
 pub use envelope::{
     HeaderValue, RequestEnvelope, ResponseEnvelope, ResponseMetadata, error_envelope,
 };
-pub use registry::{DEFAULT_APP_NAME, register_app, register_app_named};
+pub use registry::{DEFAULT_APP_NAME, register_app, register_app_named, try_register_app_named};
 pub use streaming::{
     RequestChunk, StreamAbort, StreamOutcome, dispatch_bidirectional_streaming,
     dispatch_bidirectional_streaming_closing, dispatch_bidirectional_streaming_with_header,

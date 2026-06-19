@@ -928,7 +928,13 @@ public class VesperaBridge {
 
             System.load(temp.toAbsolutePath().toString());
         } catch (IOException e) {
-            throw new UnsatisfiedLinkError("Extract failed: " + e.getMessage());
+            // Preserve the original IOException as the cause: a bare message
+            // loses the stack/cause that pinpoints WHY extraction failed
+            // (permissions, full temp dir, AV lock, ...), which is exactly the
+            // context needed to diagnose a deployment-time native-load failure.
+            UnsatisfiedLinkError ule = new UnsatisfiedLinkError("Extract failed: " + e.getMessage());
+            ule.initCause(e);
+            throw ule;
         }
     }
 

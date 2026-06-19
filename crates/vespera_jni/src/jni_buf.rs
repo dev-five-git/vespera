@@ -30,10 +30,20 @@ pub fn read_byte_array_region(
     arr: &JByteArray<'_>,
     len: usize,
 ) -> jni::errors::Result<Vec<u8>> {
-    let mut vec: Vec<u8> = Vec::with_capacity(len);
+    let mut vec: Vec<u8> = Vec::new();
     if len == 0 {
         return Ok(vec);
     }
+    // Fallible reservation BEFORE any JNI call: a very large `len` (a multi-GB
+    // request that passed an unlimited / loose ingress cap, or genuine memory
+    // pressure) must NOT reach Rust's infallible-allocation OOM handler, which
+    // ABORTS the process — and an abort takes down the host JVM, uncatchable by
+    // the `catch_unwind` guards at the JNI entry points. `try_reserve_exact`
+    // surfaces the failure as a recoverable `NoMemory` error the caller maps to
+    // a wire `413`, so the documented "degrades to a wire response, never a
+    // thrown/aborting failure" contract for the ingress read actually holds.
+    vec.try_reserve_exact(len)
+        .map_err(|_| jni::errors::Error::JniCall(jni::errors::JniError::NoMemory))?;
     // `GetByteArrayRegion` takes a `jsize` (i32) length.  `len` never
     // exceeds a Java array length (itself `jsize`-bounded), so this only
     // fails on a caller bug; surface it as an error rather than truncate.

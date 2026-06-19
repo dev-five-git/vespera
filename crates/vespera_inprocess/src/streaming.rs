@@ -11,7 +11,7 @@ use bytes::Bytes;
 use http_body::{Body as HttpBody, Frame};
 use http_body_util::BodyExt;
 
-use crate::config::streaming_channel_capacity;
+use crate::config::effective_streaming_channel_capacity;
 use crate::dispatch::{check_ingress_cap, parse_validate_resolve};
 use crate::internal::{dispatch_and_split, dispatch_response_streaming};
 use crate::wire::{WIRE_HEADER_RESERVE, build_wire_header_bytes, error_wire, split_wire_request};
@@ -625,7 +625,11 @@ impl ChannelBody {
             rx: None,
             producer: Some(RequestProducer {
                 pull_chunk: Box::new(pull_chunk),
-                capacity: streaming_channel_capacity(),
+                // Product-capped (chunk_bytes * slots <= 64 MiB) so a large
+                // configured chunk size can't multiply with the channel
+                // capacity into multi-GB peak buffering. See
+                // `effective_streaming_channel_capacity`.
+                capacity: effective_streaming_channel_capacity(),
             }),
             producer_handle,
         }

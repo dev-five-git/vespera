@@ -139,22 +139,46 @@ where
 /// Names that fail [`validate_app_name`] (empty, > 64 bytes, or
 /// containing characters outside `[A-Za-z0-9_-]`) are silently
 /// discarded — registration is a no-op.  Dispatch with a matching
-/// invalid name will return a `400` wire response.
+/// invalid name will return a `400` wire response.  Use
+/// [`try_register_app_named`] to surface an invalid name (or an
+/// already-registered one) as a `Result` instead of a silent no-op.
 pub fn register_app_named<F>(name: &str, factory: F)
 where
     F: Fn() -> Router + Send + Sync + 'static,
 {
-    let name = match validate_app_name(name) {
-        Ok(n) => n.to_owned(),
-        Err(_) => return,
-    };
+    // BC sugar over the fallible form: an invalid or already-registered name
+    // is silently a no-op. Hosts that need to detect those outcomes call
+    // [`try_register_app_named`] directly.
+    let _ = try_register_app_named(name, factory);
+}
+
+/// Fallible sibling of [`register_app_named`] that **reports the outcome**
+/// instead of silently swallowing it:
+///
+/// - `Ok(true)`  — newly registered (the factory ran and the router was stored)
+/// - `Ok(false)` — a router was already registered under this name; first-wins,
+///   so the factory was NOT invoked
+/// - `Err(msg)`  — `name` failed [`validate_app_name`] (empty, > 64 bytes, or
+///   characters outside `[A-Za-z0-9_-]`); nothing was registered
+///
+/// A multi-app host can surface a typo'd app name at startup — instead of
+/// discovering it only when every dispatch to that app silently returns
+/// `404` / `400`.
+///
+/// First-wins semantics, lock-free dispatch reads, and factory panic safety
+/// are identical to [`register_app_named`].
+pub fn try_register_app_named<F>(name: &str, factory: F) -> Result<bool, String>
+where
+    F: Fn() -> Router + Send + Sync + 'static,
+{
+    let name = validate_app_name(name)?.to_owned();
     // Serialize the registration write path (dispatch reads stay lock-free)
     // so a given name's `factory` runs at most once — see [`REGISTER_LOCK`].
     let _guard = REGISTER_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     // Re-check under the lock: first-wins, so an already-present name means
     // `factory` is NOT invoked.
     if APP_ROUTERS.load().contains_key(&name) {
-        return;
+        return Ok(false);
     }
     // Build the router OUTSIDE the copy-on-write update so a panicking
     // factory cannot corrupt the registry: the panic propagates before any
@@ -177,6 +201,7 @@ where
             let _ = DEFAULT_ROUTER.set(stored.clone());
         }
     }
+    Ok(true)
 }
 
 /// Resolve a [`Router`] for a wire request, applying default-app

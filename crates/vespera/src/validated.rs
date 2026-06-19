@@ -214,7 +214,11 @@ fn build_validation_response(report: &::garde::Report) -> Response {
     // keys), but this is a request-time boundary: on the unreachable failure
     // path emit a minimal valid 422 envelope rather than panicking.
     let body = ::serde_json::to_vec(&ValidationEnvelope { report }).unwrap_or_else(|_| {
-        br#"{"errors":[{"path":"","message":"request validation failed"}]}"#.to_vec()
+        // Field order MUST match the normal serialization above (`message`
+        // then `path`) so this unreachable fallback still honours the
+        // snapshot-locked envelope byte shape rather than emitting a
+        // path-first object that drifts from the documented contract.
+        br#"{"errors":[{"message":"request validation failed","path":""}]}"#.to_vec()
     });
 
     let mut response = (StatusCode::UNPROCESSABLE_ENTITY, body).into_response();

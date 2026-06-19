@@ -674,9 +674,9 @@ mod schema_type_option_tests {
         assert!(output.contains("name"));
     }
 
-    // Tests for qualified path storage fallback
-    // Note: This tests the case where is_qualified_path returns true
-    // and we find the struct in schema_storage rather than via file lookup
+    // Tests for qualified path storage fallback: a qualified source path like
+    // `crate::models::user::Model` resolves through schema_storage rather than
+    // via file lookup.
 
     #[test]
     fn test_generate_schema_type_code_qualified_path_storage_lookup() {

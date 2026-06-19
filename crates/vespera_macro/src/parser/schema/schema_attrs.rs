@@ -140,7 +140,11 @@ impl SchemaConstraints {
 ///
 /// Unknown keys are **silently ignored** so that struct-level keys
 /// (`name`, `ref`, `nullable`) and future additions don't break this
-/// parser when it walks a struct-level `#[schema(...)]` attribute.
+/// parser when it walks a struct-level `#[schema(...)]` attribute.  A
+/// **recognized** key with a malformed value is likewise tolerated (the
+/// constraint is simply dropped) — this leniency is intentional and locked
+/// by the `*_is_silently_ignored` tests below: future value syntaxes must
+/// not break an older macro, and `example` is best-effort documentation.
 #[must_use]
 pub fn extract_schema_constraints(attrs: &[Attribute]) -> SchemaConstraints {
     let mut out = SchemaConstraints::default();

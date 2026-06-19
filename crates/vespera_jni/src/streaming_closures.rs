@@ -432,6 +432,46 @@ pub fn call_header_consumer(
     })
 }
 
+/// Fire `Consumer.accept(byte[])` through a **local** consumer reference,
+/// for the cold setup-failure / fallback paths of the streaming-with-header
+/// dispatchers that run on the JNI entry thread (where the original
+/// `header_consumer` local ref is still valid).
+///
+/// Uses the checked `call_method` (no cached `JMethodID`) — these paths are
+/// rare (oversized / failed ingress read, or a global-ref / VM-promotion /
+/// buffer-checkout failure during setup). Crucially it does NOT promote the
+/// consumer to a `Global` first, so it still delivers the mandatory single
+/// header callback even when the very allocation that would promote it is what
+/// failed — upholding the "header consumer invoked exactly once on every code
+/// path" contract so the Java caller never hangs.
+pub fn call_header_consumer_local(
+    env: &mut jni::Env<'_>,
+    consumer: &JObject<'_>,
+    header_bytes: &[u8],
+) -> jni::errors::Result<()> {
+    // Scrub any exception already pending from the failed setup call that
+    // routed us here, so `byte_array_from_slice` below is not issued with an
+    // exception in flight.
+    if env.exception_check() {
+        env.exception_clear();
+    }
+    let arr = env.byte_array_from_slice(header_bytes)?;
+    let arr_obj: JObject = arr.into();
+    let result = env.call_method(
+        consumer,
+        jni_str!("accept"),
+        jni_sig!("(Ljava/lang/Object;)V"),
+        &[JValue::Object(&arr_obj)],
+    );
+    // Scrub on BOTH paths so a throwing `accept` doesn't poison the thread's
+    // next JNI call (this is a cold best-effort delivery).
+    if env.exception_check() {
+        env.exception_clear();
+    }
+    result?;
+    Ok(())
+}
+
 /// Complete a `CompletableFuture` via a **local** reference, for the
 /// cold error / fallback paths of `dispatchAsync` that run on the JNI
 /// entry thread (where the original `future` local ref is still valid).

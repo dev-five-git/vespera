@@ -57,32 +57,47 @@ fn check_extractors(
         .map(|r| (r.module_path.as_str(), r.file_path.as_str()))
         .collect();
 
+    // Per-file analysis cache: the local type set and the imported non-`Schema`
+    // route-type set depend only on the file (every route in a file shares one
+    // module path), so compute them ONCE per file and reuse them for every
+    // route in that file. The previous code recomputed both per route — scanning
+    // the file's items and re-resolving its imports `routes_in_file` times
+    // (O(routes_in_file x items_in_file) on every cache-miss build). Routes are
+    // still visited in declaration order, so the first reported violation is
+    // deterministic.
+    let mut file_analysis: HashMap<&str, (HashSet<String>, HashSet<String>)> = HashMap::new();
+
     for route in &metadata.routes {
         let Some(ast) = file_cache.get(&route.file_path) else {
             continue;
         };
 
-        // Types physically declared in this route file (structs + enums).
-        let local_types: HashSet<String> = ast
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                syn::Item::Struct(s) => Some(s.ident.to_string()),
-                syn::Item::Enum(e) => Some(e.ident.to_string()),
-                _ => None,
-            })
-            .collect();
-        // Non-`Schema` types imported from another route file via a
-        // `crate`/`self`/`super` path (resolved against this file's module).
-        let mut imported_route_types = HashSet::new();
-        collect_imported_route_types(
-            ast,
-            &route.module_path,
-            &route_module_files,
-            file_cache,
-            &known,
-            &mut imported_route_types,
-        );
+        let (local_types, imported_route_types) = &*file_analysis
+            .entry(route.file_path.as_str())
+            .or_insert_with(|| {
+                // Types physically declared in this route file (structs + enums).
+                let local_types: HashSet<String> = ast
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        syn::Item::Struct(s) => Some(s.ident.to_string()),
+                        syn::Item::Enum(e) => Some(e.ident.to_string()),
+                        _ => None,
+                    })
+                    .collect();
+                // Non-`Schema` types imported from another route file via a
+                // `crate`/`self`/`super` path (resolved against this file's module).
+                let mut imported_route_types = HashSet::new();
+                collect_imported_route_types(
+                    ast,
+                    &route.module_path,
+                    &route_module_files,
+                    file_cache,
+                    &known,
+                    &mut imported_route_types,
+                );
+                (local_types, imported_route_types)
+            });
 
         let Some(fn_item) = ast.items.iter().find_map(|item| match item {
             syn::Item::Fn(f) if f.sig.ident == route.function_name => Some(f),

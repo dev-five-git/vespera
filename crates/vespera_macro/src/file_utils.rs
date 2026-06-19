@@ -118,7 +118,14 @@ pub fn file_to_segments(file: &Path, base_path: &Path) -> Vec<String> {
     let file_stem = file
         .strip_prefix(base_path)
         .map_or_else(|_| normalize_display_path(file), normalize_display_path);
-    let file_stem = file_stem.replace(".rs", "").replace('\\', "/");
+    // Strip ONLY a trailing `.rs` extension (not every `.rs` substring): a
+    // path component that legitimately contains `.rs` (e.g. a directory named
+    // `v1.rs`) must keep it, so `replace(".rs", "")` — which mangled every
+    // occurrence — is wrong.  Normalize `\` → `/` afterwards.
+    let file_stem = file_stem
+        .strip_suffix(".rs")
+        .unwrap_or(&file_stem)
+        .replace('\\', "/");
     let mut segments: Vec<String> = file_stem
         .split('/')
         .filter(|s| !s.is_empty())
