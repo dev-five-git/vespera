@@ -305,7 +305,14 @@ pub fn make_pull_closure(
                 if n == 0 {
                     return Ok(RequestChunk::Data(Vec::new()));
                 }
-                let n = usize::try_from(n).expect("positive read length fits usize");
+                // `n > 0` here (the `< 0` and `== 0` cases returned above), so a
+                // positive `jint` always fits `usize`.  Avoid a panic site on
+                // this FFI hot path: an impossible conversion failure aborts the
+                // request body (`RequestChunk::Error`) instead of unwinding
+                // across the JNI boundary.
+                let Ok(n) = usize::try_from(n) else {
+                    return Ok(RequestChunk::Error);
+                };
                 // `InputStream.read(byte[])` MUST return at most the buffer
                 // length; a larger value is a contract violation (a buggy or
                 // hostile stream).  Treat it as stream corruption and ABORT
@@ -349,6 +356,12 @@ pub fn make_push_closure(
     buf: Global<jni::objects::JByteArray<'static>>,
 ) -> impl FnMut(&[u8]) -> ControlFlow<()> + Send + 'static {
     let chunk_size = streaming_chunk_size();
+    // `chunk_size` is config-clamped to <= 8 MiB (see config::MAX_STREAMING_CHUNK_BYTES),
+    // so every segment length (<= chunk_size) fits an `i32`.  Precompute the
+    // saturating bound once so the per-segment length conversion below needs no
+    // panic site; the `unwrap_or` fallback is the buffer size (never exceeds it),
+    // so it stays write-safe even if the clamp invariant were ever broken.
+    let chunk_size_i32 = i32::try_from(chunk_size).unwrap_or(i32::MAX);
     // Latches once the Java OutputStream errors (e.g. the client
     // disconnected mid-download): subsequent frames become a cheap
     // no-op instead of repeatedly crossing JNI to write into a broken
@@ -374,8 +387,11 @@ pub fn make_push_closure(
                 let seg_i8 =
                     unsafe { std::slice::from_raw_parts(seg.as_ptr().cast::<i8>(), seg.len()) };
                 arr.set_region(env, 0, seg_i8)?;
-                let len = i32::try_from(seg.len())
-                    .expect("segment length bounded by streaming_chunk_size");
+                // seg.len() <= chunk_size <= 8 MiB always fits i32; the
+                // `unwrap_or(chunk_size_i32)` fallback is unreachable but keeps
+                // this FFI hot path panic-free (and write-safe: the fallback is
+                // the buffer length) if the clamp invariant ever changes.
+                let len = i32::try_from(seg.len()).unwrap_or(chunk_size_i32);
                 call_output_stream_write(env, &stream, &buf, len)?;
                 // Any IOException thrown by write() is left
                 // pending on the env; clear it so subsequent
