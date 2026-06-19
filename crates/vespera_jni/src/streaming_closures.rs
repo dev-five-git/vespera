@@ -472,15 +472,24 @@ pub fn complete_future(
     future: &Global<JObject<'static>>,
     bytes: &[u8],
 ) -> jni::errors::Result<()> {
-    let arr = env.byte_array_from_slice(bytes)?;
-    let arr_obj: JObject = arr.into();
-    call_future_complete(env, future, &arr_obj)?;
-    // Always clear any leftover exception (e.g. if Java's
-    // complete() threw via a buggy whenComplete handler): we MUST
-    // NOT leave the attached thread in a faulted state because
-    // subsequent JNI calls will misbehave silently.
+    // Capture the result instead of `?`-propagating so the exception clear
+    // below runs on EVERY path. The prior early `?` on byte_array_from_slice
+    // / complete() returned before the clear, leaking a pending exception
+    // onto the (pooled, daemon-attached) worker thread for the next dispatch
+    // — contradicting this function's own "left clean" contract.
+    let result = match env.byte_array_from_slice(bytes) {
+        Ok(arr) => {
+            let arr_obj: JObject = arr.into();
+            call_future_complete(env, future, &arr_obj)
+        }
+        Err(e) => Err(e),
+    };
+    // Always clear any leftover exception (e.g. if Java's complete() threw
+    // via a buggy whenComplete handler): we MUST NOT leave the attached
+    // thread in a faulted state because subsequent JNI calls will misbehave
+    // silently.
     if env.exception_check() {
         env.exception_clear();
     }
-    Ok(())
+    result
 }

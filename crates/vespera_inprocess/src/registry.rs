@@ -68,7 +68,7 @@ fn validate_app_name(name: &str) -> Result<&str, String> {
     }
     if trimmed.len() > MAX_APP_NAME_LEN {
         return Err(format!(
-            "app name too long: {} chars (max {MAX_APP_NAME_LEN})",
+            "app name too long: {} bytes (max {MAX_APP_NAME_LEN})",
             trimmed.len()
         ));
     }

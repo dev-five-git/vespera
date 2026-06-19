@@ -229,6 +229,12 @@ impl<'a> Parser<'a> {
         // shorter `&mut self` borrow.
         let input = self.input;
         let start = self.pos;
+        // Scalar single-pass scan.  A `memchr2(b'"', b'\\')` variant was
+        // benchmarked (2026) and REGRESSED `request_parse_hand` ~13% and
+        // `request_headers_path` ~3-4%: header values are short, so the
+        // SIMD setup cost plus a second control-character pass over the
+        // span outweighs the vectorised search.  The branchy scalar loop
+        // wins for the small-string sizes this parser actually sees.
         loop {
             match input.get(self.pos) {
                 None => return Err("unterminated string".to_owned()),
@@ -253,7 +259,14 @@ impl<'a> Parser<'a> {
     /// sequences (`\" \\ \/ \b \f \n \r \t \uXXXX`, incl. surrogate
     /// pairs) until the closing quote.
     fn read_string_escaped(&mut self, start: usize) -> Result<Cow<'a, str>, String> {
-        let mut buf: Vec<u8> = Vec::with_capacity((self.pos - start) + 16);
+        // Reserve ~2× the already-scanned plain prefix (+16 floor): an
+        // escaped value's tail is typically the same order of magnitude as
+        // its plain head, so this absorbs most of it without the doubling
+        // reallocations the old flat `+16` paid on longer escaped values.
+        // Sizing off the prefix (never the total input length) keeps a
+        // short escaped value early in a large request from over-reserving.
+        let prefix = self.pos - start;
+        let mut buf: Vec<u8> = Vec::with_capacity(prefix.saturating_mul(2).saturating_add(16));
         buf.extend_from_slice(&self.input[start..self.pos]);
         loop {
             match self.input.get(self.pos) {

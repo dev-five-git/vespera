@@ -204,7 +204,7 @@ final class VesperaDirectBufferPool {
         in.clear();
         in.put(wireRequest);
 
-        return dispatchViaPool(pool, wireRequest.length, retryOnOverflow, () -> wireRequest);
+        return dispatchViaPool(pool, wireRequest.length, retryOnOverflow);
     }
 
     static ByteBuffer dispatchDirectPooled(
@@ -235,17 +235,13 @@ final class VesperaDirectBufferPool {
         if (pool[0].capacity() < total) {
             pool[0] = ByteBuffer.allocateDirect(grownCapacity(total));
         }
-        // Consume the reusable header buffer into the pooled direct buffer
-        // now; dispatchViaPool's lazy wireFallback re-encodes from scratch
-        // rather than capturing the buffer, so buffer reuse cannot corrupt
-        // a deferred fallback.
+        // Consume the reusable header buffer into the pooled direct buffer.
         int written = VesperaWireCodec.assembleInto(hdr.backingArray(), headerLen, bodyBytes, pool[0]);
         if (written != total) {
             throw new IllegalStateException(
                     "assembleInto wrote " + written + ", expected " + total);
         }
-        return dispatchViaPool(pool, total, retryOnOverflow,
-                () -> VesperaWireCodec.encodeRequest(appName, method, path, query, headers, bodyBytes));
+        return dispatchViaPool(pool, total, retryOnOverflow);
     }
 
     static ByteBuffer dispatchDirectPooled(
@@ -276,8 +272,7 @@ final class VesperaDirectBufferPool {
             throw new IllegalStateException(
                     "assembleInto wrote " + written + ", expected " + total);
         }
-        return dispatchViaPool(pool, total, retryOnOverflow,
-                () -> VesperaWireCodec.encodeRequest(appName, method, path, query, headers, bodyBytes));
+        return dispatchViaPool(pool, total, retryOnOverflow);
     }
 
     /**
@@ -288,8 +283,7 @@ final class VesperaDirectBufferPool {
      * pool cap and must take the {@link VesperaBridge#dispatchBytes} path.
      */
     private static ByteBuffer dispatchViaPool(
-            ByteBuffer[] pool, int reqLen, boolean retryOnOverflow,
-            java.util.function.Supplier<byte[]> wireFallback) {
+            ByteBuffer[] pool, int reqLen, boolean retryOnOverflow) {
         int n = VesperaBridge.dispatchDirect(pool[0], reqLen, pool[1]);
         if (n < 0 && n != Integer.MIN_VALUE) {
             int required = -n;
@@ -297,8 +291,13 @@ final class VesperaDirectBufferPool {
                 throw new BufferTooSmallException(required);
             }
             if (required > DIRECT_MAX_CAPACITY) {
-                // Retry permitted; beyond the pool cap use the byte[] path.
-                return ByteBuffer.wrap(VesperaBridge.dispatchBytes(wireFallback.get())).asReadOnlyBuffer();
+                // Response exceeds the pooled direct buffer's hard cap. Do NOT
+                // heap-buffer the whole response via dispatchBytes — that
+                // defeats streaming and risks an OOM spike on large downloads
+                // (a small/bodyless safe GET the SmartDispatch resolver routes
+                // here can still return gigabytes). Surface the overflow so the
+                // caller re-routes this request through response streaming.
+                throw new BufferTooSmallException(required);
             }
             pool[1] = ByteBuffer.allocateDirect(grownCapacity(required));
             n = VesperaBridge.dispatchDirect(pool[0], reqLen, pool[1]);

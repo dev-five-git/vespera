@@ -190,6 +190,16 @@ public class VesperaProxyController {
      */
     private static final int MAX_FIXED_BODY = 64 * 1024 * 1024;
 
+    /**
+     * Largest body that can be materialised into a single Java {@code byte[]}
+     * (the JVM array-length ceiling is just under {@link Integer#MAX_VALUE}).
+     * A buffered request whose length provably exceeds this can never be read
+     * via {@code readAllBytes}/{@code readNBytes}, so it is rejected with 413
+     * rather than allowed to attempt an impossible allocation; such requests
+     * must go through {@code BIDIRECTIONAL_STREAMING}.
+     */
+    private static final long MAX_BUFFERED_BODY = Integer.MAX_VALUE - 8L;
+
     private static final int DIRECT_BODY_SCRATCH_INITIAL = 16 * 1024;
     private static final int DIRECT_BODY_COPY_CHUNK = 1024 * 1024;
     private static final int DIRECT_BODY_SCRATCH_RETAIN_CAPACITY = 256 * 1024;
@@ -217,6 +227,14 @@ public class VesperaProxyController {
         long cap = Math.max(0, maxBufferedRequestBytes);
         if (cap > 0 && contentLength > cap) {
             throw payloadTooLarge(contentLength, cap);
+        }
+        // A buffered body must fit a single Java byte[] (≈ 2 GiB). A larger
+        // known Content-Length can never be materialised here, so reject it
+        // (413) instead of letting readAllBytes()/readNBytes() attempt an
+        // impossible allocation and throw OutOfMemoryError. Such requests must
+        // go through BIDIRECTIONAL_STREAMING.
+        if (contentLength > MAX_BUFFERED_BODY) {
+            throw payloadTooLarge(contentLength, MAX_BUFFERED_BODY);
         }
         try (InputStream in = request.getInputStream()) {
             if (cap > 0 && contentLength < 0) {
@@ -389,11 +407,21 @@ public class VesperaProxyController {
                     appName, method, path, query, headers, body,
                     directRetryOnOverflow && isSafe(method));
         } catch (VesperaBridge.BufferTooSmallException overflow) {
-            // Unsafe method (or retry disabled) + response larger than the
-            // pool: the first dispatch already ran; its result was discarded.
-            // Re-running would risk a different response (e.g. DELETE → 204
-            // then 404), so surface the size to the operator instead of
-            // silently double-executing.
+            // The first dispatch already ran; its oversized result was discarded.
+            if (isSafe(method) && directRetryOnOverflow) {
+                // Safe method + retry enabled: the response is larger than the
+                // pooled direct buffer's hard cap. Re-route through response
+                // streaming so a large download streams chunk-by-chunk instead
+                // of being heap-buffered — the prior dispatchBytes fallback
+                // could spike the JVM heap (OOM) on multi-GiB responses. A safe
+                // re-run returns the same response, and the DIRECT path has not
+                // committed the response yet, so streaming takes over cleanly.
+                dispatchStreaming(response, appName, method, path, query, headers, body);
+                return;
+            }
+            // Unsafe method (or retry disabled): re-running could return a
+            // different response (e.g. DELETE → 204 then 404), so surface the
+            // size to the operator instead of silently double-executing.
             response.setStatus(500);
             response.getOutputStream().write(
                     ("vespera DIRECT overflow: response needs "
@@ -520,6 +548,13 @@ public class VesperaProxyController {
 
     static void forEachRequestHeader(HttpServletRequest request, VesperaBridge.HeaderSink sink) {
         Enumeration<String> names = request.getHeaderNames();
+        // The Servlet spec permits getHeaderNames() to return null when the
+        // container disallows header access; treat that as "no headers"
+        // rather than letting a NullPointerException turn a recoverable case
+        // into an HTTP 500.
+        if (names == null) {
+            return;
+        }
         while (names.hasMoreElements()) {
             String name = names.nextElement();
             sink.put(toLowerCaseAscii(name), joinHeaderValues(name, request));

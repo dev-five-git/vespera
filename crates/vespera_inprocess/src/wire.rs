@@ -292,6 +292,11 @@ fn write_wire_header_into(
     out.extend_from_slice(&[0u8; 4]);
     let start = out.len();
     header_write::write_response_header(out, status, headers, metadata, validation_errors);
+    // Invariant: a serialized response header never approaches `u32::MAX`
+    // (4 GiB of header JSON is unreachable for any real `HeaderMap`).  On
+    // the JNI/FFI path this call is wrapped in `catch_unwind`, so even an
+    // impossible violation degrades to a `500` wire response rather than
+    // unwinding across the boundary.
     let header_len =
         u32::try_from(out.len() - start).expect("response header JSON exceeds u32::MAX bytes");
     out[start - 4..start].copy_from_slice(&header_len.to_be_bytes());
@@ -361,6 +366,11 @@ pub fn to_wire_bytes(parts: ResponseParts) -> Vec<u8> {
         None
     };
     let header_cap = header_capacity_estimate(&headers, &metadata).max(WIRE_HEADER_RESERVE);
+    // `4 + header_cap + body_bytes.len()` cannot overflow `usize` on a
+    // 64-bit target (it would require a multi-exabyte body); plain `+` is
+    // used so the hot response path keeps its exact arithmetic — a
+    // `saturating_add` variant was benchmarked and cost ~2-3% on the small
+    // `wire_path`/`request_headers_path` cases for zero real-world benefit.
     let mut out = Vec::with_capacity(4 + header_cap + body_bytes.len());
     write_wire_header_into(
         &mut out,

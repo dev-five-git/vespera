@@ -64,11 +64,20 @@ public interface DispatchModeResolver {
      * non-bidirectional mode will still read the servlet input stream fully.
      */
     static boolean definitelyBodyless(HttpServletRequest request) {
+        // A `Transfer-Encoding` request frames its body by chunking, not by
+        // Content-Length, and a malformed request carrying BOTH
+        // `Content-Length: 0` and `Transfer-Encoding: chunked` is a classic
+        // request-smuggling shape. Check TE FIRST so such a request is never
+        // mistaken for bodyless — the prior order trusted `Content-Length: 0`
+        // before ever looking at Transfer-Encoding.
+        if (request.getHeader("Transfer-Encoding") != null) {
+            return false;
+        }
         long contentLength = request.getContentLengthLong();
         if (contentLength == 0) {
             return true;
         }
-        if (contentLength > 0 || request.getHeader("Transfer-Encoding") != null) {
+        if (contentLength > 0) {
             return false;
         }
         String protocol = request.getProtocol();

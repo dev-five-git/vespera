@@ -155,6 +155,31 @@ where
     build_wire_header_bytes(status, &headers, &metadata)
 }
 
+/// Outcome of a **header-first** streaming dispatch
+/// (`dispatch_streaming_with_header_async`,
+/// `dispatch_bidirectional_streaming_with_header*`).
+///
+/// These functions commit the response header (`on_header`) **before**
+/// the body is drained, so a failure that happens afterwards can no
+/// longer be turned into an error status. This value surfaces that
+/// failure to the host so it can abort the transport (drop the
+/// connection / skip the clean chunked terminator) instead of letting a
+/// truncated body masquerade as a complete `2xx` response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamOutcome {
+    /// The response body drained to clean EOF — every chunk delivered,
+    /// or the dispatch failed *before* the header was committed (the
+    /// error response was delivered in full via `on_header`).
+    Complete,
+    /// The response body stream errored **after** the header was
+    /// committed; the bytes delivered via `on_chunk` are truncated.
+    BodyError,
+    /// `on_chunk` returned [`ControlFlow::Break`] — the chunk sink asked
+    /// to stop early (e.g. the host's output sink failed mid-stream).
+    /// The response delivered via `on_chunk` is truncated.
+    SinkStopped,
+}
+
 /// **Streaming dispatch with explicit header callback** — emits the
 /// wire-format response header via `on_header` **before** any body
 /// chunk is delivered to `on_chunk`.
@@ -173,14 +198,17 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
     input: Vec<u8>,
     mut on_header: H,
     mut on_chunk: F,
-) where
+) -> StreamOutcome
+where
     H: FnMut(&[u8]),
     F: FnMut(&[u8]) -> ControlFlow<()>,
 {
     // Response streaming buffers the full request (see
     // `dispatch_streaming_async`): apply the ingress cap, delivering the
     // 413 through the header callback so the contract (header fires
-    // exactly once) holds.
+    // exactly once) holds.  Pre-header error paths return `Complete`: the
+    // (error) response was delivered in full via `on_header`, nothing is
+    // truncated.
     if crate::config::request_exceeds_limit(input.len()) {
         on_header(&error_wire(
             413,
@@ -190,20 +218,20 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
                 crate::config::max_request_bytes()
             ),
         ));
-        return;
+        return StreamOutcome::Complete;
     }
     let (header_bytes, body_bytes) = match split_wire_request(input) {
         Ok(parts) => parts,
         Err(msg) => {
             on_header(&error_wire(400, &msg));
-            return;
+            return StreamOutcome::Complete;
         }
     };
     let header = match parse_wire_header(&header_bytes) {
         Ok(h) => h,
         Err(msg) => {
             on_header(&error_wire(400, &msg));
-            return;
+            return StreamOutcome::Complete;
         }
     };
     if header.v != WIRE_VERSION {
@@ -214,13 +242,13 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
                 header.v
             ),
         ));
-        return;
+        return StreamOutcome::Complete;
     }
     let router = match resolve_app_router(&header) {
         Ok(r) => r,
         Err(wire) => {
             on_header(&wire);
-            return;
+            return StreamOutcome::Complete;
         }
     };
 
@@ -245,26 +273,35 @@ pub async fn dispatch_streaming_with_header_async<H, F>(
         Ok(parts) => parts,
         Err((status, msg)) => {
             on_header(&error_wire(status, &msg));
-            return;
+            return StreamOutcome::Complete;
         }
     };
 
     on_header(&build_wire_header_bytes(status, &headers, &metadata));
 
+    let mut outcome = StreamOutcome::Complete;
     while let Some(frame_result) = body.frame().await {
-        match frame_result {
-            Ok(frame) => {
-                if let Some(data) = frame.data_ref()
-                    && !data.is_empty()
-                    && on_chunk(data.as_ref()).is_break()
-                {
-                    break;
-                }
+        if let Ok(frame) = frame_result {
+            if let Some(data) = frame.data_ref()
+                && !data.is_empty()
+                && on_chunk(data.as_ref()).is_break()
+            {
+                // The chunk sink asked to stop (e.g. the host's output sink
+                // failed). The header is already committed, so report the
+                // truncation to the caller.
+                outcome = StreamOutcome::SinkStopped;
+                break;
             }
-            // Known limitation: after the header is committed, a body-stream error cannot be signalled cleanly.
-            Err(_) => break,
+        } else {
+            // The response body aborted mid-stream after the header was
+            // committed: status/headers can no longer change, so surface the
+            // truncation so the host can abort the transport instead of
+            // sending a clean terminator over a short body.
+            outcome = StreamOutcome::BodyError;
+            break;
         }
     }
+    outcome
 }
 
 /// **Bidirectional streaming dispatch** — both request and response
@@ -370,7 +407,8 @@ pub async fn dispatch_bidirectional_streaming_with_header<P, F, H>(
     pull_chunk: P,
     on_chunk: F,
     on_header: H,
-) where
+) -> StreamOutcome
+where
     P: FnMut() -> RequestChunk + Send + 'static,
     F: FnMut(&[u8]) -> ControlFlow<()>,
     H: FnMut(&[u8]),
@@ -382,7 +420,7 @@ pub async fn dispatch_bidirectional_streaming_with_header<P, F, H>(
         on_header,
         || {},
     )
-    .await;
+    .await
 }
 
 /// **Bidirectional streaming with header callback and request-source
@@ -395,14 +433,14 @@ pub async fn dispatch_bidirectional_streaming_with_header_closing<P, F, H, C>(
     on_chunk: F,
     on_header: H,
     request_close: C,
-) where
+) -> StreamOutcome
+where
     P: FnMut() -> RequestChunk + Send + 'static,
     F: FnMut(&[u8]) -> ControlFlow<()>,
     H: FnMut(&[u8]),
     C: FnOnce(),
 {
-    bidirectional_streaming_inner(input_header, pull_chunk, on_chunk, on_header, request_close)
-        .await;
+    bidirectional_streaming_inner(input_header, pull_chunk, on_chunk, on_header, request_close).await
 }
 
 async fn bidirectional_streaming_inner<P, F, H, C>(
@@ -411,7 +449,8 @@ async fn bidirectional_streaming_inner<P, F, H, C>(
     mut on_chunk: F,
     mut on_header: H,
     request_close: C,
-) where
+) -> StreamOutcome
+where
     P: FnMut() -> RequestChunk + Send + 'static,
     F: FnMut(&[u8]) -> ControlFlow<()>,
     H: FnMut(&[u8]),
@@ -421,7 +460,7 @@ async fn bidirectional_streaming_inner<P, F, H, C>(
         Ok(parts) => parts,
         Err(msg) => {
             on_header(&error_wire(400, &msg));
-            return;
+            return StreamOutcome::Complete;
         }
     };
     // `input_header` MUST be header-only on the bidirectional path — the
@@ -435,13 +474,13 @@ async fn bidirectional_streaming_inner<P, F, H, C>(
             "bidirectional streaming input_header must be header-only \
              (no trailing body bytes); send the request body via pull_chunk",
         ));
-        return;
+        return StreamOutcome::Complete;
     }
     let header = match parse_wire_header(&header_bytes) {
         Ok(h) => h,
         Err(msg) => {
             on_header(&error_wire(400, &msg));
-            return;
+            return StreamOutcome::Complete;
         }
     };
     if header.v != WIRE_VERSION {
@@ -452,13 +491,13 @@ async fn bidirectional_streaming_inner<P, F, H, C>(
                 header.v
             ),
         ));
-        return;
+        return StreamOutcome::Complete;
     }
     let router = match resolve_app_router(&header) {
         Ok(r) => r,
         Err(wire) => {
             on_header(&wire);
-            return;
+            return StreamOutcome::Complete;
         }
     };
 
@@ -506,24 +545,30 @@ async fn bidirectional_streaming_inner<P, F, H, C>(
             closer.close_if_started();
             await_request_producer(&producer_handle).await;
             on_header(&error_wire(status, &msg));
-            return;
+            return StreamOutcome::Complete;
         }
     };
 
     on_header(&build_wire_header_bytes(status, &headers, &metadata));
 
+    let mut outcome = StreamOutcome::Complete;
     while let Some(frame_result) = response_body.frame().await {
-        match frame_result {
-            Ok(frame) => {
-                if let Some(data) = frame.data_ref()
-                    && !data.is_empty()
-                    && on_chunk(data.as_ref()).is_break()
-                {
-                    break;
-                }
+        if let Ok(frame) = frame_result {
+            if let Some(data) = frame.data_ref()
+                && !data.is_empty()
+                && on_chunk(data.as_ref()).is_break()
+            {
+                // Host chunk sink asked to stop (e.g. its output sink failed):
+                // report the truncation past the committed header.
+                outcome = StreamOutcome::SinkStopped;
+                break;
             }
-            // Known limitation: after the header is committed, a body-stream error cannot be signalled cleanly.
-            Err(_) => break,
+        } else {
+            // Response body aborted mid-stream after the header was committed:
+            // surface the truncation so the host can abort the transport rather
+            // than send a clean terminator over a short body.
+            outcome = StreamOutcome::BodyError;
+            break;
         }
     }
 
@@ -537,6 +582,7 @@ async fn bidirectional_streaming_inner<P, F, H, C>(
     // guard's Drop becomes a no-op on this happy path.
     closer.close_if_started();
     await_request_producer(&producer_handle).await;
+    outcome
 }
 
 /// Whether the request producer task was started — i.e. the handler read

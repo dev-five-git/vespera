@@ -25,7 +25,7 @@ use bytes::Bytes;
 use http_body::{Body as HttpBody, Frame};
 use serde_json::Value;
 use vespera_inprocess::{
-    DirectWriteResult, RequestChunk, dispatch_bidirectional_streaming_closing,
+    DirectWriteResult, RequestChunk, StreamOutcome, dispatch_bidirectional_streaming_closing,
     dispatch_bidirectional_streaming_with_header,
     dispatch_bidirectional_streaming_with_header_closing, dispatch_into_async,
     dispatch_streaming_async, dispatch_streaming_with_header_async, register_app_named,
@@ -991,6 +991,55 @@ async fn response_streaming_body_error_yields_500_not_truncated_success() {
     assert!(
         !err_body.is_empty(),
         "the 500 wire must carry an error body"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn streaming_with_header_body_error_returns_body_error_outcome() {
+    // Header-first path: the 200 header is committed via `on_header` BEFORE
+    // the body drains, so a mid-stream body error can no longer change the
+    // status. The dispatch must report `StreamOutcome::BodyError` so the host
+    // (JNI bridge) can abort the transport instead of finishing cleanly over a
+    // truncated body. Regression guard for the silently-swallowed `Err(_)`.
+    install_router();
+    let wire = encode_wire("GET", "/err-body", HashMap::new(), &[]);
+    let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let h = Arc::clone(&header_buf);
+
+    let outcome = dispatch_streaming_with_header_async(
+        wire,
+        move |header| h.lock().unwrap().extend_from_slice(header),
+        |_chunk| ControlFlow::Continue(()),
+    )
+    .await;
+
+    assert_eq!(
+        outcome,
+        StreamOutcome::BodyError,
+        "a response body that errors after the header is committed must report BodyError"
+    );
+    // The header committed as 200 — the error only surfaced afterwards.
+    let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
+    assert_eq!(header_json["status"].as_u64(), Some(200));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn streaming_with_header_chunk_break_returns_sink_stopped_outcome() {
+    // When the chunk sink returns `Break` (host output sink failed), the
+    // header-first path must report `StreamOutcome::SinkStopped` rather than a
+    // clean completion, so the JNI bridge can surface the truncation.
+    install_router();
+    let wire = encode_wire("GET", "/multi-chunk", HashMap::new(), &[]);
+    let outcome = dispatch_streaming_with_header_async(
+        wire,
+        |_header| {},
+        |_chunk| ControlFlow::Break(()),
+    )
+    .await;
+    assert_eq!(
+        outcome,
+        StreamOutcome::SinkStopped,
+        "a chunk sink that breaks must report SinkStopped"
     );
 }
 

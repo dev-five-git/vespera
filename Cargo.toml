@@ -1,7 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "examples/*"]
+members = ["crates/*", "examples/*", "benches/*"]
 exclude = ["examples/java-jni-demo"]
+# Bare `cargo build`/`test`/`clippy` (no `--workspace`) stay scoped to the
+# shipped crates + examples; the compile-time benchmark fixture/harness under
+# `benches/*` are built on demand (`cargo run -p compile-bench-runner`) so a
+# deliberately macro-heavy fixture does not tax every local build.
+default-members = ["crates/*", "examples/*"]
 
 [workspace.package]
 version = "0.2.0"

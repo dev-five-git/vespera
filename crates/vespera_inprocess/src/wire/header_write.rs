@@ -259,6 +259,12 @@ pub(super) fn write_response_header<S: JsonSink>(
     write_u64(sink, u64::from(status));
     sink.put(b",\"headers\":");
     write_headers(sink, headers);
+    // COUPLING: this hand-written `metadata` object mirrors
+    // `ResponseMetadata`'s serde shape field-for-field.  Adding a
+    // serialized field to `ResponseMetadata` (envelope.rs) without
+    // updating this line breaks the byte-identity guard
+    // `hand_serialize_matches_serde_serialize` (wire/tests.rs) — that test
+    // is the drift tripwire, so keep the two in lockstep.
     sink.put(b",\"metadata\":{\"version\":");
     write_json_string(sink, &metadata.version);
     sink.put(b"}");

@@ -676,15 +676,38 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                         }
                     },
                     push,
-                ));
+                ))
             }));
-            if panic_result.is_ok() {
-                mark_streaming_buffer_reusable(push_buf_lease);
-            } else if !header_sent.load(std::sync::atomic::Ordering::SeqCst)
-                && let Ok(fallback) = env.new_global_ref(&header_consumer)
-            {
-                let err = vespera_inprocess::error_wire(500, "panic in Rust engine");
-                let _ = call_header_consumer(env, &fallback, &err);
+            match panic_result {
+                Ok(outcome) => {
+                    mark_streaming_buffer_reusable(push_buf_lease);
+                    // The header was already committed via the consumer, so a
+                    // failure that aborts the body mid-stream can no longer
+                    // change the status.  Surface it as a thrown IOException so
+                    // the servlet container aborts the response instead of
+                    // finishing cleanly over a truncated body — the host
+                    // otherwise cannot tell a short stream from a complete one.
+                    if matches!(
+                        outcome,
+                        vespera_inprocess::StreamOutcome::BodyError
+                            | vespera_inprocess::StreamOutcome::SinkStopped
+                    ) {
+                        let _ = env.throw_new(
+                            jni::jni_str!("java/io/IOException"),
+                            jni::jni_str!(
+                                "vespera: response body stream aborted after the header was committed"
+                            ),
+                        );
+                    }
+                }
+                Err(_) => {
+                    if !header_sent.load(std::sync::atomic::Ordering::SeqCst)
+                        && let Ok(fallback) = env.new_global_ref(&header_consumer)
+                    {
+                        let err = vespera_inprocess::error_wire(500, "panic in Rust engine");
+                        let _ = call_header_consumer(env, &fallback, &err);
+                    }
+                }
             }
 
             Ok(())
@@ -787,16 +810,37 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                             });
                         },
                     ),
-                );
+                )
             }));
-            if panic_result.is_ok() {
-                mark_streaming_buffer_reusable(pull_buf_lease);
-                mark_streaming_buffer_reusable(push_buf_lease);
-            } else if !header_sent.load(std::sync::atomic::Ordering::SeqCst)
-                && let Ok(fallback) = env.new_global_ref(&header_consumer)
-            {
-                let err = vespera_inprocess::error_wire(500, "panic in Rust engine");
-                let _ = call_header_consumer(env, &fallback, &err);
+            match panic_result {
+                Ok(outcome) => {
+                    mark_streaming_buffer_reusable(pull_buf_lease);
+                    mark_streaming_buffer_reusable(push_buf_lease);
+                    // Header already committed: a post-header body abort can no
+                    // longer change the status, so throw IOException to make the
+                    // servlet container abort the response rather than finish
+                    // cleanly over a truncated body.
+                    if matches!(
+                        outcome,
+                        vespera_inprocess::StreamOutcome::BodyError
+                            | vespera_inprocess::StreamOutcome::SinkStopped
+                    ) {
+                        let _ = env.throw_new(
+                            jni::jni_str!("java/io/IOException"),
+                            jni::jni_str!(
+                                "vespera: response body stream aborted after the header was committed"
+                            ),
+                        );
+                    }
+                }
+                Err(_) => {
+                    if !header_sent.load(std::sync::atomic::Ordering::SeqCst)
+                        && let Ok(fallback) = env.new_global_ref(&header_consumer)
+                    {
+                        let err = vespera_inprocess::error_wire(500, "panic in Rust engine");
+                        let _ = call_header_consumer(env, &fallback, &err);
+                    }
+                }
             }
 
             Ok(())

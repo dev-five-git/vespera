@@ -157,7 +157,14 @@ pub fn generate_from_model_with_relations(
     // This is needed when: UserSchema.memos has MemoSchema which has required user: Box<UserSchema>
     // BUT: If the relation uses an inline type (which excludes circular fields), we don't need a parent stub
     let needs_parent_stub = relation_fields.iter().any(|rel| {
-        if rel.relation_type != "HasMany" {
+        // A parent stub is needed whenever a relation's inline construction can
+        // emit `__parent_stub__` for a REQUIRED circular back-reference. That
+        // is NOT HasMany-only: a required circular HasOne/BelongsTo (with no
+        // inline type) also routes through `generate_inline_struct_construction`
+        // (see the `has_circular` arm below) and references the same stub.
+        // Excluding them generated code referencing an undefined
+        // `__parent_stub__` local for that schema shape.
+        if !matches!(rel.relation_type.as_str(), "HasMany" | "HasOne" | "BelongsTo") {
             return false;
         }
         // If using inline type, circular fields are excluded, so no parent stub needed
@@ -197,8 +204,15 @@ pub fn generate_from_model_with_relations(
                         match rel.relation_type.as_str() {
                             "HasMany" => quote! { #new_ident: vec![] },
                             _ if rel.is_optional => quote! { #new_ident: None },
-                            // Required single relations in parent stub - this shouldn't happen
-                            // as we're creating stub to break circular ref
+                            // KNOWN LIMITATION: a REQUIRED single relation in the
+                            // parent stub has no finite value (the stub omits
+                            // relation data to break recursion), so `None` here
+                            // is a latent type error against the `Box<_>` field.
+                            // Surfacing this cleanly (compile_error! vs. a real
+                            // value vs. supporting the shape) is a codegen design
+                            // decision tracked for maintainer review; left as the
+                            // pre-existing `None` to avoid changing behavior on a
+                            // case whose intended semantics are unsettled.
                             _ => quote! { #new_ident: None },
                         }
                     } else {

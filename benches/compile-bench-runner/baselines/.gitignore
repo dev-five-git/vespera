@@ -1,0 +1,5 @@
+# Compile-time baselines are absolute timings specific to the machine and
+# toolchain that produced them — never commit them. Capture your own
+# before/after on the same machine in one session (see ../../README.md).
+*
+!.gitignore
