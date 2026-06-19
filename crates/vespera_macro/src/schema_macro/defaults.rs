@@ -75,10 +75,22 @@ pub(super) fn generate_sea_orm_default_attrs(
             let fn_name = format!("default_{struct_name}_{field_name}");
             let fn_ident = syn::Ident::new(&fn_name, proc_macro2::Span::call_site());
 
+            // Validate the literal against the field's type at macro-expansion
+            // time: a malformed `default_value` (e.g. `"abc"` on an `i32`, or
+            // `"300"` on a `u8`) becomes a COMPILE error pointing at the field
+            // instead of the runtime panic the generated `#value.parse().unwrap()`
+            // would raise the first time serde fills a missing field.  A valid
+            // literal keeps the byte-identical prior `.parse().unwrap()` body, so
+            // no currently-valid default changes behaviour.
+            let fn_body = match validate_literal_default(value, original_ty) {
+                Ok(()) => quote! { #value.parse().unwrap() },
+                Err(msg) => syn::Error::new_spanned(original_ty, msg).to_compile_error(),
+            };
+
             default_functions.push(quote! {
                 #[allow(non_snake_case)]
                 fn #fn_ident() -> #field_ty {
-                    #value.parse().unwrap()
+                    #fn_body
                 }
             });
 
@@ -180,6 +192,64 @@ pub(super) fn is_parseable_type(ty: &syn::Type) -> bool {
     type_utils::PRIMITIVE_TYPE_NAMES.contains(&segment.ident.to_string().as_str())
 }
 
+/// Validate a literal `default_value` against the field's type **at
+/// macro-expansion time**, mirroring exactly the runtime `#value.parse()`
+/// the generated default function performs (no trimming — the generated
+/// code does not trim either, so this predicts the runtime result precisely).
+///
+/// Returns `Err(msg)` when the literal cannot parse to the concrete field
+/// type, so the caller emits a `compile_error!` (pointing at the field)
+/// instead of generating a `.parse().unwrap()` that panics the first time
+/// serde fills a missing field.  Types whose `FromStr` cannot be faithfully
+/// reproduced here return `Ok(())`:
+/// - `String` — its `FromStr` is infallible.
+/// - `Decimal` — needs the `rust_decimal` runtime crate; left to runtime.
+/// - any non-primitive / unknown type — already gated out by
+///   [`is_parseable_type`] before this is reached.
+fn validate_literal_default(value: &str, ty: &syn::Type) -> Result<(), String> {
+    let syn::Type::Path(type_path) = ty else {
+        return Ok(());
+    };
+    let Some(segment) = type_path.path.segments.last() else {
+        return Ok(());
+    };
+    let type_name = segment.ident.to_string();
+
+    // Parse against the EXACT field type so a range violation (e.g. `"300"`
+    // on a `u8`) is caught, not just a syntactic one.  The message carries
+    // the offending value and type plus the underlying `FromStr` error — the
+    // same error the runtime `.unwrap()` would have panicked with.
+    macro_rules! check {
+        ($t:ty) => {
+            value
+                .parse::<$t>()
+                .map(|_| ())
+                .map_err(|e| format!("invalid default_value {value:?} for `{type_name}`: {e}"))
+        };
+    }
+
+    match type_name.as_str() {
+        "i8" => check!(i8),
+        "i16" => check!(i16),
+        "i32" => check!(i32),
+        "i64" => check!(i64),
+        "i128" => check!(i128),
+        "isize" => check!(isize),
+        "u8" => check!(u8),
+        "u16" => check!(u16),
+        "u32" => check!(u32),
+        "u64" => check!(u64),
+        "u128" => check!(u128),
+        "usize" => check!(usize),
+        "f32" => check!(f32),
+        "f64" => check!(f64),
+        "bool" => check!(bool),
+        // `String::FromStr` is infallible; `Decimal` needs the runtime crate.
+        // Everything else is gated out by `is_parseable_type` before this call.
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -197,8 +267,100 @@ mod tests {
     }
 
     // ======================================
+    // validate_literal_default tests
+    // ======================================
+
+    #[test]
+    fn validate_literal_default_accepts_valid_primitives() {
+        let i32_ty: syn::Type = syn::parse_str("i32").unwrap();
+        assert!(validate_literal_default("42", &i32_ty).is_ok());
+        let u8_ty: syn::Type = syn::parse_str("u8").unwrap();
+        assert!(validate_literal_default("255", &u8_ty).is_ok());
+        let f64_ty: syn::Type = syn::parse_str("f64").unwrap();
+        assert!(validate_literal_default("0.7", &f64_ty).is_ok());
+        let bool_ty: syn::Type = syn::parse_str("bool").unwrap();
+        assert!(validate_literal_default("true", &bool_ty).is_ok());
+        // String FromStr is infallible; Decimal is intentionally left to runtime.
+        let string_ty: syn::Type = syn::parse_str("String").unwrap();
+        assert!(validate_literal_default("anything at all", &string_ty).is_ok());
+        let decimal_ty: syn::Type = syn::parse_str("Decimal").unwrap();
+        assert!(validate_literal_default("not-validated-here", &decimal_ty).is_ok());
+    }
+
+    #[test]
+    fn validate_literal_default_rejects_unparseable_and_out_of_range() {
+        let i32_ty: syn::Type = syn::parse_str("i32").unwrap();
+        assert!(validate_literal_default("abc", &i32_ty).is_err());
+        // Range violation caught against the EXACT type, not a generic integer.
+        let u8_ty: syn::Type = syn::parse_str("u8").unwrap();
+        assert!(validate_literal_default("300", &u8_ty).is_err());
+        let bool_ty: syn::Type = syn::parse_str("bool").unwrap();
+        assert!(validate_literal_default("maybe", &bool_ty).is_err());
+        let f64_ty: syn::Type = syn::parse_str("f64").unwrap();
+        assert!(validate_literal_default("3.14.15", &f64_ty).is_err());
+    }
+
+    // ======================================
     // generate_sea_orm_default_attrs tests
     // ======================================
+
+    #[test]
+    fn test_sea_orm_default_attrs_valid_literal_keeps_parse_unwrap() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[sea_orm(default_value = "42")])];
+        let struct_name = syn::Ident::new("Test", proc_macro2::Span::call_site());
+        let ty: syn::Type = syn::parse_str("i32").unwrap();
+        let mut fns = Vec::new();
+        let (serde, _schema) = generate_sea_orm_default_attrs(
+            &attrs,
+            &struct_name,
+            "count",
+            &ty,
+            &ty,
+            false,
+            &mut fns,
+        );
+        assert!(serde.to_string().contains("serde"));
+        assert_eq!(fns.len(), 1);
+        let body = fns[0].to_string();
+        assert!(body.contains("parse"), "valid literal keeps parse: {body}");
+        assert!(body.contains("unwrap"), "valid literal keeps unwrap: {body}");
+        assert!(
+            !body.contains("compile_error"),
+            "valid literal must not emit compile_error: {body}"
+        );
+    }
+
+    #[test]
+    fn test_sea_orm_default_attrs_invalid_literal_emits_compile_error() {
+        // `"abc"` cannot parse to i32: the generated default function body must
+        // be a compile_error (pointing at the field) instead of a runtime
+        // `.parse().unwrap()` that would panic when serde fills a missing field.
+        let attrs: Vec<syn::Attribute> =
+            vec![syn::parse_quote!(#[sea_orm(default_value = "abc")])];
+        let struct_name = syn::Ident::new("Test", proc_macro2::Span::call_site());
+        let ty: syn::Type = syn::parse_str("i32").unwrap();
+        let mut fns = Vec::new();
+        let (serde, _schema) = generate_sea_orm_default_attrs(
+            &attrs,
+            &struct_name,
+            "count",
+            &ty,
+            &ty,
+            false,
+            &mut fns,
+        );
+        assert!(serde.to_string().contains("serde"));
+        assert_eq!(fns.len(), 1);
+        let body = fns[0].to_string();
+        assert!(
+            body.contains("compile_error"),
+            "invalid literal must emit compile_error: {body}"
+        );
+        assert!(
+            !body.contains("unwrap"),
+            "invalid literal must not emit a runtime parse().unwrap(): {body}"
+        );
+    }
 
     #[test]
     fn test_sea_orm_default_attrs_optional_field_skips() {

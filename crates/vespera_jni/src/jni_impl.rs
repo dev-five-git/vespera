@@ -328,6 +328,26 @@ mod direct;
 ///   The future is always completed with a valid wire response —
 ///   it is never left dangling, even on internal errors.
 ///
+/// # Threading contract (IMPORTANT)
+///
+/// The future is completed **on a Tokio runtime worker thread**, so any
+/// *non-async* `CompletableFuture` continuation (`thenApply`, `thenAccept`,
+/// `whenComplete`, …) runs **inline on that worker**.  Callers MUST therefore:
+/// - attach heavy / blocking continuations with the `*Async` variants
+///   (`thenApplyAsync`, `whenCompleteAsync`, …) on their own executor, and
+/// - never re-enter a blocking vespera dispatch (`dispatchBytes` /
+///   `dispatchDirect`) from an inline continuation — that nests a `block_on`
+///   inside the runtime and degrades to a caught-panic `500`.
+///
+/// Completing the future off the worker (via `spawn_blocking`) was measured at
+/// ~16x the per-dispatch cost (`vespera_inprocess` `benches/dispatch.rs`,
+/// group `async_completion_ab`: ~1.5 µs inline vs ~24.5 µs hand-off), so the
+/// worker-thread completion is kept and this contract is documented instead —
+/// matching how Netty / async HTTP clients complete futures from their I/O
+/// threads.  The autoconfigured Spring proxy never selects `ASYNC` (its
+/// `SmartDispatchModeResolver` uses DIRECT / SYNC / streaming), so this path is
+/// opt-in for callers doing their own `CompletableFuture` composition.
+///
 /// Cancellation: Java's `future.cancel(true)` does NOT abort the
 /// in-flight Rust task in this iteration (defer to follow-up).
 /// Java callers may still observe cancellation via `future.isCancelled()`.

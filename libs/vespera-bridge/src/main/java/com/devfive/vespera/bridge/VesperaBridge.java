@@ -301,6 +301,27 @@ public class VesperaBridge {
      * cancelled on the Java side, but the in-flight Rust dispatch
      * continues to completion (and its result is discarded).
      *
+     * <p><strong>Threading contract (IMPORTANT):</strong> the future is
+     * completed on a Rust Tokio <em>runtime worker thread</em>, so any
+     * <em>non-async</em> continuation ({@code thenApply}, {@code thenAccept},
+     * {@code whenComplete}, &hellip;) runs <strong>inline on that worker</strong>.
+     * Therefore:
+     * <ul>
+     *   <li>attach heavy or blocking continuations with the {@code *Async}
+     *       variants ({@code thenApplyAsync}, {@code whenCompleteAsync}, &hellip;)
+     *       on your own {@link java.util.concurrent.Executor}; and</li>
+     *   <li>never call a blocking vespera dispatch ({@link #dispatchBytes(byte[])}
+     *       / {@link #dispatchDirect(java.nio.ByteBuffer, int, java.nio.ByteBuffer)})
+     *       from an inline continuation &mdash; that nests a blocking call inside
+     *       the runtime worker and degrades to a {@code 500} wire response.</li>
+     * </ul>
+     * Completing the future off the worker (a {@code spawn_blocking} hand-off)
+     * was measured at ~16&times; the per-dispatch cost, so the worker-thread
+     * completion is kept and this contract is documented instead &mdash; the same
+     * approach Netty and async HTTP clients take. The autoconfigured Spring proxy
+     * never selects this async path (it uses DIRECT / SYNC / streaming), so this
+     * applies only to callers composing {@link CompletableFuture}s directly.
+     *
      * @param future        the future to complete with the wire response
      * @param wireRequest   length-prefixed binary wire request
      */

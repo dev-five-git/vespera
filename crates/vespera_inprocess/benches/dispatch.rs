@@ -789,6 +789,103 @@ fn bench_async_spawn_pattern(c: &mut Criterion) {
     drop(runtime);
 }
 
+/// Same-run A/B for the `RequestSourceCloser` hardening: the request-source
+/// close hook is now invoked under `catch_unwind` so a panicking hook running
+/// from `Drop` during unwind cannot double-panic -> `abort()` the host JVM.
+/// This isolates the added `catch_unwind` landing-pad cost vs a direct call,
+/// with BOTH arms in the SAME run so the measurement is immune to the
+/// cross-run thermal/load drift that swamps the dispatch-level `streaming_path`
+/// comparison (the close hook fires once per bidirectional dispatch, after the
+/// response body is fully drained, so its cost is amortised over an entire
+/// dispatch — this micro-A/B is the only instrument fine enough to resolve it).
+fn bench_close_hook_ab(c: &mut Criterion) {
+    use std::panic::AssertUnwindSafe;
+    let mut group = c.benchmark_group("close_hook_ab");
+
+    // `pre`: the previous direct `close()` call.  `post`: the hardened
+    // `catch_unwind(AssertUnwindSafe(close))`.  The closure does a tiny
+    // black-boxed op so it is neither optimised away nor large enough to
+    // dwarf the landing-pad cost being measured.
+    group.bench_function("direct_call_pre", |b| {
+        b.iter(|| {
+            let f = || std::hint::black_box(1u64).wrapping_mul(3);
+            std::hint::black_box(f())
+        });
+    });
+
+    group.bench_function("catch_unwind_post", |b| {
+        b.iter(|| {
+            let f = || std::hint::black_box(1u64).wrapping_mul(3);
+            std::hint::black_box(std::panic::catch_unwind(AssertUnwindSafe(f)).unwrap_or(0))
+        });
+    });
+
+    group.finish();
+}
+
+/// Same-run A/B for the Oracle-flagged `dispatchAsync` completion-isolation
+/// question: does completing the Java `CompletableFuture` from a
+/// `spawn_blocking` thread (so a blocking / re-entrant Java continuation runs
+/// OFF the core Tokio workers) cost enough to matter on the async path?
+///
+/// - `complete_inline_pre`: the future is completed inline on the dispatch
+///   worker (the pre-change behaviour) — no isolation hop.
+/// - `complete_spawn_blocking_post`: the completion is moved to a
+///   `spawn_blocking` thread — isolates Java continuations from the core
+///   workers at the cost of one blocking-pool hand-off.
+///
+/// Both arms run in the SAME run (drift-immune).  The delta is the per-async-
+/// dispatch cost isolation would add, and decides whether to isolate
+/// unconditionally or document the `thenApplyAsync` contract instead (speed is
+/// the stated priority, so a large hop argues for the zero-cost doc contract).
+///
+/// VERDICT (measured, AMD Ryzen 9 9950X): `complete_inline_pre` ~1.5 µs vs
+/// `complete_spawn_blocking_post` ~24.5 µs — a ~16x per-dispatch regression.
+/// Forced isolation is therefore REJECTED (it violates the speed-first
+/// priority); the worker-thread completion is kept and the threading contract
+/// is documented on `dispatchAsync` instead (callers use `*Async` continuations
+/// and avoid blocking / re-entrant inline continuations).  This A/B stays as
+/// the permanent regression-decision guard so the 16x cost is not re-discovered.
+fn bench_async_completion_isolation_ab(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("multi-thread runtime");
+    let mut group = c.benchmark_group("async_completion_ab");
+
+    group.bench_function("complete_inline_pre", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                tokio::spawn(async move {
+                    let resp = std::hint::black_box(vec![0u8; 64]);
+                    std::hint::black_box(resp.len())
+                })
+                .await
+                .unwrap()
+            })
+        });
+    });
+
+    group.bench_function("complete_spawn_blocking_post", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                tokio::spawn(async move {
+                    let resp = std::hint::black_box(vec![0u8; 64]);
+                    tokio::task::spawn_blocking(move || std::hint::black_box(resp.len()))
+                        .await
+                        .unwrap()
+                })
+                .await
+                .unwrap()
+            })
+        });
+    });
+
+    group.finish();
+    drop(runtime);
+}
+
 /// Hand-rolled wire-header serde vs `serde_json` (within-run A/B).
 ///
 /// Gates the Oracle-ranked #2 change: replacing `serde_json` on the
@@ -1059,7 +1156,9 @@ criterion_group!(
     bench_registry_ab,
     bench_headers_path,
     bench_streaming_path,
-    bench_async_spawn_pattern
+    bench_async_spawn_pattern,
+    bench_close_hook_ab,
+    bench_async_completion_isolation_ab
 );
 
 // The within-run A/B groups compare the production hand-rolled paths against
