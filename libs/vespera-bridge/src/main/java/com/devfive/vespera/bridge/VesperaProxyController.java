@@ -22,7 +22,6 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -105,6 +104,9 @@ public class VesperaProxyController {
 
         final String appName = appResolver.resolveAppName(request);
         final DispatchMode mode = modeResolver.resolveMode(request);
+        final Boolean currentThreadIsVirtual = modeResolver instanceof SmartDispatchModeResolver
+                ? SmartDispatchModeResolver.cachedCurrentThreadIsVirtual(request)
+                : null;
         final String method = request.getMethod();
         // Path RELATIVE to the servlet context: a Spring app deployed under
         // a non-root context (e.g. server.servlet.context-path=/api) must
@@ -142,7 +144,7 @@ public class VesperaProxyController {
                 return null;
             case DIRECT:
                 dispatchDirectMode(response, appName, method, path, query, headers,
-                        readBody(request, maxBufferedRequestBytes));
+                        readBody(request, maxBufferedRequestBytes), currentThreadIsVirtual);
                 return null;
             case BIDIRECTIONAL_STREAMING:
             default:
@@ -328,7 +330,6 @@ public class VesperaProxyController {
             }
             response.getOutputStream().write(wire, bodyOff, bodyLen);
         }
-        response.getOutputStream().flush();
     }
 
     private CompletableFuture<ResponseEntity<?>> dispatchAsyncFlow(
@@ -391,8 +392,10 @@ public class VesperaProxyController {
      * the servlet output stream.
      *
      * <p>Overflow retry (which re-runs the Rust handler) is permitted
-     * only for <em>safe</em> methods (GET/HEAD/OPTIONS), whose re-run
-     * returns the same response; for every other method — including
+     * only for <em>safe</em> methods (GET/HEAD/OPTIONS), which are not
+     * intended to mutate server state. The replayed response may still
+     * differ (for example timestamps or generated request IDs); for every
+     * other method — including
      * idempotent-but-unsafe PUT/DELETE, whose second run can return a
      * different response (e.g. DELETE → 204 then 404) — a
      * {@link VesperaBridge.BufferTooSmallException} surfaces as a
@@ -402,7 +405,8 @@ public class VesperaProxyController {
     private void dispatchDirectMode(
             HttpServletResponse response,
             String appName, String method, String path, String query,
-            VesperaBridge.HeaderSource headers, byte[] body) throws IOException {
+            VesperaBridge.HeaderSource headers, byte[] body,
+            Boolean currentThreadIsVirtual) throws IOException {
         if (!isSafe(method)) {
             // DIRECT runs the Rust handler on the FIRST dispatch before any
             // overflow is known; for an UNSAFE method an overflow would 500
@@ -417,9 +421,13 @@ public class VesperaProxyController {
         try {
             // Encodes straight into the pooled direct buffer — no
             // intermediate wire-sized byte[].
-            wireResp = VesperaBridge.dispatchDirectPooled(
-                    appName, method, path, query, headers, body,
-                    directRetryOnOverflow && isSafe(method));
+            boolean retry = directRetryOnOverflow && isSafe(method);
+            wireResp = currentThreadIsVirtual == null
+                    ? VesperaBridge.dispatchDirectPooled(
+                            appName, method, path, query, headers, body, retry)
+                    : VesperaBridge.dispatchDirectPooled(
+                            appName, method, path, query, headers, body,
+                            retry, currentThreadIsVirtual.booleanValue());
         } catch (VesperaBridge.BufferTooSmallException overflow) {
             // The first dispatch already ran; its oversized result was discarded.
             if (isSafe(method) && directRetryOnOverflow) {
@@ -428,8 +436,9 @@ public class VesperaProxyController {
                 // streaming so a large download streams chunk-by-chunk instead
                 // of being heap-buffered — the prior dispatchBytes fallback
                 // could spike the JVM heap (OOM) on multi-GiB responses. A safe
-                // re-run returns the same response, and the DIRECT path has not
-                // committed the response yet, so streaming takes over cleanly.
+                // re-run is not intended to mutate state, but its response may
+                // differ (timestamps, random IDs). The DIRECT path has not
+                // committed yet, so streaming takes over cleanly.
                 dispatchStreaming(response, appName, method, path, query, headers, body);
                 return;
             }
@@ -464,7 +473,6 @@ public class VesperaProxyController {
         if (bodyLen > 0) {
             writeDirectBody(wireResp, response.getOutputStream());
         }
-        response.getOutputStream().flush();
     }
 
     /**
@@ -539,8 +547,9 @@ public class VesperaProxyController {
     }
 
     /**
-     * "Safe" per RFC 9110 (GET/HEAD/OPTIONS) — read-only, so re-running on a
-     * DIRECT overflow retry yields the SAME response. Idempotent-but-unsafe
+     * "Safe" per RFC 9110 (GET/HEAD/OPTIONS) — not intended to mutate server
+     * state, so the DIRECT overflow retry is allowed even though the replayed
+     * response may differ (timestamps, random IDs). Idempotent-but-unsafe
      * methods (PUT/DELETE) are intentionally excluded: their second run can
      * return a different response (e.g. DELETE → 204 then 404), so on overflow
      * they fail with {@link VesperaBridge.BufferTooSmallException} instead of
@@ -573,7 +582,7 @@ public class VesperaProxyController {
         }
         while (names.hasMoreElements()) {
             String name = names.nextElement();
-            sink.put(toLowerCaseAscii(name), joinHeaderValues(name, request));
+            sink.put(canonicalLowerHeaderName(name), joinHeaderValues(name, request));
         }
     }
 
@@ -612,21 +621,52 @@ public class VesperaProxyController {
     }
 
     /**
-     * Lowercase an HTTP header name without allocating when it is
-     * already lowercase — the common case, since HTTP/2 mandates
-     * lowercase field names and most HTTP/1.1 clients send canonical
-     * names.  Header names are ASCII per RFC 9110 §5.1, so an ASCII
-     * scan is sufficient; only on encountering an uppercase letter do
-     * we fall back to a full {@link String#toLowerCase} copy.
+     * Lowercase an HTTP header name while avoiding per-request lowercase
+     * allocations for common HTTP/1.1 canonical names. Header names are ASCII
+     * per RFC 9110 §5.1, so uncommon names fall back to a small ASCII copy only
+     * when they contain uppercase bytes.
      */
-    private static String toLowerCaseAscii(String name) {
+    private static String canonicalLowerHeaderName(String name) {
+        switch (name) {
+            case "Host": return "host";
+            case "Content-Type": return "content-type";
+            case "Content-Length": return "content-length";
+            case "Accept": return "accept";
+            case "Accept-Encoding": return "accept-encoding";
+            case "Accept-Language": return "accept-language";
+            case "Authorization": return "authorization";
+            case "Connection": return "connection";
+            case "Cookie": return "cookie";
+            case "User-Agent": return "user-agent";
+            case "Referer": return "referer";
+            case "Origin": return "origin";
+            case "Cache-Control": return "cache-control";
+            case "If-None-Match": return "if-none-match";
+            case "If-Modified-Since": return "if-modified-since";
+            case "X-Forwarded-For": return "x-forwarded-for";
+            case "X-Forwarded-Host": return "x-forwarded-host";
+            case "X-Forwarded-Proto": return "x-forwarded-proto";
+            case "X-Request-Id": return "x-request-id";
+            default: break;
+        }
         for (int i = 0; i < name.length(); i++) {
             char c = name.charAt(i);
             if (c >= 'A' && c <= 'Z') {
-                return name.toLowerCase(Locale.ROOT);
+                return toLowerCaseAscii(name);
             }
         }
         return name;
+    }
+
+    private static String toLowerCaseAscii(String name) {
+        char[] chars = name.toCharArray();
+        for (int i = 0; i < chars.length; i++) {
+            char c = chars[i];
+            if (c >= 'A' && c <= 'Z') {
+                chars[i] = (char) (c + ('a' - 'A'));
+            }
+        }
+        return new String(chars);
     }
 
     /**

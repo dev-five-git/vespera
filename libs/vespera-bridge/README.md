@@ -341,9 +341,11 @@ vespera:
 | Small (≤ 256 KiB Content-Length) + unsafe (POST/PUT/PATCH/DELETE) | `SYNC` | ~3,200 |
 | Large or unknown-length body | `BIDIRECTIONAL_STREAMING` | ~24,100 |
 
-The idempotency gate on DIRECT matters because a response that
+The safe-method gate on DIRECT matters because a response that
 overflows the pooled buffer (`vespera.direct.maxBufferBytes`, default
 4 MiB) is retried by default — which re-runs the Rust handler once.
+Safe methods are not intended to mutate server state, but the replayed
+response may still differ (for example timestamps or generated IDs).
 Set `vespera.bridge.direct-retry-on-overflow=false` to surface the
 overflow instead.  SYNC never re-runs the handler (safe for POST), but
 buffers the full response on the JVM heap, which the request-size gate

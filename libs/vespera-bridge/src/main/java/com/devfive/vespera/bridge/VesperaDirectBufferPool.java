@@ -1,6 +1,5 @@
 package com.devfive.vespera.bridge;
 
-import java.lang.ref.SoftReference;
 import java.nio.ByteBuffer;
 import java.util.Map;
 import java.util.Objects;
@@ -74,17 +73,13 @@ final class VesperaDirectBufferPool {
     /**
      * Index 0 = request buffer, index 1 = response buffer.
      *
-     * <p>Held through a {@link SoftReference} so the JVM can reclaim the
-     * off-heap direct buffers under memory pressure — the
-     * {@code DirectByteBuffer} Cleaner frees the native memory once the
-     * soft reference is cleared — instead of pinning up to {@code 2 ×}
-     * {@link #DIRECT_MAX_CAPACITY} per thread for the whole thread
-     * lifetime.  Under normal load the soft reference survives, so the
-     * pooling benefit is preserved; see {@link #directPool()} for the
-     * resolve + retention-cap logic.
+     * <p>Held strongly per platform thread so baseline direct buffers stay
+     * resident on the hot DIRECT path. Oversized buffers are shrunk
+     * deterministically by {@link #recordDirectPoolUse(ByteBuffer[], int, int)}
+     * after an idle streak instead of relying on heap-pressure-driven soft
+     * reference clearing to manage off-heap memory.
      */
-    private static final ThreadLocal<SoftReference<ByteBuffer[]>> DIRECT_POOL =
-            new ThreadLocal<>();
+    private static final ThreadLocal<ByteBuffer[]> DIRECT_POOL = new ThreadLocal<>();
 
     private static final int DIRECT_SHRINK_IDLE_DISPATCHES = 8;
     private static final ThreadLocal<Integer> DIRECT_UNDER_RETAIN_STREAK =
@@ -133,17 +128,15 @@ final class VesperaDirectBufferPool {
 
     /**
      * Resolve the calling thread's pooled direct buffers, (re)allocating
-     * a baseline pair when the {@link SoftReference} has been cleared
-     * under memory pressure.
+     * a baseline pair when none exists for this thread.
      */
     private static ByteBuffer[] directPool() {
-        SoftReference<ByteBuffer[]> ref = DIRECT_POOL.get();
-        ByteBuffer[] pool = ref == null ? null : ref.get();
+        ByteBuffer[] pool = DIRECT_POOL.get();
         if (pool == null) {
             pool = new ByteBuffer[] {
                     ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY),
                     ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY)};
-            DIRECT_POOL.set(new SoftReference<>(pool));
+            DIRECT_POOL.set(pool);
             DIRECT_UNDER_RETAIN_STREAK.set(0);
             return pool;
         }
@@ -160,13 +153,24 @@ final class VesperaDirectBufferPool {
             DIRECT_UNDER_RETAIN_STREAK.set(streak);
             return;
         }
-        DIRECT_POOL.remove();
+        boolean requestGrown = pool[0].capacity() > DIRECT_INITIAL_CAPACITY;
+        boolean responseGrown = pool[1].capacity() > DIRECT_INITIAL_CAPACITY;
+        if (requestGrown) {
+            pool[0] = ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY);
+        }
+        if (responseGrown) {
+            pool[1] = ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY);
+        }
         DIRECT_UNDER_RETAIN_STREAK.set(0);
     }
 
+    static void clearCurrentThreadBuffers() {
+        DIRECT_POOL.remove();
+        DIRECT_UNDER_RETAIN_STREAK.remove();
+    }
+
     static boolean directPoolPresentForTest() {
-        SoftReference<ByteBuffer[]> ref = DIRECT_POOL.get();
-        return ref != null && ref.get() != null;
+        return DIRECT_POOL.get() != null;
     }
 
     static ByteBuffer[] directPoolForTest() {
@@ -195,8 +199,13 @@ final class VesperaDirectBufferPool {
      * boolean)} for the full contract.
      */
     static ByteBuffer dispatchDirectPooled(byte[] wireRequest, boolean retryOnOverflow) {
+        return dispatchDirectPooled(wireRequest, retryOnOverflow, currentThreadIsVirtual());
+    }
+
+    static ByteBuffer dispatchDirectPooled(
+            byte[] wireRequest, boolean retryOnOverflow, boolean currentThreadIsVirtual) {
         Objects.requireNonNull(wireRequest, "wireRequest");
-        if (currentThreadIsVirtual() || wireRequest.length > DIRECT_MAX_CAPACITY) {
+        if (currentThreadIsVirtual || wireRequest.length > DIRECT_MAX_CAPACITY) {
             // Virtual thread: the per-thread direct buffer pool would
             // accumulate off-heap memory per vthread (ThreadLocal binds to
             // the vthread, not the carrier) — use the GC-managed heap path.
@@ -260,12 +269,26 @@ final class VesperaDirectBufferPool {
             HeaderSource headers,
             byte[] body,
             boolean retryOnOverflow) {
+        return dispatchDirectPooled(
+                appName, method, path, query, headers, body,
+                retryOnOverflow, currentThreadIsVirtual());
+    }
+
+    static ByteBuffer dispatchDirectPooled(
+            String appName,
+            String method,
+            String path,
+            String query,
+            HeaderSource headers,
+            byte[] body,
+            boolean retryOnOverflow,
+            boolean currentThreadIsVirtual) {
         byte[] bodyBytes = body != null ? body : VesperaWireCodec.EMPTY_BODY;
         ExposedByteArrayOutputStream hdr =
                 VesperaWireCodec.fillHeaderJson(appName, method, path, query, headers);
         int headerLen = hdr.size();
         int total = VesperaWireCodec.wireTotalLength(headerLen, bodyBytes.length);
-        if (currentThreadIsVirtual() || total > DIRECT_MAX_CAPACITY) {
+        if (currentThreadIsVirtual || total > DIRECT_MAX_CAPACITY) {
             return ByteBuffer.wrap(
                     VesperaBridge.dispatchBytes(
                             VesperaWireCodec.assembleWire(hdr.backingArray(), headerLen, bodyBytes)))

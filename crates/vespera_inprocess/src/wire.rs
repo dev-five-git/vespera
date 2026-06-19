@@ -555,9 +555,16 @@ fn body_is_json(headers: &http::HeaderMap) -> bool {
         .get(http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|s| {
-            let mime = s.split(';').next().unwrap_or("").trim();
-            mime.eq_ignore_ascii_case("application/json")
-                || (mime.len() >= 5 && mime[mime.len() - 5..].eq_ignore_ascii_case("+json"))
+            // Any `application/json`, `*/json`, or `*+json` media type. The
+            // trailing-5-byte suffix is compared on raw bytes (not a `str`
+            // slice), so an exotic non-ASCII value can never panic on a
+            // non-char-boundary index — and `/json` (e.g. `text/json`) now
+            // hoists too, matching the documented contract.
+            let mime = s.split(';').next().unwrap_or("").trim().as_bytes();
+            mime.len() >= 5 && {
+                let suffix = &mime[mime.len() - 5..];
+                suffix.eq_ignore_ascii_case(b"/json") || suffix.eq_ignore_ascii_case(b"+json")
+            }
         })
 }
 

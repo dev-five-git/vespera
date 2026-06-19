@@ -16,9 +16,9 @@ final class HttpMethods {
 
     /**
      * Whether {@code method} is idempotent per RFC 9110
-     * (GET / HEAD / PUT / DELETE / OPTIONS).  Idempotent requests are
-     * safe to re-run, which the DIRECT dispatch path requires for its
-     * response-overflow retry.  {@code null} is treated as non-idempotent.
+     * (GET / HEAD / PUT / DELETE / OPTIONS). Idempotent requests are not
+     * necessarily replay-identical, so this is NOT the DIRECT overflow-retry
+     * gate. {@code null} is treated as non-idempotent.
      */
     static boolean isIdempotent(String method) {
         if (method == null) {
@@ -33,8 +33,8 @@ final class HttpMethods {
 
     /**
      * Whether {@code method} is "safe" per RFC 9110 §9.2.1
-     * (GET / HEAD / OPTIONS) — read-only, so re-running it yields the
-     * <em>same response</em>, not merely the same server-state effect.
+     * (GET / HEAD / OPTIONS) — not intended to mutate server state. Re-running
+     * it can still yield a different response (timestamps, random IDs).
      *
      * <p>This is the correct gate for the DIRECT overflow retry, which
      * re-runs the handler: an idempotent-but-unsafe method (PUT / DELETE)

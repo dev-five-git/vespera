@@ -470,6 +470,23 @@ async fn finish_direct_write(
     };
     let mut required = header_total;
 
+    // Fast overflow: when the body length is known exactly (a `Full` body /
+    // explicit `Content-Length`) and the response cannot fit, report the
+    // exact required size immediately instead of draining every frame just
+    // to count bytes — this is the undersized-buffer retry path the pooled
+    // JNI `dispatchDirect` takes. Unknown-length (streaming) bodies have no
+    // exact hint and fall through to the drain loop unchanged.
+    if let Some(exact) = body.size_hint().exact() {
+        let required_u64 = u64::try_from(header_total)
+            .unwrap_or(u64::MAX)
+            .saturating_add(exact);
+        if required_u64 > u64::try_from(out.len()).unwrap_or(u64::MAX) {
+            return DirectWriteResult::Overflow(
+                usize::try_from(required_u64).unwrap_or(usize::MAX),
+            );
+        }
+    }
+
     loop {
         match body.frame().await {
             Some(Ok(frame)) => {

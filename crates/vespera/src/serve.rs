@@ -47,3 +47,21 @@ impl Serve for axum::Router {
         axum::serve(listener, self).await
     }
 }
+
+/// Lets a **stateless** merged app from `vespera!(merge = [...])` —
+/// which returns a [`crate::VesperaRouter<()>`] rather than a plain
+/// `axum::Router` — start with the same one-liner, without the user
+/// having to remember the `.with_state(())` finalizer first:
+///
+/// ```ignore
+/// vespera!(merge = [other::App]).serve("0.0.0.0:3000").await
+/// ```
+///
+/// Finalizing with `()` runs the deferred child-router merge and layer
+/// replay (see [`crate::VesperaRouter::with_state`]) before binding, so
+/// merged routes and layers are present when the listener starts.
+impl Serve for crate::VesperaRouter<()> {
+    async fn serve(self, addr: impl ToSocketAddrs) -> io::Result<()> {
+        self.with_state(()).serve(addr).await
+    }
+}

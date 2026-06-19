@@ -706,6 +706,21 @@ public class VesperaBridge {
                 appName, method, path, query, headers, body, retryOnOverflow);
     }
 
+    static ByteBuffer dispatchDirectPooled(
+            String appName,
+            String method,
+            String path,
+            String query,
+            HeaderSource headers,
+            byte[] body,
+            boolean retryOnOverflow,
+            boolean currentThreadIsVirtual) {
+        requireRequestInputs(method, path);
+        return VesperaDirectBufferPool.dispatchDirectPooled(
+                appName, method, path, query, headers, body,
+                retryOnOverflow, currentThreadIsVirtual);
+    }
+
     /**
      * Encode a request <strong>directly into</strong> {@code target}
      * starting at position 0 — no intermediate wire-sized {@code byte[]}.

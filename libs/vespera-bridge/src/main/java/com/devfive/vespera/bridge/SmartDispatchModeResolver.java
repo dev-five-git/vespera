@@ -44,6 +44,9 @@ import jakarta.servlet.http.HttpServletRequest;
  */
 public class SmartDispatchModeResolver implements DispatchModeResolver {
 
+    private static final String CURRENT_THREAD_IS_VIRTUAL_ATTRIBUTE =
+            SmartDispatchModeResolver.class.getName() + ".currentThreadIsVirtual";
+
     /**
      * Default DIRECT request-size gate: 1 MiB (raised from 256 KiB,
      * measured 2026-06).  Safe requests up to this size dispatch
@@ -101,6 +104,19 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
 
     @Override
     public DispatchMode resolveMode(HttpServletRequest request) {
+        return resolveMode(request, null);
+    }
+
+    static Boolean cachedCurrentThreadIsVirtual(HttpServletRequest request) {
+        Object value = request.getAttribute(CURRENT_THREAD_IS_VIRTUAL_ATTRIBUTE);
+        return value instanceof Boolean ? (Boolean) value : null;
+    }
+
+    DispatchMode resolveMode(HttpServletRequest request, boolean currentThreadIsVirtual) {
+        return resolveMode(request, Boolean.valueOf(currentThreadIsVirtual));
+    }
+
+    private DispatchMode resolveMode(HttpServletRequest request, Boolean currentThreadIsVirtual) {
         long contentLength = request.getContentLengthLong();
         // Bodyless requests fit the direct buffer by definition even when
         // Content-Length is absent (the common shape of GET) — without this,
@@ -124,7 +140,11 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
             // SYNC (no off-heap pooling, no re-run) when small, but stream
             // above the SYNC gate — SYNC's heap buffering loses to streaming
             // for larger bodies, idempotent or not.
-            if (VesperaBridge.currentThreadIsVirtual()) {
+            boolean virtualThread = currentThreadIsVirtual != null
+                    ? currentThreadIsVirtual.booleanValue()
+                    : VesperaBridge.currentThreadIsVirtual();
+            request.setAttribute(CURRENT_THREAD_IS_VIRTUAL_ATTRIBUTE, Boolean.valueOf(virtualThread));
+            if (virtualThread) {
                 return syncSized(contentLength, bodyless)
                         ? DispatchMode.SYNC
                         : DispatchMode.BIDIRECTIONAL_STREAMING;
