@@ -50,12 +50,24 @@ fn ranges_overlap(a0: usize, a_len: usize, b0: usize, b_len: usize) -> bool {
     a0 < b1 && b0 < a1
 }
 
-fn write_response_to_out(out_addr: *mut u8, out_cap: usize, response: &[u8]) -> jint {
+/// Copy `response` into the caller's direct out buffer, returning the
+/// `dispatchDirect0` code (`>= 0` bytes written, `-(required)` on overflow,
+/// [`DIRECT_UNREPRESENTABLE`] when the size exceeds `i32::MAX`).
+///
+/// # Safety
+///
+/// `out_addr` must point to a writable region of at least `out_cap` bytes
+/// that stays valid for the whole call (a JNI direct buffer pinned by a
+/// live `JByteBuffer` local ref) and must NOT alias `response` (callers
+/// pass a Rust-owned wire `Vec`).  Encoded as `unsafe fn` so every call
+/// site acknowledges the raw-pointer contract instead of it being an
+/// unchecked promise on a safe function.
+unsafe fn write_response_to_out(out_addr: *mut u8, out_cap: usize, response: &[u8]) -> jint {
     if response.len() <= out_cap {
-        // SAFETY: `response.len() <= out_cap` and the caller
-        // guarantees `out_addr..out_addr+out_cap` is writable.
-        // Source and destination cannot overlap: `response` is a
-        // Rust-owned Vec, the destination is a Java direct buffer.
+        // SAFETY: `response.len() <= out_cap` and the caller's `# Safety`
+        // contract guarantees `out_addr..out_addr+out_cap` is writable and
+        // non-aliasing with `response` (a Rust-owned Vec → a Java direct
+        // buffer).
         unsafe {
             std::ptr::copy_nonoverlapping(response.as_ptr(), out_addr, response.len());
         }
@@ -151,7 +163,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                         400,
                         "invalid in_len (negative or exceeds buffer capacity)",
                     );
-                    return Ok(write_response_to_out(out_addr, out_cap, &err));
+                    return Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) });
                 }
             };
 
@@ -169,7 +181,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                     400,
                     "in_buf and out_buf must not overlap (aliasing would be undefined behavior)",
                 );
-                return Ok(write_response_to_out(out_addr, out_cap, &err));
+                return Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) });
             }
 
             let dispatched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -197,7 +209,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                 }
                 Err(_) => {
                     let err = vespera_inprocess::error_wire(500, "panic in Rust engine");
-                    write_response_to_out(out_addr, out_cap, &err)
+                    unsafe { write_response_to_out(out_addr, out_cap, &err) }
                 }
             };
             Ok(code)

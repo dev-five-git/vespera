@@ -77,6 +77,15 @@ pub(super) fn compute_schema_hash(schema_storage: &HashMap<String, StructMetadat
         meta.name.hash(&mut hasher);
         meta.definition.hash(&mut hasher);
         meta.include_in_openapi.hash(&mut hasher);
+        // Field defaults (`#[serde(default = "fn")]`) feed the generated
+        // OpenAPI `default` values but are NOT part of `definition`, so a
+        // changed default would otherwise hit a STALE route cache and reuse
+        // outdated spec defaults.  `BTreeMap` iterates in sorted key order
+        // (deterministic); hash each field name + its serialized JSON value.
+        for (field, value) in &meta.field_defaults {
+            field.hash(&mut hasher);
+            value.to_string().hash(&mut hasher);
+        }
     }
     hasher.finish()
 }

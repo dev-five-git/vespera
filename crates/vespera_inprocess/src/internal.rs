@@ -292,7 +292,13 @@ where
                     && !data.is_empty()
                     && on_chunk(data.as_ref()).is_break()
                 {
-                    break;
+                    // The chunk sink asked to stop EARLY (e.g. the host's
+                    // OutputStream failed mid-stream).  The bytes already
+                    // delivered are truncated, so surface a 500 — exactly
+                    // like the body-error arm below — instead of falling
+                    // through to the original success header, which would
+                    // report a short, truncated response as a clean success.
+                    return Err((500, "response body sink stopped before completion".to_owned()));
                 }
             }
             Some(Err(_)) => {

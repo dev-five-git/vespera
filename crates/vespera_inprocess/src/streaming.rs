@@ -379,12 +379,26 @@ where
     C: FnOnce(),
 {
     let mut header_bytes: Vec<u8> = Vec::with_capacity(4 + WIRE_HEADER_RESERVE);
-    {
+    let outcome = {
         let on_header = |h: &[u8]| header_bytes.extend_from_slice(h);
         bidirectional_streaming_inner(input_header, pull_chunk, on_chunk, on_header, request_close)
-            .await;
+            .await
+    };
+    match outcome {
+        // `Complete` covers a clean drain AND the pre-dispatch error paths
+        // (which deliver a full `error_wire(...)` via `on_header`), so the
+        // captured bytes are authoritative.
+        StreamOutcome::Complete => header_bytes,
+        // The response body errored, or the chunk sink stopped, AFTER the
+        // success header was captured into `header_bytes` — the delivered
+        // body is truncated.  Replace the captured success header with a 500
+        // so a truncated bidirectional response is never returned as a clean
+        // success (mirrors `dispatch_streaming_async`).
+        StreamOutcome::BodyError => error_wire(500, "response body stream error"),
+        StreamOutcome::SinkStopped => {
+            error_wire(500, "response body sink stopped before completion")
+        }
     }
-    header_bytes
 }
 
 /// **Bidirectional streaming with explicit header callback** — the
@@ -725,7 +739,20 @@ fn spawn_request_producer(
         // handler aborted mid-stream, so we stop pulling.
         let mut consecutive_empty: u32 = 0;
         loop {
-            match pull() {
+            // A panic inside the user / JNI-supplied `pull()` must NOT be
+            // turned into a clean end-of-stream — that would accept a
+            // TRUNCATED upload as a complete request body (silent data
+            // loss).  Catch it and forward a `StreamAbort`, exactly like the
+            // explicit `RequestChunk::Error` path, so axum/the handler
+            // rejects the body instead of seeing a short, "successful" read.
+            let next = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pull())) {
+                Ok(next) => next,
+                Err(_) => {
+                    let _ = tx.blocking_send(Err(StreamAbort));
+                    break;
+                }
+            };
+            match next {
                 RequestChunk::Data(chunk) => {
                     if chunk.is_empty() {
                         // A conformant blocking `InputStream.read(byte[])`

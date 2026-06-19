@@ -399,6 +399,16 @@ public class VesperaProxyController {
             HttpServletResponse response,
             String appName, String method, String path, String query,
             VesperaBridge.HeaderSource headers, byte[] body) throws IOException {
+        if (!isSafe(method)) {
+            // DIRECT runs the Rust handler on the FIRST dispatch before any
+            // overflow is known; for an UNSAFE method an overflow would 500
+            // *after* the side effect already happened (partial unsafe
+            // execution).  A custom DispatchModeResolver can route an unsafe
+            // method here, so gate it at the controller boundary: serve unsafe
+            // requests via SYNC, which never re-runs the handler.
+            dispatchSync(response, appName, method, path, query, headers, body);
+            return;
+        }
         ByteBuffer wireResp;
         try {
             // Encodes straight into the pooled direct buffer — no

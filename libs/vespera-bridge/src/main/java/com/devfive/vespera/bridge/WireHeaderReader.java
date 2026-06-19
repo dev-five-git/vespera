@@ -783,7 +783,11 @@ final class WireHeaderReader {
         if (pos < end) {
             int c = cur();
             if (c == '.' || c == 'e' || c == 'E') {
-                skipNumberTail();
+                // `status` is a protocol INTEGER field; a fraction/exponent
+                // (e.g. `200.9`, `2e2`) is malformed native output, NOT a
+                // value to silently truncate to its integer part.  Unknown
+                // numeric fields stay permissive via `skipNumberRaw`.
+                throw err("status must be an integer (no fraction or exponent)");
             }
         }
         if (!any) {

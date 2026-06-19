@@ -176,7 +176,12 @@ public class VesperaBridge {
         }
         try {
             loadBundled(libraryName);
-        } catch (UnsatisfiedLinkError e) {
+        } catch (BundledNativeAbsent absent) {
+            // Fall back to the system library path ONLY when the bundled
+            // resource is genuinely ABSENT.  A PRESENT-but-invalid bundled
+            // library (integrity / extraction / load failure) propagates from
+            // loadBundled and fails fast here instead of silently loading a
+            // different library — which would defeat the integrity check.
             System.loadLibrary(libraryName);
         }
         // Mark the native library as loaded immediately after System.load /
@@ -800,6 +805,20 @@ public class VesperaBridge {
         return VesperaWireCodec.decodeResponse(wire);
     }
 
+    /**
+     * Signals the bundled native library is genuinely ABSENT from the
+     * classpath — the one legitimate reason to fall back to the system
+     * library path.  A PRESENT-but-invalid bundled library (integrity /
+     * extraction / {@code System.load} failure) is NOT this exception, so it
+     * fails fast instead of silently loading a different library and defeating
+     * the extraction integrity check.
+     */
+    private static final class BundledNativeAbsent extends RuntimeException {
+        BundledNativeAbsent(String message) {
+            super(message);
+        }
+    }
+
     private static void loadBundled(String libraryName) {
         String os = detectOs();
         String arch = detectArch();
@@ -820,7 +839,9 @@ public class VesperaBridge {
         try (InputStream in =
                 VesperaBridge.class.getClassLoader().getResourceAsStream(resourcePath)) {
             if (in == null) {
-                throw new UnsatisfiedLinkError("Not found in JAR: " + resourcePath);
+                // ABSENT — the only case that legitimately falls back to the
+                // system library path.
+                throw new BundledNativeAbsent("Not found in JAR: " + resourcePath);
             }
             String suffix = filename.substring(filename.lastIndexOf('.'));
             Path temp = Files.createTempFile("vespera-", suffix);

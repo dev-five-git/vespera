@@ -286,20 +286,16 @@ impl OpenApi {
             self.external_docs = other.external_docs;
         }
 
-        // Merge tags, de-duplicating by name in a single pass.  `seen` starts
-        // with the existing tag names and grows as incoming tags are appended,
-        // so an incoming tag is kept only when its name collides with neither
-        // an existing tag nor an already-appended incoming one (first-wins,
-        // incoming insertion order preserved).  A name is cloned only when the
-        // tag is actually kept — a duplicate is detected by borrow and skipped
-        // without cloning.
+        // Merge tags, de-duplicating by name in a single pass with first-wins
+        // semantics (existing tags and already-appended incoming tags both
+        // win; incoming insertion order preserved).  Tag lists are tiny, so a
+        // linear membership scan over `self_tags` beats a `HashSet` here: it
+        // allocates nothing and clones nothing — the kept tag is *moved* in,
+        // and a duplicate is detected by borrow and skipped.
         if let Some(other_tags) = other.tags {
             let self_tags = self.tags.get_or_insert_with(Vec::new);
-            let mut seen: std::collections::HashSet<String> =
-                self_tags.iter().map(|tag| tag.name.clone()).collect();
             for tag in other_tags {
-                if !seen.contains(tag.name.as_str()) {
-                    seen.insert(tag.name.clone());
+                if !self_tags.iter().any(|existing| existing.name == tag.name) {
                     self_tags.push(tag);
                 }
             }

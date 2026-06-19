@@ -306,7 +306,15 @@ pub fn make_pull_closure(
                     return Ok(RequestChunk::Data(Vec::new()));
                 }
                 let n = usize::try_from(n).expect("positive read length fits usize");
-                let n = n.min(chunk_size);
+                // `InputStream.read(byte[])` MUST return at most the buffer
+                // length; a larger value is a contract violation (a buggy or
+                // hostile stream).  Treat it as stream corruption and ABORT
+                // the request body instead of silently clamping it to a
+                // "valid" read — clamping would feed a truncated / mis-sized
+                // chunk downstream and accept a corrupted upload as complete.
+                if n > chunk_size {
+                    return Ok(RequestChunk::Error);
+                }
                 // Copy the n bytes just read into the Java buffer straight into
                 // uninitialised capacity — no zero-fill to immediately overwrite.
                 let arr: &jni::objects::JByteArray<'_> = buf.as_ref();

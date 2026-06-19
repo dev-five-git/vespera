@@ -1044,7 +1044,13 @@ async fn streaming_with_header_chunk_break_returns_sink_stopped_outcome() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn response_streaming_stops_draining_when_chunk_callback_breaks() {
+async fn response_streaming_chunk_break_returns_500_not_silent_success() {
+    // When the chunk sink returns `Break` (the host output sink failed
+    // mid-stream), the non-header `dispatch_streaming_async` must surface a
+    // 500 — NOT the original success header — so a TRUNCATED response is never
+    // reported as a clean success.  (Mirrors the header-first
+    // `...sink_stopped_outcome` and direct-write
+    // `...body_error_yields_500_not_truncated_success` contracts.)
     install_router();
     let wire = encode_wire("GET", "/multi-chunk", HashMap::new(), &[]);
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1056,10 +1062,37 @@ async fn response_streaming_stops_draining_when_chunk_callback_breaks() {
     })
     .await;
 
-    let (header_json, header_body) = decode_wire(&header);
-    assert_eq!(header_json["status"].as_u64(), Some(200));
-    assert!(header_body.is_empty());
+    let (header_json, _header_body) = decode_wire(&header);
+    assert_eq!(
+        header_json["status"].as_u64(),
+        Some(500),
+        "a chunk-sink break must yield 500, not a truncated 200 success"
+    );
+    // The first chunk was already delivered to the sink before the break fired.
     assert_eq!(body_buf.lock().unwrap().as_slice(), b"first");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bidirectional_chunk_break_returns_500_not_silent_success() {
+    // The non-header BIDIRECTIONAL path must also surface a 500 when the chunk
+    // sink breaks mid-response, instead of returning the captured success
+    // header (which would report a truncated bidirectional response as a clean
+    // success).  Mirrors `response_streaming_chunk_break_returns_500...`.
+    install_router();
+    let wire = encode_wire("GET", "/multi-chunk", HashMap::new(), &[]);
+    let header = dispatch_bidirectional_streaming_closing(
+        wire,
+        || RequestChunk::End,            // no request body
+        |_chunk| ControlFlow::Break(()), // sink fails on the first chunk
+        || {},                           // no-op request-source close
+    )
+    .await;
+    let (header_json, _) = decode_wire(&header);
+    assert_eq!(
+        header_json["status"].as_u64(),
+        Some(500),
+        "a bidirectional chunk-sink break must yield 500, not truncated success"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

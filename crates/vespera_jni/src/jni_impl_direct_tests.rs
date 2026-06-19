@@ -1,10 +1,15 @@
 use super::write_response_to_out;
 
+// SAFETY (all tests below): each `out` is a live, writable `Vec<u8>`; the
+// `(out.as_mut_ptr(), out.len())` pair describes exactly its allocation, and
+// the `response` literal is a distinct Rust-owned slice that cannot alias it —
+// satisfying `write_response_to_out`'s `# Safety` contract.
+
 #[test]
 fn response_fits_returns_len_and_writes_bytes() {
     let mut out = vec![0u8; 16];
     let response = b"hello wire";
-    let n = write_response_to_out(out.as_mut_ptr(), out.len(), response);
+    let n = unsafe { write_response_to_out(out.as_mut_ptr(), out.len(), response) };
     assert_eq!(n, 10);
     assert_eq!(&out[..10], response);
 }
@@ -12,7 +17,7 @@ fn response_fits_returns_len_and_writes_bytes() {
 #[test]
 fn exact_fit_boundary() {
     let mut out = vec![0u8; 4];
-    let n = write_response_to_out(out.as_mut_ptr(), out.len(), b"abcd");
+    let n = unsafe { write_response_to_out(out.as_mut_ptr(), out.len(), b"abcd") };
     assert_eq!(n, 4);
     assert_eq!(&out[..], b"abcd");
 }
@@ -20,7 +25,7 @@ fn exact_fit_boundary() {
 #[test]
 fn overflow_returns_negative_required_size_and_writes_nothing() {
     let mut out = vec![0xAAu8; 4];
-    let n = write_response_to_out(out.as_mut_ptr(), out.len(), b"too large");
+    let n = unsafe { write_response_to_out(out.as_mut_ptr(), out.len(), b"too large") };
     assert_eq!(n, -9);
     assert_eq!(
         &out[..],
@@ -32,6 +37,6 @@ fn overflow_returns_negative_required_size_and_writes_nothing() {
 #[test]
 fn zero_capacity_overflow() {
     let mut out: Vec<u8> = Vec::new();
-    let n = write_response_to_out(out.as_mut_ptr(), 0, b"x");
+    let n = unsafe { write_response_to_out(out.as_mut_ptr(), 0, b"x") };
     assert_eq!(n, -1);
 }

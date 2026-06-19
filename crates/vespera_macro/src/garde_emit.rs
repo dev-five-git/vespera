@@ -297,8 +297,26 @@ fn emit_rule_blocks(
             );
             blocks.push(quote! { ::std::compile_error!(#msg); });
         } else {
-            let static_ident =
-                format_ident!("__VESPERA_PATTERN_{}", field_name.to_ascii_uppercase());
+            // Sanitize the field name into a valid identifier fragment before
+            // splicing it into a `static` name: strip a raw-identifier `r#`
+            // prefix and map any non-alphanumeric byte to `_`.  A raw ident
+            // (`r#type`) or otherwise unusual field name would otherwise make
+            // `format_ident!` PANIC at macro-expansion time (e.g.
+            // `__VESPERA_PATTERN_R#TYPE` is not a valid ident).  Each pattern
+            // block is emitted in its own `{ }` scope, so the sanitized name
+            // never needs to be unique across fields.
+            let ident_fragment: String = field_name
+                .trim_start_matches("r#")
+                .chars()
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() {
+                        ch.to_ascii_uppercase()
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            let static_ident = format_ident!("__VESPERA_PATTERN_{}", ident_fragment);
             blocks.push(quote! {
                 {
                     static #static_ident: ::std::sync::LazyLock<

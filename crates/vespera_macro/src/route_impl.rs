@@ -111,31 +111,34 @@ fn extract_error_status_codes(arr: &syn::ExprArray) -> Option<Vec<u16>> {
     if codes.is_empty() { None } else { Some(codes) }
 }
 
-/// Extract `String` tags from a `syn::ExprArray`.
-fn extract_tag_strings(arr: &syn::ExprArray) -> Option<Vec<String>> {
-    let tags: Vec<String> = arr
-        .elems
-        .iter()
-        .filter_map(|elem| {
-            if let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(lit_str),
+/// Reject any non-string-literal element of a `[...]` attribute array with a
+/// spanned compile error instead of silently dropping it.  A typo such as
+/// `security = [bearerAuth]` (missing quotes) or `tags = [users]` would
+/// otherwise vanish — and for `security` that silently documents a PROTECTED
+/// route as unauthenticated, so this guard is security-relevant.
+fn require_string_literal_elems(arr: &syn::ExprArray, attr_name: &str) -> syn::Result<()> {
+    for elem in &arr.elems {
+        if !matches!(
+            elem,
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(_),
                 ..
-            }) = elem
-            {
-                Some(lit_str.value())
-            } else {
-                None
-            }
-        })
-        .collect();
-    if tags.is_empty() { None } else { Some(tags) }
+            })
+        ) {
+            return Err(syn::Error::new_spanned(
+                elem,
+                format!(
+                    "#[route] `{attr_name}` entries must be string literals, e.g. `{attr_name} = [\"name\"]`"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
-/// Extract security scheme names from a `syn::ExprArray`.
-///
-/// Unlike tags, an empty array is meaningful: `security = []` disables
-/// inherited/global security for that operation in OpenAPI.
-fn extract_security_strings(arr: &syn::ExprArray) -> Vec<String> {
+/// Collect every `syn::Lit::Str` value from a validated array.  Call only after
+/// [`require_string_literal_elems`] so non-string elements cannot slip through.
+fn collect_string_literal_values(arr: &syn::ExprArray) -> Vec<String> {
     arr.elems
         .iter()
         .filter_map(|elem| {
@@ -150,6 +153,24 @@ fn extract_security_strings(arr: &syn::ExprArray) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// Extract `String` tags from a `syn::ExprArray`, erroring on any non-string
+/// entry.  An all-empty / no-string array yields `None`.
+fn extract_tag_strings(arr: &syn::ExprArray) -> syn::Result<Option<Vec<String>>> {
+    require_string_literal_elems(arr, "tags")?;
+    let tags = collect_string_literal_values(arr);
+    Ok(if tags.is_empty() { None } else { Some(tags) })
+}
+
+/// Extract security scheme names from a `syn::ExprArray`, erroring on any
+/// non-string entry.
+///
+/// Unlike tags, an empty array is meaningful: `security = []` disables
+/// inherited/global security for that operation in OpenAPI.
+fn extract_security_strings(arr: &syn::ExprArray) -> syn::Result<Vec<String>> {
+    require_string_literal_elems(arr, "security")?;
+    Ok(collect_string_literal_values(arr))
 }
 
 fn parse_example_string(lit: &syn::LitStr) -> serde_json::Value {
@@ -236,8 +257,14 @@ pub fn process_route_attribute(
             .responses
             .as_ref()
             .and_then(extract_typed_responses),
-        tags: route_args.tags.as_ref().and_then(extract_tag_strings),
-        security: route_args.security.as_ref().map(extract_security_strings),
+        tags: match route_args.tags.as_ref() {
+            Some(arr) => extract_tag_strings(arr)?,
+            None => None,
+        },
+        security: match route_args.security.as_ref() {
+            Some(arr) => Some(extract_security_strings(arr)?),
+            None => None,
+        },
         headers: route_args.headers.unwrap_or_default(),
         operation_id: route_args.operation_id.as_ref().map(syn::LitStr::value),
         summary: route_args.summary.as_ref().map(syn::LitStr::value),
@@ -511,19 +538,56 @@ mod tests {
     #[test]
     fn test_extract_tag_strings_empty() {
         let arr: syn::ExprArray = syn::parse_quote!([]);
-        assert_eq!(extract_tag_strings(&arr), None);
+        assert_eq!(extract_tag_strings(&arr).unwrap(), None);
     }
 
     #[test]
     fn test_extract_tag_strings_values() {
         let arr: syn::ExprArray = syn::parse_quote!(["users", "admin", "api"]);
         assert_eq!(
-            extract_tag_strings(&arr),
+            extract_tag_strings(&arr).unwrap(),
             Some(vec![
                 "users".to_string(),
                 "admin".to_string(),
                 "api".to_string()
             ])
         );
+    }
+
+    #[test]
+    fn test_extract_tag_strings_rejects_non_string() {
+        // `tags = [users]` (bare ident, missing quotes) must be a compile
+        // error, not silently dropped.
+        let arr: syn::ExprArray = syn::parse_quote!([users]);
+        let err = extract_tag_strings(&arr).expect_err("non-string tag must error");
+        assert!(err.to_string().contains("string literals"), "{err}");
+    }
+
+    #[test]
+    fn test_extract_security_strings_values() {
+        let arr: syn::ExprArray = syn::parse_quote!(["bearerAuth", "apiKey"]);
+        assert_eq!(
+            extract_security_strings(&arr).unwrap(),
+            vec!["bearerAuth".to_string(), "apiKey".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_extract_security_strings_empty_is_ok() {
+        // `security = []` is meaningful (explicit no-auth) and must NOT error.
+        let arr: syn::ExprArray = syn::parse_quote!([]);
+        assert_eq!(
+            extract_security_strings(&arr).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn test_extract_security_strings_rejects_non_string() {
+        // `security = [bearerAuth]` (missing quotes) must error rather than
+        // silently documenting a protected route as unauthenticated.
+        let arr: syn::ExprArray = syn::parse_quote!([bearerAuth]);
+        let err = extract_security_strings(&arr).expect_err("non-string security must error");
+        assert!(err.to_string().contains("string literals"), "{err}");
     }
 }

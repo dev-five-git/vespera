@@ -18,6 +18,32 @@ use crate::{
     route_impl::StoredRouteInfo,
 };
 
+/// Kebab-case a route path for the file-based routing convention
+/// (snake_case file / folder segments → kebab-case URL), but PRESERVE the
+/// contents of `{...}` path parameters verbatim.  Hyphenating a `{user_id}`
+/// parameter to `{user-id}` would corrupt the OpenAPI parameter name and
+/// break the match with the handler's `Path` extractor, so underscores
+/// inside `{...}` are left untouched.
+fn kebab_case_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut in_param = false;
+    for ch in path.chars() {
+        match ch {
+            '{' => {
+                in_param = true;
+                out.push(ch);
+            }
+            '}' => {
+                in_param = false;
+                out.push(ch);
+            }
+            '_' if !in_param => out.push('-'),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// Collect routes and structs from a folder.
 ///
 /// When `route_storage` contains entries with `file_path`, files covered by
@@ -123,7 +149,7 @@ pub fn collect_metadata_from_files<'a>(
                 } else {
                     base_path.clone()
                 };
-                let route_path = route_path.replace('_', "-");
+                let route_path = kebab_case_path(&route_path);
 
                 // `#[route]` already resolved the description at expansion
                 // time (explicit attribute OR doc comment — see
@@ -197,7 +223,7 @@ pub fn collect_metadata_from_files<'a>(
                 } else {
                     base_path.clone()
                 };
-                let route_path = route_path.replace('_', "-");
+                let route_path = kebab_case_path(&route_path);
 
                 // Description priority: route attribute > doc comment
                 // (move the owned Option instead of cloning + dropping it)

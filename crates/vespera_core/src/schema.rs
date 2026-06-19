@@ -191,10 +191,20 @@ pub struct Schema {
         serialize_with = "serialize_number_constraint"
     )]
     pub maximum: Option<f64>,
-    /// Exclusive minimum
+    /// Exclusive minimum.
+    ///
+    /// NOTE: currently modeled as the OpenAPI 3.0 / draft-04 **boolean
+    /// flag** (paired with `minimum`).  Migrating this to the JSON Schema
+    /// 2020-12 / OpenAPI 3.1 **numeric** form is tracked as a deliberate,
+    /// breaking spec-conformance change (it alters generated output and the
+    /// `#[schema(exclusive_minimum)]` attribute semantics) — see the 3.1
+    /// conformance decision, not done here to avoid a half-migrated model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exclusive_minimum: Option<bool>,
-    /// Exclusive maximum
+    /// Exclusive maximum.
+    ///
+    /// See [`Schema::exclusive_minimum`]: still the OpenAPI 3.0 boolean
+    /// flag, pending the bundled strict-3.1 conformance migration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exclusive_maximum: Option<bool>,
     /// Multiple of
@@ -411,17 +421,23 @@ impl Schema {
             Ok(schema) => schema,
             Err(e) => {
                 // Surface the (in-practice-unreachable) macro/serde drift in
-                // debug / CI builds while degrading gracefully in release.
-                // `debug_assert!` keeps `e` referenced in both profiles (its
-                // release expansion is a dead `if false` branch), so there is
-                // no unused-binding warning.
+                // debug / CI builds via `debug_assert!`.  In release, degrade
+                // to a VISIBLE sentinel schema (a description-only object)
+                // rather than a silent `Schema::default()`, so a drift never
+                // disappears unnoticed from the generated spec yet never
+                // panics in downstream user code.
                 debug_assert!(
                     false,
                     "vespera: Schema::from_compiled_json failed to parse macro-emitted \
-                     JSON ({e}); falling back to Schema::default(). This indicates a \
+                     JSON ({e}); emitting a sentinel schema. This indicates a \
                      vespera bug — the macro serialized a Schema that cannot round-trip."
                 );
-                Self::default()
+                Self {
+                    description: Some(format!(
+                        "vespera: schema unavailable — macro/serde drift ({e})"
+                    )),
+                    ..Self::default()
+                }
             }
         }
     }
@@ -489,6 +505,10 @@ pub enum SecuritySchemeType {
     /// `mutualTls` the container rule would produce).
     #[serde(rename = "mutualTLS")]
     MutualTls,
+    /// OpenAPI's canonical wire name is `oauth2`; the `camelCase` container
+    /// rule would otherwise lowercase only the leading char and emit the
+    /// invalid `oAuth2`.
+    #[serde(rename = "oauth2")]
     OAuth2,
     OpenIdConnect,
 }
@@ -660,6 +680,38 @@ mod tests {
             !json.contains("\"multipleOf\":2.0"),
             "must not contain 2.0: {json}"
         );
+    }
+
+    // ── CORE: OpenAPI 3.1 conformance of the schema model ────────────
+
+    #[test]
+    fn oauth2_security_scheme_serializes_to_canonical_lowercase() {
+        // OpenAPI's canonical wire name is `oauth2`.  serde's `camelCase`
+        // container rule lowercases only the leading char, which would emit
+        // the invalid `oAuth2` without the explicit `#[serde(rename)]`.
+        let json = serde_json::to_string(&SecuritySchemeType::OAuth2).unwrap();
+        assert_eq!(json, "\"oauth2\"", "must be exactly \"oauth2\"");
+    }
+
+    #[rstest]
+    #[case(SecuritySchemeType::ApiKey, "\"apiKey\"")]
+    #[case(SecuritySchemeType::Http, "\"http\"")]
+    #[case(SecuritySchemeType::MutualTls, "\"mutualTLS\"")]
+    #[case(SecuritySchemeType::OAuth2, "\"oauth2\"")]
+    #[case(SecuritySchemeType::OpenIdConnect, "\"openIdConnect\"")]
+    fn security_scheme_type_uses_openapi_canonical_wire_names(
+        #[case] ty: SecuritySchemeType,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(serde_json::to_string(&ty).unwrap(), expected);
+    }
+
+    #[test]
+    #[should_panic(expected = "from_compiled_json failed to parse")]
+    fn from_compiled_json_invalid_input_trips_debug_assert() {
+        // In debug / test builds the (in-practice-unreachable) macro/serde
+        // drift guard fires loudly so a bug never goes unnoticed in CI.
+        let _ = Schema::from_compiled_json("{not valid json");
     }
 
     // ── CORE-04: typed `additionalProperties` (untagged) ─────────────

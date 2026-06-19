@@ -89,6 +89,16 @@ class WireHeaderReaderTest {
     }
 
     @Test
+    void rejectsDecimalOrExponentStatus() {
+        // `status` is a protocol INTEGER field; `200.9` / `2e2` are malformed
+        // native output and must be REJECTED, not silently truncated to the
+        // integer part.  Unknown numeric fields stay permissive — see
+        // skipsUnknownLargeAndDecimalNumericFields.
+        assertRejected("{\"status\":200.9}".getBytes(StandardCharsets.UTF_8));
+        assertRejected("{\"status\":2e2}".getBytes(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void rejectsMalformedUtf8ContinuationAndOverlongSequences() {
         assertRejected(new byte[] {
             '{', '"', 's', 't', 'a', 't', 'u', 's', '"', ':', '2', '0', '0', ',',

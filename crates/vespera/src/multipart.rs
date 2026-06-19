@@ -171,9 +171,13 @@ impl TypedMultipartError {
 impl IntoResponse for TypedMultipartError {
     fn into_response(self) -> Response {
         let status = match &self {
-            Self::InvalidRequest { .. }
-            | Self::InvalidRequestBody { .. }
-            | Self::MissingField { .. }
+            // Preserve the SOURCE rejection / stream status so an over-limit
+            // multipart body surfaces as `413 Payload Too Large` (axum's body
+            // limit), an unsupported media type as `415`, etc. — instead of
+            // collapsing every transport-level failure to a generic `400`.
+            Self::InvalidRequest { source } => source.status(),
+            Self::InvalidRequestBody { source } => source.status(),
+            Self::MissingField { .. }
             | Self::DuplicateField { .. }
             | Self::UnknownField { .. }
             | Self::InvalidEnumValue { .. }
@@ -185,16 +189,40 @@ impl IntoResponse for TypedMultipartError {
             Self::FieldTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Other { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        // Canonical JSON error envelope — the SAME shape `Validated<T>`
-        // emits ({"errors":[{"path","message"}]}), so multipart failures are
-        // consumed uniformly across the API instead of as ad-hoc plain text;
-        // under JNI a 422 body is additionally hoisted into the wire header
-        // exactly like a `Validated` rejection.  `path` is the offending
-        // field name when known, else empty.
-        let path = self.field_name().unwrap_or("").to_owned();
+        // Canonical JSON error envelope, byte-identical to `Validated<T>`'s
+        // 422 envelope — `{"errors":[{"message":...,"path":...}]}` (message
+        // before path) — so multipart failures are consumed uniformly and,
+        // under JNI, the 422 body hoists into the wire header exactly like a
+        // `Validated` rejection.  Serialized through a borrowing `Serialize`
+        // (no `serde_json::Value` map/array/object intermediate). `path` is
+        // the offending field name when known, else empty.
+        #[derive(serde::Serialize)]
+        struct OneError<'a> {
+            message: &'a str,
+            path: &'a str,
+        }
+        #[derive(serde::Serialize)]
+        struct Envelope<'a> {
+            errors: [OneError<'a>; 1],
+        }
+        let path = self.field_name().unwrap_or("");
         let message = self.response_message();
-        let body = serde_json::json!({ "errors": [{ "path": path, "message": message }] });
-        (status, axum::Json(body)).into_response()
+        let body = serde_json::to_vec(&Envelope {
+            errors: [OneError {
+                message: &message,
+                path,
+            }],
+        })
+        .expect("multipart error envelope is infallible to serialize");
+        (
+            status,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("application/json"),
+            )],
+            body,
+        )
+            .into_response()
     }
 }
 
