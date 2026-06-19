@@ -168,6 +168,23 @@ impl TypedMultipartError {
     }
 }
 
+/// Canonical JSON error envelope, byte-identical to `Validated<T>`'s 422
+/// envelope — `{"errors":[{"message":...,"path":...}]}` (message before path)
+/// — so multipart failures are consumed uniformly and, under JNI, the 422
+/// body hoists into the wire header exactly like a `Validated` rejection.
+/// Serialized through a borrowing `Serialize` (no `serde_json::Value`
+/// map/array/object intermediate).
+#[derive(serde::Serialize)]
+struct MultipartOneError<'a> {
+    message: &'a str,
+    path: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct MultipartErrorEnvelope<'a> {
+    errors: [MultipartOneError<'a>; 1],
+}
+
 impl IntoResponse for TypedMultipartError {
     fn into_response(self) -> Response {
         let status = match &self {
@@ -189,31 +206,22 @@ impl IntoResponse for TypedMultipartError {
             Self::FieldTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Other { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        // Canonical JSON error envelope, byte-identical to `Validated<T>`'s
-        // 422 envelope — `{"errors":[{"message":...,"path":...}]}` (message
-        // before path) — so multipart failures are consumed uniformly and,
-        // under JNI, the 422 body hoists into the wire header exactly like a
-        // `Validated` rejection.  Serialized through a borrowing `Serialize`
-        // (no `serde_json::Value` map/array/object intermediate). `path` is
-        // the offending field name when known, else empty.
-        #[derive(serde::Serialize)]
-        struct OneError<'a> {
-            message: &'a str,
-            path: &'a str,
-        }
-        #[derive(serde::Serialize)]
-        struct Envelope<'a> {
-            errors: [OneError<'a>; 1],
-        }
+        // Serialize the canonical 422 envelope (see module-scope
+        // `MultipartErrorEnvelope` / `MultipartOneError`); `path` is the
+        // offending field name when known, else empty.
         let path = self.field_name().unwrap_or("");
         let message = self.response_message();
-        let body = serde_json::to_vec(&Envelope {
-            errors: [OneError {
+        let body = serde_json::to_vec(&MultipartErrorEnvelope {
+            errors: [MultipartOneError {
                 message: &message,
                 path,
             }],
         })
-        .expect("multipart error envelope is infallible to serialize");
+        // Serializing a struct of two `&str` is infallible in practice; the
+        // fallback keeps this request-time error path panic-free (matching
+        // `Validated<T>`'s 422 envelope) by emitting a minimal valid envelope
+        // instead of unwinding inside a handler.
+        .unwrap_or_else(|_| br#"{"errors":[{"message":"serialization error","path":""}]}"#.to_vec());
         (
             status,
             [(

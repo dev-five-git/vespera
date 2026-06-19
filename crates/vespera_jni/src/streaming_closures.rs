@@ -448,6 +448,17 @@ pub fn complete_future_local(
     future: &JObject<'_>,
     bytes: &[u8],
 ) -> jni::errors::Result<()> {
+    // Clear any exception ALREADY pending from the failed JNI call that routed
+    // us into this cold path (e.g. an `OutOfMemoryError` from `new_global_ref`
+    // / `get_java_vm`, or a failed request-array read).  JNI functions must not
+    // be invoked with an exception pending — `byte_array_from_slice` below
+    // would otherwise fail and leave the Java `CompletableFuture` uncompleted
+    // (the caller hangs forever).  We are converting that JNI failure into a
+    // best-effort `500` completion, so the original exception is intentionally
+    // discarded.
+    if env.exception_check() {
+        env.exception_clear();
+    }
     let arr = env.byte_array_from_slice(bytes)?;
     let arr_obj: JObject = arr.into();
     let result = env.call_method(

@@ -803,6 +803,7 @@ fn bench_async_spawn_pattern(c: &mut Criterion) {
 /// - `response_serialize_*`: slice-serialize of a many-header response
 ///   (10 single-value + 3-value `set-cookie` + content-type/length) —
 ///   `write_wire_header_into_slice` (hand) vs the `serde_json` twin.
+#[cfg(feature = "bench-support")]
 fn bench_wire_header_serde(c: &mut Criterion) {
     use vespera_inprocess::ResponseMetadata;
     use vespera_inprocess::bench_support::{
@@ -893,6 +894,7 @@ fn bench_wire_header_serde(c: &mut Criterion) {
 /// Fixtures span the dispatch hot path's real request shapes: a bodyless `GET`
 /// (the DIRECT sweet spot), a `GET` with 3 headers, a small `POST` with
 /// `content-type`, and a `POST` with 8 realistic headers.
+#[cfg(feature = "bench-support")]
 fn bench_request_build_path(c: &mut Criterion) {
     use vespera_inprocess::bench_support::{bench_build_request_new, bench_build_request_old};
 
@@ -967,6 +969,7 @@ fn bench_request_build_path(c: &mut Criterion) {
 /// Fixtures: a 1-error envelope (typical single-field failure) and a 5-error
 /// envelope (form-heavy request) — where the eliminated `Value` map/array/key
 /// allocations scale with error count.
+#[cfg(feature = "bench-support")]
 fn bench_hoist_422_path(c: &mut Criterion) {
     use vespera_inprocess::bench_support::{bench_hoist_new, bench_hoist_old};
 
@@ -1056,9 +1059,23 @@ criterion_group!(
     bench_registry_ab,
     bench_headers_path,
     bench_streaming_path,
-    bench_async_spawn_pattern,
+    bench_async_spawn_pattern
+);
+
+// The within-run A/B groups compare the production hand-rolled paths against
+// the retained `serde_json` / `http::request::Builder` / `serde_json::Value`
+// "before" twins.  Those twins live behind the `bench-support` feature so a
+// production build never compiles them — run these groups with
+// `cargo bench -p vespera_inprocess --bench dispatch --features bench-support`.
+#[cfg(feature = "bench-support")]
+criterion_group!(
+    ab_benches,
     bench_wire_header_serde,
     bench_request_build_path,
     bench_hoist_422_path
 );
+
+#[cfg(feature = "bench-support")]
+criterion_main!(benches, ab_benches);
+#[cfg(not(feature = "bench-support"))]
 criterion_main!(benches);

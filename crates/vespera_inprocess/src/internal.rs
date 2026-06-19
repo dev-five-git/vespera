@@ -54,6 +54,7 @@ pub async fn dispatch_parts<'h>(
 /// Start a request builder with method + URI.  When `query` is empty
 /// the borrowed `path` feeds `Uri` parsing directly — no intermediate
 /// `String`; otherwise a single exact-capacity join is allocated.
+#[cfg(any(test, feature = "bench-support"))]
 fn request_builder(method: Method, path: &str, query: &str) -> http::request::Builder {
     let builder = Request::builder().method(method);
     if query.is_empty() {
@@ -174,6 +175,7 @@ fn build_request_from_bytes<'h>(
 /// `wire_header_serde` group's hand-vs-`serde_json` twin).  Routes the request
 /// through the builder state machine the production path replaced; produces a
 /// byte-identical request.  Not used on any production path.
+#[cfg(any(test, feature = "bench-support"))]
 fn build_request_from_bytes_builder_old<'h>(
     method_str: &str,
     path: &str,
@@ -204,6 +206,7 @@ fn build_request_from_bytes_builder_old<'h>(
 /// Sum a built request's method / path / query / header byte lengths so the
 /// `request_build_ab` A/B cannot be optimised down to a partial build.
 /// Bench-only.
+#[cfg(any(test, feature = "bench-support"))]
 fn request_field_len_sum(req: &Request<Body>) -> usize {
     let mut acc = req.method().as_str().len() + req.uri().path().len();
     if let Some(query) = req.uri().query() {
@@ -217,6 +220,7 @@ fn request_field_len_sum(req: &Request<Body>) -> usize {
 
 /// Bench A/B: production direct-construction request build cost.  Returns a
 /// summed length so the optimiser cannot elide the build.  Bench-only.
+#[cfg(any(test, feature = "bench-support"))]
 #[doc(hidden)]
 #[must_use]
 pub fn bench_build_request_new(
@@ -232,6 +236,7 @@ pub fn bench_build_request_new(
 
 /// Bench A/B: previous `http::request::Builder` request build cost.
 /// Bench-only.
+#[cfg(any(test, feature = "bench-support"))]
 #[doc(hidden)]
 #[must_use]
 pub fn bench_build_request_old(

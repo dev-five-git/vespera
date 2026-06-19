@@ -107,6 +107,7 @@ pub use wire::error_wire;
 /// `pub` items) can call both the hand-rolled and the retained
 /// `serde_json` wire-header paths in the same measurement run.  Hidden
 /// from docs; do not depend on it.
+#[cfg(any(test, feature = "bench-support"))]
 #[doc(hidden)]
 pub mod bench_support {
     pub use crate::internal::{bench_build_request_new, bench_build_request_old};

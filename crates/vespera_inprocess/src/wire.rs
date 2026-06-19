@@ -7,7 +7,10 @@
 use std::borrow::Cow;
 
 use bytes::Bytes;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+// `Serialize` is used only by the bench-only serde wire-header twins.
+#[cfg(any(test, feature = "bench-support"))]
+use serde::Serialize;
 
 use crate::envelope::ResponseMetadata;
 use crate::internal::ResponseParts;
@@ -32,26 +35,26 @@ pub const WIRE_VERSION: u8 = 1;
 
 // ── Wire Format Types (internal) ─────────────────────────────────────
 
-/// Request wire header, deserialized **borrowing from the input
-/// buffer**: every string field is a `Cow` that points straight into
-/// the wire bytes (zero allocation) unless the JSON value contains
-/// escape sequences, in which case deserialization transparently
-/// falls back to an owned copy.
+/// Request wire header.  In production it is built **by the hand-rolled
+/// [`header_read`] parser**, which borrows every plain string straight from
+/// the wire bytes (zero allocation) and owns only escaped strings.
 ///
-/// Direct `Cow<str>` fields borrow via serde-derive's `borrow`
-/// special-casing; `headers` and `app` need the custom
-/// [`de_cow_map`] / [`de_opt_cow`] deserializers because serde's
-/// stock `Cow` impl inside containers always copies.
-#[derive(Debug, Deserialize)]
+/// The `serde` `Deserialize` derive (plus the [`BorrowableCow`] /
+/// `de_cow_pairs` / `de_opt_cow` helpers) is compiled **only under the
+/// `bench-support` feature**, where [`parse_wire_header_serde`] uses it as
+/// the criterion A/B "before" arm — the production path never goes through
+/// serde, so it is not part of the shipped build.
+#[derive(Debug)]
+#[cfg_attr(any(test, feature = "bench-support"), derive(Deserialize))]
 pub struct WireRequestHeader<'a> {
     /// Wire protocol version; clients MUST send 1.
-    #[serde(default)]
+    #[cfg_attr(any(test, feature = "bench-support"), serde(default))]
     pub v: u8,
-    #[serde(borrow)]
+    #[cfg_attr(any(test, feature = "bench-support"), serde(borrow))]
     pub method: Cow<'a, str>,
-    #[serde(borrow)]
+    #[cfg_attr(any(test, feature = "bench-support"), serde(borrow))]
     pub path: Cow<'a, str>,
-    #[serde(default, borrow)]
+    #[cfg_attr(any(test, feature = "bench-support"), serde(default, borrow))]
     pub query: Cow<'a, str>,
     /// Request headers as a flat list — dispatch only ever *iterates*
     /// them (never looks one up by key), so a `Vec` skips the
@@ -59,20 +62,29 @@ pub struct WireRequestHeader<'a> {
     /// Repeated names are forwarded as repeated request headers
     /// (valid HTTP; the previous `HashMap` silently kept the last
     /// duplicate of a degenerate duplicate-key JSON header).
-    #[serde(default, borrow, deserialize_with = "de_cow_pairs")]
+    #[cfg_attr(
+        any(test, feature = "bench-support"),
+        serde(default, borrow, deserialize_with = "de_cow_pairs")
+    )]
     pub headers: CowPairs<'a>,
     /// Optional name of the target app for multi-app routing.  When
     /// omitted (or empty), the request is dispatched to the default
     /// app registered via [`register_app`].  Use [`register_app_named`]
     /// to register additional named apps.
-    #[serde(default, borrow, deserialize_with = "de_opt_cow")]
+    #[cfg_attr(
+        any(test, feature = "bench-support"),
+        serde(default, borrow, deserialize_with = "de_opt_cow")
+    )]
     pub app: Option<Cow<'a, str>>,
 }
 
 /// `Cow<str>` wrapper whose `Deserialize` impl borrows from the input
-/// when the JSON string carries no escape sequences.
+/// when the JSON string carries no escape sequences.  Bench-only — feeds
+/// the `serde` A/B twin; production parsing is hand-rolled ([`header_read`]).
+#[cfg(any(test, feature = "bench-support"))]
 struct BorrowableCow<'a>(Cow<'a, str>);
 
+#[cfg(any(test, feature = "bench-support"))]
 impl<'de> Deserialize<'de> for BorrowableCow<'de> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct V;
@@ -109,6 +121,8 @@ type CowPairs<'a> = Vec<(Cow<'a, str>, Cow<'a, str>)>;
 /// Deserialize a JSON object into a flat `Vec` of `(name, value)`
 /// pairs whose strings borrow from the input where possible — one
 /// `Vec` allocation instead of `HashMap` buckets + per-key hashing.
+/// Bench-only (feeds the serde A/B twin).
+#[cfg(any(test, feature = "bench-support"))]
 fn de_cow_pairs<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<CowPairs<'de>, D::Error> {
@@ -137,7 +151,8 @@ fn de_cow_pairs<'de, D: serde::Deserializer<'de>>(
 }
 
 /// Deserialize an `Option<Cow>` that borrows from the input where
-/// possible.
+/// possible.  Bench-only (feeds the serde A/B twin).
+#[cfg(any(test, feature = "bench-support"))]
 fn de_opt_cow<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Cow<'de, str>>, D::Error> {
@@ -170,6 +185,7 @@ fn de_opt_cow<'de, D: serde::Deserializer<'de>>(
 // wire-order locked — field order defines the serialized wire header
 // byte layout (`v`, `status`, `headers`, `metadata`,
 // `validation_errors?`).  See tests/wire_contract.rs.
+#[cfg(any(test, feature = "bench-support"))]
 #[derive(Debug, Serialize)]
 struct WireResponseHeader<'a, H: Serialize> {
     v: u8,
@@ -196,8 +212,10 @@ struct WireResponseHeader<'a, H: Serialize> {
 ///   shape)
 /// - non-UTF-8 header values render as `""` (same `unwrap_or("")`
 ///   behaviour as the old owned conversion)
+#[cfg(any(test, feature = "bench-support"))]
 struct WireHeaders<'a>(&'a http::HeaderMap);
 
+#[cfg(any(test, feature = "bench-support"))]
 impl Serialize for WireHeaders<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
@@ -239,8 +257,10 @@ impl Serialize for WireHeaders<'_> {
 }
 
 /// Serializes the repeated values of one header name as a JSON array.
+#[cfg(any(test, feature = "bench-support"))]
 struct WireHeaderValues<'a>(&'a http::HeaderMap, &'a str);
 
+#[cfg(any(test, feature = "bench-support"))]
 impl Serialize for WireHeaderValues<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_seq(
@@ -319,12 +339,15 @@ pub fn write_wire_header_into_vec(
 
 /// One entry in the wire header's `validation_errors` array.  Fields
 /// are best-effort: missing values in the source body become `None`.
-#[derive(Debug, Serialize)]
+/// The `Serialize` derive is **bench-only** — production serializes these
+/// fields with the hand-rolled `header_write` writer, never via serde.
+#[derive(Debug)]
+#[cfg_attr(any(test, feature = "bench-support"), derive(Serialize))]
 struct ValidationErrorItem {
     path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "bench-support"), serde(skip_serializing_if = "Option::is_none"))]
     code: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "bench-support"), serde(skip_serializing_if = "Option::is_none"))]
     message: Option<String>,
 }
 
@@ -407,11 +430,13 @@ pub fn build_wire_header_bytes(
 /// buffer and still report the exact size it needed on overflow —
 /// without allocating or panicking.  `pos` is the running total of bytes
 /// the writer was asked to write (it may exceed `buf.len()`).
+#[cfg(any(test, feature = "bench-support"))]
 struct SliceWriter<'a> {
     buf: &'a mut [u8],
     pos: usize,
 }
 
+#[cfg(any(test, feature = "bench-support"))]
 impl<'a> SliceWriter<'a> {
     fn new(buf: &'a mut [u8]) -> Self {
         Self { buf, pos: 0 }
@@ -426,6 +451,7 @@ impl<'a> SliceWriter<'a> {
     }
 }
 
+#[cfg(any(test, feature = "bench-support"))]
 impl std::io::Write for SliceWriter<'_> {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
         self.put(data);
@@ -477,6 +503,7 @@ pub fn write_wire_header_into_slice(
 /// `benches/dispatch.rs` (via [`crate::bench_support`]) so hand-rolled vs
 /// `serde_json` are measured in the same run.  Not part of the public
 /// API and not used on any production path.
+#[cfg(any(test, feature = "bench-support"))]
 fn write_wire_header_into_slice_serde(
     out: &mut [u8],
     status: u16,
@@ -599,6 +626,7 @@ fn try_hoist_validation_errors(
 /// re-extracts each field — the allocation-heavier path the typed deserialize
 /// replaced; byte-identical result for the framework-generated envelope.  Not
 /// used on any production path.
+#[cfg(any(test, feature = "bench-support"))]
 fn try_hoist_validation_errors_value_old(
     headers: &http::HeaderMap,
     body_bytes: &Bytes,
@@ -730,6 +758,7 @@ pub fn parse_wire_header(header_json: &[u8]) -> Result<WireRequestHeader<'_>, St
 /// (via [`crate::bench_support`]) so hand-rolled vs `serde_json` are
 /// measured in the same run.  Not part of the public API and not used on
 /// any production path.
+#[cfg(any(test, feature = "bench-support"))]
 fn parse_wire_header_serde(header_json: &[u8]) -> Result<WireRequestHeader<'_>, String> {
     serde_json::from_slice(header_json).map_err(|e| format!("wire header JSON parse error: {e}"))
 }
@@ -746,6 +775,7 @@ fn parse_wire_header_serde(header_json: &[u8]) -> Result<WireRequestHeader<'_>, 
 // into the (hidden) public surface.
 
 /// Bench A/B: full hand-rolled request-header parse cost.
+#[cfg(any(test, feature = "bench-support"))]
 #[doc(hidden)]
 #[must_use]
 pub fn bench_parse_hand(header_json: &[u8]) -> usize {
@@ -753,6 +783,7 @@ pub fn bench_parse_hand(header_json: &[u8]) -> usize {
 }
 
 /// Bench A/B: full `serde_json` request-header parse cost.
+#[cfg(any(test, feature = "bench-support"))]
 #[doc(hidden)]
 #[must_use]
 pub fn bench_parse_serde(header_json: &[u8]) -> usize {
@@ -761,6 +792,7 @@ pub fn bench_parse_serde(header_json: &[u8]) -> usize {
 
 /// Sum every hoisted item's field byte lengths so neither `hoist_422_ab` arm
 /// can be optimised down to a partial parse.  `None` (no hoist) sums to 0.
+#[cfg(any(test, feature = "bench-support"))]
 fn hoist_field_len_sum(items: Option<Vec<ValidationErrorItem>>) -> usize {
     items.map_or(0, |v| {
         v.iter()
@@ -775,6 +807,7 @@ fn hoist_field_len_sum(items: Option<Vec<ValidationErrorItem>>) -> usize {
 
 /// Bench A/B: production typed-deserialize 422 validation hoist cost.
 /// Bench-only.
+#[cfg(any(test, feature = "bench-support"))]
 #[doc(hidden)]
 #[must_use]
 pub fn bench_hoist_new(headers: &http::HeaderMap, body: &Bytes) -> usize {
@@ -783,6 +816,7 @@ pub fn bench_hoist_new(headers: &http::HeaderMap, body: &Bytes) -> usize {
 
 /// Bench A/B: previous `serde_json::Value` DOM 422 validation hoist cost.
 /// Bench-only.
+#[cfg(any(test, feature = "bench-support"))]
 #[doc(hidden)]
 #[must_use]
 pub fn bench_hoist_old(headers: &http::HeaderMap, body: &Bytes) -> usize {
@@ -793,6 +827,7 @@ pub fn bench_hoist_old(headers: &http::HeaderMap, body: &Bytes) -> usize {
 /// each `Cow` (UTF-8 validation / escape decode) so neither A/B arm can
 /// be optimised down to a partial parse.  Takes the header by reference;
 /// the owned value is still dropped inside the timed `bench_parse_*` call.
+#[cfg(any(test, feature = "bench-support"))]
 fn header_field_len_sum(header: &WireRequestHeader<'_>) -> usize {
     let mut acc = header.method.len()
         + header.path.len()
@@ -806,6 +841,7 @@ fn header_field_len_sum(header: &WireRequestHeader<'_>) -> usize {
 }
 
 /// Bench A/B: hand-rolled response-header slice serialize cost.
+#[cfg(any(test, feature = "bench-support"))]
 #[doc(hidden)]
 #[must_use]
 pub fn bench_write_hand(
@@ -818,6 +854,7 @@ pub fn bench_write_hand(
 }
 
 /// Bench A/B: `serde_json` response-header slice serialize cost.
+#[cfg(any(test, feature = "bench-support"))]
 #[doc(hidden)]
 #[must_use]
 pub fn bench_write_serde(

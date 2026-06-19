@@ -13,10 +13,64 @@ use crate::envelope::{RequestEnvelope, ResponseEnvelope, ResponseMetadata};
 use crate::internal::{dispatch_and_split, dispatch_parts, to_response_envelope_text};
 use crate::registry::resolve_app_router;
 use crate::wire::{
-    WIRE_HEADER_RESERVE, WIRE_VERSION, error_wire, header_capacity_estimate, parse_wire_header,
-    split_wire_borrowed, split_wire_request, to_wire_bytes, write_wire_header_into_slice,
-    write_wire_header_into_vec,
+    WIRE_HEADER_RESERVE, WIRE_VERSION, WireRequestHeader, error_wire, header_capacity_estimate,
+    parse_wire_header, split_wire_borrowed, split_wire_request, to_wire_bytes,
+    write_wire_header_into_slice, write_wire_header_into_vec,
 };
+
+// ── Shared wire prelude (used by every wire entry point) ─────────────
+
+/// Ingress-cap guard shared by the **buffered** wire entry points
+/// (`dispatch_from_bytes_async`, `dispatch_into_async`,
+/// `dispatch_into_async_borrowed`, and the response-streaming pair).
+/// Returns the `413` wire bytes when the request exceeds the configured
+/// maximum, else `None`.  Centralizing the message keeps the cap identical
+/// across entry points; **bidirectional** streaming is intentionally exempt
+/// (it is `O(chunk)` RAM) and so does not call this.
+#[inline]
+pub fn check_ingress_cap(len: usize) -> Option<Vec<u8>> {
+    if crate::config::request_exceeds_limit(len) {
+        Some(error_wire(
+            413,
+            &format!(
+                "request size {len} bytes exceeds configured maximum of {} bytes",
+                crate::config::max_request_bytes()
+            ),
+        ))
+    } else {
+        None
+    }
+}
+
+/// Wire-prelude shared by **every** wire entry point (buffered,
+/// direct-write, and streaming): parse the header, enforce the protocol
+/// [`WIRE_VERSION`], and resolve the target app [`Router`].  Centralizing
+/// this keeps the security-sensitive version check + app resolution
+/// byte-identical across all dispatchers — the previous per-entry-point
+/// copies were a drift hazard.
+///
+/// `header_bytes` is the wire header-JSON region; the returned
+/// [`WireRequestHeader`] borrows from it, so the caller MUST keep it alive
+/// for as long as the header is used.  On failure the `Err` carries the
+/// exact wire error bytes to deliver in the caller's shape (`400` for a
+/// parse error or version mismatch, `400`/`404` from app resolution).
+#[inline]
+pub fn parse_validate_resolve(
+    header_bytes: &[u8],
+) -> Result<(WireRequestHeader<'_>, Router), Vec<u8>> {
+    let header = parse_wire_header(header_bytes).map_err(|msg| error_wire(400, &msg))?;
+    if header.v != WIRE_VERSION {
+        return Err(error_wire(
+            400,
+            &format!(
+                "unsupported wire version: got {}, expected {WIRE_VERSION}",
+                header.v
+            ),
+        ));
+    }
+    let router = resolve_app_router(&header)?;
+    Ok((header, router))
+}
 
 // ── Dispatch (direct API — backward compatible) ──────────────────────
 
@@ -118,40 +172,20 @@ pub fn dispatch_from_bytes(input: Vec<u8>, runtime: &tokio::runtime::Runtime) ->
 /// guarantees as [`dispatch_from_bytes`]), including `404` when no app
 /// is registered under the requested name.
 pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
-    // Ingress cap (defense-in-depth): reject an oversized buffered
-    // request with 413 before doing any further work.  Unlimited by
-    // default (see `max_request_bytes`); streaming paths are exempt.
-    if crate::config::request_exceeds_limit(input.len()) {
-        return error_wire(
-            413,
-            &format!(
-                "request size {} bytes exceeds configured maximum of {} bytes",
-                input.len(),
-                crate::config::max_request_bytes()
-            ),
-        );
+    // Ingress cap (defense-in-depth): reject an oversized buffered request
+    // with 413 before any further work.  Unlimited by default; bidirectional
+    // streaming is exempt.  See [`check_ingress_cap`].
+    if let Some(err) = check_ingress_cap(input.len()) {
+        return err;
     }
-    // Wire-level checks next: malformed input must report parse
-    // errors regardless of whether an app is registered.
+    // Malformed input must report parse errors regardless of whether an app
+    // is registered, so split first, then the shared parse/version/resolve.
     let (header_bytes, body_bytes) = match split_wire_request(input) {
         Ok(parts) => parts,
         Err(msg) => return error_wire(400, &msg),
     };
-    let header = match parse_wire_header(&header_bytes) {
-        Ok(h) => h,
-        Err(msg) => return error_wire(400, &msg),
-    };
-    if header.v != WIRE_VERSION {
-        return error_wire(
-            400,
-            &format!(
-                "unsupported wire version: got {}, expected {WIRE_VERSION}",
-                header.v
-            ),
-        );
-    }
-    let router = match resolve_app_router(&header) {
-        Ok(r) => r,
+    let (header, router) = match parse_validate_resolve(&header_bytes) {
+        Ok(parts) => parts,
         Err(wire) => return wire,
     };
 
@@ -296,41 +330,15 @@ pub fn dispatch_into(
 pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResult {
     // Ingress cap (defense-in-depth) — same policy as
     // `dispatch_from_bytes_async`; 413 written into the caller buffer.
-    if crate::config::request_exceeds_limit(input.len()) {
-        return write_wire_into(
-            out,
-            &error_wire(
-                413,
-                &format!(
-                    "request size {} bytes exceeds configured maximum of {} bytes",
-                    input.len(),
-                    crate::config::max_request_bytes()
-                ),
-            ),
-        );
+    if let Some(err) = check_ingress_cap(input.len()) {
+        return write_wire_into(out, &err);
     }
     let (header_bytes, body_bytes) = match split_wire_request(input) {
         Ok(parts) => parts,
         Err(msg) => return write_wire_into(out, &error_wire(400, &msg)),
     };
-    let header = match parse_wire_header(&header_bytes) {
-        Ok(h) => h,
-        Err(msg) => return write_wire_into(out, &error_wire(400, &msg)),
-    };
-    if header.v != WIRE_VERSION {
-        return write_wire_into(
-            out,
-            &error_wire(
-                400,
-                &format!(
-                    "unsupported wire version: got {}, expected {WIRE_VERSION}",
-                    header.v
-                ),
-            ),
-        );
-    }
-    let router = match resolve_app_router(&header) {
-        Ok(r) => r,
+    let (header, router) = match parse_validate_resolve(&header_bytes) {
+        Ok(parts) => parts,
         Err(wire) => return write_wire_into(out, &wire),
     };
 
@@ -381,41 +389,15 @@ pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteR
 /// the same error / `422` / overflow semantics apply.
 pub async fn dispatch_into_async_borrowed(input: &[u8], out: &mut [u8]) -> DirectWriteResult {
     // Ingress cap (defense-in-depth) — same policy as `dispatch_into_async`.
-    if crate::config::request_exceeds_limit(input.len()) {
-        return write_wire_into(
-            out,
-            &error_wire(
-                413,
-                &format!(
-                    "request size {} bytes exceeds configured maximum of {} bytes",
-                    input.len(),
-                    crate::config::max_request_bytes()
-                ),
-            ),
-        );
+    if let Some(err) = check_ingress_cap(input.len()) {
+        return write_wire_into(out, &err);
     }
     let (header_bytes, body_bytes) = match split_wire_borrowed(input) {
         Ok(parts) => parts,
         Err(msg) => return write_wire_into(out, &error_wire(400, &msg)),
     };
-    let header = match parse_wire_header(header_bytes) {
-        Ok(h) => h,
-        Err(msg) => return write_wire_into(out, &error_wire(400, &msg)),
-    };
-    if header.v != WIRE_VERSION {
-        return write_wire_into(
-            out,
-            &error_wire(
-                400,
-                &format!(
-                    "unsupported wire version: got {}, expected {WIRE_VERSION}",
-                    header.v
-                ),
-            ),
-        );
-    }
-    let router = match resolve_app_router(&header) {
-        Ok(r) => r,
+    let (header, router) = match parse_validate_resolve(header_bytes) {
+        Ok(parts) => parts,
         Err(wire) => return write_wire_into(out, &wire),
     };
 

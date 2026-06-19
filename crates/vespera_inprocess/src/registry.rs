@@ -2,7 +2,7 @@
 //! `OnceLock` fast path for the default app.
 
 use std::collections::HashMap;
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock, PoisonError};
 
 use arc_swap::ArcSwap;
 
@@ -52,6 +52,16 @@ static APP_ROUTERS: LazyLock<ArcSwap<HashMap<String, Router>>> =
 /// Named apps resolve through the lock-free [`ArcSwap`] load — they are
 /// the rare multi-app case and can be registered at any time.
 static DEFAULT_ROUTER: OnceLock<Router> = OnceLock::new();
+
+/// Serializes the registration **write path** (`register_app*`) so a given
+/// app name's `factory` runs **at most once**, even under concurrent
+/// same-name registration: without it, two racing registrations both pass
+/// the `contains_key` pre-check and each invoke their `factory` (the loser's
+/// router is then discarded by the first-wins insert) — observable when a
+/// factory has side effects or is expensive.  Dispatch is unaffected: the
+/// read path ([`resolve_app_router`]) never touches this lock and stays
+/// fully lock-free.
+static REGISTER_LOCK: Mutex<()> = Mutex::new(());
 
 /// Validate an app name for registration / lookup.
 ///
@@ -138,14 +148,18 @@ where
         Ok(n) => n.to_owned(),
         Err(_) => return,
     };
-    // Fast path: already registered? Lock-free load + lookup.
+    // Serialize the registration write path (dispatch reads stay lock-free)
+    // so a given name's `factory` runs at most once — see [`REGISTER_LOCK`].
+    let _guard = REGISTER_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    // Re-check under the lock: first-wins, so an already-present name means
+    // `factory` is NOT invoked.
     if APP_ROUTERS.load().contains_key(&name) {
         return;
     }
     // Build the router OUTSIDE the copy-on-write update so a panicking
-    // factory cannot corrupt the registry; built once even if `rcu`
-    // retries under concurrent registration (it only re-clones the map
-    // and re-applies the same first-wins insert with this `router`).
+    // factory cannot corrupt the registry: the panic propagates before any
+    // insert, leaving the registry untouched (the poisoned lock is recovered
+    // by the next registration).
     let router = factory();
     let is_default = name == DEFAULT_APP_NAME;
     APP_ROUTERS.rcu(|current| {

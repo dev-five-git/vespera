@@ -6,6 +6,16 @@ description = "In-process HTTP dispatch for axum — drive a Router via oneshot 
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Compiles the criterion A/B "before" twins (serde-based wire header
+# parse/serialize, the `http::request::Builder` request build, the
+# `serde_json::Value` 422 hoist) and the `bench_support` surface that
+# `benches/dispatch.rs` calls.  OFF by default so production builds (and
+# the shipped JNI cdylib) never compile the serde wire-header scaffolding
+# that exists only to benchmark the hand-rolled production path against.
+# Enable with `cargo bench -p vespera_inprocess --features bench-support`.
+bench-support = []
+
 [dependencies]
 # Lock-free read snapshot for the multi-app router registry: named-app
 # dispatch (every request in a multi-app JNI deployment) resolves with a

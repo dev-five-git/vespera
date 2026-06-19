@@ -12,12 +12,9 @@ use http_body::{Body as HttpBody, Frame};
 use http_body_util::BodyExt;
 
 use crate::config::streaming_channel_capacity;
+use crate::dispatch::{check_ingress_cap, parse_validate_resolve};
 use crate::internal::{dispatch_and_split, dispatch_response_streaming};
-use crate::registry::resolve_app_router;
-use crate::wire::{
-    WIRE_HEADER_RESERVE, WIRE_VERSION, build_wire_header_bytes, error_wire, parse_wire_header,
-    split_wire_request,
-};
+use crate::wire::{WIRE_HEADER_RESERVE, build_wire_header_bytes, error_wire, split_wire_request};
 
 /// Outcome of one request-body pull on the bidirectional streaming
 /// path (the `pull_chunk` callback).
@@ -102,35 +99,15 @@ where
     // (`input` is a complete `Vec`), so it gets the same ingress cap as
     // the buffered entry points.  Only *bidirectional* streaming, which
     // pulls the request body chunk-by-chunk, is exempt.
-    if crate::config::request_exceeds_limit(input.len()) {
-        return error_wire(
-            413,
-            &format!(
-                "request size {} bytes exceeds configured maximum of {} bytes",
-                input.len(),
-                crate::config::max_request_bytes()
-            ),
-        );
+    if let Some(err) = check_ingress_cap(input.len()) {
+        return err;
     }
     let (header_bytes, body_bytes) = match split_wire_request(input) {
         Ok(parts) => parts,
         Err(msg) => return error_wire(400, &msg),
     };
-    let header = match parse_wire_header(&header_bytes) {
-        Ok(h) => h,
-        Err(msg) => return error_wire(400, &msg),
-    };
-    if header.v != WIRE_VERSION {
-        return error_wire(
-            400,
-            &format!(
-                "unsupported wire version: got {}, expected {WIRE_VERSION}",
-                header.v
-            ),
-        );
-    }
-    let router = match resolve_app_router(&header) {
-        Ok(r) => r,
+    let (header, router) = match parse_validate_resolve(&header_bytes) {
+        Ok(parts) => parts,
         Err(wire) => return wire,
     };
     let (status, headers, metadata) = match dispatch_response_streaming(
@@ -209,15 +186,8 @@ where
     // exactly once) holds.  Pre-header error paths return `Complete`: the
     // (error) response was delivered in full via `on_header`, nothing is
     // truncated.
-    if crate::config::request_exceeds_limit(input.len()) {
-        on_header(&error_wire(
-            413,
-            &format!(
-                "request size {} bytes exceeds configured maximum of {} bytes",
-                input.len(),
-                crate::config::max_request_bytes()
-            ),
-        ));
+    if let Some(err) = check_ingress_cap(input.len()) {
+        on_header(&err);
         return StreamOutcome::Complete;
     }
     let (header_bytes, body_bytes) = match split_wire_request(input) {
@@ -227,25 +197,8 @@ where
             return StreamOutcome::Complete;
         }
     };
-    let header = match parse_wire_header(&header_bytes) {
-        Ok(h) => h,
-        Err(msg) => {
-            on_header(&error_wire(400, &msg));
-            return StreamOutcome::Complete;
-        }
-    };
-    if header.v != WIRE_VERSION {
-        on_header(&error_wire(
-            400,
-            &format!(
-                "unsupported wire version: got {}, expected {WIRE_VERSION}",
-                header.v
-            ),
-        ));
-        return StreamOutcome::Complete;
-    }
-    let router = match resolve_app_router(&header) {
-        Ok(r) => r,
+    let (header, router) = match parse_validate_resolve(&header_bytes) {
+        Ok(parts) => parts,
         Err(wire) => {
             on_header(&wire);
             return StreamOutcome::Complete;
@@ -490,25 +443,8 @@ where
         ));
         return StreamOutcome::Complete;
     }
-    let header = match parse_wire_header(&header_bytes) {
-        Ok(h) => h,
-        Err(msg) => {
-            on_header(&error_wire(400, &msg));
-            return StreamOutcome::Complete;
-        }
-    };
-    if header.v != WIRE_VERSION {
-        on_header(&error_wire(
-            400,
-            &format!(
-                "unsupported wire version: got {}, expected {WIRE_VERSION}",
-                header.v
-            ),
-        ));
-        return StreamOutcome::Complete;
-    }
-    let router = match resolve_app_router(&header) {
-        Ok(r) => r,
+    let (header, router) = match parse_validate_resolve(&header_bytes) {
+        Ok(parts) => parts,
         Err(wire) => {
             on_header(&wire);
             return StreamOutcome::Complete;
@@ -745,12 +681,9 @@ fn spawn_request_producer(
             // loss).  Catch it and forward a `StreamAbort`, exactly like the
             // explicit `RequestChunk::Error` path, so axum/the handler
             // rejects the body instead of seeing a short, "successful" read.
-            let next = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pull())) {
-                Ok(next) => next,
-                Err(_) => {
-                    let _ = tx.blocking_send(Err(StreamAbort));
-                    break;
-                }
+            let Ok(next) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut pull)) else {
+                let _ = tx.blocking_send(Err(StreamAbort));
+                break;
             };
             match next {
                 RequestChunk::Data(chunk) => {

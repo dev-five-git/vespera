@@ -586,7 +586,12 @@ public class VesperaProxyController {
     private static String joinHeaderValues(String name, HttpServletRequest request) {
         Enumeration<String> values = request.getHeaders(name);
         if (values == null || !values.hasMoreElements()) {
-            return request.getHeader(name);
+            // A non-conformant container can return an empty getHeaders(name)
+            // AND a null getHeader(name) for a name that getHeaderNames()
+            // listed; coalesce to "" so a null never reaches the wire-header
+            // JSON encoder (VesperaWireCodec.writeJsonString) and NPEs there.
+            String value = request.getHeader(name);
+            return value != null ? value : "";
         }
         String first = values.nextElement();
         if (!values.hasMoreElements()) {
