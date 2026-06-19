@@ -2173,8 +2173,6 @@
           },
           "map": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "type": "string"
             }
@@ -2190,8 +2188,6 @@
           },
           "nested_map": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/StructBodyWithOptional"
             }
@@ -2209,8 +2205,6 @@
             "type": "array",
             "items": {
               "type": "object",
-              "properties": {},
-              "required": [],
               "additionalProperties": {
                 "$ref": "#/components/schemas/StructBodyWithOptional"
               }
@@ -2218,16 +2212,12 @@
           },
           "nested_struct_map": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/StructBodyWithOptional"
             }
           },
           "nested_struct_map_array": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "type": "array",
               "items": {
@@ -2265,8 +2255,6 @@
           },
           "map": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "type": "string"
             }
@@ -2282,8 +2270,6 @@
           },
           "nestedMap": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/StructBodyWithOptional"
             }
@@ -2301,8 +2287,6 @@
             "type": "array",
             "items": {
               "type": "object",
-              "properties": {},
-              "required": [],
               "additionalProperties": {
                 "$ref": "#/components/schemas/StructBodyWithOptional"
               }
@@ -2310,16 +2294,12 @@
           },
           "nestedStructMap": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/StructBodyWithOptional"
             }
           },
           "nestedStructMapArray": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "type": "array",
               "items": {
@@ -2713,8 +2693,6 @@
             "properties": {
               "G": {
                 "type": "object",
-                "properties": {},
-                "required": [],
                 "additionalProperties": {
                   "type": "string"
                 }
@@ -2729,8 +2707,6 @@
             "properties": {
               "H": {
                 "type": "object",
-                "properties": {},
-                "required": [],
                 "additionalProperties": {
                   "type": "string"
                 }
@@ -2818,8 +2794,6 @@
             "properties": {
               "N": {
                 "type": "object",
-                "properties": {},
-                "required": [],
                 "additionalProperties": {
                   "type": "string",
                   "nullable": true
@@ -3761,8 +3735,6 @@
           },
           "in_skip5": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/InSkipResponse"
             },
@@ -3770,8 +3742,6 @@
           },
           "in_skip6": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/InSkipResponse"
             },

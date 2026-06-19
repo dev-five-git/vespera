@@ -26,11 +26,14 @@
 //!
 //! # Safety invariant
 //!
-//! The cached `*mut jni::sys::JNIEnv` is valid **only on the exact OS
-//! thread that produced it**.  This is upheld structurally:
+//! The cached `*mut jni::sys::JNIEnv` is valid **only for the exact
+//! `JavaVM` and OS thread that produced it**.  This is upheld structurally:
 //!
 //! * the pointer lives in a `thread_local!` cell, so it is never
 //!   observable from another thread;
+//! * the raw `JavaVM` pointer is stored beside it and compared on every
+//!   lookup, so an embedding that invokes this bridge with another VM on
+//!   the same native thread ejects the stale cache before reuse;
 //! * it is produced by `GetEnv` / `AttachCurrentThreadAsDaemon` *for
 //!   the current thread* and only ever dereferenced inside the same
 //!   [`with_cached_daemon_env`] call that read it back from TLS;
@@ -57,6 +60,7 @@ use jni::errors::jni_error_code_to_result;
 /// this module created (`owned`).
 struct CachedEnv {
     env_ptr: *mut jni::sys::JNIEnv,
+    vm_ptr: *mut jni::sys::JavaVM,
     jvm: jni::JavaVM,
     owned: bool,
 }
@@ -204,10 +208,18 @@ where
         // cannot double-borrow the cell.
         let env_ptr = {
             let mut slot = cell.borrow_mut();
+            let requested_vm = jvm.get_raw();
+            if slot
+                .as_ref()
+                .is_some_and(|cached| cached.vm_ptr != requested_vm)
+            {
+                *slot = None;
+            }
             if slot.is_none() {
                 let (env_ptr, owned) = resolve_current_env(jvm)?;
                 *slot = Some(CachedEnv {
                     env_ptr,
+                    vm_ptr: requested_vm,
                     jvm: jvm.clone(),
                     owned,
                 });

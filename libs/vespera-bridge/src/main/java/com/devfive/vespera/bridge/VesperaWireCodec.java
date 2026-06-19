@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Map;
+import java.util.Objects;
 
 import com.devfive.vespera.bridge.VesperaBridge.DecodedResponse;
 import com.devfive.vespera.bridge.VesperaBridge.HeaderSink;
@@ -157,6 +158,8 @@ final class VesperaWireCodec {
 
         @Override
         public void put(String lowerName, String value) {
+            Objects.requireNonNull(lowerName, "header key");
+            Objects.requireNonNull(value, "header value");
             if (started) {
                 buf.put(',');
             } else {
@@ -290,9 +293,10 @@ final class VesperaWireCodec {
     static ExposedByteArrayOutputStream fillHeaderJson(String appName, String method,
             String path, String query, Map<String, String> headers) {
         ExposedByteArrayOutputStream buf = reusableHeaderBuffer();
-        // {"v":<WIRE_VERSION>, ...} — WIRE_VERSION is a single decimal digit.
+        Objects.requireNonNull(method, "method");
+        Objects.requireNonNull(path, "path");
         buf.putAscii("{\"v\":");
-        buf.put('0' + WIRE_VERSION);
+        writeAsciiInt(buf, WIRE_VERSION);
         buf.putAscii(",\"method\":");
         writeJsonString(buf, method);
         buf.putAscii(",\"path\":");
@@ -309,9 +313,9 @@ final class VesperaWireCodec {
                     buf.put(',');
                 }
                 first = false;
-                writeJsonString(buf, e.getKey());
+                writeJsonString(buf, Objects.requireNonNull(e.getKey(), "header key"));
                 buf.put(':');
-                writeJsonString(buf, e.getValue());
+                writeJsonString(buf, Objects.requireNonNull(e.getValue(), "header value"));
             }
             buf.put('}');
         }
@@ -326,9 +330,10 @@ final class VesperaWireCodec {
     static ExposedByteArrayOutputStream fillHeaderJson(String appName, String method,
             String path, String query, HeaderSource headers) {
         ExposedByteArrayOutputStream buf = reusableHeaderBuffer();
-        // {"v":<WIRE_VERSION>, ...} — WIRE_VERSION is a single decimal digit.
+        Objects.requireNonNull(method, "method");
+        Objects.requireNonNull(path, "path");
         buf.putAscii("{\"v\":");
-        buf.put('0' + WIRE_VERSION);
+        writeAsciiInt(buf, WIRE_VERSION);
         buf.putAscii(",\"method\":");
         writeJsonString(buf, method);
         buf.putAscii(",\"path\":");
@@ -350,6 +355,10 @@ final class VesperaWireCodec {
         }
         buf.put('}');
         return buf;
+    }
+
+    private static void writeAsciiInt(ExposedByteArrayOutputStream out, int value) {
+        out.putAscii(Integer.toString(value));
     }
 
     private static ExposedByteArrayOutputStream reusableHeaderBuffer() {

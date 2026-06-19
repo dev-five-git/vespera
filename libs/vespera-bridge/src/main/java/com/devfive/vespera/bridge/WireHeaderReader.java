@@ -62,8 +62,10 @@ final class WireHeaderReader {
         int status = 500;
         if (r.peek() == '{') {
             r.beginObject();
+            int seen = 0;
             int key;
             while ((key = r.nextRootKey()) != KEY_END) {
+                seen = r.rejectDuplicateRootKey(seen, key);
                 switch (key) {
                     case KEY_STATUS -> status = r.readInt();
                     case KEY_HEADERS -> {
@@ -131,8 +133,10 @@ final class WireHeaderReader {
         Decoded out = new Decoded();
         if (r.peek() == '{') {
             r.beginObject();
+            int seen = 0;
             int key;
             while ((key = r.nextRootKey()) != KEY_END) {
+                seen = r.rejectDuplicateRootKey(seen, key);
                 switch (key) {
                     case KEY_STATUS -> out.status = r.readInt();
                     case KEY_HEADERS -> {
@@ -253,6 +257,17 @@ final class WireHeaderReader {
 
     private IllegalArgumentException err(String what) {
         return new IllegalArgumentException("wire header JSON: " + what + " at offset " + pos);
+    }
+
+    private int rejectDuplicateRootKey(int seen, int key) {
+        if (key < 0) {
+            return seen;
+        }
+        int bit = 1 << key;
+        if ((seen & bit) != 0) {
+            throw err("duplicate root key");
+        }
+        return seen | bit;
     }
 
     private void expect(char c) {
@@ -902,13 +917,15 @@ final class WireHeaderReader {
     }
 
     private void skipLiteral() {
-        while (pos < end) {
-            int d = buf.get(pos) & 0xFF;
-            if (d >= 'a' && d <= 'z') {
-                pos++;
-            } else {
-                break;
-            }
+        int c = cur();
+        if (c == 't') {
+            consumeLiteral("true");
+        } else if (c == 'f') {
+            consumeLiteral("false");
+        } else if (c == 'n') {
+            consumeLiteral("null");
+        } else {
+            throw err("expected literal");
         }
     }
 

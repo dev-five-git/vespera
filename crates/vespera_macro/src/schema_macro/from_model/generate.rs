@@ -164,7 +164,10 @@ pub fn generate_from_model_with_relations(
         // (see the `has_circular` arm below) and references the same stub.
         // Excluding them generated code referencing an undefined
         // `__parent_stub__` local for that schema shape.
-        if !matches!(rel.relation_type.as_str(), "HasMany" | "HasOne" | "BelongsTo") {
+        if !matches!(
+            rel.relation_type.as_str(),
+            "HasMany" | "HasOne" | "BelongsTo"
+        ) {
             return false;
         }
         // If using inline type, circular fields are excluded, so no parent stub needed

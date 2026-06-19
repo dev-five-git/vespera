@@ -239,10 +239,14 @@ public class VesperaProxyController {
         try (InputStream in = request.getInputStream()) {
             if (cap > 0 && contentLength < 0) {
                 long cappedPlusOne = cap == Long.MAX_VALUE ? Long.MAX_VALUE : cap + 1;
-                int readLimit = (int) Math.min(cappedPlusOne, Integer.MAX_VALUE);
+                long effectiveLimit = Math.min(cappedPlusOne, MAX_BUFFERED_BODY);
+                int readLimit = (int) effectiveLimit;
                 byte[] body = in.readNBytes(readLimit);
                 if ((long) body.length > cap) {
                     throw payloadTooLarge(body.length, cap);
+                }
+                if ((long) body.length == MAX_BUFFERED_BODY && cap >= MAX_BUFFERED_BODY) {
+                    throw payloadTooLarge(body.length, MAX_BUFFERED_BODY);
                 }
                 return body;
             }
@@ -432,12 +436,14 @@ public class VesperaProxyController {
             // Unsafe method (or retry disabled): re-running could return a
             // different response (e.g. DELETE → 204 then 404), so surface the
             // size to the operator instead of silently double-executing.
+            byte[] error = ("vespera DIRECT overflow: response needs "
+                    + overflow.requiredSize()
+                    + " bytes; route this request via BIDIRECTIONAL_STREAMING")
+                    .getBytes(StandardCharsets.UTF_8);
             response.setStatus(500);
-            response.getOutputStream().write(
-                    ("vespera DIRECT overflow: response needs "
-                            + overflow.requiredSize()
-                            + " bytes; route this request via BIDIRECTIONAL_STREAMING")
-                            .getBytes(StandardCharsets.UTF_8));
+            response.setContentType("text/plain; charset=utf-8");
+            response.setContentLength(error.length);
+            response.getOutputStream().write(error);
             response.getOutputStream().flush();
             return;
         }

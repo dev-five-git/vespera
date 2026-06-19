@@ -688,6 +688,7 @@ public class VesperaBridge {
             Map<String, String> headers,
             byte[] body,
             boolean retryOnOverflow) {
+        requireRequestInputs(method, path, headers);
         return VesperaDirectBufferPool.dispatchDirectPooled(
                 appName, method, path, query, headers, body, retryOnOverflow);
     }
@@ -700,6 +701,7 @@ public class VesperaBridge {
             HeaderSource headers,
             byte[] body,
             boolean retryOnOverflow) {
+        requireRequestInputs(method, path);
         return VesperaDirectBufferPool.dispatchDirectPooled(
                 appName, method, path, query, headers, body, retryOnOverflow);
     }
@@ -735,6 +737,7 @@ public class VesperaBridge {
             byte[] body,
             ByteBuffer target) {
         Objects.requireNonNull(target, "target");
+        requireRequestInputs(method, path, headers);
         return VesperaWireCodec.encodeRequestInto(appName, method, path, query, headers, body, target);
     }
 
@@ -747,6 +750,7 @@ public class VesperaBridge {
             byte[] body,
             ByteBuffer target) {
         Objects.requireNonNull(target, "target");
+        requireRequestInputs(method, path);
         return VesperaWireCodec.encodeRequestInto(appName, method, path, query, headers, body, target);
     }
 
@@ -804,6 +808,7 @@ public class VesperaBridge {
             String query,
             Map<String, String> headers,
             byte[] body) {
+        requireRequestInputs(method, path, headers);
         return VesperaWireCodec.encodeRequest(appName, method, path, query, headers, body);
     }
 
@@ -814,7 +819,24 @@ public class VesperaBridge {
             String query,
             HeaderSource headers,
             byte[] body) {
+        requireRequestInputs(method, path);
         return VesperaWireCodec.encodeRequest(appName, method, path, query, headers, body);
+    }
+
+    private static void requireRequestInputs(
+            String method, String path, Map<String, String> headers) {
+        requireRequestInputs(method, path);
+        if (headers != null) {
+            for (Map.Entry<String, String> header : headers.entrySet()) {
+                Objects.requireNonNull(header.getKey(), "header key");
+                Objects.requireNonNull(header.getValue(), "header value");
+            }
+        }
+    }
+
+    private static void requireRequestInputs(String method, String path) {
+        Objects.requireNonNull(method, "method");
+        Objects.requireNonNull(path, "path");
     }
 
     /**

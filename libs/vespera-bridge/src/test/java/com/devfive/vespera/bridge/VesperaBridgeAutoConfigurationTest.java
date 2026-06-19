@@ -6,7 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
@@ -121,6 +123,32 @@ class VesperaBridgeAutoConfigurationTest {
                 .run(ctx -> assertSame(
                         CustomExecutorConfig.EXECUTOR,
                         ctx.getBean("vesperaBridgeAsyncResponseExecutor", Executor.class)));
+    }
+
+    @Test
+    void defaultAsyncResponseExecutorUsesNamedDaemonThread() {
+        runner.run(ctx -> {
+            Executor executor = ctx.getBean("vesperaBridgeAsyncResponseExecutor", Executor.class);
+            CountDownLatch done = new CountDownLatch(1);
+            String[] name = {null};
+            boolean[] daemon = {false};
+
+            executor.execute(() -> {
+                Thread current = Thread.currentThread();
+                name[0] = current.getName();
+                daemon[0] = current.isDaemon();
+                done.countDown();
+            });
+
+            try {
+                assertTrue(done.await(5, TimeUnit.SECONDS));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+            assertTrue(name[0].startsWith("vespera-bridge-async-response-"), name[0]);
+            assertTrue(daemon[0]);
+        });
     }
 
     @Test

@@ -160,13 +160,21 @@ final class VesperaDirectBufferPool {
             DIRECT_UNDER_RETAIN_STREAK.set(streak);
             return;
         }
-        if (pool[0].capacity() > DIRECT_RETAIN_CAPACITY) {
-            pool[0] = ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY);
-        }
-        if (pool[1].capacity() > DIRECT_RETAIN_CAPACITY) {
-            pool[1] = ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY);
-        }
+        DIRECT_POOL.remove();
         DIRECT_UNDER_RETAIN_STREAK.set(0);
+    }
+
+    static boolean directPoolPresentForTest() {
+        SoftReference<ByteBuffer[]> ref = DIRECT_POOL.get();
+        return ref != null && ref.get() != null;
+    }
+
+    static ByteBuffer[] directPoolForTest() {
+        return directPool();
+    }
+
+    static void recordDirectPoolUseForTest(ByteBuffer[] pool, int requestLen, int responseLen) {
+        recordDirectPoolUse(pool, requestLen, responseLen);
     }
 
     /** Smallest power-of-two-ish growth ≥ {@code needed}, capped. */
@@ -285,6 +293,9 @@ final class VesperaDirectBufferPool {
     private static ByteBuffer dispatchViaPool(
             ByteBuffer[] pool, int reqLen, boolean retryOnOverflow) {
         int n = VesperaBridge.dispatchDirect(pool[0], reqLen, pool[1]);
+        if (n == Integer.MIN_VALUE) {
+            throw responseExceedsTwoGiBException();
+        }
         if (n < 0 && n != Integer.MIN_VALUE) {
             int required = -n;
             if (!retryOnOverflow) {
@@ -302,6 +313,9 @@ final class VesperaDirectBufferPool {
             pool[1] = ByteBuffer.allocateDirect(grownCapacity(required));
             n = VesperaBridge.dispatchDirect(pool[0], reqLen, pool[1]);
         }
+        if (n == Integer.MIN_VALUE) {
+            throw responseExceedsTwoGiBException();
+        }
         if (n < 0 && n != Integer.MIN_VALUE) {
             // A second overflow is legitimate: the retry re-ran the
             // handler, and a non-deterministic handler may produce a
@@ -317,5 +331,10 @@ final class VesperaDirectBufferPool {
         view.position(0).limit(n);
         recordDirectPoolUse(pool, reqLen, n);
         return view;
+    }
+
+    static IllegalStateException responseExceedsTwoGiBException() {
+        return new IllegalStateException(
+                "dispatchDirect response exceeds 2 GiB and cannot be represented; use streaming dispatch");
     }
 }

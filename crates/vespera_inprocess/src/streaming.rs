@@ -407,7 +407,8 @@ where
     H: FnMut(&[u8]),
     C: FnOnce(),
 {
-    bidirectional_streaming_inner(input_header, pull_chunk, on_chunk, on_header, request_close).await
+    bidirectional_streaming_inner(input_header, pull_chunk, on_chunk, on_header, request_close)
+        .await
 }
 
 async fn bidirectional_streaming_inner<P, F, H, C>(

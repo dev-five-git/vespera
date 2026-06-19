@@ -263,11 +263,11 @@ fn apply_constraints(schema: &mut Schema, c: &SchemaConstraints) {
     if let Some(v) = c.maximum {
         schema.maximum = Some(v);
     }
-    if let Some(v) = c.exclusive_minimum {
-        schema.exclusive_minimum = Some(v);
+    if c.exclusive_minimum == Some(true) {
+        schema.exclusive_minimum = c.minimum;
     }
-    if let Some(v) = c.exclusive_maximum {
-        schema.exclusive_maximum = Some(v);
+    if c.exclusive_maximum == Some(true) {
+        schema.exclusive_maximum = c.maximum;
     }
     if let Some(v) = c.multiple_of {
         schema.multiple_of = Some(v);
@@ -813,7 +813,7 @@ mod tests {
         let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
         let field = field_schema(&schema, "amount");
         assert_eq!(field.minimum, Some(0.0));
-        assert_eq!(field.exclusive_minimum, Some(true));
+        assert_eq!(field.exclusive_minimum, Some(0.0));
         assert_eq!(field.multiple_of, Some(0.01));
     }
 
@@ -905,8 +905,8 @@ mod tests {
         .unwrap();
         let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
         let amount = field_schema(&schema, "amount");
-        assert_eq!(amount.exclusive_minimum, Some(true));
-        assert_eq!(amount.exclusive_maximum, Some(true));
+        assert_eq!(amount.exclusive_minimum, Some(0.0));
+        assert_eq!(amount.exclusive_maximum, Some(100.0));
         assert_eq!(amount.multiple_of, Some(0.5));
         let tags = field_schema(&schema, "tags");
         assert_eq!(tags.unique_items, Some(true));

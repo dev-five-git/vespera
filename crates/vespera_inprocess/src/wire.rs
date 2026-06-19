@@ -345,9 +345,15 @@ pub fn write_wire_header_into_vec(
 #[cfg_attr(any(test, feature = "bench-support"), derive(Serialize))]
 struct ValidationErrorItem {
     path: String,
-    #[cfg_attr(any(test, feature = "bench-support"), serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        any(test, feature = "bench-support"),
+        serde(skip_serializing_if = "Option::is_none")
+    )]
     code: Option<String>,
-    #[cfg_attr(any(test, feature = "bench-support"), serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        any(test, feature = "bench-support"),
+        serde(skip_serializing_if = "Option::is_none")
+    )]
     message: Option<String>,
 }
 

@@ -8,8 +8,10 @@ pub use fk::find_fk_column_from_target_entity;
 #[allow(unused_imports)]
 pub use lookup::{
     collect_rs_files_recursive, file_path_to_module_path, find_model_from_schema_path,
-    find_struct_by_name_in_all_files, find_struct_from_path, find_struct_from_schema_path,
+    find_struct_from_path_detailed, find_struct_from_schema_path,
 };
+#[cfg(test)]
+pub use lookup::{find_struct_by_name_in_all_files, find_struct_from_path};
 
 #[cfg(test)]
 mod schema_type_lookup_tests {

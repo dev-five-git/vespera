@@ -49,10 +49,9 @@ pub fn read_byte_array_region(
     //   `convert_byte_array` (and `daemon_env`'s raw VM calls): the
     //   function-table entries are non-null `extern "system"` pointers.
     // * `array` is a live `byte[]` local/global reference; `[0, len)` is
-    //   in bounds because `len` never exceeds that array's length (it is
-    //   the array length for the buffered path, and `min(chunk_size, n)`
-    //   for the streaming pull path, where the Java buffer is
-    //   `chunk_size` bytes).
+    //   in bounds because callers pass either the array length (buffered
+    //   path) or the exact positive `InputStream.read(byte[])` count after
+    //   checking it does not exceed the fixed streaming buffer length.
     // * The destination is `vec`'s reserved-but-uninitialised capacity
     //   (`with_capacity(len)` reserved exactly `len` bytes).  Only a raw
     //   `*mut jbyte` is passed to JNI — no `&mut [i8]` over uninitialised

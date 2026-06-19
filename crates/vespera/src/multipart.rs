@@ -159,11 +159,11 @@ impl TypedMultipartError {
     /// it describes a client-supplied field problem). The full `Display`
     /// (including `Other`'s `source`) stays available for server-side
     /// logging via the `std::error::Error` impl.
-    fn response_message(&self) -> String {
+    fn response_message(&self) -> Cow<'_, str> {
         if matches!(self, Self::Other { .. }) {
-            "internal error while processing multipart request".to_owned()
+            Cow::Borrowed("internal error while processing multipart request")
         } else {
-            self.to_string()
+            Cow::Owned(self.to_string())
         }
     }
 }
@@ -221,7 +221,9 @@ impl IntoResponse for TypedMultipartError {
         // fallback keeps this request-time error path panic-free (matching
         // `Validated<T>`'s 422 envelope) by emitting a minimal valid envelope
         // instead of unwinding inside a handler.
-        .unwrap_or_else(|_| br#"{"errors":[{"message":"serialization error","path":""}]}"#.to_vec());
+        .unwrap_or_else(|_| {
+            br#"{"errors":[{"message":"serialization error","path":""}]}"#.to_vec()
+        });
         (
             status,
             [(
@@ -492,6 +494,12 @@ fn str_to_bool(s: &str) -> Option<bool> {
 /// an explicit `#[form_data(limit = "...")]`.
 const DEFAULT_STRING_FIELD_LIMIT_BYTES: usize = 1024 * 1024; // 1 MiB
 
+/// Default streaming cap for an **unannotated** `NamedTempFile` multipart field.
+///
+/// Explicit `#[form_data(limit = "unlimited")]` continues to opt out by passing
+/// `usize::MAX` through the derive-generated parser.
+const DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES: usize = 1024 * 1024; // 1 MiB
+
 impl<S: Send + Sync> TryFromFieldWithState<S> for String {
     async fn try_from_field_with_state(
         field: Field<'_>,
@@ -626,18 +634,17 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for tempfile::NamedTempFile {
         })?;
         let mut file = tokio::fs::File::from_std(std_file);
 
+        let limit_bytes = limit_bytes.unwrap_or(DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES);
         let mut total = 0usize;
         while let Some(chunk) = field.chunk().await? {
             // `saturating_add` (matching `read_field_data`) prevents a
             // pathological chunk size from wrapping `total` and slipping
             // past the limit check below.
             total = total.saturating_add(chunk.len());
-            if let Some(limit) = limit_bytes
-                && total > limit
-            {
+            if total > limit_bytes {
                 return Err(TypedMultipartError::FieldTooLarge {
                     field_name: field.name().unwrap_or_default().to_string(),
-                    limit_bytes: limit,
+                    limit_bytes,
                 });
             }
             tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)

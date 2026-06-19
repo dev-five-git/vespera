@@ -96,7 +96,13 @@ pub fn parse_type_to_schema_ref_with_schemas(
     SCHEMA_RECURSION_DEPTH.with(|depth| {
         let current = depth.get();
         if current >= MAX_SCHEMA_RECURSION_DEPTH {
-            return SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)));
+            return SchemaRef::Inline(Box::new(Schema {
+                description: Some(format!(
+                    "Schema generation stopped after reaching recursion depth limit ({MAX_SCHEMA_RECURSION_DEPTH}) for `{}`",
+                    quote::quote!(#ty)
+                )),
+                ..Schema::new(SchemaType::Object)
+            }));
         }
         depth.set(current + 1);
         let result = parse_type_impl(ty, known_schemas, struct_definitions);

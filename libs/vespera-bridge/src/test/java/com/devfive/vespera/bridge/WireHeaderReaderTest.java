@@ -146,6 +146,23 @@ class WireHeaderReaderTest {
     }
 
     @Test
+    void rejectsDuplicateStatusRootKey() {
+        assertRejected("{\"status\":200,\"status\":201}".getBytes(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void rejectsDuplicateHeadersRootKey() {
+        assertRejected(
+                ("{\"status\":200,\"headers\":{\"a\":\"b\"},"
+                        + "\"headers\":{\"c\":\"d\"}}").getBytes(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void rejectsMalformedSkippedLiteral() {
+        assertRejected("{\"status\":200,\"unknown\":truth}".getBytes(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void skipsUnknownLargeAndDecimalNumericFields() {
         // Forward-compat: an UNKNOWN numeric field beyond int range, or a
         // decimal / exponent, must be skipped as a raw token — NOT parsed

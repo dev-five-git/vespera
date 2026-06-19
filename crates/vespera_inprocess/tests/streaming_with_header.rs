@@ -1030,12 +1030,9 @@ async fn streaming_with_header_chunk_break_returns_sink_stopped_outcome() {
     // clean completion, so the JNI bridge can surface the truncation.
     install_router();
     let wire = encode_wire("GET", "/multi-chunk", HashMap::new(), &[]);
-    let outcome = dispatch_streaming_with_header_async(
-        wire,
-        |_header| {},
-        |_chunk| ControlFlow::Break(()),
-    )
-    .await;
+    let outcome =
+        dispatch_streaming_with_header_async(wire, |_header| {}, |_chunk| ControlFlow::Break(()))
+            .await;
     assert_eq!(
         outcome,
         StreamOutcome::SinkStopped,

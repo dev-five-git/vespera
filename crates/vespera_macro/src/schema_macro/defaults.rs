@@ -323,7 +323,10 @@ mod tests {
         assert_eq!(fns.len(), 1);
         let body = fns[0].to_string();
         assert!(body.contains("parse"), "valid literal keeps parse: {body}");
-        assert!(body.contains("unwrap"), "valid literal keeps unwrap: {body}");
+        assert!(
+            body.contains("unwrap"),
+            "valid literal keeps unwrap: {body}"
+        );
         assert!(
             !body.contains("compile_error"),
             "valid literal must not emit compile_error: {body}"
@@ -335,8 +338,7 @@ mod tests {
         // `"abc"` cannot parse to i32: the generated default function body must
         // be a compile_error (pointing at the field) instead of a runtime
         // `.parse().unwrap()` that would panic when serde fills a missing field.
-        let attrs: Vec<syn::Attribute> =
-            vec![syn::parse_quote!(#[sea_orm(default_value = "abc")])];
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[sea_orm(default_value = "abc")])];
         let struct_name = syn::Ident::new("Test", proc_macro2::Span::call_site());
         let ty: syn::Type = syn::parse_str("i32").unwrap();
         let mut fns = Vec::new();

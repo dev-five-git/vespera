@@ -16,11 +16,15 @@
 //! `fs::metadata` costs ~1–10 µs per call. Projects with 100+ source files
 //! previously paid that cost on every cache lookup, even on hits.
 //!
-//! The epoch mechanism amortises this: each top-level macro invocation
-//! (`vespera!`, `schema_type!`) calls [`bump_epoch`] once at entry. Within
-//! that epoch, a given path's mtime is fetched from `fs::metadata` **at most
-//! once** and stored in `mtime_epoch_cache`. Subsequent lookups for the same
-//! path in the same epoch reuse the cached mtime without a syscall.
+//! The epoch mechanism amortises this: each file-cache-reaching top-level macro
+//! invocation (`#[derive(Schema)]`, `schema!`, `schema_type!`, `vespera!`, and
+//! `export_app!`) calls [`bump_epoch`] once at entry. Within that epoch, a given
+//! path's mtime is fetched from `fs::metadata` **at most once** and stored in
+//! `mtime_epoch_cache`. Subsequent lookups for the same path in the same epoch
+//! reuse the cached mtime without a syscall. `#[route]`, `#[cron]`, and
+//! `#[derive(Multipart)]` do not call into this module: they parse only the
+//! annotated item tokens and update in-memory macro storage, so they are
+//! intentionally exempt.
 //!
 //! Across epochs the full mtime check still runs, preserving the existing
 //! invalidation semantics (important for rust-analyzer's long-lived server).
@@ -195,7 +199,8 @@ struct FileCache {
 
     // --- Epoch caching ---
     /// Monotonically increasing counter. Bumped once at the start of each
-    /// top-level macro invocation (`vespera!`, `schema_type!`).
+    /// file-cache-reaching top-level macro invocation (`#[derive(Schema)]`,
+    /// `schema!`, `schema_type!`, `vespera!`, `export_app!`).
     epoch: u64,
     /// Epoch the path-keyed lookup caches (`struct_lookup`,
     /// `fk_column_lookup`) were last populated for.
@@ -244,10 +249,12 @@ thread_local! {
 
 /// Advance the per-invocation epoch counter.
 ///
-/// Call this **once** at the start of each top-level macro invocation
-/// (`vespera!`, `schema_type!`). Within a single epoch, `fs::metadata` is
-/// called at most once per path; subsequent lookups for the same path reuse
-/// the cached mtime without a syscall.
+/// Call this **once** at the start of each file-cache-reaching top-level macro
+/// invocation (`#[derive(Schema)]`, `schema!`, `schema_type!`, `vespera!`,
+/// `export_app!`). `#[route]`, `#[cron]`, and `#[derive(Multipart)]` are exempt
+/// because they do not read files through this module. Within a single epoch,
+/// `fs::metadata` is called at most once per path; subsequent lookups for the
+/// same path reuse the cached mtime without a syscall.
 ///
 /// Across epochs the full mtime check still runs, preserving the existing
 /// invalidation semantics for long-lived processes (e.g. rust-analyzer).

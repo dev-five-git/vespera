@@ -88,4 +88,23 @@ class VesperaDirectWrapperTest {
         assertTrue(e.getMessage().contains("123456"), e.getMessage());
         assertTrue(e.getMessage().contains("re-run"), e.getMessage());
     }
+
+    @Test
+    void integerMinValueDirectOverflowHasActionableMessage() {
+        IllegalStateException e = VesperaDirectBufferPool.responseExceedsTwoGiBException();
+
+        assertTrue(e.getMessage().contains("exceeds 2 GiB"), e.getMessage());
+        assertTrue(e.getMessage().contains("streaming dispatch"), e.getMessage());
+    }
+
+    @Test
+    void directPoolClearsThreadLocalAfterIdleStreak() {
+        ByteBuffer[] pool = VesperaDirectBufferPool.directPoolForTest();
+
+        for (int i = 0; i < 8; i++) {
+            VesperaDirectBufferPool.recordDirectPoolUseForTest(pool, 1, 1);
+        }
+
+        assertTrue(!VesperaDirectBufferPool.directPoolPresentForTest());
+    }
 }

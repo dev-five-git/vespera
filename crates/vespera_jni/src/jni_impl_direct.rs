@@ -10,7 +10,7 @@ use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{JByteBuffer, JClass};
 use jni::sys::jint;
 
-use super::block_on_sync_runtime;
+use super::{block_on_sync_runtime, panic_wire};
 
 /// Sentinel for [`Java_..._dispatchDirect`]: the response (or its
 /// required size) cannot be represented in the `jint` return value
@@ -145,74 +145,103 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
 ) -> jint {
     unowned_env
         .with_env(|env| -> jni::errors::Result<jint> {
-            // Err here (null address ⇒ heap buffer, or JVM trouble)
-            // is thrown as RuntimeException via the resolve below —
-            // defense in depth behind the Java-side isDirect() check.
-            let in_addr = env.get_direct_buffer_address(&in_buf)?;
-            let in_cap = env.get_direct_buffer_capacity(&in_buf)?;
-            let out_addr = env.get_direct_buffer_address(&out_buf)?;
-            let out_cap = env.get_direct_buffer_capacity(&out_buf)?;
+            let mut out_region: Option<(*mut u8, usize)> = None;
+            let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                || -> jni::errors::Result<jint> {
+                    // Err here (null address ⇒ heap buffer, or JVM trouble)
+                    // is thrown as RuntimeException via the resolve below —
+                    // defense in depth behind the Java-side isDirect() check.
+                    let in_addr = env.get_direct_buffer_address(&in_buf)?;
+                    let in_cap = env.get_direct_buffer_capacity(&in_buf)?;
+                    let out_addr = env.get_direct_buffer_address(&out_buf)?;
+                    let out_cap = env.get_direct_buffer_capacity(&out_buf)?;
+                    out_region = Some((out_addr, out_cap));
 
-            // Validate in_len against the buffer's real capacity —
-            // all failures still produce a valid wire response in
-            // `out_buf`, per the dispatch* family contract.
-            let in_len = match usize::try_from(in_len) {
-                Ok(len) if len <= in_cap => len,
-                _ => {
-                    let err = vespera_inprocess::error_wire(
-                        400,
-                        "invalid in_len (negative or exceeds buffer capacity)",
-                    );
-                    return Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) });
-                }
-            };
+                    // Validate in_len against the buffer's real capacity —
+                    // all failures still produce a valid wire response in
+                    // `out_buf`, per the dispatch* family contract.
+                    let in_len = match usize::try_from(in_len) {
+                        Ok(len) if len <= in_cap => len,
+                        _ => {
+                            let err = vespera_inprocess::error_wire(
+                                400,
+                                "invalid in_len (negative or exceeds buffer capacity)",
+                            );
+                            // SAFETY: `out_addr`/`out_cap` came from the live direct
+                            // output buffer above and `err` is a Rust-owned Vec.
+                            return Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) });
+                        }
+                    };
 
-            // SEC-1: reject overlapping `in_buf` / `out_buf` ranges.
-            // Below we create a shared `&[u8]` over the input and an
-            // exclusive `&mut [u8]` over the output; if they alias the
-            // same direct-buffer memory (the caller passed the same
-            // buffer, or overlapping `slice()`/`duplicate()` views) that
-            // is instant UB.  The Java wrapper cannot detect this (it has
-            // no native address), so the check lives here.  `out_buf` is
-            // writable by the wrapper's `isReadOnly()` guard (SEC-2), so
-            // writing the error response into it is sound.
-            if ranges_overlap(in_addr as usize, in_len, out_addr as usize, out_cap) {
-                let err = vespera_inprocess::error_wire(
-                    400,
-                    "in_buf and out_buf must not overlap (aliasing would be undefined behavior)",
-                );
-                return Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) });
-            }
+                    // SEC-1: reject overlapping `in_buf` / `out_buf` ranges.
+                    // Below we create a shared `&[u8]` over the input and an
+                    // exclusive `&mut [u8]` over the output; if they alias the
+                    // same direct-buffer memory (the caller passed the same
+                    // buffer, or overlapping `slice()`/`duplicate()` views) that
+                    // is instant UB.  The Java wrapper cannot detect this (it has
+                    // no native address), so the check lives here.  `out_buf` is
+                    // writable by the wrapper's `isReadOnly()` guard (SEC-2), so
+                    // writing the error response into it is sound.
+                    if ranges_overlap(in_addr as usize, in_len, out_addr as usize, out_cap) {
+                        let err = vespera_inprocess::error_wire(
+                            400,
+                            "in_buf and out_buf must not overlap (aliasing would be undefined behavior)",
+                        );
+                        // SAFETY: `out_addr`/`out_cap` came from the live direct
+                        // output buffer above and `err` is a Rust-owned Vec.
+                        return Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) });
+                    }
 
-            let dispatched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                // SAFETY: invariants 1–3 above.  `in_addr..in_addr+in_len`
-                // (`in_len <= in_cap`) is a readable region and
-                // `out_addr..out_addr+out_cap` a writable region, both of
-                // direct buffers pinned by their live `in_buf` / `out_buf`
-                // local refs; the Java caller is blocked for the whole call,
-                // so both stay valid throughout.  The borrowed `input` slice
-                // is read in place (no `Vec` copy) and never escapes this
-                // synchronous `block_on`.
-                let input = unsafe { std::slice::from_raw_parts(in_addr, in_len) };
-                let out = unsafe { std::slice::from_raw_parts_mut(out_addr, out_cap) };
-                block_on_sync_runtime(vespera_inprocess::dispatch_into_async_borrowed(input, out))
-            }));
+                    let dispatched = {
+                        // SAFETY: invariants 1–3 above.  `in_addr..in_addr+in_len`
+                        // (`in_len <= in_cap`) is a readable region and
+                        // `out_addr..out_addr+out_cap` a writable region, both of
+                        // direct buffers pinned by their live `in_buf` / `out_buf`
+                        // local refs; the Java caller is blocked for the whole call,
+                        // so both stay valid throughout.  The borrowed `input` slice
+                        // is read in place (no `Vec` copy) and never escapes this
+                        // synchronous `block_on`.
+                        let input = unsafe { std::slice::from_raw_parts(in_addr, in_len) };
+                        let out = unsafe { std::slice::from_raw_parts_mut(out_addr, out_cap) };
+                        block_on_sync_runtime(vespera_inprocess::dispatch_into_async_borrowed(
+                            input, out,
+                        ))
+                    };
 
-            let code = match dispatched {
-                Ok(vespera_inprocess::DirectWriteResult::Complete(n)) => {
-                    // n <= out_cap, and Java buffer capacities are
-                    // jint-bounded, so this always fits i32.
-                    jint::try_from(n).unwrap_or(DIRECT_UNREPRESENTABLE)
-                }
-                Ok(vespera_inprocess::DirectWriteResult::Overflow(required)) => {
-                    jint::try_from(required).map_or(DIRECT_UNREPRESENTABLE, |r| -r)
-                }
-                Err(_) => {
-                    let err = vespera_inprocess::error_wire(500, "panic in Rust engine");
-                    unsafe { write_response_to_out(out_addr, out_cap, &err) }
-                }
-            };
-            Ok(code)
+                    let code = match dispatched {
+                        vespera_inprocess::DirectWriteResult::Complete(n) => {
+                            // n <= out_cap, and Java buffer capacities are
+                            // jint-bounded, so this always fits i32.
+                            jint::try_from(n).unwrap_or(DIRECT_UNREPRESENTABLE)
+                        }
+                        vespera_inprocess::DirectWriteResult::Overflow(required) => {
+                            jint::try_from(required).map_or(DIRECT_UNREPRESENTABLE, |r| -r)
+                        }
+                    };
+                    Ok(code)
+                },
+            ));
+
+            guarded.unwrap_or_else(|_| {
+                out_region.map_or_else(
+                    || {
+                        let _ = env.throw_new(
+                            jni::jni_str!("java/lang/RuntimeException"),
+                            jni::jni_str!(
+                                "panic in Rust engine before direct output buffer resolution"
+                            ),
+                        );
+                        Ok(DIRECT_UNREPRESENTABLE)
+                    },
+                    |(out_addr, out_cap)| {
+                        let err = panic_wire();
+                        // SAFETY: `out_addr`/`out_cap` were resolved from the live
+                        // direct output buffer before the panic, and `err` is a
+                        // Rust-owned Vec that cannot alias that Java buffer.
+                        Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) })
+                    },
+                )
+            })
         })
         .resolve::<ThrowRuntimeExAndDefault>()
 }

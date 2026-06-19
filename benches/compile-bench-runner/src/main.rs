@@ -58,12 +58,17 @@ fn parse_args() -> Args {
     };
     let mut it = env::args().skip(1);
     while let Some(arg) = it.next() {
-        let mut next = |flag: &str| it.next().unwrap_or_else(|| fatal(&format!("{flag} needs a value")));
+        let mut next = |flag: &str| {
+            it.next()
+                .unwrap_or_else(|| fatal(&format!("{flag} needs a value")))
+        };
         match arg.as_str() {
             "--target" => a.target = next("--target"),
             "--pass" => a.pass = next("--pass"),
             "--runs" => {
-                a.runs = next("--runs").parse().unwrap_or_else(|_| fatal("--runs must be an integer"));
+                a.runs = next("--runs")
+                    .parse()
+                    .unwrap_or_else(|_| fatal("--runs must be an integer"));
             }
             "--save-baseline" => a.save_baseline = Some(next("--save-baseline")),
             "--baseline" => a.baseline = Some(next("--baseline")),
@@ -110,7 +115,16 @@ fn measure_once(target: &str, pass: &str) -> Option<f64> {
     // Force a full re-expansion of the fixture lib (deps stay built).
     let _ = cargo().args(["clean", "-p", target]).status();
     let out = cargo()
-        .args(["rustc", "--quiet", "-p", target, "--lib", "--", "-Z", "time-passes"])
+        .args([
+            "rustc",
+            "--quiet",
+            "-p",
+            target,
+            "--lib",
+            "--",
+            "-Z",
+            "time-passes",
+        ])
         .output()
         .ok()?;
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -166,7 +180,11 @@ fn main() {
                 eprintln!("  run {:>2}: {t:.4}s", i + 1);
                 samples.push(t);
             }
-            None => eprintln!("  run {:>2}: pass `{}` not found in output", i + 1, args.pass),
+            None => eprintln!(
+                "  run {:>2}: pass `{}` not found in output",
+                i + 1,
+                args.pass
+            ),
         }
     }
     if samples.is_empty() {
@@ -175,8 +193,16 @@ fn main() {
 
     samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let med0 = median(&samples);
-    let clean: Vec<f64> = samples.iter().copied().filter(|&t| t <= med0 * 3.0).collect();
-    let clean = if clean.is_empty() { samples.clone() } else { clean };
+    let clean: Vec<f64> = samples
+        .iter()
+        .copied()
+        .filter(|&t| t <= med0 * 3.0)
+        .collect();
+    let clean = if clean.is_empty() {
+        samples.clone()
+    } else {
+        clean
+    };
 
     let min = clean[0];
     let med = median(&clean);
@@ -209,8 +235,7 @@ fn main() {
         let path = baselines_dir().join(format!("{name}.txt"));
         match fs::read_to_string(&path) {
             Ok(s) => {
-                let mut base: Vec<f64> =
-                    s.lines().filter_map(|l| l.trim().parse().ok()).collect();
+                let mut base: Vec<f64> = s.lines().filter_map(|l| l.trim().parse().ok()).collect();
                 if base.is_empty() {
                     eprintln!("   baseline `{name}` is empty");
                 } else {

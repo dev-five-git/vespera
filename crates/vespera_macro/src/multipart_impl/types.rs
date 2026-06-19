@@ -32,7 +32,8 @@ pub(super) fn is_vec_type(ty: &Type) -> bool {
 ///
 /// File uploads are the unbounded-memory risk that multipart limits guard,
 /// so the `Multipart` derive requires an explicit `#[form_data(limit = ...)]`
-/// on them (see [`super::attrs::has_explicit_limit`]).
+/// on them.
+#[cfg(test)]
 pub(super) fn is_file_field_type(ty: &Type) -> bool {
     let inner = if is_option_type(ty) || is_vec_type(ty) {
         extract_inner_generic(ty)

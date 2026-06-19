@@ -2177,8 +2177,6 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           },
           "map": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "type": "string"
             }
@@ -2194,8 +2192,6 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           },
           "nested_map": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/StructBodyWithOptional"
             }
@@ -2213,8 +2209,6 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "type": "array",
             "items": {
               "type": "object",
-              "properties": {},
-              "required": [],
               "additionalProperties": {
                 "$ref": "#/components/schemas/StructBodyWithOptional"
               }
@@ -2222,16 +2216,12 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           },
           "nested_struct_map": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/StructBodyWithOptional"
             }
           },
           "nested_struct_map_array": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "type": "array",
               "items": {
@@ -2269,8 +2259,6 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           },
           "map": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "type": "string"
             }
@@ -2286,8 +2274,6 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           },
           "nestedMap": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/StructBodyWithOptional"
             }
@@ -2305,8 +2291,6 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "type": "array",
             "items": {
               "type": "object",
-              "properties": {},
-              "required": [],
               "additionalProperties": {
                 "$ref": "#/components/schemas/StructBodyWithOptional"
               }
@@ -2314,16 +2298,12 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           },
           "nestedStructMap": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/StructBodyWithOptional"
             }
           },
           "nestedStructMapArray": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "type": "array",
               "items": {
@@ -2717,8 +2697,6 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "properties": {
               "G": {
                 "type": "object",
-                "properties": {},
-                "required": [],
                 "additionalProperties": {
                   "type": "string"
                 }
@@ -2733,8 +2711,6 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "properties": {
               "H": {
                 "type": "object",
-                "properties": {},
-                "required": [],
                 "additionalProperties": {
                   "type": "string"
                 }
@@ -2822,8 +2798,6 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             "properties": {
               "N": {
                 "type": "object",
-                "properties": {},
-                "required": [],
                 "additionalProperties": {
                   "type": "string",
                   "nullable": true
@@ -3765,8 +3739,6 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           },
           "in_skip5": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/InSkipResponse"
             },
@@ -3774,8 +3746,6 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           },
           "in_skip6": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/InSkipResponse"
             },

@@ -9,7 +9,10 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.beans.factory.annotation.Qualifier;
 
 import java.util.concurrent.Executor;
-import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Spring Boot autoconfigure entry point for vespera-bridge.
@@ -45,9 +48,9 @@ import java.util.concurrent.ForkJoinPool;
  *       set {@code vespera.bridge.controller-enabled=false} and
  *       provide your own {@code @RestController} that calls the
  *       {@link VesperaBridge} native methods directly.</li>
- *   <li><strong>Async response continuation executor</strong>:
- *       replace the {@code vesperaBridgeAsyncResponseExecutor} bean.
- *       The default is {@link ForkJoinPool#commonPool()}.</li>
+   *   <li><strong>Async response continuation executor</strong>:
+   *       replace the {@code vesperaBridgeAsyncResponseExecutor} bean.
+   *       The default is a small named daemon-thread pool.</li>
  * </ul>
  *
  * <p><strong>0.2.0 behavior change:</strong> the autoconfigured
@@ -135,8 +138,15 @@ public class VesperaBridgeAutoConfiguration {
 
     @Bean("vesperaBridgeAsyncResponseExecutor")
     @ConditionalOnMissingBean(name = "vesperaBridgeAsyncResponseExecutor")
-    public Executor vesperaBridgeAsyncResponseExecutor() {
-        return ForkJoinPool.commonPool();
+    public ExecutorService vesperaBridgeAsyncResponseExecutor() {
+        int threads = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
+        AtomicInteger seq = new AtomicInteger(1);
+        ThreadFactory factory = task -> {
+            Thread thread = new Thread(task, "vespera-bridge-async-response-" + seq.getAndIncrement());
+            thread.setDaemon(true);
+            return thread;
+        };
+        return Executors.newFixedThreadPool(threads, factory);
     }
 
     @Bean

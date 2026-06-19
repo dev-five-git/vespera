@@ -94,6 +94,16 @@ where
     }
 }
 
+impl<U> ValidatePayload for crate::multipart::TypedMultipart<U>
+where
+    U: Validate<Context = ()>,
+{
+    type Inner = U;
+    fn payload(&self) -> &U {
+        &self.0
+    }
+}
+
 impl<S, T> FromRequest<S> for Validated<T>
 where
     S: Send + Sync,

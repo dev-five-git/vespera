@@ -140,6 +140,16 @@ where
     }
 }
 
+#[allow(clippy::ref_option)] // serde skip_serializing_if mandates &Option<T> signature
+fn is_empty_properties(value: &Option<BTreeMap<String, SchemaRef>>) -> bool {
+    value.as_ref().is_none_or(BTreeMap::is_empty)
+}
+
+#[allow(clippy::ref_option)] // serde skip_serializing_if mandates &Option<T> signature
+fn is_empty_required(value: &Option<Vec<String>>) -> bool {
+    value.as_ref().is_none_or(Vec::is_empty)
+}
+
 /// JSON Schema definition
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -191,22 +201,18 @@ pub struct Schema {
         serialize_with = "serialize_number_constraint"
     )]
     pub maximum: Option<f64>,
-    /// Exclusive minimum.
-    ///
-    /// NOTE: currently modeled as the OpenAPI 3.0 / draft-04 **boolean
-    /// flag** (paired with `minimum`).  Migrating this to the JSON Schema
-    /// 2020-12 / OpenAPI 3.1 **numeric** form is tracked as a deliberate,
-    /// breaking spec-conformance change (it alters generated output and the
-    /// `#[schema(exclusive_minimum)]` attribute semantics) — see the 3.1
-    /// conformance decision, not done here to avoid a half-migrated model.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exclusive_minimum: Option<bool>,
-    /// Exclusive maximum.
-    ///
-    /// See [`Schema::exclusive_minimum`]: still the OpenAPI 3.0 boolean
-    /// flag, pending the bundled strict-3.1 conformance migration.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exclusive_maximum: Option<bool>,
+    /// Exclusive minimum boundary (OpenAPI 3.1 / JSON Schema 2020-12 numeric form).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_number_constraint"
+    )]
+    pub exclusive_minimum: Option<f64>,
+    /// Exclusive maximum boundary (OpenAPI 3.1 / JSON Schema 2020-12 numeric form).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_number_constraint"
+    )]
+    pub exclusive_maximum: Option<f64>,
     /// Multiple of
     #[serde(
         skip_serializing_if = "Option::is_none",
@@ -248,10 +254,10 @@ pub struct Schema {
 
     // Object constraints
     /// Property definitions
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "is_empty_properties")]
     pub properties: Option<BTreeMap<String, SchemaRef>>,
     /// List of required properties
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "is_empty_required")]
     pub required: Option<Vec<String>>,
     /// `additionalProperties`: a boolean or a value-schema (CORE-04).
     ///

@@ -11,7 +11,7 @@ use quote::quote;
 
 use super::defaults::generate_sea_orm_default_attrs;
 use super::file_cache;
-use super::file_lookup::find_struct_from_path;
+use super::file_lookup::find_struct_from_path_detailed;
 use super::from_model::generate_from_model_with_relations;
 use super::inline_types::{
     generate_inline_relation_type, generate_inline_relation_type_no_relations,
@@ -65,8 +65,8 @@ pub fn generate_schema_type_code(
         // then file lookup for non-Schema types (e.g., SeaORM Model)
         if let Some(found) = schema_storage.get(&source_type_name) {
             found
-        } else if let Some((found, module_path)) =
-            find_struct_from_path(&input.source_type, schema_name_hint)
+        } else if let Ok((found, module_path)) =
+            find_struct_from_path_detailed(&input.source_type, schema_name_hint)
         {
             struct_def_owned = found;
             // Use the module path from file lookup for qualified paths
@@ -75,21 +75,21 @@ pub fn generate_schema_type_code(
             source_module_path = module_path;
             &struct_def_owned
         } else {
-            return Err(syn::Error::new_spanned(
-                &input.source_type,
-                format!(
-                    "type `{source_type_name}` not found. Either:\n\
-                     1. Use #[derive(Schema)] in the same file\n\
-                     2. Use full module path like `crate::models::memo::Model` to reference a struct from another file"
-                ),
-            ));
+            match find_struct_from_path_detailed(&input.source_type, schema_name_hint) {
+                Ok((found, module_path)) => {
+                    struct_def_owned = found;
+                    source_module_path = module_path;
+                    &struct_def_owned
+                }
+                Err(err) => return Err(err.to_syn_error(&input.source_type)),
+            }
         }
     } else {
         // Simple name: try storage first (for same-file structs), then file lookup with schema name hint
         if let Some(found) = schema_storage.get(&source_type_name) {
             found
-        } else if let Some((found, module_path)) =
-            find_struct_from_path(&input.source_type, schema_name_hint)
+        } else if let Ok((found, module_path)) =
+            find_struct_from_path_detailed(&input.source_type, schema_name_hint)
         {
             struct_def_owned = found;
             // For simple names, we MUST use the inferred module path from the file location
@@ -97,15 +97,14 @@ pub fn generate_schema_type_code(
             source_module_path = module_path;
             &struct_def_owned
         } else {
-            return Err(syn::Error::new_spanned(
-                &input.source_type,
-                format!(
-                    "type `{source_type_name}` not found. Either:\n\
-                     1. Use #[derive(Schema)] in the same file\n\
-                     2. Use full module path like `crate::models::memo::Model` to reference a struct from another file\n\
-                     3. If using `name = \"XxxSchema\"`, ensure the file name matches (e.g., xxx.rs)"
-                ),
-            ));
+            match find_struct_from_path_detailed(&input.source_type, schema_name_hint) {
+                Ok((found, module_path)) => {
+                    struct_def_owned = found;
+                    source_module_path = module_path;
+                    &struct_def_owned
+                }
+                Err(err) => return Err(err.to_syn_error(&input.source_type)),
+            }
         }
     };
 

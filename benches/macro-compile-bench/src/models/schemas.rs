@@ -171,12 +171,21 @@ pub struct ErrorBody {
 impl<T: Serialize> Paginated<T> {
     /// One empty page — keeps handlers free of `T` construction.
     pub fn empty() -> Self {
-        Self { items: Vec::new(), total: 0, page: 1, per_page: 20 }
+        Self {
+            items: Vec::new(),
+            total: 0,
+            page: 1,
+            per_page: 20,
+        }
     }
 }
 
 impl<T: Serialize> ApiResponse<T> {
     pub fn ok(data: T) -> Self {
-        Self { data, success: true, message: None }
+        Self {
+            data,
+            success: true,
+            message: None,
+        }
     }
 }

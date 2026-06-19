@@ -9,7 +9,11 @@ pub fn extract_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
             // Try using parse_nested_meta for robust parsing
             let mut found_rename_all = None;
             let parsed = attr.parse_nested_meta(|meta| {
-                if meta.path.segments.last().is_some_and(|seg| seg.ident == "rename_all")
+                if meta
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|seg| seg.ident == "rename_all")
                     && let Ok(value) = meta.value()
                     && let Ok(syn::Expr::Lit(syn::ExprLit {
                         lit: syn::Lit::Str(s),
@@ -78,7 +82,11 @@ pub fn extract_field_rename(attrs: &[syn::Attribute]) -> Option<String> {
             // Use parse_nested_meta to parse nested attributes
             let mut found_rename = None;
             let parsed = attr.parse_nested_meta(|meta| {
-                if meta.path.segments.last().is_some_and(|seg| seg.ident == "rename")
+                if meta
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|seg| seg.ident == "rename")
                     && let Ok(value) = meta.value()
                     && let Ok(syn::Expr::Lit(syn::ExprLit {
                         lit: syn::Lit::Str(s),
@@ -189,7 +197,12 @@ pub fn extract_flatten(attrs: &[syn::Attribute]) -> bool {
                 // itself; the manual fallback below then only covers the genuine
                 // parse-error case (an unhandled `key = value` aborting the
                 // walk), not "key present but written as a qualified path".
-                if meta.path.segments.last().is_some_and(|seg| seg.ident == "flatten") {
+                if meta
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|seg| seg.ident == "flatten")
+                {
                     found = true;
                 }
                 Ok(())
@@ -230,7 +243,12 @@ pub fn extract_default(attrs: &[syn::Attribute]) -> Option<Option<String>> {
             let parsed = attr.parse_nested_meta(|meta| {
                 // Match by the path's LAST segment (see extract_flatten) so a
                 // qualified `module::default` is caught by the structured parser.
-                if meta.path.segments.last().is_some_and(|seg| seg.ident == "default") {
+                if meta
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|seg| seg.ident == "default")
+                {
                     // Check if it has a value (default = "function_name")
                     if let Ok(value) = meta.value() {
                         if let Ok(syn::Expr::Lit(syn::ExprLit {

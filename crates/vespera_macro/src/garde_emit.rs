@@ -941,13 +941,8 @@ mod tests {
         );
     }
 
-    // ── is_option_type / peel_option / rust_numeric_kind branches ───
-
     #[test]
     fn tuple_typed_field_does_not_trip_option_or_numeric_helpers() {
-        // Tuple types are Type::Tuple, not Type::Path — drives the
-        // non-Path early-return branches inside is_option_type,
-        // peel_option, and rust_numeric_kind.
         let s: DeriveInput = parse_quote! {
             struct WithTuple {
                 #[schema(min_length = 3)]
@@ -955,21 +950,12 @@ mod tests {
             }
         };
         let out = emit_to_string(s);
-        // Tuple is not an Option — outer rule block must NOT wrap in
-        // `if let Some`.
         assert!(!out.contains("if let :: std :: option :: Option :: Some"));
         assert!(out.contains("length :: chars :: apply"));
     }
 
     #[test]
     fn bare_option_without_angle_brackets_falls_through_peel() {
-        // A bare `Option` with no type argument (invalid Rust, but the
-        // macro must still handle it gracefully without panicking).
-        // Detection now goes through `option_inner`, which extracts the
-        // inner type from `Option<T>`; a bare `Option` has no inner type,
-        // so `is_option_type` returns false and the field is NOT treated
-        // as a peelable option.  The rule is therefore applied directly
-        // (`else` branch) rather than wrapped in `if let Some`.
         let s: DeriveInput = parse_quote! {
             struct BareOption {
                 #[schema(min_length = 3)]
@@ -977,18 +963,12 @@ mod tests {
             }
         };
         let out = emit_to_string(s);
-        // No panic; not peeled, so no `if let Some` wrap …
         assert!(!out.contains("if let :: std :: option :: Option :: Some"));
-        // … but the length rule is still emitted (applied directly).
         assert!(out.contains("length :: chars :: apply"));
     }
 
     #[test]
     fn option_with_lifetime_only_arg_falls_through_find_map() {
-        // `Option<'static>` is syntactically a valid path with one
-        // angle-bracketed argument — but the argument is a Lifetime,
-        // not a Type, so peel_option's `find_map` returns None.
-        // Semantically nonsensical, but the macro must not panic.
         let s: DeriveInput = parse_quote! {
             struct WithLifetime {
                 #[schema(min_length = 3)]
@@ -996,9 +976,6 @@ mod tests {
             }
         };
         let out = emit_to_string(s);
-        // The rule block still emits — peel_option returning None just
-        // means rust_numeric_kind is invoked on the outer `Option<'a>`
-        // type, which also returns None.  No panic, no compile_error.
         assert!(out.contains("length :: chars :: apply"));
     }
 }

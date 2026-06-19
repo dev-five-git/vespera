@@ -103,6 +103,21 @@ class ProxyControllerBodyHeaderTest {
     }
 
     @Test
+    void unknownLengthWithHugeConfiguredCapDoesNotAllocateHugeReadBuffer() throws IOException {
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/x") {
+            @Override
+            public long getContentLengthLong() {
+                return -1;
+            }
+        };
+        req.setContent("hello".getBytes(StandardCharsets.UTF_8));
+
+        byte[] body = VesperaProxyController.readBody(req, Long.MAX_VALUE);
+
+        assertEquals("hello", new String(body, StandardCharsets.UTF_8));
+    }
+
+    @Test
     void bufferedCapZeroKeepsBackwardCompatibleUnlimitedRead() throws IOException {
         MockHttpServletRequest req = new MockHttpServletRequest("POST", "/x");
         req.setContent("hello".getBytes(StandardCharsets.UTF_8));

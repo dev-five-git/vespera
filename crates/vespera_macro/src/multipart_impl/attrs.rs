@@ -110,6 +110,7 @@ pub(super) fn extract_limit_tokens(attrs: &[syn::Attribute]) -> TokenStream {
 /// value all return `false`. The `Multipart` derive treats that as a
 /// missing limit on a file field and emits a compile error, so an unbounded
 /// upload is never accepted silently.
+#[cfg(test)]
 pub(super) fn has_explicit_limit(attrs: &[syn::Attribute]) -> bool {
     for attr in attrs {
         if attr.path().is_ident("form_data") {

@@ -26,9 +26,8 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, Fields};
 
-use self::attrs::{extract_strict, extract_struct_default, has_explicit_limit};
+use self::attrs::{extract_strict, extract_struct_default};
 use self::fields::{FieldCodegen, process_fields};
-use self::types::is_file_field_type;
 
 /// Process the `#[derive(TryFromMultipart)]` macro input.
 pub fn process_derive(input: &DeriveInput) -> TokenStream {
@@ -56,27 +55,6 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
             .to_compile_error();
         }
     };
-
-    // File fields (`FieldData<_>`, including `Option`/`Vec`-wrapped) MUST
-    // declare an explicit upload bound — `#[form_data(limit = "<size>")]` or
-    // `#[form_data(limit = "unlimited")]`. Without it an unbounded file could
-    // be streamed into temp storage, so a missing/invalid limit is a compile
-    // error spanned to the offending field. The errors are emitted ALONGSIDE
-    // the impl (not instead of it) so a missing limit does not also produce a
-    // cascading "trait not implemented" error at every use site.
-    let limit_errors: Vec<TokenStream> = fields
-        .iter()
-        .filter(|field| is_file_field_type(&field.ty) && !has_explicit_limit(&field.attrs))
-        .map(|field| {
-            syn::Error::new_spanned(
-                field,
-                "multipart file field requires an explicit upload limit: add \
-                 `#[form_data(limit = \"<size>\")]` (e.g. \"10MiB\") — or \
-                 `#[form_data(limit = \"unlimited\")]` to opt out of the cap",
-            )
-            .to_compile_error()
-        })
-        .collect();
 
     let cg = process_fields(fields.iter(), rename_all.as_deref(), strict, struct_default);
 
@@ -116,7 +94,6 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
     } = &cg;
 
     quote! {
-        #(#limit_errors)*
         impl<__VesperaS__: Send + Sync> vespera::multipart::TryFromMultipartWithState<__VesperaS__> for #struct_name {
             async fn try_from_multipart_with_state(
                 __multipart__: &mut vespera::axum::extract::Multipart,
@@ -281,26 +258,28 @@ mod tests {
         assert!(!code.contains("UnknownField"));
     }
 
-    // ── File-field upload-limit enforcement (compile-time) ───────────
+    // ── File-field upload-limit defaults (runtime) ───────────
 
     #[test]
-    fn test_process_derive_file_field_without_limit_errors() {
+    fn test_process_derive_file_field_without_limit_uses_runtime_default() {
         let input: syn::DeriveInput =
             syn::parse_str("struct Up { pub file: FieldData<NamedTempFile> }").unwrap();
         let code = process_derive(&input).to_string();
         assert!(
-            code.contains("compile_error"),
-            "a file field without a limit must be a compile error: {code}"
+            code.contains("Option :: None"),
+            "a file field without a limit should pass None to runtime default cap: {code}"
         );
     }
 
     #[test]
-    fn test_process_derive_optional_file_field_without_limit_errors() {
+    fn test_process_derive_optional_file_field_without_limit_uses_runtime_default() {
         let input: syn::DeriveInput =
             syn::parse_str("struct Up { pub file: Option<FieldData<NamedTempFile>> }").unwrap();
         assert!(
-            process_derive(&input).to_string().contains("compile_error"),
-            "an Option-wrapped file field without a limit must error"
+            process_derive(&input)
+                .to_string()
+                .contains("Option :: None"),
+            "an Option-wrapped file field without a limit should use runtime default cap"
         );
     }
 

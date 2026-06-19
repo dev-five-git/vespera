@@ -6,6 +6,73 @@ use syn::Type;
 
 use crate::metadata::StructMetadata;
 
+/// Why a source struct lookup failed.
+#[derive(Debug, Clone)]
+pub enum LookupError {
+    /// The macro could not derive a usable path from the supplied type.
+    InvalidTypePath,
+    /// `CARGO_MANIFEST_DIR` was unavailable.
+    MissingManifestDir,
+    /// No matching struct definition was found.
+    NotFound {
+        struct_name: String,
+        searched: Vec<PathBuf>,
+    },
+    /// Multiple files define the requested struct and no hint disambiguated it.
+    Ambiguous {
+        struct_name: String,
+        candidates: Vec<PathBuf>,
+    },
+}
+
+impl LookupError {
+    /// Convert a lookup failure into a user-facing macro diagnostic.
+    pub fn to_syn_error(&self, span: &impl quote::ToTokens) -> syn::Error {
+        match self {
+            Self::InvalidTypePath => syn::Error::new_spanned(
+                span,
+                "schema_type! source must be a type path like `Model` or `crate::models::user::Model`",
+            ),
+            Self::MissingManifestDir => syn::Error::new_spanned(
+                span,
+                "schema_type! source type not found: CARGO_MANIFEST_DIR is not set",
+            ),
+            Self::NotFound {
+                struct_name,
+                searched,
+            } => syn::Error::new_spanned(
+                span,
+                format!(
+                    "schema_type! struct `{struct_name}` not found. Searched: {}",
+                    render_paths(searched)
+                ),
+            ),
+            Self::Ambiguous {
+                struct_name,
+                candidates,
+            } => syn::Error::new_spanned(
+                span,
+                format!(
+                    "schema_type! found multiple structs named `{struct_name}`. Add a fully-qualified path or a `name = \"...\"` hint. Candidates: {}",
+                    render_paths(candidates)
+                ),
+            ),
+        }
+    }
+}
+
+fn render_paths(paths: &[PathBuf]) -> String {
+    if paths.is_empty() {
+        "<none>".to_string()
+    } else {
+        paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 /// Build candidate file paths from module segments.
 ///
 /// Given a source directory and module segments (e.g., `["models", "memo"]`),
@@ -45,17 +112,27 @@ pub(super) fn candidate_file_paths(src_dir: &Path, module_segments: &[&str]) -> 
 /// Returns `(StructMetadata, Vec<String>)` where the Vec is the module path.
 /// For qualified paths, this is extracted from the type itself.
 /// For simple names, it's inferred from the file location.
+#[cfg(test)]
 pub fn find_struct_from_path(
     ty: &Type,
     schema_name_hint: Option<&str>,
 ) -> Option<(StructMetadata, Vec<String>)> {
+    find_struct_from_path_detailed(ty, schema_name_hint).ok()
+}
+
+/// Detailed variant of [`find_struct_from_path`] that preserves failure reasons.
+pub fn find_struct_from_path_detailed(
+    ty: &Type,
+    schema_name_hint: Option<&str>,
+) -> Result<(StructMetadata, Vec<String>), LookupError> {
     // Get CARGO_MANIFEST_DIR to locate src folder (cached to avoid repeated syscalls)
-    let manifest_dir = crate::schema_macro::file_cache::get_manifest_dir()?;
+    let manifest_dir = crate::schema_macro::file_cache::get_manifest_dir()
+        .ok_or(LookupError::MissingManifestDir)?;
     let src_dir = Path::new(&manifest_dir).join("src");
 
     // Extract path segments from the type
     let Type::Path(type_path) = ty else {
-        return None;
+        return Err(LookupError::InvalidTypePath);
     };
 
     let segments: Vec<String> = type_path
@@ -66,11 +143,11 @@ pub fn find_struct_from_path(
         .collect();
 
     if segments.is_empty() {
-        return None;
+        return Err(LookupError::InvalidTypePath);
     }
 
     // The last segment is the struct name
-    let struct_name = segments.last()?.clone();
+    let struct_name = segments.last().ok_or(LookupError::InvalidTypePath)?.clone();
 
     // Build possible file paths from the module path
     // e.g., models::memo::Model -> src/models/memo.rs or src/models/memo/mod.rs
@@ -83,7 +160,7 @@ pub fn find_struct_from_path(
 
     // If no module path (simple name like `Model`), scan all files with schema_name hint
     if module_segments.is_empty() {
-        return find_struct_by_name_in_all_files(&src_dir, &struct_name, schema_name_hint);
+        return find_struct_by_name_in_all_files_detailed(&src_dir, &struct_name, schema_name_hint);
     }
 
     // For qualified paths, the module path is extracted from the type itself
@@ -100,14 +177,19 @@ pub fn find_struct_from_path(
         if let Some(definition) =
             crate::schema_macro::file_cache::get_struct_definition(&file_path, &struct_name)
         {
-            return Some((
+            return Ok((
                 StructMetadata::new_model(struct_name, definition),
                 type_module_path,
             ));
         }
     }
 
-    None
+    Err(LookupError::NotFound {
+        struct_name,
+        searched: candidate_file_paths(&src_dir, &module_segments)
+            .into_iter()
+            .collect(),
+    })
 }
 
 /// Find a struct by name by scanning all `.rs` files in the src directory.
@@ -127,11 +209,22 @@ pub fn find_struct_from_path(
 /// Returns `(StructMetadata, Vec<String>)` where the Vec is the inferred module path
 /// from the file location (e.g., `["crate", "models", "user"]`).
 #[allow(clippy::too_many_lines)]
+#[cfg(test)]
 pub fn find_struct_by_name_in_all_files(
     src_dir: &Path,
     struct_name: &str,
     schema_name_hint: Option<&str>,
 ) -> Option<(StructMetadata, Vec<String>)> {
+    find_struct_by_name_in_all_files_detailed(src_dir, struct_name, schema_name_hint).ok()
+}
+
+/// Detailed variant of [`find_struct_by_name_in_all_files`].
+#[allow(clippy::too_many_lines)]
+pub fn find_struct_by_name_in_all_files_detailed(
+    src_dir: &Path,
+    struct_name: &str,
+    schema_name_hint: Option<&str>,
+) -> Result<(StructMetadata, Vec<String>), LookupError> {
     // Use cached struct-candidate index: files already filtered by text
     // search.  `Arc<[PathBuf]>` — iterate by reference; only matched
     // paths are cloned.
@@ -172,7 +265,7 @@ pub fn find_struct_by_name_in_all_files(
         if found_in_candidates.len() == 1 {
             let (path, metadata) = found_in_candidates.remove(0);
             let module_path = file_path_to_module_path(&path, src_dir);
-            return Some((metadata, module_path));
+            return Ok((metadata, module_path));
         }
 
         // If candidates found multiple, try disambiguation by exact filename match
@@ -189,11 +282,17 @@ pub fn find_struct_by_name_in_all_files(
             if exact_match.len() == 1 {
                 let (path, metadata) = exact_match[0];
                 let module_path = file_path_to_module_path(path, src_dir);
-                return Some((metadata.clone(), module_path));
+                return Ok((metadata.clone(), module_path));
             }
 
             // Still ambiguous among candidates
-            return None;
+            return Err(LookupError::Ambiguous {
+                struct_name: struct_name.to_string(),
+                candidates: found_in_candidates
+                    .into_iter()
+                    .map(|(path, _)| path)
+                    .collect(),
+            });
         }
 
         // No match in candidates — fall through to scan remaining files
@@ -218,9 +317,16 @@ pub fn find_struct_by_name_in_all_files(
         1 => {
             let (path, metadata) = found_structs.remove(0);
             let module_path = file_path_to_module_path(&path, src_dir);
-            Some((metadata, module_path))
+            Ok((metadata, module_path))
         }
-        _ => None,
+        0 => Err(LookupError::NotFound {
+            struct_name: struct_name.to_string(),
+            searched: all_files.iter().cloned().collect(),
+        }),
+        _ => Err(LookupError::Ambiguous {
+            struct_name: struct_name.to_string(),
+            candidates: found_structs.into_iter().map(|(path, _)| path).collect(),
+        }),
     }
 }
 

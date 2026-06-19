@@ -238,18 +238,29 @@ pub struct PathItem {
 }
 
 impl PathItem {
-    /// Set an operation for a specific HTTP method
-    pub fn set_operation(&mut self, method: HttpMethod, operation: Operation) {
+    /// Try to set an operation for a specific HTTP method.
+    ///
+    /// Returns the operation that was already present, if this call replaced one.
+    pub fn try_set_operation(
+        &mut self,
+        method: HttpMethod,
+        operation: Operation,
+    ) -> Option<Operation> {
         match method {
-            HttpMethod::Get => self.get = Some(operation),
-            HttpMethod::Post => self.post = Some(operation),
-            HttpMethod::Put => self.put = Some(operation),
-            HttpMethod::Patch => self.patch = Some(operation),
-            HttpMethod::Delete => self.delete = Some(operation),
-            HttpMethod::Head => self.head = Some(operation),
-            HttpMethod::Options => self.options = Some(operation),
-            HttpMethod::Trace => self.trace = Some(operation),
+            HttpMethod::Get => self.get.replace(operation),
+            HttpMethod::Post => self.post.replace(operation),
+            HttpMethod::Put => self.put.replace(operation),
+            HttpMethod::Patch => self.patch.replace(operation),
+            HttpMethod::Delete => self.delete.replace(operation),
+            HttpMethod::Head => self.head.replace(operation),
+            HttpMethod::Options => self.options.replace(operation),
+            HttpMethod::Trace => self.trace.replace(operation),
         }
+    }
+
+    /// Set an operation for a specific HTTP method, discarding any replaced operation.
+    pub fn set_operation(&mut self, method: HttpMethod, operation: Operation) {
+        let _ = self.try_set_operation(method, operation);
     }
 }
 

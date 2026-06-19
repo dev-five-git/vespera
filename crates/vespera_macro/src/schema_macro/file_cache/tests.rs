@@ -449,7 +449,8 @@ fn h1_single_file_add_reextracts_only_changed_file() {
     );
     // The win: only the newly added file is re-tokenised, not all N+1.
     assert_eq!(
-        rebuild, 1,
+        rebuild,
+        1,
         "rebuild after a single-file add must re-tokenise only the new file \
          (got {rebuild}; pre-fix this re-tokenised all N+1 = {} files)",
         N + 1

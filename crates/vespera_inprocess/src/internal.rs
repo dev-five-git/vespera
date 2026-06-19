@@ -303,7 +303,10 @@ where
                     // like the body-error arm below — instead of falling
                     // through to the original success header, which would
                     // report a short, truncated response as a clean success.
-                    return Err((500, "response body sink stopped before completion".to_owned()));
+                    return Err((
+                        500,
+                        "response body sink stopped before completion".to_owned(),
+                    ));
                 }
             }
             Some(Err(_)) => {

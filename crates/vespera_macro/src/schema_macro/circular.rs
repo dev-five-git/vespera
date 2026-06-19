@@ -5,13 +5,15 @@
 
 use std::collections::HashMap;
 
-use super::type_utils::normalize_token_str;
 use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::{
     seaorm::extract_belongs_to_from_field,
-    type_utils::{capitalize_first, is_option_type, is_seaorm_relation_type},
+    type_utils::{
+        SeaOrmRelationKind, capitalize_first, first_generic_type_arg, is_option_type,
+        is_seaorm_relation_type, seaorm_relation_inner_type, seaorm_relation_kind,
+    },
 };
 use crate::parser::extract_skip;
 
@@ -70,19 +72,14 @@ pub fn analyze_circular_refs(source_module_path: &[String], definition: &str) ->
         .iter()
         .filter_map(|f| f.ident.as_ref().map(|id| (id.to_string(), f)))
         .collect();
-    // Precompute format strings used for circular reference detection
-    let schema_pattern = format!("{source_module}::Schema");
-    let entity_pattern = format!("{source_module}::Entity");
     let capitalized_pattern = format!("{}Schema", capitalize_first(source_module));
 
     for field in &fields_named.named {
         // FieldsNamed guarantees all fields have identifiers
         let field_ident = field.ident.as_ref().expect("named field has ident");
         let field_name = field_ident.to_string();
-        let ty_str = normalize_token_str(&quote!(#field.ty));
-
         // --- has_fk_relations logic ---
-        if ty_str.contains("HasOne<") || ty_str.contains("BelongsTo<") {
+        if seaorm_relation_kind(&field.ty).is_some_and(SeaOrmRelationKind::is_fk_backed) {
             has_fk = true;
 
             // --- is_circular_relation_required logic (for ALL FK fields) ---
@@ -95,18 +92,9 @@ pub fn analyze_circular_refs(source_module_path: &[String], definition: &str) ->
         }
 
         // --- detect_circular_fields logic ---
-        // Skip HasMany — they are excluded by default and don't create circular refs
-        if !ty_str.contains("HasMany<") {
-            let is_circular = (ty_str.contains("HasOne<")
-                || ty_str.contains("BelongsTo<")
-                || ty_str.contains("Box<"))
-                && (ty_str.contains(&schema_pattern)
-                    || ty_str.contains(&entity_pattern)
-                    || ty_str.contains(&capitalized_pattern));
-
-            if is_circular {
-                circular_fields.push(field_name);
-            }
+        // Skip HasMany — they are excluded by default and don't create circular refs.
+        if is_circular_relation_type(&field.ty, source_module, &capitalized_pattern) {
+            circular_fields.push(field_name);
         }
     }
 
@@ -114,6 +102,62 @@ pub fn analyze_circular_refs(source_module_path: &[String], definition: &str) ->
         circular_fields,
         has_fk_relations: has_fk,
         circular_field_required,
+    }
+}
+
+fn is_circular_relation_type(
+    ty: &syn::Type,
+    source_module: &str,
+    capitalized_schema: &str,
+) -> bool {
+    match seaorm_relation_kind(ty) {
+        Some(SeaOrmRelationKind::HasMany) => false,
+        Some(SeaOrmRelationKind::HasOne | SeaOrmRelationKind::BelongsTo) => {
+            seaorm_relation_inner_type(ty).is_some_and(|inner| {
+                type_targets_source_schema(inner, source_module, capitalized_schema)
+            })
+        }
+        None => type_targets_source_schema(ty, source_module, capitalized_schema),
+    }
+}
+
+fn transparent_inner_type<'a>(ty: &'a syn::Type, wrapper: &str) -> Option<&'a syn::Type> {
+    let syn::Type::Path(type_path) = ty else {
+        return None;
+    };
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != wrapper {
+        return None;
+    }
+    first_generic_type_arg(segment)
+}
+
+fn type_targets_source_schema(
+    ty: &syn::Type,
+    source_module: &str,
+    capitalized_schema: &str,
+) -> bool {
+    if let Some(inner) =
+        transparent_inner_type(ty, "Option").or_else(|| transparent_inner_type(ty, "Box"))
+    {
+        return type_targets_source_schema(inner, source_module, capitalized_schema);
+    }
+    let syn::Type::Path(type_path) = ty else {
+        return false;
+    };
+    let segments: Vec<_> = type_path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    match segments.as_slice() {
+        [last] => last == capitalized_schema,
+        [.., module, last] => {
+            module == source_module && (last == "Schema" || last == "Entity")
+                || last == capitalized_schema
+        }
+        [] => false,
     }
 }
 
@@ -128,13 +172,11 @@ pub fn generate_default_for_relation_field(
     field_attrs: &[syn::Attribute],
     all_fields: &syn::FieldsNamed,
 ) -> TokenStream {
-    let ty_str = normalize_token_str(&quote!(#ty));
-
-    // Check the SeaORM relation type
-    if ty_str.contains("HasMany<") {
+    // Check the SeaORM relation type using the parsed AST rather than rendered tokens.
+    if seaorm_relation_kind(ty) == Some(SeaOrmRelationKind::HasMany) {
         // HasMany -> Vec<Schema> -> empty vec
         quote! { #field_ident: vec![] }
-    } else if ty_str.contains("HasOne<") || ty_str.contains("BelongsTo<") {
+    } else if seaorm_relation_kind(ty).is_some_and(SeaOrmRelationKind::is_fk_backed) {
         // Check FK field optionality
         let fk_field = extract_belongs_to_from_field(field_attrs);
         let is_optional = fk_field.as_ref().is_none_or(|fk| {

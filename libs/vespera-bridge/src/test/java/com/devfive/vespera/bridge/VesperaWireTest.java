@@ -92,6 +92,37 @@ class VesperaWireTest {
         assertEquals("{\"x\":1}", new String(body, StandardCharsets.UTF_8));
     }
 
+    @Test
+    void encodeRequestRejectsNullMethodAndPathWithFieldName() {
+        NullPointerException method = assertThrows(
+                NullPointerException.class,
+                () -> VesperaBridge.encodeRequest(null, "/x", null, Map.of(), new byte[0]));
+        NullPointerException path = assertThrows(
+                NullPointerException.class,
+                () -> VesperaBridge.encodeRequest("GET", null, null, Map.of(), new byte[0]));
+
+        assertEquals("method", method.getMessage());
+        assertEquals("path", path.getMessage());
+    }
+
+    @Test
+    void encodeRequestRejectsNullHeaderKeyAndValueWithFieldName() {
+        Map<String, String> nullKey = new HashMap<>();
+        nullKey.put(null, "value");
+        Map<String, String> nullValue = new HashMap<>();
+        nullValue.put("x", null);
+
+        NullPointerException key = assertThrows(
+                NullPointerException.class,
+                () -> VesperaBridge.encodeRequest("GET", "/x", null, nullKey, new byte[0]));
+        NullPointerException value = assertThrows(
+                NullPointerException.class,
+                () -> VesperaBridge.encodeRequest("GET", "/x", null, nullValue, new byte[0]));
+
+        assertEquals("header key", key.getMessage());
+        assertEquals("header value", value.getMessage());
+    }
+
     /** Build a synthetic wire response (mimics what Rust would emit). */
     private static byte[] buildWireResponse(int status, String contentType, byte[] body) throws Exception {
         return buildWireResponseWithExtras(status, contentType, body, null);

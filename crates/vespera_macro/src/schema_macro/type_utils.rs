@@ -7,23 +7,75 @@ use quote::quote;
 use serde_json;
 use syn::{GenericArgument, PathArguments, Type};
 
-/// Primitive type names shared across the crate.
-/// Used by both `is_primitive_type()` (parser) and `is_parseable_type()` (schema_macro).
-/// Note: `"str"` is intentionally excluded — only `is_primitive_type()` considers `str`,
-/// since it appears in parser contexts but not in schema_macro type parsing.
+/// SeaORM relation wrapper kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeaOrmRelationKind {
+    /// `HasOne<T>` relation.
+    HasOne,
+    /// `HasMany<T>` relation.
+    HasMany,
+    /// `BelongsTo<T>` relation.
+    BelongsTo,
+}
+
+impl SeaOrmRelationKind {
+    /// Whether the relation is FK-backed on the current model.
+    #[inline]
+    pub const fn is_fk_backed(self) -> bool {
+        matches!(self, Self::HasOne | Self::BelongsTo)
+    }
+}
+
+/// Return the final path segment for path-like types.
+#[inline]
+pub fn last_path_segment(ty: &Type) -> Option<&syn::PathSegment> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    type_path.path.segments.last()
+}
+
+/// Return the first generic type argument on a path segment.
+#[inline]
+pub fn first_generic_type_arg(segment: &syn::PathSegment) -> Option<&Type> {
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|arg| match arg {
+        GenericArgument::Type(inner) => Some(inner),
+        _ => None,
+    })
+}
+
+/// Inspect a `syn` type and return the SeaORM relation kind if its final path
+/// segment is one of the supported relation wrappers.
+pub fn seaorm_relation_kind(ty: &Type) -> Option<SeaOrmRelationKind> {
+    let segment = last_path_segment(ty)?;
+    if segment.ident == "HasOne" {
+        Some(SeaOrmRelationKind::HasOne)
+    } else if segment.ident == "HasMany" {
+        Some(SeaOrmRelationKind::HasMany)
+    } else if segment.ident == "BelongsTo" {
+        Some(SeaOrmRelationKind::BelongsTo)
+    } else {
+        None
+    }
+}
+
+/// Extract the inner target type of a SeaORM relation wrapper.
+pub fn seaorm_relation_inner_type(ty: &Type) -> Option<&Type> {
+    let segment = last_path_segment(ty)?;
+    seaorm_relation_kind(ty)?;
+    first_generic_type_arg(segment)
+}
+
+/// Primitive type names shared across parser and schema-macro type parsing.
 pub const PRIMITIVE_TYPE_NAMES: &[&str] = &[
     "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32",
     "f64", "bool", "String", "Decimal",
 ];
 
-/// Normalize a `TokenStream` or `Type` to a compact string by removing all whitespace.
-///
-/// This replaces the common `.to_string().replace(' ', "")` pattern used throughout
-/// the codebase to produce deterministic path strings for comparison and cache keys.
-///
-/// Removes spaces, newlines, and carriage returns — `proc_macro2`'s `Display` impl
-/// may insert newlines when token sequences exceed an internal line-length threshold,
-/// which would break substring checks like `contains("HasOne<")`.
+/// Normalize a `TokenStream` or `Type` to a compact string by removing whitespace.
 #[inline]
 pub fn normalize_token_str(displayable: &impl std::fmt::Display) -> String {
     let s = displayable.to_string();
@@ -92,13 +144,7 @@ pub fn is_option_type(ty: &Type) -> bool {
 
 /// Check if a type is a `SeaORM` relation type (`HasOne`, `HasMany`, `BelongsTo`)
 pub fn is_seaorm_relation_type(ty: &Type) -> bool {
-    match ty {
-        Type::Path(type_path) => type_path.path.segments.last().is_some_and(|segment| {
-            let ident = segment.ident.to_string();
-            matches!(ident.as_str(), "HasOne" | "HasMany" | "BelongsTo")
-        }),
-        _ => false,
-    }
+    seaorm_relation_kind(ty).is_some()
 }
 
 /// Check if a struct is a `SeaORM` Model (has #[`sea_orm::model`] or #[`sea_orm(table_name` = ...)] attribute)

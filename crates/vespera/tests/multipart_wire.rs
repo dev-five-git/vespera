@@ -20,7 +20,7 @@ use ::tokio::runtime::Builder;
 use ::vespera::axum::Json;
 use ::vespera::multipart::{FieldData, TypedMultipart};
 use ::vespera::tempfile::NamedTempFile;
-use ::vespera::{Multipart, Schema};
+use ::vespera::{Multipart, Schema, Validated};
 use ::vespera_inprocess::{dispatch_from_bytes, register_app};
 
 #[derive(Multipart, Schema)]
@@ -32,6 +32,20 @@ struct UploadReq {
     // the now-mandatory file-field cap explicitly rather than inheriting one.
     #[form_data(limit = "unlimited")]
     file: FieldData<NamedTempFile>,
+}
+
+#[derive(Multipart, Schema)]
+#[allow(dead_code)]
+struct CappedUploadReq {
+    name: String,
+    file: FieldData<NamedTempFile>,
+}
+
+#[derive(Multipart, Schema, garde::Validate)]
+#[allow(dead_code)]
+struct ValidatedMultipartReq {
+    #[garde(length(min = 3))]
+    name: String,
 }
 
 #[derive(Serialize, Schema)]
@@ -56,6 +70,29 @@ async fn upload_handler(TypedMultipart(mut req): TypedMultipart<UploadReq>) -> J
         file_size: len,
         file_first_byte: first,
         file_last_byte: last,
+    })
+}
+
+async fn capped_upload_handler(
+    TypedMultipart(mut req): TypedMultipart<CappedUploadReq>,
+) -> Json<UploadResult> {
+    let mut buf = Vec::new();
+    let f = req.file.contents.as_file_mut();
+    f.seek(SeekFrom::Start(0)).expect("rewind temp file");
+    f.read_to_end(&mut buf).expect("read temp file");
+    Json(UploadResult {
+        name: req.name,
+        file_size: u64::try_from(buf.len()).expect("file size fits in u64"),
+        file_first_byte: *buf.first().unwrap_or(&0),
+        file_last_byte: *buf.last().unwrap_or(&0),
+    })
+}
+
+async fn validated_multipart_handler(
+    Validated(TypedMultipart(req)): Validated<TypedMultipart<ValidatedMultipartReq>>,
+) -> Json<TextResult> {
+    Json(TextResult {
+        text_len: u64::try_from(req.name.len()).unwrap_or(u64::MAX),
     })
 }
 
@@ -96,6 +133,8 @@ async fn text_unlimited_handler(
 fn multipart_router() -> Router {
     Router::new()
         .route("/upload", post(upload_handler))
+        .route("/capped-upload", post(capped_upload_handler))
+        .route("/validated-multipart", post(validated_multipart_handler))
         .route("/text", post(text_handler))
         .route("/text-unlimited", post(text_unlimited_handler))
         // Disable the 2 MiB default so the 256 KiB test below isn't
@@ -112,6 +151,16 @@ fn install_router_once() {
 }
 
 fn encode_multipart_wire(
+    boundary: &str,
+    name: &str,
+    file_name: &str,
+    file_bytes: &[u8],
+) -> Vec<u8> {
+    encode_multipart_upload_wire("/upload", boundary, name, file_name, file_bytes)
+}
+
+fn encode_multipart_upload_wire(
+    path: &str,
     boundary: &str,
     name: &str,
     file_name: &str,
@@ -139,7 +188,7 @@ fn encode_multipart_wire(
     let header_json = ::serde_json::json!({
         "v": 1,
         "method": "POST",
-        "path": "/upload",
+        "path": path,
         "headers": headers,
     });
     let header_bytes = ::serde_json::to_vec(&header_json).expect("header serialise");
@@ -340,4 +389,54 @@ fn string_field_unlimited_optout_allows_large() {
     );
     let json: Value = ::serde_json::from_slice(&body).expect("response is JSON");
     assert_eq!(json["text_len"].as_u64(), Some(1024 * 1024 + 1));
+}
+
+#[test]
+fn named_temp_file_over_default_cap_rejected_413() {
+    install_router_once();
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    let payload = vec![b'z'; 1024 * 1024 + 1];
+    let wire = encode_multipart_upload_wire(
+        "/capped-upload",
+        "----TempFileCapBoundary",
+        "bob",
+        "too-large.bin",
+        &payload,
+    );
+    let resp = dispatch_from_bytes(wire, &runtime);
+    let (header, _body) = decode_wire(&resp);
+    assert_eq!(
+        header["status"].as_u64(),
+        Some(413),
+        "oversized unannotated tempfile field must be rejected with 413, got header={header:#}"
+    );
+}
+
+#[test]
+fn validated_typed_multipart_rejects_garde_failure_422() {
+    install_router_once();
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    let wire = encode_multipart_text(
+        "----ValidatedMultipartBoundary",
+        "/validated-multipart",
+        "name",
+        b"xy",
+    );
+    let resp = dispatch_from_bytes(wire, &runtime);
+    let (header, body) = decode_wire(&resp);
+    assert_eq!(
+        header["status"].as_u64(),
+        Some(422),
+        "garde failure must be rejected with 422, got header={header:#}"
+    );
+    let json: Value = ::serde_json::from_slice(&body).expect("response is JSON");
+    assert_eq!(json["errors"][0]["path"], "name");
 }

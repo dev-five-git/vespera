@@ -38,7 +38,10 @@ fn decode_status(resp: &[u8]) -> u64 {
     assert!(resp.len() >= 4, "wire response too short ({})", resp.len());
     let len_bytes: [u8; 4] = resp[..4].try_into().expect("4 bytes");
     let header_len = u32::from_be_bytes(len_bytes) as usize;
-    assert!(4 + header_len <= resp.len(), "wire header_len overflows response");
+    assert!(
+        4 + header_len <= resp.len(),
+        "wire header_len overflows response"
+    );
     let header: Value =
         serde_json::from_slice(&resp[4..4 + header_len]).expect("response header is valid JSON");
     header["status"].as_u64().expect("status is an integer")
