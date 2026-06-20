@@ -1,4 +1,4 @@
-use super::{runtime_worker_threads, set_runtime_worker_threads};
+use super::config::{runtime_worker_threads, set_runtime_worker_threads};
 
 /// One test owns the process-global `OnceLock`: setter wins,
 /// clamping applies, and later writes are rejected.

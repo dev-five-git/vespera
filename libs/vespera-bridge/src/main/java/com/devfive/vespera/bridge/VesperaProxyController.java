@@ -348,7 +348,7 @@ public class VesperaProxyController {
                     statusHolder[0] = s;
                     response.setStatus(s);
                 },
-                response::addHeader);
+                (n, v) -> addServletResponseHeader(response, n, v));
         int bodyOff = 4 + headerLen;
         int bodyLen = wire.length - bodyOff;
         if (bodyLen > 0) {
@@ -552,7 +552,7 @@ public class VesperaProxyController {
                     statusHolder[0] = s;
                     response.setStatus(s);
                 },
-                response::addHeader);
+                (n, v) -> addServletResponseHeader(response, n, v));
         int bodyOff = 4 + headerLen;
         int bodyLen = wireResp.limit() - bodyOff;
         if (bodyLen > 0 && !response.containsHeader("Content-Length")) {
@@ -568,6 +568,43 @@ public class VesperaProxyController {
 
     private static boolean responseStatusPermitsBody(int status) {
         return (status < 100 || status >= 200) && status != 204 && status != 304;
+    }
+
+    /**
+     * Pure hop-by-hop response headers the proxy must NOT forward verbatim from
+     * the Rust wire response. Forwarding a handler-supplied (or malicious
+     * native) {@code transfer-encoding} / {@code connection} desynchronises
+     * framing at the servlet container or a downstream proxy (e.g. a wire
+     * {@code transfer-encoding: chunked} on a response the container frames with
+     * {@code Content-Length}). These are connection-scoped per RFC 9110 and are
+     * never legitimately emitted by an application handler.
+     *
+     * <p>{@code content-length} is deliberately NOT in this set: the Rust
+     * handler is authoritative for it and the direct/buffered paths preserve a
+     * wire-supplied length (locked by
+     * {@code ProxyControllerBodyHeaderTest.directHeaderPreservesWireContentLength}),
+     * synthesising it from the body only when absent.
+     *
+     * <p>Names are compared case-insensitively against the canonical lowercase
+     * form the wire header carries.
+     */
+    private static final java.util.Set<String> HOP_BY_HOP_RESPONSE_HEADERS = java.util.Set.of(
+            "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+            "te", "trailer", "transfer-encoding", "upgrade");
+
+    static boolean isHopByHopResponseHeader(String name) {
+        return HOP_BY_HOP_RESPONSE_HEADERS.contains(name.toLowerCase(java.util.Locale.ROOT));
+    }
+
+    /**
+     * Apply a Rust wire response header to the servlet response, dropping the
+     * hop-by-hop / framing headers the proxy owns ({@link #HOP_BY_HOP_RESPONSE_HEADERS}).
+     */
+    private static void addServletResponseHeader(
+            HttpServletResponse response, String name, String value) {
+        if (!isHopByHopResponseHeader(name)) {
+            response.addHeader(name, value);
+        }
     }
 
     private static void writeDirectBody(ByteBuffer body, OutputStream out) throws IOException {
@@ -743,7 +780,10 @@ public class VesperaProxyController {
         // (e.g. set-cookie), preserving the prior semantics.
         ByteBuffer buf = ByteBuffer.wrap(headerBytes);
         int headerLen = readValidatedHeaderLen(buf);
-        WireHeaderReader.apply(buf, 4, headerLen, response::setStatus, response::addHeader);
+        WireHeaderReader.apply(
+                buf, 4, headerLen,
+                response::setStatus,
+                (n, v) -> addServletResponseHeader(response, n, v));
     }
 
     /**
@@ -782,7 +822,11 @@ public class VesperaProxyController {
                 4,
                 headerLen,
                 s -> statusHolder[0] = s,
-                httpHeaders::add);
+                (n, v) -> {
+                    if (!isHopByHopResponseHeader(n)) {
+                        httpHeaders.add(n, v);
+                    }
+                });
         HttpStatusCode status = HttpStatusCode.valueOf(statusHolder[0]);
         int bodyOff = 4 + headerLen;
         return new ResponseEntity<>(

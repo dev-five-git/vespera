@@ -27,6 +27,23 @@ fn test_str_to_bool_invalid() {
     }
 }
 
+#[test]
+fn test_str_to_bool_trims_surrounding_whitespace() {
+    // Multipart text values can arrive with incidental surrounding whitespace
+    // (e.g. a trailing newline from a client); bool must tolerate it exactly as
+    // the numeric field impls do (`text.trim().parse()`), so a padded token
+    // parses like the bare token instead of being rejected.
+    assert_eq!(str_to_bool("  true  "), Some(true));
+    assert_eq!(str_to_bool("true\n"), Some(true));
+    assert_eq!(str_to_bool("\tyes\r\n"), Some(true));
+    assert_eq!(str_to_bool(" false"), Some(false));
+    assert_eq!(str_to_bool("off\n"), Some(false));
+    // Trim only touches the ends — internal whitespace stays invalid, and a
+    // whitespace-only value is still `None`.
+    assert_eq!(str_to_bool("tr ue"), None);
+    assert_eq!(str_to_bool("   "), None);
+}
+
 // ─── Display tests for all error variants ───────────────────────────
 
 #[test]

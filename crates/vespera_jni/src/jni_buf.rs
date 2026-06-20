@@ -63,7 +63,7 @@ pub fn read_byte_array_region(
     //   path) or the exact positive `InputStream.read(byte[])` count after
     //   checking it does not exceed the fixed streaming buffer length.
     // * The destination is `vec`'s reserved-but-uninitialised capacity
-    //   (`with_capacity(len)` reserved exactly `len` bytes).  Only a raw
+    //   (`try_reserve_exact(len)` reserved exactly `len` bytes).  Only a raw
     //   `*mut jbyte` is passed to JNI — no `&mut [i8]` over uninitialised
     //   memory is created.  `u8` and `jbyte` (`i8`) share size/alignment.
     unsafe {

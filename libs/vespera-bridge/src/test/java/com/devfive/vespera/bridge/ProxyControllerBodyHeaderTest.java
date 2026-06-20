@@ -1,7 +1,9 @@
 package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -185,6 +187,38 @@ class ProxyControllerBodyHeaderTest {
 
         assertEquals(5, bodyLen);
         assertEquals(123, response.getContentLength());
+    }
+
+    @Test
+    void directHeaderDropsHopByHopHeaders() {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        // Wire response carries hop-by-hop `transfer-encoding` / `connection`
+        // (which desync framing if forwarded) alongside a normal `content-type`.
+        ByteBuffer wire = directWire(
+                "{\"status\":200,\"headers\":{\"transfer-encoding\":\"chunked\","
+                        + "\"connection\":\"keep-alive\",\"content-type\":\"application/json\"}}",
+                "hi");
+
+        int bodyLen = VesperaProxyController.applyDirectHeaderAndPositionBody(wire, response);
+
+        // Hop-by-hop headers are owned by the proxy and never forwarded.
+        assertFalse(response.containsHeader("transfer-encoding"));
+        assertFalse(response.containsHeader("connection"));
+        // Normal application headers pass through unchanged.
+        assertEquals("application/json", response.getHeader("content-type"));
+        // The proxy still synthesises Content-Length from the body.
+        assertEquals(2, bodyLen);
+        assertEquals(2, response.getContentLength());
+    }
+
+    @Test
+    void isHopByHopResponseHeaderClassifiesCaseInsensitively() {
+        assertTrue(VesperaProxyController.isHopByHopResponseHeader("Transfer-Encoding"));
+        assertTrue(VesperaProxyController.isHopByHopResponseHeader("connection"));
+        assertTrue(VesperaProxyController.isHopByHopResponseHeader("UPGRADE"));
+        // content-length is deliberately preserved (handler-authoritative).
+        assertFalse(VesperaProxyController.isHopByHopResponseHeader("content-length"));
+        assertFalse(VesperaProxyController.isHopByHopResponseHeader("content-type"));
     }
 
     private static ByteBuffer directWire(String headerJson, String body) {

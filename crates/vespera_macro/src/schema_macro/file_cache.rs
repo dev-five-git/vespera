@@ -649,18 +649,23 @@ pub fn get_circular_analysis(source_module_path: &[String], definition: &str) ->
     result
 }
 
-/// Drop the path-keyed lookup caches (`struct_lookup`, `fk_column_lookup`)
-/// when the epoch has advanced since they were last populated.
+/// Re-stamp the path-keyed lookup caches (`struct_lookup`, `fk_column_lookup`)
+/// to the current epoch.
 ///
-/// Unlike `file_contents` / `struct_definitions`, these caches key on a
-/// schema PATH string rather than a file, so they cannot be mtime-validated
-/// per entry. Without this, a long-lived rust-analyzer proc-macro server
-/// would keep a stale `StructMetadata` (or stale FK column / negative
-/// result) after a model file edit, indefinitely. Scoping them to a single
-/// epoch (one top-level macro invocation) preserves the intra-invocation
-/// caching — where the same path is resolved repeatedly for circular
-/// references — while re-resolving across invocations through the lower
-/// mtime-validated layers, so an edited file is always picked up.
+/// These caches **deliberately survive epoch bumps** (see the
+/// `path_lookup_epoch` field): keeping resolved path lookups warm across
+/// invocations lets repeated `schema_type!` / `#[derive(Schema)]` expansions in
+/// one crate build share path-resolution work. They key on a schema PATH string
+/// (not a file), so a cache MISS re-resolves through the lower file-content /
+/// struct-definition mtime caches; within a single `cargo build` no source file
+/// changes mid-build, so a surviving entry only ever returns the result a
+/// re-resolution would produce. The epoch stamp is retained only for
+/// cache-format / test compatibility.
+///
+/// (A long-lived rust-analyzer proc-macro server therefore keeps a resolved
+/// entry until the server restarts — the accepted cost of the shared-work
+/// optimisation. A future mtime-aware path cache could be both warm AND fresh,
+/// but that is a design change, not a one-line tweak.)
 fn ensure_path_lookup_caches_fresh(cache: &mut FileCache) {
     cache.path_lookup_epoch = cache.epoch;
 }

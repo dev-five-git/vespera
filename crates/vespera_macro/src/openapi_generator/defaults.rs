@@ -93,9 +93,22 @@ pub(super) fn process_default_functions(
                 continue;
             }
 
-            // Priority 1: #[schema(default = "value")] from schema_type! macro
+            // Priority 1: #[schema(default = "value")] from schema_type! macro.
+            // The attribute value is a string literal; for a string-typed field
+            // use it VERBATIM so lexical form is preserved (e.g. a leading-zero
+            // id `"00123"` must NOT normalise to `"123"`), otherwise infer the
+            // JSON type from the string.
             if let Some(default_str) = extract_schema_default_attr(&field.attrs) {
-                let value = parse_default_string_to_json_value(&default_str);
+                let is_string_field = matches!(
+                    properties.get(&field_name),
+                    Some(vespera_core::schema::SchemaRef::Inline(s))
+                        if s.schema_type == Some(vespera_core::schema::SchemaType::String)
+                );
+                let value = if is_string_field {
+                    serde_json::Value::String(default_str)
+                } else {
+                    parse_default_string_to_json_value(&default_str)
+                };
                 set_property_default(properties, &field_name, value);
                 continue;
             }
@@ -304,11 +317,30 @@ pub(super) fn extract_value_from_expr(expr: &syn::Expr) -> Option<serde_json::Va
             }
             None
         }
-        // Macro calls like vec![]
+        // Macro calls like vec![...]
         Expr::Macro(ExprMacro { mac, .. }) => {
             if mac.path.is_ident("vec") {
-                // Try to parse vec![] as empty array
-                return Some(serde_json::Value::Array(vec![]));
+                // `vec![]` → empty array.  `vec![a, b, ...]` → the array of its
+                // element values, but ONLY when every element resolves to a
+                // literal; otherwise the default is unrepresentable and we
+                // return `None` (the field is then demoted from `required`)
+                // rather than emitting a WRONG empty `[]` for a non-empty
+                // `vec!` (the prior behaviour silently dropped the elements).
+                if mac.tokens.is_empty() {
+                    return Some(serde_json::Value::Array(Vec::new()));
+                }
+                return mac
+                    .parse_body_with(
+                        syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated,
+                    )
+                    .ok()
+                    .and_then(|elems| {
+                        elems
+                            .iter()
+                            .map(extract_value_from_expr)
+                            .collect::<Option<Vec<_>>>()
+                    })
+                    .map(serde_json::Value::Array);
             }
             None
         }
@@ -348,6 +380,9 @@ mod tests {
     #[case::to_string(r#""hello".to_string()"#, Some(Value::String("hello".to_string())))]
     #[case::string_from(r#"String::from("hello")"#, Some(Value::String("hello".to_string())))]
     #[case::vec_macro("vec![]", Some(Value::Array(vec![])))]
+    #[case::vec_macro_nonempty("vec![1, 2, 3]", Some(json!([1, 2, 3])))]
+    #[case::vec_macro_strings(r#"vec!["a", "b"]"#, Some(json!(["a", "b"])))]
+    #[case::vec_macro_unresolvable("vec![some_var]", None)]
     #[case::int_to_string("42.to_string()", Some(Value::Number(42.into())))]
     #[case::binary_unsupported("1 + 2", None)]
     #[case::method_call_non_to_string(r#""hello".len()"#, None)]
@@ -487,6 +522,34 @@ mod tests {
         let properties = schema.properties.as_ref().unwrap();
         assert_inline_default(properties, "sort", &json!("asc"));
         assert_inline_default(properties, "direction", &json!("desc"));
+    }
+
+    #[test]
+    fn process_default_functions_preserves_lexical_string_default() {
+        // A `#[schema(default = "...")]` on a string field must keep the literal
+        // verbatim — a numeric-looking default like a zero-padded id must NOT be
+        // parsed to a number and back (which dropped leading zeroes:
+        // "00123" -> "123").
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r#"
+            pub struct Test {
+                #[schema(default = "00123")]
+                pub zip: String,
+            }
+            "#,
+        )
+        .unwrap();
+        let mut schema = Schema::object();
+        let props = schema.properties.get_or_insert_with(BTreeMap::new);
+        props.insert(
+            "zip".to_string(),
+            SchemaRef::Inline(Box::new(Schema::string())),
+        );
+
+        process_default_functions(&struct_item, None, &mut schema, &BTreeMap::new());
+
+        let properties = schema.properties.as_ref().unwrap();
+        assert_inline_default(properties, "zip", &json!("00123"));
     }
 
     #[test]

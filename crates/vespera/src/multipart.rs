@@ -498,11 +498,16 @@ fn tiny_scalar_limit(limit_bytes: Option<usize>) -> usize {
 
 /// Parse a string as a boolean using clap-style conventions.
 ///
+/// Surrounding ASCII whitespace is ignored, so a multipart text value that
+/// arrives with incidental padding (e.g. a trailing newline) parses like the
+/// trimmed token — matching the numeric field impls, which `text.trim().parse()`.
+///
 /// Accepted truthy values: `true`, `yes`, `y`, `1`, `on`
 /// Accepted falsy  values: `false`, `no`, `n`, `0`, `off`
 fn str_to_bool(s: &str) -> Option<bool> {
     const TRUTHY: [&str; 5] = ["true", "yes", "y", "1", "on"];
     const FALSY: [&str; 5] = ["false", "no", "n", "0", "off"];
+    let s = s.trim();
     if TRUTHY.iter().any(|t| s.eq_ignore_ascii_case(t)) {
         Some(true)
     } else if FALSY.iter().any(|f| s.eq_ignore_ascii_case(f)) {
