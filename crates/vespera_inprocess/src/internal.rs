@@ -415,11 +415,17 @@ pub fn to_response_envelope_text(parts: ResponseParts) -> ResponseEnvelope {
 /// Callers that know the body is non-empty pass `!body.is_empty()`;
 /// streaming callers whose body emptiness is unknowable up front pass
 /// `true` (default whenever absent).
+// 8 params: the request line (method / path / query / path_bytes), the
+// borrowed header iterator, the body, and the content-type-default flag are
+// each distinct per-request inputs.  Bundling them into a struct would add
+// indirection on this hot path without removing any genuinely-needed data.
+#[allow(clippy::too_many_arguments)]
 pub async fn dispatch_and_split<'h>(
     router: Router,
     method_str: &str,
     path: &str,
     query: &str,
+    path_bytes: Option<Bytes>,
     headers: impl Iterator<Item = (&'h str, &'h str)>,
     body: Body,
     default_json_when_absent: bool,
@@ -432,7 +438,21 @@ pub async fn dispatch_and_split<'h>(
     };
     // Same contract as dispatch_parts: a malformed path/header must surface as
     // a 400 wire response, not a panic.
-    let uri = build_uri(path, query)?;
+    //
+    // `path_bytes` is `Some` only on the OWNED wire path with an empty query
+    // and a path whose bytes already live in the request's owning `Bytes`
+    // (a borrowed `Cow` sliced from the wire header — see `slice_from_owner`).
+    // Building the `Uri` by SHARING those bytes skips the `Bytes::copy_from_slice`
+    // that `Uri::try_from(&str)` performs — one fewer per-request allocation.
+    // The parsed URI is byte-identical (same origin-form/absolute parse as
+    // `build_uri`); any owned/escaped path or non-empty query passes `None` and
+    // falls back to the copying join.
+    let uri = match path_bytes {
+        Some(bytes) => {
+            Uri::from_maybe_shared(bytes).map_err(|e| (400, format!("invalid request: {e}")))?
+        }
+        None => build_uri(path, query)?,
+    };
 
     // Direct construction — see [`build_request_from_bytes`]: bypass the
     // `http::request::Builder` state machine and pre-reserve the HeaderMap so
@@ -562,6 +582,7 @@ mod tests {
                 "GET",
                 "bad path with spaces",
                 "",
+                None,
                 std::iter::empty(),
                 Body::empty(),
                 false,

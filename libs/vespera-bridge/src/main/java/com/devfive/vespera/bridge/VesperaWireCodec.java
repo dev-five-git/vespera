@@ -257,6 +257,9 @@ final class VesperaWireCodec {
         if (target.capacity() < total) {
             return -total;
         }
+        if (target.isReadOnly()) {
+            throw new IllegalArgumentException("encode target buffer is read-only");
+        }
         target.clear();
         target.put((byte) (headerLen >>> 24));
         target.put((byte) (headerLen >>> 16));

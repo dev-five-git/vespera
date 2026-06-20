@@ -151,21 +151,48 @@ fn merge_component_map<V>(
     self_map: &mut Option<BTreeMap<String, V>>,
     other_map: Option<BTreeMap<String, V>>,
 ) {
-    let Some(other_map) = other_map else { return };
+    let Some(other_map) = non_empty_component_map(other_map) else {
+        return;
+    };
     let target = self_map.get_or_insert_with(BTreeMap::new);
     for (name, value) in other_map {
         target.entry(name).or_insert(value);
     }
 }
 
+fn non_empty_component_map<V>(map: Option<BTreeMap<String, V>>) -> Option<BTreeMap<String, V>> {
+    map.filter(|entries| !entries.is_empty())
+}
+
 fn has_any_component_map(components: &Components) -> bool {
-    components.schemas.is_some()
-        || components.responses.is_some()
-        || components.parameters.is_some()
-        || components.examples.is_some()
-        || components.request_bodies.is_some()
-        || components.headers.is_some()
-        || components.security_schemes.is_some()
+    components
+        .schemas
+        .as_ref()
+        .is_some_and(|entries| !entries.is_empty())
+        || components
+            .responses
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
+        || components
+            .parameters
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
+        || components
+            .examples
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
+        || components
+            .request_bodies
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
+        || components
+            .headers
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
+        || components
+            .security_schemes
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
 }
 
 /// Merge `other`'s per-method operations into `into` with **self-wins**

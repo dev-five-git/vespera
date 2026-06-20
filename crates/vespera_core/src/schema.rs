@@ -290,17 +290,24 @@ impl Serialize for NumberConstraint {
 #[serde(untagged)]
 enum SchemaTypeWire {
     Single(SchemaType),
-    Nullable([SchemaType; 2]),
+    Multiple(Vec<SchemaType>),
 }
 
 impl SchemaTypeWire {
-    const fn into_schema_type_and_nullable(self) -> (Option<SchemaType>, Option<bool>) {
+    fn into_schema_type_and_nullable(self) -> (Option<SchemaType>, Option<bool>) {
         match self {
-            Self::Nullable([SchemaType::Null, schema_type] | [schema_type, SchemaType::Null]) => {
-                (Some(schema_type), Some(true))
-            }
-            Self::Single(schema_type) | Self::Nullable([schema_type, _]) => {
-                (Some(schema_type), None)
+            Self::Single(schema_type) => (Some(schema_type), None),
+            Self::Multiple(schema_types) => {
+                let nullable = schema_types.contains(&SchemaType::Null).then_some(true);
+                // Vespera's public `Schema` shape can represent one concrete
+                // `type` plus nullability, not arbitrary multi-non-null JSON
+                // Schema unions.  Preserve deserialization robustness by
+                // collapsing `type: ["integer", "string"]` to the first
+                // non-null type instead of rejecting the whole schema.
+                let schema_type = schema_types
+                    .into_iter()
+                    .find(|schema_type| *schema_type != SchemaType::Null);
+                (schema_type, nullable)
             }
         }
     }
@@ -364,6 +371,11 @@ impl<'de> Deserialize<'de> for Schema {
         let (schema_type, type_nullable) = wire
             .schema_type
             .map_or((None, None), SchemaTypeWire::into_schema_type_and_nullable);
+        let nullable = match type_nullable {
+            Some(true) => Some(true),
+            None => wire.nullable,
+            Some(false) => wire.nullable.or(Some(false)),
+        };
         Ok(Self {
             ref_path: wire.ref_path,
             schema_type,
@@ -397,7 +409,7 @@ impl<'de> Deserialize<'de> for Schema {
             one_of: wire.one_of,
             not: wire.not,
             discriminator: wire.discriminator,
-            nullable: wire.nullable.or(type_nullable),
+            nullable,
             read_only: wire.read_only,
             write_only: wire.write_only,
             external_docs: wire.external_docs,
@@ -431,7 +443,7 @@ impl Serialize for Schema {
         }
         if let Some(schema_type) = self.schema_type {
             let wire = if self.nullable == Some(true) {
-                SchemaTypeWire::Nullable([schema_type, SchemaType::Null])
+                SchemaTypeWire::Multiple(vec![schema_type, SchemaType::Null])
             } else {
                 SchemaTypeWire::Single(schema_type)
             };
@@ -617,15 +629,15 @@ impl Schema {
         }
     }
 
-    /// Build a **nullable reference** schema — `{ "$ref": <path>,
-    /// "nullable": true }`.
+    /// Build a **nullable reference** schema that serializes as OpenAPI 3.1
+    /// `anyOf`: `[{ "$ref": <path> }, { "type": "null" }]`.
     ///
     /// This is the single legitimate mixed `$ref` form (CORE-03): a
     /// reference that is also allowed to be `null`.  Centralizing it
     /// here keeps `ref_path` from being hand-mixed with unrelated inline
     /// constraints at call sites.  `ref_path` is the full reference
     /// path (e.g. `"#/components/schemas/User"`); `schema_type` stays
-    /// `None` so only `$ref` + `nullable` are emitted.
+    /// `None` so only the nullable-reference `anyOf` shape is emitted.
     #[must_use]
     pub fn nullable_reference(ref_path: String) -> Self {
         Self {

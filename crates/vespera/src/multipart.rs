@@ -165,20 +165,48 @@ impl TypedMultipartError {
         }
     }
 
-    /// Public-facing message for the JSON error envelope.
+    /// Serialize the canonical `4xx`/`422` JSON error envelope
+    /// (`{"errors":[{"message":...,"path":...}]}`) for this error — byte-
+    /// identical to `Validated<T>`'s envelope so JNI hoisting and clients
+    /// treat both uniformly.
     ///
-    /// `Other` wraps internal I/O / blocking-task failures whose source
-    /// string can leak implementation details (temp-file paths, OS error
-    /// text); it is the only `500` variant, so it returns a stable, generic
-    /// message. Every other variant returns its `Display` (already safe —
-    /// it describes a client-supplied field problem). The full `Display`
-    /// (including `Other`'s `source`) stays available for server-side
-    /// logging via the `std::error::Error` impl.
-    fn response_message(&self) -> Cow<'_, str> {
-        if matches!(self, Self::Other { .. }) {
-            Cow::Borrowed("internal error while processing multipart request")
+    /// The message streams through [`MultipartMessage`]: `Other` (the only
+    /// `500`, whose source can leak temp-file paths / OS text) yields a stable
+    /// generic string; every other (client-caused) variant streams its own
+    /// `Display` with NO intermediate `String`. `path` is the offending field
+    /// name when known, else empty. Infallible in practice; the fallback keeps
+    /// this request-time path panic-free instead of unwinding in a handler.
+    fn error_body(&self) -> Vec<u8> {
+        serde_json::to_vec(&MultipartErrorEnvelope {
+            errors: [MultipartOneError {
+                message: MultipartMessage(self),
+                path: self.field_name().unwrap_or(""),
+            }],
+        })
+        .unwrap_or_else(|_| br#"{"errors":[{"message":"serialization error","path":""}]}"#.to_vec())
+    }
+}
+
+/// Stable, source-free public message for the only `500` variant (`Other`),
+/// whose wrapped `source` can leak temp-file paths / OS error text. Every
+/// other variant is client-caused and safe to expose verbatim.
+const MULTIPART_INTERNAL_ERROR_MSG: &str = "internal error while processing multipart request";
+
+/// Streams a multipart error's public message straight into the serializer
+/// with NO intermediate `String`: `Other` becomes [`MULTIPART_INTERNAL_ERROR_MSG`];
+/// every other (client-caused) variant streams its own `Display` via
+/// `collect_str`. Byte-identical to the previous `to_string()`-then-serialize
+/// path (serde escapes a `collect_str` stream exactly like an equal `&str`)
+/// but allocation-free on the common client-error path — mirroring
+/// `Validated<T>`'s 422 serializer.
+struct MultipartMessage<'a>(&'a TypedMultipartError);
+
+impl serde::Serialize for MultipartMessage<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if matches!(self.0, TypedMultipartError::Other { .. }) {
+            serializer.serialize_str(MULTIPART_INTERNAL_ERROR_MSG)
         } else {
-            Cow::Owned(self.to_string())
+            serializer.collect_str(self.0)
         }
     }
 }
@@ -191,7 +219,7 @@ impl TypedMultipartError {
 /// map/array/object intermediate).
 #[derive(serde::Serialize)]
 struct MultipartOneError<'a> {
-    message: &'a str,
+    message: MultipartMessage<'a>,
     path: &'a str,
 }
 
@@ -221,24 +249,9 @@ impl IntoResponse for TypedMultipartError {
             Self::FieldTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Other { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        // Serialize the canonical 422 envelope (see module-scope
-        // `MultipartErrorEnvelope` / `MultipartOneError`); `path` is the
-        // offending field name when known, else empty.
-        let path = self.field_name().unwrap_or("");
-        let message = self.response_message();
-        let body = serde_json::to_vec(&MultipartErrorEnvelope {
-            errors: [MultipartOneError {
-                message: &message,
-                path,
-            }],
-        })
-        // Serializing a struct of two `&str` is infallible in practice; the
-        // fallback keeps this request-time error path panic-free (matching
-        // `Validated<T>`'s 422 envelope) by emitting a minimal valid envelope
-        // instead of unwinding inside a handler.
-        .unwrap_or_else(|_| {
-            br#"{"errors":[{"message":"serialization error","path":""}]}"#.to_vec()
-        });
+        // Serialize the canonical 422 envelope (see `error_body` /
+        // module-scope `MultipartErrorEnvelope`).
+        let body = self.error_body();
         (
             status,
             [(

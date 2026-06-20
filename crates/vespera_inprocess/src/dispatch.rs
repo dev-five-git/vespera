@@ -72,6 +72,25 @@ pub fn parse_validate_resolve(
     Ok((header, router))
 }
 
+/// Return the sub-[`Bytes`] of `owner` that exactly backs the string slice `s`,
+/// or `None` when `s` does not lie within `owner`.
+///
+/// Used on the OWNED wire path to build a zero-copy [`http::Uri`] from the
+/// request's owning header `Bytes` — sharing the bytes `Uri::try_from(&str)`
+/// would otherwise re-allocate and copy.  The pointer arithmetic is fully
+/// checked, and because distinct heap allocations never overlap, an `s` that
+/// lives in its OWN allocation (an escaped `Cow::Owned` path, or a borrowed
+/// string from a different buffer) can never satisfy the in-range bound: the
+/// function returns `None` and the caller falls back to the copying path.  So a
+/// returned `Some(bytes)` is guaranteed to hold exactly `s`'s bytes — there is
+/// no provenance-confusion path, and `slice` itself never panics.
+fn slice_from_owner(owner: &Bytes, s: &str) -> Option<Bytes> {
+    let base = owner.as_ptr() as usize;
+    let off = (s.as_ptr() as usize).checked_sub(base)?;
+    let end = off.checked_add(s.len())?;
+    (end <= owner.len()).then(|| owner.slice(off..end))
+}
+
 // ── Dispatch (direct API — backward compatible) ──────────────────────
 
 /// Dispatch a [`RequestEnvelope`] through an axum [`Router`] and
@@ -195,11 +214,22 @@ pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
     // non-empty body should default.  Computed before `body_bytes` is moved.
     let default_json_when_absent = !body_bytes.is_empty();
 
+    // Owned path: with no query and a path borrowed from the owning header
+    // `Bytes`, hand its sub-`Bytes` to the URI builder so the URI SHARES those
+    // bytes instead of `Uri::try_from(&str)` copying them — one fewer
+    // per-request allocation (`slice_from_owner` / `dispatch_and_split`).
+    let path_bytes = if header.query.is_empty() {
+        slice_from_owner(&header_bytes, &header.path)
+    } else {
+        None
+    };
+
     let (status, headers, metadata, body) = match dispatch_and_split(
         router,
         &header.method,
         &header.path,
         &header.query,
+        path_bytes,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         Body::from(body_bytes),
         default_json_when_absent,
@@ -327,10 +357,13 @@ pub fn dispatch_into(
 ///
 /// # Overflow semantics
 ///
-/// If `out` is too small the body stream is still drained (counting,
-/// not writing) so [`DirectWriteResult::Overflow`] reports the
-/// **exact** required size.  The handler has already run; retrying
-/// runs it again — callers must gate retries on idempotency.
+/// If `out` is too small the **exact** required size is reported via
+/// [`DirectWriteResult::Overflow`].  An exact-length body (a `Full`
+/// response / explicit `Content-Length`) reports it immediately from the
+/// body's size hint **without draining**; an unknown-length (streaming)
+/// body is drained (counting, not writing) to compute the size.  Either
+/// way the handler has already run; retrying runs it again — callers must
+/// gate retries on idempotency.
 pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResult {
     // Ingress cap (defense-in-depth) — same policy as
     // `dispatch_from_bytes_async`; 413 written into the caller buffer.
@@ -352,11 +385,20 @@ pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteR
     // so we just signal that a non-empty body should default.
     let default_json_when_absent = !body_bytes.is_empty();
 
+    // Owned path: share the borrowed path's sub-`Bytes` with the URI builder
+    // (no query) so the URI is built zero-copy — see `dispatch_from_bytes_async`.
+    let path_bytes = if header.query.is_empty() {
+        slice_from_owner(&header_bytes, &header.path)
+    } else {
+        None
+    };
+
     let (status, headers, metadata, body) = match dispatch_and_split(
         router,
         &header.method,
         &header.path,
         &header.query,
+        path_bytes,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         Body::from(body_bytes),
         default_json_when_absent,
@@ -418,11 +460,15 @@ pub async fn dispatch_into_async_borrowed(input: &[u8], out: &mut [u8]) -> Direc
         Body::from(Bytes::copy_from_slice(body_bytes))
     };
 
+    // Borrowed path: `input` is not owned, so there is no request-lifetime
+    // `Bytes` to share into the URI — pass `None` and let `build_uri` parse the
+    // borrowed path (the zero-copy URI win applies only to the owned paths).
     let (status, headers, metadata, resp_body) = match dispatch_and_split(
         router,
         &header.method,
         &header.path,
         &header.query,
+        None,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         body,
         default_json_when_absent,

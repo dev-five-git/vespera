@@ -108,3 +108,61 @@ pub(super) fn setup_full_stream_with_header(
         buffers,
     ))
 }
+
+/// Promoted output-stream ref + a checked-out push chunk buffer for a
+/// response-streaming dispatch (no header consumer).  Aliased to stay under
+/// clippy's `type_complexity` cap.
+pub(super) type StreamSetup = (
+    Global<JObject<'static>>,
+    jni::JavaVM,
+    StreamingChunkBuffer,
+    Option<StreamingChunkBufferLease>,
+);
+
+/// Promote the output-stream ref and check out the push chunk buffer for
+/// [`Java_..._dispatchStreaming`].  Split out so the dispatcher can handle a
+/// (rare, OOM-driven) setup failure with a `let ... else` that returns a `500`
+/// wire response, instead of a silently-ignored `?` that surfaced to Java as a
+/// thrown exception + `null` return — breaking the "every failure is a valid
+/// wire response" contract the other dispatch symbols uphold.  The buffer
+/// checkout is last, so an earlier ref/VM failure never leaves a lease held.
+pub(super) fn setup_stream(
+    env: &mut jni::Env<'_>,
+    output_stream: &JObject<'_>,
+) -> jni::errors::Result<StreamSetup> {
+    let stream_global: Global<JObject<'static>> = env.new_global_ref(output_stream)?;
+    let jvm = env.get_java_vm()?;
+    let (push_buf, push_buf_lease) =
+        checkout_streaming_chunk_buffer(env, StreamingBufferRole::Push)?;
+    Ok((stream_global, jvm, push_buf, push_buf_lease))
+}
+
+/// Promoted input/output refs (+ a second input ref for the post-response
+/// close, since `Global` is not `Clone`) and both chunk buffers for a
+/// bidirectional streaming dispatch (no header consumer).  Aliased to stay
+/// under `type_complexity`.
+pub(super) type FullStreamSetup = (
+    Global<JObject<'static>>,
+    Global<JObject<'static>>,
+    Global<JObject<'static>>,
+    jni::JavaVM,
+    PullPushBuffers,
+);
+
+/// Promote the refs and check out both chunk buffers for
+/// [`Java_..._dispatchFullStreaming`].  Split out so a setup failure returns a
+/// `500` wire response instead of a silently-ignored `?` (see [`setup_stream`]).
+/// `checkout_pull_push_buffers` releases the pull lease for us if the push
+/// checkout fails, and no lease is held if an earlier ref/VM promotion fails.
+pub(super) fn setup_full_stream(
+    env: &mut jni::Env<'_>,
+    input_stream: &JObject<'_>,
+    output_stream: &JObject<'_>,
+) -> jni::errors::Result<FullStreamSetup> {
+    let input_global: Global<JObject<'static>> = env.new_global_ref(input_stream)?;
+    let input_for_close: Global<JObject<'static>> = env.new_global_ref(input_stream)?;
+    let output_global: Global<JObject<'static>> = env.new_global_ref(output_stream)?;
+    let jvm = env.get_java_vm()?;
+    let buffers = checkout_pull_push_buffers(env)?;
+    Ok((input_global, input_for_close, output_global, jvm, buffers))
+}

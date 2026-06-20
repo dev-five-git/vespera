@@ -279,10 +279,13 @@ public class VesperaProxyController {
                 return in.readNBytes((int) contentLength);
             }
             // Unknown (-1), or oversized known length with no explicit cap:
-            // faithful incremental read. The latter intentionally guards
-            // against a lying Content-Length forcing a giant up-front array
-            // when vespera.bridge.max-buffered-request-bytes is not set.
-            return in.readAllBytes();
+            // read incrementally, but still enforce the single-byte[] hard
+            // ceiling so a custom resolver cannot grow the JVM heap until OOM.
+            byte[] body = in.readNBytes((int) MAX_BUFFERED_BODY);
+            if ((long) body.length == MAX_BUFFERED_BODY) {
+                throw payloadTooLarge(body.length, MAX_BUFFERED_BODY);
+            }
+            return body;
         }
     }
 
@@ -338,9 +341,14 @@ public class VesperaProxyController {
                     "wire header_len " + headerLen
                             + " overflows response (" + wire.length + " bytes)");
         }
+        int[] statusHolder = {500};
         WireHeaderReader.apply(
                 ByteBuffer.wrap(wire), 4, headerLen,
-                response::setStatus, response::addHeader);
+                s -> {
+                    statusHolder[0] = s;
+                    response.setStatus(s);
+                },
+                response::addHeader);
         int bodyOff = 4 + headerLen;
         int bodyLen = wire.length - bodyOff;
         if (bodyLen > 0) {
@@ -348,6 +356,9 @@ public class VesperaProxyController {
                 response.setContentLength(bodyLen);
             }
             response.getOutputStream().write(wire, bodyOff, bodyLen);
+        } else if (responseStatusPermitsBody(statusHolder[0])
+                && !response.containsHeader("Content-Length")) {
+            response.setContentLength(0);
         }
     }
 
@@ -532,14 +543,31 @@ public class VesperaProxyController {
     static int applyDirectHeaderAndPositionBody(
             ByteBuffer wireResp, HttpServletResponse response) {
         int headerLen = readValidatedHeaderLen(wireResp);
-        WireHeaderReader.apply(wireResp, 4, headerLen, response::setStatus, response::addHeader);
+        int[] statusHolder = {500};
+        WireHeaderReader.apply(
+                wireResp,
+                4,
+                headerLen,
+                s -> {
+                    statusHolder[0] = s;
+                    response.setStatus(s);
+                },
+                response::addHeader);
         int bodyOff = 4 + headerLen;
         int bodyLen = wireResp.limit() - bodyOff;
         if (bodyLen > 0 && !response.containsHeader("Content-Length")) {
             response.setContentLength(bodyLen);
+        } else if (bodyLen == 0
+                && responseStatusPermitsBody(statusHolder[0])
+                && !response.containsHeader("Content-Length")) {
+            response.setContentLength(0);
         }
         wireResp.position(bodyOff);
         return bodyLen;
+    }
+
+    private static boolean responseStatusPermitsBody(int status) {
+        return (status < 100 || status >= 200) && status != 204 && status != 304;
     }
 
     private static void writeDirectBody(ByteBuffer body, OutputStream out) throws IOException {

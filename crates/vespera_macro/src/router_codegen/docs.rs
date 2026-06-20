@@ -26,9 +26,18 @@ pub(super) fn generate_docs_route_tokens(
             .route(#url, #method_path(|| async {
                 static MERGED_SPEC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
                 let spec = MERGED_SPEC.get_or_init(|| {
-                    let mut merged: vespera::OpenApi = vespera::serde_json::from_str(__VESPERA_SPEC).unwrap();
+                    // The base spec is Vespera-generated and expected to parse; on the
+                    // unreachable drift where parse or re-serialization fails, fall back
+                    // to serving the un-merged base spec instead of panicking inside this
+                    // request handler — the docs page still renders.
+                    let Ok(mut merged) =
+                        vespera::serde_json::from_str::<vespera::OpenApi>(__VESPERA_SPEC)
+                    else {
+                        return __VESPERA_SPEC.to_string();
+                    };
                     #(#merge_spec_code)*
-                    vespera::serde_json::to_string(&merged).unwrap()
+                    vespera::serde_json::to_string(&merged)
+                        .unwrap_or_else(|_| __VESPERA_SPEC.to_string())
                 });
                 static HTML: std::sync::OnceLock<String> = std::sync::OnceLock::new();
                 let html = HTML.get_or_init(|| {

@@ -410,6 +410,64 @@ fn test_merge_components_responses_and_parameters() {
 }
 
 #[test]
+fn test_merge_empty_component_maps_are_absent() {
+    let mut base = create_base_openapi();
+    let mut other = create_base_openapi();
+    other.components = Some(Components {
+        schemas: Some(BTreeMap::new()),
+        responses: Some(BTreeMap::new()),
+        parameters: Some(BTreeMap::new()),
+        examples: Some(BTreeMap::new()),
+        request_bodies: Some(BTreeMap::new()),
+        headers: Some(BTreeMap::new()),
+        security_schemes: Some(BTreeMap::new()),
+    });
+
+    base.merge(other);
+
+    assert!(base.components.is_none());
+}
+
+#[test]
+fn test_merge_empty_component_maps_do_not_create_empty_sections() {
+    let mut schemas = BTreeMap::new();
+    schemas.insert("User".to_string(), Schema::object());
+
+    let mut base = create_base_openapi();
+    base.components = Some(Components {
+        schemas: Some(schemas),
+        responses: None,
+        parameters: None,
+        examples: None,
+        request_bodies: None,
+        headers: None,
+        security_schemes: None,
+    });
+
+    let mut other = create_base_openapi();
+    other.components = Some(Components {
+        schemas: Some(BTreeMap::new()),
+        responses: Some(BTreeMap::new()),
+        parameters: Some(BTreeMap::new()),
+        examples: Some(BTreeMap::new()),
+        request_bodies: Some(BTreeMap::new()),
+        headers: Some(BTreeMap::new()),
+        security_schemes: Some(BTreeMap::new()),
+    });
+
+    base.merge(other);
+
+    let components = base.components.as_ref().unwrap();
+    assert!(components.schemas.as_ref().unwrap().contains_key("User"));
+    assert!(components.responses.is_none());
+    assert!(components.parameters.is_none());
+    assert!(components.examples.is_none());
+    assert!(components.request_bodies.is_none());
+    assert!(components.headers.is_none());
+    assert!(components.security_schemes.is_none());
+}
+
+#[test]
 fn test_merge_top_level_servers_security_external_docs() {
     use crate::schema::ExternalDocumentation;
 

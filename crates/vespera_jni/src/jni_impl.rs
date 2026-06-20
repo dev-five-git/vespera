@@ -9,7 +9,7 @@ use std::{
 use futures_util::FutureExt;
 use jni::EnvUnowned;
 use jni::errors::ThrowRuntimeExAndDefault;
-use jni::objects::{Global, JByteArray, JClass, JObject};
+use jni::objects::{JByteArray, JClass, JObject};
 use jni::sys::{jbyteArray, jint};
 
 use crate::daemon_env::with_cached_daemon_env;
@@ -22,10 +22,7 @@ use crate::streaming_closures::{
 // a sidecar module to keep this file within the 1000-line source cap.
 #[path = "jni_impl_streaming_buffer.rs"]
 mod streaming_buffer;
-use streaming_buffer::{
-    PullPushBuffers, StreamingBufferRole, checkout_pull_push_buffers,
-    checkout_streaming_chunk_buffer, mark_streaming_buffer_reusable,
-};
+use streaming_buffer::{PullPushBuffers, mark_streaming_buffer_reusable};
 
 /// Multi-threaded Tokio runtime shared across all JNI calls.
 ///
@@ -199,8 +196,8 @@ fn panic_wire() -> Vec<u8> {
 #[path = "jni_impl_support.rs"]
 mod support;
 use support::{
-    push_unless_header_failed, setup_full_stream_with_header, setup_stream_with_header,
-    throw_streaming_abort,
+    push_unless_header_failed, setup_full_stream, setup_full_stream_with_header, setup_stream,
+    setup_stream_with_header, throw_streaming_abort,
 };
 
 /// Worker thread count for the shared [`RUNTIME`], resolved once
@@ -518,16 +515,26 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                         Err(err) => return Ok(env.byte_array_from_slice(&err)?.into()),
                     };
 
-                    // Promote the OutputStream to Global so we can call
-                    // .write() from a different attached thread inside
-                    // the streaming callback.
-                    let stream_global: Global<JObject<'static>> =
-                        env.new_global_ref(&output_stream)?;
-                    let jvm = env.get_java_vm()?;
-
-                    // One per-thread reusable Java chunk buffer for the whole stream.
-                    let (push_buf, push_buf_lease) =
-                        checkout_streaming_chunk_buffer(env, StreamingBufferRole::Push)?;
+                    // Promote the OutputStream to a Global (so the streaming
+                    // callback can call .write() from a daemon-attached worker
+                    // thread), grab the VM, and check out the per-thread push
+                    // chunk buffer.  On ANY setup failure (rare, OOM-driven) the
+                    // previous bare `?` returned an ignored `Err` from `with_env`
+                    // → `resolve::<ThrowRuntimeExAndDefault>` threw a Java
+                    // exception + returned `null`, breaking the "every failure is
+                    // a valid wire response" contract.  Return a `500` wire
+                    // response instead so the Java decoder is never handed `null`.
+                    let Ok((stream_global, jvm, push_buf, push_buf_lease)) =
+                        setup_stream(env, &output_stream)
+                    else {
+                        clear_pending_exception(env);
+                        return Ok(env
+                            .byte_array_from_slice(&vespera_inprocess::error_wire(
+                                500,
+                                "JNI streaming setup failed",
+                            ))?
+                            .into());
+                    };
 
                     let header_bytes =
                         RUNTIME.block_on(vespera_inprocess::dispatch_streaming_async(
@@ -595,26 +602,31 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                         Err(err) => return Ok(env.byte_array_from_slice(&err)?.into()),
                     };
 
-                    let input_global: Global<JObject<'static>> =
-                        env.new_global_ref(&input_stream)?;
-                    // A second InputStream ref for the post-response close — the
-                    // first is moved into the pull closure (a `Global` is not
-                    // `Clone`); both are independent GC roots to the same stream.
-                    let input_for_close: Global<JObject<'static>> =
-                        env.new_global_ref(&input_stream)?;
-                    let output_global: Global<JObject<'static>> =
-                        env.new_global_ref(&output_stream)?;
-                    let jvm = env.get_java_vm()?;
-
-                    // Pull and push run concurrently on different threads, so each
-                    // direction checks out its own per-thread cached buffer (the
-                    // pull lease is released for us if the push checkout fails).
+                    // Promote the input/output refs (+ a second input ref for the
+                    // post-response close, since `Global` is not `Clone`), grab the
+                    // VM, and check out both per-thread chunk buffers.  On ANY setup
+                    // failure (rare, OOM-driven) the previous bare `?` surfaced to
+                    // Java as a thrown exception + `null` return; return a `500` wire
+                    // response instead so the decoder is never handed `null`.  A
+                    // half-acquired buffer pair cannot leak a lease (see
+                    // `setup_full_stream` / `checkout_pull_push_buffers`).
+                    let Ok((input_global, input_for_close, output_global, jvm, buffers)) =
+                        setup_full_stream(env, &input_stream, &output_stream)
+                    else {
+                        clear_pending_exception(env);
+                        return Ok(env
+                            .byte_array_from_slice(&vespera_inprocess::error_wire(
+                                500,
+                                "JNI streaming setup failed",
+                            ))?
+                            .into());
+                    };
                     let PullPushBuffers {
                         pull_buf,
                         pull_buf_lease,
                         push_buf,
                         push_buf_lease,
-                    } = checkout_pull_push_buffers(env)?;
+                    } = buffers;
 
                     // Closures capture clones of the JavaVM and Globals;
                     // both types are Send+Sync.

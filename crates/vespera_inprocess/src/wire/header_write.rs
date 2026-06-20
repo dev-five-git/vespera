@@ -170,11 +170,33 @@ fn write_u64<S: JsonSink>(sink: &mut S, mut v: u64) {
 ///   JSON array in insertion order;
 /// - non-UTF-8 values render as `""` (same `to_str().unwrap_or("")`).
 fn write_headers<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap) {
-    // Sort distinct names in a stack buffer for the common small-header
-    // response; larger sets fall back to a heap `Vec`.  Output is
-    // byte-identical either way (same sorted order over the same names).
     const STACK_CAP: usize = 32;
     let key_count = headers.keys_len();
+    // Fast paths for the overwhelmingly common tiny-header responses: skip
+    // initialising the 32-slot stack name array AND the (no-op) sort that the
+    // general path below always pays — a bodyless `GET` returning a bare string
+    // has ZERO response headers, and a single `content-type` is the next most
+    // common shape.  Output is byte-identical (an N<=1 set is trivially sorted).
+    if key_count == 0 {
+        sink.put(b"{}");
+        return;
+    }
+    if key_count == 1 {
+        let name = headers
+            .keys()
+            .next()
+            .expect("keys_len()==1 yields exactly one name");
+        sink.put(b"{");
+        write_header_name_json_string(sink, name.as_str());
+        sink.put(b":");
+        write_header_value(sink, headers, name.as_str());
+        sink.put(b"}");
+        return;
+    }
+
+    // >=2 distinct names: sort in a stack buffer for the common small-header
+    // response; larger sets fall back to a heap `Vec`.  Output is byte-identical
+    // either way (same sorted order over the same names).
     let mut stack_names: [&str; STACK_CAP] = [""; STACK_CAP];
     let mut heap_names: Vec<&str>;
     let names: &mut [&str] = if key_count <= STACK_CAP {
@@ -194,34 +216,50 @@ fn write_headers<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap) {
         if idx > 0 {
             sink.put(b",");
         }
-        write_json_string(sink, name);
+        write_header_name_json_string(sink, name);
         sink.put(b":");
-        let mut values = headers.get_all(name).iter();
-        let first = values
-            .next()
-            .expect("HeaderMap::keys yields only present names");
-        match values.next() {
-            // Single value: emit the scalar string.
-            None => write_json_string(sink, first.to_str().unwrap_or("")),
-            // Multiple values: emit a JSON array, reusing the already
-            // advanced iterator (first, second, then the rest) instead of
-            // re-iterating `get_all(name)` from the start — byte-identical
-            // output, no second hash lookup, important for repeated
-            // headers like `set-cookie`.
-            Some(second) => {
-                sink.put(b"[");
-                write_json_string(sink, first.to_str().unwrap_or(""));
-                sink.put(b",");
-                write_json_string(sink, second.to_str().unwrap_or(""));
-                for value in values {
-                    sink.put(b",");
-                    write_json_string(sink, value.to_str().unwrap_or(""));
-                }
-                sink.put(b"]");
-            }
-        }
+        write_header_value(sink, headers, name);
     }
     sink.put(b"}");
+}
+
+/// Append an HTTP header **name** as a quoted JSON string WITHOUT the
+/// escape-table scan.  An `http::HeaderName` is a validated HTTP field-name
+/// token (RFC 9110 §5.6.2 — only `!#$%&'*+-.^_`|~`, digits, and ASCII letters,
+/// lowercase here), so it can contain NONE of the `"`, `\`, or C0-control bytes
+/// `write_json_string` rewrites.  Byte-identical to `write_json_string(sink,
+/// name)` for any valid header name, but skips the per-byte escape lookup.
+fn write_header_name_json_string<S: JsonSink>(sink: &mut S, name: &str) {
+    sink.put(b"\"");
+    sink.put(name.as_bytes());
+    sink.put(b"\"");
+}
+
+/// Write the JSON value for header `name`: a scalar string for a single value,
+/// or a JSON array (insertion order) for a repeated name (e.g. `set-cookie`).
+/// Reuses the already-advanced `get_all` iterator for the multi-value case
+/// (first, second, then the rest) — byte-identical, no second hash lookup.
+fn write_header_value<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap, name: &str) {
+    let mut values = headers.get_all(name).iter();
+    let first = values
+        .next()
+        .expect("write_header_value is only called for present names");
+    match values.next() {
+        // Single value: emit the scalar string.
+        None => write_json_string(sink, first.to_str().unwrap_or("")),
+        // Multiple values: emit a JSON array.
+        Some(second) => {
+            sink.put(b"[");
+            write_json_string(sink, first.to_str().unwrap_or(""));
+            sink.put(b",");
+            write_json_string(sink, second.to_str().unwrap_or(""));
+            for value in values {
+                sink.put(b",");
+                write_json_string(sink, value.to_str().unwrap_or(""));
+            }
+            sink.put(b"]");
+        }
+    }
 }
 
 /// Serialize one `validation_errors` entry — fields in struct order

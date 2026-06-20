@@ -289,6 +289,39 @@ fn nullable_primitive_type_array_deserializes() {
     assert_eq!(schema.nullable, Some(true));
 }
 
+#[test]
+fn multi_type_array_with_null_deserializes_to_first_non_null_nullable_type() {
+    let schema: Schema = serde_json::from_str(r#"{"type":["string","integer","null"]}"#).unwrap();
+
+    assert_eq!(schema.schema_type, Some(SchemaType::String));
+    assert_eq!(schema.nullable, Some(true));
+}
+
+#[test]
+fn multi_type_array_without_null_deserializes_to_first_type() {
+    let schema: Schema = serde_json::from_str(r#"{"type":["integer","string"]}"#).unwrap();
+
+    assert_eq!(schema.schema_type, Some(SchemaType::Integer));
+    assert_eq!(schema.nullable, None);
+}
+
+#[test]
+fn type_array_nullability_wins_over_nullable_false_sibling() {
+    let schema: Schema =
+        serde_json::from_str(r#"{"type":["string","null"],"nullable":false}"#).unwrap();
+
+    assert_eq!(schema.schema_type, Some(SchemaType::String));
+    assert_eq!(schema.nullable, Some(true));
+}
+
+#[test]
+fn primitive_schema_serialize_contract_stays_byte_identical() {
+    assert_eq!(
+        serde_json::to_string(&Schema::string()).unwrap(),
+        r#"{"type":"string"}"#
+    );
+}
+
 // ── SchemaRef: $ref-sibling preservation ─────────────────────────
 //
 // The prior `#[serde(untagged)]` `Ref`-first enum greedily matched

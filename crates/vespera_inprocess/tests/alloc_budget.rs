@@ -274,5 +274,11 @@ fn allocation_budgets() {
 const BUDGET_BODYLESS_BORROWED: usize = 14; // borrowed: no clone / no output Vec / no body copy
 const BUDGET_SMALL_POST: usize = 22; // borrowed: +1 body copy over bodyless
 const BUDGET_HEADERS_POST: usize = 40; // borrowed: 40 alloc + 0 realloc (header Vec pre-reserved at 16)
-const BUDGET_MATERIALISE: usize = 18; // dispatch_from_bytes: +input clone +response Vec
-const BUDGET_DISPATCH_INTO: usize = 17; // dispatch_into: +input clone, reused out
+// MATERIALISE / DISPATCH_INTO dropped by 2 each (was 18 / 17) when the OWNED
+// wire path stopped copying the request path into a fresh `Bytes`: a bodyless
+// GET's borrowed path now SHARES the request's owning header `Bytes` to build
+// the `Uri` (`Uri::from_maybe_shared` via `slice_from_owner`), removing the
+// `Uri::try_from(&str)` allocation+copy.  A regression that re-introduces the
+// path copy (or any other owned-path allocation) trips these tightened budgets.
+const BUDGET_MATERIALISE: usize = 16; // dispatch_from_bytes: +input clone +response Vec, URI shared
+const BUDGET_DISPATCH_INTO: usize = 15; // dispatch_into: +input clone, reused out, URI shared

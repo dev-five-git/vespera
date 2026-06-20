@@ -212,11 +212,15 @@ where
     // signal only that a non-empty body should default.  Computed before
     // `body_bytes` is moved.
     let default_json_when_absent = !body_bytes.is_empty();
+    // Streaming is dominated by body throughput, so the owned-path URI
+    // zero-copy is not worth threading here — pass `None` (the URI is parsed
+    // from the borrowed path by `build_uri`, exactly as before).
     let (status, headers, metadata, mut body) = match dispatch_and_split(
         router,
         &header.method,
         &header.path,
         &header.query,
+        None,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         Body::from(body_bytes),
         default_json_when_absent,
@@ -477,11 +481,14 @@ where
     // default whenever no `Content-Type` header is present — byte-identical
     // to the prior `!has_content_type` semantics.
     let default_json_when_absent = true;
+    // See the response-streaming sibling: streaming is body-throughput bound,
+    // so pass `None` rather than threading the owned-path URI zero-copy here.
     let (status, headers, metadata, mut response_body) = match dispatch_and_split(
         router,
         &header.method,
         &header.path,
         &header.query,
+        None,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         body,
         default_json_when_absent,

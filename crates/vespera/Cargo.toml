@@ -95,5 +95,11 @@ trybuild = "1"
 name = "validation"
 harness = false
 
+# multipart `4xx`/`422` error-envelope serialization before/after A/B bench
+# (same borrowing-`Serialize` win as `validation`, on `TypedMultipartError`).
+[[bench]]
+name = "multipart_error"
+harness = false
+
 [lints]
 workspace = true

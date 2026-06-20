@@ -65,27 +65,34 @@ fn test_error_display_duplicate_field() {
 }
 
 #[test]
-fn other_error_response_message_hides_internal_source() {
+fn other_error_body_hides_internal_source() {
     // The internal source (e.g. a temp-file path / OS error) must NOT
-    // leak into the public 500 response message.
+    // leak into the public 500 response body — assert on the ACTUAL
+    // serialized envelope (the production path), not an intermediate.
     let err = TypedMultipartError::Other {
         source: "/tmp/vespera-upload-7f3a.part: No such file or directory".to_string(),
     };
+    let body = String::from_utf8(err.error_body()).expect("envelope is UTF-8");
     assert_eq!(
-        err.response_message(),
-        "internal error while processing multipart request"
+        body,
+        r#"{"errors":[{"message":"internal error while processing multipart request","path":""}]}"#
     );
     assert!(
-        !err.response_message().contains("/tmp/"),
-        "internal source path leaked into response message"
+        !body.contains("/tmp/"),
+        "internal source path leaked into response body"
     );
     // Display still exposes the source for server-side logging.
     assert!(err.to_string().contains("/tmp/"));
-    // Non-Other variants keep their (client-safe) Display message.
+    // Non-Other variants stream their (client-safe) Display message verbatim,
+    // byte-identical to the prior `to_string()` path.
     let missing = TypedMultipartError::MissingField {
         field_name: "avatar".to_string(),
     };
-    assert_eq!(missing.response_message(), "Missing field: `avatar`");
+    let missing_body = String::from_utf8(missing.error_body()).expect("envelope is UTF-8");
+    assert_eq!(
+        missing_body,
+        r#"{"errors":[{"message":"Missing field: `avatar`","path":"avatar"}]}"#
+    );
 }
 
 #[test]

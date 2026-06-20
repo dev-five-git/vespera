@@ -154,11 +154,15 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
             let mut out_region: Option<(*mut u8, usize)> = None;
             let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                 || -> jni::errors::Result<jint> {
-                    // Err here (null address ⇒ heap buffer, or JVM trouble)
-                    // is thrown as RuntimeException via the resolve below —
-                    // defense in depth behind the Java-side isDirect() check.
-                    let in_addr = env.get_direct_buffer_address(&in_buf)?;
-                    let in_cap = env.get_direct_buffer_capacity(&in_buf)?;
+                    // Resolve the OUTPUT buffer FIRST and record it, so any
+                    // *later* failure (notably an invalid `in_buf`) can still
+                    // write a decodable wire response into it instead of
+                    // throwing — upholding the dispatch* family contract that
+                    // every failure yields a wire response.  An output-resolution
+                    // failure (null ⇒ heap buffer, or JVM trouble) has no buffer
+                    // to write into, so it still propagates via `?` → the
+                    // RuntimeException the resolve below maps it to (defense in
+                    // depth behind the Java-side isDirect()/isReadOnly() guard).
                     let out_addr = env.get_direct_buffer_address(&out_buf)?;
                     let out_cap = env.get_direct_buffer_capacity(&out_buf)?;
                     out_region = Some((out_addr, out_cap));
@@ -166,6 +170,32 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                         !out_addr.is_null(),
                         "JNI direct output buffer address must be non-null"
                     );
+
+                    // Now resolve the INPUT buffer.  A failure here (null ⇒ heap
+                    // buffer, non-direct, or JVM trouble) writes a `400` wire
+                    // response into the already-resolved output buffer instead of
+                    // throwing + returning the default `jint` — so a caller that
+                    // bypasses the Java wrapper with a bad `in_buf` but a valid
+                    // `out_buf` still receives a decodable wire error.
+                    let in_resolved = match env.get_direct_buffer_address(&in_buf) {
+                        Ok(addr) => env.get_direct_buffer_capacity(&in_buf).map(|cap| (addr, cap)),
+                        Err(e) => Err(e),
+                    };
+                    let Ok((in_addr, in_cap)) = in_resolved else {
+                        // GetDirectBufferAddress returns NULL without raising a
+                        // Java exception, but clear defensively so the wire
+                        // response is delivered with no exception in flight.
+                        if env.exception_check() {
+                            env.exception_clear();
+                        }
+                        let err = vespera_inprocess::error_wire(
+                            400,
+                            "invalid in_buf (null, heap, or non-direct ByteBuffer)",
+                        );
+                        // SAFETY: `out_addr`/`out_cap` came from the live direct
+                        // output buffer above and `err` is a Rust-owned Vec.
+                        return Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) });
+                    };
 
                     // Validate in_len against the buffer's real capacity —
                     // all failures still produce a valid wire response in

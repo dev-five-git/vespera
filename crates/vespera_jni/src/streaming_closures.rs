@@ -102,6 +102,27 @@ impl MethodCache {
     }
 }
 
+/// Process-global cache of the four `java.*` callback method IDs.
+///
+/// **Single-JVM-per-process invariant (deliberate).** The cached `JMethodID`s
+/// and their pinning `Global<JClass>` are JVM-local, and this `OnceLock` is
+/// keyed only by the process — NOT by `JavaVM`. This is sound because:
+///
+/// * HotSpot supports exactly one JVM per OS process — `JNI_CreateJavaVM`
+///   fails on a second call — so a second `JavaVM` whose IDs could differ
+///   cannot exist alongside the cached one.
+/// * Every cached class (`InputStream`, `OutputStream`, `Consumer`,
+///   `CompletableFuture`) is a bootstrap `java.*` class that never unloads,
+///   so the cached IDs stay valid for the process lifetime.
+/// * [`crate::daemon_env`] separately stores and compares the raw `JavaVM`
+///   pointer on every cached-env reuse, so a thread attached to a *different*
+///   VM cannot even obtain a live `Env` to reach this cache.
+///
+/// A per-call `JavaVM` check is intentionally NOT added: it would require a
+/// `GetJavaVM` JNI call on every streaming chunk — the exact per-chunk JNI
+/// cost this cache exists to eliminate — to guard against a multi-JVM
+/// configuration the platform already forbids. Trading hot-path throughput
+/// for that guard would be a net regression.
 static METHOD_CACHE: OnceLock<MethodCache> = OnceLock::new();
 
 fn method_cache(env: &mut jni::Env<'_>) -> Option<&'static MethodCache> {

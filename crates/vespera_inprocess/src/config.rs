@@ -31,11 +31,34 @@ const MAX_STREAMING_CHANNEL_CAPACITY: usize = 1024;
 static STREAMING_CHUNK_BYTES: OnceLock<usize> = OnceLock::new();
 static STREAMING_CHANNEL_CAPACITY: OnceLock<usize> = OnceLock::new();
 
-/// Parse an optional config string into a clamped `usize`, falling
-/// back to `default` when absent or unparseable.
-fn parse_config_value(raw: Option<&str>, default: usize, min: usize, max: usize) -> usize {
-    raw.and_then(|s| s.trim().parse::<usize>().ok())
-        .map_or(default, |v| v.clamp(min, max))
+/// Parse an optional config string into a clamped `usize`, falling back to
+/// `default` when the value is **absent**.
+///
+/// A value that is **present but unparseable** (e.g. a typo like `"256KiB"` or
+/// `"abc"`) emits a one-time stderr warning — every caller resolves through a
+/// process-`OnceLock`, so its initializer runs at most once — and then uses
+/// `default`. This mirrors [`max_request_bytes`]'s warn-and-default policy so a
+/// mistuned streaming knob is never silently ignored (the operator would
+/// otherwise believe they tuned a value that is actually unchanged).
+fn parse_config_value(
+    var_name: &str,
+    raw: Option<&str>,
+    default: usize,
+    min: usize,
+    max: usize,
+) -> usize {
+    raw.map_or(default, |s| {
+        s.trim().parse::<usize>().map_or_else(
+            |_| {
+                eprintln!(
+                    "vespera: ignoring invalid {var_name}={s:?} \
+                     (expected a non-negative integer); using the default {default}"
+                );
+                default
+            },
+            |v| v.clamp(min, max),
+        )
+    })
 }
 
 /// Effective per-chunk buffer size for streaming dispatches.
@@ -53,6 +76,7 @@ fn parse_config_value(raw: Option<&str>, default: usize, min: usize, max: usize)
 pub fn streaming_chunk_bytes() -> usize {
     *STREAMING_CHUNK_BYTES.get_or_init(|| {
         parse_config_value(
+            "VESPERA_STREAMING_CHUNK_BYTES",
             std::env::var("VESPERA_STREAMING_CHUNK_BYTES")
                 .ok()
                 .as_deref(),
@@ -87,6 +111,7 @@ pub fn set_streaming_chunk_bytes(bytes: usize) -> bool {
 pub fn streaming_channel_capacity() -> usize {
     *STREAMING_CHANNEL_CAPACITY.get_or_init(|| {
         parse_config_value(
+            "VESPERA_STREAMING_CHANNEL_CAPACITY",
             std::env::var("VESPERA_STREAMING_CHANNEL_CAPACITY")
                 .ok()
                 .as_deref(),
@@ -226,7 +251,13 @@ mod tests {
     #[test]
     fn absent_value_yields_default() {
         assert_eq!(
-            parse_config_value(None, DEFAULT_STREAMING_CHUNK_BYTES, 4096, 8 << 20),
+            parse_config_value(
+                "VESPERA_STREAMING_CHUNK_BYTES",
+                None,
+                DEFAULT_STREAMING_CHUNK_BYTES,
+                4096,
+                8 << 20
+            ),
             DEFAULT_STREAMING_CHUNK_BYTES
         );
     }
@@ -235,7 +266,13 @@ mod tests {
     fn unparseable_value_yields_default() {
         for raw in ["", "abc", "-1", "64KiB", "1.5"] {
             assert_eq!(
-                parse_config_value(Some(raw), DEFAULT_STREAMING_CHANNEL_CAPACITY, 1, 1024),
+                parse_config_value(
+                    "VESPERA_STREAMING_CHANNEL_CAPACITY",
+                    Some(raw),
+                    DEFAULT_STREAMING_CHANNEL_CAPACITY,
+                    1,
+                    1024
+                ),
                 DEFAULT_STREAMING_CHANNEL_CAPACITY,
                 "raw = {raw:?}"
             );
@@ -253,17 +290,47 @@ mod tests {
     #[test]
     fn valid_value_is_used_and_whitespace_tolerated() {
         assert_eq!(
-            parse_config_value(Some("131072"), 262_144, 4096, 8 << 20),
+            parse_config_value(
+                "VESPERA_STREAMING_CHUNK_BYTES",
+                Some("131072"),
+                262_144,
+                4096,
+                8 << 20
+            ),
             131_072
         );
-        assert_eq!(parse_config_value(Some("  64  "), 16, 1, 1024), 64);
+        assert_eq!(
+            parse_config_value(
+                "VESPERA_STREAMING_CHANNEL_CAPACITY",
+                Some("  64  "),
+                16,
+                1,
+                1024
+            ),
+            64
+        );
     }
 
     #[test]
     fn out_of_range_values_are_clamped() {
-        assert_eq!(parse_config_value(Some("1"), 262_144, 4096, 8 << 20), 4096);
         assert_eq!(
-            parse_config_value(Some("999999999"), 262_144, 4096, 8 << 20),
+            parse_config_value(
+                "VESPERA_STREAMING_CHUNK_BYTES",
+                Some("1"),
+                262_144,
+                4096,
+                8 << 20
+            ),
+            4096
+        );
+        assert_eq!(
+            parse_config_value(
+                "VESPERA_STREAMING_CHUNK_BYTES",
+                Some("999999999"),
+                262_144,
+                4096,
+                8 << 20
+            ),
             8 << 20
         );
     }
