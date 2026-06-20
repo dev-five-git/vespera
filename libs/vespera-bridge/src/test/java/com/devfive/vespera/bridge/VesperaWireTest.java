@@ -92,6 +92,56 @@ class VesperaWireTest {
         assertEquals("{\"x\":1}", new String(body, StandardCharsets.UTF_8));
     }
 
+    /**
+     * Canonical request header JSON — the <strong>shared cross-language
+     * golden</strong> that locks the Java encoder against the Rust
+     * {@code serde_json}/hand-rolled parser. The Rust counterpart
+     * ({@code crates/vespera_inprocess/tests/wire_contract.rs ::
+     * cross_language_request_golden_routes}) dispatches the byte-identical
+     * frame and asserts it routes, so the two independent hand-rolled wire
+     * implementations cannot silently drift: a change to either side's field
+     * order / escaping / structure breaks its own golden assertion.
+     *
+     * <p>Field order is fixed by {@code VesperaWireCodec.fillHeaderJson}:
+     * {@code v, method, path, query?, headers?, app?}.
+     */
+    static final String CANONICAL_REQUEST_HEADER_JSON =
+            "{\"v\":1,\"method\":\"POST\",\"path\":\"/users\",\"query\":\"page=1\","
+                    + "\"headers\":{\"content-type\":\"application/json\"}}";
+
+    /** Canonical request body paired with {@link #CANONICAL_REQUEST_HEADER_JSON}. */
+    static final byte[] CANONICAL_REQUEST_BODY = "{\"x\":1}".getBytes(StandardCharsets.UTF_8);
+
+    @Test
+    void crossLanguage_request_golden_bytes_are_locked() {
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("content-type", "application/json");
+
+        byte[] wire = VesperaBridge.encodeRequest(
+                "POST", "/users", "page=1", headers, CANONICAL_REQUEST_BODY);
+
+        byte[] expectedHeader =
+                CANONICAL_REQUEST_HEADER_JSON.getBytes(StandardCharsets.UTF_8);
+
+        // Length prefix == exact canonical header byte length (big-endian).
+        int headerLen = ByteBuffer.wrap(wire).order(ByteOrder.BIG_ENDIAN).getInt();
+        assertEquals(expectedHeader.length, headerLen,
+                "encoded header length drifted from the cross-language golden");
+
+        // Header JSON bytes are byte-identical to the shared golden (locks the
+        // Java encoder's field order + structure the Rust parser is asserted
+        // to accept verbatim in wire_contract.rs).
+        byte[] headerJson = new byte[headerLen];
+        System.arraycopy(wire, 4, headerJson, 0, headerLen);
+        assertArrayEquals(expectedHeader, headerJson,
+                "request header JSON drifted from the cross-language golden — WIRE FORMAT BREAK");
+
+        // Body follows the header verbatim.
+        byte[] body = new byte[wire.length - 4 - headerLen];
+        System.arraycopy(wire, 4 + headerLen, body, 0, body.length);
+        assertArrayEquals(CANONICAL_REQUEST_BODY, body, "request body must follow header verbatim");
+    }
+
     @Test
     void encodeRequestRejectsNullMethodAndPathWithFieldName() {
         NullPointerException method = assertThrows(

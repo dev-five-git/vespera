@@ -329,18 +329,7 @@ public class VesperaProxyController {
      */
     private static void writeWireResponse(byte[] wire, HttpServletResponse response)
             throws IOException {
-        if (wire == null || wire.length < 4) {
-            throw new IllegalArgumentException(
-                    "wire response too short: "
-                            + (wire == null ? "null" : wire.length + " bytes"));
-        }
-        int headerLen = ((wire[0] & 0xFF) << 24) | ((wire[1] & 0xFF) << 16)
-                | ((wire[2] & 0xFF) << 8) | (wire[3] & 0xFF);
-        if (headerLen < 0 || (long) 4 + headerLen > wire.length) {
-            throw new IllegalArgumentException(
-                    "wire header_len " + headerLen
-                            + " overflows response (" + wire.length + " bytes)");
-        }
+        int headerLen = VesperaWireCodec.readHeaderLength(wire);
         int[] statusHolder = {500};
         WireHeaderReader.apply(
                 ByteBuffer.wrap(wire), 4, headerLen,
@@ -517,25 +506,13 @@ public class VesperaProxyController {
      * already apply.
      */
     static int readValidatedHeaderLen(ByteBuffer wire) {
-        int limit = wire.limit();
-        if (limit < 4) {
-            throw new IllegalArgumentException("wire response too short: " + limit + " bytes");
-        }
-        // Decode the u32 BE length prefix from absolute bytes (order-independent)
-        // instead of wire.getInt(0), which honours the buffer's CURRENT byte
-        // order — a LITTLE_ENDIAN view (e.g. a caller that called order(...) on
-        // the buffer, or a future change) would misparse the big-endian wire
-        // prefix. Matches the manual big-endian decode the heap byte[] paths
-        // (writeWireResponse / buildResponseEntityFromWire) already use.
-        int headerLen = ((wire.get(0) & 0xFF) << 24)
-                | ((wire.get(1) & 0xFF) << 16)
-                | ((wire.get(2) & 0xFF) << 8)
-                | (wire.get(3) & 0xFF);
-        if (headerLen < 0 || (long) 4 + headerLen > limit) {
-            throw new IllegalArgumentException(
-                    "wire header_len " + headerLen + " overflows response (" + limit + " bytes)");
-        }
-        return headerLen;
+        // Delegates to the single source of truth in VesperaWireCodec so the
+        // u32 BE prefix decode + bounds contract stays byte-identical across
+        // every wire-frame split site (heap byte[] and direct ByteBuffer). The
+        // helper decodes from absolute bytes (order-independent) — never
+        // wire.getInt(0), which honours the buffer's CURRENT byte order — so a
+        // LITTLE_ENDIAN view can never misparse the big-endian wire prefix.
+        return VesperaWireCodec.readHeaderLength(wire);
     }
 
     // Package-private so tests can verify DIRECT header/body-length behavior
@@ -805,16 +782,7 @@ public class VesperaProxyController {
      * response executor instead of the native completion thread.
      */
     private static ResponseEntity<?> buildResponseEntityFromWire(byte[] wire) {
-        if (wire == null || wire.length < 4) {
-            throw new IllegalArgumentException(
-                    "wire response too short: " + (wire == null ? "null" : wire.length + " bytes"));
-        }
-        int headerLen = ((wire[0] & 0xFF) << 24) | ((wire[1] & 0xFF) << 16)
-                | ((wire[2] & 0xFF) << 8) | (wire[3] & 0xFF);
-        if (headerLen < 0 || (long) 4 + headerLen > wire.length) {
-            throw new IllegalArgumentException(
-                    "wire header_len " + headerLen + " overflows response (" + wire.length + " bytes)");
-        }
+        int headerLen = VesperaWireCodec.readHeaderLength(wire);
         HttpHeaders httpHeaders = new HttpHeaders();
         int[] statusHolder = {500};
         WireHeaderReader.apply(

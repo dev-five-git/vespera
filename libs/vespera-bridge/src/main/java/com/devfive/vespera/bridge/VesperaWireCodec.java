@@ -251,6 +251,63 @@ final class VesperaWireCodec {
         return (int) total;
     }
 
+    /**
+     * Decode and validate the u32 BE header-length prefix at bytes {@code 0..4}
+     * of a heap wire frame — the <strong>single source of truth</strong> for
+     * the frame split shared by {@link #decodeResponse} and the
+     * {@link VesperaProxyController} write/build paths, so the bounds contract
+     * can never drift between the (previously duplicated) call sites.
+     *
+     * <p>The prefix is read from absolute bytes (big-endian, order-independent),
+     * never {@code ByteBuffer.getInt} which honours the buffer's current byte
+     * order.
+     *
+     * @return the header JSON length {@code N} (so the body is {@code wire[4+N..]})
+     * @throws IllegalArgumentException if {@code wire} is shorter than the
+     *     4-byte prefix, or the decoded length is negative or overflows the frame
+     */
+    static int readHeaderLength(byte[] wire) {
+        if (wire == null || wire.length < 4) {
+            throw new IllegalArgumentException(
+                    "wire response too short: "
+                            + (wire == null ? "null" : wire.length + " bytes"));
+        }
+        int headerLen = ((wire[0] & 0xFF) << 24) | ((wire[1] & 0xFF) << 16)
+                | ((wire[2] & 0xFF) << 8) | (wire[3] & 0xFF);
+        if (headerLen < 0 || 4L + headerLen > wire.length) {
+            throw new IllegalArgumentException(
+                    "wire header_len " + headerLen
+                            + " overflows response (" + wire.length + " bytes)");
+        }
+        return headerLen;
+    }
+
+    /**
+     * {@link ByteBuffer} sibling of {@link #readHeaderLength(byte[])} — decodes
+     * the u32 BE header-length prefix from absolute bytes {@code 0..4} of
+     * {@code wire} (honouring neither the buffer's position nor its byte order),
+     * validating against {@code wire.limit()}.
+     *
+     * @return the header JSON length {@code N}
+     * @throws IllegalArgumentException if the buffer is shorter than the 4-byte
+     *     prefix, or the decoded length is negative or overflows the limit
+     */
+    static int readHeaderLength(ByteBuffer wire) {
+        int limit = wire.limit();
+        if (limit < 4) {
+            throw new IllegalArgumentException("wire response too short: " + limit + " bytes");
+        }
+        int headerLen = ((wire.get(0) & 0xFF) << 24)
+                | ((wire.get(1) & 0xFF) << 16)
+                | ((wire.get(2) & 0xFF) << 8)
+                | (wire.get(3) & 0xFF);
+        if (headerLen < 0 || 4L + headerLen > limit) {
+            throw new IllegalArgumentException(
+                    "wire header_len " + headerLen + " overflows response (" + limit + " bytes)");
+        }
+        return headerLen;
+    }
+
     /** Internal: write {@code [u32 BE len | headerJson[0..headerLen] | body]} at position 0. */
     static int assembleInto(byte[] headerJson, int headerLen, byte[] body, ByteBuffer target) {
         int total = wireTotalLength(headerLen, body.length);
@@ -499,18 +556,7 @@ final class VesperaWireCodec {
      * @throws IllegalArgumentException if the wire bytes are malformed
      */
     static DecodedResponse decodeResponse(byte[] wire) {
-        if (wire == null || wire.length < 4) {
-            throw new IllegalArgumentException(
-                    "wire response too short: "
-                            + (wire == null ? "null" : wire.length + " bytes"));
-        }
-        int headerLen = ((wire[0] & 0xFF) << 24) | ((wire[1] & 0xFF) << 16)
-                | ((wire[2] & 0xFF) << 8) | (wire[3] & 0xFF);
-        if (headerLen < 0 || (long) 4 + headerLen > wire.length) {
-            throw new IllegalArgumentException(
-                    "wire header_len " + headerLen
-                            + " overflows response (" + wire.length + " bytes)");
-        }
+        int headerLen = readHeaderLength(wire);
         // Manual decode via the allocation-lean WireHeaderReader tokenizer
         // (the same parser the DIRECT / streaming header callbacks use)
         // instead of a Jackson JsonParser — drops the per-response parser +

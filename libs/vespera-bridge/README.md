@@ -394,6 +394,45 @@ end-to-end:
 `DispatchMode.BIDIRECTIONAL_STREAMING` is safe for virtual threads
 and handles all payload sizes without pooling.
 
+### Synchronous dispatch runtime semantics (background tasks)
+
+`SYNC` and `DIRECT` drive each request on a **per-calling-thread
+current-thread Tokio runtime** (one runtime per Java request thread,
+created lazily, blocking pool capped at 4 threads). The request future and
+any task the handler `.await`s run to completion normally. The one caveat:
+a handler that **detaches** background work with `tokio::spawn(...)` and
+returns *without awaiting it* makes progress on that detached task only
+while a later request reuses the same Java thread's runtime in a
+`block_on` — there are no dedicated worker threads on this path.
+
+If your handlers fire-and-forget background tasks, route them through a
+mode backed by the shared multi-threaded runtime instead:
+
+- `dispatchAsync` / the `CompletableFuture` API, or
+- `vespera.bridge.dispatch-mode=bidirectional-streaming`
+
+(both use the shared `RUNTIME`, whose worker count is tunable via
+`vespera.runtime.workerThreads` / `VESPERA_RUNTIME_WORKERS`). Handlers that
+only `.await` their own work are unaffected.
+
+### Operational sizing (threads & off-heap)
+
+The `DIRECT` fast path keeps per-platform-thread pooled direct
+`ByteBuffer`s (64 KiB → `vespera.direct.maxBufferBytes`, default 4 MiB),
+and `SYNC`/`DIRECT` keep one current-thread runtime per Java request
+thread. On a large servlet pool (e.g. 200 Tomcat threads) the steady-state
+cost is therefore bounded but not negligible:
+
+- **Off-heap**: up to `poolThreads × maxBufferBytes` retained direct
+  memory once each thread has served a large response (adaptive shrink
+  reclaims it after idle dispatches). Lower `vespera.direct.maxBufferBytes`
+  if off-heap pressure matters more than the DIRECT copy savings.
+- **Threads**: worst case `poolThreads × 4` Tokio blocking threads if many
+  handlers use `spawn_blocking` concurrently (the multipart temp-file
+  extractor does). Cap Rust's shared async runtime with
+  `vespera.runtime.workerThreads` when the JVM's own pools compete for the
+  same cores, or when a container CPU limit is below the host CPU count.
+
 ## Direct API (without the proxy controller)
 
 For custom integrations bypassing Spring:

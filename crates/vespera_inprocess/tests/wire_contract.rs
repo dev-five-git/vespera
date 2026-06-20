@@ -14,7 +14,7 @@ use std::sync::Once;
 use axum::Router;
 use axum::http::{HeaderMap, HeaderName};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use serde_json::Value;
 use tokio::runtime::Builder;
 use vespera_inprocess::{dispatch_from_bytes, error_wire, register_app};
@@ -31,10 +31,21 @@ async fn contract_headers() -> Response {
     (headers, "ok").into_response()
 }
 
+/// Echo the raw request body back — used by the cross-language golden
+/// test so a matched `POST /users` proves the header/body split + routing
+/// on the exact bytes the Java encoder produces.
+async fn echo_body(body: axum::body::Bytes) -> axum::body::Bytes {
+    body
+}
+
 fn install_router() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        register_app(|| Router::new().route("/contract", get(contract_headers)));
+        register_app(|| {
+            Router::new()
+                .route("/contract", get(contract_headers))
+                .route("/users", post(echo_body))
+        });
     });
 }
 
@@ -130,6 +141,51 @@ fn error_wire_bytes_are_locked() {
     assert_eq!(
         header, expected,
         "error_wire header bytes drifted — this is a WIRE FORMAT BREAK"
+    );
+}
+
+/// **Cross-language golden (request direction)** — dispatches the
+/// byte-identical wire frame the Java encoder produces and asserts the
+/// Rust parser accepts it and routes correctly.
+///
+/// The header JSON + body below are byte-identical to the Java side's
+/// shared golden (`VesperaWireTest.CANONICAL_REQUEST_HEADER_JSON` /
+/// `CANONICAL_REQUEST_BODY`).  Java asserts its encoder emits exactly
+/// these bytes; this test asserts Rust parses exactly these bytes and
+/// routes `POST /users` with the body intact.  Together they lock the two
+/// independent hand-rolled wire implementations against silent drift: a
+/// change to either side's field order / structure / framing breaks its
+/// own golden assertion.
+#[test]
+fn cross_language_request_golden_routes() {
+    install_router();
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    // Byte-identical to the Java cross-language golden — do NOT edit one
+    // side without the other (see VesperaWireTest).
+    let header_json =
+        br#"{"v":1,"method":"POST","path":"/users","query":"page=1","headers":{"content-type":"application/json"}}"#;
+    let body = br#"{"x":1}"#;
+    let mut wire = Vec::with_capacity(4 + header_json.len() + body.len());
+    wire.extend_from_slice(&u32::try_from(header_json.len()).unwrap().to_be_bytes());
+    wire.extend_from_slice(header_json);
+    wire.extend_from_slice(body);
+
+    let resp = dispatch_from_bytes(wire, &runtime);
+    let (header, resp_body) = split_wire(&resp);
+
+    // Body round-trip proves the parser split header/body at the exact
+    // offset and routed the echo handler; 200 proves `POST /users` matched.
+    assert_eq!(
+        resp_body, body,
+        "cross-language request golden: echo body must round-trip (header/body split + routing)"
+    );
+    assert!(
+        header.contains(r#""status":200"#),
+        "cross-language request golden: POST /users must route 200 — got: {header}"
     );
 }
 
