@@ -112,8 +112,8 @@ pub use wire::error_wire;
 #[doc(hidden)]
 pub mod bench_support {
     pub use crate::internal::{bench_build_request_new, bench_build_request_old};
+    pub use crate::wire::hoist::{bench_hoist_new, bench_hoist_old};
     pub use crate::wire::{
-        bench_hoist_new, bench_hoist_old, bench_parse_hand, bench_parse_serde, bench_write_hand,
-        bench_write_serde,
+        bench_parse_hand, bench_parse_serde, bench_write_hand, bench_write_serde,
     };
 }

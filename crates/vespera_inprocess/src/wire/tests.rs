@@ -360,7 +360,7 @@ fn hoist_422_is_best_effort_for_wrong_typed_fields() {
             {"path":"c","code":[1,2],"message":null}
         ]}"#,
     );
-    let items = super::try_hoist_validation_errors(&headers, &body)
+    let items = super::hoist::try_hoist_validation_errors(&headers, &body)
         .expect("a wrong-typed field must not abort the best-effort hoist");
     assert_eq!(items.len(), 3, "every error with a path must be hoisted");
     assert_eq!(items[0].path, "a");
@@ -372,4 +372,69 @@ fn hoist_422_is_best_effort_for_wrong_typed_fields() {
     assert_eq!(items[2].path, "c");
     assert_eq!(items[2].code, None);
     assert_eq!(items[2].message, None);
+}
+
+/// Byte-identity for the TINY-header response fast paths in `write_headers`
+/// (0 headers → `{}`; exactly 1 distinct name → no stack-array init / sort;
+/// header NAME written without the escape-table scan).  The multi-header
+/// `hand_serialize_matches_serde_serialize` test never reaches these
+/// branches, so this locks 0 / 1-single-value / 1-repeated-value maps against
+/// `serde_json` on BOTH the `Vec` and slice paths.
+#[test]
+fn hand_serialize_matches_serde_for_tiny_header_maps() {
+    use http::{HeaderMap, HeaderName, HeaderValue};
+
+    let empty = HeaderMap::new();
+
+    let mut one = HeaderMap::new();
+    one.insert("content-type", HeaderValue::from_static("application/json"));
+
+    let mut one_repeated = HeaderMap::new();
+    let cookie = HeaderName::from_static("set-cookie");
+    one_repeated.append(cookie.clone(), HeaderValue::from_static("a=1"));
+    one_repeated.append(cookie, HeaderValue::from_static("b=2; Path=/"));
+
+    let metadata = ResponseMetadata::current();
+
+    for (label, headers) in [
+        ("0-header", &empty),
+        ("1-header-single", &one),
+        ("1-header-repeated", &one_repeated),
+    ] {
+        for status in [200u16, 204, 404] {
+            let mut hand = Vec::new();
+            assert!(
+                write_wire_header_into(&mut hand, status, headers, &metadata, None),
+                "header fits ({label}, status={status})"
+            );
+            let serde_view = WireResponseHeader {
+                v: WIRE_VERSION,
+                status,
+                headers: &WireHeaders(headers),
+                metadata: &metadata,
+                validation_errors: None::<Vec<ValidationErrorItem>>,
+            };
+            let serde_bytes = serde_json::to_vec(&serde_view).expect("serde serialize");
+            assert_eq!(
+                &hand[4..],
+                serde_bytes.as_slice(),
+                "Vec-path byte drift ({label}, status={status})"
+            );
+
+            let mut hand_slice = vec![0u8; 1024];
+            let n_hand = write_wire_header_into_slice(&mut hand_slice, status, headers, &metadata);
+            let mut serde_slice = vec![0u8; 1024];
+            let n_serde =
+                write_wire_header_into_slice_serde(&mut serde_slice, status, headers, &metadata);
+            assert_eq!(
+                n_hand, n_serde,
+                "slice length drift ({label}, status={status})"
+            );
+            assert_eq!(
+                &hand_slice[..n_hand],
+                &serde_slice[..n_serde],
+                "slice-path byte drift ({label}, status={status})"
+            );
+        }
+    }
 }
