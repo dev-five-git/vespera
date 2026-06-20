@@ -167,6 +167,15 @@ where
 ///
 /// First-wins semantics, lock-free dispatch reads, and factory panic safety
 /// are identical to [`register_app_named`].
+///
+/// # Re-entrancy
+///
+/// `factory` runs while the registration write-path mutex ([`REGISTER_LOCK`])
+/// is held, so a given name's factory runs **at most once** even under a
+/// concurrent same-name race.  It therefore MUST NOT call back into
+/// `register_app*` from within itself — doing so re-enters the non-reentrant
+/// lock and deadlocks.  Registration is a startup-time operation: build the
+/// `Router` inside `factory` without registering further apps from within it.
 pub fn try_register_app_named<F>(name: &str, factory: F) -> Result<bool, String>
 where
     F: Fn() -> Router + Send + Sync + 'static,

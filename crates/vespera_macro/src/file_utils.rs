@@ -47,6 +47,7 @@ pub fn path_to_include_str_literal(path: impl AsRef<Path>) -> String {
     normalize_display_path(path)
 }
 
+#[allow(dead_code)]
 pub fn collect_files(folder_path: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(collect_files_with_mtimes(folder_path)?
         .into_iter()

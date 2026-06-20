@@ -65,13 +65,12 @@ fn test_get_fk_column_cache_hit() {
     assert_eq!(result1, result2);
 }
 
-/// In a long-lived rust-analyzer proc-macro server the path-keyed lookup
-/// caches must not outlive the epoch that populated them — otherwise a
-/// model file edited between two macro invocations would keep returning a
-/// stale `StructMetadata` / FK result. Advancing the epoch must drop them.
+/// Path-keyed lookup caches survive epoch bumps so repeated `schema_type!`
+/// expansions in one crate share path resolution work. Staleness is guarded
+/// by the lower file-content / struct-definition mtime caches.
 #[serial_test::serial]
 #[test]
-fn path_lookup_caches_invalidate_across_epochs() {
+fn path_lookup_caches_survive_epoch_bumps() {
     // Fresh epoch; cache a (negative) FK result for this epoch.
     bump_epoch();
     let _ = get_fk_column("ra::stale::Schema", "Rel");
@@ -82,13 +81,13 @@ fn path_lookup_caches_invalidate_across_epochs() {
     // A second access in the SAME epoch keeps the cache populated.
     let _ = get_fk_column("ra::stale::Schema", "Rel");
     assert!(fk_lookup_contains("ra::stale::Schema", "Rel"));
-    // Advancing the epoch (the next macro invocation) must drop the
-    // path-keyed caches; the next lookup triggers the lazy clear.
+    // Advancing the epoch (the next macro invocation) must not drop the
+    // path-keyed caches anymore.
     bump_epoch();
     let _ = get_fk_column("ra::trigger::Schema", "Rel");
     assert!(
-        !fk_lookup_contains("ra::stale::Schema", "Rel"),
-        "stale lookup entry must be invalidated when the epoch advances"
+        fk_lookup_contains("ra::stale::Schema", "Rel"),
+        "lookup entry must remain cached when the epoch advances"
     );
 }
 

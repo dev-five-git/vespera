@@ -16,7 +16,7 @@
 //! exclusively in [`crate::jni_impl`].
 
 use std::ops::ControlFlow;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use jni::ids::JMethodID;
 use jni::objects::{JClass, JObject};
@@ -278,7 +278,7 @@ fn call_future_complete(
 pub fn make_pull_closure(
     jvm: jni::JavaVM,
     stream: Global<JObject<'static>>,
-    buf: Global<jni::objects::JByteArray<'static>>,
+    buf: Arc<Global<jni::objects::JByteArray<'static>>>,
 ) -> impl FnMut() -> vespera_inprocess::RequestChunk + Send + 'static {
     use vespera_inprocess::RequestChunk;
     let chunk_size = streaming_chunk_size();
@@ -324,7 +324,7 @@ pub fn make_pull_closure(
                 }
                 // Copy the n bytes just read into the Java buffer straight into
                 // uninitialised capacity — no zero-fill to immediately overwrite.
-                let arr: &jni::objects::JByteArray<'_> = buf.as_ref();
+                let arr: &jni::objects::JByteArray<'_> = buf.as_ref().as_ref();
                 let data = crate::jni_buf::read_byte_array_region(env, arr, n)?;
                 Ok(RequestChunk::Data(data))
             });
@@ -353,7 +353,7 @@ pub fn make_pull_closure(
 pub fn make_push_closure(
     jvm: jni::JavaVM,
     stream: Global<JObject<'static>>,
-    buf: Global<jni::objects::JByteArray<'static>>,
+    buf: Arc<Global<jni::objects::JByteArray<'static>>>,
 ) -> impl FnMut(&[u8]) -> ControlFlow<()> + Send + 'static {
     let chunk_size = streaming_chunk_size();
     // `chunk_size` is config-clamped to <= 8 MiB (see config::MAX_STREAMING_CHUNK_BYTES),
@@ -376,7 +376,7 @@ pub fn make_push_closure(
         // creates no JNI local refs (cached unchecked `write` call +
         // `set_region`), so the per-chunk frame would be pure overhead.
         let outcome = with_cached_daemon_env_no_frame(&jvm, |env| -> jni::errors::Result<()> {
-            let arr: &jni::objects::JByteArray<'_> = buf.as_ref();
+            let arr: &jni::objects::JByteArray<'_> = buf.as_ref().as_ref();
             for seg in chunk.chunks(chunk_size) {
                 // SAFETY: `u8` and `i8` (JNI's `jbyte`) have
                 // identical size/alignment; this views the

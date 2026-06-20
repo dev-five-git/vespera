@@ -11,7 +11,6 @@
 //! dispatch symbol is exported by this crate, matching the fixed Java
 //! class `com.devfive.vespera.bridge.VesperaBridge`.
 
-#![allow(unsafe_code)]
 #![cfg(not(tarpaulin_include))]
 
 pub use jni;
@@ -41,6 +40,10 @@ static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// `JNI_OnLoad`.  The resulting router is reachable from Java
 /// without an `X-Vespera-App` header (or with the header set to
 /// `"_default"`).
+// SAFETY SCOPE: this macro intentionally emits `#[unsafe(no_mangle)]` for the
+// single required `JNI_OnLoad` export; keep the unsafe allowance local so other
+// crate-root code still trips the workspace unsafe lint.
+#[allow(unsafe_code)]
 #[macro_export]
 macro_rules! jni_app {
     ($factory:expr) => {
@@ -97,6 +100,10 @@ macro_rules! jni_app {
 /// once — will produce a duplicate-symbol link error.
 ///
 /// [`register_app_named`]: vespera_inprocess::register_app_named
+// SAFETY SCOPE: this macro intentionally emits `#[unsafe(no_mangle)]` for the
+// single required `JNI_OnLoad` export; keep the unsafe allowance local so other
+// crate-root code still trips the workspace unsafe lint.
+#[allow(unsafe_code)]
 #[macro_export]
 macro_rules! jni_apps {
     ( $( $name:literal => $factory:expr ),+ $(,)? ) => {
@@ -124,10 +131,18 @@ macro_rules! jni_apps {
 
 // Everything below requires a JVM — excluded from coverage.
 #[cfg(not(tarpaulin_include))]
+// SAFETY SCOPE: daemon attach/detach uses raw JNI invocation table calls.
+#[allow(unsafe_code)]
 mod daemon_env;
 #[cfg(not(tarpaulin_include))]
+// SAFETY SCOPE: byte-array transfers write directly into uninitialized Vec capacity.
+#[allow(unsafe_code)]
 mod jni_buf;
 #[cfg(not(tarpaulin_include))]
+// SAFETY SCOPE: JNI exports and direct-buffer submodule contain FFI entry points.
+#[allow(unsafe_code)]
 mod jni_impl;
 #[cfg(not(tarpaulin_include))]
+// SAFETY SCOPE: streaming callbacks use cached JMethodID calls and signed-byte views.
+#[allow(unsafe_code)]
 mod streaming_closures;

@@ -76,6 +76,20 @@ pub fn process_derive_schema(
 ) -> (StructMetadata, proc_macro2::TokenStream) {
     let name = &input.ident;
 
+    if let syn::Data::Struct(data_struct) = &input.data
+        && let syn::Fields::Named(fields_named) = &data_struct.fields
+    {
+        for field in &fields_named.named {
+            if let Err(error) =
+                crate::parser::schema::schema_attrs::try_extract_schema_constraints(&field.attrs)
+            {
+                let metadata =
+                    StructMetadata::new(name.to_string(), quote::quote!(#input).to_string());
+                return (metadata, error.to_compile_error());
+            }
+        }
+    }
+
     // Check for custom schema name from #[schema(name = "...")] attribute
     let schema_name = extract_schema_name_attr(&input.attrs).unwrap_or_else(|| name.to_string());
 

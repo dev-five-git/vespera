@@ -10,7 +10,9 @@ mod path_utils;
 mod route_merge;
 
 #[allow(unused_imports)]
-pub use openapi_io::{DocsInfo, ensure_openapi_files_from_cache, generate_and_write_openapi};
+pub use openapi_io::{
+    OpenApiWriteResult, ensure_openapi_files_from_cache, generate_and_write_openapi,
+};
 pub use orchestrator::{process_export_app, process_vespera_macro};
 #[allow(unused_imports)]
 pub use path_utils::{find_folder_path, find_target_dir};

@@ -270,6 +270,8 @@ mod tests {
                 r#in: None,
                 scheme: Some("bearer".to_string()),
                 bearer_format: Some("JWT".to_string()),
+                flows: None,
+                open_id_connect_url: None,
             },
         )]);
         let global_security = Some(vec![BTreeMap::from([(
@@ -329,6 +331,8 @@ mod tests {
                     r#in: None,
                     scheme: Some("bearer".to_string()),
                     bearer_format: Some("JWT".to_string()),
+                    flows: None,
+                    open_id_connect_url: None,
                 },
             ),
             (
@@ -340,6 +344,8 @@ mod tests {
                     r#in: Some("header".to_string()),
                     scheme: None,
                     bearer_format: None,
+                    flows: None,
+                    open_id_connect_url: None,
                 },
             ),
             (
@@ -351,6 +357,8 @@ mod tests {
                     r#in: None,
                     scheme: Some("basic".to_string()),
                     bearer_format: None,
+                    flows: None,
+                    open_id_connect_url: None,
                 },
             ),
         ]);

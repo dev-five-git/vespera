@@ -256,6 +256,14 @@ pub fn generate_schema_type_code(
                                 let inline_field_ty = quote! { Vec<#inline_type_name> };
                                 (Box::new(inline_field_ty), Some(rel_info))
                             } else {
+                                if pick_set.contains(&rust_field_name) {
+                                    return Err(syn::Error::new_spanned(
+                                        field,
+                                        format!(
+                                            "schema_type!: relation field `{rust_field_name}` was explicitly picked but its inline relation type could not be generated"
+                                        ),
+                                    ));
+                                }
                                 continue;
                             }
                         } else {
@@ -309,6 +317,14 @@ pub fn generate_schema_type_code(
                             }
                         }
                     } else {
+                        if pick_set.contains(&rust_field_name) {
+                            return Err(syn::Error::new_spanned(
+                                field,
+                                format!(
+                                    "schema_type!: relation field `{rust_field_name}` was explicitly picked but its SeaORM relation type could not be converted"
+                                ),
+                            ));
+                        }
                         // Fallback: skip if conversion fails
                         continue;
                     }

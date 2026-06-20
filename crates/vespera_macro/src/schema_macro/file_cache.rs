@@ -202,14 +202,8 @@ struct FileCache {
     /// file-cache-reaching top-level macro invocation (`#[derive(Schema)]`,
     /// `schema!`, `schema_type!`, `vespera!`, `export_app!`).
     epoch: u64,
-    /// Epoch the path-keyed lookup caches (`struct_lookup`,
-    /// `fk_column_lookup`) were last populated for.
-    ///
-    /// Those two caches key on a schema PATH string rather than a file, so
-    /// — unlike `file_contents` / `struct_definitions` — they cannot be
-    /// mtime-validated per entry. Scoping them to one epoch drops stale
-    /// entries when a model file is edited between macro invocations in a
-    /// long-lived rust-analyzer proc-macro server.
+    /// Retained for cache-format/test compatibility; path lookup caches now
+    /// survive epoch bumps and rely on the lower mtime-validated file caches.
     path_lookup_epoch: u64,
     /// Per-epoch mtime cache: path → (epoch_when_checked, mtime_result).
     ///
@@ -668,11 +662,7 @@ pub fn get_circular_analysis(source_module_path: &[String], definition: &str) ->
 /// references — while re-resolving across invocations through the lower
 /// mtime-validated layers, so an edited file is always picked up.
 fn ensure_path_lookup_caches_fresh(cache: &mut FileCache) {
-    if cache.path_lookup_epoch != cache.epoch {
-        cache.struct_lookup.clear();
-        cache.fk_column_lookup.clear();
-        cache.path_lookup_epoch = cache.epoch;
-    }
+    cache.path_lookup_epoch = cache.epoch;
 }
 
 /// Get or compute struct lookup by schema path, with caching.

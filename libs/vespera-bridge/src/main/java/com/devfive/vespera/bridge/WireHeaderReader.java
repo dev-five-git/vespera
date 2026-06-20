@@ -1,7 +1,6 @@
 package com.devfive.vespera.bridge;
 
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,10 +28,13 @@ import java.util.function.IntConsumer;
  */
 final class WireHeaderReader {
 
-    private static final int DIRECT_STRING_SCRATCH_INITIAL = 256;
-    private static final int DIRECT_STRING_SCRATCH_MAX = 8 * 1024;
-    private static final ThreadLocal<byte[]> DIRECT_STRING_SCRATCH =
-            ThreadLocal.withInitial(() -> new byte[DIRECT_STRING_SCRATCH_INITIAL]);
+    /**
+     * Drop this thread's direct-buffer string decode scratch. Intended for
+     * servlet-container shutdown/redeploy cleanup; do not call per request.
+     */
+    static void clearCurrentThreadBuffers() {
+        WireHeaderStringSupport.clearCurrentThreadBuffers();
+    }
 
     private final ByteBuffer buf;
     private int pos;
@@ -307,28 +309,6 @@ final class WireHeaderReader {
      * the allocation Jackson's symbol table used to elide.  Plain ASCII by
      * construction (HTTP field names + the fixed metadata / validation keys).
      */
-    private static final String[] CANONICAL_KEYS = {
-        "content-type", "content-length", "content-encoding",
-        "content-disposition", "cache-control", "set-cookie", "location",
-        "etag", "date", "vary", "access-control-allow-origin",
-        "version", "path", "code", "message",
-    };
-
-    /**
-     * Shared canonical instance for {@code buf[start .. start+len]} when it
-     * equals a {@link #CANONICAL_KEYS} entry, else {@code null}.  Linear scan
-     * with a length pre-check — the list is tiny, so the per-key cost is a
-     * handful of byte comparisons.
-     */
-    private String canonicalKey(int start, int len) {
-        for (String k : CANONICAL_KEYS) {
-            if (k.length() == len && regionEquals(start, k)) {
-                return k;
-            }
-        }
-        return null;
-    }
-
     /**
      * If the upcoming quoted member key is a plain-ASCII {@link #CANONICAL_KEYS}
      * entry, consume it (key + closing quote) and return the shared instance;
@@ -355,7 +335,7 @@ final class WireHeaderReader {
         if (p >= end) {
             return null;
         }
-        String canon = canonicalKey(start, p - start);
+        String canon = WireHeaderStringSupport.canonicalKey(buf, start, p - start);
         if (canon != null) {
             pos = p + 1;
             return canon;
@@ -478,14 +458,8 @@ final class WireHeaderReader {
         return KEY_OTHER;
     }
 
-    /** Whether {@code buf[s .. s+lit.length())} equals the ASCII literal. */
     private boolean regionEquals(int s, String lit) {
-        for (int i = 0; i < lit.length(); i++) {
-            if ((buf.get(s + i) & 0xFF) != lit.charAt(i)) {
-                return false;
-            }
-        }
-        return true;
+        return WireHeaderStringSupport.regionEquals(buf, s, lit);
     }
 
     void beginArray() {
@@ -535,14 +509,9 @@ final class WireHeaderReader {
                 // array — one copy, no intermediate byte[].  Direct buffers
                 // (the DIRECT dispatch path) have no accessible array and keep
                 // the absolute bulk-get copy below.
-                s =
-                        new String(
-                                buf.array(),
-                                buf.arrayOffset() + pos,
-                                simpleLen,
-                                StandardCharsets.US_ASCII);
+                s = WireHeaderStringSupport.readAsciiString(buf, pos, simpleLen);
             } else {
-                s = readDirectAsciiString(pos, simpleLen);
+                s = WireHeaderStringSupport.readAsciiString(buf, pos, simpleLen);
             }
             pos += simpleLen + 1; // consume the run + the closing quote
             return s;
@@ -595,26 +564,6 @@ final class WireHeaderReader {
             }
         }
         throw err("unterminated string");
-    }
-
-    private String readDirectAsciiString(int start, int len) {
-        if (len <= DIRECT_STRING_SCRATCH_MAX) {
-            byte[] scratch = directStringScratch(len);
-            buf.get(start, scratch, 0, len); // absolute bulk get; position untouched
-            return new String(scratch, 0, len, StandardCharsets.US_ASCII);
-        }
-        byte[] tmp = new byte[len];
-        buf.get(start, tmp, 0, len);
-        return new String(tmp, StandardCharsets.US_ASCII);
-    }
-
-    private static byte[] directStringScratch(int required) {
-        byte[] scratch = DIRECT_STRING_SCRATCH.get();
-        if (scratch.length < required) {
-            scratch = new byte[Math.min(DIRECT_STRING_SCRATCH_MAX, Math.max(required, scratch.length * 2))];
-            DIRECT_STRING_SCRATCH.set(scratch);
-        }
-        return scratch;
     }
 
     /**
@@ -708,10 +657,7 @@ final class WireHeaderReader {
     }
 
     private String asciiToken(int start, int len) {
-        if (buf.hasArray()) {
-            return new String(buf.array(), buf.arrayOffset() + start, len, StandardCharsets.US_ASCII);
-        }
-        return readDirectAsciiString(start, len);
+        return WireHeaderStringSupport.readAsciiString(buf, start, len);
     }
 
     /**

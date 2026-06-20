@@ -130,7 +130,22 @@ impl fmt::Display for TypedMultipartError {
     }
 }
 
-impl std::error::Error for TypedMultipartError {}
+impl std::error::Error for TypedMultipartError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidRequest { source } => Some(source),
+            Self::InvalidRequestBody { source } => Some(source),
+            Self::MissingField { .. }
+            | Self::WrongFieldType { .. }
+            | Self::DuplicateField { .. }
+            | Self::UnknownField { .. }
+            | Self::InvalidEnumValue { .. }
+            | Self::NamelessField
+            | Self::FieldTooLarge { .. }
+            | Self::Other { .. } => None,
+        }
+    }
+}
 
 impl TypedMultipartError {
     /// The offending field name when the error carries one — used as the
@@ -429,12 +444,12 @@ where
 async fn read_field_data(
     mut field: Field<'_>,
     limit: Option<usize>,
+    initial_capacity: usize,
 ) -> Result<(Field<'_>, Vec<u8>), TypedMultipartError> {
-    // Pre-size up to 64 KiB when a limit is known: avoids repeated
-    // doubling reallocations for typical fields without reserving huge
-    // buffers for large limits.  Unbounded fields start empty and grow
-    // on demand, so a tiny scalar field never over-allocates.
-    let mut buf = limit.map_or_else(Vec::new, |limit| Vec::with_capacity(limit.min(64 * 1024)));
+    // Initial capacity is independent from the hard byte limit: tiny scalar
+    // fields keep the 256B cap without preallocating 256B per bool/number.
+    let capacity = limit.map_or(initial_capacity, |limit| initial_capacity.min(limit));
+    let mut buf = Vec::with_capacity(capacity);
     while let Some(chunk) = field.chunk().await? {
         if let Some(limit) = limit
             && buf.len().saturating_add(chunk.len()) > limit
@@ -457,6 +472,8 @@ async fn read_field_data(
 /// `#[form_data(limit = "...")]` is supplied. 256 bytes is far beyond any
 /// legitimate bool/number/char payload while preventing unbounded buffering.
 const DEFAULT_TINY_SCALAR_LIMIT_BYTES: usize = 256;
+const TINY_SCALAR_INITIAL_CAPACITY_BYTES: usize = 16;
+const STRING_INITIAL_CAPACITY_BYTES: usize = 64;
 
 /// Resolve the buffering cap for a tiny scalar field: the explicit
 /// per-field `#[form_data(limit = "...")]` if present, otherwise the
@@ -511,7 +528,8 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for String {
         // `Some(usize::MAX)` (set by the derive macro) and stays unbounded;
         // an explicit byte size wins as `Some(n)`.
         let limit = limit_bytes.unwrap_or(DEFAULT_STRING_FIELD_LIMIT_BYTES);
-        let (field, data) = read_field_data(field, Some(limit)).await?;
+        let (field, data) =
+            read_field_data(field, Some(limit), STRING_INITIAL_CAPACITY_BYTES).await?;
         Self::from_utf8(data).map_err(|e| TypedMultipartError::WrongFieldType {
             field_name: field.name().unwrap_or_default().to_string(),
             wanted: Cow::Borrowed("String"),
@@ -528,7 +546,12 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for bool {
         limit_bytes: Option<usize>,
         _state: &S,
     ) -> Result<Self, TypedMultipartError> {
-        let (field, data) = read_field_data(field, Some(tiny_scalar_limit(limit_bytes))).await?;
+        let (field, data) = read_field_data(
+            field,
+            Some(tiny_scalar_limit(limit_bytes)),
+            TINY_SCALAR_INITIAL_CAPACITY_BYTES,
+        )
+        .await?;
         let text = std::str::from_utf8(&data).map_err(|e| TypedMultipartError::WrongFieldType {
             field_name: field.name().unwrap_or_default().to_string(),
             wanted: Cow::Borrowed("bool"),
@@ -553,7 +576,11 @@ macro_rules! impl_try_from_field_for_number {
                     limit_bytes: Option<usize>,
                     _state: &S,
                 ) -> Result<Self, TypedMultipartError> {
-                    let (field, data) = read_field_data(field, Some(tiny_scalar_limit(limit_bytes))).await?;
+                    let (field, data) = read_field_data(
+                        field,
+                        Some(tiny_scalar_limit(limit_bytes)),
+                        TINY_SCALAR_INITIAL_CAPACITY_BYTES,
+                    ).await?;
                     let text = std::str::from_utf8(&data).map_err(|e| {
                         TypedMultipartError::WrongFieldType {
                             field_name: field.name().unwrap_or_default().to_string(),
@@ -586,7 +613,12 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for char {
         limit_bytes: Option<usize>,
         _state: &S,
     ) -> Result<Self, TypedMultipartError> {
-        let (field, data) = read_field_data(field, Some(tiny_scalar_limit(limit_bytes))).await?;
+        let (field, data) = read_field_data(
+            field,
+            Some(tiny_scalar_limit(limit_bytes)),
+            TINY_SCALAR_INITIAL_CAPACITY_BYTES,
+        )
+        .await?;
         let text = std::str::from_utf8(&data).map_err(|e| TypedMultipartError::WrongFieldType {
             field_name: field.name().unwrap_or_default().to_string(),
             wanted: Cow::Borrowed("char"),

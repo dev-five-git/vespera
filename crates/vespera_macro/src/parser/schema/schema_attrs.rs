@@ -141,18 +141,23 @@ impl SchemaConstraints {
 /// Unknown keys are **silently ignored** so that struct-level keys
 /// (`name`, `ref`, `nullable`) and future additions don't break this
 /// parser when it walks a struct-level `#[schema(...)]` attribute.  A
-/// **recognized** key with a malformed value is likewise tolerated (the
-/// constraint is simply dropped) — this leniency is intentional and locked
-/// by the `*_is_silently_ignored` tests below: future value syntaxes must
-/// not break an older macro, and `example` is best-effort documentation.
+/// **recognized** key with a malformed value is an error: silently dropping
+/// known constraints makes both OpenAPI output and generated garde validators
+/// lie about user intent.
 #[must_use]
 pub fn extract_schema_constraints(attrs: &[Attribute]) -> SchemaConstraints {
+    try_extract_schema_constraints(attrs).unwrap_or_default()
+}
+
+/// Fallible variant used by macro entry points to emit `compile_error!` for
+/// malformed values of known `#[schema(...)]` keys.
+pub fn try_extract_schema_constraints(attrs: &[Attribute]) -> syn::Result<SchemaConstraints> {
     let mut out = SchemaConstraints::default();
     for attr in attrs {
         if !attr.path().is_ident("schema") {
             continue;
         }
-        let _ = attr.parse_nested_meta(|meta| {
+        attr.parse_nested_meta(|meta| {
             // ── string / array length ────────────────────────────────
             if meta.path.is_ident("min_length") {
                 out.min_length = Some(parse_usize(&meta)?);
@@ -208,9 +213,9 @@ pub fn extract_schema_constraints(attrs: &[Attribute]) -> SchemaConstraints {
                 }
             }
             Ok(())
-        });
+        })?;
     }
-    out
+    Ok(out)
 }
 
 // ── primitive value helpers ──────────────────────────────────────────
@@ -340,7 +345,11 @@ mod tests {
     use syn::parse_quote;
 
     fn parse(attrs: &[Attribute]) -> SchemaConstraints {
-        extract_schema_constraints(attrs)
+        try_extract_schema_constraints(attrs).expect("schema attrs parse")
+    }
+
+    fn parse_err(attrs: &[Attribute]) -> syn::Error {
+        try_extract_schema_constraints(attrs).expect_err("schema attrs must fail")
     }
 
     #[test]
@@ -540,65 +549,47 @@ mod tests {
     }
 
     #[test]
-    fn negative_non_literal_minimum_is_silently_ignored() {
-        // parse_f64 rejects non-literal expressions after `-`.  The
-        // outer parse_nested_meta swallows the syn::Error so the
-        // overall constraint set remains empty.
-        let c = parse(&[parse_quote!(#[schema(minimum = -CONST)])]);
-        assert_eq!(c.minimum, None);
+    fn negative_non_literal_minimum_is_rejected() {
+        let err = parse_err(&[parse_quote!(#[schema(minimum = -CONST)])]);
+        assert!(err.to_string().contains("expected a numeric literal"));
     }
 
     #[test]
-    fn non_unary_non_lit_minimum_expr_is_silently_ignored() {
-        // Anything that is neither a literal nor a unary `-` literal
-        // (here: a function call) goes to the `other => Err(...)`
-        // arm at the bottom of parse_f64.
-        let c = parse(&[parse_quote!(#[schema(minimum = foo())])]);
-        assert_eq!(c.minimum, None);
+    fn non_unary_non_lit_minimum_expr_is_rejected() {
+        let err = parse_err(&[parse_quote!(#[schema(minimum = foo())])]);
+        assert!(err.to_string().contains("expected a numeric literal"));
     }
 
     #[test]
-    fn non_neg_unary_minimum_expr_is_silently_ignored() {
-        // `!x` is a unary op but not `Neg` — hits the inner fallback
-        // inside the unary arm of parse_f64.
-        let c = parse(&[parse_quote!(#[schema(minimum = !5)])]);
-        assert_eq!(c.minimum, None);
+    fn non_neg_unary_minimum_expr_is_rejected() {
+        let err = parse_err(&[parse_quote!(#[schema(minimum = !5)])]);
+        assert!(err.to_string().contains("expected a numeric literal"));
     }
 
     #[test]
-    fn negative_non_numeric_literal_minimum_is_silently_ignored() {
-        // `-true` and `-"x"` are unary-neg of non-numeric literals.
-        // Drives the `other =>` arm inside parse_f64's unary branch
-        // (after the Int/Float arms).
-        let c1 = parse(&[parse_quote!(#[schema(minimum = -true)])]);
-        assert_eq!(c1.minimum, None);
-        let c2 = parse(&[parse_quote!(#[schema(minimum = -"x")])]);
-        assert_eq!(c2.minimum, None);
+    fn negative_non_numeric_literal_minimum_is_rejected() {
+        let c1 = parse_err(&[parse_quote!(#[schema(minimum = -true)])]);
+        assert!(c1.to_string().contains("expected a numeric literal"));
+        let c2 = parse_err(&[parse_quote!(#[schema(minimum = -"x")])]);
+        assert!(c2.to_string().contains("expected a numeric literal"));
     }
 
     #[test]
-    fn example_negative_non_lit_is_silently_ignored() {
-        // `example = -CONST` — the inner literal isn't a number, so
-        // expr_to_json_value's "negate a literal" branch falls
-        // through to the trailing Err.
-        let c = parse(&[parse_quote!(#[schema(example = -CONST)])]);
-        assert_eq!(c.example, None);
+    fn example_negative_non_lit_is_rejected() {
+        let err = parse_err(&[parse_quote!(#[schema(example = -CONST)])]);
+        assert!(err.to_string().contains("expected a literal"));
     }
 
     #[test]
-    fn example_non_lit_non_path_is_silently_ignored() {
-        // Function-call expression — neither a literal, a unary
-        // negation of a literal, nor the special `null` path.
-        let c = parse(&[parse_quote!(#[schema(example = some_fn())])]);
-        assert_eq!(c.example, None);
+    fn example_non_lit_non_path_is_rejected() {
+        let err = parse_err(&[parse_quote!(#[schema(example = some_fn())])]);
+        assert!(err.to_string().contains("expected a literal value"));
     }
 
     #[test]
-    fn example_byte_string_literal_is_silently_ignored() {
-        // Byte-string literals fall through `lit_to_json_value`'s
-        // explicit match arms to the `other => Err(...)` fallback.
-        let c = parse(&[parse_quote!(#[schema(example = b"bytes")])]);
-        assert_eq!(c.example, None);
+    fn example_byte_string_literal_is_rejected() {
+        let err = parse_err(&[parse_quote!(#[schema(example = b"bytes")])]);
+        assert!(err.to_string().contains("unsupported literal type"));
     }
 
     #[test]

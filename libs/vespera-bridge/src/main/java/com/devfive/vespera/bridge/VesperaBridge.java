@@ -1,15 +1,8 @@
 package com.devfive.vespera.bridge;
 
-import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.security.DigestInputStream;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -175,8 +168,8 @@ public class VesperaBridge {
             return;
         }
         try {
-            loadBundled(libraryName);
-        } catch (BundledNativeAbsent absent) {
+            VesperaNativeLoader.loadBundled(libraryName);
+        } catch (VesperaNativeLoader.BundledNativeAbsent absent) {
             // Fall back to the system library path ONLY when the bundled
             // resource is genuinely ABSENT.  A PRESENT-but-invalid bundled
             // library (integrity / extraction / load failure) propagates from
@@ -253,6 +246,20 @@ public class VesperaBridge {
             pendingChunkBytes = chunkBytes;
             pendingChannelCapacity = channelCapacity;
         }
+    }
+
+    /**
+     * Clear all vespera-bridge buffers retained by the <em>current</em> Java
+     * thread. This is for servlet-container shutdown/redeploy hooks that want
+     * to release ThreadLocal-held app-class objects and direct buffers from
+     * container worker threads. Normal request handling should not call it;
+     * per-request clearing would defeat the hot-path pools.
+     */
+    public static void clearCurrentThreadBuffers() {
+        VesperaDirectBufferPool.clearCurrentThreadBuffers();
+        VesperaWireCodec.clearCurrentThreadBuffers();
+        WireHeaderReader.clearCurrentThreadBuffers();
+        VesperaProxyController.clearCurrentThreadBuffers();
     }
 
     /**
@@ -861,116 +868,6 @@ public class VesperaBridge {
      */
     public static DecodedResponse decodeResponse(byte[] wire) {
         return VesperaWireCodec.decodeResponse(wire);
-    }
-
-    /**
-     * Signals the bundled native library is genuinely ABSENT from the
-     * classpath — the one legitimate reason to fall back to the system
-     * library path.  A PRESENT-but-invalid bundled library (integrity /
-     * extraction / {@code System.load} failure) is NOT this exception, so it
-     * fails fast instead of silently loading a different library and defeating
-     * the extraction integrity check.
-     */
-    private static final class BundledNativeAbsent extends RuntimeException {
-        BundledNativeAbsent(String message) {
-            super(message);
-        }
-    }
-
-    private static void loadBundled(String libraryName) {
-        String os = detectOs();
-        String arch = detectArch();
-        String filename = mapLibraryName(os, libraryName);
-        String resourcePath = "native/" + os + "-" + arch + "/" + filename;
-
-        MessageDigest digest;
-        try {
-            digest = MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException sha256Missing) {
-            // SHA-256 is mandated for every conformant JRE; its absence is a
-            // fatal environment fault, not a reason to skip the check silently.
-            throw new UnsatisfiedLinkError(
-                    "SHA-256 unavailable for native library verification: "
-                            + sha256Missing.getMessage());
-        }
-
-        try (InputStream in =
-                VesperaBridge.class.getClassLoader().getResourceAsStream(resourcePath)) {
-            if (in == null) {
-                // ABSENT — the only case that legitimately falls back to the
-                // system library path.
-                throw new BundledNativeAbsent("Not found in JAR: " + resourcePath);
-            }
-            String suffix = filename.substring(filename.lastIndexOf('.'));
-            Path temp = Files.createTempFile("vespera-", suffix);
-            temp.toFile().deleteOnExit();
-
-            // Hash the trusted classpath resource as it is extracted, then
-            // re-hash the file actually written to the (owner-only) temp path
-            // and compare.  Defense-in-depth integrity check: it rejects a
-            // corrupted / truncated extraction and a temp file swapped between
-            // write and load before that image reaches System.load — the
-            // native loader cannot recover from a bad library image.  (This is
-            // not tamper-proofing: the resource itself is the trust root and a
-            // same-user attacker has stronger options; it catches corruption
-            // and casual interference.)
-            try (DigestInputStream din = new DigestInputStream(in, digest)) {
-                Files.copy(din, temp, StandardCopyOption.REPLACE_EXISTING);
-            }
-            byte[] resourceDigest = digest.digest(); // finalises and resets `digest`
-            byte[] extractedDigest = digestOfFile(temp, digest);
-            if (!MessageDigest.isEqual(resourceDigest, extractedDigest)) {
-                throw new UnsatisfiedLinkError(
-                        "Native library integrity check failed for " + resourcePath
-                                + ": extracted file does not match the bundled resource "
-                                + "(corrupted or modified extraction).");
-            }
-
-            System.load(temp.toAbsolutePath().toString());
-        } catch (IOException e) {
-            // Preserve the original IOException as the cause: a bare message
-            // loses the stack/cause that pinpoints WHY extraction failed
-            // (permissions, full temp dir, AV lock, ...), which is exactly the
-            // context needed to diagnose a deployment-time native-load failure.
-            UnsatisfiedLinkError ule = new UnsatisfiedLinkError("Extract failed: " + e.getMessage());
-            ule.initCause(e);
-            throw ule;
-        }
-    }
-
-    /** Compute the SHA-256 of {@code file}, resetting the supplied digest first. */
-    private static byte[] digestOfFile(Path file, MessageDigest digest) throws IOException {
-        digest.reset();
-        try (InputStream fin = Files.newInputStream(file)) {
-            byte[] buf = new byte[64 * 1024];
-            int n;
-            while ((n = fin.read(buf)) != -1) {
-                digest.update(buf, 0, n);
-            }
-        }
-        return digest.digest();
-    }
-
-    private static String detectOs() {
-        String os = System.getProperty("os.name", "").toLowerCase();
-        if (os.contains("win")) return "windows";
-        if (os.contains("mac") || os.contains("darwin")) return "macos";
-        return "linux";
-    }
-
-    private static String detectArch() {
-        String arch = System.getProperty("os.arch", "").toLowerCase();
-        if (arch.contains("amd64") || arch.contains("x86_64")) return "x86_64";
-        if (arch.contains("aarch64") || arch.contains("arm64")) return "aarch64";
-        return arch;
-    }
-
-    private static String mapLibraryName(String os, String name) {
-        return switch (os) {
-            case "windows" -> name + ".dll";
-            case "macos" -> "lib" + name + ".dylib";
-            default -> "lib" + name + ".so";
-        };
     }
 
     private VesperaBridge() {}

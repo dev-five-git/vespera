@@ -302,24 +302,30 @@ pub fn header_capacity_estimate(headers: &http::HeaderMap, metadata: &ResponseMe
     est
 }
 
+/// Append `[u32 BE header_len | header JSON]` to `out`.  Returns `false`
+/// when the serialized header JSON exceeds `u32::MAX` bytes — unreachable for
+/// any real `HeaderMap` (4 GiB of header JSON), so callers map it to a `500`
+/// wire response instead of panicking on the response path.
+#[must_use]
 fn write_wire_header_into(
     out: &mut Vec<u8>,
     status: u16,
     headers: &http::HeaderMap,
     metadata: &ResponseMetadata,
     validation_errors: Option<&[ValidationErrorItem]>,
-) {
+) -> bool {
     out.extend_from_slice(&[0u8; 4]);
     let start = out.len();
     header_write::write_response_header(out, status, headers, metadata, validation_errors);
-    // Invariant: a serialized response header never approaches `u32::MAX`
-    // (4 GiB of header JSON is unreachable for any real `HeaderMap`).  On
-    // the JNI/FFI path this call is wrapped in `catch_unwind`, so even an
-    // impossible violation degrades to a `500` wire response rather than
-    // unwinding across the boundary.
-    let header_len =
-        u32::try_from(out.len() - start).expect("response header JSON exceeds u32::MAX bytes");
+    // A serialized response header never approaches `u32::MAX` (4 GiB of
+    // header JSON is unreachable for any real `HeaderMap`); on the impossible
+    // overflow report `false` so the caller emits a `500` rather than
+    // panicking on the response path.
+    let Ok(header_len) = u32::try_from(out.len() - start) else {
+        return false;
+    };
     out[start - 4..start].copy_from_slice(&header_len.to_be_bytes());
+    true
 }
 
 /// Append `[u32 BE header_len | header JSON]` (no `validation_errors`)
@@ -328,13 +334,14 @@ fn write_wire_header_into(
 /// response assembler (`dispatch::finish_buffered_wire`).  Wraps the
 /// private [`write_wire_header_into`] so the internal [`ValidationErrorItem`]
 /// type stays out of the crate-visible surface.
+#[must_use]
 pub fn write_wire_header_into_vec(
     out: &mut Vec<u8>,
     status: u16,
     headers: &http::HeaderMap,
     metadata: &ResponseMetadata,
-) {
-    write_wire_header_into(out, status, headers, metadata, None);
+) -> bool {
+    write_wire_header_into(out, status, headers, metadata, None)
 }
 
 /// One entry in the wire header's `validation_errors` array.  Fields
@@ -370,13 +377,19 @@ pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
         http::HeaderValue::from_static("text/plain; charset=utf-8"),
     );
     let metadata = ResponseMetadata::current();
-    let parts = (
-        status,
-        headers,
-        Bytes::copy_from_slice(msg.as_bytes()),
-        metadata,
-    );
-    to_wire_bytes(parts)
+    // Write the header + plain-text body straight into one buffer.  An error
+    // body is never JSON, so it never participates in 422 `validation_errors`
+    // hoisting — routing through `to_wire_bytes` would only add an
+    // intermediate `Bytes::copy_from_slice(msg)` allocation plus a second copy
+    // of the same bytes into the final `Vec`.  The error header is a single
+    // `content-type`, so it can never approach `u32::MAX`; the
+    // `write_wire_header_into` overflow signal is unreachable here and ignored.
+    let body = msg.as_bytes();
+    let header_cap = header_capacity_estimate(&headers, &metadata).max(WIRE_HEADER_RESERVE);
+    let mut out = Vec::with_capacity(4 + header_cap + body.len());
+    let _ = write_wire_header_into(&mut out, status, &headers, &metadata, None);
+    out.extend_from_slice(body);
+    out
 }
 
 /// Adapter: response parts → wire-format bytes.  Layout:
@@ -401,13 +414,17 @@ pub fn to_wire_bytes(parts: ResponseParts) -> Vec<u8> {
     // `saturating_add` variant was benchmarked and cost ~2-3% on the small
     // `wire_path`/`request_headers_path` cases for zero real-world benefit.
     let mut out = Vec::with_capacity(4 + header_cap + body_bytes.len());
-    write_wire_header_into(
+    if !write_wire_header_into(
         &mut out,
         status,
         &headers,
         &metadata,
         validation_errors.as_deref(),
-    );
+    ) {
+        // Unreachable for a real `HeaderMap` (would need 4 GiB+ of header
+        // JSON); never panic on the response path — emit a 500 instead.
+        return error_wire(500, "response header exceeds u32::MAX bytes");
+    }
     out.extend_from_slice(&body_bytes);
     out
 }
@@ -427,7 +444,10 @@ pub fn build_wire_header_bytes(
 ) -> Vec<u8> {
     let header_cap = header_capacity_estimate(headers, metadata).max(WIRE_HEADER_RESERVE);
     let mut out = Vec::with_capacity(4 + header_cap);
-    write_wire_header_into(&mut out, status, headers, metadata, None);
+    if !write_wire_header_into(&mut out, status, headers, metadata, None) {
+        // Unreachable for a real `HeaderMap`; never panic on the response path.
+        return error_wire(500, "response header exceeds u32::MAX bytes");
+    }
     out
 }
 
@@ -496,9 +516,14 @@ pub fn write_wire_header_into_slice(
         header_write::write_response_header(&mut sink, status, headers, metadata, None);
         sink.pos
     };
-    if header_total <= out.len() {
-        let json_len =
-            u32::try_from(header_total - 4).expect("response header JSON exceeds u32::MAX bytes");
+    if header_total <= out.len()
+        && let Ok(json_len) = u32::try_from(header_total - 4)
+    {
+        // `json_len` only overflows `u32` when the header JSON exceeds 4 GiB,
+        // which requires `out` itself to exceed 4 GiB — unreachable for any
+        // real buffer.  Leave the length prefix zeroed in that impossible
+        // case rather than panicking; the exact `header_total` is still
+        // returned so the caller reports the precise required size.
         out[0..4].copy_from_slice(&json_len.to_be_bytes());
     }
     header_total
@@ -572,9 +597,13 @@ fn body_is_json(headers: &http::HeaderMap) -> bool {
 /// 422 body — skips building the intermediate `serde_json::Value` DOM (the
 /// object map + array vec + per-error maps + interned string keys) the
 /// previous reparse allocated, going straight to the `Vec<HoistErrorIn>` whose
-/// owned strings [`ValidationErrorItem`] needs anyway.  Unknown fields are
-/// ignored and every field is optional, so an odd error object never aborts
-/// the parse for a framework-generated (all-string-field) envelope.
+/// owned strings [`ValidationErrorItem`] needs anyway.
+///
+/// This is the **fast strict path**: the common, framework-generated envelope
+/// has all-string fields, so the plain derive parses it with no per-field
+/// visitor overhead.  A body with a wrong-typed field (`"code": 123`) fails
+/// this strict parse and is retried via [`LenientHoistEnvelope`], so the
+/// hoist stays genuinely best-effort without taxing the common case.
 #[derive(Deserialize)]
 struct HoistEnvelope {
     errors: Vec<HoistErrorIn>,
@@ -588,6 +617,122 @@ struct HoistErrorIn {
     code: Option<String>,
     #[serde(default)]
     message: Option<String>,
+}
+
+/// Deserialize an optional string **leniently**: a JSON string yields
+/// `Some`, while `null` / a missing field / any non-string value (number,
+/// bool, object, array) yields `None` instead of failing the parse.  This
+/// keeps the 422 hoist genuinely *best-effort* — a single odd error object
+/// (e.g. `{"code": 123}`) never aborts the whole hoist, matching the
+/// documented contract and the previous `serde_json::Value` extract path
+/// (`e.get("code").and_then(Value::as_str)`).  Zero-allocation: a wrong-typed
+/// scalar is dropped without building a `Value` DOM.
+fn de_lenient_opt_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    struct V;
+    impl<'de> serde::de::Visitor<'de> for V {
+        type Value = Option<String>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a string, null, or any JSON value")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(v.to_owned()))
+        }
+        fn visit_borrowed_str<E: serde::de::Error>(self, v: &'de str) -> Result<Self::Value, E> {
+            Ok(Some(v.to_owned()))
+        }
+        fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+        // Anything that is not a JSON string → `None` (best-effort, never err).
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_some<D2: serde::Deserializer<'de>>(self, d: D2) -> Result<Self::Value, D2::Error> {
+            d.deserialize_any(self)
+        }
+        fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_i128<E: serde::de::Error>(self, _: i128) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_u128<E: serde::de::Error>(self, _: u128) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut access: A,
+        ) -> Result<Self::Value, A::Error> {
+            while access
+                .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                .is_some()
+            {}
+            Ok(None)
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut access: A,
+        ) -> Result<Self::Value, A::Error> {
+            while access.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+            Ok(None)
+        }
+    }
+    deserializer.deserialize_any(V)
+}
+
+/// Lenient fallback shape, parsed **only** when the strict [`HoistEnvelope`]
+/// parse fails on a wrong-typed field.  Each field decodes through
+/// [`de_lenient_opt_string`], so a hand-crafted 422 body like
+/// `{"errors":[{"path":"a","code":123}]}` still hoists every entry that has a
+/// usable `path`.  Confined to this cold retry so the common all-string
+/// envelope never pays the per-field visitor cost.
+#[derive(Deserialize)]
+struct LenientHoistEnvelope {
+    errors: Vec<LenientHoistErrorIn>,
+}
+
+#[derive(Deserialize)]
+struct LenientHoistErrorIn {
+    #[serde(default, deserialize_with = "de_lenient_opt_string")]
+    path: Option<String>,
+    #[serde(default, deserialize_with = "de_lenient_opt_string")]
+    code: Option<String>,
+    #[serde(default, deserialize_with = "de_lenient_opt_string")]
+    message: Option<String>,
+}
+
+/// Collect hoistable `(path, code, message)` triples into wire items,
+/// skipping any error that lacks a usable `path` (matches the previous
+/// `e.get("path")?.as_str()?` behaviour).  Shared by the strict fast path
+/// and the lenient fallback so both apply identical selection rules.
+fn hoist_items(
+    errors: impl Iterator<Item = (Option<String>, Option<String>, Option<String>)>,
+) -> Vec<ValidationErrorItem> {
+    errors
+        .filter_map(|(path, code, message)| {
+            Some(ValidationErrorItem {
+                path: path?,
+                code,
+                message,
+            })
+        })
+        .collect()
 }
 
 /// Best-effort extract validation errors from a 422 JSON body.
@@ -614,21 +759,29 @@ fn try_hoist_validation_errors(
     if body_bytes.len() > MAX_HOIST_BODY_BYTES {
         return None;
     }
-    // Direct typed deserialize — no intermediate `serde_json::Value` DOM.
-    let envelope: HoistEnvelope = serde_json::from_slice(body_bytes).ok()?;
-    let items: Vec<ValidationErrorItem> = envelope
-        .errors
-        .into_iter()
-        .filter_map(|e| {
-            // Match the previous behaviour: an error with no `path` is
-            // skipped while the rest are still hoisted.
-            Some(ValidationErrorItem {
-                path: e.path?,
-                code: e.code,
-                message: e.message,
-            })
-        })
-        .collect();
+    // Fast path: strict typed deserialize (no intermediate `serde_json::Value`
+    // DOM, no per-field visitor) — the common all-string framework envelope
+    // parses here directly.
+    let items = if let Ok(envelope) = serde_json::from_slice::<HoistEnvelope>(body_bytes) {
+        hoist_items(
+            envelope
+                .errors
+                .into_iter()
+                .map(|e| (e.path, e.code, e.message)),
+        )
+    } else {
+        // A wrong-typed field aborted the strict parse; retry leniently so a
+        // single odd error object never loses the other valid errors. Cold
+        // (only a hand-crafted 422 body reaches here), so the second parse of
+        // the already-size-capped body is negligible.
+        let envelope: LenientHoistEnvelope = serde_json::from_slice(body_bytes).ok()?;
+        hoist_items(
+            envelope
+                .errors
+                .into_iter()
+                .map(|e| (e.path, e.code, e.message)),
+        )
+    };
     if items.is_empty() { None } else { Some(items) }
 }
 

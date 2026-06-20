@@ -225,7 +225,7 @@ pub struct Model {
         // SAFETY: This is a test that runs single-threaded
         unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
 
-        // Explicitly pick HasMany field - file not found, should skip
+        // Explicitly picked HasMany field must error when inline generation fails.
         let tokens =
             quote!(UserSchema from crate::models::user::Model, pick = ["id", "name", "items"]);
         let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -243,14 +243,11 @@ pub struct Model {
             }
         }
 
-        assert!(result.is_ok());
-        let (tokens, _metadata) = result.unwrap();
-        let output = tokens.to_string();
-        // items field should be skipped (file not found for inline type)
-        assert!(!output.contains("items"));
-        // But other fields should exist
-        assert!(output.contains("id"));
-        assert!(output.contains("name"));
+        let err = result.expect_err("picked relation must not be silently omitted");
+        assert!(
+            err.to_string().contains("explicitly picked"),
+            "unexpected error: {err}"
+        );
     }
     #[test]
     #[serial]

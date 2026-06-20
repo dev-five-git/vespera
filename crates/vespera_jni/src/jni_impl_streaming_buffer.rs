@@ -10,7 +10,7 @@
 //! next dispatch allocates a fresh buffer instead of aliasing the Java
 //! array that may still be in flight).
 
-use std::cell::RefCell;
+use std::{cell::RefCell, sync::Arc};
 
 use jni::objects::{Global, JByteArray};
 
@@ -21,7 +21,7 @@ thread_local! {
     static STREAMING_PUSH_BUFFER: RefCell<Option<CachedStreamingChunkBuffer>> = const { RefCell::new(None) };
 }
 
-pub type StreamingChunkBuffer = Global<JByteArray<'static>>;
+pub type StreamingChunkBuffer = Arc<Global<JByteArray<'static>>>;
 
 #[derive(Clone, Copy)]
 pub enum StreamingBufferRole {
@@ -59,10 +59,10 @@ struct CachedStreamingChunkBuffer {
 // Java array.  Discarding instead lets pooling recover on the next dispatch.
 //
 // Discarding is safe against the still-running producer: the in-flight closure
-// holds its OWN `Global<JByteArray>` to the same array (a separate global ref
-// taken at checkout), so dropping the cache's reference cannot free the array
-// out from under the producer, and the next dispatch installs a brand-new
-// buffer that can never alias the one still in flight.
+// holds an `Arc` clone of the cached `Global<JByteArray>`, so dropping the
+// cache's `Arc` cannot delete the JVM global ref out from under the producer,
+// and the next dispatch installs a brand-new buffer that can never alias the
+// one still in flight.
 pub struct StreamingChunkBufferLease {
     role: StreamingBufferRole,
     released: bool,
@@ -111,7 +111,7 @@ fn new_streaming_chunk_buffer(
     size: usize,
 ) -> jni::errors::Result<StreamingChunkBuffer> {
     let local = env.new_byte_array(size)?;
-    env.new_global_ref(&local)
+    Ok(Arc::new(env.new_global_ref(&local)?))
 }
 
 pub fn checkout_streaming_chunk_buffer(
@@ -137,8 +137,7 @@ pub fn checkout_streaming_chunk_buffer(
                     cached.array = new_streaming_chunk_buffer(env, size)?;
                     cached.size = size;
                 }
-                let cached_array: &JByteArray<'static> = cached.array.as_ref();
-                let dispatch_array = env.new_global_ref(cached_array)?;
+                let dispatch_array = Arc::clone(&cached.array);
                 cached.checked_out = true;
                 return Ok((dispatch_array, Some(StreamingChunkBufferLease::new(role))));
             }
@@ -146,8 +145,7 @@ pub fn checkout_streaming_chunk_buffer(
             None => {}
         }
         let array = new_streaming_chunk_buffer(env, size)?;
-        let array_ref: &JByteArray<'static> = array.as_ref();
-        let dispatch_array = env.new_global_ref(array_ref)?;
+        let dispatch_array = Arc::clone(&array);
         *slot = Some(CachedStreamingChunkBuffer {
             size,
             array,

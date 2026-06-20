@@ -212,8 +212,9 @@ pub fn find_function_in_file<'a>(
     file_ast: &'a syn::File,
     function_name: &str,
 ) -> Option<&'a syn::ItemFn> {
+    let local_name = function_name.rsplit("::").next().unwrap_or(function_name);
     file_ast.items.iter().find_map(|item| match item {
-        syn::Item::Fn(fn_item) if fn_item.sig.ident == function_name => Some(fn_item),
+        syn::Item::Fn(fn_item) if fn_item.sig.ident == local_name => Some(fn_item),
         _ => None,
     })
 }
@@ -414,6 +415,7 @@ mod tests {
 
     #[rstest]
     #[case("foo", true)]
+    #[case("defaults::foo", true)]
     #[case("bar", true)]
     #[case("baz", true)]
     #[case("nonexistent", false)]

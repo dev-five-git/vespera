@@ -257,7 +257,11 @@ async fn finish_buffered_wire(
     let header_cap = header_capacity_estimate(&headers, &metadata).max(WIRE_HEADER_RESERVE);
     let body_cap = usize::try_from(body.size_hint().exact().unwrap_or(0)).unwrap_or(0);
     let mut out = Vec::with_capacity(4 + header_cap + body_cap);
-    write_wire_header_into_vec(&mut out, status, &headers, &metadata);
+    if !write_wire_header_into_vec(&mut out, status, &headers, &metadata) {
+        // Unreachable for a real `HeaderMap` (4 GiB+ of header JSON); never
+        // panic on the response path — emit a 500 wire response instead.
+        return error_wire(500, "response header exceeds u32::MAX bytes");
+    }
 
     loop {
         match body.frame().await {

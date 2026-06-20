@@ -31,7 +31,7 @@ pub(super) fn push_unless_header_failed(
     push: &mut impl FnMut(&[u8]) -> std::ops::ControlFlow<()>,
     chunk: &[u8],
 ) -> std::ops::ControlFlow<()> {
-    if header_failed.load(Ordering::SeqCst) {
+    if header_failed.load(Ordering::Acquire) {
         std::ops::ControlFlow::Break(())
     } else {
         push(chunk)

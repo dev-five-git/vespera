@@ -109,7 +109,13 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
 
     static Boolean cachedCurrentThreadIsVirtual(HttpServletRequest request) {
         Object value = request.getAttribute(CURRENT_THREAD_IS_VIRTUAL_ATTRIBUTE);
-        return value instanceof Boolean ? (Boolean) value : null;
+        if (value instanceof Boolean cached) {
+            return cached;
+        }
+        Object shape = request.getAttribute(RequestShape.class.getName());
+        return shape instanceof RequestShape requestShape
+                ? Boolean.valueOf(requestShape.currentThreadIsVirtual)
+                : null;
     }
 
     DispatchMode resolveMode(HttpServletRequest request, boolean currentThreadIsVirtual) {
@@ -117,12 +123,13 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
     }
 
     private DispatchMode resolveMode(HttpServletRequest request, Boolean currentThreadIsVirtual) {
-        long contentLength = request.getContentLengthLong();
+        RequestShape shape = RequestShape.from(request);
+        long contentLength = shape.contentLength;
         // Bodyless requests fit the direct buffer by definition even when
         // Content-Length is absent (the common shape of GET) — without this,
         // every length-less GET would miss the fast path.
-        boolean bodyless = DispatchModeResolver.definitelyBodyless(request);
-        String method = request.getMethod();
+        boolean bodyless = shape.definitelyBodyless;
+        String method = shape.method;
 
         if (HttpMethods.isSafe(method)) {
             // Safe (GET/HEAD/OPTIONS): DIRECT up to the (larger) DIRECT gate,
@@ -142,7 +149,7 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
             // for larger bodies, idempotent or not.
             boolean virtualThread = currentThreadIsVirtual != null
                     ? currentThreadIsVirtual.booleanValue()
-                    : VesperaBridge.currentThreadIsVirtual();
+                    : shape.currentThreadIsVirtual;
             request.setAttribute(CURRENT_THREAD_IS_VIRTUAL_ATTRIBUTE, Boolean.valueOf(virtualThread));
             if (virtualThread) {
                 return syncSized(contentLength, bodyless)

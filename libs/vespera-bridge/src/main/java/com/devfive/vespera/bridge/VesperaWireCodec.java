@@ -2,7 +2,6 @@ package com.devfive.vespera.bridge;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.Map;
 import java.util.Objects;
 
@@ -70,6 +69,15 @@ final class VesperaWireCodec {
      */
     private static final ThreadLocal<ExposedByteArrayOutputStream> HEADER_BUF =
             ThreadLocal.withInitial(() -> new ExposedByteArrayOutputStream(HEADER_INITIAL_CAPACITY));
+
+    /**
+     * Drop this thread's reusable wire-header encoder buffer. Intended for
+     * servlet-container shutdown/redeploy hooks; normal request handling keeps
+     * the pool hot and must not call this per request.
+     */
+    static void clearCurrentThreadBuffers() {
+        HEADER_BUF.remove();
+    }
 
     /**
      * {@link ByteArrayOutputStream} that exposes its backing array so the
@@ -250,8 +258,10 @@ final class VesperaWireCodec {
             return -total;
         }
         target.clear();
-        target.order(ByteOrder.BIG_ENDIAN);
-        target.putInt(headerLen);
+        target.put((byte) (headerLen >>> 24));
+        target.put((byte) (headerLen >>> 16));
+        target.put((byte) (headerLen >>> 8));
+        target.put((byte) headerLen);
         target.put(headerJson, 0, headerLen);
         if (body.length > 0) {
             target.put(body);
@@ -292,6 +302,7 @@ final class VesperaWireCodec {
      */
     static ExposedByteArrayOutputStream fillHeaderJson(String appName, String method,
             String path, String query, Map<String, String> headers) {
+        String normalizedAppName = normalizedAppName(appName);
         ExposedByteArrayOutputStream buf = reusableHeaderBuffer();
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(path, "path");
@@ -319,9 +330,9 @@ final class VesperaWireCodec {
             }
             buf.put('}');
         }
-        if (appName != null && !appName.isBlank()) {
+        if (normalizedAppName != null) {
             buf.putAscii(",\"app\":");
-            writeJsonString(buf, appName.trim());
+            writeJsonString(buf, normalizedAppName);
         }
         buf.put('}');
         return buf;
@@ -329,6 +340,7 @@ final class VesperaWireCodec {
 
     static ExposedByteArrayOutputStream fillHeaderJson(String appName, String method,
             String path, String query, HeaderSource headers) {
+        String normalizedAppName = normalizedAppName(appName);
         ExposedByteArrayOutputStream buf = reusableHeaderBuffer();
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(path, "path");
@@ -349,9 +361,9 @@ final class VesperaWireCodec {
                 buf.put('}');
             }
         }
-        if (appName != null && !appName.isBlank()) {
+        if (normalizedAppName != null) {
             buf.putAscii(",\"app\":");
-            writeJsonString(buf, appName.trim());
+            writeJsonString(buf, normalizedAppName);
         }
         buf.put('}');
         return buf;
@@ -359,6 +371,24 @@ final class VesperaWireCodec {
 
     private static void writeAsciiInt(ExposedByteArrayOutputStream out, int value) {
         out.putAscii(Integer.toString(value));
+    }
+
+    static String normalizedAppName(String appName) {
+        if (appName == null) {
+            return null;
+        }
+        int start = 0;
+        int end = appName.length();
+        while (start < end && Character.isWhitespace(appName.charAt(start))) {
+            start++;
+        }
+        while (end > start && Character.isWhitespace(appName.charAt(end - 1))) {
+            end--;
+        }
+        if (start == end) {
+            return null;
+        }
+        return start == 0 && end == appName.length() ? appName : appName.substring(start, end);
     }
 
     private static ExposedByteArrayOutputStream reusableHeaderBuffer() {

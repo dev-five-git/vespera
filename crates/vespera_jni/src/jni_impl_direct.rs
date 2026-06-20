@@ -81,17 +81,20 @@ unsafe fn write_response_to_out(out_addr: *mut u8, out_cap: usize, response: &[u
 
 /// `com.devfive.vespera.bridge.VesperaBridge.dispatchDirect0(ByteBuffer, int, ByteBuffer) -> int`
 /// (private native; the public Java wrapper `dispatchDirect` validates
-/// buffer directness before crossing JNI)
+/// buffer directness and writability before crossing JNI)
 ///
 /// **Direct-buffer** synchronous dispatch — the zero-JNI-region-copy
 /// sibling of [`Java_...dispatchBytes`].
 ///
 /// Contract (mirrored in the Java wrapper's javadoc):
-/// * `in_buf` / `out_buf` MUST be **direct** `ByteBuffer`s.  The
-///   Java wrapper enforces this before crossing JNI; non-direct
-///   buffers reaching this symbol produce a thrown
-///   `RuntimeException` (the jni crate surfaces a null direct
-///   address as `Err`).
+/// * `in_buf` / `out_buf` MUST be **direct, writable** `ByteBuffer`s.
+///   The public Java wrapper is the authoritative guard: it rejects
+///   non-direct and read-only buffers before crossing JNI.  This private
+///   native symbol deliberately does NOT call back into Java (for example,
+///   `ByteBuffer.isReadOnly()`) because this ~2 µs direct path is selected
+///   specifically to avoid per-request JNI calls beyond raw-address/capacity
+///   resolution.  Callers that bypass the Java wrapper violate this ABI
+///   contract and may hand Rust a read-only page as `&mut [u8]`.
 /// * The wire request is read from `in_buf[0..in_len]` — explicit
 ///   `in_len`, **never** the buffer's position/limit (eliminates
 ///   the classic "forgot to flip()" corruption).
@@ -132,9 +135,12 @@ unsafe fn write_response_to_out(out_addr: *mut u8, out_cap: usize, response: &[u
 ///    outlives the call.
 /// 4. `in_buf` and `out_buf` are proven **non-overlapping** (SEC-1)
 ///    before the shared `&[u8]` / exclusive `&mut [u8]` are created, so
-///    they never alias the same memory; and `out_buf` is **writable**
-///    (the Java wrapper rejects read-only buffers — SEC-2), so the
-///    `&mut [u8]` write target is valid.
+///    they never alias the same memory.
+/// 5. `out_buf` is **writable** and covers at least `out_cap` bytes.  This is
+///    an explicit ABI precondition of this private symbol, enforced by the
+///    public Java wrapper's `isReadOnly()` checks (SEC-2).  Re-checking here
+///    would add a hot-path JNI call, so the native side documents and trusts
+///    that wrapper contract for speed.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDirect0<'local>(
     mut unowned_env: EnvUnowned<'local>,
@@ -156,6 +162,10 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                     let out_addr = env.get_direct_buffer_address(&out_buf)?;
                     let out_cap = env.get_direct_buffer_capacity(&out_buf)?;
                     out_region = Some((out_addr, out_cap));
+                    debug_assert!(
+                        !out_addr.is_null(),
+                        "JNI direct output buffer address must be non-null"
+                    );
 
                     // Validate in_len against the buffer's real capacity —
                     // all failures still produce a valid wire response in
@@ -197,10 +207,13 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                         // (`in_len <= in_cap`) is a readable region and
                         // `out_addr..out_addr+out_cap` a writable region, both of
                         // direct buffers pinned by their live `in_buf` / `out_buf`
-                        // local refs; the Java caller is blocked for the whole call,
-                        // so both stay valid throughout.  The borrowed `input` slice
-                        // is read in place (no `Vec` copy) and never escapes this
-                        // synchronous `block_on`.
+                        // local refs; SEC-1 proved non-overlap and SEC-2 is the ABI
+                        // contract that `out_buf` is writable (enforced by Java's
+                        // public wrapper, not re-checked here to keep the direct hot
+                        // path free of an extra JNI call). The Java caller is blocked
+                        // for the whole call, so both buffers stay valid throughout.
+                        // The borrowed `input` slice is read in place (no `Vec` copy)
+                        // and never escapes this synchronous `block_on`.
                         let input = unsafe { std::slice::from_raw_parts(in_addr, in_len) };
                         let out = unsafe { std::slice::from_raw_parts_mut(out_addr, out_cap) };
                         block_on_sync_runtime(vespera_inprocess::dispatch_into_async_borrowed(

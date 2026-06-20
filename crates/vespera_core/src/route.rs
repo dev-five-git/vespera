@@ -241,6 +241,7 @@ impl PathItem {
     /// Try to set an operation for a specific HTTP method.
     ///
     /// Returns the operation that was already present, if this call replaced one.
+    #[must_use]
     pub fn try_set_operation(
         &mut self,
         method: HttpMethod,

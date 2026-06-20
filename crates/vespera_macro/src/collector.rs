@@ -53,7 +53,7 @@ fn kebab_case_path(path: &str) -> String {
 ///
 /// Returns the metadata AND the parsed file ASTs, so downstream consumers
 /// (e.g., `openapi_generator`) can reuse them without re-reading files from disk.
-#[allow(clippy::option_if_let_else, clippy::too_many_lines)]
+#[allow(dead_code, clippy::option_if_let_else, clippy::too_many_lines)]
 pub fn collect_metadata(
     folder_path: &Path,
     folder_name: &str,

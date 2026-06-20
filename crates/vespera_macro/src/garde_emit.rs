@@ -38,7 +38,7 @@ use quote::{format_ident, quote};
 use syn::{Data, Fields, Type};
 
 #[cfg(feature = "validation")]
-use crate::parser::schema::schema_attrs::{SchemaConstraints, extract_schema_constraints};
+use crate::parser::schema::schema_attrs::{SchemaConstraints, try_extract_schema_constraints};
 
 /// Public entry point used by `process_derive_schema`.
 ///
@@ -69,11 +69,15 @@ fn emit_impl(input: &DeriveInput) -> TokenStream {
 
     // Collect per-field constraints up-front so we can short-circuit
     // when nothing on the struct opts into validation.
-    let per_field: Vec<(&syn::Field, SchemaConstraints)> = fields_named
+    let per_field = fields_named
         .named
         .iter()
-        .map(|f| (f, extract_schema_constraints(&f.attrs)))
-        .collect();
+        .map(|f| try_extract_schema_constraints(&f.attrs).map(|constraints| (f, constraints)))
+        .collect::<syn::Result<_>>();
+    let per_field: Vec<(&syn::Field, SchemaConstraints)> = match per_field {
+        Ok(per_field) => per_field,
+        Err(error) => return error.to_compile_error(),
+    };
 
     if per_field.iter().all(|(_, c)| !c.has_runtime_rule()) {
         // No field requested a runtime rule — skip Validate emission.

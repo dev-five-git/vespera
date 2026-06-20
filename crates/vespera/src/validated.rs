@@ -23,7 +23,7 @@
 //! with a JSON body of shape:
 //!
 //! ```json
-//! { "errors": [ { "path": "username", "message": "..." }, ... ] }
+//! { "errors": [ { "message": "...", "path": "username" }, ... ] }
 //! ```
 
 use ::axum::{

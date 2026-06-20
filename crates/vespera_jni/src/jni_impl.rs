@@ -739,9 +739,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                         )
                         .is_ok()
                         {
-                            header_sent_cb.store(true, Ordering::SeqCst);
+                            header_sent_cb.store(true, Ordering::Relaxed);
                         } else {
-                            header_failed_cb.store(true, Ordering::SeqCst);
+                            header_failed_cb.store(true, Ordering::Release);
                         }
                     },
                     move |chunk: &[u8]| {
@@ -752,7 +752,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
             match panic_result {
                 Ok(outcome) => {
                     mark_streaming_buffer_reusable(push_buf_lease);
-                    let failed_header = header_failed.load(Ordering::SeqCst);
+                    let failed_header = header_failed.load(Ordering::Acquire);
                     // The header was already committed via the consumer, so a
                     // failure that aborts the body mid-stream can no longer
                     // change the status.  Surface it as a thrown IOException so
@@ -770,7 +770,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                     }
                 }
                 Err(_) => {
-                    if !header_sent.load(Ordering::SeqCst)
+                    if !header_sent.load(Ordering::Relaxed)
                         && let Ok(fallback) = env.new_global_ref(&header_consumer)
                     {
                         let err = panic_wire();
@@ -878,9 +878,9 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                             )
                             .is_ok()
                             {
-                                header_sent_cb.store(true, Ordering::SeqCst);
+                                header_sent_cb.store(true, Ordering::Relaxed);
                             } else {
-                                header_failed_cb.store(true, Ordering::SeqCst);
+                                header_failed_cb.store(true, Ordering::Release);
                             }
                         },
                         // Close the InputStream once the response is fully
@@ -898,7 +898,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                 Ok(outcome) => {
                     mark_streaming_buffer_reusable(pull_buf_lease);
                     mark_streaming_buffer_reusable(push_buf_lease);
-                    let failed_header = header_failed.load(Ordering::SeqCst);
+                    let failed_header = header_failed.load(Ordering::Acquire);
                     // Header already committed: a post-header body abort can no
                     // longer change the status, so throw IOException to make the
                     // servlet container abort the response rather than finish
@@ -914,7 +914,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                     }
                 }
                 Err(_) => {
-                    if !header_sent.load(Ordering::SeqCst)
+                    if !header_sent.load(Ordering::Relaxed)
                         && let Ok(fallback) = env.new_global_ref(&header_consumer)
                     {
                         let err = panic_wire();

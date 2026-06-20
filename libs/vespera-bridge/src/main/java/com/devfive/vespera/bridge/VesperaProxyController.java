@@ -102,12 +102,13 @@ public class VesperaProxyController {
     public Object proxy(HttpServletRequest request,
                         HttpServletResponse response) throws IOException {
 
-        final String appName = appResolver.resolveAppName(request);
+        final RequestShape shape = RequestShape.capture(request);
+        final String appName = VesperaWireCodec.normalizedAppName(appResolver.resolveAppName(request));
         final DispatchMode mode = modeResolver.resolveMode(request);
         final Boolean currentThreadIsVirtual = modeResolver instanceof SmartDispatchModeResolver
                 ? SmartDispatchModeResolver.cachedCurrentThreadIsVirtual(request)
                 : null;
-        final String method = request.getMethod();
+        final String method = shape.method;
         // Path RELATIVE to the servlet context: a Spring app deployed under
         // a non-root context (e.g. server.servlet.context-path=/api) must
         // still forward `/health` — not `/api/health` — so the Rust router
@@ -128,11 +129,11 @@ public class VesperaProxyController {
         switch (mode) {
             case SYNC:
                 dispatchSync(response, appName, method, path, query, headers,
-                        readBody(request, maxBufferedRequestBytes));
+                        readBody(request, shape, maxBufferedRequestBytes));
                 return null;
             case ASYNC:
                 return dispatchAsyncFlow(appName, method, path, query, headers,
-                        readBody(request, maxBufferedRequestBytes));
+                        readBody(request, shape, maxBufferedRequestBytes));
             case STREAMING:
                 // STREAMING materialises the REQUEST body (only the response
                 // streams), so it must honour the same buffered-request cap
@@ -140,11 +141,11 @@ public class VesperaProxyController {
                 // a bodyful request here would bypass
                 // vespera.bridge.max-buffered-request-bytes.
                 dispatchStreaming(response, appName, method, path, query,
-                        headers, readBody(request, maxBufferedRequestBytes));
+                        headers, readBody(request, shape, maxBufferedRequestBytes));
                 return null;
             case DIRECT:
                 dispatchDirectMode(response, appName, method, path, query, headers,
-                        readBody(request, maxBufferedRequestBytes), currentThreadIsVirtual);
+                        readBody(request, shape, maxBufferedRequestBytes), currentThreadIsVirtual);
                 return null;
             case BIDIRECTIONAL_STREAMING:
             default:
@@ -208,6 +209,15 @@ public class VesperaProxyController {
     private static final ThreadLocal<byte[]> DIRECT_BODY_SCRATCH =
             ThreadLocal.withInitial(() -> new byte[DIRECT_BODY_SCRATCH_INITIAL]);
 
+    /**
+     * Drop this thread's reusable heap scratch buffer used for DIRECT response
+     * body copies. Intended for servlet-container shutdown/redeploy cleanup;
+     * keep pooling active during request handling.
+     */
+    static void clearCurrentThreadBuffers() {
+        DIRECT_BODY_SCRATCH.remove();
+    }
+
     // Package-private (not private) so unit tests can exercise the
     // bodyless fast path and length-based reads with MockHttpServletRequest.
     static byte[] readBody(HttpServletRequest request) throws IOException {
@@ -216,16 +226,22 @@ public class VesperaProxyController {
 
     static byte[] readBody(HttpServletRequest request, long maxBufferedRequestBytes)
             throws IOException {
+        return readBody(request, RequestShape.from(request), maxBufferedRequestBytes);
+    }
+
+    static byte[] readBody(
+            HttpServletRequest request, RequestShape shape, long maxBufferedRequestBytes)
+            throws IOException {
         // Provably bodyless requests skip the servlet InputStream
         // acquisition + readAllBytes allocations entirely. This covers
         // both Content-Length: 0 AND length-less GET/HEAD/OPTIONS (the
         // hottest path — the small safe GETs the SmartDispatch
         // resolver routes through DIRECT, which previously still paid a
         // getInputStream()+readAllBytes() round-trip on an empty body).
-        if (DispatchModeResolver.definitelyBodyless(request)) {
+        if (shape.definitelyBodyless) {
             return VesperaWireCodec.EMPTY_BODY;
         }
-        long contentLength = request.getContentLengthLong();
+        long contentLength = shape.contentLength;
         long cap = Math.max(0, maxBufferedRequestBytes);
         if (cap > 0 && contentLength > cap) {
             throw payloadTooLarge(contentLength, cap);
@@ -252,7 +268,7 @@ public class VesperaProxyController {
                 }
                 return body;
             }
-            if (contentLength > 0 && contentLength <= MAX_FIXED_BODY) {
+            if (contentLength > 0 && (cap > 0 || contentLength <= MAX_FIXED_BODY)) {
                 // Known, bounded length: one exact allocation filled in
                 // place, skipping readAllBytes()'s grow-by-doubling and
                 // its final trim copy.  readNBytes blocks until the
@@ -262,7 +278,10 @@ public class VesperaProxyController {
                 // yields a correctly-sized smaller array).
                 return in.readNBytes((int) contentLength);
             }
-            // Unknown (-1) or oversized length: faithful incremental read.
+            // Unknown (-1), or oversized known length with no explicit cap:
+            // faithful incremental read. The latter intentionally guards
+            // against a lying Content-Length forcing a giant up-front array
+            // when vespera.bridge.max-buffered-request-bytes is not set.
             return in.readAllBytes();
         }
     }

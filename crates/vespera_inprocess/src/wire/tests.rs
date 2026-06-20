@@ -290,12 +290,15 @@ fn hand_serialize_matches_serde_serialize() {
         for with_ve in [false, true] {
             let hand_items = with_ve.then(validation_items);
             let mut hand = Vec::new();
-            write_wire_header_into(
-                &mut hand,
-                status,
-                &headers,
-                &metadata,
-                hand_items.as_deref(),
+            assert!(
+                write_wire_header_into(
+                    &mut hand,
+                    status,
+                    &headers,
+                    &metadata,
+                    hand_items.as_deref(),
+                ),
+                "header fits u32 (status={status}, with_ve={with_ve})"
             );
 
             let serde_view = WireResponseHeader {
@@ -332,4 +335,41 @@ fn hand_serialize_matches_serde_serialize() {
             "slice-path byte drift (status={status})"
         );
     }
+}
+
+/// INP-01 regression: the 422 validation-error hoist is genuinely
+/// best-effort — a single error object with a wrong-typed field
+/// (`"code": 123`, `"message": {...}`, `"code": [..]`) must NOT abort the
+/// hoist of the other valid errors.  Locks the lenient-field behaviour
+/// restored after the typed-deserialize rewrite (matches the prior
+/// `serde_json::Value` extract path which used `Value::as_str`).
+#[test]
+fn hoist_422_is_best_effort_for_wrong_typed_fields() {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("application/json"),
+    );
+    // `b`/`c` carry numeric / object / array `code` & `message` — all wrong
+    // types; every entry still has a usable string `path`, so the whole array
+    // must hoist (wrong-typed scalars degrade to `None`, never error).
+    let body = bytes::Bytes::from_static(
+        br#"{"errors":[
+            {"path":"a","code":"too_short","message":"min 3"},
+            {"path":"b","code":123,"message":{"nested":true}},
+            {"path":"c","code":[1,2],"message":null}
+        ]}"#,
+    );
+    let items = super::try_hoist_validation_errors(&headers, &body)
+        .expect("a wrong-typed field must not abort the best-effort hoist");
+    assert_eq!(items.len(), 3, "every error with a path must be hoisted");
+    assert_eq!(items[0].path, "a");
+    assert_eq!(items[0].code.as_deref(), Some("too_short"));
+    assert_eq!(items[0].message.as_deref(), Some("min 3"));
+    assert_eq!(items[1].path, "b");
+    assert_eq!(items[1].code, None);
+    assert_eq!(items[1].message, None);
+    assert_eq!(items[2].path, "c");
+    assert_eq!(items[2].code, None);
+    assert_eq!(items[2].message, None);
 }

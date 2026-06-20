@@ -164,6 +164,15 @@ pub(super) fn compute_config_hash(processed: &ProcessedVesperaInput) -> u64 {
     hasher.finish()
 }
 
+/// Compute a deterministic hash for `export_app!` inputs.
+pub(super) fn compute_export_config_hash(app_name: &str, folder_name: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    "export_app:v1".hash(&mut hasher);
+    app_name.hash(&mut hasher);
+    folder_name.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Directory holding child apps' exported OpenAPI sidecars
 /// (`<AppName>.openapi.json`), used by [`compute_config_hash`] to fold a
 /// merged child's spec content into the parent cache key.  Mirrors the
@@ -180,6 +189,18 @@ pub(super) fn get_cache_path() -> std::path::PathBuf {
     find_target_dir(manifest_path)
         .join("vespera")
         .join(format!("routes-{}.cache", current_crate_tag()))
+}
+
+/// Get the path to this crate/app/folder's `export_app!` route cache file.
+pub(super) fn get_export_cache_path(app_name: &str, folder_name: &str) -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let manifest_path = Path::new(&manifest_dir);
+    find_target_dir(manifest_path).join("vespera").join(format!(
+        "export-routes-{}-{}-{:016x}.cache",
+        current_crate_tag(),
+        app_name,
+        compute_export_config_hash(app_name, folder_name)
+    ))
 }
 
 /// Fingerprint of the vespera_macro **source tree itself**, for cache
@@ -399,6 +420,14 @@ mod tests {
     }
 
     #[test]
+    fn export_config_hash_is_namespaced_by_app_and_folder() {
+        let base = compute_export_config_hash("ThirdApp", "routes");
+
+        assert_ne!(base, compute_export_config_hash("AdminApp", "routes"));
+        assert_ne!(base, compute_export_config_hash("ThirdApp", "api"));
+    }
+
+    #[test]
     fn security_scheme_field_changes_affect_config_hash() {
         fn scheme(http_scheme: &str) -> SecurityScheme {
             SecurityScheme {
@@ -408,6 +437,8 @@ mod tests {
                 r#in: None,
                 scheme: Some(http_scheme.to_string()),
                 bearer_format: Some("JWT".to_string()),
+                flows: None,
+                open_id_connect_url: None,
             }
         }
 

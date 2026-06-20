@@ -11,8 +11,15 @@ use proc_macro2::Span;
 
 use super::path_utils::{current_crate_tag, find_target_dir};
 
-/// Docs info tuple type alias for cleaner signatures
-pub type DocsInfo = (Option<String>, Option<String>, Option<String>);
+/// OpenAPI write result consumed by router/doc codegen and incremental cache sidecars.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct OpenApiWriteResult {
+    pub docs_url: Option<String>,
+    pub redoc_url: Option<String>,
+    pub spec_json: Option<String>,
+    pub spec_pretty: Option<String>,
+}
 
 /// Whether `path` already holds exactly `content`.
 ///
@@ -22,7 +29,7 @@ pub type DocsInfo = (Option<String>, Option<String>, Option<String>);
 /// falls back to the full read + compare.  Missing or unreadable files
 /// count as "changed", so the caller writes — exactly like the previous
 /// `read_to_string(...).map_or(true, |e| e != content)` this replaces.
-fn content_unchanged(path: &Path, content: &str) -> bool {
+pub(super) fn content_unchanged(path: &Path, content: &str) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.len() == content.len() as u64)
         && std::fs::read_to_string(path).is_ok_and(|existing| existing == content)
 }
@@ -33,10 +40,15 @@ pub fn generate_and_write_openapi(
     metadata: &CollectedMetadata,
     file_asts: HashMap<String, syn::File>,
     route_storage: &[StoredRouteInfo],
-) -> MacroResult<DocsInfo> {
+) -> MacroResult<OpenApiWriteResult> {
     if input.openapi_file_names.is_empty() && input.docs_url.is_none() && input.redoc_url.is_none()
     {
-        return Ok((None, None, None));
+        return Ok(OpenApiWriteResult {
+            docs_url: None,
+            redoc_url: None,
+            spec_json: None,
+            spec_pretty: None,
+        });
     }
 
     let mut openapi_doc = try_generate_openapi_doc_with_metadata(
@@ -66,13 +78,22 @@ pub fn generate_and_write_openapi(
             if let Some(last_segment) = merge_path.segments.last() {
                 let struct_name = last_segment.ident.to_string();
                 let spec_file = vespera_dir.join(format!("{struct_name}.openapi.json"));
-
-                if let Ok(spec_content) = std::fs::read_to_string(&spec_file)
-                    && let Ok(child_spec) =
-                        serde_json::from_str::<vespera_core::openapi::OpenApi>(&spec_content)
-                {
-                    openapi_doc.merge(child_spec);
-                }
+                let spec_content = std::fs::read_to_string(&spec_file).map_err(|e| {
+                    err_call_site(format!(
+                        "OpenAPI merge: failed to read child spec for `{struct_name}` at '{}'. Error: {e}. Ensure the child crate containing `export_app!({struct_name})` is built before the parent app.",
+                        spec_file.display()
+                    ))
+                })?;
+                let child_spec = serde_json::from_str::<vespera_core::openapi::OpenApi>(
+                    &spec_content,
+                )
+                .map_err(|e| {
+                    err_call_site(format!(
+                        "OpenAPI merge: failed to parse child spec for `{struct_name}` at '{}'. Error: {e}.",
+                        spec_file.display()
+                    ))
+                })?;
+                openapi_doc.merge(child_spec);
             }
         }
     }
@@ -88,7 +109,9 @@ pub fn generate_and_write_openapi(
     // file users diff in CI.  Keep two direct serialisations.
     //
     // Pretty-print for user-visible files.
-    if !input.openapi_file_names.is_empty() {
+    let spec_pretty = if input.openapi_file_names.is_empty() {
+        None
+    } else {
         let json_pretty = serde_json::to_string_pretty(&openapi_doc).map_err(|e| err_call_site(format!("OpenAPI generation: failed to serialize document to JSON. Error: {e}. Check that all schema types are serializable.")))?;
         for openapi_file_name in &input.openapi_file_names {
             let file_path = Path::new(openapi_file_name);
@@ -100,7 +123,8 @@ pub fn generate_and_write_openapi(
                 std::fs::write(file_path, &json_pretty).map_err(|e| err_call_site(format!("OpenAPI output: failed to write file '{openapi_file_name}'. Error: {e}. Ensure the file path is writable.")))?;
             }
         }
-    }
+        Some(json_pretty)
+    };
 
     // Compact JSON for embedding (smaller binary, faster downstream compilation).
     let spec_json = if input.docs_url.is_some() || input.redoc_url.is_some() {
@@ -109,7 +133,12 @@ pub fn generate_and_write_openapi(
         None
     };
 
-    Ok((input.docs_url.clone(), input.redoc_url.clone(), spec_json))
+    Ok(OpenApiWriteResult {
+        docs_url: input.docs_url.clone(),
+        redoc_url: input.redoc_url.clone(),
+        spec_json,
+        spec_pretty,
+    })
 }
 
 /// Write cached OpenAPI spec to output files if they are stale or missing.
@@ -300,10 +329,10 @@ mod tests {
         let metadata = CollectedMetadata::new();
         let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
         assert!(result.is_ok());
-        let (docs_url, redoc_url, spec_json) = result.unwrap();
-        assert!(docs_url.is_none());
-        assert!(redoc_url.is_none());
-        assert!(spec_json.is_none());
+        let result = result.unwrap();
+        assert!(result.docs_url.is_none());
+        assert!(result.redoc_url.is_none());
+        assert!(result.spec_json.is_none());
     }
 
     #[test]
@@ -324,14 +353,14 @@ mod tests {
         let metadata = CollectedMetadata::new();
         let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
         assert!(result.is_ok());
-        let (docs_url, redoc_url, spec_json) = result.unwrap();
-        assert!(docs_url.is_some());
-        assert_eq!(docs_url.unwrap(), "/docs");
-        assert!(spec_json.is_some());
-        let json = spec_json.unwrap();
+        let result = result.unwrap();
+        assert!(result.docs_url.is_some());
+        assert_eq!(result.docs_url.unwrap(), "/docs");
+        assert!(result.spec_json.is_some());
+        let json = result.spec_json.unwrap();
         assert!(json.contains("\"openapi\""));
         assert!(json.contains("Test API"));
-        assert!(redoc_url.is_none());
+        assert!(result.redoc_url.is_none());
     }
 
     #[test]
@@ -352,11 +381,11 @@ mod tests {
         let metadata = CollectedMetadata::new();
         let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
         assert!(result.is_ok());
-        let (docs_url, redoc_url, spec_json) = result.unwrap();
-        assert!(docs_url.is_none());
-        assert!(redoc_url.is_some());
-        assert_eq!(redoc_url.unwrap(), "/redoc");
-        assert!(spec_json.is_some());
+        let result = result.unwrap();
+        assert!(result.docs_url.is_none());
+        assert!(result.redoc_url.is_some());
+        assert_eq!(result.redoc_url.unwrap(), "/redoc");
+        assert!(result.spec_json.is_some());
     }
 
     #[test]
@@ -377,10 +406,10 @@ mod tests {
         let metadata = CollectedMetadata::new();
         let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
         assert!(result.is_ok());
-        let (docs_url, redoc_url, spec_json) = result.unwrap();
-        assert!(docs_url.is_some());
-        assert!(redoc_url.is_some());
-        assert!(spec_json.is_some());
+        let result = result.unwrap();
+        assert!(result.docs_url.is_some());
+        assert!(result.redoc_url.is_some());
+        assert!(result.spec_json.is_some());
     }
 
     #[test]
@@ -439,9 +468,15 @@ mod tests {
         assert!(output_path.exists());
     }
 
+    #[serial_test::serial]
     #[test]
     fn test_generate_and_write_openapi_with_merge_no_manifest_dir() {
         // When CARGO_MANIFEST_DIR is not set or merge is empty, it should work normally
+        let old_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+        // SAFETY: This serial test temporarily removes process environment to
+        // exercise the no-manifest fallback branch.
+        unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") };
+
         let processed = ProcessedVesperaInput {
             folder_name: "routes".to_string(),
             openapi_file_names: vec![],
@@ -458,6 +493,10 @@ mod tests {
         let metadata = CollectedMetadata::new();
         // This should still work - merge logic is skipped when CARGO_MANIFEST_DIR lookup fails
         let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
+        if let Some(value) = old_manifest_dir {
+            // SAFETY: This serial test restores the process environment it changed.
+            unsafe { std::env::set_var("CARGO_MANIFEST_DIR", value) };
+        }
         assert!(result.is_ok());
     }
 

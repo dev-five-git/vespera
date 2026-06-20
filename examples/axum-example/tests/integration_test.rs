@@ -1054,8 +1054,11 @@ async fn test_openapi_memo_detail_same_file_relation_adapter_schema() {
     // B6: the same-file relation adapter exposes its OWN schema, so the spec
     // matches what the handler actually serializes (UserInMemoDetail's 3 fields)
     // instead of over-promising the base UserSchema's 5 fields.
+    // Nullable single-value relation (`BelongsTo` → `Option<..>`) renders as the
+    // OpenAPI 3.1 `anyOf: [{$ref}, {type: null}]` form (not the 3.0 `$ref +
+    // nullable` keyword), so the adapter $ref lives under `anyOf[0]`.
     assert_eq!(
-        memo_detail["properties"]["user"]["$ref"],
+        memo_detail["properties"]["user"]["anyOf"][0]["$ref"],
         "#/components/schemas/UserInMemoDetail"
     );
     // The referenced adapter schema must carry exactly the adapter's fields —

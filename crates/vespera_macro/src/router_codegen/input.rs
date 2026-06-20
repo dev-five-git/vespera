@@ -347,6 +347,8 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
             r#in: location,
             scheme,
             bearer_format,
+            flows: None,
+            open_id_connect_url: None,
         },
     })
 }
