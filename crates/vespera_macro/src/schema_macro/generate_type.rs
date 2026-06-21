@@ -34,8 +34,8 @@ use super::type_utils::{
     is_seaorm_relation_type,
 };
 use super::validation::{
-    extract_source_field_names, validate_omit_fields, validate_partial_fields,
-    validate_pick_fields, validate_rename_fields,
+    extract_source_field_names, validate_add_field_idents, validate_omit_fields,
+    validate_partial_fields, validate_pick_fields, validate_rename_fields,
 };
 use crate::metadata::StructMetadata;
 use crate::parser::{extract_field_rename, strip_raw_prefix_owned};
@@ -118,6 +118,10 @@ pub fn generate_schema_type_code(
         &input.source_type,
         &source_type_name,
     )?;
+    // `add` field names also become struct identifiers via `syn::Ident::new`
+    // downstream, so reject a non-identifier / keyword name here as a spanned
+    // error instead of panicking the proc-macro during expansion.
+    validate_add_field_idents(input.add.as_ref(), &input.source_type)?;
     let partial_fields_to_validate = match &input.partial {
         Some(PartialMode::Fields(fields)) => Some(fields),
         _ => None,

@@ -5,11 +5,15 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.io.Resource;
+import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.web.server.ResponseStatusException;
@@ -127,6 +131,42 @@ class ProxyControllerBodyHeaderTest {
         assertEquals(5, VesperaProxyController.readBody(req, 0).length);
     }
 
+    @Test
+    void configuredBufferedCapRejectsUnknownLengthBodyAfterCapPlusOneRead() {
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/x") {
+            @Override
+            public long getContentLengthLong() {
+                return -1;
+            }
+        };
+        req.setContent(new byte[5]);
+
+        ResponseStatusException e = assertThrows(
+                ResponseStatusException.class,
+                () -> VesperaProxyController.readBody(req, RequestShape.from(req), 4));
+
+        assertEquals(413, e.getStatusCode().value());
+    }
+
+    @Test
+    void conservativeDefaultBufferedCapRejectsKnownOversizedBodyBeforeRead() {
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/x") {
+            @Override
+            public long getContentLengthLong() {
+                return VesperaProxyController.DEFAULT_MAX_BUFFERED_REQUEST_BYTES + 1;
+            }
+        };
+
+        ResponseStatusException e = assertThrows(
+                ResponseStatusException.class,
+                () -> VesperaProxyController.readBody(
+                        req,
+                        RequestShape.from(req),
+                        VesperaProxyController.DEFAULT_MAX_BUFFERED_REQUEST_BYTES));
+
+        assertEquals(413, e.getStatusCode().value());
+    }
+
     // ── Context-path stripping: Rust sees the context-relative path ──────
 
     @Test
@@ -177,7 +217,7 @@ class ProxyControllerBodyHeaderTest {
     }
 
     @Test
-    void directHeaderPreservesWireContentLength() {
+    void directHeaderOwnsContentLengthWhenWireDisagrees() {
         MockHttpServletResponse response = new MockHttpServletResponse();
         ByteBuffer wire = directWire(
                 "{\"status\":200,\"headers\":{\"content-length\":\"123\"}}",
@@ -186,7 +226,72 @@ class ProxyControllerBodyHeaderTest {
         int bodyLen = VesperaProxyController.applyDirectHeaderAndPositionBody(wire, response);
 
         assertEquals(5, bodyLen);
-        assertEquals(123, response.getContentLength());
+        assertEquals(5, response.getContentLength());
+        assertEquals("5", response.getHeader("Content-Length"));
+    }
+
+    @Test
+    void directHeaderSuppressesNoBodyStatusBodyAndLength() {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        ByteBuffer wire = directWire(
+                "{\"status\":204,\"headers\":{\"content-length\":\"123\"}}",
+                "hello");
+
+        int bodyLen = VesperaProxyController.applyDirectHeaderAndPositionBody(wire, response);
+
+        assertEquals(0, bodyLen);
+        assertEquals(0, response.getContentLength());
+        assertEquals("0", response.getHeader("Content-Length"));
+    }
+
+    @Test
+    void directHeaderSuppressesHeadResponseBody() {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        ByteBuffer wire = directWire("{\"status\":200,\"headers\":{}}", "hello");
+
+        int bodyLen = VesperaProxyController.applyDirectHeaderAndPositionBody(
+                wire, response, "HEAD");
+
+        assertEquals(0, bodyLen);
+        assertEquals(0, response.getContentLength());
+    }
+
+    @Test
+    void asyncResponseEntityOwnsContentLengthAndSuppressesHeadBody() throws IOException {
+        byte[] wire = heapWire(
+                "{\"status\":200,\"headers\":{\"content-length\":\"123\"}}",
+                "hello");
+
+        ResponseEntity<?> entity = VesperaProxyController.buildResponseEntityFromWire(wire, "HEAD");
+
+        assertEquals(0, entity.getHeaders().getContentLength());
+        Resource body = (Resource) entity.getBody();
+        assertEquals(0, body.contentLength());
+        try (InputStream in = body.getInputStream()) {
+            assertEquals(-1, in.read());
+        }
+    }
+
+    @Test
+    void streamingHeaderDropsContentLengthAndBodyGateSuppressesNoBodyStatus() throws IOException {
+        byte[] header = heapWire(
+                "{\"status\":304,\"headers\":{\"content-length\":\"123\","
+                        + "\"content-type\":\"text/plain\"}}",
+                "");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        boolean permits = VesperaProxyController.applyDecodedHeader(header, response, "GET");
+
+        assertFalse(permits);
+        assertFalse(response.containsHeader("content-length"));
+        assertEquals("text/plain", response.getHeader("content-type"));
+
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        VesperaProxyController.BodyPermittingOutputStream out =
+                new VesperaProxyController.BodyPermittingOutputStream(sink, "GET");
+        out.applyPermitsBody(permits);
+        out.write("hello".getBytes(StandardCharsets.UTF_8));
+        assertEquals(0, sink.size());
     }
 
     @Test
@@ -216,7 +321,8 @@ class ProxyControllerBodyHeaderTest {
         assertTrue(VesperaProxyController.isHopByHopResponseHeader("Transfer-Encoding"));
         assertTrue(VesperaProxyController.isHopByHopResponseHeader("connection"));
         assertTrue(VesperaProxyController.isHopByHopResponseHeader("UPGRADE"));
-        // content-length is deliberately preserved (handler-authoritative).
+        // content-length is not hop-by-hop, but addServletResponseHeader treats
+        // it as proxy-owned framing and drops it separately.
         assertFalse(VesperaProxyController.isHopByHopResponseHeader("content-length"));
         assertFalse(VesperaProxyController.isHopByHopResponseHeader("content-type"));
     }
@@ -230,5 +336,18 @@ class ProxyControllerBodyHeaderTest {
         buf.put(bodyBytes);
         buf.flip();
         return buf.asReadOnlyBuffer();
+    }
+
+    private static byte[] heapWire(String headerJson, String body) {
+        byte[] header = headerJson.getBytes(StandardCharsets.UTF_8);
+        byte[] bodyBytes = body.getBytes(StandardCharsets.UTF_8);
+        byte[] wire = new byte[4 + header.length + bodyBytes.length];
+        wire[0] = (byte) (header.length >>> 24);
+        wire[1] = (byte) (header.length >>> 16);
+        wire[2] = (byte) (header.length >>> 8);
+        wire[3] = (byte) header.length;
+        System.arraycopy(header, 0, wire, 4, header.length);
+        System.arraycopy(bodyBytes, 0, wire, 4 + header.length, bodyBytes.length);
+        return wire;
     }
 }

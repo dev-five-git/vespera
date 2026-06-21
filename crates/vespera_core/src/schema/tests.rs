@@ -211,6 +211,21 @@ fn from_compiled_json_invalid_input_trips_debug_assert() {
     let _ = Schema::from_compiled_json("{not valid json");
 }
 
+#[test]
+fn compiled_json_parse_failure_sentinel_is_machine_detectable() {
+    let error = serde_json::from_str::<Schema>("{not valid json").unwrap_err();
+    let schema = schema_parse_failure_sentinel(&error);
+
+    assert_eq!(schema.title.as_deref(), Some("VESPERA_SCHEMA_PARSE_ERROR"));
+    assert!(
+        schema
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("macro/serde drift")),
+        "sentinel description should identify macro/serde drift: {schema:#?}",
+    );
+}
+
 // ── CORE-04: typed `additionalProperties` (untagged) ─────────────
 //
 // The untagged enum MUST serialize to the bare JSON Schema wire form
@@ -298,6 +313,22 @@ fn nullable_reference_serialization_is_byte_identical() {
 }
 
 #[test]
+fn nullable_reference_with_explicit_any_of_returns_clean_serialization_error() {
+    let schema = Schema {
+        any_of: Some(vec![SchemaRef::Inline(Box::new(Schema::string()))]),
+        ..Schema::nullable_reference("#/components/schemas/User".to_owned())
+    };
+
+    let err = serde_json::to_string(&schema).unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("cannot also carry explicit any_of"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
 fn nullable_primitive_emits_type_array_with_null() {
     let schema = Schema {
         nullable: Some(true),
@@ -315,19 +346,32 @@ fn nullable_primitive_type_array_deserializes() {
 }
 
 #[test]
-fn multi_type_array_with_null_deserializes_to_first_non_null_nullable_type() {
-    let schema: Schema = serde_json::from_str(r#"{"type":["string","integer","null"]}"#).unwrap();
+fn duplicate_single_type_array_deserializes_without_loss() {
+    let schema: Schema = serde_json::from_str(r#"{"type":["integer","integer","null"]}"#).unwrap();
 
-    assert_eq!(schema.schema_type, Some(SchemaType::String));
+    assert_eq!(schema.schema_type, Some(SchemaType::Integer));
     assert_eq!(schema.nullable, Some(true));
 }
 
 #[test]
-fn multi_type_array_without_null_deserializes_to_first_type() {
-    let schema: Schema = serde_json::from_str(r#"{"type":["integer","string"]}"#).unwrap();
+fn multi_type_array_with_null_is_rejected_instead_of_lossy_collapsing() {
+    let err =
+        serde_json::from_str::<Schema>(r#"{"type":["string","integer","null"]}"#).unwrap_err();
 
-    assert_eq!(schema.schema_type, Some(SchemaType::Integer));
-    assert_eq!(schema.nullable, None);
+    assert!(
+        err.to_string().contains("multiple non-null types"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
+fn multi_type_array_without_null_is_rejected_instead_of_lossy_collapsing() {
+    let err = serde_json::from_str::<Schema>(r#"{"type":["integer","string"]}"#).unwrap_err();
+
+    assert!(
+        err.to_string().contains("multiple non-null types"),
+        "unexpected error: {err}",
+    );
 }
 
 #[test]

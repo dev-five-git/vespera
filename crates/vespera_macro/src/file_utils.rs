@@ -89,6 +89,33 @@ fn mtime_fingerprint(modified: Option<std::time::SystemTime>) -> u64 {
     })
 }
 
+/// Mix a file's mtime fingerprint with its byte length into a single
+/// equality-only cache fingerprint.
+///
+/// mtime alone misses a content edit that PRESERVES the modification time —
+/// a timestamp-preserving checkout, `cp -p`, or build-cache restore can
+/// rewrite a route file's contents while leaving its mtime untouched, which
+/// would otherwise serve a STALE generated router / OpenAPI spec from the
+/// cache. Folding in `len()` catches every such edit that changes the file
+/// size (the overwhelming majority), at ZERO extra compile-time cost: the
+/// metadata is already stat'd for the mtime and no file contents are ever
+/// hashed. The fingerprint is only ever compared for equality, so any stable
+/// mix works; this one is strictly more sensitive than mtime alone.
+fn combine_fingerprint(mtime: u64, len: u64) -> u64 {
+    mtime.rotate_left(1).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ len.wrapping_mul(0xD1B5_4A32_D192_ED03)
+}
+
+/// Compile-time cache fingerprint for a source file from its already-fetched
+/// [`std::fs::Metadata`] — combines mtime ([`mtime_fingerprint`]) and size
+/// ([`combine_fingerprint`]). Returns `0` when the metadata is unavailable
+/// (same sentinel the previous mtime-only path used).
+fn file_fingerprint(meta: Option<&std::fs::Metadata>) -> u64 {
+    meta.map_or(0, |m| {
+        combine_fingerprint(mtime_fingerprint(m.modified().ok()), m.len())
+    })
+}
+
 fn collect_with_mtimes_into(folder_path: &Path, out: &mut Vec<(PathBuf, u64)>) -> io::Result<()> {
     for entry in std::fs::read_dir(folder_path)? {
         let entry = entry?;
@@ -103,7 +130,7 @@ fn collect_with_mtimes_into(folder_path: &Path, out: &mut Vec<(PathBuf, u64)>) -
             // file at compile time; the entry still keeps its place in the
             // list with mtime `0` (never read for non-`.rs` paths).
             let mtime = if path.extension().is_some_and(|e| e == "rs") {
-                mtime_fingerprint(entry.metadata().ok().and_then(|m| m.modified().ok()))
+                file_fingerprint(entry.metadata().ok().as_ref())
             } else {
                 0
             };
@@ -380,5 +407,20 @@ mod tests {
 
         // Unavailable mtime collapses to 0 (unchanged contract).
         assert_eq!(mtime_fingerprint(None), 0);
+    }
+
+    #[test]
+    fn combine_fingerprint_is_sensitive_to_mtime_and_size() {
+        // Same mtime, DIFFERENT size — the timestamp-preserving content edit
+        // the size term is here to catch — must produce distinct fingerprints.
+        assert_ne!(
+            combine_fingerprint(42, 100),
+            combine_fingerprint(42, 101),
+            "same mtime + different size must differ (stale-cache guard)"
+        );
+        // Different mtime, same size — still distinguished (mtime term).
+        assert_ne!(combine_fingerprint(42, 100), combine_fingerprint(43, 100));
+        // Identical (mtime, size) — equal (a genuine cache hit).
+        assert_eq!(combine_fingerprint(42, 100), combine_fingerprint(42, 100));
     }
 }

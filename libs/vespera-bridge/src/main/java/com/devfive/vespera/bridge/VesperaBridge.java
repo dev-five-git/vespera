@@ -241,7 +241,14 @@ public class VesperaBridge {
         }
         if (loaded) {
             // Native library already loaded — apply immediately.
-            configureStreaming0(chunkBytes, channelCapacity);
+            try {
+                configureStreaming0(chunkBytes, channelCapacity);
+            } catch (UnsatisfiedLinkError olderNativeLibrary) {
+                // Pre-0.2 native libraries do not export configureStreaming0.
+                // Match init(): keep the validated Java-side values for any
+                // future reload/test reset, but degrade gracefully instead of
+                // surfacing a raw optional-feature LinkageError.
+            }
         } else {
             // Native library not yet loaded — store pending values.
             // These will be applied in init() before any dispatch.

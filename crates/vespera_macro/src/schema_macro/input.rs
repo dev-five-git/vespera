@@ -209,6 +209,10 @@ impl Parse for SchemaTypeInput {
         let mut rename_all = None;
         let mut multipart = false;
         let mut omit_default = false;
+        // Reject a repeated parameter (e.g. `pick = .., pick = ..` or a bare
+        // `partial, partial`) with a spanned error instead of letting the
+        // later value silently overwrite the earlier one.
+        let mut seen_params = std::collections::HashSet::<String>::new();
 
         // Parse optional parameters
         while input.peek(Token![,]) {
@@ -220,6 +224,12 @@ impl Parse for SchemaTypeInput {
 
             let ident: Ident = input.parse()?;
             let ident_str = ident.to_string();
+            if !seen_params.insert(ident_str.clone()) {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    format!("duplicate parameter `{ident_str}` in schema_type! macro"),
+                ));
+            }
 
             match ident_str.as_str() {
                 "omit" => {

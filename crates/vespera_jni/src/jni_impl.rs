@@ -264,9 +264,14 @@ mod direct;
 /// `whenComplete`, …) runs **inline on that worker**.  Callers MUST therefore:
 /// - attach heavy / blocking continuations with the `*Async` variants
 ///   (`thenApplyAsync`, `whenCompleteAsync`, …) on their own executor, and
-/// - never re-enter a blocking vespera dispatch (`dispatchBytes` /
-///   `dispatchDirect`) from an inline continuation — that nests a `block_on`
-///   inside the runtime and degrades to a caught-panic `500`.
+/// - never re-enter a blocking vespera dispatch from an inline continuation —
+///   that nests a `block_on` inside the runtime and degrades to a caught-panic
+///   `500`. This applies to EVERY blocking JNI entry point, not just
+///   `dispatchBytes` / `dispatchDirect`: the streaming symbols
+///   (`dispatchStreaming`, `dispatchFullStreaming`, and their `*WithHeader`
+///   variants) also `RUNTIME.block_on(...)` and are *more* damaging to
+///   re-enter because they hold a worker across the entire response/request
+///   stream.
 ///
 /// Completing the future off the worker (via `spawn_blocking`) was measured at
 /// ~16x the per-dispatch cost (`vespera_inprocess` `benches/dispatch.rs`,

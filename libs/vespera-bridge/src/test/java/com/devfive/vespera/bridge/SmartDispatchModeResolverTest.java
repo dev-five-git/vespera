@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Pure-Java gating tests for {@link SmartDispatchModeResolver}. */
@@ -116,6 +117,16 @@ class SmartDispatchModeResolverTest {
         // with the 2 MiB retain cap, DIRECT beats streaming through 1 MiB.
         assertEquals(DispatchMode.DIRECT,
                 resolver.resolveMode(request("GET", 1024 * 1024)));
+    }
+
+    @Test
+    void resolveModeDoesNotMutateRequestAttributesOnSafeHotPath() {
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
+
+        assertEquals(DispatchMode.DIRECT, resolver.resolveMode(req, false));
+
+        assertNull(req.getAttribute(
+                "com.devfive.vespera.bridge.SmartDispatchModeResolver.currentThreadIsVirtual"));
     }
 
     @Test

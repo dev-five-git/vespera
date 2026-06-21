@@ -20,7 +20,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *     app-header: X-My-App        # override the default header name
  *     controller-enabled: false   # disable our controller (BYO controller)
  *     direct-retry-on-overflow: false # surface DIRECT overflow instead of retrying
- *     max-buffered-request-bytes: 10485760 # cap SYNC/ASYNC/DIRECT request buffering
+ *     max-buffered-request-bytes: 10485760 # cap SYNC/ASYNC/DIRECT/STREAMING request buffering
  * }</pre>
  */
 @ConfigurationProperties(prefix = "vespera.bridge")
@@ -82,13 +82,13 @@ public class VesperaBridgeProperties {
 
     /**
      * Maximum request-body bytes the Spring proxy may buffer for
-     * SYNC/ASYNC/DIRECT dispatch modes.  Default {@code 0} means unlimited
-     * for backward compatibility and mirrors Rust-side
-     * {@code VESPERA_MAX_REQUEST_BYTES} convention.  Streaming modes are
-     * exempt because they do not fully buffer the request body for
-     * bidirectional dispatch.
+     * SYNC/ASYNC/DIRECT/STREAMING dispatch modes.  The conservative default is
+     * 64 MiB so a custom resolver cannot accidentally route an unknown-length
+     * upload into a heap-buffered mode and grow toward the JVM array ceiling.
+     * Set {@code 0} explicitly to restore unlimited buffering. Bidirectional
+     * streaming is exempt because it does not fully buffer the request body.
      */
-    private long maxBufferedRequestBytes = 0;
+    private long maxBufferedRequestBytes = VesperaProxyController.DEFAULT_MAX_BUFFERED_REQUEST_BYTES;
 
     /**
      * Thread count for the autoconfigured {@code vesperaBridgeAsyncResponseExecutor}

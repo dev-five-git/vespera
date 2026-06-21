@@ -61,6 +61,65 @@ fn test_generate_schema_type_code_rename_preserves_serde_rename() {
     assert!(output.contains("userName") || output.contains("rename"));
 }
 
+#[test]
+fn test_generate_schema_type_code_rename_invalid_target_errors_not_panics() {
+    // Regression: a `rename` target that is not a valid Rust identifier used
+    // to panic the proc-macro at `syn::Ident::new`. It must now return a
+    // spanned `Err` so the user sees a compile diagnostic, not an aborted
+    // expansion.
+    let storage = to_storage(vec![create_test_struct_metadata(
+        "User",
+        "pub struct User { pub id: i32, pub name: String }",
+    )]);
+
+    let tokens = quote!(UserDTO from User, rename = [("id", "user-id")]);
+    let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+    let result = generate_schema_type_code(&input, &storage);
+
+    assert!(result.is_err(), "invalid rename target must Err, not panic");
+    assert!(result.unwrap_err().to_string().contains("user-id"));
+}
+
+#[test]
+fn test_generate_schema_type_code_add_invalid_ident_errors_not_panics() {
+    // Same class of bug as rename: an `add` field name that is not a valid
+    // identifier must Err, not panic at `syn::Ident::new`.
+    let storage = to_storage(vec![create_test_struct_metadata(
+        "User",
+        "pub struct User { pub id: i32 }",
+    )]);
+
+    let tokens = quote!(UserDTO from User, add = [("bad-field": String)]);
+    let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+    let result = generate_schema_type_code(&input, &storage);
+
+    assert!(result.is_err(), "invalid add ident must Err, not panic");
+    assert!(result.unwrap_err().to_string().contains("bad-field"));
+}
+
+#[test]
+fn test_schema_type_duplicate_param_rejected() {
+    // A repeated parameter must be a spanned parse error, not a silent
+    // last-value-wins overwrite.
+    let tokens = quote!(UserDTO from User, pick = ["id"], pick = ["name"]);
+    let result: syn::Result<SchemaTypeInput> = syn::parse2(tokens);
+    assert!(result.is_err(), "duplicate `pick` must be rejected");
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("duplicate parameter")
+    );
+}
+
+#[test]
+fn test_schema_type_duplicate_bare_flag_rejected() {
+    let tokens = quote!(UserDTO from User, partial, partial);
+    let result: syn::Result<SchemaTypeInput> = syn::parse2(tokens);
+    assert!(result.is_err(), "duplicate bare `partial` must be rejected");
+}
+
 // Tests for schema derive and name attribute generation
 
 #[test]

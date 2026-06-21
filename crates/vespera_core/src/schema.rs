@@ -2,7 +2,7 @@
 
 use serde::{
     Deserialize, Serialize,
-    de::MapAccess,
+    de::{Error as DeError, MapAccess},
     ser::{SerializeSeq, SerializeStruct},
 };
 use std::collections::BTreeMap;
@@ -393,20 +393,29 @@ enum SchemaTypeWire {
 }
 
 impl SchemaTypeWire {
-    fn into_schema_type_and_nullable(self) -> (Option<SchemaType>, Option<bool>) {
+    fn into_schema_type_and_nullable<E>(self) -> Result<(Option<SchemaType>, Option<bool>), E>
+    where
+        E: DeError,
+    {
         match self {
-            Self::Single(schema_type) => (Some(schema_type), None),
+            Self::Single(schema_type) => Ok((Some(schema_type), None)),
             Self::Multiple(schema_types) => {
                 let nullable = schema_types.contains(&SchemaType::Null).then_some(true);
-                // Vespera's public `Schema` shape can represent one concrete
-                // `type` plus nullability, not arbitrary multi-non-null JSON
-                // Schema unions.  Preserve deserialization robustness by
-                // collapsing `type: ["integer", "string"]` to the first
-                // non-null type instead of rejecting the whole schema.
-                let schema_type = schema_types
+                let mut schema_type = None;
+                for next_type in schema_types
                     .into_iter()
-                    .find(|schema_type| *schema_type != SchemaType::Null);
-                (schema_type, nullable)
+                    .filter(|schema_type| *schema_type != SchemaType::Null)
+                {
+                    if let Some(current_type) = schema_type
+                        && current_type != next_type
+                    {
+                        return Err(E::custom(
+                            "OpenAPI schema `type` arrays with multiple non-null types are not representable; use anyOf/oneOf instead",
+                        ));
+                    }
+                    schema_type = Some(next_type);
+                }
+                Ok((schema_type, nullable))
             }
         }
     }
@@ -467,9 +476,9 @@ impl<'de> Deserialize<'de> for Schema {
         D: serde::Deserializer<'de>,
     {
         let wire = SchemaDeserialize::deserialize(deserializer)?;
-        let (schema_type, type_nullable) = wire
-            .schema_type
-            .map_or((None, None), SchemaTypeWire::into_schema_type_and_nullable);
+        let (schema_type, type_nullable) = wire.schema_type.map_or(Ok((None, None)), |wire| {
+            wire.into_schema_type_and_nullable::<D::Error>()
+        })?;
         let nullable = match type_nullable {
             Some(true) => Some(true),
             None => wire.nullable,
@@ -526,6 +535,11 @@ impl Serialize for Schema {
         S: serde::Serializer,
     {
         let nullable_ref = self.nullable == Some(true) && self.ref_path.is_some();
+        if nullable_ref && self.any_of.is_some() {
+            return Err(serde::ser::Error::custom(
+                "invalid Schema: nullable `$ref` serializes through anyOf and cannot also carry explicit any_of",
+            ));
+        }
         let mut out = serializer.serialize_struct("Schema", 42)?;
         if let Some(ref_path) = &self.ref_path {
             if nullable_ref {
@@ -786,14 +800,19 @@ impl Schema {
                      JSON ({e}); emitting a sentinel schema. This indicates a \
                      vespera bug — the macro serialized a Schema that cannot round-trip."
                 );
-                Self {
-                    description: Some(format!(
-                        "vespera: schema unavailable — macro/serde drift ({e})"
-                    )),
-                    ..Self::default()
-                }
+                schema_parse_failure_sentinel(&e)
             }
         }
+    }
+}
+
+fn schema_parse_failure_sentinel(error: &serde_json::Error) -> Schema {
+    Schema {
+        title: Some("VESPERA_SCHEMA_PARSE_ERROR".to_owned()),
+        description: Some(format!(
+            "vespera: schema unavailable — macro/serde drift ({error})"
+        )),
+        ..Schema::default()
     }
 }
 

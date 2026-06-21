@@ -178,9 +178,10 @@ pub fn process_vespera_macro(
     // #[cron("...")] attribute already registers metadata at expansion time.
     // No folder scanning needed — just read the storage.
     let cron_jobs: Vec<crate::metadata::CronMetadata> = {
-        let storage = crate::CRON_STORAGE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Per-crate snapshot (see `cron_impl::current_crate_crons`): in a
+        // shared rust-analyzer proc-macro server this never picks up another
+        // crate's `#[cron]` jobs.
+        let storage = crate::cron_impl::current_crate_crons();
         let src_dir = std::env::var("CARGO_MANIFEST_DIR")
             .map(|d| {
                 let p = std::path::PathBuf::from(d).join("src");

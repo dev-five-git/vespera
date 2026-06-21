@@ -18,7 +18,7 @@ use ::std::io::{Read, Seek, SeekFrom};
 use ::std::sync::Once;
 use ::tokio::runtime::Builder;
 use ::vespera::axum::Json;
-use ::vespera::multipart::DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES;
+use ::vespera::multipart::{DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES, TypedMultipartWithLimits};
 use ::vespera::multipart::{FieldData, TypedMultipart};
 use ::vespera::tempfile::NamedTempFile;
 use ::vespera::{Multipart, Schema, Validated};
@@ -123,6 +123,22 @@ async fn text_handler(TypedMultipart(req): TypedMultipart<TextReq>) -> Json<Text
     })
 }
 
+async fn text_aggregate_total_handler(
+    TypedMultipartWithLimits(req): TypedMultipartWithLimits<TextReq, 8, 8>,
+) -> Json<TextResult> {
+    Json(TextResult {
+        text_len: u64::try_from(req.text.len()).unwrap_or(u64::MAX),
+    })
+}
+
+async fn text_aggregate_field_count_handler(
+    TypedMultipartWithLimits(req): TypedMultipartWithLimits<TextReq, 1024, 0>,
+) -> Json<TextResult> {
+    Json(TextResult {
+        text_len: u64::try_from(req.text.len()).unwrap_or(u64::MAX),
+    })
+}
+
 async fn text_unlimited_handler(
     TypedMultipart(req): TypedMultipart<UnlimitedTextReq>,
 ) -> Json<TextResult> {
@@ -137,6 +153,11 @@ fn multipart_router() -> Router {
         .route("/capped-upload", post(capped_upload_handler))
         .route("/validated-multipart", post(validated_multipart_handler))
         .route("/text", post(text_handler))
+        .route("/text-aggregate-total", post(text_aggregate_total_handler))
+        .route(
+            "/text-aggregate-field-count",
+            post(text_aggregate_field_count_handler),
+        )
         .route("/text-unlimited", post(text_unlimited_handler))
         // Disable the 2 MiB default so the 256 KiB test below isn't
         // truncated — and so end-users can document a sensible policy
@@ -361,6 +382,67 @@ fn string_field_under_default_cap_ok() {
     assert_eq!(header["status"].as_u64(), Some(200), "header={header:#}");
     let json: Value = ::serde_json::from_slice(&body).expect("response is JSON");
     assert_eq!(json["text_len"].as_u64(), Some(1024));
+}
+
+#[test]
+fn typed_multipart_aggregate_total_cap_rejected_413() {
+    install_router_once();
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    let wire = encode_multipart_text(
+        "----AggregateTotalBoundary",
+        "/text-aggregate-total",
+        "text",
+        b"ninebytes",
+    );
+    let resp = dispatch_from_bytes(wire, &runtime);
+    let (header, body) = decode_wire(&resp);
+    assert_eq!(header["status"].as_u64(), Some(413), "header={header:#}");
+    let json: Value = ::serde_json::from_slice(&body).expect("response is JSON");
+    assert_eq!(json["errors"][0]["path"], "text");
+}
+
+#[test]
+fn typed_multipart_aggregate_field_count_cap_rejected_413() {
+    install_router_once();
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    let wire = encode_multipart_text(
+        "----AggregateFieldsBoundary",
+        "/text-aggregate-field-count",
+        "text",
+        b"ok",
+    );
+    let resp = dispatch_from_bytes(wire, &runtime);
+    let (header, _body) = decode_wire(&resp);
+    assert_eq!(header["status"].as_u64(), Some(413), "header={header:#}");
+}
+
+#[test]
+fn typed_multipart_aggregate_under_limit_passes() {
+    install_router_once();
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    let wire = encode_multipart_text(
+        "----AggregateOkBoundary",
+        "/text-aggregate-total",
+        "text",
+        b"eight888",
+    );
+    let resp = dispatch_from_bytes(wire, &runtime);
+    let (header, body) = decode_wire(&resp);
+    assert_eq!(header["status"].as_u64(), Some(200), "header={header:#}");
+    let json: Value = ::serde_json::from_slice(&body).expect("response is JSON");
+    assert_eq!(json["text_len"].as_u64(), Some(8));
 }
 
 #[test]

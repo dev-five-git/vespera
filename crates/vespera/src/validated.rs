@@ -34,7 +34,7 @@ use ::axum::{
 };
 use ::garde::Validate;
 use ::serde::{Serialize, Serializer, ser::SerializeStruct};
-use std::fmt::Display;
+use std::{fmt::Display, marker::PhantomData};
 
 /// Extractor wrapper that validates the inner extractor's output via
 /// [`garde::Validate`] before handing it to the handler.
@@ -52,6 +52,105 @@ pub trait ValidatePayload {
     type Inner: Validate<Context = ()>;
     /// Borrow the inner value for validation.
     fn payload(&self) -> &Self::Inner;
+}
+
+/// Provide the context used by [`ValidatedWith`] from axum state.
+///
+/// The blanket `impl<C> ValidationContext<C> for C` covers the common case
+/// where `Router::with_state(ctx)` stores the validation context directly. App
+/// state structs can implement this trait to expose a borrowed context field
+/// without cloning per request.
+pub trait ValidationContext<C> {
+    /// Borrow the context used by `garde::Validate::validate_with`.
+    fn validation_context(&self) -> &C;
+}
+
+impl<C> ValidationContext<C> for C {
+    fn validation_context(&self) -> &C {
+        self
+    }
+}
+
+/// Helper trait that pulls a context-aware validatable payload out of common
+/// axum extractors.
+pub trait ValidatePayloadWith<C> {
+    /// The inner type that implements [`garde::Validate`] with context `C`.
+    type Inner: Validate<Context = C>;
+    /// Borrow the inner value for validation.
+    fn payload(&self) -> &Self::Inner;
+}
+
+impl<U, C> ValidatePayloadWith<C> for Json<U>
+where
+    U: Validate<Context = C>,
+{
+    type Inner = U;
+    fn payload(&self) -> &U {
+        &self.0
+    }
+}
+
+impl<U, C> ValidatePayloadWith<C> for ::axum::Form<U>
+where
+    U: Validate<Context = C>,
+{
+    type Inner = U;
+    fn payload(&self) -> &U {
+        &self.0
+    }
+}
+
+impl<U, C> ValidatePayloadWith<C> for ::axum::extract::Query<U>
+where
+    U: Validate<Context = C>,
+{
+    type Inner = U;
+    fn payload(&self) -> &U {
+        &self.0
+    }
+}
+
+impl<U, C> ValidatePayloadWith<C> for ::axum::extract::Path<U>
+where
+    U: Validate<Context = C>,
+{
+    type Inner = U;
+    fn payload(&self) -> &U {
+        &self.0
+    }
+}
+
+impl<U, C> ValidatePayloadWith<C> for crate::multipart::TypedMultipart<U>
+where
+    U: Validate<Context = C>,
+{
+    type Inner = U;
+    fn payload(&self) -> &U {
+        &self.0
+    }
+}
+
+/// Context-aware validation extractor.
+///
+/// `Validated<T>` remains the zero-context fast path. Use
+/// `ValidatedWith<C, T>` when the payload derives `garde::Validate` with
+/// `#[garde(context(C))]`; the context is borrowed from axum state through
+/// [`ValidationContext`].
+#[derive(Debug, Clone, Copy)]
+pub struct ValidatedWith<C, T>(pub T, PhantomData<fn() -> C>);
+
+impl<C, T> ValidatedWith<C, T> {
+    /// Wrap an already-extracted value. Mostly useful in tests.
+    #[must_use]
+    pub const fn new(value: T) -> Self {
+        Self(value, PhantomData)
+    }
+
+    /// Consume the wrapper and return the extracted value.
+    #[must_use]
+    pub fn into_inner(self) -> T {
+        self.0
+    }
 }
 
 impl<U> ValidatePayload for Json<U>
@@ -117,6 +216,28 @@ where
             .map_err(IntoResponse::into_response)?;
         match extracted.payload().validate() {
             Ok(()) => Ok(Self(extracted)),
+            Err(report) => Err(build_validation_response(&report)),
+        }
+    }
+}
+
+impl<S, C, T> FromRequest<S> for ValidatedWith<C, T>
+where
+    S: Send + Sync + ValidationContext<C>,
+    C: Send + Sync + 'static,
+    T: FromRequest<S> + ValidatePayloadWith<C> + Send,
+{
+    type Rejection = Response;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let extracted = T::from_request(req, state)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        match extracted
+            .payload()
+            .validate_with(state.validation_context())
+        {
+            Ok(()) => Ok(Self::new(extracted)),
             Err(report) => Err(build_validation_response(&report)),
         }
     }

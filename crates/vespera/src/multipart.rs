@@ -15,6 +15,7 @@
 
 use std::{
     borrow::Cow,
+    cell::RefCell,
     fmt,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -81,6 +82,18 @@ pub enum TypedMultipartError {
         /// The configured limit in bytes.
         limit_bytes: usize,
     },
+    /// The cumulative bytes read across all fields exceeded the request cap.
+    RequestTooLarge {
+        /// Name of the field whose chunk crossed the aggregate cap.
+        field_name: String,
+        /// The configured aggregate limit in bytes.
+        limit_bytes: usize,
+    },
+    /// The multipart request contained more parts than the configured cap.
+    TooManyFields {
+        /// The configured maximum number of fields.
+        limit_fields: usize,
+    },
     /// A catch-all for other errors during multipart processing.
     Other {
         /// Description of the error.
@@ -129,6 +142,19 @@ impl fmt::Display for TypedMultipartError {
                     "Field `{field_name}` exceeds size limit of {limit_bytes} bytes"
                 )
             }
+            Self::RequestTooLarge {
+                field_name,
+                limit_bytes,
+            } => write!(
+                f,
+                "Multipart request exceeds aggregate size limit of {limit_bytes} bytes while reading field `{field_name}`"
+            ),
+            Self::TooManyFields { limit_fields } => {
+                write!(
+                    f,
+                    "Multipart request exceeds field count limit of {limit_fields}"
+                )
+            }
             Self::Other { source } => write!(f, "{source}"),
         }
     }
@@ -146,6 +172,8 @@ impl std::error::Error for TypedMultipartError {
             | Self::InvalidEnumValue { .. }
             | Self::NamelessField
             | Self::FieldTooLarge { .. }
+            | Self::RequestTooLarge { .. }
+            | Self::TooManyFields { .. }
             | Self::Other { .. } => None,
         }
     }
@@ -161,10 +189,12 @@ impl TypedMultipartError {
             | Self::DuplicateField { field_name }
             | Self::UnknownField { field_name }
             | Self::InvalidEnumValue { field_name, .. }
-            | Self::FieldTooLarge { field_name, .. } => Some(field_name),
+            | Self::FieldTooLarge { field_name, .. }
+            | Self::RequestTooLarge { field_name, .. } => Some(field_name),
             Self::InvalidRequest { .. }
             | Self::InvalidRequestBody { .. }
             | Self::NamelessField
+            | Self::TooManyFields { .. }
             | Self::Other { .. } => None,
         }
     }
@@ -250,7 +280,9 @@ impl IntoResponse for TypedMultipartError {
             // unsupported multipart media type. Keep this aligned with
             // `Validated<T>`'s validation-failure status.
             Self::WrongFieldType { .. } => StatusCode::UNPROCESSABLE_ENTITY,
-            Self::FieldTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::FieldTooLarge { .. }
+            | Self::RequestTooLarge { .. }
+            | Self::TooManyFields { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Other { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         };
         // Serialize the canonical 422 envelope (see `error_body` /
@@ -441,6 +473,150 @@ impl<T> std::ops::DerefMut for TypedMultipart<T> {
     }
 }
 
+/// Default aggregate cap for a typed multipart request body.
+///
+/// This cap is intentionally much higher than axum's built-in
+/// [`DefaultBodyLimit`](axum::extract::DefaultBodyLimit) default because the
+/// two policies guard different layers: axum may reject the raw HTTP body before
+/// Vespera sees it, while this cap still applies when applications explicitly
+/// disable or raise axum's body limit for in-process/JNI uploads.
+pub const DEFAULT_MULTIPART_MAX_TOTAL_BYTES: usize = 512 * 1024 * 1024; // 512 MiB
+
+/// Default maximum number of parts in a typed multipart request.
+pub const DEFAULT_MULTIPART_MAX_FIELDS: usize = 1024;
+
+static DEFAULT_MULTIPART_TOTAL_LIMIT: AtomicUsize =
+    AtomicUsize::new(DEFAULT_MULTIPART_MAX_TOTAL_BYTES);
+static DEFAULT_MULTIPART_FIELD_LIMIT: AtomicUsize = AtomicUsize::new(DEFAULT_MULTIPART_MAX_FIELDS);
+
+/// Aggregate resource policy for [`TypedMultipart`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MultipartLimits {
+    /// Maximum cumulative bytes accepted across all parsed fields.
+    pub max_total_bytes: usize,
+    /// Maximum number of parsed fields accepted in one request.
+    pub max_fields: usize,
+}
+
+impl MultipartLimits {
+    /// Construct an aggregate multipart policy.
+    #[must_use]
+    pub const fn new(max_total_bytes: usize, max_fields: usize) -> Self {
+        Self {
+            max_total_bytes,
+            max_fields,
+        }
+    }
+}
+
+/// Return the process-wide default aggregate multipart policy.
+#[must_use]
+pub fn default_multipart_limits() -> MultipartLimits {
+    MultipartLimits::new(
+        DEFAULT_MULTIPART_TOTAL_LIMIT.load(Ordering::Relaxed),
+        DEFAULT_MULTIPART_FIELD_LIMIT.load(Ordering::Relaxed),
+    )
+}
+
+/// Set the process-wide default aggregate multipart policy.
+///
+/// Prefer calling this during application startup, before request handling. For
+/// per-route policies use [`TypedMultipartWithLimits`], which avoids global
+/// process state and is therefore safer in tests and multi-tenant apps.
+pub fn set_default_multipart_limits(limits: MultipartLimits) -> MultipartLimits {
+    MultipartLimits::new(
+        DEFAULT_MULTIPART_TOTAL_LIMIT.swap(limits.max_total_bytes, Ordering::Relaxed),
+        DEFAULT_MULTIPART_FIELD_LIMIT.swap(limits.max_fields, Ordering::Relaxed),
+    )
+}
+
+#[derive(Debug)]
+struct MultipartAggregateState {
+    limits: MultipartLimits,
+    total_bytes: usize,
+    fields: usize,
+}
+
+impl MultipartAggregateState {
+    const fn new(limits: MultipartLimits) -> Self {
+        Self {
+            limits,
+            total_bytes: 0,
+            fields: 0,
+        }
+    }
+}
+
+tokio::task_local! {
+    static MULTIPART_AGGREGATE: RefCell<MultipartAggregateState>;
+}
+
+fn register_multipart_field() -> Result<(), TypedMultipartError> {
+    MULTIPART_AGGREGATE
+        .try_with(|state| {
+            let mut state = state.borrow_mut();
+            state.fields = state.fields.saturating_add(1);
+            if state.fields > state.limits.max_fields {
+                return Err(TypedMultipartError::TooManyFields {
+                    limit_fields: state.limits.max_fields,
+                });
+            }
+            Ok(())
+        })
+        // Field parsers can be unit-tested outside the extractor. In that shape
+        // there is no request aggregate to update, so per-field limits remain the
+        // only active guard instead of failing spuriously.
+        .unwrap_or(Ok(()))
+}
+
+fn register_multipart_bytes(field_name: &str, chunk_len: usize) -> Result<(), TypedMultipartError> {
+    MULTIPART_AGGREGATE
+        .try_with(|state| {
+            let mut state = state.borrow_mut();
+            state.total_bytes = state.total_bytes.saturating_add(chunk_len);
+            if state.total_bytes > state.limits.max_total_bytes {
+                return Err(TypedMultipartError::RequestTooLarge {
+                    field_name: field_name.to_owned(),
+                    limit_bytes: state.limits.max_total_bytes,
+                });
+            }
+            Ok(())
+        })
+        .unwrap_or(Ok(()))
+}
+
+/// Axum extractor variant with const aggregate multipart limits.
+///
+/// Use this when a route needs a tighter or looser request-level policy than
+/// the process default. Per-field `#[form_data(limit = "...")]` caps still
+/// apply independently: the effective policy is whichever per-field or
+/// aggregate limit is exceeded first.
+pub struct TypedMultipartWithLimits<
+    T,
+    const MAX_TOTAL_BYTES: usize,
+    const MAX_FIELDS: usize = DEFAULT_MULTIPART_MAX_FIELDS,
+>(pub T);
+
+async fn parse_typed_multipart_with_limits<T, S>(
+    req: Request,
+    state: &S,
+    limits: MultipartLimits,
+) -> Result<T, TypedMultipartError>
+where
+    T: TryFromMultipartWithState<S>,
+    S: Send + Sync + 'static,
+{
+    let mut multipart = axum::extract::Multipart::from_request(req, state)
+        .await
+        .map_err(TypedMultipartError::from)?;
+    MULTIPART_AGGREGATE
+        .scope(
+            RefCell::new(MultipartAggregateState::new(limits)),
+            async move { T::try_from_multipart_with_state(&mut multipart, state).await },
+        )
+        .await
+}
+
 impl<T, S> FromRequest<S> for TypedMultipart<T>
 where
     T: TryFromMultipartWithState<S>,
@@ -449,10 +625,27 @@ where
     type Rejection = TypedMultipartError;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        let mut multipart = axum::extract::Multipart::from_request(req, state)
-            .await
-            .map_err(TypedMultipartError::from)?;
-        let value = T::try_from_multipart_with_state(&mut multipart, state).await?;
+        let value =
+            parse_typed_multipart_with_limits(req, state, default_multipart_limits()).await?;
+        Ok(Self(value))
+    }
+}
+
+impl<T, S, const MAX_TOTAL_BYTES: usize, const MAX_FIELDS: usize> FromRequest<S>
+    for TypedMultipartWithLimits<T, MAX_TOTAL_BYTES, MAX_FIELDS>
+where
+    T: TryFromMultipartWithState<S>,
+    S: Send + Sync + 'static,
+{
+    type Rejection = TypedMultipartError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let value = parse_typed_multipart_with_limits(
+            req,
+            state,
+            MultipartLimits::new(MAX_TOTAL_BYTES, MAX_FIELDS),
+        )
+        .await?;
         Ok(Self(value))
     }
 }
@@ -483,11 +676,13 @@ async fn read_field_data(
     limit: Option<usize>,
     initial_capacity: usize,
 ) -> Result<(Field<'_>, Vec<u8>), TypedMultipartError> {
+    register_multipart_field()?;
     // Initial capacity is independent from the hard byte limit: tiny scalar
     // fields keep the 256B cap without preallocating 256B per bool/number.
     let capacity = limit.map_or(initial_capacity, |limit| initial_capacity.min(limit));
     let mut buf = Vec::with_capacity(capacity);
     while let Some(chunk) = field.chunk().await? {
+        register_multipart_bytes(field.name().unwrap_or_default(), chunk.len())?;
         if let Some(limit) = limit
             && buf.len().saturating_add(chunk.len()) > limit
         {
@@ -709,6 +904,7 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for tempfile::NamedTempFile {
         limit_bytes: Option<usize>,
         _state: &S,
     ) -> Result<Self, TypedMultipartError> {
+        register_multipart_field()?;
         // Temp-file creation AND reopen() are both blocking syscalls —
         // run them together on the blocking pool so neither stalls the
         // async worker (the reopen previously ran inline on the async
@@ -734,6 +930,7 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for tempfile::NamedTempFile {
         let limit_bytes = limit_bytes.unwrap_or_else(default_temp_file_field_limit_bytes);
         let mut total = 0usize;
         while let Some(chunk) = field.chunk().await? {
+            register_multipart_bytes(field.name().unwrap_or_default(), chunk.len())?;
             // `saturating_add` (matching `read_field_data`) prevents a
             // pathological chunk size from wrapping `total` and slipping
             // past the limit check below.

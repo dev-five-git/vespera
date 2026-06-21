@@ -172,7 +172,9 @@ pub mod __validation;
 #[cfg(feature = "validation")]
 mod validated;
 #[cfg(feature = "validation")]
-pub use validated::{ValidatePayload, Validated};
+pub use validated::{
+    ValidatePayload, ValidatePayloadWith, Validated, ValidatedWith, ValidationContext,
+};
 
 /// In-process dispatch — drive an axum Router without a TCP socket.
 #[cfg(feature = "inprocess")]

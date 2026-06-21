@@ -170,7 +170,9 @@ mod tests {
     use super::*;
     use crate::{
         metadata::{CollectedMetadata, RouteMetadata, StructMetadata},
-        openapi_generator::{generate_openapi_doc_with_metadata, try_generate_openapi_doc_with_metadata},
+        openapi_generator::{
+            generate_openapi_doc_with_metadata, try_generate_openapi_doc_with_metadata,
+        },
     };
 
     fn create_temp_file(dir: &TempDir, filename: &str, content: &str) -> PathBuf {
@@ -285,10 +287,9 @@ mod tests {
             field_defaults: BTreeMap::new(),
         });
 
-        let err = try_generate_openapi_doc_with_metadata(
-            None, None, None, None, &metadata, None, &[],
-        )
-        .expect_err("invalid component metadata must surface as an error");
+        let err =
+            try_generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[])
+                .expect_err("invalid component metadata must surface as an error");
 
         assert!(
             err.to_string()

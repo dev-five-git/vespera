@@ -520,3 +520,124 @@ fn test_auto_router_input_server_env_var_invalid_url_filtered() {
         );
     }
 }
+
+#[test]
+fn test_duplicate_field_rejected() {
+    let tokens = quote::quote!(title = "A", title = "B");
+    let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+    assert!(result.is_err(), "duplicate `title` must be rejected");
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("duplicate field")
+    );
+}
+
+#[test]
+fn test_duplicate_field_distinct_ok() {
+    let tokens = quote::quote!(title = "A", version = "1.0.0");
+    let input: AutoRouterInput = syn::parse2(tokens).expect("distinct fields parse");
+    assert_eq!(input.title.unwrap().value(), "A");
+    assert_eq!(input.version.unwrap().value(), "1.0.0");
+}
+
+#[test]
+fn test_security_scheme_apikey_valid() {
+    let tokens = quote::quote!(security_schemes = [
+        { name = "apiKey", type = "apiKey", header_name = "X-API-Key", in = "header" }
+    ]);
+    let input: AutoRouterInput = syn::parse2(tokens).expect("valid apiKey scheme parses");
+    let schemes = input.security_schemes.unwrap();
+    assert_eq!(schemes.len(), 1);
+    assert_eq!(schemes[0].scheme.name.as_deref(), Some("X-API-Key"));
+}
+
+#[test]
+fn test_security_scheme_apikey_missing_in_rejected() {
+    let tokens = quote::quote!(security_schemes = [
+        { name = "apiKey", type = "apiKey", header_name = "X-API-Key" }
+    ]);
+    let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+    assert!(result.is_err(), "apiKey without `in` must be rejected");
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("required field `in`")
+    );
+}
+
+#[test]
+fn test_security_scheme_apikey_bad_in_rejected() {
+    let tokens = quote::quote!(security_schemes = [
+        { name = "apiKey", type = "apiKey", header_name = "X-API-Key", in = "body" }
+    ]);
+    let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+    assert!(result.is_err(), "invalid `in` value must be rejected");
+}
+
+#[test]
+fn test_security_scheme_http_missing_scheme_rejected() {
+    let tokens = quote::quote!(security_schemes = [
+        { name = "bearerAuth", type = "http" }
+    ]);
+    let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+    assert!(result.is_err(), "http without `scheme` must be rejected");
+    assert!(result.err().unwrap().to_string().contains("scheme"));
+}
+
+#[test]
+fn test_security_scheme_http_valid() {
+    let tokens = quote::quote!(security_schemes = [
+        { name = "bearerAuth", type = "http", scheme = "bearer", bearer_format = "JWT" }
+    ]);
+    let input: AutoRouterInput = syn::parse2(tokens).expect("valid http scheme parses");
+    assert_eq!(input.security_schemes.unwrap().len(), 1);
+}
+
+#[test]
+fn test_security_scheme_oauth2_rejected() {
+    let tokens = quote::quote!(security_schemes = [
+        { name = "oauth", type = "oauth2" }
+    ]);
+    let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+    assert!(
+        result.is_err(),
+        "oauth2 (no flows support) must be rejected"
+    );
+    assert!(result.err().unwrap().to_string().contains("flows"));
+}
+
+#[test]
+fn test_security_scheme_openidconnect_requires_url() {
+    let missing = quote::quote!(security_schemes = [
+        { name = "oidc", type = "openIdConnect" }
+    ]);
+    assert!(
+        syn::parse2::<AutoRouterInput>(missing).is_err(),
+        "openIdConnect without url must be rejected"
+    );
+
+    let ok = quote::quote!(security_schemes = [
+        { name = "oidc", type = "openIdConnect", open_id_connect_url = "https://example.com/.well-known/openid-configuration" }
+    ]);
+    let input: AutoRouterInput = syn::parse2(ok).expect("openIdConnect with url parses");
+    let schemes = input.security_schemes.unwrap();
+    assert_eq!(
+        schemes[0].scheme.open_id_connect_url.as_deref(),
+        Some("https://example.com/.well-known/openid-configuration")
+    );
+}
+
+#[test]
+fn test_security_scheme_duplicate_field_rejected() {
+    let tokens = quote::quote!(security_schemes = [
+        { name = "a", name = "b", type = "http", scheme = "bearer" }
+    ]);
+    let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+    assert!(result.is_err(), "duplicate scheme field must be rejected");
+    assert!(result.err().unwrap().to_string().contains("duplicate"));
+}

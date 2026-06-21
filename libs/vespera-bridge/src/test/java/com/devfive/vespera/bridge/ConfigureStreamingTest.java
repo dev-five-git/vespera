@@ -1,5 +1,6 @@
 package com.devfive.vespera.bridge;
 
+import java.lang.reflect.Field;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -104,5 +105,24 @@ class ConfigureStreamingTest {
                 IllegalArgumentException.class,
                 () -> VesperaBridge.configureStreaming(0, 0));
         assertTrue(ex.getMessage().contains("chunkBytes"));
+    }
+
+    @Test
+    void postInitMissingOptionalNativeHookDoesNotThrowRawLinkageError() throws Exception {
+        Field loadedField = VesperaBridge.class.getDeclaredField("loaded");
+        Field nameField = VesperaBridge.class.getDeclaredField("loadedLibraryName");
+        loadedField.setAccessible(true);
+        nameField.setAccessible(true);
+        boolean prevLoaded = loadedField.getBoolean(null);
+        Object prevName = nameField.get(null);
+        try {
+            loadedField.setBoolean(null, true);
+            nameField.set(null, "older-native-without-configure-streaming");
+
+            assertDoesNotThrow(() -> VesperaBridge.configureStreaming(65536, 16));
+        } finally {
+            loadedField.setBoolean(null, prevLoaded);
+            nameField.set(null, prevName);
+        }
     }
 }

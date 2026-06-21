@@ -44,9 +44,6 @@ import jakarta.servlet.http.HttpServletRequest;
  */
 public class SmartDispatchModeResolver implements DispatchModeResolver {
 
-    private static final String CURRENT_THREAD_IS_VIRTUAL_ATTRIBUTE =
-            SmartDispatchModeResolver.class.getName() + ".currentThreadIsVirtual";
-
     /**
      * Default DIRECT request-size gate: 1 MiB (raised from 256 KiB,
      * measured 2026-06).  Safe requests up to this size dispatch
@@ -107,11 +104,6 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
         return resolveMode(request, null);
     }
 
-    static Boolean cachedCurrentThreadIsVirtual(HttpServletRequest request) {
-        Object value = request.getAttribute(CURRENT_THREAD_IS_VIRTUAL_ATTRIBUTE);
-        return value instanceof Boolean cached ? cached : null;
-    }
-
     DispatchMode resolveMode(HttpServletRequest request, boolean currentThreadIsVirtual) {
         return resolveMode(request, Boolean.valueOf(currentThreadIsVirtual));
     }
@@ -144,7 +136,6 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
             boolean virtualThread = currentThreadIsVirtual != null
                     ? currentThreadIsVirtual.booleanValue()
                     : VesperaBridge.currentThreadIsVirtual();
-            request.setAttribute(CURRENT_THREAD_IS_VIRTUAL_ATTRIBUTE, Boolean.valueOf(virtualThread));
             if (virtualThread) {
                 return syncSized(contentLength, bodyless)
                         ? DispatchMode.SYNC

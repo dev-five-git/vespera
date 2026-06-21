@@ -74,6 +74,8 @@ public class VesperaProxyController {
     private final boolean directRetryOnOverflow;
     private final long maxBufferedRequestBytes;
 
+    static final long DEFAULT_MAX_BUFFERED_REQUEST_BYTES = 64L * 1024L * 1024L;
+
     /**
      * One-time guard for the "custom resolver routed an UNSAFE method to
      * DIRECT, downgraded to SYNC" warning. A misconfigured custom
@@ -87,14 +89,16 @@ public class VesperaProxyController {
 
     public VesperaProxyController(AppNameResolver appResolver,
                                   DispatchModeResolver modeResolver) {
-        this(appResolver, modeResolver, ForkJoinPool.commonPool(), true, 0);
+        this(appResolver, modeResolver, ForkJoinPool.commonPool(), true,
+                DEFAULT_MAX_BUFFERED_REQUEST_BYTES);
     }
 
     public VesperaProxyController(AppNameResolver appResolver,
-                                   DispatchModeResolver modeResolver,
-                                   Executor asyncResponseExecutor,
-                                   boolean directRetryOnOverflow) {
-        this(appResolver, modeResolver, asyncResponseExecutor, directRetryOnOverflow, 0);
+                                    DispatchModeResolver modeResolver,
+                                    Executor asyncResponseExecutor,
+                                    boolean directRetryOnOverflow) {
+        this(appResolver, modeResolver, asyncResponseExecutor, directRetryOnOverflow,
+                DEFAULT_MAX_BUFFERED_REQUEST_BYTES);
     }
 
     public VesperaProxyController(AppNameResolver appResolver,
@@ -115,10 +119,16 @@ public class VesperaProxyController {
 
         final RequestShape shape = RequestShape.capture(request);
         final String appName = appResolver.resolveAppName(request);
-        final DispatchMode mode = modeResolver.resolveMode(request);
-        final Boolean currentThreadIsVirtual = modeResolver instanceof SmartDispatchModeResolver
-                ? SmartDispatchModeResolver.cachedCurrentThreadIsVirtual(request)
-                : null;
+        final Boolean currentThreadIsVirtual;
+        final DispatchMode mode;
+        if (modeResolver instanceof SmartDispatchModeResolver smartResolver) {
+            boolean virtualThread = VesperaBridge.currentThreadIsVirtual();
+            currentThreadIsVirtual = Boolean.valueOf(virtualThread);
+            mode = smartResolver.resolveMode(request, virtualThread);
+        } else {
+            currentThreadIsVirtual = null;
+            mode = modeResolver.resolveMode(request);
+        }
         final String method = shape.method;
         // Path RELATIVE to the servlet context: a Spring app deployed under
         // a non-root context (e.g. server.servlet.context-path=/api) must
@@ -329,7 +339,7 @@ public class VesperaProxyController {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
         byte[] wireResp = VesperaBridge.dispatchBytes(wireReq);
-        writeWireResponse(wireResp, response);
+        writeWireResponse(wireResp, response, method);
     }
 
     /**
@@ -338,11 +348,15 @@ public class VesperaProxyController {
      * applied from the header region via the allocation-lean
      * {@link WireHeaderReader}, then the body region written directly from
      * {@code wire} with no {@code byte[]} slice copy.  The exact body
-     * length is known, so {@code Content-Length} is set when the wire
-     * header did not already carry it — preserving the prior
-     * {@code ResponseEntity<byte[]>} behaviour without the copy.
+     * length is known, so {@code Content-Length} is always proxy-owned and
+     * set to the exact bytes written to the servlet response.
      */
     private static void writeWireResponse(byte[] wire, HttpServletResponse response)
+            throws IOException {
+        writeWireResponse(wire, response, null);
+    }
+
+    private static void writeWireResponse(byte[] wire, HttpServletResponse response, String method)
             throws IOException {
         int headerLen = VesperaWireCodec.readHeaderLength(wire);
         int[] statusHolder = {500};
@@ -355,14 +369,11 @@ public class VesperaProxyController {
                 (n, v) -> addServletResponseHeader(response, n, v));
         int bodyOff = 4 + headerLen;
         int bodyLen = wire.length - bodyOff;
-        if (bodyLen > 0) {
-            if (!response.containsHeader("Content-Length")) {
-                response.setContentLength(bodyLen);
-            }
+        boolean writeBody = responsePermitsBody(statusHolder[0], method) && bodyLen > 0;
+        int bytesToWrite = writeBody ? bodyLen : 0;
+        response.setContentLength(bytesToWrite);
+        if (writeBody) {
             response.getOutputStream().write(wire, bodyOff, bodyLen);
-        } else if (responseStatusPermitsBody(statusHolder[0])
-                && !response.containsHeader("Content-Length")) {
-            response.setContentLength(0);
         }
     }
 
@@ -373,7 +384,7 @@ public class VesperaProxyController {
                 appName, method, path, query, headers, body);
         return VesperaBridge.dispatch(wireReq)
                 .thenApplyAsync(
-                        VesperaProxyController::buildResponseEntityFromWire,
+                        wireResp -> buildResponseEntityFromWire(wireResp, method),
                         asyncResponseExecutor);
     }
 
@@ -389,10 +400,13 @@ public class VesperaProxyController {
             VesperaBridge.HeaderSource headers, byte[] body) throws IOException {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
+        BodyPermittingOutputStream bodyOut =
+                new BodyPermittingOutputStream(response.getOutputStream(), method);
         VesperaBridge.dispatchStreamingWithHeader(
                 wireReq,
-                headerBytes -> applyDecodedHeader(headerBytes, response),
-                response.getOutputStream());
+                headerBytes -> bodyOut.applyPermitsBody(
+                        applyDecodedHeader(headerBytes, response, method)),
+                bodyOut);
         response.getOutputStream().flush();
     }
 
@@ -409,11 +423,14 @@ public class VesperaProxyController {
             VesperaBridge.HeaderSource headers) throws IOException {
         byte[] wireHeader = VesperaBridge.encodeRequestHeader(
                 appName, method, path, query, headers);
+        BodyPermittingOutputStream bodyOut =
+                new BodyPermittingOutputStream(response.getOutputStream(), method);
         VesperaBridge.dispatchFullStreamingWithHeader(
                 wireHeader,
-                headerBytes -> applyDecodedHeader(headerBytes, response),
+                headerBytes -> bodyOut.applyPermitsBody(
+                        applyDecodedHeader(headerBytes, response, method)),
                 request.getInputStream(),
-                response.getOutputStream());
+                bodyOut);
         response.getOutputStream().flush();
     }
 
@@ -510,7 +527,7 @@ public class VesperaProxyController {
         // body views). addHeader on the still-uncommitted response is
         // equivalent to setHeader for a header's first value and appends for
         // multi-valued headers (e.g. set-cookie).
-        int bodyLen = applyDirectHeaderAndPositionBody(wireResp, response);
+        int bodyLen = applyDirectHeaderAndPositionBody(wireResp, response, method);
 
         // Stream the body region of the direct buffer with an explicit
         // per-thread heap scratch.  Channels.newChannel(OutputStream)
@@ -548,6 +565,11 @@ public class VesperaProxyController {
     // without invoking the native dispatchDirect JNI symbol.
     static int applyDirectHeaderAndPositionBody(
             ByteBuffer wireResp, HttpServletResponse response) {
+        return applyDirectHeaderAndPositionBody(wireResp, response, null);
+    }
+
+    static int applyDirectHeaderAndPositionBody(
+            ByteBuffer wireResp, HttpServletResponse response, String method) {
         int headerLen = readValidatedHeaderLen(wireResp);
         int[] statusHolder = {500};
         WireHeaderReader.apply(
@@ -561,19 +583,22 @@ public class VesperaProxyController {
                 (n, v) -> addServletResponseHeader(response, n, v));
         int bodyOff = 4 + headerLen;
         int bodyLen = wireResp.limit() - bodyOff;
-        if (bodyLen > 0 && !response.containsHeader("Content-Length")) {
-            response.setContentLength(bodyLen);
-        } else if (bodyLen == 0
-                && responseStatusPermitsBody(statusHolder[0])
-                && !response.containsHeader("Content-Length")) {
-            response.setContentLength(0);
-        }
+        int bytesToWrite = responsePermitsBody(statusHolder[0], method) ? bodyLen : 0;
+        response.setContentLength(bytesToWrite);
         wireResp.position(bodyOff);
-        return bodyLen;
+        return bytesToWrite;
     }
 
     private static boolean responseStatusPermitsBody(int status) {
         return (status < 100 || status >= 200) && status != 204 && status != 304;
+    }
+
+    private static boolean responsePermitsBody(int status, String method) {
+        return responseStatusPermitsBody(status) && requestMethodPermitsBody(method);
+    }
+
+    private static boolean requestMethodPermitsBody(String method) {
+        return method == null || !"HEAD".equalsIgnoreCase(method);
     }
 
     /**
@@ -585,11 +610,10 @@ public class VesperaProxyController {
      * {@code Content-Length}). These are connection-scoped per RFC 9110 and are
      * never legitimately emitted by an application handler.
      *
-     * <p>{@code content-length} is deliberately NOT in this set: the Rust
-     * handler is authoritative for it and the direct/buffered paths preserve a
-     * wire-supplied length (locked by
-     * {@code ProxyControllerBodyHeaderTest.directHeaderPreservesWireContentLength}),
-     * synthesising it from the body only when absent.
+     * <p>{@code content-length} is not hop-by-hop by RFC semantics, but it is
+     * proxy-owned in this servlet bridge: buffered/direct responses set the
+     * exact bytes they write, and streaming responses let the servlet container
+     * frame the body.
      *
      * <p>Names are compared case-insensitively against the canonical lowercase
      * form the wire header carries.
@@ -614,9 +638,13 @@ public class VesperaProxyController {
      */
     private static void addServletResponseHeader(
             HttpServletResponse response, String name, String value) {
-        if (!isHopByHopResponseHeader(name)) {
+        if (!isHopByHopResponseHeader(name) && !isContentLengthHeader(name)) {
             response.addHeader(name, value);
         }
+    }
+
+    private static boolean isContentLengthHeader(String name) {
+        return name.length() == 14 && name.regionMatches(true, 0, "content-length", 0, 14);
     }
 
     private static void writeDirectBody(ByteBuffer body, OutputStream out) throws IOException {
@@ -789,8 +817,9 @@ public class VesperaProxyController {
      * called from streaming dispatch callbacks BEFORE the first body
      * byte is written, while the response is still uncommitted.
      */
-    private static void applyDecodedHeader(byte[] headerBytes,
-                                            HttpServletResponse response) {
+    static boolean applyDecodedHeader(byte[] headerBytes,
+                                      HttpServletResponse response,
+                                      String method) {
         // Apply status + headers straight from the wire header bytes via
         // the allocation-lean WireHeaderReader — the same path
         // dispatchDirectMode uses.  This avoids the DecodedResponse object
@@ -802,10 +831,15 @@ public class VesperaProxyController {
         // (e.g. set-cookie), preserving the prior semantics.
         ByteBuffer buf = ByteBuffer.wrap(headerBytes);
         int headerLen = readValidatedHeaderLen(buf);
+        int[] statusHolder = {500};
         WireHeaderReader.apply(
                 buf, 4, headerLen,
-                response::setStatus,
+                s -> {
+                    statusHolder[0] = s;
+                    response.setStatus(s);
+                },
                 (n, v) -> addServletResponseHeader(response, n, v));
+        return responsePermitsBody(statusHolder[0], method);
     }
 
     /**
@@ -826,7 +860,11 @@ public class VesperaProxyController {
      * Pure Java (no JNI) — run by the controller on its configured async
      * response executor instead of the native completion thread.
      */
-    private static ResponseEntity<?> buildResponseEntityFromWire(byte[] wire) {
+    static ResponseEntity<?> buildResponseEntityFromWire(byte[] wire) {
+        return buildResponseEntityFromWire(wire, null);
+    }
+
+    static ResponseEntity<?> buildResponseEntityFromWire(byte[] wire, String method) {
         int headerLen = VesperaWireCodec.readHeaderLength(wire);
         HttpHeaders httpHeaders = new HttpHeaders();
         int[] statusHolder = {500};
@@ -836,14 +874,51 @@ public class VesperaProxyController {
                 headerLen,
                 s -> statusHolder[0] = s,
                 (n, v) -> {
-                    if (!isHopByHopResponseHeader(n)) {
+                    if (!isHopByHopResponseHeader(n) && !isContentLengthHeader(n)) {
                         httpHeaders.add(n, v);
                     }
                 });
         HttpStatusCode status = HttpStatusCode.valueOf(statusHolder[0]);
         int bodyOff = 4 + headerLen;
+        int bodyLen = wire.length - bodyOff;
+        int bytesToExpose = responsePermitsBody(statusHolder[0], method) ? bodyLen : 0;
+        httpHeaders.setContentLength(bytesToExpose);
         return new ResponseEntity<>(
-                new WireBodyResource(wire, bodyOff, wire.length - bodyOff), httpHeaders, status);
+                new WireBodyResource(wire, bodyOff, bytesToExpose), httpHeaders, status);
+    }
+
+    static final class BodyPermittingOutputStream extends OutputStream {
+        private final OutputStream delegate;
+        private final String method;
+        private boolean permitsBody = true;
+
+        BodyPermittingOutputStream(OutputStream delegate, String method) {
+            this.delegate = Objects.requireNonNull(delegate, "delegate");
+            this.method = method;
+        }
+
+        void applyPermitsBody(boolean permitsBody) {
+            this.permitsBody = permitsBody;
+        }
+
+        @Override
+        public void write(int b) throws IOException {
+            if (permitsBody) {
+                delegate.write(b);
+            }
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws IOException {
+            if (permitsBody) {
+                delegate.write(b, off, len);
+            }
+        }
+
+        @Override
+        public void flush() throws IOException {
+            delegate.flush();
+        }
     }
 
     static final class WireBodyResource extends AbstractResource {

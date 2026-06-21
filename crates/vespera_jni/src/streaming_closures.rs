@@ -312,8 +312,17 @@ pub fn make_pull_closure(
         let result: jni::errors::Result<RequestChunk> =
             with_cached_daemon_env_no_frame(&jvm, |env| {
                 let n = call_input_stream_read(env, &stream, &buf)?;
+                // The cached fast path calls `read()` via `call_method_unchecked`,
+                // which does NOT surface a thrown exception as `Err` — it returns a
+                // garbage `n` with the exception left pending. A thrown `read()`
+                // must ABORT the request body so a truncated upload is rejected,
+                // and must never be misread as EOF (`n < 0`) or a chunk. (The
+                // checked fallback in `call_input_stream_read` already aborts via
+                // `?`; acting on the pending exception here gives the unchecked
+                // path identical semantics instead of interpreting the garbage `n`.)
                 if env.exception_check() {
                     env.exception_clear();
+                    return Ok(RequestChunk::Error);
                 }
                 // InputStream.read(byte[]) contract (mirrored in the
                 // VesperaBridge javadoc): -1 = EOF, 0 = empty read that
@@ -414,11 +423,16 @@ pub fn make_push_closure(
                 // the buffer length) if the clamp invariant ever changes.
                 let len = i32::try_from(seg.len()).unwrap_or(chunk_size_i32);
                 call_output_stream_write(env, &stream, &buf, len)?;
-                // Any IOException thrown by write() is left
-                // pending on the env; clear it so subsequent
-                // chunks on the same thread aren't poisoned.
+                // The cached fast path calls `write()` via `call_method_unchecked`,
+                // which leaves a thrown `write()` (e.g. the client disconnected
+                // mid-download) PENDING instead of surfacing it as `Err`. Clear it
+                // AND propagate so the `failed` latch engages and we STOP writing
+                // the remaining segments/frames into a broken sink — instead of
+                // clearing it and futilely streaming the rest of the body to a
+                // dead stream. (The checked fallback already latches via `?`.)
                 if env.exception_check() {
                     env.exception_clear();
+                    return Err(jni::errors::Error::JavaException);
                 }
             }
             Ok(())
@@ -476,7 +490,19 @@ pub fn call_header_consumer_local(
     if env.exception_check() {
         env.exception_clear();
     }
-    let arr = env.byte_array_from_slice(header_bytes)?;
+    // If the array allocation ITSELF fails (e.g. OOM), it leaves a NEW pending
+    // exception; clear it before surfacing the error so it does not leak into
+    // the caller's next JNI call on this thread (the `?` would otherwise return
+    // before the post-call scrub below).
+    let arr = match env.byte_array_from_slice(header_bytes) {
+        Ok(arr) => arr,
+        Err(e) => {
+            if env.exception_check() {
+                env.exception_clear();
+            }
+            return Err(e);
+        }
+    };
     let arr_obj: JObject = arr.into();
     let result = env.call_method(
         consumer,
@@ -520,7 +546,21 @@ pub fn complete_future_local(
     if env.exception_check() {
         env.exception_clear();
     }
-    let arr = env.byte_array_from_slice(bytes)?;
+    // If the array allocation ITSELF fails (e.g. OOM), it leaves a NEW pending
+    // exception; clear it before surfacing the error so the cold path does not
+    // leak it into the caller's next JNI call (the `?` would otherwise return
+    // before the post-call scrub below) — the `CompletableFuture` is then left
+    // uncompleted by THIS helper, but the caller treats the `Err` as a failed
+    // best-effort completion rather than hanging on a poisoned thread.
+    let arr = match env.byte_array_from_slice(bytes) {
+        Ok(arr) => arr,
+        Err(e) => {
+            if env.exception_check() {
+                env.exception_clear();
+            }
+            return Err(e);
+        }
+    };
     let arr_obj: JObject = arr.into();
     let result = env.call_method(
         future,

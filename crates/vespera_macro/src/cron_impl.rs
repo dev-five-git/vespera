@@ -20,6 +20,7 @@
 //! }
 //! ```
 
+use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 /// Metadata stored by `#[cron]` for later consumption by `vespera!()`.
@@ -36,10 +37,38 @@ pub struct StoredCronInfo {
     pub file_path: Option<String>,
 }
 
-/// Global storage for cron metadata collected by `#[cron]` attribute macros.
-/// Read by `vespera!()` to build the cron scheduler.
-pub static CRON_STORAGE: LazyLock<Mutex<Vec<StoredCronInfo>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+/// Per-crate storage for cron metadata collected by `#[cron]` attribute
+/// macros, read by `vespera!()` to build the cron scheduler.
+///
+/// Keyed by [`crate::schema_impl::current_crate_key`] so a long-lived
+/// rust-analyzer proc-macro server (one process, many crates) never schedules
+/// crate A's cron jobs into crate B. See
+/// [`SCHEMA_STORAGE`](crate::schema_impl::SCHEMA_STORAGE) for the rationale.
+pub static CRON_STORAGE: LazyLock<Mutex<HashMap<String, Vec<StoredCronInfo>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Append a `#[cron]` metadata entry to the current crate's bucket.
+pub fn register_cron(info: StoredCronInfo) {
+    CRON_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(crate::schema_impl::current_crate_key())
+        .or_default()
+        .push(info);
+}
+
+/// Snapshot (clone) of the current crate's registered cron jobs, so the
+/// scheduler in `vespera!` never picks up another crate's jobs in a shared
+/// proc-macro server.
+#[must_use]
+pub fn current_crate_crons() -> Vec<StoredCronInfo> {
+    CRON_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&crate::schema_impl::current_crate_key())
+        .cloned()
+        .unwrap_or_default()
+}
 
 /// Validate cron function - must be pub, async, and take no parameters.
 pub fn validate_cron_fn(item_fn: &syn::ItemFn) -> Result<(), syn::Error> {
@@ -86,10 +115,7 @@ pub fn process_cron_attribute(
             .local_file()
             .map(|p| p.display().to_string()),
     };
-    CRON_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(stored);
+    register_cron(stored);
 
     Ok(item)
 }

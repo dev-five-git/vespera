@@ -39,11 +39,78 @@ use std::{
 
 use crate::metadata::StructMetadata;
 
-pub static SCHEMA_STORAGE: LazyLock<Mutex<HashMap<String, StructMetadata>>> =
+/// Per-crate registry of `#[derive(Schema)]` metadata.
+///
+/// The OUTER key is [`current_crate_key`] (the consuming crate's
+/// `CARGO_MANIFEST_DIR`); the inner map is `schema name -> metadata` exactly
+/// as before. Scoping by crate stops a long-lived rust-analyzer proc-macro
+/// server — which expands MANY crates in ONE process — from leaking crate
+/// A's schemas into crate B's generated `openapi.json`. A plain `cargo build`
+/// runs each crate in its own process, so the outer map only ever holds one
+/// bucket there; the scoping matters only for the shared-server (IDE) case.
+pub static SCHEMA_STORAGE: LazyLock<Mutex<HashMap<String, HashMap<String, StructMetadata>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 static DEFAULT_FUNCTION_CACHE: LazyLock<Mutex<HashMap<PathBuf, DefaultFunctionCacheEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Crate-identity key for the process-global metadata registries
+/// ([`SCHEMA_STORAGE`], `ROUTE_STORAGE`, `CRON_STORAGE`).
+///
+/// Uses `CARGO_MANIFEST_DIR` (set per-crate by cargo, and re-set per expanded
+/// crate by the rust-analyzer proc-macro server). When unset — a non-cargo
+/// invocation — all entries share one empty-string bucket, i.e. the prior
+/// un-scoped global behaviour, which is correct for that single-build case.
+#[must_use]
+pub fn current_crate_key() -> String {
+    std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default()
+}
+
+/// Register a `#[derive(Schema)]` metadata entry for the current crate.
+///
+/// Returns `Err(())` when a DIFFERENT definition is already registered under
+/// `name` for THIS crate (the silent duplicate-schema-name footgun) so the
+/// caller can raise a spanned compile error; an identical re-registration is
+/// idempotent and returns `Ok(())`.
+pub fn register_schema(name: String, metadata: StructMetadata) -> Result<(), ()> {
+    let mut guard = SCHEMA_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let bucket = guard.entry(current_crate_key()).or_default();
+    if let Some(existing) = bucket.get(&name)
+        && existing.definition != metadata.definition
+    {
+        return Err(());
+    }
+    bucket.insert(name, metadata);
+    Ok(())
+}
+
+/// Overwrite-insert a schema for the current crate — the
+/// `schema_type!(.., ignore)` pre-registration path, which has no
+/// duplicate-name semantics.
+pub fn insert_schema(name: String, metadata: StructMetadata) {
+    SCHEMA_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(current_crate_key())
+        .or_default()
+        .insert(name, metadata);
+}
+
+/// Snapshot of the current crate's registered schemas — a clone of just this
+/// crate's bucket (small at compile time), so every consumer keeps operating
+/// on a `HashMap<String, StructMetadata>` exactly as before the per-crate
+/// scoping was introduced.
+#[must_use]
+pub fn current_crate_schemas() -> HashMap<String, StructMetadata> {
+    SCHEMA_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&current_crate_key())
+        .cloned()
+        .unwrap_or_default()
+}
 
 #[derive(Clone)]
 struct DefaultFunctionCacheEntry {
@@ -238,7 +305,9 @@ fn cached_default_functions(file_path: &Path) -> Option<BTreeMap<String, serde_j
     Some(values)
 }
 
-fn extract_default_functions_from_file(file_ast: &syn::File) -> BTreeMap<String, serde_json::Value> {
+fn extract_default_functions_from_file(
+    file_ast: &syn::File,
+) -> BTreeMap<String, serde_json::Value> {
     file_ast
         .items
         .iter()
@@ -576,61 +645,110 @@ mod tests {
 
     // ========== Coverage: SCHEMA_STORAGE direct usage ==========
 
+    /// Remove a schema entry from the current crate's bucket (test cleanup).
+    fn remove_current_crate_schema(key: &str) {
+        let mut guard = SCHEMA_STORAGE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(bucket) = guard.get_mut(&current_crate_key()) {
+            bucket.remove(key);
+        }
+    }
+
     #[test]
     fn test_schema_storage_insert_and_get() {
-        let storage = SCHEMA_STORAGE.lock().unwrap();
         let key = "__test_coverage_type__".to_string();
-        // Clean up if previous test left data
-        drop(storage);
+        remove_current_crate_schema(&key);
 
-        {
-            let mut storage = SCHEMA_STORAGE.lock().unwrap();
-            storage.insert(
-                key.clone(),
-                StructMetadata::new(key.clone(), "struct __test_coverage_type__ {}".to_string()),
-            );
-        }
+        insert_schema(
+            key.clone(),
+            StructMetadata::new(key.clone(), "struct __test_coverage_type__ {}".to_string()),
+        );
 
-        {
-            let storage = SCHEMA_STORAGE.lock().unwrap();
-            let meta = storage.get(&key);
-            assert!(meta.is_some(), "Inserted metadata should be retrievable");
-            let meta = meta.unwrap();
-            assert_eq!(meta.name, key);
-            assert!(meta.include_in_openapi);
-        }
+        let schemas = current_crate_schemas();
+        let meta = schemas.get(&key);
+        assert!(meta.is_some(), "Inserted metadata should be retrievable");
+        let meta = meta.unwrap();
+        assert_eq!(meta.name, key);
+        assert!(meta.include_in_openapi);
 
-        // Cleanup
-        {
-            let mut storage = SCHEMA_STORAGE.lock().unwrap();
-            storage.remove(&key);
-        }
+        remove_current_crate_schema(&key);
     }
 
     #[test]
     fn test_schema_storage_overwrite() {
         let key = "__test_overwrite_type__".to_string();
-        {
-            let mut storage = SCHEMA_STORAGE.lock().unwrap();
-            storage.insert(
+        remove_current_crate_schema(&key);
+        insert_schema(
+            key.clone(),
+            StructMetadata::new(key.clone(), "struct V1 {}".to_string()),
+        );
+        insert_schema(
+            key.clone(),
+            StructMetadata::new(key.clone(), "struct V2 {}".to_string()),
+        );
+        let schemas = current_crate_schemas();
+        let meta = schemas.get(&key).unwrap();
+        assert!(meta.definition.contains("V2"), "Last insert should win");
+        remove_current_crate_schema(&key);
+    }
+
+    #[test]
+    fn test_register_schema_rejects_conflicting_definition() {
+        let key = "__test_conflict_type__".to_string();
+        remove_current_crate_schema(&key);
+        // First registration wins.
+        assert!(
+            register_schema(
                 key.clone(),
-                StructMetadata::new(key.clone(), "struct V1 {}".to_string()),
-            );
-            storage.insert(
+                StructMetadata::new(key.clone(), "struct A { x: i32 }".to_string()),
+            )
+            .is_ok()
+        );
+        // Identical re-registration is idempotent.
+        assert!(
+            register_schema(
                 key.clone(),
-                StructMetadata::new(key.clone(), "struct V2 {}".to_string()),
+                StructMetadata::new(key.clone(), "struct A { x: i32 }".to_string()),
+            )
+            .is_ok()
+        );
+        // A DIFFERENT definition under the same name is rejected.
+        assert!(
+            register_schema(
+                key.clone(),
+                StructMetadata::new(key.clone(), "struct A { y: u64 }".to_string()),
+            )
+            .is_err()
+        );
+        remove_current_crate_schema(&key);
+    }
+
+    #[test]
+    fn test_schema_storage_crate_scoping_isolation() {
+        // A schema registered under a DIFFERENT crate's bucket must never leak
+        // into the current crate's snapshot — the cross-crate contamination
+        // fix for long-lived rust-analyzer proc-macro servers.
+        let fake_crate = "__fake_other_crate_dir__".to_string();
+        let key = "__isolated_schema__".to_string();
+        {
+            let mut guard = SCHEMA_STORAGE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.entry(fake_crate.clone()).or_default().insert(
+                key.clone(),
+                StructMetadata::new(key.clone(), "struct Isolated {}".to_string()),
             );
         }
-        {
-            let storage = SCHEMA_STORAGE.lock().unwrap();
-            let meta = storage.get(&key).unwrap();
-            assert!(meta.definition.contains("V2"), "Last insert should win");
-        }
-        // Cleanup
-        {
-            let mut storage = SCHEMA_STORAGE.lock().unwrap();
-            storage.remove(&key);
-        }
+        let mine = current_crate_schemas();
+        assert!(
+            !mine.contains_key(&key),
+            "another crate's schema must not leak into this crate's snapshot"
+        );
+        SCHEMA_STORAGE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&fake_crate);
     }
 
     #[test]

@@ -32,6 +32,7 @@
 //! }
 //! ```
 
+use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 use crate::{args, metadata::HeaderParam};
@@ -86,10 +87,40 @@ pub struct StoredRouteInfo {
     pub fn_sig_str: String,
 }
 
-/// Global storage for route metadata collected by `#[route]` attribute macros.
-/// Read by `vespera!()` to supplement file-based route discovery.
-pub static ROUTE_STORAGE: LazyLock<Mutex<Vec<StoredRouteInfo>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+/// Per-crate storage for route metadata collected by `#[route]` attribute
+/// macros, read by `vespera!()` / `export_app!()` to supplement file-based
+/// route discovery.
+///
+/// Keyed by [`crate::schema_impl::current_crate_key`] so a long-lived
+/// rust-analyzer proc-macro server (one process, many crates) never feeds
+/// crate A's routes into crate B's generated router/spec. See
+/// [`SCHEMA_STORAGE`](crate::schema_impl::SCHEMA_STORAGE) for the rationale.
+pub static ROUTE_STORAGE: LazyLock<Mutex<HashMap<String, Vec<StoredRouteInfo>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Append a `#[route]` metadata entry to the current crate's bucket.
+pub fn register_route(info: StoredRouteInfo) {
+    ROUTE_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(crate::schema_impl::current_crate_key())
+        .or_default()
+        .push(info);
+}
+
+/// Snapshot (clone) of the current crate's registered routes, so consumers
+/// keep operating on a `Vec<StoredRouteInfo>` exactly as before per-crate
+/// scoping — never seeing another crate's routes in a shared proc-macro
+/// server.
+#[must_use]
+pub fn current_crate_routes() -> Vec<StoredRouteInfo> {
+    ROUTE_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&crate::schema_impl::current_crate_key())
+        .cloned()
+        .unwrap_or_default()
+}
 
 /// Extract `u16` error status codes from a `syn::ExprArray`.
 fn extract_error_status_codes(arr: &syn::ExprArray) -> Option<Vec<u16>> {
@@ -287,10 +318,7 @@ pub fn process_route_attribute(
             .local_file()
             .map(|p| p.display().to_string()),
     };
-    ROUTE_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(stored);
+    register_route(stored);
 
     Ok(item)
 }
@@ -474,10 +502,9 @@ mod tests {
         let result = process_route_attribute(attr, item);
         assert!(result.is_ok());
 
-        // Find our entry by unique fn_name (ROUTE_STORAGE is global, shared across parallel tests)
-        let storage = ROUTE_STORAGE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Find our entry by unique fn_name (the current crate's routes are
+        // shared across parallel tests in this crate).
+        let storage = current_crate_routes();
 
         // Find our entry and verify fields
         let stored = storage
@@ -508,9 +535,7 @@ mod tests {
         let result = process_route_attribute(attr, item);
         assert!(result.is_ok());
 
-        let storage = ROUTE_STORAGE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let storage = current_crate_routes();
 
         let stored = storage.iter().find(|s| s.fn_name == "minimal_handler_test");
         assert!(stored.is_some());

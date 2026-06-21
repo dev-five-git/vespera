@@ -109,8 +109,8 @@ class VesperaBridgeAutoConfigurationTest {
     }
 
     @Test
-    void maxBufferedRequestBytesDefaultsToUnlimitedAndCanBeConfigured() {
-        runner.run(ctx -> assertEquals(0L,
+    void maxBufferedRequestBytesDefaultsToConservativeCapAndCanBeConfigured() {
+        runner.run(ctx -> assertEquals(VesperaProxyController.DEFAULT_MAX_BUFFERED_REQUEST_BYTES,
                 ctx.getBean(VesperaBridgeProperties.class).getMaxBufferedRequestBytes()));
         runner.withPropertyValues("vespera.bridge.max-buffered-request-bytes=12345")
                 .run(ctx -> assertEquals(12345L,

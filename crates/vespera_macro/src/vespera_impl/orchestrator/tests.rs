@@ -118,23 +118,20 @@ fn test_process_vespera_macro_with_cron_storage() {
         );
     }
 
-    // Populate CRON_STORAGE with a fake cron entry
-    {
-        let mut storage = crate::CRON_STORAGE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        storage.push(crate::cron_impl::StoredCronInfo {
-            fn_name: "test_cron_job".to_string(),
-            expression: "0 */5 * * * *".to_string(),
-            file_path: Some(
-                src_dir
-                    .join("routes")
-                    .join("health.rs")
-                    .display()
-                    .to_string(),
-            ),
-        });
-    }
+    // Populate CRON_STORAGE with a fake cron entry under the CURRENT crate
+    // key (CARGO_MANIFEST_DIR was set to temp_dir above, so this lands in the
+    // same bucket `process_vespera_macro` reads back via `current_crate_crons`).
+    crate::cron_impl::register_cron(crate::cron_impl::StoredCronInfo {
+        fn_name: "test_cron_job".to_string(),
+        expression: "0 */5 * * * *".to_string(),
+        file_path: Some(
+            src_dir
+                .join("routes")
+                .join("health.rs")
+                .display()
+                .to_string(),
+        ),
+    });
 
     let processed = ProcessedVesperaInput {
         folder_name: src_dir.join("routes").to_string_lossy().to_string(),
@@ -157,12 +154,13 @@ fn test_process_vespera_macro_with_cron_storage() {
         "Should succeed with cron storage: {result:?}"
     );
 
-    // Clean up CRON_STORAGE
+    // Clean up: drop this crate-key's cron bucket (temp_dir key is unique to
+    // this test, and CARGO_MANIFEST_DIR is still temp_dir at this point).
     {
-        let mut storage = crate::CRON_STORAGE
+        let mut storage = crate::cron_impl::CRON_STORAGE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        storage.retain(|s| s.fn_name != "test_cron_job");
+        storage.remove(&crate::schema_impl::current_crate_key());
     }
 
     // Restore CARGO_MANIFEST_DIR

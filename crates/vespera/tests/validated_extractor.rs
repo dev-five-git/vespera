@@ -7,7 +7,7 @@
 use ::axum::{Router, body::Body, http::Request, routing::post};
 use ::serde::Deserialize;
 use ::tower::ServiceExt;
-use ::vespera::{Schema, Validated};
+use ::vespera::{Schema, Validated, ValidatedWith};
 
 #[derive(Deserialize, Schema)]
 #[allow(dead_code)]
@@ -23,6 +23,38 @@ async fn create_post(
     Validated(::axum::Json(_payload)): Validated<::axum::Json<CreatePost>>,
 ) -> &'static str {
     "ok"
+}
+
+#[derive(Clone)]
+struct SlugContext {
+    required_prefix: String,
+}
+
+#[derive(Deserialize, garde::Validate)]
+#[garde(context(SlugContext as ctx))]
+struct ContextPost {
+    #[garde(custom(|value: &str, ctx: &SlugContext| {
+        if value.starts_with(&ctx.required_prefix) {
+            Ok(())
+        } else {
+            Err(garde::Error::new(format!(
+                "must start with {}",
+                ctx.required_prefix
+            )))
+        }
+    }))]
+    slug: String,
+}
+
+async fn create_context_post(
+    validated: ValidatedWith<SlugContext, ::axum::Json<ContextPost>>,
+) -> &'static str {
+    let ::axum::Json(_payload) = validated.into_inner();
+    "ok"
+}
+
+fn context_router() -> Router<SlugContext> {
+    Router::new().route("/context-posts", post(create_context_post))
 }
 
 fn router() -> Router {
@@ -124,6 +156,35 @@ async fn malformed_json_propagates_400_not_422() {
     // Axum's Json extractor returns 400 (or 415 depending on cause) —
     // anything that is NOT our 422 envelope is acceptable here.
     assert_ne!(res.status(), 422);
+}
+
+#[tokio::test]
+async fn context_validated_payload_returns_200_when_state_context_accepts_value() {
+    let app = context_router().with_state(SlugContext {
+        required_prefix: "vespera-".to_owned(),
+    });
+    let req = post_json_request("/context-posts", r#"{"slug":"vespera-release"}"#);
+
+    let res = app.oneshot(req).await.unwrap();
+
+    assert_eq!(res.status(), 200);
+    assert_eq!(body_to_string(res.into_body()).await, "ok");
+}
+
+#[tokio::test]
+async fn context_validated_payload_returns_422_when_state_context_rejects_value() {
+    let app = context_router().with_state(SlugContext {
+        required_prefix: "vespera-".to_owned(),
+    });
+    let req = post_json_request("/context-posts", r#"{"slug":"other-release"}"#);
+
+    let res = app.oneshot(req).await.unwrap();
+
+    assert_eq!(res.status(), 422);
+    assert_json_content_type(res.headers());
+    let body: ::serde_json::Value =
+        ::serde_json::from_str(&body_to_string(res.into_body()).await).unwrap();
+    assert_envelope_has_field_error(&body, "slug");
 }
 
 // ── per-rule 422 coverage ────────────────────────────────────────────

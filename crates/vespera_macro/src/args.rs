@@ -164,7 +164,10 @@ fn reject_duplicate<T>(slot: Option<&T>, ident: &syn::Ident, name: &str) -> syn:
 }
 
 fn duplicate_error(ident: &syn::Ident, name: &str) -> syn::Error {
-    syn::Error::new(ident.span(), format!("#[route] `{name}` specified more than once"))
+    syn::Error::new(
+        ident.span(),
+        format!("#[route] `{name}` specified more than once"),
+    )
 }
 
 /// Validate `error_status = [<u16>, ...]`: every element must be an integer

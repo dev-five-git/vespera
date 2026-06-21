@@ -1,5 +1,5 @@
 use proc_macro2::Span;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use syn::{
     LitStr, bracketed,
     parse::{Parse, ParseStream},
@@ -59,6 +59,11 @@ impl Parse for AutoRouterInput {
         let mut security = None;
         let mut tags = None;
         let mut merge = None;
+        // Reject a repeated named argument (e.g. `title = ..., title = ...`)
+        // with a spanned error instead of silently letting the later value
+        // overwrite the earlier one — a typo would otherwise build a spec that
+        // does not match the source.
+        let mut seen_fields = HashSet::<String>::new();
 
         while !input.is_empty() {
             let lookahead = input.lookahead1();
@@ -66,6 +71,12 @@ impl Parse for AutoRouterInput {
             if lookahead.peek(syn::Ident) {
                 let ident: syn::Ident = input.parse()?;
                 let ident_str = ident.to_string();
+                if !seen_fields.insert(ident_str.clone()) {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!("duplicate field `{ident_str}` in vespera! macro"),
+                    ));
+                }
 
                 match ident_str.as_str() {
                     "dir" => {
@@ -294,9 +305,17 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
     let mut location: Option<String> = None;
     let mut scheme: Option<String> = None;
     let mut bearer_format: Option<String> = None;
+    let mut open_id_connect_url: Option<String> = None;
+    let mut seen_fields = HashSet::<String>::new();
 
     while !content.is_empty() {
         let (field_name, span) = parse_security_field_name(&content)?;
+        if !seen_fields.insert(field_name.clone()) {
+            return Err(syn::Error::new(
+                span,
+                format!("duplicate security scheme field: `{field_name}`"),
+            ));
+        }
         content.parse::<syn::Token![=]>()?;
         let value: LitStr = content.parse()?;
 
@@ -308,11 +327,12 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
             "in" => location = Some(value.value()),
             "scheme" => scheme = Some(value.value()),
             "bearer_format" => bearer_format = Some(value.value()),
+            "open_id_connect_url" => open_id_connect_url = Some(value.value()),
             _ => {
                 return Err(syn::Error::new(
                     span,
                     format!(
-                        "unknown security scheme field: `{field_name}`. Expected `name`, `type`, `description`, `header_name`, `in`, `scheme`, or `bearer_format`"
+                        "unknown security scheme field: `{field_name}`. Expected `name`, `type`, `description`, `header_name`, `in`, `scheme`, `bearer_format`, or `open_id_connect_url`"
                     ),
                 ));
             }
@@ -337,6 +357,17 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
             "vespera! macro: security scheme missing required `type` field.",
         )
     })?;
+    // Type-specific OpenAPI validity: reject an under-specified scheme at
+    // compile time instead of silently emitting a spec that violates the
+    // OpenAPI Security Scheme Object requirements.
+    validate_security_scheme_fields(
+        &name,
+        scheme_type,
+        location.as_deref(),
+        header_name.as_deref(),
+        scheme.as_deref(),
+        open_id_connect_url.as_deref(),
+    )?;
 
     Ok(SecuritySchemeConfig {
         name,
@@ -348,9 +379,93 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
             scheme,
             bearer_format,
             flows: None,
-            open_id_connect_url: None,
+            open_id_connect_url,
         },
     })
+}
+
+/// Validate that a security scheme carries the fields OpenAPI requires for
+/// its `type`, so `vespera!` never emits a structurally-invalid
+/// `components.securitySchemes` entry.
+///
+/// - `apiKey` → `header_name` (the api-key `name`) + `in` ∈ {query, header, cookie}
+/// - `http` → `scheme`
+/// - `openIdConnect` → `open_id_connect_url`
+/// - `oauth2` → requires `flows`, which the DSL does not yet parse → rejected
+///   with an explicit message (better than emitting an `oauth2` scheme with no
+///   flows, which is invalid)
+/// - `mutualTLS` → no extra required fields
+fn validate_security_scheme_fields(
+    name: &str,
+    scheme_type: SecuritySchemeType,
+    location: Option<&str>,
+    header_name: Option<&str>,
+    scheme: Option<&str>,
+    open_id_connect_url: Option<&str>,
+) -> syn::Result<()> {
+    let span = proc_macro2::Span::call_site();
+    let missing = |field: &str, hint: &str| {
+        syn::Error::new(
+            span,
+            format!(
+                "vespera! macro: security scheme `{name}` of type `{}` is missing required field `{field}` ({hint})",
+                scheme_type_label(scheme_type)
+            ),
+        )
+    };
+    match scheme_type {
+        SecuritySchemeType::ApiKey => {
+            if header_name.is_none() {
+                return Err(missing("header_name", "the api-key parameter name"));
+            }
+            match location {
+                None => return Err(missing("in", "one of \"query\", \"header\", or \"cookie\"")),
+                Some(loc) if !matches!(loc, "query" | "header" | "cookie") => {
+                    return Err(syn::Error::new(
+                        span,
+                        format!(
+                            "vespera! macro: security scheme `{name}` has invalid `in` value `{loc}`; expected \"query\", \"header\", or \"cookie\""
+                        ),
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        SecuritySchemeType::Http => {
+            if scheme.is_none() {
+                return Err(missing("scheme", "e.g. \"bearer\" or \"basic\""));
+            }
+        }
+        SecuritySchemeType::OpenIdConnect => {
+            if open_id_connect_url.is_none() {
+                return Err(missing(
+                    "open_id_connect_url",
+                    "the OpenID Connect discovery URL",
+                ));
+            }
+        }
+        SecuritySchemeType::OAuth2 => {
+            return Err(syn::Error::new(
+                span,
+                format!(
+                    "vespera! macro: security scheme `{name}` of type `oauth2` requires `flows`, which the vespera! security_schemes DSL does not yet support"
+                ),
+            ));
+        }
+        SecuritySchemeType::MutualTls => {}
+    }
+    Ok(())
+}
+
+/// OpenAPI wire label for a [`SecuritySchemeType`], for diagnostics.
+fn scheme_type_label(scheme_type: SecuritySchemeType) -> &'static str {
+    match scheme_type {
+        SecuritySchemeType::ApiKey => "apiKey",
+        SecuritySchemeType::Http => "http",
+        SecuritySchemeType::MutualTls => "mutualTLS",
+        SecuritySchemeType::OAuth2 => "oauth2",
+        SecuritySchemeType::OpenIdConnect => "openIdConnect",
+    }
 }
 
 fn parse_security_field_name(input: ParseStream) -> syn::Result<(String, proc_macro2::Span)> {
