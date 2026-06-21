@@ -302,6 +302,31 @@ pub fn header_capacity_estimate(headers: &http::HeaderMap, metadata: &ResponseMe
     est
 }
 
+/// Cheap upper-ish estimate of the serialized `validation_errors` JSON
+/// array byte length, added to the response-`Vec` capacity **only on the
+/// 422 path** (`validation_errors` is `None` for every other status, so the
+/// hot success path pays nothing).  Each item renders as
+/// `{"path":"…","code":"…","message":"…"},` inside the
+/// `,"validation_errors":[…]` wrapper — count the field bytes plus a fixed
+/// per-item scaffold.  A safe over-estimate (absent `code`/`message` only
+/// shrink the real output), so it only ever prevents the mid-serialize
+/// realloc the hoisted errors would otherwise force; it never changes the
+/// emitted bytes.
+fn validation_errors_capacity_estimate(items: &[ValidationErrorItem]) -> usize {
+    // `,"validation_errors":[]` wrapper, plus per item the
+    // `{"path":"","code":"","message":""},` scaffold.
+    const WRAPPER: usize = 24;
+    const ITEM_SCAFFOLD: usize = 36;
+    let mut est = WRAPPER;
+    for item in items {
+        est += ITEM_SCAFFOLD
+            + item.path.len()
+            + item.code.as_deref().map_or(0, str::len)
+            + item.message.as_deref().map_or(0, str::len);
+    }
+    est
+}
+
 /// Append `[u32 BE header_len | header JSON]` to `out`.  Returns `false`
 /// when the serialized header JSON exceeds `u32::MAX` bytes — unreachable for
 /// any real `HeaderMap` (4 GiB of header JSON), so callers map it to a `500`
@@ -407,12 +432,19 @@ pub fn to_wire_bytes(parts: ResponseParts) -> Vec<u8> {
     } else {
         None
     };
-    let header_cap = header_capacity_estimate(&headers, &metadata).max(WIRE_HEADER_RESERVE);
+    let header_cap = header_capacity_estimate(&headers, &metadata).max(WIRE_HEADER_RESERVE)
+        + validation_errors
+            .as_deref()
+            .map_or(0, validation_errors_capacity_estimate);
     // `4 + header_cap + body_bytes.len()` cannot overflow `usize` on a
     // 64-bit target (it would require a multi-exabyte body); plain `+` is
     // used so the hot response path keeps its exact arithmetic — a
     // `saturating_add` variant was benchmarked and cost ~2-3% on the small
     // `wire_path`/`request_headers_path` cases for zero real-world benefit.
+    // The `validation_errors` term is `0` for every non-422 response (the hot
+    // success path is byte-for-byte unchanged); on the 422 path it sizes the
+    // `Vec` to serialise the hoisted errors without the mid-write realloc a
+    // hoist-blind estimate paid (locked by tests/alloc_budget.rs case F).
     let mut out = Vec::with_capacity(4 + header_cap + body_bytes.len());
     if !write_wire_header_into(
         &mut out,

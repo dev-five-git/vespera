@@ -678,15 +678,19 @@ fn ensure_path_lookup_caches_fresh(cache: &mut FileCache) {
 /// The `Arc` makes cache hits O(1) instead of cloning the full struct
 /// definition text per lookup.
 ///
-/// The cache is scoped to the current epoch
-/// ([`ensure_path_lookup_caches_fresh`]): a new top-level macro invocation
-/// drops prior entries so an edited model file is re-resolved (correctness
-/// for long-lived rust-analyzer servers), while repeated lookups within the
-/// same invocation still hit the cache.
+/// The cache **survives epoch bumps** (see
+/// [`ensure_path_lookup_caches_fresh`]): entries key on a schema PATH string,
+/// and a cache MISS re-resolves through the lower file-content /
+/// struct-definition mtime caches — so within one `cargo build` (no source
+/// file changes mid-build) a surviving entry only ever returns the result a
+/// re-resolution would produce, while keeping repeated lookups O(1). A
+/// long-lived rust-analyzer proc-macro server therefore keeps a resolved
+/// entry until the server restarts — the documented cost of the shared-work
+/// optimisation (a future mtime-aware path cache could be warm AND fresh).
 pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>> {
-    // Drop stale (pre-edit) entries when the epoch advanced, then read this
-    // epoch's cache. The borrow ends before the lookup below, which
-    // re-enters FILE_CACHE.
+    // Re-stamp the path-lookup epoch (entries deliberately SURVIVE bumps — see
+    // `ensure_path_lookup_caches_fresh`), then read the cache. The borrow ends
+    // before the lookup below, which re-enters FILE_CACHE.
     let cached = FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         ensure_path_lookup_caches_fresh(&mut cache);
@@ -716,9 +720,9 @@ pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>
 pub fn get_fk_column(schema_path: &str, via_rel: &str) -> Option<String> {
     let key = (schema_path.to_string(), via_rel.to_string());
 
-    // Drop stale entries when the epoch advanced, then read this epoch's
-    // cache. The borrow ends before the lookup below, which re-enters
-    // FILE_CACHE.
+    // Re-stamp the path-lookup epoch (entries deliberately SURVIVE bumps — see
+    // `ensure_path_lookup_caches_fresh`), then read this epoch's cache. The
+    // borrow ends before the lookup below, which re-enters FILE_CACHE.
     let cached = FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         ensure_path_lookup_caches_fresh(&mut cache);

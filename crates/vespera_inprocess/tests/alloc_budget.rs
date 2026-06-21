@@ -76,6 +76,25 @@ async fn echo(body: Bytes) -> Bytes {
     body
 }
 
+/// Returns a `422` with a JSON `{"errors":[...]}` body so the wire path
+/// exercises the `to_wire_bytes` 422 `validation_errors` hoist plus the
+/// header-capacity estimate. Two realistic errors push the hoisted header
+/// JSON past the `WIRE_HEADER_RESERVE` floor, so a build whose capacity
+/// estimate ignores the hoisted errors reallocates once mid-serialize; the
+/// validation-errors capacity estimate removes that realloc.
+async fn validate_fail() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    (
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/json"),
+        )],
+        r#"{"errors":[{"path":"username","message":"length is lower than 3"},{"path":"email","message":"not a valid email"}]}"#,
+    )
+        .into_response()
+}
+
 fn install() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
@@ -83,6 +102,7 @@ fn install() {
             Router::new()
                 .route("/ping", get(ping))
                 .route("/echo", post(echo))
+                .route("/validate", post(validate_fail))
         });
     });
 }
@@ -209,6 +229,21 @@ fn allocation_budgets() {
         let _ = dispatch_into(wire_get.clone(), &mut out, &rt);
     });
 
+    // ── Case F: 422 JSON response via the buffered materialise path. The
+    // `to_wire_bytes` 422 path hoists `{"errors":[...]}` into the wire
+    // header's `validation_errors`. With the hoisted-errors length folded
+    // into the capacity estimate the response `Vec` is sized to serialise the
+    // header in one shot — the realloc a hoist-blind estimate paid is gone.
+    let wire_validate = encode(
+        "POST",
+        "/validate",
+        &[("content-type", "application/json")],
+        br#"{"x":1}"#,
+    );
+    let validate_422 = measure(200, 2000, || {
+        let _ = dispatch_from_bytes(wire_validate.clone(), &rt);
+    });
+
     // (label, sample, budget). The gate metric is total per-op allocation
     // OPS (`alloc` + `realloc` calls) — the deterministic, noise-free
     // figure; bytes/op is informational only.
@@ -234,6 +269,7 @@ fn allocation_budgets() {
             &direct_into,
             BUDGET_DISPATCH_INTO,
         ),
+        ("F 422-validate materialise", &validate_422, BUDGET_VALIDATE_422),
     ];
 
     // Print every case first so a regression failure still shows the full
@@ -282,3 +318,8 @@ const BUDGET_HEADERS_POST: usize = 40; // borrowed: 40 alloc + 0 realloc (header
 // path copy (or any other owned-path allocation) trips these tightened budgets.
 const BUDGET_MATERIALISE: usize = 16; // dispatch_from_bytes: +input clone +response Vec, URI shared
 const BUDGET_DISPATCH_INTO: usize = 15; // dispatch_into: +input clone, reused out, URI shared
+// 422 materialise path: the hoisted `validation_errors` JSON is now folded
+// into the response-`Vec` capacity estimate, so the wire header serialises
+// without the mid-write realloc a hoist-blind estimate paid (26 alloc + 0
+// realloc; was 26 alloc + 1 realloc). A re-introduced realloc trips this.
+const BUDGET_VALIDATE_422: usize = 26; // realloc-free 422 hoist (was 27 w/ realloc)
