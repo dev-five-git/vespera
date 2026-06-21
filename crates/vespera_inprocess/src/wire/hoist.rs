@@ -62,104 +62,6 @@ struct HoistErrorIn {
     message: Option<String>,
 }
 
-/// Deserialize an optional string **leniently**: a JSON string yields
-/// `Some`, while `null` / a missing field / any non-string value (number,
-/// bool, object, array) yields `None` instead of failing the parse.  This
-/// keeps the 422 hoist genuinely *best-effort* — a single odd error object
-/// (e.g. `{"code": 123}`) never aborts the whole hoist, matching the
-/// documented contract and the previous `serde_json::Value` extract path
-/// (`e.get("code").and_then(Value::as_str)`).  Zero-allocation: a wrong-typed
-/// scalar is dropped without building a `Value` DOM.
-fn de_lenient_opt_string<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    struct V;
-    impl<'de> serde::de::Visitor<'de> for V {
-        type Value = Option<String>;
-
-        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            f.write_str("a string, null, or any JSON value")
-        }
-
-        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-            Ok(Some(v.to_owned()))
-        }
-        fn visit_borrowed_str<E: serde::de::Error>(self, v: &'de str) -> Result<Self::Value, E> {
-            Ok(Some(v.to_owned()))
-        }
-        fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
-            Ok(Some(v))
-        }
-        // Anything that is not a JSON string → `None` (best-effort, never err).
-        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-        fn visit_some<D2: serde::Deserializer<'de>>(self, d: D2) -> Result<Self::Value, D2::Error> {
-            d.deserialize_any(self)
-        }
-        fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-        fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-        fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-        fn visit_i128<E: serde::de::Error>(self, _: i128) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-        fn visit_u128<E: serde::de::Error>(self, _: u128) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-        fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-        fn visit_map<A: serde::de::MapAccess<'de>>(
-            self,
-            mut access: A,
-        ) -> Result<Self::Value, A::Error> {
-            while access
-                .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
-                .is_some()
-            {}
-            Ok(None)
-        }
-        fn visit_seq<A: serde::de::SeqAccess<'de>>(
-            self,
-            mut access: A,
-        ) -> Result<Self::Value, A::Error> {
-            while access.next_element::<serde::de::IgnoredAny>()?.is_some() {}
-            Ok(None)
-        }
-    }
-    deserializer.deserialize_any(V)
-}
-
-/// Lenient fallback shape, parsed **only** when the strict [`HoistEnvelope`]
-/// parse fails on a wrong-typed field.  Each field decodes through
-/// [`de_lenient_opt_string`], so a hand-crafted 422 body like
-/// `{"errors":[{"path":"a","code":123}]}` still hoists every entry that has a
-/// usable `path`.  Confined to this cold retry so the common all-string
-/// envelope never pays the per-field visitor cost.
-#[derive(Deserialize)]
-struct LenientHoistEnvelope {
-    errors: Vec<LenientHoistErrorIn>,
-}
-
-#[derive(Deserialize)]
-struct LenientHoistErrorIn {
-    #[serde(default, deserialize_with = "de_lenient_opt_string")]
-    path: Option<String>,
-    #[serde(default, deserialize_with = "de_lenient_opt_string")]
-    code: Option<String>,
-    #[serde(default, deserialize_with = "de_lenient_opt_string")]
-    message: Option<String>,
-}
-
 /// Collect hoistable `(path, code, message)` triples into wire items,
 /// skipping any error that lacks a usable `path` (matches the previous
 /// `e.get("path")?.as_str()?` behaviour).  Shared by the strict fast path
@@ -213,17 +115,27 @@ pub(super) fn try_hoist_validation_errors(
                 .map(|e| (e.path, e.code, e.message)),
         )
     } else {
-        // A wrong-typed field aborted the strict parse; retry leniently so a
-        // single odd error object never loses the other valid errors. Cold
-        // (only a hand-crafted 422 body reaches here), so the second parse of
-        // the already-size-capped body is negligible.
-        let envelope: LenientHoistEnvelope = serde_json::from_slice(body_bytes).ok()?;
-        hoist_items(
-            envelope
-                .errors
-                .into_iter()
-                .map(|e| (e.path, e.code, e.message)),
-        )
+        // The strict typed parse aborted — either a wrong-typed field
+        // (`"code": 123`) OR a non-object array element (`null`, a bare
+        // string). Retry through a `serde_json::Value` walk that extracts
+        // each field with `as_str` (wrong types → `None`) and SKIPS any
+        // element lacking a usable `path` (non-objects: `Value::get` returns
+        // `None`). This keeps every still-valid error instead of discarding
+        // the whole array when one entry is malformed — the bug a typed
+        // `Vec<Struct>` fallback had, since one bad element failed the entire
+        // `Vec` deserialize. Cold (only a hand-crafted 422 body reaches here)
+        // and size-capped at `MAX_HOIST_BODY_BYTES`, so the `Value` DOM here
+        // is negligible and never touches the common all-string fast path.
+        let parsed: serde_json::Value = serde_json::from_slice(body_bytes).ok()?;
+        let errors = parsed.get("errors")?.as_array()?;
+        hoist_items(errors.iter().map(|e| {
+            let field = |key| {
+                e.get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            };
+            (field("path"), field("code"), field("message"))
+        }))
     };
     if items.is_empty() { None } else { Some(items) }
 }

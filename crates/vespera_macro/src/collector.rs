@@ -114,6 +114,11 @@ pub fn collect_metadata_from_files<'a>(
         }
 
         let mut file_path = normalize_display_path(file);
+        // Fast-path lookup key, computed once and reused below.  Feeding the
+        // already-built `file_path` borrow (not a fresh `file.to_string_lossy()`)
+        // avoids an extra owned-string allocation; `normalize_path_key` does its
+        // own separator + component folding, so the key is identical either way.
+        let file_key = normalize_path_key(&file_path, &cwd);
 
         let segments = file
             .strip_prefix(folder_path)
@@ -140,7 +145,7 @@ pub fn collect_metadata_from_files<'a>(
         // Per-file invariants (`module_path`, `file_path`) are CLONED for
         // every non-last route but MOVED into the last route's push —
         // refcount-free amortization of two String allocations per file.
-        if let Some(stored_routes) = storage_by_file.get(&normalize_path_key(&file_path, &cwd)) {
+        if let Some(stored_routes) = storage_by_file.get(&file_key) {
             let n = stored_routes.len();
             for (i, stored) in stored_routes.iter().enumerate() {
                 let route_path = if let Some(ref custom_path) = stored.custom_path {

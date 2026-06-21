@@ -45,6 +45,15 @@ impl Parse for SchemaInput {
 
             match ident_str.as_str() {
                 "omit" => {
+                    // Reject a second `omit` instead of silently overwriting the
+                    // first (the prior behaviour gave surprising schemas with no
+                    // diagnostic) — matching `schema_type!`'s stricter parser.
+                    if omit.is_some() {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "duplicate parameter `omit` in schema! invocation",
+                        ));
+                    }
                     input.parse::<Token![=]>()?;
                     let content;
                     let _ = bracketed!(content in input);
@@ -53,6 +62,12 @@ impl Parse for SchemaInput {
                     omit = Some(fields.into_iter().map(|s| s.value()).collect());
                 }
                 "pick" => {
+                    if pick.is_some() {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "duplicate parameter `pick` in schema! invocation",
+                        ));
+                    }
                     input.parse::<Token![=]>()?;
                     let content;
                     let _ = bracketed!(content in input);

@@ -709,6 +709,13 @@ fn spawn_request_producer(
         // receiver — axum's request body — was dropped because the
         // handler aborted mid-stream, so we stop pulling.
         let mut consecutive_empty: u32 = 0;
+        // Read once: the configured max bytes per queued frame. A host
+        // `pull()` may return an arbitrarily large `Vec`; splitting it into
+        // `<= max_chunk` pieces below keeps the channel's `slots * chunk_bytes`
+        // memory bound REAL instead of `slots * arbitrary` — without it a
+        // hostile/buggy producer returning multi-MiB chunks defeats the
+        // `O(chunk)` RAM guarantee and can OOM the host under load.
+        let max_chunk = crate::config::streaming_chunk_bytes();
         loop {
             // A panic inside the user / JNI-supplied `pull()` must NOT be
             // turned into a clean end-of-stream — that would accept a
@@ -739,7 +746,29 @@ fn spawn_request_producer(
                         continue;
                     }
                     consecutive_empty = 0;
-                    if tx.blocking_send(Ok(Bytes::from(chunk))).is_err() {
+                    // Enforce the per-frame size cap: split an oversized host
+                    // chunk into `<= max_chunk` pieces so each QUEUED frame is
+                    // bounded and the channel's slot accounting reflects real
+                    // bytes (a 100 MiB host chunk no longer occupies a slot as
+                    // 100 MiB).  `Bytes::split_to` is an O(1) refcount slice —
+                    // no copy — and a conformant `<= max_chunk` chunk (the JNI
+                    // reader always reads into a `chunk_bytes` buffer, and the
+                    // benches pre-chunk at `chunk_bytes`) sends in a single
+                    // iteration exactly as before.
+                    let mut bytes = Bytes::from(chunk);
+                    let mut receiver_gone = false;
+                    while !bytes.is_empty() {
+                        let piece = if bytes.len() > max_chunk {
+                            bytes.split_to(max_chunk)
+                        } else {
+                            std::mem::take(&mut bytes)
+                        };
+                        if tx.blocking_send(Ok(piece)).is_err() {
+                            receiver_gone = true;
+                            break;
+                        }
+                    }
+                    if receiver_gone {
                         break;
                     }
                 }

@@ -277,6 +277,7 @@ fn parse_header_struct(input: syn::parse::ParseStream) -> syn::Result<HeaderPara
 
     let mut name: Option<String> = None;
     let mut required = false;
+    let mut required_seen = false;
     let mut description: Option<String> = None;
 
     while !content.is_empty() {
@@ -284,10 +285,39 @@ fn parse_header_struct(input: syn::parse::ParseStream) -> syn::Result<HeaderPara
         let ident_str = ident.to_string();
         content.parse::<syn::Token![=]>()?;
 
+        // Reject a repeated field in one header object instead of letting the
+        // later value silently win (which produced ambiguous OpenAPI with no
+        // diagnostic).  `required` is a bare `bool`, so it needs its own
+        // seen-flag; `name`/`description` are `Option`s already.
         match ident_str.as_str() {
-            "name" => name = Some(content.parse::<LitStr>()?.value()),
-            "required" => required = content.parse::<LitBool>()?.value,
-            "description" => description = Some(content.parse::<LitStr>()?.value()),
+            "name" => {
+                if name.is_some() {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "duplicate header field `name`",
+                    ));
+                }
+                name = Some(content.parse::<LitStr>()?.value());
+            }
+            "required" => {
+                if required_seen {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "duplicate header field `required`",
+                    ));
+                }
+                required = content.parse::<LitBool>()?.value;
+                required_seen = true;
+            }
+            "description" => {
+                if description.is_some() {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "duplicate header field `description`",
+                    ));
+                }
+                description = Some(content.parse::<LitStr>()?.value());
+            }
             _ => {
                 return Err(syn::Error::new(
                     ident.span(),

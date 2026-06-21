@@ -303,9 +303,26 @@ public class VesperaProxyController {
                 // yields a correctly-sized smaller array).
                 return in.readNBytes((int) contentLength);
             }
-            // Unknown (-1), or oversized known length with no explicit cap:
-            // read incrementally, but still enforce the single-byte[] hard
-            // ceiling so a custom resolver cannot grow the JVM heap until OOM.
+            // Unknown length (-1) with NO soft cap: a buffered mode is the
+            // WRONG path for an open-ended stream (it should have been routed
+            // to BIDIRECTIONAL_STREAMING). Bound the read at MAX_FIXED_BODY
+            // (64 MiB) instead of the ~2 GiB single-array ceiling, so a
+            // (mis)configured resolver feeding a runaway chunked upload into a
+            // buffered mode cannot grow the JVM heap toward OOM. Reading one
+            // byte past the bound distinguishes "exactly at the bound" from
+            // "over". Known-length bodies keep the documented `cap=0`
+            // "unlimited" behaviour below.
+            if (contentLength < 0) {
+                byte[] body = in.readNBytes(MAX_FIXED_BODY + 1);
+                if ((long) body.length > MAX_FIXED_BODY) {
+                    throw payloadTooLarge(body.length, MAX_FIXED_BODY);
+                }
+                return body;
+            }
+            // Oversized KNOWN length with no explicit cap (cap=0,
+            // contentLength > MAX_FIXED_BODY): the caller opted into unlimited
+            // buffering for a SIZED body, so honour it up to the single-array
+            // ceiling (the actual read stops at the known Content-Length).
             byte[] body = in.readNBytes((int) MAX_BUFFERED_BODY);
             if ((long) body.length == MAX_BUFFERED_BODY) {
                 throw payloadTooLarge(body.length, MAX_BUFFERED_BODY);

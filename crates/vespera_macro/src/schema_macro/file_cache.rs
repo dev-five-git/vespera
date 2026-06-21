@@ -84,13 +84,29 @@ use crate::metadata::StructMetadata;
 /// Phase-4 path-string resolution caches (struct / FK / module-path / circular
 /// lookups), split into the `lookups` sidecar to keep this file within the
 /// source-size budget. They share the parent `FILE_CACHE` + the
-/// `ensure_file_list` / `get_mtime_cached` helpers via `super::` but operate on
-/// a disjoint set of `FileCache` fields.
+/// `ensure_file_list` / `get_fingerprint_cached` helpers via `super::` but
+/// operate on a disjoint set of `FileCache` fields.
 mod lookups;
 pub use lookups::{
     get_circular_analysis, get_fk_column, get_module_path_from_schema_path,
     get_struct_from_schema_path,
 };
+
+/// Combined per-file fingerprint: modification time **and** byte length,
+/// both read from a single `fs::metadata` call.
+///
+/// Pairing length with mtime catches a **timestamp-preserving edit that
+/// changes the file size** — a `git checkout`, a `cp -p`, or a build-cache
+/// restore that resets mtime — which a bare-`SystemTime` cache silently
+/// served stale. This matches the route-folder cache's mtime+size
+/// fingerprint, so every file cache in this module now shares the same
+/// (stronger) invalidation. A same-mtime *and* same-size edit remains
+/// undetectable — a fundamental mtime-cache limitation, not introduced here.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct FileFingerprint {
+    mtime: SystemTime,
+    len: u64,
+}
 
 /// Cached directory walk for a single `src_dir`.
 ///
@@ -126,14 +142,15 @@ struct FileCache {
     /// See [`DirEntry`] for the invalidation semantics.
     file_lists: HashMap<PathBuf, DirEntry>,
 
-    /// Cached file contents: file path → (mtime, content string).
-    /// Mtime is checked to invalidate stale entries in long-lived processes.
+    /// Cached file contents: file path → (fingerprint, content string).
+    /// The mtime+len [`FileFingerprint`] is checked to invalidate stale
+    /// entries in long-lived processes.
     ///
     /// `Arc<String>` lets the cache hand out cheap pointer-clones instead of
     /// copying the entire file body on every lookup.  The previous `String`
     /// variant cloned `O(file_size)` bytes per cache hit and a second time
     /// on insert; both become single-word `Arc::clone`s.
-    file_contents: HashMap<PathBuf, (SystemTime, Arc<String>)>,
+    file_contents: HashMap<PathBuf, (FileFingerprint, Arc<String>)>,
 
     /// Per-`src_dir` struct identifier index: struct name → files that
     /// define it (as a top-level `struct <Name>` declaration found via
@@ -160,7 +177,7 @@ struct FileCache {
     /// genuinely changed file pays the O(file_size) tokenisation. The index
     /// rebuild then costs one tokenisation per *edited* file instead of one
     /// per file in the directory.
-    file_struct_names: HashMap<PathBuf, (SystemTime, Arc<[String]>)>,
+    file_struct_names: HashMap<PathBuf, (FileFingerprint, Arc<[String]>)>,
 
     // NOTE: We CANNOT cache `syn::File` or `syn::ItemStruct` across proc-macro
     // invocations. Both `syn` and `proc_macro2` types contain `proc_macro::Span`
@@ -195,9 +212,9 @@ struct FileCache {
     fk_column_lookup: HashMap<(String, String), PathLookupEntry<Option<String>>>,
     /// Cached module path extraction from schema paths: path_str → Vec<module segments>.
     module_path_cache: HashMap<String, Vec<String>>,
-    /// Cached struct definitions from files: file_path → (mtime, struct_name → definition_string).
+    /// Cached struct definitions from files: file_path → (fingerprint, struct_name → definition_string).
     /// Unlike `syn::File`, strings have no `proc_macro::Span` handles, safe to cache.
-    struct_definitions: HashMap<PathBuf, (SystemTime, HashMap<String, String>)>,
+    struct_definitions: HashMap<PathBuf, (FileFingerprint, HashMap<String, String>)>,
     /// Cached `CARGO_MANIFEST_DIR` value to avoid repeated `std::env::var`
     /// reads.  Constant within one compilation, but revalidated once per
     /// epoch (see [`get_manifest_dir`]) so a long-lived rust-analyzer
@@ -223,12 +240,12 @@ struct FileCache {
     /// Retained for cache-format/test compatibility; path lookup caches now
     /// survive epoch bumps and rely on the lower mtime-validated file caches.
     path_lookup_epoch: u64,
-    /// Per-epoch mtime cache: path → (epoch_when_checked, mtime_result).
+    /// Per-epoch fingerprint cache: path → (epoch_when_checked, fingerprint_result).
     ///
-    /// When the stored epoch equals `self.epoch`, the mtime was already
+    /// When the stored epoch equals `self.epoch`, the fingerprint was already
     /// fetched during this invocation and `fs::metadata` is skipped.
     /// When the epoch differs the entry is stale and the syscall runs again.
-    mtime_epoch_cache: HashMap<PathBuf, (u64, Option<SystemTime>)>,
+    mtime_epoch_cache: HashMap<PathBuf, (u64, Option<FileFingerprint>)>,
 }
 
 thread_local! {
@@ -277,24 +294,48 @@ pub fn bump_epoch() {
     });
 }
 
-/// Fetch the mtime for `path`, using the epoch cache to avoid redundant
-/// `fs::metadata` syscalls within a single macro invocation.
+/// Fetch the [`FileFingerprint`] (mtime + byte length) for `path`, using the
+/// epoch cache to avoid redundant `fs::metadata` syscalls within a single
+/// macro invocation.
 ///
-/// Returns `None` if the file does not exist or its mtime is unavailable.
-fn get_mtime_cached(cache: &mut FileCache, path: &Path) -> Option<SystemTime> {
+/// Both fields come from ONE `fs::metadata` call, so adding the length costs
+/// no extra syscall over the previous mtime-only fetch. Returns `None` if the
+/// file does not exist or its mtime is unavailable.
+fn get_fingerprint_cached(cache: &mut FileCache, path: &Path) -> Option<FileFingerprint> {
     let current_epoch = cache.epoch;
-    if let Some(&(entry_epoch, mtime)) = cache.mtime_epoch_cache.get(path)
+    if let Some(&(entry_epoch, fingerprint)) = cache.mtime_epoch_cache.get(path)
         && entry_epoch == current_epoch
     {
-        return mtime;
+        return fingerprint;
     }
     #[cfg(test)]
     METADATA_CALL_COUNT.with(|c| c.set(c.get() + 1));
-    let mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
+    let fingerprint = std::fs::metadata(path).ok().and_then(|m| {
+        // `len()` is already materialised in the same `Metadata`, so pairing
+        // it with mtime is free — no second syscall.
+        m.modified().ok().map(|mtime| FileFingerprint {
+            mtime,
+            len: m.len(),
+        })
+    });
     cache
         .mtime_epoch_cache
-        .insert(path.to_path_buf(), (current_epoch, mtime));
-    mtime
+        .insert(path.to_path_buf(), (current_epoch, fingerprint));
+    fingerprint
+}
+
+/// Public accessor for a path's [`FileFingerprint`], routed through the shared
+/// per-epoch cache.
+///
+/// Lets callers outside this module (e.g. the `schema_impl` default-function
+/// cache) validate their own caches against the SAME mtime+len fingerprint
+/// **without an extra `fs::metadata` syscall**: the first lookup this epoch
+/// populates the epoch cache, and a subsequent [`get_parsed_file`] /
+/// content read for the same path reuses it instead of stat-ing again — the
+/// previous code stat'd the file twice (once here, once inside
+/// `get_parsed_file`) on every derive carrying `#[serde(default = "fn")]`.
+pub fn get_file_fingerprint(path: &Path) -> Option<FileFingerprint> {
+    FILE_CACHE.with(|cache| get_fingerprint_cached(&mut cache.borrow_mut(), path))
 }
 
 /// Get `CARGO_MANIFEST_DIR` from cache, or read from env and cache.
@@ -357,8 +398,8 @@ fn parse_file_cached(cache: &mut FileCache, path: &Path) -> Option<syn::File> {
 /// need to invalidate the cached file list and the dependent struct
 /// identifier index.
 ///
-/// `mtime` lookups reuse the per-epoch [`get_mtime_cached`] so this is
-/// effectively one `fs::metadata` per file per epoch, and zero subsequent
+/// Fingerprint lookups reuse the per-epoch [`get_fingerprint_cached`] so this
+/// is effectively one `fs::metadata` per file per epoch, and zero subsequent
 /// `fs::metadata` calls for the same path within the same epoch.
 fn walk_and_fingerprint(cache: &mut FileCache, dir: &Path) -> (Vec<PathBuf>, u64) {
     let mut files = Vec::new();
@@ -368,11 +409,16 @@ fn walk_and_fingerprint(cache: &mut FileCache, dir: &Path) -> (Vec<PathBuf>, u64
     let mut hasher = DefaultHasher::new();
     for path in &files {
         path.hash(&mut hasher);
-        if let Some(mtime) = get_mtime_cached(cache, path)
-            && let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH)
-        {
-            duration.as_secs().hash(&mut hasher);
-            duration.subsec_nanos().hash(&mut hasher);
+        if let Some(fp) = get_fingerprint_cached(cache, path) {
+            if let Ok(duration) = fp.mtime.duration_since(std::time::UNIX_EPOCH) {
+                duration.as_secs().hash(&mut hasher);
+                duration.subsec_nanos().hash(&mut hasher);
+            }
+            // Fold the byte length in too: a size-changing,
+            // timestamp-preserving edit now perturbs the directory fingerprint
+            // (and thus invalidates the file list + struct index), matching the
+            // per-file `FileFingerprint` invalidation.
+            fp.len.hash(&mut hasher);
         }
     }
     (files, hasher.finish())
@@ -466,11 +512,11 @@ fn extract_struct_names(content: &str) -> Vec<String> {
 /// yields an empty name list — the caller simply contributes no candidates
 /// for it, matching the prior inline `continue`-on-read-miss behaviour.
 fn get_file_struct_names(cache: &mut FileCache, path: &Path) -> Arc<[String]> {
-    let current_mtime = get_mtime_cached(cache, path);
+    let current_fp = get_fingerprint_cached(cache, path);
 
-    if let Some(mtime) = current_mtime
-        && let Some((cached_mtime, names)) = cache.file_struct_names.get(path)
-        && *cached_mtime == mtime
+    if let Some(fp) = current_fp
+        && let Some((cached_fp, names)) = cache.file_struct_names.get(path)
+        && *cached_fp == fp
     {
         return Arc::clone(names);
     }
@@ -480,10 +526,10 @@ fn get_file_struct_names(cache: &mut FileCache, path: &Path) -> Arc<[String]> {
         |content| extract_struct_names(&content).into(),
     );
 
-    if let Some(mtime) = current_mtime {
+    if let Some(fp) = current_fp {
         cache
             .file_struct_names
-            .insert(path.to_path_buf(), (mtime, Arc::clone(&names)));
+            .insert(path.to_path_buf(), (fp, Arc::clone(&names)));
     }
 
     names
@@ -540,13 +586,13 @@ pub fn get_struct_candidates(src_dir: &Path, struct_name: &str) -> Arc<[PathBuf]
 }
 /// Ensure struct definitions are extracted and cached for the given file.
 /// On first call, parses the file and caches all struct definitions as strings.
-/// On subsequent calls, checks mtime to validate cache.
+/// On subsequent calls, checks the mtime+len fingerprint to validate cache.
 fn ensure_struct_definitions(cache: &mut FileCache, path: &Path) -> bool {
-    let current_mtime = get_mtime_cached(cache, path);
+    let current_fp = get_fingerprint_cached(cache, path);
 
-    if let Some(mtime) = current_mtime
-        && let Some((cached_mtime, _)) = cache.struct_definitions.get(path)
-        && *cached_mtime == mtime
+    if let Some(fp) = current_fp
+        && let Some((cached_fp, _)) = cache.struct_definitions.get(path)
+        && *cached_fp == fp
     {
         cache.struct_def_cache_hits += 1;
         return true;
@@ -565,10 +611,10 @@ fn ensure_struct_definitions(cache: &mut FileCache, path: &Path) -> bool {
         }
     }
 
-    if let Some(mtime) = current_mtime {
+    if let Some(fp) = current_fp {
         cache
             .struct_definitions
-            .insert(path.to_path_buf(), (mtime, defs));
+            .insert(path.to_path_buf(), (fp, defs));
     }
 
     true
@@ -598,16 +644,16 @@ pub fn get_struct_definition(path: &Path, struct_name: &str) -> Option<String> {
 }
 
 /// Internal helper: get file content from cache or read from disk.
-/// Checks mtime for invalidation.
+/// Checks the mtime+len fingerprint for invalidation.
 ///
 /// Returns `Arc<String>` so callers share a single allocation instead of
 /// cloning the whole file body per lookup.
 fn get_file_content_inner(cache: &mut FileCache, path: &Path) -> Option<Arc<String>> {
-    let current_mtime = get_mtime_cached(cache, path);
+    let current_fp = get_fingerprint_cached(cache, path);
 
-    if let Some(mtime) = current_mtime
-        && let Some((cached_mtime, content)) = cache.file_contents.get(path)
-        && *cached_mtime == mtime
+    if let Some(fp) = current_fp
+        && let Some((cached_fp, content)) = cache.file_contents.get(path)
+        && *cached_fp == fp
     {
         cache.content_cache_hits += 1;
         return Some(Arc::clone(content));
@@ -616,10 +662,10 @@ fn get_file_content_inner(cache: &mut FileCache, path: &Path) -> Option<Arc<Stri
     let content = Arc::new(std::fs::read_to_string(path).ok()?);
     cache.file_disk_reads += 1;
 
-    if let Some(mtime) = current_mtime {
+    if let Some(fp) = current_fp {
         cache
             .file_contents
-            .insert(path.to_path_buf(), (mtime, Arc::clone(&content)));
+            .insert(path.to_path_buf(), (fp, Arc::clone(&content)));
     }
 
     Some(content)
@@ -693,22 +739,32 @@ pub fn print_profile_summary() {
 }
 
 /// Inject a fake struct definition into the cache for testing.
-/// Uses the file's real mtime so `ensure_struct_definitions` won't invalidate the cache.
+/// Uses the file's real mtime+len fingerprint so `ensure_struct_definitions`
+/// won't invalidate the cache.
 /// Enables tests to simulate scenarios where `get_struct_definition` succeeds
 /// but `parse_struct_cached` fails (defensive code path).
 #[cfg(test)]
 pub fn inject_struct_definition_for_test(path: &std::path::Path, name: &str, definition: &str) {
     FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let mtime = std::fs::metadata(path)
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let fingerprint = std::fs::metadata(path).ok().map_or(
+            FileFingerprint {
+                mtime: std::time::SystemTime::UNIX_EPOCH,
+                len: 0,
+            },
+            |m| FileFingerprint {
+                mtime: m
+                    .modified()
+                    .ok()
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                len: m.len(),
+            },
+        );
         let entry = cache
             .struct_definitions
             .entry(path.to_path_buf())
-            .or_insert_with(|| (mtime, HashMap::new()));
-        entry.0 = mtime;
+            .or_insert_with(|| (fingerprint, HashMap::new()));
+        entry.0 = fingerprint;
         entry.1.insert(name.to_string(), definition.to_string());
     });
 }

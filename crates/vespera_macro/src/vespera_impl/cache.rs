@@ -163,12 +163,21 @@ pub(super) fn compute_config_hash_with_merge_cache(
     if let Some(ref schemes) = processed.security_schemes {
         for (name, scheme) in schemes {
             name.hash(&mut hasher);
-            scheme.r#type.hash(&mut hasher);
-            scheme.description.hash(&mut hasher);
-            scheme.name.hash(&mut hasher);
-            scheme.r#in.hash(&mut hasher);
-            scheme.scheme.hash(&mut hasher);
-            scheme.bearer_format.hash(&mut hasher);
+            // Hash a STABLE serialized representation of the whole scheme
+            // rather than a hand-picked field subset.  The previous list
+            // omitted `flows` and `open_id_connect_url`, so changing only an
+            // OIDC discovery URL hit the warm route cache and reused stale
+            // OpenAPI output.  `serde_json` renders struct fields in
+            // declaration order (deterministic) and `skip_serializing_if`
+            // only drops `None`s, so the digest is faithful AND future-proof:
+            // any field added to `SecurityScheme` is covered automatically,
+            // closing this class of stale-cache bug for good.  Serialization
+            // is infallible for this plain struct; a hypothetical failure
+            // falls back to a stable marker so the hash still differs.
+            match serde_json::to_string(scheme) {
+                Ok(json) => json.hash(&mut hasher),
+                Err(_) => "scheme:unserializable".hash(&mut hasher),
+            }
         }
     }
     match &processed.security {

@@ -528,6 +528,26 @@ impl<'de> Deserialize<'de> for Schema {
     }
 }
 
+/// Borrowing serializer for a nullable scalar `type` array (`[T, "null"]`).
+///
+/// Avoids the temporary two-element `Vec` the
+/// `SchemaTypeWire::Multiple(vec![t, Null])` path allocated on **every**
+/// nullable non-`$ref` schema during OpenAPI generation. Emits the identical
+/// JSON array (`SchemaTypeWire` is `#[serde(untagged)]`, so `Multiple(vec)`
+/// renders as a bare array), so the wire bytes are unchanged — mirrors the
+/// existing zero-allocation [`NullableRefAnyOf`] serializer.
+struct NullableScalarType(SchemaType);
+
+impl Serialize for NullableScalarType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(2))?;
+        seq.serialize_element(&self.0)?;
+        seq.serialize_element(&SchemaType::Null)?;
+        seq.end()
+    }
+}
+
 impl Serialize for Schema {
     #[allow(clippy::too_many_lines)]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -549,12 +569,16 @@ impl Serialize for Schema {
             }
         }
         if let Some(schema_type) = self.schema_type {
-            let wire = if self.nullable == Some(true) {
-                SchemaTypeWire::Multiple(vec![schema_type, SchemaType::Null])
+            // Nullable scalar → `[T, "null"]` via the borrowing
+            // `NullableScalarType` (no temporary `Vec`); plain scalar → `T`
+            // directly (`SchemaTypeWire::Single` is untagged, so a bare
+            // `SchemaType` is byte-identical). Both avoid the previous
+            // per-schema `SchemaTypeWire` value.
+            if self.nullable == Some(true) {
+                out.serialize_field("type", &NullableScalarType(schema_type))?;
             } else {
-                SchemaTypeWire::Single(schema_type)
-            };
-            out.serialize_field("type", &wire)?;
+                out.serialize_field("type", &schema_type)?;
+            }
         }
         if let Some(value) = &self.format {
             out.serialize_field("format", value)?;

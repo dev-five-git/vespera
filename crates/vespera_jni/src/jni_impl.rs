@@ -696,10 +696,17 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                     if should_fire_fallback_header(
                         header_sent.load(Ordering::Relaxed),
                         header_failed.load(Ordering::Acquire),
-                    ) && let Ok(fallback) = env.new_global_ref(&header_consumer)
-                    {
+                    ) {
                         let err = panic_wire();
-                        let _ = call_header_consumer(env, &fallback, &err);
+                        // On the JNI entry thread `header_consumer` is still a
+                        // valid LOCAL ref, so deliver the mandatory fallback
+                        // header through it directly. Promoting it to a
+                        // `Global` here added an avoidable allocation AND a
+                        // failure point: a failed `new_global_ref` (e.g. OOM)
+                        // silently skipped the required single callback and
+                        // hung the Java caller. `call_header_consumer_local`
+                        // exists for exactly this cold on-thread fallback.
+                        let _ = call_header_consumer_local(env, &header_consumer, &err);
                     }
                 }
             }
@@ -846,10 +853,17 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                     if should_fire_fallback_header(
                         header_sent.load(Ordering::Relaxed),
                         header_failed.load(Ordering::Acquire),
-                    ) && let Ok(fallback) = env.new_global_ref(&header_consumer)
-                    {
+                    ) {
                         let err = panic_wire();
-                        let _ = call_header_consumer(env, &fallback, &err);
+                        // On the JNI entry thread `header_consumer` is still a
+                        // valid LOCAL ref, so deliver the mandatory fallback
+                        // header through it directly. Promoting it to a
+                        // `Global` here added an avoidable allocation AND a
+                        // failure point: a failed `new_global_ref` (e.g. OOM)
+                        // silently skipped the required single callback and
+                        // hung the Java caller. `call_header_consumer_local`
+                        // exists for exactly this cold on-thread fallback.
+                        let _ = call_header_consumer_local(env, &header_consumer, &err);
                     }
                 }
             }

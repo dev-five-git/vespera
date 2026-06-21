@@ -590,6 +590,63 @@ async fn dispatch_bidirectional_streaming_large_request_body() {
     );
 }
 
+/// A single host `pull()` chunk LARGER than the configured per-frame cap
+/// (`streaming_chunk_bytes`, default 256 KiB) must be split into bounded
+/// pieces on the wire into the mpsc channel — otherwise one oversized chunk
+/// occupies a slot at its full size, defeating the `slots * chunk_bytes`
+/// memory bound. This pins that the split preserves the body **byte-for-byte
+/// and in order** (a broken split would corrupt or reorder the echo).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dispatch_bidirectional_streaming_oversized_chunk_splits_and_roundtrips() {
+    install_router();
+
+    let header_only_wire = encode_wire(
+        "POST",
+        "/echo/bytes",
+        None,
+        HashMap::from([("content-type", "application/octet-stream")]),
+        &[],
+    );
+
+    // ONE chunk of 1 MiB — 4x the 256 KiB default cap, so the producer must
+    // emit it as several bounded pieces. A position-dependent pattern makes
+    // any reorder/truncation in the split path fail the byte-for-byte assert.
+    let total_size = 1024 * 1024;
+    let oversized: Vec<u8> = (0..total_size)
+        .map(|i| u8::try_from(i % 256).expect("mod 256"))
+        .collect();
+    let expected = oversized.clone();
+    let chunk = Mutex::new(Some(oversized));
+    let pull_chunk = move || -> RequestChunk {
+        chunk
+            .lock()
+            .unwrap()
+            .take()
+            .map_or(RequestChunk::End, RequestChunk::Data)
+    };
+
+    let received: std::sync::Arc<Mutex<Vec<u8>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let received_clone = std::sync::Arc::clone(&received);
+    let on_chunk = move |chunk: &[u8]| {
+        received_clone.lock().unwrap().extend_from_slice(chunk);
+        ControlFlow::Continue(())
+    };
+
+    let header_bytes =
+        vespera_inprocess::dispatch_bidirectional_streaming(header_only_wire, pull_chunk, on_chunk)
+            .await;
+
+    let (header, _) = decode_wire(&header_bytes);
+    assert_eq!(header["status"].as_u64(), Some(200));
+
+    let final_body = received.lock().unwrap().clone();
+    assert_eq!(final_body.len(), expected.len(), "size match after split");
+    assert_eq!(
+        final_body, expected,
+        "1 MiB oversized chunk must split and round-trip byte-for-byte"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatch_bidirectional_streaming_emits_error_wire_on_malformed_header() {
     install_router();

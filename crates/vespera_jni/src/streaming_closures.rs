@@ -455,12 +455,20 @@ pub fn call_header_consumer(
         let arr = env.byte_array_from_slice(header_bytes)?;
         let arr_obj: JObject = arr.into();
         let result = call_consumer_accept(env, consumer, &arr_obj);
-        // Scrub a pending Java exception on BOTH success and failure: if
-        // `Consumer.accept` threw, the bare `?` previously returned BEFORE
-        // the clear, leaking the pending exception into the (often
-        // result-ignoring) caller's next JNI call on this thread.
-        if env.exception_check() {
+        // `call_consumer_accept`'s cached `call_method_unchecked` fast path
+        // returns `Ok` with a thrown `Consumer.accept` left PENDING (only the
+        // checked fallback surfaces it as `Err`). A throwing header consumer
+        // is a FAILURE and MUST be reported as `Err`, exactly like the cached
+        // `read`/`write` paths convert their pending exception to an
+        // abort/`Err`. Otherwise the caller's `.is_ok()` records
+        // `header_sent = true` for a header the Java side never accepted, and
+        // the body keeps streaming over a failed header instead of aborting.
+        // Scrub on BOTH paths so the thread is left clean, then fail if a
+        // throw was detected.
+        let threw = env.exception_check();
+        if threw {
             env.exception_clear();
+            return Err(jni::errors::Error::JavaException);
         }
         result?;
         Ok(())

@@ -33,11 +33,11 @@
 use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
-    sync::{LazyLock, Mutex},
-    time::SystemTime,
+    sync::{Arc, LazyLock, Mutex},
 };
 
 use crate::metadata::StructMetadata;
+use crate::schema_macro::file_cache::{FileFingerprint, get_file_fingerprint};
 
 /// Per-crate registry of `#[derive(Schema)]` metadata.
 ///
@@ -114,8 +114,11 @@ pub fn current_crate_schemas() -> HashMap<String, StructMetadata> {
 
 #[derive(Clone)]
 struct DefaultFunctionCacheEntry {
-    mtime: SystemTime,
-    values: BTreeMap<String, serde_json::Value>,
+    fingerprint: FileFingerprint,
+    /// `Arc` so a cache hit hands back a single pointer-clone instead of
+    /// deep-cloning the whole `field -> default JSON` map on every derive that
+    /// shares a file (the previous `BTreeMap` clone copied every entry).
+    values: Arc<BTreeMap<String, serde_json::Value>>,
 }
 
 /// Extract custom schema name from #[schema(name = "...")] attribute
@@ -279,27 +282,33 @@ fn extract_defaults_from_path(
         .collect()
 }
 
-fn cached_default_functions(file_path: &Path) -> Option<BTreeMap<String, serde_json::Value>> {
-    let mtime = std::fs::metadata(file_path).ok()?.modified().ok()?;
+fn cached_default_functions(file_path: &Path) -> Option<Arc<BTreeMap<String, serde_json::Value>>> {
+    // Fingerprint via the SHARED per-epoch file cache: this populates the
+    // epoch cache so the `get_parsed_file` below reuses it instead of issuing
+    // a second `fs::metadata` syscall (the previous direct `fs::metadata` here
+    // double-stat'd every derive with function defaults). The mtime+len
+    // fingerprint also matches the file-content cache, so a size-changing
+    // timestamp-preserving edit invalidates this cache too.
+    let fingerprint = get_file_fingerprint(file_path)?;
     if let Some(values) = DEFAULT_FUNCTION_CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(file_path)
-        .and_then(|entry| (entry.mtime == mtime).then(|| entry.values.clone()))
+        .and_then(|entry| (entry.fingerprint == fingerprint).then(|| Arc::clone(&entry.values)))
     {
         return Some(values);
     }
 
     let file_ast = crate::schema_macro::file_cache::get_parsed_file(file_path)?;
-    let values = extract_default_functions_from_file(&file_ast);
+    let values = Arc::new(extract_default_functions_from_file(&file_ast));
     DEFAULT_FUNCTION_CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(
             file_path.to_path_buf(),
             DefaultFunctionCacheEntry {
-                mtime,
-                values: values.clone(),
+                fingerprint,
+                values: Arc::clone(&values),
             },
         );
     Some(values)

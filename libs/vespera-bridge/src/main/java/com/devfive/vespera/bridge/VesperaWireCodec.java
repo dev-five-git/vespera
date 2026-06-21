@@ -377,7 +377,10 @@ final class VesperaWireCodec {
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(path, "path");
         buf.putAscii("{\"v\":");
-        writeAsciiInt(buf, WIRE_VERSION);
+        // WIRE_VERSION is a single-digit constant; write its ASCII digit
+        // directly to avoid the per-request `Integer.toString(1)` allocation
+        // the old `writeAsciiInt` made on every encode. Byte-identical output.
+        buf.put((byte) ('0' + WIRE_VERSION));
         buf.putAscii(",\"method\":");
         writeJsonString(buf, method);
         buf.putAscii(",\"path\":");
@@ -415,7 +418,10 @@ final class VesperaWireCodec {
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(path, "path");
         buf.putAscii("{\"v\":");
-        writeAsciiInt(buf, WIRE_VERSION);
+        // WIRE_VERSION is a single-digit constant; write its ASCII digit
+        // directly to avoid the per-request `Integer.toString(1)` allocation
+        // the old `writeAsciiInt` made on every encode. Byte-identical output.
+        buf.put((byte) ('0' + WIRE_VERSION));
         buf.putAscii(",\"method\":");
         writeJsonString(buf, method);
         buf.putAscii(",\"path\":");
@@ -437,10 +443,6 @@ final class VesperaWireCodec {
         }
         buf.put('}');
         return buf;
-    }
-
-    private static void writeAsciiInt(ExposedByteArrayOutputStream out, int value) {
-        out.putAscii(Integer.toString(value));
     }
 
     static String normalizedAppName(String appName) {

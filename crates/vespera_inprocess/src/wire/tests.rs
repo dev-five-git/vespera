@@ -374,6 +374,38 @@ fn hoist_422_is_best_effort_for_wrong_typed_fields() {
     assert_eq!(items[2].message, None);
 }
 
+/// Regression: a NON-OBJECT array element (`null`, a bare string, a number)
+/// must be SKIPPED, not abort the whole hoist.  Before the lenient fallback
+/// switched to a `Value` walk, the typed `Vec<Struct>` retry failed to
+/// deserialize the non-object element and dropped EVERY valid error with it.
+#[test]
+fn hoist_422_skips_non_object_array_elements() {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("application/json"),
+    );
+    // A valid object, then a `null`, a bare string, and a number — the three
+    // non-object elements must be skipped while the valid one still hoists.
+    let body = bytes::Bytes::from_static(
+        br#"{"errors":[
+            {"path":"email","message":"not a valid email"},
+            null,
+            "oops",
+            42
+        ]}"#,
+    );
+    let items = super::hoist::try_hoist_validation_errors(&headers, &body)
+        .expect("a non-object element must not discard the valid errors");
+    assert_eq!(
+        items.len(),
+        1,
+        "only the one well-formed error object should hoist"
+    );
+    assert_eq!(items[0].path, "email");
+    assert_eq!(items[0].message.as_deref(), Some("not a valid email"));
+}
+
 /// Byte-identity for the TINY-header response fast paths in `write_headers`
 /// (0 headers → `{}`; exactly 1 distinct name → no stack-array init / sort;
 /// header NAME written without the escape-table scan).  The multi-header

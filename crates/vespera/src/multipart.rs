@@ -101,6 +101,27 @@ pub enum TypedMultipartError {
     },
 }
 
+/// Maximum characters of a reflected, attacker-controlled value (an invalid
+/// enum variant parsed from a multipart text field) echoed back in an error.
+///
+/// The error `Display` feeds the serialized 4xx envelope via `collect_str`
+/// ([`MultipartMessage`]), so bounding it here bounds BOTH `to_string()` and
+/// the wire body — preventing a hostile field from amplifying the error
+/// envelope (and its serialization cost) with a huge value.
+const MAX_REFLECTED_VALUE_CHARS: usize = 128;
+
+/// Truncate a reflected value to [`MAX_REFLECTED_VALUE_CHARS`] on a `char`
+/// boundary (never mid-UTF-8), appending a marker when shortened. Borrows
+/// the original when it is already within the limit (the common case).
+fn truncate_reflected_value(value: &str) -> std::borrow::Cow<'_, str> {
+    match value.char_indices().nth(MAX_REFLECTED_VALUE_CHARS) {
+        None => std::borrow::Cow::Borrowed(value),
+        Some((byte_idx, _)) => {
+            std::borrow::Cow::Owned(format!("{}... (truncated)", &value[..byte_idx]))
+        }
+    }
+}
+
 impl fmt::Display for TypedMultipartError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -130,7 +151,11 @@ impl fmt::Display for TypedMultipartError {
                 write!(f, "Unknown field: `{field_name}`")
             }
             Self::InvalidEnumValue { field_name, value } => {
-                write!(f, "Invalid enum value `{value}` for field `{field_name}`")
+                write!(
+                    f,
+                    "Invalid enum value `{}` for field `{field_name}`",
+                    truncate_reflected_value(value)
+                )
             }
             Self::NamelessField => write!(f, "Encountered a field without a name"),
             Self::FieldTooLarge {
@@ -475,12 +500,16 @@ impl<T> std::ops::DerefMut for TypedMultipart<T> {
 
 /// Default aggregate cap for a typed multipart request body.
 ///
-/// This cap is intentionally much higher than axum's built-in
-/// [`DefaultBodyLimit`](axum::extract::DefaultBodyLimit) default because the
-/// two policies guard different layers: axum may reject the raw HTTP body before
-/// Vespera sees it, while this cap still applies when applications explicitly
-/// disable or raise axum's body limit for in-process/JNI uploads.
-pub const DEFAULT_MULTIPART_MAX_TOTAL_BYTES: usize = 512 * 1024 * 1024; // 512 MiB
+/// Sized as a **bounded safety budget**, not a generous allowance: it is the
+/// guard that still applies when applications disable or raise axum's
+/// [`DefaultBodyLimit`](axum::extract::DefaultBodyLimit) (notably the
+/// in-process / JNI upload path, where axum's HTTP-layer limit never runs). At
+/// 64 MiB a single request can no longer pin hundreds of MiB of buffered text
+/// fields / temp-file I/O — the practical DoS budget the previous 512 MiB
+/// default handed every caller. Applications that legitimately accept larger
+/// typed uploads opt in explicitly via [`TypedMultipartWithLimits`] or
+/// [`set_default_multipart_limits`]; genuinely large payloads should stream.
+pub const DEFAULT_MULTIPART_MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
 /// Default maximum number of parts in a typed multipart request.
 pub const DEFAULT_MULTIPART_MAX_FIELDS: usize = 1024;
