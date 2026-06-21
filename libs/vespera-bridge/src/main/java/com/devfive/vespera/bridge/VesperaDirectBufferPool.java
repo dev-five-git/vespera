@@ -162,8 +162,8 @@ final class VesperaDirectBufferPool {
             DIRECT_UNDER_RETAIN_STREAK.set(streak);
             return;
         }
-        boolean requestGrown = pool[0].capacity() > DIRECT_INITIAL_CAPACITY;
-        boolean responseGrown = pool[1].capacity() > DIRECT_INITIAL_CAPACITY;
+        boolean requestGrown = pool[0].capacity() > DIRECT_RETAIN_CAPACITY;
+        boolean responseGrown = pool[1].capacity() > DIRECT_RETAIN_CAPACITY;
         if (requestGrown) {
             pool[0] = ByteBuffer.allocateDirect(DIRECT_INITIAL_CAPACITY);
         }

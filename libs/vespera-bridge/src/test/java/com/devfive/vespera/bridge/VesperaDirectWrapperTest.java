@@ -115,8 +115,8 @@ class VesperaDirectWrapperTest {
     void directPoolShrinksGrownBuffersAfterIdleStreak() {
         VesperaDirectBufferPool.clearCurrentThreadBuffers();
         ByteBuffer[] pool = VesperaDirectBufferPool.directPoolForTest();
-        pool[0] = ByteBuffer.allocateDirect(128 * 1024);
-        pool[1] = ByteBuffer.allocateDirect(256 * 1024);
+        pool[0] = ByteBuffer.allocateDirect(3 * 1024 * 1024);
+        pool[1] = ByteBuffer.allocateDirect(3 * 1024 * 1024);
 
         for (int i = 0; i < 8; i++) {
             VesperaDirectBufferPool.recordDirectPoolUseForTest(pool, 1, 1);
@@ -125,5 +125,20 @@ class VesperaDirectWrapperTest {
         assertTrue(VesperaDirectBufferPool.directPoolPresentForTest());
         assertEquals(64 * 1024, pool[0].capacity());
         assertEquals(64 * 1024, pool[1].capacity());
+    }
+
+    @Test
+    void directPoolRetainsMediumResponseUnderRetainCapAfterIdleStreak() {
+        VesperaDirectBufferPool.clearCurrentThreadBuffers();
+        ByteBuffer[] pool = VesperaDirectBufferPool.directPoolForTest();
+        pool[1] = ByteBuffer.allocateDirect(1024 * 1024);
+
+        for (int i = 0; i < 9; i++) {
+            VesperaDirectBufferPool.recordDirectPoolUseForTest(pool, 1, 1024 * 1024);
+        }
+
+        assertTrue(VesperaDirectBufferPool.directPoolPresentForTest());
+        assertEquals(64 * 1024, pool[0].capacity());
+        assertEquals(1024 * 1024, pool[1].capacity());
     }
 }

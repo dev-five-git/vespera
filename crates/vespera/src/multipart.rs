@@ -785,6 +785,13 @@ const DEFAULT_STRING_FIELD_LIMIT_BYTES: usize = 1024 * 1024; // 1 MiB
 /// `usize::MAX` through the derive-generated parser. Applications can tune the
 /// process-wide default before handling requests with
 /// [`set_default_temp_file_field_limit_bytes`].
+///
+/// Note: `"unlimited"` lifts only this **per-field** cap. The request-wide
+/// aggregate budget ([`DEFAULT_MULTIPART_MAX_TOTAL_BYTES`], 64 MiB by default)
+/// still applies, so a single `"unlimited"` field is bounded by the aggregate
+/// rather than being truly unbounded. To raise the aggregate, use
+/// [`TypedMultipartWithLimits`] (per-route) or [`set_default_multipart_limits`]
+/// (process-wide); genuinely large uploads should stream instead.
 pub const DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
 
 static DEFAULT_TEMP_FILE_FIELD_LIMIT: AtomicUsize =

@@ -60,8 +60,20 @@ pub(super) fn find_same_file_struct_metadata<'a>(
 }
 
 pub(super) fn related_model_type_from_schema_path(schema_path: &TokenStream) -> Option<syn::Type> {
-    let schema_path_str = schema_path.to_string().replace("Schema", "Model");
-    syn::parse_str(&schema_path_str).ok()
+    // Map a schema path (`…::UserSchema`) to its model path (`…::UserModel`)
+    // by renaming ONLY the final path segment's identifier.  The previous
+    // `to_string().replace("Schema", "Model")` rewrote EVERY "Schema"
+    // substring in the whole path string, so a *module* segment that itself
+    // contained "Schema" (e.g. `crate::SchemaStore::UserSchema`) was silently
+    // corrupted into `crate::ModelStore::UserModel`, producing a dangling /
+    // wrong `From<Model>` target.  Parsing to a `TypePath` and editing only
+    // the last segment keeps every module segment verbatim and preserves any
+    // generic arguments on the segment.
+    let mut type_path: syn::TypePath = syn::parse2(schema_path.clone()).ok()?;
+    let last = type_path.path.segments.last_mut()?;
+    let renamed = last.ident.to_string().replace("Schema", "Model");
+    last.ident = syn::Ident::new(&renamed, last.ident.span());
+    Some(syn::Type::Path(type_path))
 }
 
 pub(super) fn has_derive(struct_item: &syn::ItemStruct, derive_name: &str) -> bool {
@@ -449,6 +461,29 @@ mod tests {
             maybe_generate_same_file_relation_override(&new_type_name, "user", &rel_info, &storage)
                 .expect("invalid model type should not error");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn related_model_type_renames_only_final_segment() {
+        // A module segment that itself contains "Schema" (capital S) must be
+        // left verbatim — only the trailing `…Schema` ident becomes `…Model`.
+        // The previous `to_string().replace("Schema","Model")` corrupted
+        // `SchemaStore` into `ModelStore`; this locks the regression.
+        let ty = related_model_type_from_schema_path(&quote!(crate::SchemaStore::user::UserSchema))
+            .expect("valid schema path resolves to a model type");
+        assert_eq!(
+            quote!(#ty).to_string(),
+            quote!(crate::SchemaStore::user::UserModel).to_string(),
+        );
+        // A bare trailing `Schema` ident maps to `Model`.
+        let ty2 = related_model_type_from_schema_path(&quote!(crate::models::user::Schema))
+            .expect("valid schema path");
+        assert_eq!(
+            quote!(#ty2).to_string(),
+            quote!(crate::models::user::Model).to_string(),
+        );
+        // A non-path token stream (e.g. a stray `?`) yields None, not a panic.
+        assert!(related_model_type_from_schema_path(&quote!(?)).is_none());
     }
 
     #[test]

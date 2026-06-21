@@ -409,6 +409,56 @@ class PerfAllocBench {
                 afterReallocs, afterRehandlers);
     }
 
+    /** Regression model for retaining steady medium responses below the cap. */
+    @Test
+    void directPoolMediumRetention_reallocations() {
+        final int initial = 64 * 1024;
+        final int retainCap = 2 * 1024 * 1024;
+        final int respSize = 1024 * 1024;
+        final int dispatches = 50;
+
+        int beforeReallocs = 0;
+        int beforeRehandlers = 0;
+        int beforeCap = initial;
+        int beforeIdle = 0;
+        for (int i = 0; i < dispatches; i++) {
+            if (beforeCap < respSize) {
+                beforeCap = respSize;
+                beforeReallocs++;
+                beforeRehandlers++;
+            }
+            beforeIdle = respSize <= retainCap ? beforeIdle + 1 : 0;
+            if (beforeIdle >= 8 && beforeCap > initial) {
+                beforeCap = initial;
+                beforeIdle = 0;
+            }
+        }
+
+        int afterReallocs = 0;
+        int afterRehandlers = 0;
+        int afterCap = initial;
+        int afterIdle = 0;
+        for (int i = 0; i < dispatches; i++) {
+            if (afterCap < respSize) {
+                afterCap = respSize;
+                afterReallocs++;
+                afterRehandlers++;
+            }
+            afterIdle = respSize <= retainCap ? afterIdle + 1 : 0;
+            if (afterIdle >= 8 && afterCap > retainCap) {
+                afterCap = initial;
+                afterIdle = 0;
+            }
+        }
+
+        System.out.printf(
+                "VESPERA_ALLOC direct_pool_medium_reallocs_before count=%d handler_reruns=%d (%d dispatches, %d KiB each)%n",
+                beforeReallocs, beforeRehandlers, dispatches, respSize / 1024);
+        System.out.printf(
+                "VESPERA_ALLOC direct_pool_medium_reallocs_after  count=%d handler_reruns=%d retained_bytes=%d%n",
+                afterReallocs, afterRehandlers, afterCap);
+    }
+
     private static MockHttpServletRequest realisticHeaderRequest() {
         MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
         req.addHeader("Host", "api.example.test");

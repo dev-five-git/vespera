@@ -11,13 +11,6 @@ final class WireHeaderStringSupport {
     private static final ThreadLocal<byte[]> DIRECT_STRING_SCRATCH =
             ThreadLocal.withInitial(() -> new byte[DIRECT_STRING_SCRATCH_INITIAL]);
 
-    private static final String[] CANONICAL_KEYS = {
-        "content-type", "content-length", "content-encoding",
-        "content-disposition", "cache-control", "set-cookie", "location",
-        "etag", "date", "vary", "access-control-allow-origin",
-        "version", "path", "code", "message",
-    };
-
     private WireHeaderStringSupport() {}
 
     static void clearCurrentThreadBuffers() {

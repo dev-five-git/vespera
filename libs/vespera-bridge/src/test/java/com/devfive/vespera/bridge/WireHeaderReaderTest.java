@@ -52,6 +52,17 @@ class WireHeaderReaderTest {
         assertThrows(IllegalArgumentException.class, () -> runWith(headerBytes, false));
     }
 
+    private static void assertDecodeRejected(String headerJson) {
+        byte[] hb = headerJson.getBytes(StandardCharsets.UTF_8);
+        ByteBuffer buf = ByteBuffer.allocate(4 + hb.length);
+        buf.putInt(hb.length);
+        buf.put(hb);
+        IllegalArgumentException e = assertThrows(
+                IllegalArgumentException.class,
+                () -> WireHeaderReader.decode(buf, 4, hb.length));
+        assertEquals("wire header JSON: expected object at offset 4", e.getMessage());
+    }
+
     @Test
     void parsesStatusAndSingleHeader() {
         Captured c =
@@ -146,6 +157,13 @@ class WireHeaderReaderTest {
     }
 
     @Test
+    void rejectsNonObjectRootHeader() {
+        byte[] headerBytes = "[]".getBytes(StandardCharsets.UTF_8);
+        assertRejected(headerBytes);
+        assertDecodeRejected("[]");
+    }
+
+    @Test
     void rejectsDuplicateStatusRootKey() {
         assertRejected("{\"status\":200,\"status\":201}".getBytes(StandardCharsets.UTF_8));
     }
@@ -179,7 +197,7 @@ class WireHeaderReaderTest {
 
     /**
      * P3: {@code apply()} now routes common header names through the shared
-     * {@code CANONICAL_KEYS} table (the same allocation-free path {@code
+     * canonical-key matcher (the same allocation-free path {@code
      * decode()} uses), so the key String it hands back is the interned
      * instance — not a freshly allocated one per request. Asserting identity
      * ({@code assertSame}) against {@code decode()}'s key locks that in.

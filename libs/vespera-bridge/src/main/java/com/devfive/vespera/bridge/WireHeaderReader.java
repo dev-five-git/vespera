@@ -62,41 +62,40 @@ final class WireHeaderReader {
             BiConsumer<String, String> headerSink) {
         WireHeaderReader r = new WireHeaderReader(buf, off, len);
         int status = 500;
-        if (r.peek() == '{') {
-            r.beginObject();
-            int seen = 0;
-            int key;
-            while ((key = r.nextRootKey()) != KEY_END) {
-                seen = r.rejectDuplicateRootKey(seen, key);
-                switch (key) {
-                    case KEY_STATUS -> status = r.readInt();
-                    case KEY_HEADERS -> {
-                        if (r.isObjectStart()) {
-                            r.beginObject();
-                            String k;
-                            // Canonical keys reuse one shared String per common
-                            // header name (content-type, content-length, …) —
-                            // the same allocation-free path decode() uses, so
-                            // the per-request DIRECT/streaming apply() no longer
-                            // allocates a fresh key String for each header.
-                            while ((k = r.nextKeyCanonical()) != null) {
-                                if (r.isArrayStart()) {
-                                    r.beginArray();
-                                    while (r.hasNextElement()) {
-                                        headerSink.accept(k, r.readString());
-                                    }
-                                } else {
+        r.requireObjectStart();
+        r.beginObject();
+        int seen = 0;
+        int key;
+        while ((key = r.nextRootKey()) != KEY_END) {
+            seen = r.rejectDuplicateRootKey(seen, key);
+            switch (key) {
+                case KEY_STATUS -> status = r.readInt();
+                case KEY_HEADERS -> {
+                    if (r.isObjectStart()) {
+                        r.beginObject();
+                        String k;
+                        // Canonical keys reuse one shared String per common
+                        // header name (content-type, content-length, …) —
+                        // the same allocation-free path decode() uses, so
+                        // the per-request DIRECT/streaming apply() no longer
+                        // allocates a fresh key String for each header.
+                        while ((k = r.nextKeyCanonical()) != null) {
+                            if (r.isArrayStart()) {
+                                r.beginArray();
+                                while (r.hasNextElement()) {
                                     headerSink.accept(k, r.readString());
                                 }
+                            } else {
+                                headerSink.accept(k, r.readString());
                             }
-                        } else {
-                            r.skipValue();
                         }
+                    } else {
+                        r.skipValue();
                     }
-                    // KEY_OTHER: "v", "metadata", "validation_errors", … —
-                    // matched by bytes, value skipped, never materialised.
-                    default -> r.skipValue();
                 }
+                // KEY_OTHER: "v", "metadata", "validation_errors", … —
+                // matched by bytes, value skipped, never materialised.
+                default -> r.skipValue();
             }
         }
         statusSink.accept(status);
@@ -133,76 +132,75 @@ final class WireHeaderReader {
     static Decoded decode(ByteBuffer buf, int off, int len) {
         WireHeaderReader r = new WireHeaderReader(buf, off, len);
         Decoded out = new Decoded();
-        if (r.peek() == '{') {
-            r.beginObject();
-            int seen = 0;
-            int key;
-            while ((key = r.nextRootKey()) != KEY_END) {
-                seen = r.rejectDuplicateRootKey(seen, key);
-                switch (key) {
-                    case KEY_STATUS -> out.status = r.readInt();
-                    case KEY_HEADERS -> {
-                        if (r.isObjectStart()) {
+        r.requireObjectStart();
+        r.beginObject();
+        int seen = 0;
+        int key;
+        while ((key = r.nextRootKey()) != KEY_END) {
+            seen = r.rejectDuplicateRootKey(seen, key);
+            switch (key) {
+                case KEY_STATUS -> out.status = r.readInt();
+                case KEY_HEADERS -> {
+                    if (r.isObjectStart()) {
+                        r.beginObject();
+                        String k;
+                        while ((k = r.nextKeyCanonical()) != null) {
+                            if (out.headers == null) {
+                                // Pre-size for a typical response header
+                                // count (content-type, content-length, …).
+                                out.headers = new LinkedHashMap<>(8);
+                            }
+                            if (r.isArrayStart()) {
+                                r.beginArray();
+                                List<String> list = new ArrayList<>();
+                                while (r.hasNextElement()) {
+                                    list.add(r.readString());
+                                }
+                                out.headers.put(k, list);
+                            } else {
+                                out.headers.put(k, r.readString());
+                            }
+                        }
+                    } else {
+                        r.skipValue();
+                    }
+                }
+                case KEY_METADATA -> {
+                    if (r.isObjectStart()) {
+                        r.beginObject();
+                        out.metadata = r.readStringMap();
+                    } else {
+                        r.skipValue();
+                    }
+                }
+                case KEY_VALIDATION -> {
+                    if (r.isArrayStart()) {
+                        r.beginArray();
+                        out.validationErrors = new ArrayList<>();
+                        while (r.hasNextElement()) {
+                            if (!r.isObjectStart()) {
+                                // Fixed schema is an array of objects; a
+                                // non-object element (only on malformed
+                                // input) is skipped so the cursor still
+                                // reaches the array end cleanly.
+                                r.skipValue();
+                                continue;
+                            }
                             r.beginObject();
+                            Map<String, Object> entry = new LinkedHashMap<>(4);
                             String k;
                             while ((k = r.nextKeyCanonical()) != null) {
-                                if (out.headers == null) {
-                                    // Pre-size for a typical response header
-                                    // count (content-type, content-length, …).
-                                    out.headers = new LinkedHashMap<>(8);
-                                }
-                                if (r.isArrayStart()) {
-                                    r.beginArray();
-                                    List<String> list = new ArrayList<>();
-                                    while (r.hasNextElement()) {
-                                        list.add(r.readString());
-                                    }
-                                    out.headers.put(k, list);
-                                } else {
-                                    out.headers.put(k, r.readString());
-                                }
+                                entry.put(k, r.readPrimitiveValue());
                             }
-                        } else {
-                            r.skipValue();
+                            out.validationErrors.add(entry);
                         }
+                    } else {
+                        r.skipValue();
                     }
-                    case KEY_METADATA -> {
-                        if (r.isObjectStart()) {
-                            r.beginObject();
-                            out.metadata = r.readStringMap();
-                        } else {
-                            r.skipValue();
-                        }
-                    }
-                    case KEY_VALIDATION -> {
-                        if (r.isArrayStart()) {
-                            r.beginArray();
-                            out.validationErrors = new ArrayList<>();
-                            while (r.hasNextElement()) {
-                                if (!r.isObjectStart()) {
-                                    // Fixed schema is an array of objects; a
-                                    // non-object element (only on malformed
-                                    // input) is skipped so the cursor still
-                                    // reaches the array end cleanly.
-                                    r.skipValue();
-                                    continue;
-                                }
-                                r.beginObject();
-                                Map<String, Object> entry = new LinkedHashMap<>(4);
-                                String k;
-                                while ((k = r.nextKeyCanonical()) != null) {
-                                    entry.put(k, r.readPrimitiveValue());
-                                }
-                                out.validationErrors.add(entry);
-                            }
-                        } else {
-                            r.skipValue();
-                        }
-                    }
-                    // KEY_OTHER: "v" and any unknown field — value skipped,
-                    // never materialised.
-                    default -> r.skipValue();
                 }
+                // KEY_OTHER: "v" and any unknown field — value skipped,
+                // never materialised.
+                default -> r.skipValue();
             }
         }
         return out;
@@ -261,6 +259,12 @@ final class WireHeaderReader {
         return new IllegalArgumentException("wire header JSON: " + what + " at offset " + pos);
     }
 
+    private void requireObjectStart() {
+        if (peek() != '{') {
+            throw err("expected object");
+        }
+    }
+
     private int rejectDuplicateRootKey(int seen, int key) {
         if (key < 0) {
             return seen;
@@ -310,8 +314,8 @@ final class WireHeaderReader {
      * construction (HTTP field names + the fixed metadata / validation keys).
      */
     /**
-     * If the upcoming quoted member key is a plain-ASCII {@link #CANONICAL_KEYS}
-     * entry, consume it (key + closing quote) and return the shared instance;
+     * If the upcoming quoted member key is a plain-ASCII canonical-key entry,
+     * consume it (key + closing quote) and return the shared instance;
      * otherwise leave {@code pos} untouched and return {@code null} so the
      * caller falls back to {@link #readString()} — escaped / non-ASCII /
      * unknown keys still allocate exactly as before.
