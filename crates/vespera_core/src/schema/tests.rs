@@ -99,6 +99,19 @@ fn schema_level_example_serializes_as_examples_array() {
 }
 
 #[test]
+fn schema_level_example_and_examples_serialization_is_byte_identical() {
+    let schema = Schema {
+        example: Some(serde_json::json!("abc")),
+        examples: Some(vec![serde_json::json!("def")]),
+        ..Schema::string()
+    };
+
+    let json = serde_json::to_string(&schema).unwrap();
+
+    assert_eq!(json, r#"{"type":"string","examples":["abc","def"]}"#);
+}
+
+#[test]
 fn schema_level_legacy_example_deserializes_for_round_trip_compatibility() {
     let schema: Schema = serde_json::from_value(serde_json::json!({
         "type": "string",
@@ -269,6 +282,18 @@ fn nullable_reference_emits_anyof_ref_and_null_only() {
     assert!(
         !json.starts_with("{\"type\":"),
         "a nullable reference must not also emit a top-level type: {json}"
+    );
+}
+
+#[test]
+fn nullable_reference_serialization_is_byte_identical() {
+    let schema = Schema::nullable_reference("#/components/schemas/User".to_owned());
+
+    let json = serde_json::to_string(&schema).unwrap();
+
+    assert_eq!(
+        json,
+        r##"{"anyOf":[{"$ref":"#/components/schemas/User"},{"type":"null"}]}"##
     );
 }
 

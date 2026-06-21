@@ -11,9 +11,9 @@ use crate::{
 
 use super::{
     cache::{
-        CACHE_FORMAT, VesperaCache, compute_config_hash, compute_export_config_hash,
-        compute_macro_dev_fingerprint, compute_schema_hash, get_cache_path, get_export_cache_path,
-        hash_str, read_cache, write_cache,
+        CACHE_FORMAT, MergeSpecCache, VesperaCache, compute_config_hash_with_merge_cache,
+        compute_export_config_hash, compute_macro_dev_fingerprint, compute_schema_hash,
+        get_cache_path, get_export_cache_path, hash_str, read_cache, write_cache,
     },
     openapi_io::{
         ensure_openapi_files_from_cache, generate_and_write_openapi, load_validated_sidecar_specs,
@@ -72,7 +72,8 @@ pub fn process_vespera_macro(
         .map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: {e}")))?;
     let fingerprints = crate::collector::fingerprints_from_scan(&scanned);
     let schema_hash = compute_schema_hash(schema_storage);
-    let config_hash = compute_config_hash(processed);
+    let mut merge_specs = MergeSpecCache::new();
+    let config_hash = compute_config_hash_with_merge_cache(processed, &mut merge_specs);
     stage("fingerprints + hashes");
 
     let macro_version = env!("CARGO_PKG_VERSION").to_string();
@@ -137,7 +138,13 @@ pub fn process_vespera_macro(
         crate::parser::validate_schema_backed_extractors_with_cache(&metadata, &file_asts)?;
         stage("validate_schema_backed_extractors");
 
-        let openapi = generate_and_write_openapi(processed, &metadata, file_asts, route_storage)?;
+        let openapi = generate_and_write_openapi(
+            processed,
+            &metadata,
+            file_asts,
+            route_storage,
+            &mut merge_specs,
+        )?;
         stage("generate_and_write_openapi");
 
         write_pretty_sidecar(openapi.spec_pretty.as_deref());

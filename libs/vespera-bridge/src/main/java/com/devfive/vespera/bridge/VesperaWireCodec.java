@@ -592,9 +592,10 @@ final class VesperaWireCodec {
         // IOContext allocation.  Output is shape-identical: status (default
         // 500), headers (String | List<String>), metadata (pre-sized),
         // validation_errors, and unknown fields (incl. "v") skipped.
-        WireHeaderReader.Decoded d =
-                WireHeaderReader.decode(ByteBuffer.wrap(wire), 4, headerLen);
-        ByteBuffer body = ByteBuffer.wrap(wire, 4 + headerLen, wire.length - 4 - headerLen);
+        ByteBuffer buf = ByteBuffer.wrap(wire);
+        WireHeaderReader.Decoded d = WireHeaderReader.decode(buf, 4, headerLen);
+        buf.position(4 + headerLen).limit(wire.length);
+        ByteBuffer body = buf.slice().asReadOnlyBuffer();
         return new DecodedResponse(
                 d.status,
                 d.headers == null ? Map.of() : d.headers,

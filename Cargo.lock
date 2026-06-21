@@ -4043,6 +4043,7 @@ dependencies = [
  "serial_test",
  "syn 2.0.117",
  "tempfile",
+ "trybuild",
  "vespera_core",
 ]
 

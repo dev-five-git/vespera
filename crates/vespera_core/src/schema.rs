@@ -1,6 +1,10 @@
 //! Schema-related structure definitions
 
-use serde::{Deserialize, Serialize, ser::SerializeStruct};
+use serde::{
+    Deserialize, Serialize,
+    de::MapAccess,
+    ser::{SerializeSeq, SerializeStruct},
+};
 use std::collections::BTreeMap;
 
 /// Schema reference or inline schema.
@@ -30,23 +34,50 @@ impl<'de> Deserialize<'de> for SchemaRef {
     where
         D: serde::Deserializer<'de>,
     {
+        deserializer.deserialize_map(SchemaRefVisitor)
+    }
+}
+
+struct SchemaRefVisitor;
+
+impl<'de> serde::de::Visitor<'de> for SchemaRefVisitor {
+    type Value = SchemaRef;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an OpenAPI schema reference or inline schema object")
+    }
+
+    fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
         use serde::de::Error as _;
-        // OpenAPI is always JSON; buffer the node so a *pure* reference
-        // can be distinguished from a `$ref` carrying sibling keywords.
-        let value = serde_json::Value::deserialize(deserializer)?;
-        // Pure reference: an object whose ONLY key is `$ref` with a string
-        // value.  A `$ref` with any sibling (`nullable`, `description`, …)
-        // is an inline schema, so the siblings are preserved instead of
-        // being dropped by the prior untagged `Ref`-first match.
-        if let serde_json::Value::Object(map) = &value
-            && map.len() == 1
-            && let Some(serde_json::Value::String(ref_path)) = map.get("$ref")
-        {
-            return Ok(Self::Ref(Reference::new(ref_path.clone())));
+
+        let mut ref_path = None;
+        let mut inline = serde_json::Map::new();
+        while let Some(key) = access.next_key::<String>()? {
+            let value = access.next_value::<serde_json::Value>()?;
+            if key == "$ref"
+                && ref_path.is_none()
+                && inline.is_empty()
+                && let serde_json::Value::String(path) = value
+            {
+                ref_path = Some(path);
+            } else {
+                if let Some(path) = ref_path.take() {
+                    inline.insert("$ref".to_owned(), serde_json::Value::String(path));
+                }
+                inline.insert(key, value);
+            }
         }
-        serde_json::from_value::<Schema>(value)
-            .map(|schema| Self::Inline(Box::new(schema)))
-            .map_err(D::Error::custom)
+
+        if let Some(path) = ref_path {
+            return Ok(SchemaRef::Ref(Reference::new(path)));
+        }
+
+        serde_json::from_value::<Schema>(serde_json::Value::Object(inline))
+            .map(|schema| SchemaRef::Inline(Box::new(schema)))
+            .map_err(M::Error::custom)
     }
 }
 
@@ -286,6 +317,74 @@ impl Serialize for NumberConstraint {
     }
 }
 
+struct NullableRefSchema<'a> {
+    ref_path: &'a str,
+}
+
+impl Serialize for NullableRefSchema<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut out = serializer.serialize_struct("Schema", 1)?;
+        out.serialize_field("$ref", self.ref_path)?;
+        out.end()
+    }
+}
+
+struct NullSchema;
+
+impl Serialize for NullSchema {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut out = serializer.serialize_struct("Schema", 1)?;
+        out.serialize_field("type", &SchemaType::Null)?;
+        out.end()
+    }
+}
+
+struct NullableRefAnyOf<'a> {
+    ref_path: &'a str,
+}
+
+impl Serialize for NullableRefAnyOf<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(2))?;
+        seq.serialize_element(&NullableRefSchema {
+            ref_path: self.ref_path,
+        })?;
+        seq.serialize_element(&NullSchema)?;
+        seq.end()
+    }
+}
+
+struct ExamplesWithLegacy<'a> {
+    example: Option<&'a serde_json::Value>,
+    examples: &'a [serde_json::Value],
+}
+
+impl Serialize for ExamplesWithLegacy<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let len = self.examples.len() + usize::from(self.example.is_some());
+        let mut seq = serializer.serialize_seq(Some(len))?;
+        if let Some(example) = self.example {
+            seq.serialize_element(example)?;
+        }
+        for example in self.examples {
+            seq.serialize_element(example)?;
+        }
+        seq.end()
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 enum SchemaTypeWire {
@@ -430,13 +529,7 @@ impl Serialize for Schema {
         let mut out = serializer.serialize_struct("Schema", 42)?;
         if let Some(ref_path) = &self.ref_path {
             if nullable_ref {
-                out.serialize_field(
-                    "anyOf",
-                    &[
-                        SchemaRef::Ref(Reference::new(ref_path.clone())),
-                        SchemaRef::Inline(Box::new(Self::new(SchemaType::Null))),
-                    ],
-                )?;
+                out.serialize_field("anyOf", &NullableRefAnyOf { ref_path })?;
             } else {
                 out.serialize_field("$ref", ref_path)?;
             }
@@ -463,13 +556,22 @@ impl Serialize for Schema {
         }
         match (&self.example, &self.examples) {
             (Some(example), Some(examples)) => {
-                let mut combined_examples = Vec::with_capacity(examples.len() + 1);
-                combined_examples.push(example);
-                combined_examples.extend(examples);
-                out.serialize_field("examples", &combined_examples)?;
+                out.serialize_field(
+                    "examples",
+                    &ExamplesWithLegacy {
+                        example: Some(example),
+                        examples,
+                    },
+                )?;
             }
             (Some(example), None) => {
-                out.serialize_field("examples", &[example])?;
+                out.serialize_field(
+                    "examples",
+                    &ExamplesWithLegacy {
+                        example: Some(example),
+                        examples: &[],
+                    },
+                )?;
             }
             (None, Some(examples)) => {
                 out.serialize_field("examples", examples)?;

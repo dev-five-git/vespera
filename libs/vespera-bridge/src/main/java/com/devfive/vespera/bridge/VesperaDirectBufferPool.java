@@ -324,45 +324,53 @@ final class VesperaDirectBufferPool {
      */
     private static ByteBuffer dispatchViaPool(
             ByteBuffer[] pool, int reqLen, boolean retryOnOverflow) {
-        int n = VesperaBridge.dispatchDirect(pool[0], reqLen, pool[1]);
-        if (n == Integer.MIN_VALUE) {
-            throw responseExceedsTwoGiBException();
-        }
-        if (n < 0 && n != Integer.MIN_VALUE) {
-            int required = -n;
-            if (!retryOnOverflow) {
-                throw new BufferTooSmallException(required);
+        boolean recorded = false;
+        try {
+            int n = VesperaBridge.dispatchDirect(pool[0], reqLen, pool[1]);
+            if (n == Integer.MIN_VALUE) {
+                throw responseExceedsTwoGiBException();
             }
-            if (required > DIRECT_MAX_CAPACITY) {
-                // Response exceeds the pooled direct buffer's hard cap. Do NOT
-                // heap-buffer the whole response via dispatchBytes — that
-                // defeats streaming and risks an OOM spike on large downloads
-                // (a small/bodyless safe GET the SmartDispatch resolver routes
-                // here can still return gigabytes). Surface the overflow so the
-                // caller re-routes this request through response streaming.
-                throw new BufferTooSmallException(required);
+            if (n < 0 && n != Integer.MIN_VALUE) {
+                int required = -n;
+                if (!retryOnOverflow) {
+                    throw new BufferTooSmallException(required);
+                }
+                if (required > DIRECT_MAX_CAPACITY) {
+                    // Response exceeds the pooled direct buffer's hard cap. Do NOT
+                    // heap-buffer the whole response via dispatchBytes — that
+                    // defeats streaming and risks an OOM spike on large downloads
+                    // (a small/bodyless safe GET the SmartDispatch resolver routes
+                    // here can still return gigabytes). Surface the overflow so the
+                    // caller re-routes this request through response streaming.
+                    throw new BufferTooSmallException(required);
+                }
+                pool[1] = ByteBuffer.allocateDirect(grownCapacity(required));
+                n = VesperaBridge.dispatchDirect(pool[0], reqLen, pool[1]);
             }
-            pool[1] = ByteBuffer.allocateDirect(grownCapacity(required));
-            n = VesperaBridge.dispatchDirect(pool[0], reqLen, pool[1]);
+            if (n == Integer.MIN_VALUE) {
+                throw responseExceedsTwoGiBException();
+            }
+            if (n < 0 && n != Integer.MIN_VALUE) {
+                // A second overflow is legitimate: the retry re-ran the
+                // handler, and a non-deterministic handler may produce a
+                // larger response this time.  Surface the new exact size
+                // instead of retrying unboundedly.
+                throw new BufferTooSmallException(-n);
+            }
+            if (n < 0) {
+                throw new IllegalStateException(
+                        "dispatchDirect protocol violation: return code " + n + " after retry");
+            }
+            ByteBuffer view = pool[1].asReadOnlyBuffer();
+            view.position(0).limit(n);
+            recordDirectPoolUse(pool, reqLen, n);
+            recorded = true;
+            return view;
+        } finally {
+            if (!recorded) {
+                recordDirectPoolUse(pool, reqLen, 0);
+            }
         }
-        if (n == Integer.MIN_VALUE) {
-            throw responseExceedsTwoGiBException();
-        }
-        if (n < 0 && n != Integer.MIN_VALUE) {
-            // A second overflow is legitimate: the retry re-ran the
-            // handler, and a non-deterministic handler may produce a
-            // larger response this time.  Surface the new exact size
-            // instead of retrying unboundedly.
-            throw new BufferTooSmallException(-n);
-        }
-        if (n < 0) {
-            throw new IllegalStateException(
-                    "dispatchDirect protocol violation: return code " + n + " after retry");
-        }
-        ByteBuffer view = pool[1].asReadOnlyBuffer();
-        view.position(0).limit(n);
-        recordDirectPoolUse(pool, reqLen, n);
-        return view;
     }
 
     static IllegalStateException responseExceedsTwoGiBException() {

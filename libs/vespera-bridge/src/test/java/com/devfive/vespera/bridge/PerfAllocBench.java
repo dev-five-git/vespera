@@ -224,29 +224,49 @@ class PerfAllocBench {
                 afterBpo);
     }
 
-    /** Model DIRECT heap-scratch retained capacity before/after adaptive sizing. */
+    /** Model DIRECT heap-scratch churn before/after adaptive sizing. */
     @Test
-    void directScratchRetention_retainedBytes() {
+    void directScratchRetention_reallocations() {
         final int beforeInitial = 256 * 1024;
         final int afterInitial = 16 * 1024;
         final int afterRetainCap = 256 * 1024;
+        final int afterIdleWrites = 8;
         final int largeBody = 1024 * 1024;
+        final int writes = 50;
 
         int beforeCap = beforeInitial;
-        beforeCap = Math.max(beforeCap, largeBody);
+        int beforeReallocs = 0;
+        for (int i = 0; i < writes; i++) {
+            if (beforeCap > afterRetainCap) {
+                beforeCap = beforeInitial;
+            }
+            if (beforeCap < largeBody) {
+                beforeCap = largeBody;
+                beforeReallocs++;
+            }
+        }
 
         int afterCap = afterInitial;
-        afterCap = Math.max(afterCap, largeBody);
-        if (afterCap > afterRetainCap) {
-            afterCap = afterInitial;
+        int afterReallocs = 0;
+        int afterIdle = 0;
+        for (int i = 0; i < writes; i++) {
+            if (afterCap < largeBody) {
+                afterCap = largeBody;
+                afterReallocs++;
+            }
+            afterIdle = largeBody <= afterRetainCap ? afterIdle + 1 : 0;
+            if (afterIdle >= afterIdleWrites && afterCap > afterRetainCap) {
+                afterCap = afterInitial;
+                afterIdle = 0;
+            }
         }
 
         System.out.printf(
-                "VESPERA_ALLOC direct_scratch_retained_before bytes=%d (after one 1 MiB DIRECT body)%n",
-                beforeCap);
+                "VESPERA_ALLOC direct_scratch_reallocs_before count=%d (%d writes, %d KiB body)%n",
+                beforeReallocs, writes, largeBody / 1024);
         System.out.printf(
-                "VESPERA_ALLOC direct_scratch_retained_after  bytes=%d (shrunk to 16 KiB initial)%n",
-                afterCap);
+                "VESPERA_ALLOC direct_scratch_reallocs_after  count=%d retained_bytes=%d%n",
+                afterReallocs, afterCap);
     }
 
     private static void directWriteBefore(ByteBuffer src, java.io.OutputStream out)

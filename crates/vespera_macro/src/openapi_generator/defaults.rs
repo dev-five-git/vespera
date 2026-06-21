@@ -6,7 +6,7 @@
 //! 3. `#[serde(default)]` / `#[serde(default = "fn_name")]` attributes
 //!    (the function variant needs a parsed file AST)
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     parser::{
@@ -73,7 +73,7 @@ pub(super) fn process_default_functions(
     // resolved at compile time. A non-`Option` such field would otherwise be
     // `required` with no `default` — impossible for a client to satisfy — so it
     // is demoted to optional after the field walk.
-    let mut unresolved_default_fields: Vec<String> = Vec::new();
+    let mut unresolved_default_fields: BTreeSet<String> = BTreeSet::new();
 
     // Process each field in the struct
     if let Some(properties) = target.properties.as_mut()
@@ -123,7 +123,7 @@ pub(super) fn process_default_functions(
                     if let Some(default_value) = utils_get_type_default(&field.ty) {
                         set_property_default(properties, &field_name, default_value);
                     } else {
-                        unresolved_default_fields.push(field_name);
+                        unresolved_default_fields.insert(field_name);
                     }
                     continue;
                 }
@@ -140,7 +140,7 @@ pub(super) fn process_default_functions(
             if let Some(default_value) = resolved {
                 set_property_default(properties, &field_name, default_value);
             } else {
-                unresolved_default_fields.push(field_name);
+                unresolved_default_fields.insert(field_name);
             }
         }
     }

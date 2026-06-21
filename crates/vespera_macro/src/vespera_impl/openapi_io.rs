@@ -9,7 +9,10 @@ use crate::{
 };
 use proc_macro2::Span;
 
-use super::path_utils::{current_crate_tag, find_target_dir};
+use super::{
+    cache::{MergeSpecCache, MergeSpecRead},
+    path_utils::{current_crate_tag, find_target_dir},
+};
 
 /// OpenAPI write result consumed by router/doc codegen and incremental cache sidecars.
 #[derive(Debug)]
@@ -40,6 +43,7 @@ pub fn generate_and_write_openapi(
     metadata: &CollectedMetadata,
     file_asts: HashMap<String, syn::File>,
     route_storage: &[StoredRouteInfo],
+    merge_specs: &mut MergeSpecCache,
 ) -> MacroResult<OpenApiWriteResult> {
     if input.openapi_file_names.is_empty() && input.docs_url.is_none() && input.redoc_url.is_none()
     {
@@ -66,24 +70,19 @@ pub fn generate_and_write_openapi(
     )?;
 
     // Merge specs from child apps at compile time
-    if !input.merge.is_empty()
-        && let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR")
-    {
-        let manifest_path = Path::new(&manifest_dir);
-        let target_dir = find_target_dir(manifest_path);
-        let vespera_dir = target_dir.join("vespera");
-
+    if !input.merge.is_empty() {
         for merge_path in &input.merge {
             // Extract the struct name (last segment, e.g., "ThirdApp" from "third::ThirdApp")
-            if let Some(last_segment) = merge_path.segments.last() {
-                let struct_name = last_segment.ident.to_string();
-                let spec_file = vespera_dir.join(format!("{struct_name}.openapi.json"));
-                let spec_content = std::fs::read_to_string(&spec_file).map_err(|e| {
-                    err_call_site(format!(
-                        "OpenAPI merge: failed to read child spec for `{struct_name}` at '{}'. Error: {e}. Ensure the child crate containing `export_app!({struct_name})` is built before the parent app.",
-                        spec_file.display()
-                    ))
-                })?;
+            if let Some((struct_name, spec_file)) = merge_specs.spec_file_for(merge_path) {
+                let spec_content = match merge_specs.read(&spec_file) {
+                    MergeSpecRead::Present(content) => content,
+                    MergeSpecRead::Error(e) => {
+                        return Err(err_call_site(format!(
+                            "OpenAPI merge: failed to read child spec for `{struct_name}` at '{}'. Error: {e}. Ensure the child crate containing `export_app!({struct_name})` is built before the parent app.",
+                            spec_file.display()
+                        )));
+                    }
+                };
                 let child_spec = serde_json::from_str::<vespera_core::openapi::OpenApi>(
                     &spec_content,
                 )
@@ -327,7 +326,13 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
+        let result = generate_and_write_openapi(
+            &processed,
+            &metadata,
+            HashMap::new(),
+            &[],
+            &mut MergeSpecCache::new(),
+        );
         assert!(result.is_ok());
         let result = result.unwrap();
         assert!(result.docs_url.is_none());
@@ -351,7 +356,13 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
+        let result = generate_and_write_openapi(
+            &processed,
+            &metadata,
+            HashMap::new(),
+            &[],
+            &mut MergeSpecCache::new(),
+        );
         assert!(result.is_ok());
         let result = result.unwrap();
         assert!(result.docs_url.is_some());
@@ -379,7 +390,13 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
+        let result = generate_and_write_openapi(
+            &processed,
+            &metadata,
+            HashMap::new(),
+            &[],
+            &mut MergeSpecCache::new(),
+        );
         assert!(result.is_ok());
         let result = result.unwrap();
         assert!(result.docs_url.is_none());
@@ -404,7 +421,13 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
+        let result = generate_and_write_openapi(
+            &processed,
+            &metadata,
+            HashMap::new(),
+            &[],
+            &mut MergeSpecCache::new(),
+        );
         assert!(result.is_ok());
         let result = result.unwrap();
         assert!(result.docs_url.is_some());
@@ -431,7 +454,13 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
+        let result = generate_and_write_openapi(
+            &processed,
+            &metadata,
+            HashMap::new(),
+            &[],
+            &mut MergeSpecCache::new(),
+        );
         assert!(result.is_ok());
 
         // Verify file was written
@@ -461,7 +490,13 @@ mod tests {
             merge: vec![],
         };
         let metadata = CollectedMetadata::new();
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
+        let result = generate_and_write_openapi(
+            &processed,
+            &metadata,
+            HashMap::new(),
+            &[],
+            &mut MergeSpecCache::new(),
+        );
         assert!(result.is_ok());
 
         // Verify nested directories and file were created
@@ -492,7 +527,13 @@ mod tests {
         };
         let metadata = CollectedMetadata::new();
         // This should still work - merge logic is skipped when CARGO_MANIFEST_DIR lookup fails
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
+        let result = generate_and_write_openapi(
+            &processed,
+            &metadata,
+            HashMap::new(),
+            &[],
+            &mut MergeSpecCache::new(),
+        );
         if let Some(value) = old_manifest_dir {
             // SAFETY: This serial test restores the process environment it changed.
             unsafe { std::env::set_var("CARGO_MANIFEST_DIR", value) };
@@ -535,7 +576,13 @@ mod tests {
         };
         let metadata = CollectedMetadata::new();
 
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
+        let result = generate_and_write_openapi(
+            &processed,
+            &metadata,
+            HashMap::new(),
+            &[],
+            &mut MergeSpecCache::new(),
+        );
 
         // Restore CARGO_MANIFEST_DIR
         if let Some(old_value) = old_manifest_dir {
@@ -570,7 +617,13 @@ mod tests {
         };
         let metadata = CollectedMetadata::new();
 
-        let result = generate_and_write_openapi(&processed, &metadata, HashMap::new(), &[]);
+        let result = generate_and_write_openapi(
+            &processed,
+            &metadata,
+            HashMap::new(),
+            &[],
+            &mut MergeSpecCache::new(),
+        );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("failed to write file"));

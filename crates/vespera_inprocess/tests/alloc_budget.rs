@@ -269,7 +269,11 @@ fn allocation_budgets() {
             &direct_into,
             BUDGET_DISPATCH_INTO,
         ),
-        ("F 422-validate materialise", &validate_422, BUDGET_VALIDATE_422),
+        (
+            "F 422-validate materialise",
+            &validate_422,
+            BUDGET_VALIDATE_422,
+        ),
     ];
 
     // Print every case first so a regression failure still shows the full

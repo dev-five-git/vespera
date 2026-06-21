@@ -47,22 +47,27 @@ impl syn::parse::Parse for RouteArgs {
                 let ident: syn::Ident = input.parse()?;
                 let ident_str = ident.to_string().to_lowercase();
                 if is_http_method(&ident_str) {
+                    reject_duplicate(method.as_ref(), &ident, "HTTP method")?;
                     method = Some(ident);
                 } else if ident_str == "path" {
+                    reject_duplicate(path.as_ref(), &ident, "path")?;
                     input.parse::<syn::Token![=]>()?;
                     let lit: syn::LitStr = input.parse()?;
                     path = Some(lit);
                 } else if ident_str == "error_status" {
+                    reject_duplicate(error_status.as_ref(), &ident, "error_status")?;
                     input.parse::<syn::Token![=]>()?;
                     let array: syn::ExprArray = input.parse()?;
                     validate_error_status_array(&array)?;
                     error_status = Some(array);
                 } else if ident_str == "responses" {
+                    reject_duplicate(responses.as_ref(), &ident, "responses")?;
                     input.parse::<syn::Token![=]>()?;
                     let array: syn::ExprArray = input.parse()?;
                     validate_responses_array(&array)?;
                     responses = Some(array);
                 } else if ident_str == "status" {
+                    reject_duplicate(success_status.as_ref(), &ident, "status")?;
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitInt = input.parse()?;
                     let code = lit.base10_parse::<u16>()?;
@@ -74,34 +79,45 @@ impl syn::parse::Parse for RouteArgs {
                     }
                     success_status = Some(code);
                 } else if ident_str == "tags" {
+                    reject_duplicate(tags.as_ref(), &ident, "tags")?;
                     input.parse::<syn::Token![=]>()?;
                     let array: syn::ExprArray = input.parse()?;
                     tags = Some(array);
                 } else if ident_str == "security" {
+                    reject_duplicate(security.as_ref(), &ident, "security")?;
                     input.parse::<syn::Token![=]>()?;
                     let array: syn::ExprArray = input.parse()?;
                     security = Some(array);
                 } else if ident_str == "headers" {
+                    reject_duplicate(headers.as_ref(), &ident, "headers")?;
                     headers = Some(parse_header_values(input)?);
                 } else if ident_str == "operation_id" {
+                    reject_duplicate(operation_id.as_ref(), &ident, "operation_id")?;
                     input.parse::<syn::Token![=]>()?;
                     let lit: syn::LitStr = input.parse()?;
                     operation_id = Some(lit);
                 } else if ident_str == "summary" {
+                    reject_duplicate(summary.as_ref(), &ident, "summary")?;
                     input.parse::<syn::Token![=]>()?;
                     let lit: syn::LitStr = input.parse()?;
                     summary = Some(lit);
                 } else if ident_str == "request_example" {
+                    reject_duplicate(request_example.as_ref(), &ident, "request_example")?;
                     input.parse::<syn::Token![=]>()?;
                     let lit: syn::LitStr = input.parse()?;
                     request_example = Some(lit);
                 } else if ident_str == "response_example" {
+                    reject_duplicate(response_example.as_ref(), &ident, "response_example")?;
                     input.parse::<syn::Token![=]>()?;
                     let lit: syn::LitStr = input.parse()?;
                     response_example = Some(lit);
                 } else if ident_str == "deprecated" {
+                    if deprecated {
+                        return Err(duplicate_error(&ident, "deprecated"));
+                    }
                     deprecated = true;
                 } else if ident_str == "description" {
+                    reject_duplicate(description.as_ref(), &ident, "description")?;
                     input.parse::<syn::Token![=]>()?;
                     let lit: syn::LitStr = input.parse()?;
                     description = Some(lit);
@@ -137,6 +153,18 @@ impl syn::parse::Parse for RouteArgs {
             description,
         })
     }
+}
+
+fn reject_duplicate<T>(slot: Option<&T>, ident: &syn::Ident, name: &str) -> syn::Result<()> {
+    if slot.is_some() {
+        Err(duplicate_error(ident, name))
+    } else {
+        Ok(())
+    }
+}
+
+fn duplicate_error(ident: &syn::Ident, name: &str) -> syn::Error {
+    syn::Error::new(ident.span(), format!("#[route] `{name}` specified more than once"))
 }
 
 /// Validate `error_status = [<u16>, ...]`: every element must be an integer

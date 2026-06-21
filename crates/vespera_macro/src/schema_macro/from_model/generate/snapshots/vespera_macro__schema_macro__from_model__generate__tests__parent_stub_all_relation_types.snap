@@ -18,7 +18,11 @@ impl UserSchema {
             id: model.id.clone(),
             memos: vec![],
             profile: None,
-            settings: None,
+            settings: {
+                ::core::compile_error! {
+                    "schema_type! cannot generate a circular parent stub for required relation field `settings`; make the relation `Option<...>` to break the cycle"
+                }
+            },
             orphan_rel: Default::default(),
         };
         Ok(Self {

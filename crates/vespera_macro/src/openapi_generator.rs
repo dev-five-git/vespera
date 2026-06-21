@@ -16,7 +16,9 @@ mod paths;
 use component_schemas::{
     build_file_cache, build_schema_lookups, build_struct_file_index, parse_component_schemas,
 };
-pub use defaults::{extract_default_value_from_function, find_function_in_file};
+pub use defaults::extract_default_value_from_function;
+#[cfg(test)]
+pub use defaults::find_function_in_file;
 use paths::build_path_items;
 
 /// OpenAPI security data parsed from the `vespera!` macro.

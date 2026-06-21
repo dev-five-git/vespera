@@ -17,19 +17,16 @@ final class RequestShape {
     final long contentLength;
     final boolean transferEncodingPresent;
     final boolean definitelyBodyless;
-    final boolean currentThreadIsVirtual;
 
     private RequestShape(
             String method,
             long contentLength,
             boolean transferEncodingPresent,
-            boolean definitelyBodyless,
-            boolean currentThreadIsVirtual) {
+            boolean definitelyBodyless) {
         this.method = method;
         this.contentLength = contentLength;
         this.transferEncodingPresent = transferEncodingPresent;
         this.definitelyBodyless = definitelyBodyless;
-        this.currentThreadIsVirtual = currentThreadIsVirtual;
     }
 
     static RequestShape capture(HttpServletRequest request) {
@@ -45,8 +42,7 @@ final class RequestShape {
                 method,
                 contentLength,
                 transferEncodingPresent,
-                definitelyBodyless,
-                VesperaBridge.currentThreadIsVirtual());
+                definitelyBodyless);
         request.setAttribute(ATTRIBUTE, shape);
         return shape;
     }

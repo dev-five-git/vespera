@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{quote, quote_spanned};
 use syn::Type;
 
 use super::super::{
@@ -207,16 +207,15 @@ pub fn generate_from_model_with_relations(
                         match rel.relation_type.as_str() {
                             "HasMany" => quote! { #new_ident: vec![] },
                             _ if rel.is_optional => quote! { #new_ident: None },
-                            // KNOWN LIMITATION: a REQUIRED single relation in the
-                            // parent stub has no finite value (the stub omits
-                            // relation data to break recursion), so `None` here
-                            // is a latent type error against the `Box<_>` field.
-                            // Surfacing this cleanly (compile_error! vs. a real
-                            // value vs. supporting the shape) is a codegen design
-                            // decision tracked for maintainer review; left as the
-                            // pre-existing `None` to avoid changing behavior on a
-                            // case whose intended semantics are unsettled.
-                            _ => quote! { #new_ident: None },
+                            _ => {
+                                let message = format!(
+                                    "schema_type! cannot generate a circular parent stub for required relation field `{}`; make the relation `Option<...>` to break the cycle",
+                                    rel.field_name
+                                );
+                                let error = syn::Error::new(rel.field_name.span(), message)
+                                    .to_compile_error();
+                                quote_spanned! { rel.field_name.span() => #new_ident: { #error } }
+                            }
                         }
                     } else {
                         quote! { #new_ident: Default::default() }

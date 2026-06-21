@@ -44,6 +44,38 @@ fn test_str_to_bool_trims_surrounding_whitespace() {
     assert_eq!(str_to_bool("   "), None);
 }
 
+#[test]
+fn field_metadata_full_headers_are_optional_by_default() {
+    let metadata = FieldMetadata {
+        name: Some("file".to_owned()),
+        file_name: Some("data.bin".to_owned()),
+        content_type: Some("application/octet-stream".to_owned()),
+        headers: None,
+    };
+
+    assert!(metadata.headers().is_none());
+}
+
+#[test]
+fn temp_file_default_limit_is_bounded_and_configurable() {
+    assert_eq!(
+        default_temp_file_field_limit_bytes(),
+        DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES
+    );
+    assert_eq!(DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES, 16 * 1024 * 1024);
+
+    let previous = set_default_temp_file_field_limit_bytes(2 * 1024 * 1024);
+    assert_eq!(previous, DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES);
+    assert_eq!(default_temp_file_field_limit_bytes(), 2 * 1024 * 1024);
+
+    let restored = set_default_temp_file_field_limit_bytes(previous);
+    assert_eq!(restored, 2 * 1024 * 1024);
+    assert_eq!(
+        default_temp_file_field_limit_bytes(),
+        DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES
+    );
+}
+
 // ─── Display tests for all error variants ───────────────────────────
 
 #[test]

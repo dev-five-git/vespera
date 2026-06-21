@@ -1,0 +1,23 @@
+error: #[route] `HTTP method` specified more than once
+ --> tests/ui/route_duplicate_args.rs:3:14
+  |
+3 | #[route(get, post)]
+  |              ^^^^
+
+error: #[route] `path` specified more than once
+ --> tests/ui/route_duplicate_args.rs:6:29
+  |
+6 | #[route(get, path = "/one", path = "/two")]
+  |                             ^^^^
+
+error: #[route] `status` specified more than once
+ --> tests/ui/route_duplicate_args.rs:9:29
+  |
+9 | #[route(post, status = 201, status = 202)]
+  |                             ^^^^^^
+
+error: #[route] `responses` specified more than once
+  --> tests/ui/route_duplicate_args.rs:12:44
+   |
+12 | #[route(get, responses = [(404, Missing)], responses = [(500, Broken)])]
+   |                                            ^^^^^^^^^

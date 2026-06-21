@@ -99,7 +99,9 @@ public class VesperaBridge {
 
         public DecodedResponse {
             Objects.requireNonNull(body, "body");
-            body = body.slice().asReadOnlyBuffer();
+            if (!body.isReadOnly() || body.position() != 0) {
+                body = body.slice().asReadOnlyBuffer();
+            }
         }
 
         /**

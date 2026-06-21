@@ -100,6 +100,13 @@ struct DirEntry {
     files: Arc<[PathBuf]>,
 }
 
+#[derive(Clone)]
+struct PathLookupEntry<T> {
+    value: T,
+    fingerprint: u64,
+    last_epoch_validated: u64,
+}
+
 /// Internal cache state.
 struct FileCache {
     /// Cached `.rs` file lists per source directory with a directory
@@ -168,13 +175,13 @@ struct FileCache {
     // --- Phase 4 caches ---
     /// Cached circular reference analysis results: (module_path, definition) → analysis.
     circular_analysis: HashMap<(String, String), CircularAnalysis>,
-    /// Cached struct lookups by schema path: path_str → Option<Arc<StructMetadata>>.
+    /// Cached struct lookups by schema path plus dependency fingerprint.
     /// `None` values are cached (negative cache) to avoid repeated failed lookups.
     /// `Arc` because `StructMetadata.definition` holds the full struct
     /// source text — cloning it per hit copied kilobytes.
-    struct_lookup: HashMap<String, Option<Arc<StructMetadata>>>,
-    /// Cached FK column lookups: (schema_path, via_rel) → Option<column_name>.
-    fk_column_lookup: HashMap<(String, String), Option<String>>,
+    struct_lookup: HashMap<String, PathLookupEntry<Option<Arc<StructMetadata>>>>,
+    /// Cached FK column lookups plus dependency fingerprint.
+    fk_column_lookup: HashMap<(String, String), PathLookupEntry<Option<String>>>,
     /// Cached module path extraction from schema paths: path_str → Vec<module segments>.
     module_path_cache: HashMap<String, Vec<String>>,
     /// Cached struct definitions from files: file_path → (mtime, struct_name → definition_string).
@@ -666,6 +673,71 @@ pub fn get_circular_analysis(source_module_path: &[String], definition: &str) ->
 /// entry until the server restarts — the accepted cost of the shared-work
 /// optimisation. A future mtime-aware path cache could be both warm AND fresh,
 /// but that is a design change, not a one-line tweak.)
+fn path_lookup_fingerprint(cache: &mut FileCache, path_str: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    path_str.hash(&mut hasher);
+
+    let Some(manifest_dir) = get_manifest_dir_inner(cache) else {
+        return hasher.finish();
+    };
+    let src_dir = Path::new(&manifest_dir).join("src");
+    src_dir.hash(&mut hasher);
+
+    let segments: Vec<&str> = path_str
+        .split("::")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter(|s| *s != "crate" && *s != "self" && *s != "super")
+        .collect();
+
+    if segments.len() <= 1 {
+        let files = ensure_file_list(cache, &src_dir);
+        for path in files.iter() {
+            fingerprint_path(cache, path, &mut hasher);
+        }
+        return hasher.finish();
+    }
+
+    let module_segments = &segments[..segments.len() - 1];
+    let joined = module_segments.join("/");
+    let candidates = [
+        src_dir.join(format!("{joined}.rs")),
+        src_dir.join(format!("{joined}/mod.rs")),
+    ];
+    for path in &candidates {
+        fingerprint_path(cache, path, &mut hasher);
+    }
+
+    hasher.finish()
+}
+
+fn get_manifest_dir_inner(cache: &mut FileCache) -> Option<String> {
+    let epoch = cache.epoch;
+    if cache.manifest_dir_epoch == epoch
+        && let Some(ref dir) = cache.manifest_dir
+    {
+        return Some(dir.clone());
+    }
+    let dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+    cache.manifest_dir.clone_from(&dir);
+    cache.manifest_dir_epoch = epoch;
+    dir
+}
+
+fn fingerprint_path(cache: &mut FileCache, path: &Path, hasher: &mut DefaultHasher) {
+    path.hash(hasher);
+    match get_mtime_cached(cache, path) {
+        Some(mtime) => {
+            "mtime:some".hash(hasher);
+            if let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH) {
+                duration.as_secs().hash(hasher);
+                duration.subsec_nanos().hash(hasher);
+            }
+        }
+        None => "mtime:none".hash(hasher),
+    }
+}
+
 fn ensure_path_lookup_caches_fresh(cache: &mut FileCache) {
     cache.path_lookup_epoch = cache.epoch;
 }
@@ -694,7 +766,14 @@ pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>
     let cached = FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         ensure_path_lookup_caches_fresh(&mut cache);
-        cache.struct_lookup.get(path_str).cloned()
+        let fingerprint = path_lookup_fingerprint(&mut cache, path_str);
+        cache.struct_lookup.get(path_str).and_then(|entry| {
+            if entry.last_epoch_validated == cache.epoch || entry.fingerprint == fingerprint {
+                Some(entry.value.clone())
+            } else {
+                None
+            }
+        })
     });
     if let Some(result) = cached {
         FILE_CACHE.with(|cache| cache.borrow_mut().struct_lookup_cache_hits += 1);
@@ -704,10 +783,17 @@ pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>
     let result = super::file_lookup::find_struct_from_schema_path(path_str).map(Arc::new);
 
     FILE_CACHE.with(|cache| {
-        cache
-            .borrow_mut()
-            .struct_lookup
-            .insert(path_str.to_string(), result.clone());
+        let mut cache = cache.borrow_mut();
+        let fingerprint = path_lookup_fingerprint(&mut cache, path_str);
+        let epoch = cache.epoch;
+        cache.struct_lookup.insert(
+            path_str.to_string(),
+            PathLookupEntry {
+                value: result.clone(),
+                fingerprint,
+                last_epoch_validated: epoch,
+            },
+        );
     });
 
     result
@@ -726,7 +812,14 @@ pub fn get_fk_column(schema_path: &str, via_rel: &str) -> Option<String> {
     let cached = FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         ensure_path_lookup_caches_fresh(&mut cache);
-        cache.fk_column_lookup.get(&key).cloned()
+        let fingerprint = path_lookup_fingerprint(&mut cache, schema_path);
+        cache.fk_column_lookup.get(&key).and_then(|entry| {
+            if entry.last_epoch_validated == cache.epoch || entry.fingerprint == fingerprint {
+                Some(entry.value.clone())
+            } else {
+                None
+            }
+        })
     });
     if let Some(result) = cached {
         FILE_CACHE.with(|cache| cache.borrow_mut().fk_column_cache_hits += 1);
@@ -736,10 +829,17 @@ pub fn get_fk_column(schema_path: &str, via_rel: &str) -> Option<String> {
     let result = super::file_lookup::find_fk_column_from_target_entity(schema_path, via_rel);
 
     FILE_CACHE.with(|cache| {
-        cache
-            .borrow_mut()
-            .fk_column_lookup
-            .insert(key, result.clone());
+        let mut cache = cache.borrow_mut();
+        let fingerprint = path_lookup_fingerprint(&mut cache, schema_path);
+        let epoch = cache.epoch;
+        cache.fk_column_lookup.insert(
+            key,
+            PathLookupEntry {
+                value: result.clone(),
+                fingerprint,
+                last_epoch_validated: epoch,
+            },
+        );
     });
 
     result

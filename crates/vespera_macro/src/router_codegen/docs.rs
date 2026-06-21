@@ -16,47 +16,19 @@ pub(super) const REDOC_HTML: &str = r#"<!DOCTYPE html><html lang="en"><head><met
 pub(super) fn generate_docs_route_tokens(
     url: &str,
     html_template: &str,
-    merge_spec_code: &[proc_macro2::TokenStream],
-    has_merge: bool,
+    spec_expr: &proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let method_path = http_method_to_token_stream(HttpMethod::Get);
 
-    if has_merge {
-        quote!(
-            .route(#url, #method_path(|| async {
-                static MERGED_SPEC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-                let spec = MERGED_SPEC.get_or_init(|| {
-                    // The base spec is Vespera-generated and expected to parse; on the
-                    // unreachable drift where parse or re-serialization fails, fall back
-                    // to serving the un-merged base spec instead of panicking inside this
-                    // request handler — the docs page still renders.
-                    let Ok(mut merged) =
-                        vespera::serde_json::from_str::<vespera::OpenApi>(__VESPERA_SPEC)
-                    else {
-                        return __VESPERA_SPEC.to_string();
-                    };
-                    #(#merge_spec_code)*
-                    vespera::serde_json::to_string(&merged)
-                        .unwrap_or_else(|_| __VESPERA_SPEC.to_string())
-                });
-                static HTML: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-                let html = HTML.get_or_init(|| {
-                    format!(#html_template, spec)
-                });
-                vespera::axum::response::Html(html.as_str())
-            }))
-        )
-    } else {
-        quote!(
-            .route(#url, #method_path(|| async {
-                static HTML: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-                let html = HTML.get_or_init(|| {
-                    format!(#html_template, __VESPERA_SPEC)
-                });
-                vespera::axum::response::Html(html.as_str())
-            }))
-        )
-    }
+    quote!(
+        .route(#url, #method_path(|| async {
+            static HTML: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+            let html = HTML.get_or_init(|| {
+                format!(#html_template, #spec_expr)
+            });
+            vespera::axum::response::Html(html.as_str())
+        }))
+    )
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@ use ::std::io::{Read, Seek, SeekFrom};
 use ::std::sync::Once;
 use ::tokio::runtime::Builder;
 use ::vespera::axum::Json;
+use ::vespera::multipart::DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES;
 use ::vespera::multipart::{FieldData, TypedMultipart};
 use ::vespera::tempfile::NamedTempFile;
 use ::vespera::{Multipart, Schema, Validated};
@@ -399,7 +400,7 @@ fn named_temp_file_over_default_cap_rejected_413() {
         .build()
         .expect("tokio runtime");
 
-    let payload = vec![b'z'; 1024 * 1024 + 1];
+    let payload = vec![b'z'; DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES + 1];
     let wire = encode_multipart_upload_wire(
         "/capped-upload",
         "----TempFileCapBoundary",

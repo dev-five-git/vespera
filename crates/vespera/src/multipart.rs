@@ -13,7 +13,11 @@
 //! - [`TryFromMultipartWithState<S>`] — Trait for parsing a full multipart request
 //! - [`TryFromFieldWithState<S>`] — Trait for parsing a single multipart field
 
-use std::{borrow::Cow, fmt};
+use std::{
+    borrow::Cow,
+    fmt,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use axum::extract::multipart::{Field, MultipartError, MultipartRejection};
 use axum::extract::{FromRequest, Request};
@@ -319,8 +323,28 @@ pub struct FieldMetadata {
     pub file_name: Option<String>,
     /// The MIME content type of the field.
     pub content_type: Option<String>,
-    /// All HTTP headers associated with this multipart part.
-    pub headers: axum::http::HeaderMap,
+    /// Full HTTP headers associated with this multipart part, when explicitly captured.
+    ///
+    /// Vespera's built-in parsers only need `name`, `file_name`, and `content_type`,
+    /// so the default `FieldData<T>` path no longer clones the whole `HeaderMap` for
+    /// every field. Use [`FieldMetadata::with_headers`] when constructing metadata
+    /// manually and the complete part header map is part of your API contract.
+    pub headers: Option<axum::http::HeaderMap>,
+}
+
+impl FieldMetadata {
+    /// Return the captured full multipart part headers, if they were collected.
+    #[must_use]
+    pub const fn headers(&self) -> Option<&axum::http::HeaderMap> {
+        self.headers.as_ref()
+    }
+
+    /// Attach a full header snapshot to existing metadata.
+    #[must_use]
+    pub fn with_headers(mut self, headers: axum::http::HeaderMap) -> Self {
+        self.headers = Some(headers);
+        self
+    }
 }
 
 impl From<&Field<'_>> for FieldMetadata {
@@ -329,7 +353,7 @@ impl From<&Field<'_>> for FieldMetadata {
             name: field.name().map(String::from),
             file_name: field.file_name().map(String::from),
             content_type: field.content_type().map(String::from),
-            headers: field.headers().clone(),
+            headers: None,
         }
     }
 }
@@ -531,9 +555,32 @@ const DEFAULT_STRING_FIELD_LIMIT_BYTES: usize = 1024 * 1024; // 1 MiB
 
 /// Default streaming cap for an **unannotated** `NamedTempFile` multipart field.
 ///
+/// The cap is intentionally larger than text fields: unannotated temp-file uploads
+/// are real file uploads, but still need a denial-of-service guard by default.
 /// Explicit `#[form_data(limit = "unlimited")]` continues to opt out by passing
-/// `usize::MAX` through the derive-generated parser.
-const DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES: usize = 1024 * 1024; // 1 MiB
+/// `usize::MAX` through the derive-generated parser. Applications can tune the
+/// process-wide default before handling requests with
+/// [`set_default_temp_file_field_limit_bytes`].
+pub const DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
+
+static DEFAULT_TEMP_FILE_FIELD_LIMIT: AtomicUsize =
+    AtomicUsize::new(DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES);
+
+/// Return the current process-wide default cap for unannotated `NamedTempFile` fields.
+#[must_use]
+pub fn default_temp_file_field_limit_bytes() -> usize {
+    DEFAULT_TEMP_FILE_FIELD_LIMIT.load(Ordering::Relaxed)
+}
+
+/// Set the process-wide default cap for unannotated `NamedTempFile` fields.
+///
+/// Call this during application startup, before request handling begins. Per-field
+/// `#[form_data(limit = "...")]` annotations still take precedence, including the
+/// explicit `"unlimited"` opt-out. The previous cap is returned to support tests or
+/// embedders that need to restore their process setting.
+pub fn set_default_temp_file_field_limit_bytes(limit_bytes: usize) -> usize {
+    DEFAULT_TEMP_FILE_FIELD_LIMIT.swap(limit_bytes, Ordering::Relaxed)
+}
 
 impl<S: Send + Sync> TryFromFieldWithState<S> for String {
     async fn try_from_field_with_state(
@@ -684,7 +731,7 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for tempfile::NamedTempFile {
         })?;
         let mut file = tokio::fs::File::from_std(std_file);
 
-        let limit_bytes = limit_bytes.unwrap_or(DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES);
+        let limit_bytes = limit_bytes.unwrap_or_else(default_temp_file_field_limit_bytes);
         let mut total = 0usize;
         while let Some(chunk) = field.chunk().await? {
             // `saturating_add` (matching `read_field_data`) prevents a

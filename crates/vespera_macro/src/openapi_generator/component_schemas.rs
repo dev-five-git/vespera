@@ -89,8 +89,16 @@ pub(super) fn parse_component_schemas(
     // collector fast path skips parsing, leaving `file_cache` empty).
     let build_one = |struct_meta: &crate::metadata::StructMetadata,
                      file_ast: Option<&syn::File>|
-     -> Option<(String, vespera_core::schema::Schema)> {
-        let parsed = syn::parse_str::<syn::Item>(&struct_meta.definition).ok()?;
+     -> syn::Result<Option<(String, vespera_core::schema::Schema)>> {
+        let parsed = syn::parse_str::<syn::Item>(&struct_meta.definition).map_err(|err| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!(
+                    "failed to parse component schema `{}` metadata: {err}",
+                    struct_meta.name
+                ),
+            )
+        })?;
         let mut schema = match &parsed {
             syn::Item::Struct(struct_item) => {
                 parse_struct_to_schema(struct_item, known_schema_names, struct_definitions)
@@ -98,7 +106,7 @@ pub(super) fn parse_component_schemas(
             syn::Item::Enum(enum_item) => {
                 parse_enum_to_schema(enum_item, known_schema_names, struct_definitions)
             }
-            _ => return None,
+            _ => return Ok(None),
         };
         if let syn::Item::Struct(struct_item) = &parsed {
             process_default_functions(
@@ -108,7 +116,7 @@ pub(super) fn parse_component_schemas(
                 &struct_meta.field_defaults,
             );
         }
-        Some((struct_meta.name.clone(), schema))
+        Ok(Some((struct_meta.name.clone(), schema)))
     };
 
     // Partition: structs whose file AST is reachable need the
@@ -137,12 +145,12 @@ pub(super) fn parse_component_schemas(
     let mut schemas = BTreeMap::new();
     for (name, schema) in parallel_filter_map(
         &parallel_jobs,
-        &|meta: &&crate::metadata::StructMetadata| Ok(build_one(meta, None)),
+        &|meta: &&crate::metadata::StructMetadata| build_one(meta, None),
     )? {
         schemas.insert(name, schema);
     }
     for (struct_meta, ast) in ast_backed {
-        if let Some((name, schema)) = build_one(struct_meta, Some(ast)) {
+        if let Some((name, schema)) = build_one(struct_meta, Some(ast))? {
             schemas.insert(name, schema);
         }
     }
@@ -162,7 +170,7 @@ mod tests {
     use super::*;
     use crate::{
         metadata::{CollectedMetadata, RouteMetadata, StructMetadata},
-        openapi_generator::generate_openapi_doc_with_metadata,
+        openapi_generator::{generate_openapi_doc_with_metadata, try_generate_openapi_doc_with_metadata},
     };
 
     fn create_temp_file(dir: &TempDir, filename: &str, content: &str) -> PathBuf {
@@ -255,21 +263,38 @@ mod tests {
         assert!(schemas(&doc).contains_key(name));
     }
 
-    #[rstest]
-    #[case::non_struct_non_enum("Config", "const CONFIG: i32 = 42;")]
-    #[case::unparseable_definition("Invalid", "struct { invalid syntax {{{{")]
-    fn invalid_component_definitions_are_skipped(#[case] name: &str, #[case] definition: &str) {
+    #[test]
+    fn non_struct_non_enum_component_definitions_are_skipped() {
         let mut metadata = CollectedMetadata::new();
-        metadata.structs.push(StructMetadata {
-            name: name.to_string(),
-            definition: definition.to_string(),
-            include_in_openapi: true,
-            field_defaults: BTreeMap::new(),
-        });
+        metadata
+            .structs
+            .push(struct_meta("Config", "const CONFIG: i32 = 42;"));
 
         let doc = generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
 
         assert!(doc.components.is_none() || doc.components.as_ref().unwrap().schemas.is_none());
+    }
+
+    #[test]
+    fn unparseable_component_definition_surfaces_error() {
+        let mut metadata = CollectedMetadata::new();
+        metadata.structs.push(StructMetadata {
+            name: "Invalid".to_string(),
+            definition: "struct { invalid syntax {{{{".to_string(),
+            include_in_openapi: true,
+            field_defaults: BTreeMap::new(),
+        });
+
+        let err = try_generate_openapi_doc_with_metadata(
+            None, None, None, None, &metadata, None, &[],
+        )
+        .expect_err("invalid component metadata must surface as an error");
+
+        assert!(
+            err.to_string()
+                .contains("failed to parse component schema `Invalid` metadata"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

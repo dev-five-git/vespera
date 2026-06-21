@@ -93,6 +93,46 @@ fn path_lookup_caches_survive_epoch_bumps() {
 
 #[serial_test::serial]
 #[test]
+fn path_lookup_revalidates_when_resolved_file_mtime_changes() {
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(v) => unsafe { std::env::set_var("CARGO_MANIFEST_DIR", v) },
+                None => unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") },
+            }
+        }
+    }
+
+    let temp_dir = TempDir::new().unwrap();
+    let models_dir = temp_dir.path().join("src").join("models");
+    std::fs::create_dir_all(&models_dir).unwrap();
+    let model_path = models_dir.join("user.rs");
+    std::fs::write(&model_path, "pub struct Model { pub id: i32 }").unwrap();
+
+    let _restore = Restore(std::env::var("CARGO_MANIFEST_DIR").ok());
+    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+
+    bump_epoch();
+    let first = get_struct_from_schema_path("crate::models::user::Model")
+        .expect("initial model should resolve");
+    assert!(first.definition.contains("id : i32"));
+
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    std::fs::write(&model_path, "pub struct Model { pub name: String }").unwrap();
+
+    bump_epoch();
+    let second = get_struct_from_schema_path("crate::models::user::Model")
+        .expect("edited model should resolve");
+    assert!(
+        second.definition.contains("name : String"),
+        "path lookup must invalidate stale resolved-file entries after mtime changes: {}",
+        second.definition
+    );
+}
+
+#[serial_test::serial]
+#[test]
 fn test_print_profile_summary_with_profile_env() {
     unsafe { std::env::set_var("VESPERA_PROFILE", "1") };
 

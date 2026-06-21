@@ -114,7 +114,7 @@ public class VesperaProxyController {
                         HttpServletResponse response) throws IOException {
 
         final RequestShape shape = RequestShape.capture(request);
-        final String appName = VesperaWireCodec.normalizedAppName(appResolver.resolveAppName(request));
+        final String appName = appResolver.resolveAppName(request);
         final DispatchMode mode = modeResolver.resolveMode(request);
         final Boolean currentThreadIsVirtual = modeResolver instanceof SmartDispatchModeResolver
                 ? SmartDispatchModeResolver.cachedCurrentThreadIsVirtual(request)
@@ -217,8 +217,11 @@ public class VesperaProxyController {
     private static final int DIRECT_BODY_SCRATCH_INITIAL = 16 * 1024;
     private static final int DIRECT_BODY_COPY_CHUNK = 1024 * 1024;
     private static final int DIRECT_BODY_SCRATCH_RETAIN_CAPACITY = 256 * 1024;
+    private static final int DIRECT_BODY_SCRATCH_SHRINK_IDLE_WRITES = 8;
     private static final ThreadLocal<byte[]> DIRECT_BODY_SCRATCH =
             ThreadLocal.withInitial(() -> new byte[DIRECT_BODY_SCRATCH_INITIAL]);
+    private static final ThreadLocal<Integer> DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK =
+            ThreadLocal.withInitial(() -> 0);
 
     /**
      * Drop this thread's reusable heap scratch buffer used for DIRECT response
@@ -227,6 +230,7 @@ public class VesperaProxyController {
      */
     static void clearCurrentThreadBuffers() {
         DIRECT_BODY_SCRATCH.remove();
+        DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.remove();
     }
 
     // Package-private (not private) so unit tests can exercise the
@@ -590,12 +594,18 @@ public class VesperaProxyController {
      * <p>Names are compared case-insensitively against the canonical lowercase
      * form the wire header carries.
      */
-    private static final java.util.Set<String> HOP_BY_HOP_RESPONSE_HEADERS = java.util.Set.of(
-            "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-            "te", "trailer", "transfer-encoding", "upgrade");
-
     static boolean isHopByHopResponseHeader(String name) {
-        return HOP_BY_HOP_RESPONSE_HEADERS.contains(name.toLowerCase(java.util.Locale.ROOT));
+        return switch (name.length()) {
+            case 2 -> name.regionMatches(true, 0, "te", 0, 2);
+            case 7 -> name.regionMatches(true, 0, "trailer", 0, 7)
+                    || name.regionMatches(true, 0, "upgrade", 0, 7);
+            case 10 -> name.regionMatches(true, 0, "connection", 0, 10)
+                    || name.regionMatches(true, 0, "keep-alive", 0, 10);
+            case 17 -> name.regionMatches(true, 0, "transfer-encoding", 0, 17);
+            case 18 -> name.regionMatches(true, 0, "proxy-authenticate", 0, 18);
+            case 19 -> name.regionMatches(true, 0, "proxy-authorization", 0, 19);
+            default -> false;
+        };
     }
 
     /**
@@ -610,24 +620,21 @@ public class VesperaProxyController {
     }
 
     private static void writeDirectBody(ByteBuffer body, OutputStream out) throws IOException {
+        int initialRemaining = body.remaining();
         try {
-            byte[] scratch = directBodyScratch(Math.min(body.remaining(), DIRECT_BODY_COPY_CHUNK));
+            byte[] scratch = directBodyScratch(Math.min(initialRemaining, DIRECT_BODY_COPY_CHUNK));
             while (body.hasRemaining()) {
                 int n = Math.min(body.remaining(), scratch.length);
                 body.get(scratch, 0, n);
                 out.write(scratch, 0, n);
             }
         } finally {
-            shrinkDirectBodyScratchIfOversized();
+            shrinkDirectBodyScratchIfIdle(initialRemaining);
         }
     }
 
     private static byte[] directBodyScratch(int required) {
         byte[] scratch = DIRECT_BODY_SCRATCH.get();
-        if (scratch.length > DIRECT_BODY_SCRATCH_RETAIN_CAPACITY) {
-            scratch = new byte[DIRECT_BODY_SCRATCH_INITIAL];
-            DIRECT_BODY_SCRATCH.set(scratch);
-        }
         if (scratch.length < required) {
             scratch = new byte[Math.min(DIRECT_BODY_COPY_CHUNK, required)];
             DIRECT_BODY_SCRATCH.set(scratch);
@@ -635,9 +642,22 @@ public class VesperaProxyController {
         return scratch;
     }
 
-    private static void shrinkDirectBodyScratchIfOversized() {
-        if (DIRECT_BODY_SCRATCH.get().length > DIRECT_BODY_SCRATCH_RETAIN_CAPACITY) {
+    private static void shrinkDirectBodyScratchIfIdle(int remainingAfterWrite) {
+        byte[] scratch = DIRECT_BODY_SCRATCH.get();
+        if (scratch.length <= DIRECT_BODY_SCRATCH_RETAIN_CAPACITY) {
+            DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.set(0);
+            return;
+        }
+        if (remainingAfterWrite > DIRECT_BODY_SCRATCH_RETAIN_CAPACITY) {
+            DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.set(0);
+            return;
+        }
+        int streak = DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.get() + 1;
+        if (streak >= DIRECT_BODY_SCRATCH_SHRINK_IDLE_WRITES) {
             DIRECT_BODY_SCRATCH.set(new byte[DIRECT_BODY_SCRATCH_INITIAL]);
+            DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.set(0);
+        } else {
+            DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.set(streak);
         }
     }
 

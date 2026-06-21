@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use quote::quote;
@@ -66,6 +66,47 @@ pub(super) fn hash_str(s: &str) -> u64 {
     hasher.finish()
 }
 
+#[derive(Clone)]
+pub enum MergeSpecRead {
+    Present(String),
+    Error(String),
+}
+
+pub struct MergeSpecCache {
+    dir: Option<PathBuf>,
+    reads: HashMap<PathBuf, MergeSpecRead>,
+}
+
+impl MergeSpecCache {
+    pub(super) fn new() -> Self {
+        Self {
+            dir: merge_spec_dir(),
+            reads: HashMap::new(),
+        }
+    }
+
+    pub(super) fn spec_file_for(&self, merge_path: &syn::Path) -> Option<(String, PathBuf)> {
+        let dir = self.dir.as_ref()?;
+        let struct_name = merge_path.segments.last()?.ident.to_string();
+        Some((
+            struct_name.clone(),
+            dir.join(format!("{struct_name}.openapi.json")),
+        ))
+    }
+
+    pub(super) fn read(&mut self, path: &Path) -> MergeSpecRead {
+        if let Some(cached) = self.reads.get(path) {
+            return cached.clone();
+        }
+        let read = match std::fs::read_to_string(path) {
+            Ok(content) => MergeSpecRead::Present(content),
+            Err(err) => MergeSpecRead::Error(err.to_string()),
+        };
+        self.reads.insert(path.to_path_buf(), read.clone());
+        read
+    }
+}
+
 /// Compute a deterministic hash of SCHEMA_STORAGE contents.
 pub(super) fn compute_schema_hash(schema_storage: &HashMap<String, StructMetadata>) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -91,7 +132,17 @@ pub(super) fn compute_schema_hash(schema_storage: &HashMap<String, StructMetadat
 }
 
 /// Compute a deterministic hash of OpenAPI config fields.
+#[cfg(test)]
 pub(super) fn compute_config_hash(processed: &ProcessedVesperaInput) -> u64 {
+    let mut merge_specs = MergeSpecCache::new();
+    compute_config_hash_with_merge_cache(processed, &mut merge_specs)
+}
+
+/// Compute a deterministic hash of OpenAPI config fields, sharing merge-sidecar reads.
+pub(super) fn compute_config_hash_with_merge_cache(
+    processed: &ProcessedVesperaInput,
+    merge_specs: &mut MergeSpecCache,
+) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     processed.title.hash(&mut hasher);
     processed.version.hash(&mut hasher);
@@ -148,16 +199,14 @@ pub(super) fn compute_config_hash(processed: &ProcessedVesperaInput) -> u64 {
     // detect a child whose routes / schemas changed between builds.
     // Mirrors the sidecar resolution in `generate_and_write_openapi`
     // (`vespera_dir / <LastSegment>.openapi.json`).
-    let merge_dir = merge_spec_dir();
     for merge_path in &processed.merge {
         quote!(#merge_path).to_string().hash(&mut hasher);
-        if let (Some(dir), Some(last)) = (merge_dir.as_ref(), merge_path.segments.last()) {
-            let spec_file = dir.join(format!("{}.openapi.json", last.ident));
-            match std::fs::read_to_string(&spec_file) {
-                Ok(content) => content.hash(&mut hasher),
+        if let Some((_struct_name, spec_file)) = merge_specs.spec_file_for(merge_path) {
+            match merge_specs.read(&spec_file) {
+                MergeSpecRead::Present(content) => content.hash(&mut hasher),
                 // Absent / unreadable child sidecar → stable marker so the
                 // hashed state still differs from a present spec.
-                Err(_) => "child-spec:absent".hash(&mut hasher),
+                MergeSpecRead::Error(_) => "child-spec:absent".hash(&mut hasher),
             }
         }
     }

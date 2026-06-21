@@ -155,12 +155,17 @@ pub fn generate_router_code(
         })
         .collect();
 
+    let docs_spec_expr = if has_merge {
+        quote! { __vespera_merged_spec() }
+    } else {
+        quote! { __VESPERA_SPEC }
+    };
+
     if let Some(docs_url) = docs_url {
         router_nests.push(generate_docs_route_tokens(
             docs_url,
             SWAGGER_UI_HTML,
-            &merge_spec_code,
-            has_merge,
+            &docs_spec_expr,
         ));
     }
 
@@ -168,8 +173,7 @@ pub fn generate_router_code(
         router_nests.push(generate_docs_route_tokens(
             redoc_url,
             REDOC_HTML,
-            &merge_spec_code,
-            has_merge,
+            &docs_spec_expr,
         ));
     }
 
@@ -191,6 +195,23 @@ pub fn generate_router_code(
             quote! {
                 {
                     const __VESPERA_SPEC: &str = #spec_expr;
+                    fn __vespera_merged_spec() -> &'static str {
+                        static MERGED_SPEC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+                        MERGED_SPEC.get_or_init(|| {
+                            // The base spec is Vespera-generated and expected to parse; on the
+                            // unreachable drift where parse or re-serialization fails, fall back
+                            // to serving the un-merged base spec instead of panicking inside this
+                            // request handler — the docs page still renders.
+                            let Ok(mut merged) =
+                                vespera::serde_json::from_str::<vespera::OpenApi>(__VESPERA_SPEC)
+                            else {
+                                return __VESPERA_SPEC.to_string();
+                            };
+                            #(#merge_spec_code)*
+                            vespera::serde_json::to_string(&merged)
+                                .unwrap_or_else(|_| __VESPERA_SPEC.to_string())
+                        })
+                    }
                     #cron_code
                     vespera::VesperaRouter::new(
                         vespera::axum::Router::new()

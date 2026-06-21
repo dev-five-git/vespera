@@ -109,13 +109,7 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
 
     static Boolean cachedCurrentThreadIsVirtual(HttpServletRequest request) {
         Object value = request.getAttribute(CURRENT_THREAD_IS_VIRTUAL_ATTRIBUTE);
-        if (value instanceof Boolean cached) {
-            return cached;
-        }
-        Object shape = request.getAttribute(RequestShape.class.getName());
-        return shape instanceof RequestShape requestShape
-                ? Boolean.valueOf(requestShape.currentThreadIsVirtual)
-                : null;
+        return value instanceof Boolean cached ? cached : null;
     }
 
     DispatchMode resolveMode(HttpServletRequest request, boolean currentThreadIsVirtual) {
@@ -149,7 +143,7 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
             // for larger bodies, idempotent or not.
             boolean virtualThread = currentThreadIsVirtual != null
                     ? currentThreadIsVirtual.booleanValue()
-                    : shape.currentThreadIsVirtual;
+                    : VesperaBridge.currentThreadIsVirtual();
             request.setAttribute(CURRENT_THREAD_IS_VIRTUAL_ATTRIBUTE, Boolean.valueOf(virtualThread));
             if (virtualThread) {
                 return syncSized(contentLength, bodyless)

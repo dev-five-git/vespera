@@ -32,14 +32,24 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{LazyLock, Mutex},
+    time::SystemTime,
 };
 
 use crate::metadata::StructMetadata;
 
 pub static SCHEMA_STORAGE: LazyLock<Mutex<HashMap<String, StructMetadata>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+static DEFAULT_FUNCTION_CACHE: LazyLock<Mutex<HashMap<PathBuf, DefaultFunctionCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Clone)]
+struct DefaultFunctionCacheEntry {
+    mtime: SystemTime,
+    values: BTreeMap<String, serde_json::Value>,
+}
 
 /// Extract custom schema name from #[schema(name = "...")] attribute
 pub fn extract_schema_name_attr(attrs: &[syn::Attribute]) -> Option<String> {
@@ -180,19 +190,72 @@ pub fn extract_field_defaults_from_path(
         return defaults;
     }
 
-    // Read and parse the file (cached via FileCache parsed_file_asts)
-    let Some(file_ast) = crate::schema_macro::file_cache::get_parsed_file(file_path) else {
-        return defaults;
-    };
-
-    // Extract default values from functions
-    defaults.extend(extract_defaults_from_file(&fn_defaults, &file_ast));
+    defaults.extend(extract_defaults_from_path(&fn_defaults, file_path));
     defaults
+}
+
+fn extract_defaults_from_path(
+    fn_defaults: &[(String, String)],
+    file_path: &Path,
+) -> BTreeMap<String, serde_json::Value> {
+    let Some(function_defaults) = cached_default_functions(file_path) else {
+        return BTreeMap::new();
+    };
+    fn_defaults
+        .iter()
+        .filter_map(|(field_name, fn_name)| {
+            function_defaults
+                .get(fn_name)
+                .cloned()
+                .map(|value| (field_name.clone(), value))
+        })
+        .collect()
+}
+
+fn cached_default_functions(file_path: &Path) -> Option<BTreeMap<String, serde_json::Value>> {
+    let mtime = std::fs::metadata(file_path).ok()?.modified().ok()?;
+    if let Some(values) = DEFAULT_FUNCTION_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(file_path)
+        .and_then(|entry| (entry.mtime == mtime).then(|| entry.values.clone()))
+    {
+        return Some(values);
+    }
+
+    let file_ast = crate::schema_macro::file_cache::get_parsed_file(file_path)?;
+    let values = extract_default_functions_from_file(&file_ast);
+    DEFAULT_FUNCTION_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(
+            file_path.to_path_buf(),
+            DefaultFunctionCacheEntry {
+                mtime,
+                values: values.clone(),
+            },
+        );
+    Some(values)
+}
+
+fn extract_default_functions_from_file(file_ast: &syn::File) -> BTreeMap<String, serde_json::Value> {
+    file_ast
+        .items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Fn(func) = item else {
+                return None;
+            };
+            crate::openapi_generator::extract_default_value_from_function(func)
+                .map(|value| (func.sig.ident.to_string(), value))
+        })
+        .collect()
 }
 
 /// Extract default values by finding functions in the given file AST.
 /// Separated from `extract_field_defaults` for testability (proc_macro2::Span
 /// is not available in unit tests).
+#[cfg(test)]
 pub fn extract_defaults_from_file(
     fn_defaults: &[(String, String)],
     file_ast: &syn::File,
