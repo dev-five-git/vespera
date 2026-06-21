@@ -38,6 +38,26 @@ pub(super) fn push_unless_header_failed(
     }
 }
 
+/// Whether the panic-path fallback header (a one-shot `500`) should be delivered
+/// after a Rust panic unwound out of a streaming-with-header dispatch.
+///
+/// It fires ONLY when the header consumer was never invoked: `header_sent`
+/// records a SUCCESSFUL invocation and `header_failed` records one that THREW —
+/// either flag means "already invoked once", so a later panic must NOT re-enter
+/// the consumer.  Re-entry would break the documented "header consumer invoked
+/// exactly once on every code path" contract and re-deliver to a consumer that
+/// may already be in a failed / partially-committed state.  Only a panic that
+/// unwound BEFORE the callback was ever reached (both flags false) earns the
+/// fallback, so the Java caller is never left without a header.
+///
+/// (The prior inline guard tested `!header_sent` alone, which double-invoked the
+/// consumer in the rare "callback threw, then the dispatch future panicked"
+/// edge; this predicate closes that gap and is unit-tested in
+/// `jni_impl_streaming_abort_tests.rs`.)
+pub(super) fn should_fire_fallback_header(header_sent: bool, header_failed: bool) -> bool {
+    !header_sent && !header_failed
+}
+
 /// Promoted refs + a checked-out chunk buffer for a response
 /// streaming-with-header dispatch.  Aliased so the helper return type stays
 /// under clippy's `type_complexity` cap.

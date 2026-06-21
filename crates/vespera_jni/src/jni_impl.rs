@@ -199,7 +199,7 @@ fn panic_wire() -> Vec<u8> {
 mod support;
 use support::{
     push_unless_header_failed, setup_full_stream, setup_full_stream_with_header, setup_stream,
-    setup_stream_with_header, throw_streaming_abort,
+    setup_stream_with_header, should_fire_fallback_header, throw_streaming_abort,
 };
 
 /// `com.devfive.vespera.bridge.VesperaBridge.dispatchBytes(byte[]) -> byte[]`
@@ -684,8 +684,14 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                     }
                 }
                 Err(_) => {
-                    if !header_sent.load(Ordering::Relaxed)
-                        && let Ok(fallback) = env.new_global_ref(&header_consumer)
+                    // See `should_fire_fallback_header`: a panic re-enters the
+                    // header consumer ONLY when it was never invoked (neither
+                    // succeeded nor threw), upholding the "invoked exactly once on
+                    // every code path" contract.
+                    if should_fire_fallback_header(
+                        header_sent.load(Ordering::Relaxed),
+                        header_failed.load(Ordering::Acquire),
+                    ) && let Ok(fallback) = env.new_global_ref(&header_consumer)
                     {
                         let err = panic_wire();
                         let _ = call_header_consumer(env, &fallback, &err);
@@ -828,8 +834,14 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                     }
                 }
                 Err(_) => {
-                    if !header_sent.load(Ordering::Relaxed)
-                        && let Ok(fallback) = env.new_global_ref(&header_consumer)
+                    // See `should_fire_fallback_header`: a panic re-enters the
+                    // header consumer ONLY when it was never invoked (neither
+                    // succeeded nor threw), upholding the "invoked exactly once on
+                    // every code path" contract.
+                    if should_fire_fallback_header(
+                        header_sent.load(Ordering::Relaxed),
+                        header_failed.load(Ordering::Acquire),
+                    ) && let Ok(fallback) = env.new_global_ref(&header_consumer)
                     {
                         let err = panic_wire();
                         let _ = call_header_consumer(env, &fallback, &err);

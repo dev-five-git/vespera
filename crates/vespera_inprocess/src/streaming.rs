@@ -543,13 +543,24 @@ where
     outcome
 }
 
+/// Lock the producer handle, transparently recovering the guard if the mutex
+/// was poisoned.  A poison here only means a prior holder panicked while the
+/// streaming path was tearing down; the guarded `Option<JoinHandle>` is still
+/// structurally valid, so recovering and proceeding is correct — and keeps this
+/// FFI-adjacent path free of the `unwrap` panic site each of the three call
+/// sites would otherwise carry.  (Same idiom as the registry/bench read paths.)
+fn lock_producer_handle(
+    producer_handle: &RequestProducerHandle,
+) -> std::sync::MutexGuard<'_, Option<tokio::task::JoinHandle<()>>> {
+    producer_handle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Whether the request producer task was started — i.e. the handler read
 /// at least one body chunk, which lazily spawns the producer.
 fn producer_was_started(producer_handle: &RequestProducerHandle) -> bool {
-    match producer_handle.lock() {
-        Ok(guard) => guard.is_some(),
-        Err(poisoned) => poisoned.into_inner().is_some(),
-    }
+    lock_producer_handle(producer_handle).is_some()
 }
 
 /// RAII guard that closes the request body source **exactly once** if the
@@ -750,24 +761,13 @@ fn store_request_producer_handle(
     producer_handle: &RequestProducerHandle,
     handle: tokio::task::JoinHandle<()>,
 ) {
-    match producer_handle.lock() {
-        Ok(mut guard) => *guard = Some(handle),
-        Err(poisoned) => {
-            let mut guard = poisoned.into_inner();
-            *guard = Some(handle);
-        }
-    }
+    *lock_producer_handle(producer_handle) = Some(handle);
 }
 
 async fn await_request_producer(producer_handle: &RequestProducerHandle) {
-    let handle = match producer_handle.lock() {
-        Ok(mut guard) => guard.take(),
-        Err(poisoned) => {
-            let mut guard = poisoned.into_inner();
-            guard.take()
-        }
-    };
-
+    // Take the handle and release the guard on the same statement: a
+    // `MutexGuard` is not `Send` and must never be held across the `.await`.
+    let handle = lock_producer_handle(producer_handle).take();
     if let Some(handle) = handle {
         let _ = handle.await;
     }

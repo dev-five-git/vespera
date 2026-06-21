@@ -182,15 +182,20 @@ fn write_headers<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap) {
         return;
     }
     if key_count == 1 {
-        let name = headers
-            .keys()
-            .next()
-            .expect("keys_len()==1 yields exactly one name");
-        sink.put(b"{");
-        write_header_name_json_string(sink, name.as_str());
-        sink.put(b":");
-        write_header_value(sink, headers, name.as_str());
-        sink.put(b"}");
+        // `keys_len() == 1` guarantees exactly one key.  On the impossible
+        // `None` we emit an empty object instead of panicking, keeping this
+        // FFI-adjacent response serializer free of unwind sites (mirrors the
+        // no-panic/unwind discipline the dispatch internals document).
+        if let Some(name) = headers.keys().next() {
+            sink.put(b"{");
+            write_header_name_json_string(sink, name.as_str());
+            sink.put(b":");
+            write_header_value(sink, headers, name.as_str());
+            sink.put(b"}");
+        } else {
+            debug_assert!(false, "keys_len()==1 yields exactly one name");
+            sink.put(b"{}");
+        }
         return;
     }
 
@@ -241,9 +246,14 @@ fn write_header_name_json_string<S: JsonSink>(sink: &mut S, name: &str) {
 /// (first, second, then the rest) — byte-identical, no second hash lookup.
 fn write_header_value<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap, name: &str) {
     let mut values = headers.get_all(name).iter();
-    let first = values
-        .next()
-        .expect("write_header_value is only called for present names");
+    // `write_header_value` is only invoked for names taken from `headers.keys()`,
+    // so `get_all(name)` is always non-empty.  On the impossible `None` we emit an
+    // empty-string value rather than panicking on this response hot path.
+    let Some(first) = values.next() else {
+        debug_assert!(false, "write_header_value is only called for present names");
+        write_json_string(sink, "");
+        return;
+    };
     match values.next() {
         // Single value: emit the scalar string.
         None => write_json_string(sink, first.to_str().unwrap_or("")),

@@ -74,6 +74,17 @@ public class VesperaProxyController {
     private final boolean directRetryOnOverflow;
     private final long maxBufferedRequestBytes;
 
+    /**
+     * One-time guard for the "custom resolver routed an UNSAFE method to
+     * DIRECT, downgraded to SYNC" warning. A misconfigured custom
+     * {@link DispatchModeResolver} would otherwise log on every unsafe
+     * request; warn once at WARN, then DEBUG thereafter, so the
+     * misconfiguration is observable without per-request log spam.
+     */
+    private static final java.util.concurrent.atomic.AtomicBoolean
+            UNSAFE_DIRECT_DOWNGRADE_WARNED =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+
     public VesperaProxyController(AppNameResolver appResolver,
                                   DispatchModeResolver modeResolver) {
         this(appResolver, modeResolver, ForkJoinPool.commonPool(), true, 0);
@@ -433,6 +444,20 @@ public class VesperaProxyController {
             // execution).  A custom DispatchModeResolver can route an unsafe
             // method here, so gate it at the controller boundary: serve unsafe
             // requests via SYNC, which never re-runs the handler.
+            //
+            // The autoconfigured SmartDispatchModeResolver never routes unsafe
+            // methods to DIRECT, so reaching here means a CUSTOM resolver is
+            // misconfigured. Make it observable: warn once (then DEBUG) so the
+            // operator sees the silent downgrade without per-request spam.
+            if (UNSAFE_DIRECT_DOWNGRADE_WARNED.compareAndSet(false, true)) {
+                log.warn("DispatchModeResolver routed unsafe method {} to DIRECT; "
+                        + "downgrading to SYNC (DIRECT overflow retry re-runs the handler, "
+                        + "unsafe for non-safe methods). Fix the custom resolver to avoid "
+                        + "this downgrade. Further occurrences log at DEBUG.", method);
+            } else if (log.isDebugEnabled()) {
+                log.debug("DispatchModeResolver routed unsafe method {} to DIRECT; "
+                        + "downgrading to SYNC.", method);
+            }
             dispatchSync(response, appName, method, path, query, headers, body);
             return;
         }

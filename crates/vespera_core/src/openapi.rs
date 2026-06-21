@@ -316,12 +316,17 @@ impl OpenApi {
         // Merge tags, de-duplicating by name with first-wins semantics while
         // preserving deterministic output order (existing tags first, then
         // incoming tags in their original order).
+        //
+        // A linear `any` scan beats a `HashSet<String>` here: tag sets are
+        // tiny (OpenAPI tags are top-level operation groupings — a handful,
+        // rarely past a few dozen even for large APIs), so the O(n²) short-
+        // string compare over an already-resident `Vec` is cheaper than
+        // allocating a set and cloning every existing + incoming tag name.
+        // Net: zero allocations and zero `String` clones on the merge path.
         if let Some(other_tags) = other.tags {
             let self_tags = self.tags.get_or_insert_with(Vec::new);
-            let mut seen: std::collections::HashSet<String> =
-                self_tags.iter().map(|tag| tag.name.clone()).collect();
             for tag in other_tags {
-                if seen.insert(tag.name.clone()) {
+                if !self_tags.iter().any(|existing| existing.name == tag.name) {
                     self_tags.push(tag);
                 }
             }

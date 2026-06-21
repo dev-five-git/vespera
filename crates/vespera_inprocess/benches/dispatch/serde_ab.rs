@@ -8,6 +8,11 @@
 //! `#[cfg(feature = "bench-support")]`). Wired into the parent `ab_benches`
 //! criterion group.
 
+// This is a `#[path]` bench submodule of `dispatch.rs`; it intentionally
+// re-uses the parent bench file's imports (criterion types, header types,
+// wire-assembly helpers) rather than re-listing them.  The glob is the
+// idiomatic shape for a bench helper split out only to honour the file-size cap.
+#[allow(clippy::wildcard_imports)]
 use super::*;
 
 /// `request_parse_*` / `response_serialize_*` within-run A/B: the hand-rolled

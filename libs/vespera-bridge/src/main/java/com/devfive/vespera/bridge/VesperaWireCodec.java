@@ -190,7 +190,9 @@ final class VesperaWireCodec {
             Map<String, String> headers,
             byte[] body) {
         ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
-        return assembleWire(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY);
+        byte[] wire = assembleWire(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY);
+        shrinkHeaderBufferIfOversized(hdr);
+        return wire;
     }
 
     static byte[] encodeRequest(
@@ -201,7 +203,9 @@ final class VesperaWireCodec {
             HeaderSource headers,
             byte[] body) {
         ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
-        return assembleWire(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY);
+        byte[] wire = assembleWire(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY);
+        shrinkHeaderBufferIfOversized(hdr);
+        return wire;
     }
 
     static int encodeRequestInto(
@@ -213,7 +217,10 @@ final class VesperaWireCodec {
             byte[] body,
             ByteBuffer target) {
         ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
-        return assembleInto(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY, target);
+        int written = assembleInto(
+                hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY, target);
+        shrinkHeaderBufferIfOversized(hdr);
+        return written;
     }
 
     static int encodeRequestInto(
@@ -225,7 +232,10 @@ final class VesperaWireCodec {
             byte[] body,
             ByteBuffer target) {
         ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
-        return assembleInto(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY, target);
+        int written = assembleInto(
+                hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY, target);
+        shrinkHeaderBufferIfOversized(hdr);
+        return written;
     }
 
     /**
@@ -460,6 +470,25 @@ final class VesperaWireCodec {
             buf.reset();
         }
         return buf;
+    }
+
+    /**
+     * Proactively release a per-thread header buffer that one pathologically
+     * large header grew past {@link #HEADER_RETAIN_CAPACITY}. Called right
+     * after the header is built and consumed, so the oversized backing array
+     * is dropped immediately instead of staying pinned for the servlet
+     * thread's lifetime until that thread happens to encode another request.
+     *
+     * <p>The bytes have already been consumed by the caller
+     * ({@code assembleWire} / {@code assembleInto} / {@code dispatchBytes})
+     * before this runs, so replacing the buffer here is safe.
+     * {@link #reusableHeaderBuffer()} still keeps its lazy shrink as a
+     * defense-in-depth fallback for any path that does not call this.
+     */
+    static void shrinkHeaderBufferIfOversized(ExposedByteArrayOutputStream buf) {
+        if (buf.capacity() > HEADER_RETAIN_CAPACITY) {
+            HEADER_BUF.set(new ExposedByteArrayOutputStream(HEADER_INITIAL_CAPACITY));
+        }
     }
 
     /**

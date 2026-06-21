@@ -138,8 +138,14 @@ public class VesperaBridgeAutoConfiguration {
 
     @Bean("vesperaBridgeAsyncResponseExecutor")
     @ConditionalOnMissingBean(name = "vesperaBridgeAsyncResponseExecutor")
-    public ExecutorService vesperaBridgeAsyncResponseExecutor() {
-        int threads = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
+    public ExecutorService vesperaBridgeAsyncResponseExecutor(VesperaBridgeProperties props) {
+        // Default (asyncPoolSize <= 0) preserves the historical sizing:
+        // Math.max(2, Math.min(4, cpus)). A positive vespera.bridge.async-pool-size
+        // overrides the cap for high-concurrency async dispatch (clamped to >= 1).
+        int configured = props.getAsyncPoolSize();
+        int threads = configured > 0
+                ? configured
+                : Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
         AtomicInteger seq = new AtomicInteger(1);
         ThreadFactory factory = task -> {
             Thread thread = new Thread(task, "vespera-bridge-async-response-" + seq.getAndIncrement());

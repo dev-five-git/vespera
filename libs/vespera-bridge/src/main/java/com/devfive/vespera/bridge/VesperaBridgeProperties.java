@@ -90,6 +90,16 @@ public class VesperaBridgeProperties {
      */
     private long maxBufferedRequestBytes = 0;
 
+    /**
+     * Thread count for the autoconfigured {@code vesperaBridgeAsyncResponseExecutor}
+     * — the JVM-side pool that parses the ASYNC wire response off the native
+     * completion thread.  Default {@code 0} preserves the historical sizing
+     * ({@code Math.max(2, Math.min(4, availableProcessors()))}).  Set a positive
+     * value to override the cap for high-concurrency async dispatch; the value
+     * is clamped to at least {@code 1}.
+     */
+    private int asyncPoolSize = 0;
+
     public String getAppHeader() {
         return appHeader;
     }
@@ -128,5 +138,13 @@ public class VesperaBridgeProperties {
 
     public void setMaxBufferedRequestBytes(long maxBufferedRequestBytes) {
         this.maxBufferedRequestBytes = maxBufferedRequestBytes;
+    }
+
+    public int getAsyncPoolSize() {
+        return asyncPoolSize;
+    }
+
+    public void setAsyncPoolSize(int asyncPoolSize) {
+        this.asyncPoolSize = asyncPoolSize;
     }
 }
