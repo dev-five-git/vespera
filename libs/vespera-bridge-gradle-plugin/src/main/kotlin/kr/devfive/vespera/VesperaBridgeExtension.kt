@@ -57,4 +57,25 @@ abstract class VesperaBridgeExtension {
      * Java build to invoke cargo implicitly.
      */
     abstract val autoBuildCargo: Property<Boolean>
+
+    /**
+     * Cargo build profile selecting both the output subdirectory and the
+     * build flag. `"release"` (default) → `cargo build --release` →
+     * `target/release/`; `"dev"` (or `"debug"`) → plain `cargo build` →
+     * `target/debug/`; any other `"<p>"` → `cargo build --profile <p>` →
+     * `target/<p>/`. Lets debug or custom-profile cdylibs be bundled
+     * without hand-editing the plugin (the previous hardcoded `--release`
+     * forced every consumer onto the release profile).
+     */
+    abstract val cargoProfile: Property<String>
+
+    /**
+     * Base Cargo target directory that holds the per-profile output
+     * subdirectory. Defaults to `<cargoRoot>/target`. Set this when the
+     * workspace redirects Cargo output via `CARGO_TARGET_DIR` or a
+     * `.cargo/config.toml` `build.target-dir`, so the plugin locates the
+     * cdylib (and, when `autoBuildCargo` is on, directs cargo's output)
+     * at the right place instead of failing on the default `target/`.
+     */
+    abstract val targetDir: DirectoryProperty
 }

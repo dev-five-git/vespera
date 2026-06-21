@@ -42,6 +42,7 @@ class VesperaBridgePlugin : Plugin<Project> {
             .create("vespera", VesperaBridgeExtension::class.java)
         ext.autoBuildCargo.convention(false)
         ext.cargoSourceRoots.convention(listOf("src", "crates", "examples"))
+        ext.cargoProfile.convention("release")
 
         // Compute platform-derived values eagerly (host machine info).
         val os = detectOs()
@@ -49,11 +50,16 @@ class VesperaBridgePlugin : Plugin<Project> {
         val generatedResourcesDir = project.layout.buildDirectory.dir("generated/vesperaNativeResources")
         val targetSubdir = "native/$os-$arch"
 
-        // Lazy file references — evaluated at task execution.
+        // Lazy file references — evaluated at task execution.  The cdylib
+        // lives under `<targetDir|cargoRoot/target>/<profileDir>/`, so a
+        // debug / custom-profile build or a redirected CARGO_TARGET_DIR is
+        // located correctly instead of being hardcoded to `target/release/`.
         val cdylibFile = project.provider {
-            val root = ext.cargoRoot.get().asFile
             val name = ext.crateName.get()
-            File(root, "target/release/" + mapLibraryName(os, name))
+            val targetBase =
+                if (ext.targetDir.isPresent) ext.targetDir.get().asFile
+                else File(ext.cargoRoot.get().asFile, "target")
+            File(targetBase, profileDir(ext.cargoProfile.get()) + "/" + mapLibraryName(os, name))
         }
 
         val cargoBuildTask = project.tasks.register(
@@ -64,7 +70,24 @@ class VesperaBridgePlugin : Plugin<Project> {
                     t.group = "vespera"
                     t.description = "Build the Rust cdylib via `cargo build --release`."
                     t.workingDir = ext.cargoRoot.get().asFile
-                    t.commandLine("cargo", "build", "-p", ext.crateName.get(), "--release")
+                    // Profile-aware command: `release` → `--release`, `dev`/
+                    // `debug` → default build, any other → `--profile <p>`.
+                    val profile = ext.cargoProfile.get()
+                    val cmd = mutableListOf("cargo", "build", "-p", ext.crateName.get())
+                    when (profile) {
+                        "release" -> cmd.add("--release")
+                        "dev", "debug" -> {} // default profile → target/debug
+                        else -> { cmd.add("--profile"); cmd.add(profile) }
+                    }
+                    t.commandLine(cmd)
+                    // Honour a redirected target dir so cargo writes where
+                    // `bundleNativeLib` later looks for the cdylib.
+                    if (ext.targetDir.isPresent) {
+                        t.environment(
+                            "CARGO_TARGET_DIR",
+                            ext.targetDir.get().asFile.absolutePath,
+                        )
+                    }
                     // Up-to-date check: re-run on workspace manifests, Cargo.lock,
                     // and Rust sources in configured roots. This repository keeps
                     // Rust code under crates/* and examples/*, not only src/.
@@ -97,8 +120,12 @@ class VesperaBridgePlugin : Plugin<Project> {
                             val src = cdylibFile.get()
                             require(src.exists()) {
                                 "Native library not found: $src\n" +
-                                    "Run: cargo build -p ${ext.crateName.get()} --release " +
-                                    "(or set vespera.autoBuildCargo = true)"
+                                    "Build the '${ext.crateName.get()}' cdylib for the " +
+                                    "'${ext.cargoProfile.get()}' profile (or set " +
+                                    "vespera.autoBuildCargo = true). If the workspace " +
+                                    "redirects Cargo output (CARGO_TARGET_DIR / " +
+                                    ".cargo/config.toml build.target-dir), set " +
+                                    "vespera.targetDir to that directory."
                             }
                         }
                     })
@@ -166,5 +193,15 @@ class VesperaBridgePlugin : Plugin<Project> {
         "windows" -> "$name.dll"
         "macos" -> "lib$name.dylib"
         else -> "lib$name.so"
+    }
+
+    /**
+     * Map a Cargo profile name to its `target/` output subdirectory.
+     * Cargo's built-in `dev` profile emits to `debug`; every other profile
+     * (`release`, or a custom `[profile.X]`) uses its own name verbatim.
+     */
+    private fun profileDir(profile: String): String = when (profile) {
+        "dev", "debug" -> "debug"
+        else -> profile
     }
 }

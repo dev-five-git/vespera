@@ -502,17 +502,15 @@ final class WireHeaderReader {
         // decode loop below.
         int simpleLen = simpleAsciiRun();
         if (simpleLen >= 0) {
-            String s;
-            if (buf.hasArray()) {
-                // Heap-backed buffer (ByteBuffer.wrap on the SYNC / streaming
-                // / async paths): build the String straight from the backing
-                // array — one copy, no intermediate byte[].  Direct buffers
-                // (the DIRECT dispatch path) have no accessible array and keep
-                // the absolute bulk-get copy below.
-                s = WireHeaderStringSupport.readAsciiString(buf, pos, simpleLen);
-            } else {
-                s = WireHeaderStringSupport.readAsciiString(buf, pos, simpleLen);
-            }
+            // `readAsciiString` already branches on `buf.hasArray()` itself:
+            // heap-backed buffers (SYNC / streaming / async, ByteBuffer.wrap)
+            // build the String straight from the backing array (one copy, no
+            // intermediate byte[]), while direct buffers (the DIRECT dispatch
+            // path) fall back to a pooled-scratch bulk-get — so this single
+            // call is already optimal for both buffer kinds. The previous outer
+            // `if (buf.hasArray()) ... else ...` invoked the identical call in
+            // both arms (dead branch); collapsed here.
+            String s = WireHeaderStringSupport.readAsciiString(buf, pos, simpleLen);
             pos += simpleLen + 1; // consume the run + the closing quote
             return s;
         }

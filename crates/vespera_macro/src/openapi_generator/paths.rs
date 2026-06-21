@@ -94,6 +94,14 @@ pub(super) fn build_path_items(
     for (idx, route_meta) in metadata.routes.iter().enumerate() {
         // ROUTE_STORAGE first (avoids file_cache dependency for known
         // routes) — same priority order as the previous sequential code.
+        //
+        // `normalize_path_key` canonicalises the path (allocates + folds
+        // `.`/`..` components + display-renders + Windows case-folds), so
+        // compute it ONCE per route and reuse the owned key: the storage
+        // lookup takes it by reference, and on a storage miss the `fn_index`
+        // fallback MOVES the same `String` out of `storage_key.0` instead of
+        // recomputing it.  The prior code ran the full normalization twice
+        // per route.
         let storage_key = (
             Some(normalize_path_key(&route_meta.file_path, &cwd)),
             route_meta.function_name.as_str(),
@@ -106,7 +114,8 @@ pub(super) fn build_path_items(
             .or_else(|| storage_fn_sigs.get(&legacy_storage_key).copied().flatten())
         {
             parallel_jobs.push((idx, route_meta, fn_sig_str));
-        } else if let Some(fns) = fn_index.get(&normalize_path_key(&route_meta.file_path, &cwd))
+        } else if let Some(norm_key) = storage_key.0
+            && let Some(fns) = fn_index.get(&norm_key)
             && let Some(fn_item) = fns.get(&route_meta.function_name)
         {
             ast_jobs.push((idx, route_meta, &fn_item.sig));
@@ -186,21 +195,19 @@ fn build_storage_fn_sigs<'a>(
 ) -> StorageFnSigs<'a> {
     let mut storage = HashMap::with_capacity(route_storage.len());
     for s in route_storage {
-        let already_in_ast = s
-            .file_path
-            .as_deref()
-            .map(|fp| normalize_path_key(fp, cwd))
-            .and_then(|fp| fn_index.get(&fp))
+        // Canonicalise the stored path ONCE per route (it allocates + folds
+        // path components + display-renders) and reuse it for both the
+        // `already_in_ast` skip check (by reference) and the storage key (by
+        // move) — the prior code ran the full normalization twice per route.
+        let norm_fp = s.file_path.as_deref().map(|fp| normalize_path_key(fp, cwd));
+        let already_in_ast = norm_fp
+            .as_ref()
+            .and_then(|fp| fn_index.get(fp))
             .is_some_and(|fns| fns.contains_key(&s.fn_name));
         if already_in_ast {
             continue;
         }
-        let key = (
-            s.file_path
-                .as_deref()
-                .map(|path| normalize_path_key(path, cwd)),
-            s.fn_name.as_str(),
-        );
+        let key = (norm_fp, s.fn_name.as_str());
         storage
             .entry(key)
             .and_modify(|slot| *slot = None)
