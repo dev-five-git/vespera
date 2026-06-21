@@ -790,6 +790,11 @@ public class VesperaProxyController {
             case "X-Forwarded-Host": return "x-forwarded-host";
             case "X-Forwarded-Proto": return "x-forwarded-proto";
             case "X-Request-Id": return "x-request-id";
+            // X-Vespera-App is the multi-app routing header sent on EVERY
+            // request in multi-app deployments (the HeaderAppNameResolver
+            // default); keep it on the allocation-free switch path instead of
+            // falling through to a per-request char[]+String lowercase copy.
+            case "X-Vespera-App": return "x-vespera-app";
             default: break;
         }
         for (int i = 0; i < name.length(); i++) {
