@@ -94,6 +94,21 @@ class WireHeaderReaderTest {
     }
 
     @Test
+    void handlesEscapedUnicodeSurrogatePairInValues() {
+        Captured c = run("{\"status\":200,\"headers\":{\"x-emoji\":\"\\uD83D\\uDE00\"}}");
+
+        assertEquals(200, c.status());
+        assertEquals(List.of("x-emoji=\uD83D\uDE00"), c.headers());
+    }
+
+    @Test
+    void rejectsLoneEscapedUnicodeSurrogates() {
+        assertRejected("{\"status\":200,\"headers\":{\"x\":\"\\uD800\"}}".getBytes(StandardCharsets.UTF_8));
+        assertRejected("{\"status\":200,\"headers\":{\"x\":\"\\uDC00\"}}".getBytes(StandardCharsets.UTF_8));
+        assertRejected("{\"status\":200,\"headers\":{\"x\":\"\\uD800\\u0041\"}}".getBytes(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void rejectsStatusIntegerOverflow() {
         assertRejected("{\"status\":2147483648}".getBytes(StandardCharsets.UTF_8));
         assertRejected("{\"status\":-2147483649}".getBytes(StandardCharsets.UTF_8));

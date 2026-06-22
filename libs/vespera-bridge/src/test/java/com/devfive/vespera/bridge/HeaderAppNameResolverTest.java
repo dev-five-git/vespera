@@ -25,4 +25,11 @@ class HeaderAppNameResolverTest {
         req.addHeader("X-Vespera-App", "  admin  ");
         assertEquals("admin", resolver.resolveAppName(req));
     }
+
+    @Test
+    void unicodeWhitespaceIsStripped() {
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
+        req.addHeader("X-Vespera-App", "\u2003admin\u2003");
+        assertEquals("admin", resolver.resolveAppName(req));
+    }
 }

@@ -442,7 +442,7 @@ async fn multiple_per_rule_violations_all_appear_in_envelope() {
 // - Consumed by Java decoders and client libraries
 //
 // Multi-error coverage: triggers 2+ field errors to verify the full
-// envelope structure (path before message, array ordering, etc.).
+// envelope structure (message before path, array ordering, etc.).
 
 #[tokio::test]
 async fn byte_snapshot_422_envelope_multi_error() {

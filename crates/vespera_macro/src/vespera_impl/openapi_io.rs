@@ -222,27 +222,37 @@ pub(super) struct SidecarSpecs {
 pub(super) fn load_validated_sidecar_specs(
     spec_json_hash: Option<u64>,
     spec_pretty_hash: Option<u64>,
+    spec_json_fingerprint: Option<u64>,
+    spec_pretty_fingerprint: Option<u64>,
 ) -> Option<SidecarSpecs> {
-    let spec_tokens = match spec_json_hash {
-        None => None,
-        Some(expected) => {
+    let spec_tokens = match (spec_json_hash, spec_json_fingerprint) {
+        (None, _) => None,
+        (Some(expected_hash), Some(expected_fingerprint)) => {
             let path = embed_spec_path();
-            let content = std::fs::read_to_string(&path).ok()?;
-            if super::cache::hash_str(&content) != expected {
+            if !super::cache::sidecar_matches(
+                &path,
+                Some(expected_hash),
+                Some(expected_fingerprint),
+            ) {
                 return None;
             }
             Some(embed_tokens(&path))
         }
+        (Some(_), None) => return None,
     };
-    let pretty = match spec_pretty_hash {
-        None => None,
-        Some(expected) => {
-            let content = std::fs::read_to_string(pretty_sidecar_path()).ok()?;
-            if super::cache::hash_str(&content) != expected {
+    let pretty = match (spec_pretty_hash, spec_pretty_fingerprint) {
+        (None, _) => None,
+        (Some(expected_hash), Some(expected_fingerprint)) => {
+            let path = pretty_sidecar_path();
+            let content = std::fs::read_to_string(&path).ok()?;
+            if super::cache::path_fingerprint(&path) != Some(expected_fingerprint)
+                && super::cache::hash_str(&content) != expected_hash
+            {
                 return None;
             }
             Some(content)
         }
+        (Some(_), None) => return None,
     };
     Some(SidecarSpecs {
         pretty,

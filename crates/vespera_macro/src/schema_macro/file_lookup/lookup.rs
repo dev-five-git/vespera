@@ -426,7 +426,11 @@ pub fn find_struct_from_schema_path(path_str: &str) -> Option<StructMetadata> {
     let src_dir = Path::new(&manifest_dir).join("src");
 
     // Parse the path string into segments
-    let segments: Vec<&str> = path_str.split("::").filter(|s| !s.is_empty()).collect();
+    let segments: Vec<&str> = path_str
+        .split("::")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
 
     if segments.is_empty() {
         return None;

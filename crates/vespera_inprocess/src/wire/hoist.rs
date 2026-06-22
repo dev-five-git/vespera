@@ -45,8 +45,9 @@ fn body_is_json(headers: &http::HeaderMap) -> bool {
 /// This is the **fast strict path**: the common, framework-generated envelope
 /// has all-string fields, so the plain derive parses it with no per-field
 /// visitor overhead.  A body with a wrong-typed field (`"code": 123`) fails
-/// this strict parse and is retried via [`LenientHoistEnvelope`], so the
-/// hoist stays genuinely best-effort without taxing the common case.
+/// this strict parse and is retried via the inline `serde_json::Value`
+/// fallback walk in [`try_hoist_validation_errors`], so the hoist stays
+/// genuinely best-effort without taxing the common case.
 #[derive(Deserialize)]
 struct HoistEnvelope {
     errors: Vec<HoistErrorIn>,

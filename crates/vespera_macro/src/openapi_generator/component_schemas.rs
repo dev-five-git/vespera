@@ -238,6 +238,7 @@ mod tests {
             definition: "struct Hidden { id: i32 }".to_string(),
             include_in_openapi: false,
             field_defaults: BTreeMap::new(),
+            source_identity: None,
         });
 
         let (known_schema_names, struct_definitions) = build_schema_lookups(&metadata);
@@ -285,6 +286,7 @@ mod tests {
             definition: "struct { invalid syntax {{{{".to_string(),
             include_in_openapi: true,
             field_defaults: BTreeMap::new(),
+            source_identity: None,
         });
 
         let err =
@@ -463,6 +465,7 @@ pub fn get_config() -> Config { Config { count: 0, name: String::new() } }
                 ("count".to_string(), json!(42)),
                 ("name".to_string(), json!("default_name")),
             ]),
+            source_identity: None,
         });
         metadata.routes.push(route_meta(
             "/config",

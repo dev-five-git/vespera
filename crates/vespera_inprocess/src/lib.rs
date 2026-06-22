@@ -35,7 +35,7 @@
 //!                        (request)  { "v":1, "method", "path",
 //!                                     "query"?, "headers"? }
 //!                        (response) { "v":1, "status", "headers",
-//!                                     "metadata" }
+//!                                     "metadata", "validation_errors"? }
 //!    bytes 4+N..end  : raw body bytes (UTF-8 text or binary —
 //!                       no encoding applied)
 //!    ```

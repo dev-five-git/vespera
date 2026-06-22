@@ -402,10 +402,15 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
 /// first to commit the HTTP status + response headers, then
 /// continue serving the streamed body bytes.
 ///
-/// Failure modes mirror [`Java_...dispatchBytes`]: malformed wire,
-/// version mismatch, no app registered, or Rust panic produce a
-/// regular `error_wire(...)` response (header + small body) and
-/// the `OutputStream` is **not** written to.
+/// Failure modes mirror [`Java_...dispatchBytes`]: a **pre-streaming**
+/// failure (malformed wire, version mismatch, no app registered, or a panic
+/// before the first body frame) produces a regular `error_wire(...)` response
+/// (header + small body) and the `OutputStream` is **not** written to.  A
+/// failure that occurs **after** the first body frame (the host
+/// `OutputStream` erroring mid-drain, or a body-stream error) may leave
+/// partial bytes already written to the `OutputStream`; it is still reported
+/// as a `500` `error_wire(...)` header return, so the caller must treat a
+/// `5xx` header returned after streaming has begun as a truncated response.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStreaming<'local>(
     mut unowned_env: EnvUnowned<'local>,

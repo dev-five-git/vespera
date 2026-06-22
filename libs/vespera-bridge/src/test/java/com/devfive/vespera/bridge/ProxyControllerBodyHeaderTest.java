@@ -53,6 +53,26 @@ class ProxyControllerBodyHeaderTest {
         assertEquals("abc123", headers.get("x-trace-id"));
     }
 
+    @Test
+    void requestHopByHopAndConnectionNominatedHeadersAreDropped() {
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/x");
+        req.addHeader("Connection", "X-Internal-Hop, x-another-hop");
+        req.addHeader("X-Internal-Hop", "secret");
+        req.addHeader("X-Another-Hop", "secret2");
+        req.addHeader("Transfer-Encoding", "chunked");
+        req.addHeader("Content-Type", "application/json");
+        req.addHeader("X-Trace-Id", "abc123");
+
+        Map<String, String> headers = VesperaProxyController.collectHeaders(req);
+
+        assertFalse(headers.containsKey("connection"));
+        assertFalse(headers.containsKey("x-internal-hop"));
+        assertFalse(headers.containsKey("x-another-hop"));
+        assertFalse(headers.containsKey("transfer-encoding"));
+        assertEquals("application/json", headers.get("content-type"));
+        assertEquals("abc123", headers.get("x-trace-id"));
+    }
+
     // ── P1: readBody skips the stream for provably bodyless requests ─────
 
     @Test
@@ -253,23 +273,37 @@ class ProxyControllerBodyHeaderTest {
                 wire, response, "HEAD");
 
         assertEquals(0, bodyLen);
-        assertEquals(0, response.getContentLength());
+        assertEquals(5, response.getContentLength());
     }
 
     @Test
-    void asyncResponseEntityOwnsContentLengthAndSuppressesHeadBody() throws IOException {
+    void asyncResponseEntityAdvertisesHeadRepresentationLengthAndSuppressesHeadBody() throws IOException {
         byte[] wire = heapWire(
                 "{\"status\":200,\"headers\":{\"content-length\":\"123\"}}",
                 "hello");
 
         ResponseEntity<?> entity = VesperaProxyController.buildResponseEntityFromWire(wire, "HEAD");
 
-        assertEquals(0, entity.getHeaders().getContentLength());
+        assertEquals(5, entity.getHeaders().getContentLength());
         Resource body = (Resource) entity.getBody();
         assertEquals(0, body.contentLength());
         try (InputStream in = body.getInputStream()) {
             assertEquals(-1, in.read());
         }
+    }
+
+    @Test
+    void responseConnectionNominatedHeadersAreDropped() {
+        byte[] wire = heapWire(
+                "{\"status\":200,\"headers\":{\"connection\":\"x-internal-hop\"," 
+                        + "\"x-internal-hop\":\"secret\",\"x-visible\":\"ok\"}}",
+                "hello");
+
+        ResponseEntity<?> entity = VesperaProxyController.buildResponseEntityFromWire(wire, "GET");
+
+        assertFalse(entity.getHeaders().containsKey("connection"));
+        assertFalse(entity.getHeaders().containsKey("x-internal-hop"));
+        assertEquals("ok", entity.getHeaders().getFirst("x-visible"));
     }
 
     @Test

@@ -20,13 +20,18 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Enumeration;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
+import java.util.function.BiConsumer;
 
 /**
  * Catch-all proxy controller — autoconfigured by
@@ -377,19 +382,22 @@ public class VesperaProxyController {
             throws IOException {
         int headerLen = VesperaWireCodec.readHeaderLength(wire);
         int[] statusHolder = {500};
+        ResponseHeaderAccumulator headerAccumulator = new ResponseHeaderAccumulator();
         WireHeaderReader.apply(
                 ByteBuffer.wrap(wire), 4, headerLen,
                 s -> {
                     statusHolder[0] = s;
                     response.setStatus(s);
                 },
-                (n, v) -> addServletResponseHeader(response, n, v));
+                headerAccumulator);
+        addServletResponseHeaders(response, headerAccumulator);
         int bodyOff = 4 + headerLen;
         int bodyLen = wire.length - bodyOff;
-        boolean writeBody = responsePermitsBody(statusHolder[0], method) && bodyLen > 0;
-        int bytesToWrite = writeBody ? bodyLen : 0;
-        response.setContentLength(bytesToWrite);
-        if (writeBody) {
+        boolean statusPermitsBody = responseStatusPermitsBody(statusHolder[0]);
+        boolean methodPermitsBody = requestMethodPermitsBody(method);
+        int bytesToWrite = statusPermitsBody && methodPermitsBody ? bodyLen : 0;
+        response.setContentLength(statusPermitsBody ? bodyLen : 0);
+        if (bytesToWrite > 0) {
             response.getOutputStream().write(wire, bodyOff, bodyLen);
         }
     }
@@ -589,6 +597,7 @@ public class VesperaProxyController {
             ByteBuffer wireResp, HttpServletResponse response, String method) {
         int headerLen = readValidatedHeaderLen(wireResp);
         int[] statusHolder = {500};
+        ResponseHeaderAccumulator headerAccumulator = new ResponseHeaderAccumulator();
         WireHeaderReader.apply(
                 wireResp,
                 4,
@@ -597,11 +606,14 @@ public class VesperaProxyController {
                     statusHolder[0] = s;
                     response.setStatus(s);
                 },
-                (n, v) -> addServletResponseHeader(response, n, v));
+                headerAccumulator);
+        addServletResponseHeaders(response, headerAccumulator);
         int bodyOff = 4 + headerLen;
         int bodyLen = wireResp.limit() - bodyOff;
-        int bytesToWrite = responsePermitsBody(statusHolder[0], method) ? bodyLen : 0;
-        response.setContentLength(bytesToWrite);
+        boolean statusPermitsBody = responseStatusPermitsBody(statusHolder[0]);
+        boolean methodPermitsBody = requestMethodPermitsBody(method);
+        int bytesToWrite = statusPermitsBody && methodPermitsBody ? bodyLen : 0;
+        response.setContentLength(statusPermitsBody ? bodyLen : 0);
         wireResp.position(bodyOff);
         return bytesToWrite;
     }
@@ -653,11 +665,82 @@ public class VesperaProxyController {
      * Apply a Rust wire response header to the servlet response, dropping the
      * hop-by-hop / framing headers the proxy owns ({@link #HOP_BY_HOP_RESPONSE_HEADERS}).
      */
+    private static void addServletResponseHeaders(
+            HttpServletResponse response, ResponseHeaderAccumulator headers) {
+        for (HeaderPair header : headers.headers) {
+            addServletResponseHeader(response, header.name, header.value, headers.connectionTokens);
+        }
+    }
+
     private static void addServletResponseHeader(
-            HttpServletResponse response, String name, String value) {
-        if (!isHopByHopResponseHeader(name) && !isContentLengthHeader(name)) {
+            HttpServletResponse response, String name, String value, Set<String> connectionTokens) {
+        if (!isHopByHopResponseHeader(name)
+                && !isContentLengthHeader(name)
+                && !isConnectionNominatedHeader(name, connectionTokens)) {
             response.addHeader(name, value);
         }
+    }
+
+    private static boolean isConnectionNominatedHeader(String name, Set<String> connectionTokens) {
+        return connectionTokens != null && connectionTokens.contains(canonicalLowerHeaderName(name));
+    }
+
+    private record HeaderPair(String name, String value) {}
+
+    private static final class ResponseHeaderAccumulator implements BiConsumer<String, String> {
+        private final List<HeaderPair> headers = new ArrayList<>(8);
+        private Set<String> connectionTokens;
+
+        @Override
+        public void accept(String name, String value) {
+            headers.add(new HeaderPair(name, value));
+            if (name.length() == 10 && name.regionMatches(true, 0, "connection", 0, 10)) {
+                connectionTokens = addConnectionTokens(connectionTokens, value);
+            }
+        }
+    }
+
+    private static Set<String> addConnectionTokens(Set<String> tokens, String value) {
+        int start = 0;
+        int len = value.length();
+        Set<String> result = tokens;
+        while (start < len) {
+            int comma = value.indexOf(',', start);
+            int end = comma >= 0 ? comma : len;
+            int tokenStart = trimHttpWhitespaceStart(value, start, end);
+            int tokenEnd = trimHttpWhitespaceEnd(value, tokenStart, end);
+            if (tokenStart < tokenEnd) {
+                if (result == null) {
+                    result = new HashSet<>(4);
+                }
+                result.add(canonicalLowerHeaderName(value.substring(tokenStart, tokenEnd)));
+            }
+            if (comma < 0) {
+                break;
+            }
+            start = comma + 1;
+        }
+        return result;
+    }
+
+    private static int trimHttpWhitespaceStart(String value, int start, int end) {
+        int p = start;
+        while (p < end && isHttpWhitespace(value.charAt(p))) {
+            p++;
+        }
+        return p;
+    }
+
+    private static int trimHttpWhitespaceEnd(String value, int start, int end) {
+        int p = end;
+        while (p > start && isHttpWhitespace(value.charAt(p - 1))) {
+            p--;
+        }
+        return p;
+    }
+
+    private static boolean isHttpWhitespace(char c) {
+        return c == ' ' || c == '\t';
     }
 
     private static boolean isContentLengthHeader(String name) {
@@ -740,10 +823,31 @@ public class VesperaProxyController {
         if (names == null) {
             return;
         }
+        Set<String> connectionTokens = requestConnectionTokens(request);
         while (names.hasMoreElements()) {
             String name = names.nextElement();
-            sink.put(canonicalLowerHeaderName(name), joinHeaderValues(name, request));
+            String lowerName = canonicalLowerHeaderName(name);
+            if (!isHopByHopRequestHeader(lowerName)
+                    && !isConnectionNominatedHeader(lowerName, connectionTokens)) {
+                sink.put(lowerName, joinHeaderValues(name, request));
+            }
         }
+    }
+
+    private static Set<String> requestConnectionTokens(HttpServletRequest request) {
+        Enumeration<String> values = request.getHeaders("Connection");
+        Set<String> tokens = null;
+        if (values == null) {
+            return null;
+        }
+        while (values.hasMoreElements()) {
+            tokens = addConnectionTokens(tokens, values.nextElement());
+        }
+        return tokens;
+    }
+
+    private static boolean isHopByHopRequestHeader(String name) {
+        return isHopByHopResponseHeader(name);
     }
 
     /**
@@ -854,13 +958,15 @@ public class VesperaProxyController {
         ByteBuffer buf = ByteBuffer.wrap(headerBytes);
         int headerLen = readValidatedHeaderLen(buf);
         int[] statusHolder = {500};
+        ResponseHeaderAccumulator headerAccumulator = new ResponseHeaderAccumulator();
         WireHeaderReader.apply(
                 buf, 4, headerLen,
                 s -> {
                     statusHolder[0] = s;
                     response.setStatus(s);
                 },
-                (n, v) -> addServletResponseHeader(response, n, v));
+                headerAccumulator);
+        addServletResponseHeaders(response, headerAccumulator);
         return responsePermitsBody(statusHolder[0], method);
     }
 
@@ -890,21 +996,26 @@ public class VesperaProxyController {
         int headerLen = VesperaWireCodec.readHeaderLength(wire);
         HttpHeaders httpHeaders = new HttpHeaders();
         int[] statusHolder = {500};
+        ResponseHeaderAccumulator headerAccumulator = new ResponseHeaderAccumulator();
         WireHeaderReader.apply(
                 java.nio.ByteBuffer.wrap(wire),
                 4,
                 headerLen,
                 s -> statusHolder[0] = s,
-                (n, v) -> {
-                    if (!isHopByHopResponseHeader(n) && !isContentLengthHeader(n)) {
-                        httpHeaders.add(n, v);
-                    }
-                });
+                headerAccumulator);
+        for (HeaderPair header : headerAccumulator.headers) {
+            if (!isHopByHopResponseHeader(header.name)
+                    && !isContentLengthHeader(header.name)
+                    && !isConnectionNominatedHeader(header.name, headerAccumulator.connectionTokens)) {
+                httpHeaders.add(header.name, header.value);
+            }
+        }
         HttpStatusCode status = HttpStatusCode.valueOf(statusHolder[0]);
         int bodyOff = 4 + headerLen;
         int bodyLen = wire.length - bodyOff;
-        int bytesToExpose = responsePermitsBody(statusHolder[0], method) ? bodyLen : 0;
-        httpHeaders.setContentLength(bytesToExpose);
+        boolean statusPermitsBody = responseStatusPermitsBody(statusHolder[0]);
+        int bytesToExpose = statusPermitsBody && requestMethodPermitsBody(method) ? bodyLen : 0;
+        httpHeaders.setContentLength(statusPermitsBody ? bodyLen : 0);
         return new ResponseEntity<>(
                 new WireBodyResource(wire, bodyOff, bytesToExpose), httpHeaders, status);
     }

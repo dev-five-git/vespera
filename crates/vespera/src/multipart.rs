@@ -310,8 +310,9 @@ impl IntoResponse for TypedMultipartError {
             | Self::TooManyFields { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Other { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        // Serialize the canonical 422 envelope (see `error_body` /
-        // module-scope `MultipartErrorEnvelope`).
+        // Serialize the canonical JSON error envelope (see `error_body` /
+        // module-scope `MultipartErrorEnvelope`); the status varies (400/413/
+        // 422/500) but the body shape is identical.
         let body = self.error_body();
         (
             status,
@@ -580,7 +581,16 @@ tokio::task_local! {
     static MULTIPART_AGGREGATE: RefCell<MultipartAggregateState>;
 }
 
-fn register_multipart_field() -> Result<(), TypedMultipartError> {
+/// Count one multipart PART against the request-wide `max_fields` limit.
+///
+/// Invoked by the derived `TryFromMultipart` loop **once per wire part** —
+/// before the field name is resolved — so EVERY part (known, unknown, or
+/// nameless) is counted exactly once.  Counting inside the per-known-field
+/// parsers instead let unknown parts in non-strict mode (the `_ => {}`
+/// dispatch arm) slip past the cap entirely, so a request with thousands of
+/// unknown parts could burn unbounded parser/boundary-scan work without ever
+/// tripping `TooManyFields`.
+pub fn register_multipart_part() -> Result<(), TypedMultipartError> {
     MULTIPART_AGGREGATE
         .try_with(|state| {
             let mut state = state.borrow_mut();
@@ -592,9 +602,8 @@ fn register_multipart_field() -> Result<(), TypedMultipartError> {
             }
             Ok(())
         })
-        // Field parsers can be unit-tested outside the extractor. In that shape
-        // there is no request aggregate to update, so per-field limits remain the
-        // only active guard instead of failing spuriously.
+        // The derived impl can be unit-tested outside the extractor scope; with
+        // no request aggregate present, counting no-ops rather than failing.
         .unwrap_or(Ok(()))
 }
 
@@ -705,7 +714,8 @@ async fn read_field_data(
     limit: Option<usize>,
     initial_capacity: usize,
 ) -> Result<(Field<'_>, Vec<u8>), TypedMultipartError> {
-    register_multipart_field()?;
+    // Part counting now happens once per part in the derived loop
+    // (`register_multipart_part`), so the field parsers no longer count.
     // Initial capacity is independent from the hard byte limit: tiny scalar
     // fields keep the 256B cap without preallocating 256B per bool/number.
     let capacity = limit.map_or(initial_capacity, |limit| initial_capacity.min(limit));
@@ -940,7 +950,8 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for tempfile::NamedTempFile {
         limit_bytes: Option<usize>,
         _state: &S,
     ) -> Result<Self, TypedMultipartError> {
-        register_multipart_field()?;
+        // Part counting happens once per part in the derived loop
+        // (`register_multipart_part`); the temp-file parser no longer counts.
         // Temp-file creation AND reopen() are both blocking syscalls —
         // run them together on the blocking pool so neither stalls the
         // async worker (the reopen previously ran inline on the async

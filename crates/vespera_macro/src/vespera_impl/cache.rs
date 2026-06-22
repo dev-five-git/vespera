@@ -17,7 +17,7 @@ use super::path_utils::{current_crate_tag, find_target_dir};
 /// Current cache format. Bump when the on-disk layout changes —
 /// old caches deserialize with `cache_format: 0` (serde default) and
 /// are treated as a miss.
-pub(super) const CACHE_FORMAT: u32 = 1;
+pub(super) const CACHE_FORMAT: u32 = 2;
 
 /// Cache for avoiding redundant route scanning and OpenAPI generation.
 /// Persisted to `target/vespera/routes.cache` across builds.
@@ -57,6 +57,45 @@ pub(super) struct VesperaCache {
     /// (`openapi_pretty-<tag>.json`).  `None` if no openapi file configured.
     #[serde(default)]
     pub(super) spec_pretty_hash: Option<u64>,
+    /// Metadata fingerprint (mtime + len) of the compact spec sidecar.
+    #[serde(default)]
+    pub(super) spec_json_fingerprint: Option<u64>,
+    /// Metadata fingerprint (mtime + len) of the pretty spec sidecar.
+    #[serde(default)]
+    pub(super) spec_pretty_fingerprint: Option<u64>,
+}
+
+/// Cheap metadata fingerprint for sidecar files.
+pub(super) fn path_fingerprint(path: &Path) -> Option<u64> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    let mtime = u64::try_from(
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    )
+    .unwrap_or(u64::MAX);
+    Some(
+        mtime.rotate_left(1).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ meta.len().wrapping_mul(0xD1B5_4A32_D192_ED03),
+    )
+}
+
+/// Validate a sidecar by cheap metadata first, falling back to content hash when
+/// the metadata fingerprint changed.
+pub(super) fn sidecar_matches(
+    path: &Path,
+    expected_hash: Option<u64>,
+    expected_fingerprint: Option<u64>,
+) -> bool {
+    let Some(hash) = expected_hash else {
+        return false;
+    };
+    if expected_fingerprint.is_some_and(|fingerprint| path_fingerprint(path) == Some(fingerprint)) {
+        return true;
+    }
+    std::fs::read_to_string(path).is_ok_and(|content| hash_str(&content) == hash)
 }
 
 /// Deterministic content hash for sidecar spec validation.
@@ -475,6 +514,27 @@ mod tests {
     fn test_hash_str_deterministic_and_content_sensitive() {
         assert_eq!(hash_str("abc"), hash_str("abc"));
         assert_ne!(hash_str("abc"), hash_str("abd"));
+    }
+
+    #[test]
+    fn sidecar_matches_accepts_matching_fingerprint_without_hash_miss() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("spec.json");
+        std::fs::write(&path, "{\"openapi\":\"3.1.0\"}").unwrap();
+
+        let fingerprint = path_fingerprint(&path);
+        assert!(sidecar_matches(&path, Some(0), fingerprint));
+    }
+
+    #[test]
+    fn sidecar_matches_falls_back_to_hash_when_fingerprint_differs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("spec.json");
+        let content = "{\"openapi\":\"3.1.0\"}";
+        std::fs::write(&path, content).unwrap();
+
+        assert!(sidecar_matches(&path, Some(hash_str(content)), Some(1)));
+        assert!(!sidecar_matches(&path, Some(hash_str("corrupt")), Some(1)));
     }
 
     #[test]

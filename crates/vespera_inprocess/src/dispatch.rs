@@ -286,7 +286,11 @@ async fn finish_buffered_wire(
     // with zero reallocations.
     let header_cap = header_capacity_estimate(&headers, &metadata).max(WIRE_HEADER_RESERVE);
     let body_cap = usize::try_from(body.size_hint().exact().unwrap_or(0)).unwrap_or(0);
-    let mut out = Vec::with_capacity(4 + header_cap + body_cap);
+    // Saturating so a pathological/oversized exact body hint cannot wrap the
+    // capacity arithmetic (debug panic / release wrap → under-reserve); the
+    // common case computes the identical value, and `finish_direct_write`
+    // already uses the same saturating accounting for its overflow reporting.
+    let mut out = Vec::with_capacity(4usize.saturating_add(header_cap).saturating_add(body_cap));
     if !write_wire_header_into_vec(&mut out, status, &headers, &metadata) {
         // Unreachable for a real `HeaderMap` (4 GiB+ of header JSON); never
         // panic on the response path — emit a 500 wire response instead.

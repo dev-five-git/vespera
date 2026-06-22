@@ -188,11 +188,13 @@ final class VesperaWireCodec {
             String path,
             String query,
             Map<String, String> headers,
-            byte[] body) {
+        byte[] body) {
         ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
-        byte[] wire = assembleWire(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY);
-        shrinkHeaderBufferIfOversized(hdr);
-        return wire;
+        try {
+            return assembleWire(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY);
+        } finally {
+            shrinkHeaderBufferIfOversized(hdr);
+        }
     }
 
     static byte[] encodeRequest(
@@ -201,11 +203,13 @@ final class VesperaWireCodec {
             String path,
             String query,
             HeaderSource headers,
-            byte[] body) {
+        byte[] body) {
         ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
-        byte[] wire = assembleWire(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY);
-        shrinkHeaderBufferIfOversized(hdr);
-        return wire;
+        try {
+            return assembleWire(hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY);
+        } finally {
+            shrinkHeaderBufferIfOversized(hdr);
+        }
     }
 
     static int encodeRequestInto(
@@ -215,12 +219,14 @@ final class VesperaWireCodec {
             String query,
             Map<String, String> headers,
             byte[] body,
-            ByteBuffer target) {
+        ByteBuffer target) {
         ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
-        int written = assembleInto(
-                hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY, target);
-        shrinkHeaderBufferIfOversized(hdr);
-        return written;
+        try {
+            return assembleInto(
+                    hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY, target);
+        } finally {
+            shrinkHeaderBufferIfOversized(hdr);
+        }
     }
 
     static int encodeRequestInto(
@@ -230,12 +236,14 @@ final class VesperaWireCodec {
             String query,
             HeaderSource headers,
             byte[] body,
-            ByteBuffer target) {
+        ByteBuffer target) {
         ExposedByteArrayOutputStream hdr = fillHeaderJson(appName, method, path, query, headers);
-        int written = assembleInto(
-                hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY, target);
-        shrinkHeaderBufferIfOversized(hdr);
-        return written;
+        try {
+            return assembleInto(
+                    hdr.backingArray(), hdr.size(), body != null ? body : EMPTY_BODY, target);
+        } finally {
+            shrinkHeaderBufferIfOversized(hdr);
+        }
     }
 
     /**

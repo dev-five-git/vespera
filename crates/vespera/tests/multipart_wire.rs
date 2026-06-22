@@ -425,6 +425,35 @@ fn typed_multipart_aggregate_field_count_cap_rejected_413() {
 }
 
 #[test]
+fn typed_multipart_unknown_fields_count_toward_max_fields() {
+    // Regression: in non-strict mode an UNKNOWN part (the generated `_ => {}`
+    // dispatch arm) must still count against `max_fields`.  Before the fix,
+    // counting happened only inside the per-known-field parsers, so a flood of
+    // unknown parts bypassed the cap entirely (a DoS-adjacent gap) and this
+    // request would instead fail later with a 400 missing-field error.  With
+    // `MAX_FIELDS = 0`, even one part — known OR unknown — must be rejected 413.
+    install_router_once();
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+
+    let wire = encode_multipart_text(
+        "----UnknownFieldCountBoundary",
+        "/text-aggregate-field-count",
+        "definitely_not_a_known_field",
+        b"x",
+    );
+    let resp = dispatch_from_bytes(wire, &runtime);
+    let (header, _body) = decode_wire(&resp);
+    assert_eq!(
+        header["status"].as_u64(),
+        Some(413),
+        "an unknown multipart part must count against max_fields, got header={header:#}"
+    );
+}
+
+#[test]
 fn typed_multipart_aggregate_under_limit_passes() {
     install_router_once();
     let runtime = Builder::new_current_thread()

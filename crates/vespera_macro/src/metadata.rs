@@ -83,6 +83,13 @@ pub struct StructMetadata {
     /// Populated by `#[derive(Schema)]` to avoid AST re-parsing in `vespera!()`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub field_defaults: BTreeMap<String, serde_json::Value>,
+    /// Stable source identity for proc-macro-server re-expansions.
+    ///
+    /// This is not part of the OpenAPI output. It lets `#[derive(Schema)]`
+    /// replace metadata for the same source item after an IDE edit while still
+    /// rejecting two distinct items that claim the same OpenAPI schema name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_identity: Option<String>,
 }
 
 const fn default_include_in_openapi() -> bool {
@@ -96,6 +103,7 @@ impl Default for StructMetadata {
             definition: String::new(),
             include_in_openapi: true,
             field_defaults: BTreeMap::new(),
+            source_identity: None,
         }
     }
 }
@@ -108,6 +116,7 @@ impl StructMetadata {
             definition,
             include_in_openapi: true,
             field_defaults: BTreeMap::new(),
+            source_identity: None,
         }
     }
 
@@ -118,7 +127,15 @@ impl StructMetadata {
             definition,
             include_in_openapi: false,
             field_defaults: BTreeMap::new(),
+            source_identity: None,
         }
+    }
+
+    /// Attach the source identity used for same-item replacement in global storage.
+    #[must_use]
+    pub fn with_source_identity(mut self, source_identity: String) -> Self {
+        self.source_identity = Some(source_identity);
+        self
     }
 }
 

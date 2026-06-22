@@ -98,14 +98,36 @@ pub struct StoredRouteInfo {
 pub static ROUTE_STORAGE: LazyLock<Mutex<HashMap<String, Vec<StoredRouteInfo>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Append a `#[route]` metadata entry to the current crate's bucket.
+fn same_route_source(left: &StoredRouteInfo, right: &StoredRouteInfo) -> bool {
+    left.fn_name == right.fn_name
+        && left
+            .file_path
+            .as_deref()
+            .unwrap_or_default()
+            .replace('\\', "/")
+            == right
+                .file_path
+                .as_deref()
+                .unwrap_or_default()
+                .replace('\\', "/")
+}
+
+/// Replace-insert a `#[route]` metadata entry in the current crate's bucket.
 pub fn register_route(info: StoredRouteInfo) {
-    ROUTE_STORAGE
+    let mut guard = ROUTE_STORAGE
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let bucket = guard
         .entry(crate::schema_impl::current_crate_key())
-        .or_default()
-        .push(info);
+        .or_default();
+    if let Some(existing) = bucket
+        .iter_mut()
+        .find(|existing| same_route_source(existing, &info))
+    {
+        *existing = info;
+    } else {
+        bucket.push(info);
+    }
 }
 
 /// Snapshot (clone) of the current crate's registered routes, so consumers
@@ -546,6 +568,50 @@ mod tests {
         assert_eq!(stored.description, None);
         assert_eq!(stored.error_status, None);
         assert!(stored.headers.is_empty());
+    }
+
+    #[test]
+    fn test_register_route_replaces_same_file_and_function() {
+        let file_path = Some("/tmp/vespera/routes/replaced.rs".to_string());
+        let fn_name = "__test_replace_route".to_string();
+        let base = StoredRouteInfo {
+            fn_name: fn_name.clone(),
+            method: Some("get".to_string()),
+            custom_path: Some("/before".to_string()),
+            success_status: None,
+            error_status: None,
+            typed_responses: None,
+            tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
+            description: None,
+            file_path: file_path.clone(),
+            fn_sig_str: "pub async fn __test_replace_route ()".to_string(),
+        };
+        register_route(base);
+        register_route(StoredRouteInfo {
+            method: Some("post".to_string()),
+            custom_path: Some("/after".to_string()),
+            file_path,
+            fn_sig_str: "pub async fn __test_replace_route ()".to_string(),
+            ..current_crate_routes()
+                .into_iter()
+                .find(|entry| entry.fn_name == fn_name)
+                .expect("first route registration should exist")
+        });
+
+        let matches: Vec<_> = current_crate_routes()
+            .into_iter()
+            .filter(|entry| entry.fn_name == fn_name)
+            .collect();
+        assert_eq!(matches.len(), 1, "same source route should replace");
+        assert_eq!(matches[0].method, Some("post".to_string()));
+        assert_eq!(matches[0].custom_path, Some("/after".to_string()));
     }
 
     #[test]

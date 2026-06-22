@@ -121,6 +121,9 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
 
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     let (metadata, expanded) = schema_impl::process_derive_schema(&input);
+    let Some(metadata) = metadata else {
+        return TokenStream::from(expanded);
+    };
     let name = metadata.name.clone();
 
     // Register into the current crate's bucket (see `current_crate_key`).

@@ -104,6 +104,12 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
                 while let std::option::Option::Some(__field__) = __multipart__
                     .next_field().await
                     .map_err(vespera::multipart::TypedMultipartError::from)? {
+                    // Count EVERY wire part against the request-wide `max_fields`
+                    // cap up front — before name resolution / dispatch — so
+                    // unknown parts (the `_ => {}` non-strict arm) and nameless
+                    // parts cannot slip past the limit the per-field parsers
+                    // formerly enforced only for known fields.
+                    vespera::multipart::register_multipart_part()?;
                     // Borrowed `&str` — NLL ends the borrow on each match
                     // arm before `__field__` is consumed by the parser, so
                     // no per-field `String` allocation is needed.

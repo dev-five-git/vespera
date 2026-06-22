@@ -68,22 +68,34 @@ pub fn current_crate_key() -> String {
 
 /// Register a `#[derive(Schema)]` metadata entry for the current crate.
 ///
-/// Returns `Err(())` when a DIFFERENT definition is already registered under
+/// Returns `Err(())` when a DIFFERENT source item is already registered under
 /// `name` for THIS crate (the silent duplicate-schema-name footgun) so the
-/// caller can raise a spanned compile error; an identical re-registration is
-/// idempotent and returns `Ok(())`.
+/// caller can raise a spanned compile error. Re-registration from the same
+/// source identity replaces the previous metadata, which keeps long-lived
+/// proc-macro servers correct across IDE edits.
 pub fn register_schema(name: String, metadata: StructMetadata) -> Result<(), ()> {
     let mut guard = SCHEMA_STORAGE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let bucket = guard.entry(current_crate_key()).or_default();
-    if let Some(existing) = bucket.get(&name)
-        && existing.definition != metadata.definition
-    {
+    if let Some(existing) = bucket.get(&name) {
+        if existing.definition == metadata.definition
+            || (existing.source_identity.is_some()
+                && existing.source_identity == metadata.source_identity)
+        {
+            bucket.insert(name, metadata);
+            return Ok(());
+        }
         return Err(());
     }
     bucket.insert(name, metadata);
     Ok(())
+}
+
+fn derive_source_identity(input: &syn::DeriveInput) -> Option<String> {
+    proc_macro2::Span::call_site()
+        .local_file()
+        .map(|path| format!("{}::{}", path.display(), input.ident))
 }
 
 /// Overwrite-insert a schema for the current crate — the
@@ -153,7 +165,7 @@ pub fn extract_schema_name_attr(attrs: &[syn::Attribute]) -> Option<String> {
 /// Process derive input and return metadata + expanded code
 pub fn process_derive_schema(
     input: &syn::DeriveInput,
-) -> (StructMetadata, proc_macro2::TokenStream) {
+) -> (Option<StructMetadata>, proc_macro2::TokenStream) {
     let name = &input.ident;
 
     if let syn::Data::Struct(data_struct) = &input.data
@@ -163,9 +175,7 @@ pub fn process_derive_schema(
             if let Err(error) =
                 crate::parser::schema::schema_attrs::try_extract_schema_constraints(&field.attrs)
             {
-                let metadata =
-                    StructMetadata::new(name.to_string(), quote::quote!(#input).to_string());
-                return (metadata, error.to_compile_error());
+                return (None, error.to_compile_error());
             }
         }
     }
@@ -183,6 +193,9 @@ pub fn process_derive_schema(
 
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
     let mut metadata = StructMetadata::new(schema_name, quote::quote!(#input).to_string());
+    if let Some(source_identity) = derive_source_identity(input) {
+        metadata = metadata.with_source_identity(source_identity);
+    }
     if input
         .attrs
         .iter()
@@ -216,7 +229,7 @@ pub fn process_derive_schema(
     // The emit function returns an empty `TokenStream` when no field
     // requests a runtime rule or when the feature is off.
     let expanded = crate::garde_emit::emit_garde_validate(input);
-    (metadata, expanded)
+    (Some(metadata), expanded)
 }
 
 /// Extract default values from `#[serde(default = "fn_name")]` attributes
@@ -362,6 +375,7 @@ mod tests {
             }
         };
         let (metadata, _expanded) = process_derive_schema(&input);
+        let metadata = metadata.expect("valid schema metadata");
         assert_eq!(metadata.name, "User");
         assert!(metadata.definition.contains("struct User"));
     }
@@ -375,6 +389,7 @@ mod tests {
             }
         };
         let (metadata, _expanded) = process_derive_schema(&input);
+        let metadata = metadata.expect("valid schema metadata");
         assert_eq!(metadata.name, "Status");
         assert!(metadata.definition.contains("enum Status"));
     }
@@ -387,6 +402,7 @@ mod tests {
             }
         };
         let (metadata, _expanded) = process_derive_schema(&input);
+        let metadata = metadata.expect("valid schema metadata");
         assert_eq!(metadata.name, "Container");
     }
 
@@ -437,6 +453,7 @@ mod tests {
             }
         };
         let (metadata, _tokens) = process_derive_schema(&input);
+        let metadata = metadata.expect("valid schema metadata");
         assert_eq!(metadata.name, "User");
         assert!(metadata.definition.contains("User"));
     }
@@ -450,6 +467,7 @@ mod tests {
             }
         };
         let (metadata, _) = process_derive_schema(&input);
+        let metadata = metadata.expect("valid schema metadata");
         assert_eq!(metadata.name, "CustomUserSchema");
     }
 
@@ -461,6 +479,7 @@ mod tests {
             }
         };
         let (metadata, _tokens) = process_derive_schema(&input);
+        let metadata = metadata.expect("valid schema metadata");
         assert_eq!(metadata.name, "Container");
     }
 
@@ -569,6 +588,7 @@ mod tests {
             struct Unit;
         };
         let (metadata, tokens) = process_derive_schema(&input);
+        let metadata = metadata.expect("valid schema metadata");
         assert_eq!(metadata.name, "Unit");
         assert!(metadata.definition.contains("Unit"));
         assert!(tokens.is_empty(), "Token stream should be empty");
@@ -580,6 +600,7 @@ mod tests {
             struct Pair(i32, String);
         };
         let (metadata, tokens) = process_derive_schema(&input);
+        let metadata = metadata.expect("valid schema metadata");
         assert_eq!(metadata.name, "Pair");
         assert!(metadata.definition.contains("Pair"));
         assert!(tokens.is_empty());
@@ -591,6 +612,7 @@ mod tests {
             struct Empty {}
         };
         let (metadata, _) = process_derive_schema(&input);
+        let metadata = metadata.expect("valid schema metadata");
         assert_eq!(metadata.name, "Empty");
     }
 
@@ -602,6 +624,7 @@ mod tests {
             }
         };
         let (metadata, _) = process_derive_schema(&input);
+        let metadata = metadata.expect("valid schema metadata");
         assert_eq!(metadata.name, "Ref");
     }
 
@@ -616,6 +639,7 @@ mod tests {
             }
         };
         let (metadata, _) = process_derive_schema(&input);
+        let metadata = metadata.expect("valid schema metadata");
         assert_eq!(metadata.name, "UserResponse");
         assert!(metadata.definition.contains("camelCase"));
         assert!(metadata.definition.contains("skip"));
@@ -629,6 +653,7 @@ mod tests {
             struct Visible { x: i32 }
         };
         let (metadata, _) = process_derive_schema(&input);
+        let metadata = metadata.expect("valid schema metadata");
         assert!(
             metadata.include_in_openapi,
             "Schema-derived types must have include_in_openapi=true"
@@ -645,6 +670,7 @@ mod tests {
             }
         };
         let (metadata, _) = process_derive_schema(&input);
+        let metadata = metadata.expect("valid schema metadata");
         assert!(metadata.definition.contains("id"));
         assert!(metadata.definition.contains("u64"));
         assert!(metadata.definition.contains("name"));
@@ -730,6 +756,89 @@ mod tests {
             )
             .is_err()
         );
+        remove_current_crate_schema(&key);
+    }
+
+    #[test]
+    fn test_register_schema_replaces_same_source_identity() {
+        let key = "__test_same_source_replacement__".to_string();
+        remove_current_crate_schema(&key);
+        let source_identity = "src/models/user.rs::User".to_string();
+
+        assert!(
+            register_schema(
+                key.clone(),
+                StructMetadata::new(key.clone(), "struct User { id: i32 }".to_string())
+                    .with_source_identity(source_identity.clone()),
+            )
+            .is_ok()
+        );
+        assert!(
+            register_schema(
+                key.clone(),
+                StructMetadata::new(key.clone(), "struct User { id: i64 }".to_string())
+                    .with_source_identity(source_identity),
+            )
+            .is_ok()
+        );
+
+        let schemas = current_crate_schemas();
+        let meta = schemas.get(&key).expect("schema should remain registered");
+        assert!(meta.definition.contains("i64"));
+        remove_current_crate_schema(&key);
+    }
+
+    #[test]
+    fn test_register_schema_rejects_different_source_identity() {
+        let key = "__test_distinct_source_conflict__".to_string();
+        remove_current_crate_schema(&key);
+
+        assert!(
+            register_schema(
+                key.clone(),
+                StructMetadata::new(key.clone(), "struct UserA { id: i32 }".to_string())
+                    .with_source_identity("src/a.rs::User".to_string()),
+            )
+            .is_ok()
+        );
+        assert!(
+            register_schema(
+                key.clone(),
+                StructMetadata::new(key.clone(), "struct UserB { id: i32 }".to_string())
+                    .with_source_identity("src/b.rs::User".to_string()),
+            )
+            .is_err()
+        );
+        remove_current_crate_schema(&key);
+    }
+
+    #[test]
+    fn test_invalid_derive_schema_does_not_register_or_poison_storage() {
+        let key = "__InvalidConstraintDoesNotPoison".to_string();
+        remove_current_crate_schema(&key);
+        let invalid: syn::DeriveInput = syn::parse_quote! {
+            struct __InvalidConstraintDoesNotPoison {
+                #[schema(min_length = "bad")]
+                name: String,
+            }
+        };
+
+        let (metadata, tokens) = process_derive_schema(&invalid);
+        assert!(
+            metadata.is_none(),
+            "invalid constraints must skip registration"
+        );
+        assert!(tokens.to_string().contains("compile_error"));
+
+        let valid: syn::DeriveInput = syn::parse_quote! {
+            struct __InvalidConstraintDoesNotPoison {
+                name: String,
+            }
+        };
+        let (metadata, tokens) = process_derive_schema(&valid);
+        assert!(tokens.is_empty());
+        let metadata = metadata.expect("valid schema metadata");
+        assert!(register_schema(key.clone(), metadata).is_ok());
         remove_current_crate_schema(&key);
     }
 
@@ -865,6 +974,7 @@ struct Config {
         };
 
         let (metadata, tokens) = process_derive_schema(&input);
+        let metadata = metadata.expect("valid schema metadata");
         assert_eq!(metadata.name, "UserSchema");
         assert!(!metadata.include_in_openapi);
         assert!(tokens.is_empty());

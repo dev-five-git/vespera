@@ -538,7 +538,7 @@ final class WireHeaderReader {
                     case 'n' -> sb.append('\n');
                     case 'r' -> sb.append('\r');
                     case 't' -> sb.append('\t');
-                    case 'u' -> sb.append(readHex4());
+                    case 'u' -> appendUnicodeEscape(sb);
                     default -> throw err("bad escape");
                 }
             } else if (b < 0x80) {
@@ -719,6 +719,26 @@ final class WireHeaderReader {
             v = (v << 4) | h;
         }
         return (char) v;
+    }
+
+    private void appendUnicodeEscape(StringBuilder sb) {
+        char c = readHex4();
+        if (Character.isHighSurrogate(c)) {
+            if (pos + 6 > end || (buf.get(pos) & 0xFF) != '\\' || (buf.get(pos + 1) & 0xFF) != 'u') {
+                throw err("unpaired unicode surrogate");
+            }
+            pos += 2;
+            char low = readHex4();
+            if (!Character.isLowSurrogate(low)) {
+                throw err("unpaired unicode surrogate");
+            }
+            sb.appendCodePoint(Character.toCodePoint(c, low));
+            return;
+        }
+        if (Character.isLowSurrogate(c)) {
+            throw err("unpaired unicode surrogate");
+        }
+        sb.append(c);
     }
 
     int readInt() {

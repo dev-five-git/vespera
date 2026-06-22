@@ -47,14 +47,36 @@ pub struct StoredCronInfo {
 pub static CRON_STORAGE: LazyLock<Mutex<HashMap<String, Vec<StoredCronInfo>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Append a `#[cron]` metadata entry to the current crate's bucket.
+fn same_cron_source(left: &StoredCronInfo, right: &StoredCronInfo) -> bool {
+    left.fn_name == right.fn_name
+        && left
+            .file_path
+            .as_deref()
+            .unwrap_or_default()
+            .replace('\\', "/")
+            == right
+                .file_path
+                .as_deref()
+                .unwrap_or_default()
+                .replace('\\', "/")
+}
+
+/// Replace-insert a `#[cron]` metadata entry in the current crate's bucket.
 pub fn register_cron(info: StoredCronInfo) {
-    CRON_STORAGE
+    let mut guard = CRON_STORAGE
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let bucket = guard
         .entry(crate::schema_impl::current_crate_key())
-        .or_default()
-        .push(info);
+        .or_default();
+    if let Some(existing) = bucket
+        .iter_mut()
+        .find(|existing| same_cron_source(existing, &info))
+    {
+        *existing = info;
+    } else {
+        bucket.push(info);
+    }
 }
 
 /// Snapshot (clone) of the current crate's registered cron jobs, so the
@@ -303,6 +325,29 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("must take no parameters"));
+    }
+
+    #[test]
+    fn test_register_cron_replaces_same_file_and_function() {
+        let file_path = Some("/tmp/vespera/tasks/replaced.rs".to_string());
+        let fn_name = "__test_replace_cron".to_string();
+        register_cron(StoredCronInfo {
+            fn_name: fn_name.clone(),
+            expression: "0 */5 * * * *".to_string(),
+            file_path: file_path.clone(),
+        });
+        register_cron(StoredCronInfo {
+            fn_name: fn_name.clone(),
+            expression: "0 */10 * * * *".to_string(),
+            file_path,
+        });
+
+        let matches: Vec<_> = current_crate_crons()
+            .into_iter()
+            .filter(|entry| entry.fn_name == fn_name)
+            .collect();
+        assert_eq!(matches.len(), 1, "same source cron should replace");
+        assert_eq!(matches[0].expression, "0 */10 * * * *");
     }
 
     // ===== Compile-time cron-syntax validation (gated by the `cron` feature) =====

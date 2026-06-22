@@ -13,7 +13,8 @@ use super::{
     cache::{
         CACHE_FORMAT, MergeSpecCache, VesperaCache, compute_config_hash_with_merge_cache,
         compute_export_config_hash, compute_macro_dev_fingerprint, compute_schema_hash,
-        get_cache_path, get_export_cache_path, hash_str, read_cache, write_cache,
+        get_cache_path, get_export_cache_path, hash_str, path_fingerprint, read_cache,
+        sidecar_matches, write_cache,
     },
     openapi_io::{
         ensure_openapi_files_from_cache, generate_and_write_openapi, load_validated_sidecar_specs,
@@ -95,7 +96,12 @@ pub fn process_vespera_macro(
     // sidecars: corruption self-heals on the next build.
     let sidecars = if cache_hit {
         let c = cached.as_ref().unwrap();
-        load_validated_sidecar_specs(c.spec_json_hash, c.spec_pretty_hash)
+        load_validated_sidecar_specs(
+            c.spec_json_hash,
+            c.spec_pretty_hash,
+            c.spec_json_fingerprint,
+            c.spec_pretty_fingerprint,
+        )
     } else {
         None
     };
@@ -147,7 +153,11 @@ pub fn process_vespera_macro(
         )?;
         stage("generate_and_write_openapi");
 
+        let spec_json_hash = openapi.spec_json.as_deref().map(hash_str);
+        let spec_pretty_hash = openapi.spec_pretty.as_deref().map(hash_str);
         write_pretty_sidecar(openapi.spec_pretty.as_deref());
+        let spec_tokens = write_spec_for_embedding(openapi.spec_json)?;
+        stage("write_spec_for_embedding");
 
         // Persist cache (best-effort, failures are silent) — spec
         // contents live in the sidecar files; only hashes are cached.
@@ -161,15 +171,15 @@ pub fn process_vespera_macro(
                 schema_hash,
                 config_hash,
                 metadata: cache_metadata.clone(),
-                spec_json_hash: openapi.spec_json.as_deref().map(hash_str),
-                spec_pretty_hash: openapi.spec_pretty.as_deref().map(hash_str),
+                spec_json_hash,
+                spec_pretty_hash,
+                spec_json_fingerprint: spec_json_hash
+                    .and_then(|_| path_fingerprint(&super::openapi_io::embed_spec_path())),
+                spec_pretty_fingerprint: spec_pretty_hash
+                    .and_then(|_| path_fingerprint(&super::openapi_io::pretty_sidecar_path())),
             },
         );
         stage("write_cache");
-
-        // Write compact spec for include_str! embedding
-        let spec_tokens = write_spec_for_embedding(openapi.spec_json)?;
-        stage("write_spec_for_embedding");
 
         (metadata, spec_tokens)
     };
@@ -293,10 +303,7 @@ pub fn process_export_app(
             && c.file_fingerprints == fingerprints
             && c.schema_hash == schema_hash
             && c.config_hash == config_hash
-            && c.spec_json_hash.is_some_and(|expected| {
-                std::fs::read_to_string(&spec_file)
-                    .is_ok_and(|content| hash_str(&content) == expected)
-            })
+            && sidecar_matches(&spec_file, c.spec_json_hash, c.spec_json_fingerprint)
     });
 
     let mut metadata = if let (true, Some(cache)) = (cache_hit, cached) {
@@ -331,6 +338,7 @@ pub fn process_export_app(
         if !super::openapi_io::content_unchanged(&spec_file, &spec_json) {
             std::fs::write(&spec_file, &spec_json).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to write OpenAPI spec file '{}'. Error: {}. Ensure the file path is writable.", spec_file.display(), e)))?;
         }
+        let spec_json_hash = Some(hash_str(&spec_json));
         write_cache(
             &cache_path,
             &VesperaCache {
@@ -341,8 +349,10 @@ pub fn process_export_app(
                 schema_hash,
                 config_hash,
                 metadata: cache_metadata.clone(),
-                spec_json_hash: Some(hash_str(&spec_json)),
+                spec_json_hash,
                 spec_pretty_hash: None,
+                spec_json_fingerprint: spec_json_hash.and_then(|_| path_fingerprint(&spec_file)),
+                spec_pretty_fingerprint: None,
             },
         );
         cache_metadata

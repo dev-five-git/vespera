@@ -389,6 +389,32 @@ pub const NOT_STRUCT: i32 = 1;
     assert!(result.is_some(), "Should find Target struct");
     assert!(result.unwrap().definition.contains("Target"));
 }
+
+#[test]
+#[serial]
+fn test_find_struct_from_schema_path_trims_segments() {
+    let temp_dir = TempDir::new().unwrap();
+    let src_dir = temp_dir.path().join("src");
+    let models_dir = src_dir.join("models");
+    std::fs::create_dir_all(&models_dir).unwrap();
+    std::fs::write(
+        models_dir.join("item.rs"),
+        "pub struct Target { pub id: i32 }",
+    )
+    .unwrap();
+    let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+    let result = find_struct_from_schema_path("crate :: models :: item :: Target");
+    unsafe {
+        if let Some(dir) = original {
+            std::env::set_var("CARGO_MANIFEST_DIR", dir);
+        } else {
+            std::env::remove_var("CARGO_MANIFEST_DIR");
+        }
+    }
+    assert!(result.is_some(), "Whitespace around :: should be ignored");
+}
+
 #[test]
 #[serial]
 fn test_find_model_from_schema_path_empty_after_filter() {
