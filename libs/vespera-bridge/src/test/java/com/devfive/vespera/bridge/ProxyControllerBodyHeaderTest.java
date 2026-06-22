@@ -31,7 +31,7 @@ class ProxyControllerBodyHeaderTest {
         MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
         req.addHeader("Accept", "text/html");
         req.addHeader("Accept", "application/json");
-        Map<String, String> headers = VesperaProxyController.collectHeaders(req);
+        Map<String, String> headers = HeaderPolicy.collectHeaders(req);
         assertEquals("text/html, application/json", headers.get("accept"));
     }
 
@@ -40,7 +40,7 @@ class ProxyControllerBodyHeaderTest {
         MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
         req.addHeader("Cookie", "a=1");
         req.addHeader("Cookie", "b=2");
-        Map<String, String> headers = VesperaProxyController.collectHeaders(req);
+        Map<String, String> headers = HeaderPolicy.collectHeaders(req);
         // RFC 6265bis: Cookie joins with "; ", never ",".
         assertEquals("a=1; b=2", headers.get("cookie"));
     }
@@ -49,7 +49,7 @@ class ProxyControllerBodyHeaderTest {
     void singleValuedHeaderIsUnchanged() {
         MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
         req.addHeader("X-Trace-Id", "abc123");
-        Map<String, String> headers = VesperaProxyController.collectHeaders(req);
+        Map<String, String> headers = HeaderPolicy.collectHeaders(req);
         assertEquals("abc123", headers.get("x-trace-id"));
     }
 
@@ -63,7 +63,7 @@ class ProxyControllerBodyHeaderTest {
         req.addHeader("Content-Type", "application/json");
         req.addHeader("X-Trace-Id", "abc123");
 
-        Map<String, String> headers = VesperaProxyController.collectHeaders(req);
+        Map<String, String> headers = HeaderPolicy.collectHeaders(req);
 
         assertFalse(headers.containsKey("connection"));
         assertFalse(headers.containsKey("x-internal-hop"));
@@ -352,13 +352,13 @@ class ProxyControllerBodyHeaderTest {
 
     @Test
     void isHopByHopResponseHeaderClassifiesCaseInsensitively() {
-        assertTrue(VesperaProxyController.isHopByHopResponseHeader("Transfer-Encoding"));
-        assertTrue(VesperaProxyController.isHopByHopResponseHeader("connection"));
-        assertTrue(VesperaProxyController.isHopByHopResponseHeader("UPGRADE"));
+        assertTrue(HeaderPolicy.isHopByHopResponseHeader("Transfer-Encoding"));
+        assertTrue(HeaderPolicy.isHopByHopResponseHeader("connection"));
+        assertTrue(HeaderPolicy.isHopByHopResponseHeader("UPGRADE"));
         // content-length is not hop-by-hop, but addServletResponseHeader treats
         // it as proxy-owned framing and drops it separately.
-        assertFalse(VesperaProxyController.isHopByHopResponseHeader("content-length"));
-        assertFalse(VesperaProxyController.isHopByHopResponseHeader("content-type"));
+        assertFalse(HeaderPolicy.isHopByHopResponseHeader("content-length"));
+        assertFalse(HeaderPolicy.isHopByHopResponseHeader("content-type"));
     }
 
     private static ByteBuffer directWire(String headerJson, String body) {

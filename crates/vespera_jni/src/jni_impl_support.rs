@@ -58,6 +58,43 @@ pub(super) fn should_fire_fallback_header(header_sent: bool, header_failed: bool
     !header_sent && !header_failed
 }
 
+/// What the panic landing-pad of a streaming-with-header dispatch must do after
+/// a Rust panic unwound out of the dispatch future, given whether the response
+/// header was already delivered.
+///
+/// Mirror image of the SUCCESS branch's truncation handling: that branch throws
+/// [`throw_streaming_abort`] when the body errors or the sink stops *after* the
+/// header was committed (`failed_header || BodyError | SinkStopped`).  A panic
+/// after a committed header is the SAME failure shape — the body is truncated
+/// past a header the host already wrote — so it must abort the transport too,
+/// not return cleanly over a short body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PanicHeaderAction {
+    /// The header consumer was never invoked (`!header_sent && !header_failed`):
+    /// deliver the one-shot `500` fallback header so the Java caller is never
+    /// left without a header.
+    FireFallbackHeader,
+    /// The header was already committed (or its delivery threw): a panic now
+    /// truncates the body past a committed header, so throw `IOException` to
+    /// abort the response — symmetric with the body-error / sink-stop abort on
+    /// the success branch.
+    ThrowAbort,
+}
+
+/// Decide the panic-branch action from the two header flags.  Splitting it out
+/// (like [`should_fire_fallback_header`], which it reuses) keeps the decision
+/// unit-testable without a live JVM — see `jni_impl_streaming_abort_tests.rs`.
+pub(super) fn panic_post_header_action(
+    header_sent: bool,
+    header_failed: bool,
+) -> PanicHeaderAction {
+    if should_fire_fallback_header(header_sent, header_failed) {
+        PanicHeaderAction::FireFallbackHeader
+    } else {
+        PanicHeaderAction::ThrowAbort
+    }
+}
+
 /// Promoted refs + a checked-out chunk buffer for a response
 /// streaming-with-header dispatch.  Aliased so the helper return type stays
 /// under clippy's `type_complexity` cap.

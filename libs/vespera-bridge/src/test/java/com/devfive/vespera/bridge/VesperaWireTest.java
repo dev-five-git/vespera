@@ -173,6 +173,42 @@ class VesperaWireTest {
         assertEquals("header value", value.getMessage());
     }
 
+    @Test
+    void oversizedHeaderBufferShrinksWhenHeaderSourceThrows() {
+        VesperaWireCodec.clearCurrentThreadBuffers();
+        String huge = "x".repeat(40 * 1024);
+
+        assertThrows(IllegalStateException.class, () -> VesperaBridge.encodeRequest(
+                "GET",
+                "/x",
+                null,
+                sink -> {
+                    sink.put("x-big", huge);
+                    throw new IllegalStateException("boom");
+                },
+                new byte[0]));
+
+        assertEquals(256, VesperaWireCodec.currentHeaderBufferCapacityForTest());
+    }
+
+    @Test
+    void directPoolShrinksOversizedHeaderBufferWhenDispatchThrows() {
+        VesperaWireCodec.clearCurrentThreadBuffers();
+        String huge = "x".repeat(40 * 1024);
+
+        assertThrows(UnsatisfiedLinkError.class, () -> VesperaDirectBufferPool.dispatchDirectPooled(
+                null,
+                "GET",
+                "/x",
+                null,
+                sink -> sink.put("x-big", huge),
+                new byte[0],
+                false,
+                true));
+
+        assertEquals(256, VesperaWireCodec.currentHeaderBufferCapacityForTest());
+    }
+
     /** Build a synthetic wire response (mimics what Rust would emit). */
     private static byte[] buildWireResponse(int status, String contentType, byte[] body) throws Exception {
         return buildWireResponseWithExtras(status, contentType, body, null);

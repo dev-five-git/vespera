@@ -1,7 +1,10 @@
 use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::{push_unless_header_failed, should_fire_fallback_header};
+use super::support::{
+    PanicHeaderAction, panic_post_header_action, push_unless_header_failed,
+    should_fire_fallback_header,
+};
 
 #[test]
 fn push_gate_aborts_without_writing_when_header_delivery_failed() {
@@ -69,4 +72,37 @@ fn fallback_header_fires_only_when_consumer_never_invoked() {
     // Defensive: both flags set never co-occurs in practice, but must still not
     // re-fire.
     assert!(!should_fire_fallback_header(true, true));
+}
+
+#[test]
+fn panic_post_header_action_aborts_once_header_is_committed() {
+    // Panic BEFORE the header was ever delivered: the Java caller has no header,
+    // so the one-shot 500 fallback must be delivered (never an abort, which
+    // would leave the caller with neither a header nor a result).
+    assert_eq!(
+        panic_post_header_action(false, false),
+        PanicHeaderAction::FireFallbackHeader
+    );
+
+    // Header already SUCCEEDED, then the dispatch future panicked mid-body: the
+    // body is truncated past a committed header, so the transport must be
+    // aborted — re-firing the consumer is forbidden (already invoked once).
+    assert_eq!(
+        panic_post_header_action(true, false),
+        PanicHeaderAction::ThrowAbort
+    );
+
+    // Header delivery THREW (consumer already invoked, response already broken):
+    // a later panic must abort rather than re-enter the consumer.
+    assert_eq!(
+        panic_post_header_action(false, true),
+        PanicHeaderAction::ThrowAbort
+    );
+
+    // Defensive: both flags set never co-occurs, but must still abort, never
+    // double-invoke the consumer.
+    assert_eq!(
+        panic_post_header_action(true, true),
+        PanicHeaderAction::ThrowAbort
+    );
 }

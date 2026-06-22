@@ -124,12 +124,12 @@ class PerfAllocBench {
         long sink = 0;
 
         for (int i = 0; i < WARMUP; i++) {
-            Map<String, String> headers = VesperaProxyController.collectHeaders(req);
+        Map<String, String> headers = HeaderPolicy.collectHeaders(req);
             sink += VesperaBridge.encodeRequest(null, "GET", "/x", null, headers, null).length;
         }
         long oldBefore = tmx.getThreadAllocatedBytes(tid);
         for (int i = 0; i < MEASURE; i++) {
-            Map<String, String> headers = VesperaProxyController.collectHeaders(req);
+        Map<String, String> headers = HeaderPolicy.collectHeaders(req);
             sink += VesperaBridge.encodeRequest(null, "GET", "/x", null, headers, null).length;
         }
         long oldAfter = tmx.getThreadAllocatedBytes(tid);
@@ -137,13 +137,13 @@ class PerfAllocBench {
 
         for (int i = 0; i < WARMUP; i++) {
             sink += VesperaBridge.encodeRequest(null, "GET", "/x", null,
-                    (VesperaBridge.HeaderSource) (s -> VesperaProxyController.forEachRequestHeader(req, s)),
+                (VesperaBridge.HeaderSource) (s -> HeaderPolicy.forEachRequestHeader(req, s)),
                     null).length;
         }
         long newBefore = tmx.getThreadAllocatedBytes(tid);
         for (int i = 0; i < MEASURE; i++) {
             sink += VesperaBridge.encodeRequest(null, "GET", "/x", null,
-                    (VesperaBridge.HeaderSource) (s -> VesperaProxyController.forEachRequestHeader(req, s)),
+                (VesperaBridge.HeaderSource) (s -> HeaderPolicy.forEachRequestHeader(req, s)),
                     null).length;
         }
         long newAfter = tmx.getThreadAllocatedBytes(tid);

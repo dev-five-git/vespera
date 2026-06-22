@@ -125,6 +125,24 @@ class WireHeaderReaderTest {
     }
 
     @Test
+    void rejectsTrailingGarbageAfterRootObject() {
+        byte[] headerBytes = "{\"status\":200}junk".getBytes(StandardCharsets.UTF_8);
+        assertRejected(headerBytes);
+
+        ByteBuffer buf = ByteBuffer.allocate(4 + headerBytes.length);
+        buf.putInt(headerBytes.length);
+        buf.put(headerBytes);
+        assertThrows(IllegalArgumentException.class, () -> WireHeaderReader.decode(buf, 4, headerBytes.length));
+    }
+
+    @Test
+    void rejectsStatusOutsideWireHttpRange() {
+        assertRejected("{\"status\":99}".getBytes(StandardCharsets.UTF_8));
+        assertRejected("{\"status\":1000}".getBytes(StandardCharsets.UTF_8));
+        assertRejected("{\"status\":-200}".getBytes(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void rejectsMalformedUtf8ContinuationAndOverlongSequences() {
         assertRejected(new byte[] {
             '{', '"', 's', 't', 'a', 't', 'u', 's', '"', ':', '2', '0', '0', ',',

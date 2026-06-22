@@ -244,30 +244,32 @@ final class VesperaDirectBufferPool {
         byte[] bodyBytes = body != null ? body : VesperaWireCodec.EMPTY_BODY;
         ExposedByteArrayOutputStream hdr =
                 VesperaWireCodec.fillHeaderJson(appName, method, path, query, headers);
-        int headerLen = hdr.size();
-        int total = VesperaWireCodec.wireTotalLength(headerLen, bodyBytes.length);
-        if (currentThreadIsVirtual() || total > DIRECT_MAX_CAPACITY) {
-            // Virtual thread: avoid the per-vthread off-heap direct buffer
-            // accumulation — use the GC-managed heap path.  Oversized
-            // request (> cap): byte[] fallback is safe for any method
-            // because no dispatch has run yet.  The reusable header buffer
-            // is consumed here, before any other fillHeaderJson call.
-            byte[] wire = VesperaWireCodec.assembleWire(hdr.backingArray(), headerLen, bodyBytes);
+        try {
+            int headerLen = hdr.size();
+            int total = VesperaWireCodec.wireTotalLength(headerLen, bodyBytes.length);
+            if (currentThreadIsVirtual() || total > DIRECT_MAX_CAPACITY) {
+                // Virtual thread: avoid the per-vthread off-heap direct buffer
+                // accumulation — use the GC-managed heap path.  Oversized
+                // request (> cap): byte[] fallback is safe for any method
+                // because no dispatch has run yet.  The reusable header buffer
+                // is consumed here, before any other fillHeaderJson call.
+                byte[] wire = VesperaWireCodec.assembleWire(hdr.backingArray(), headerLen, bodyBytes);
+                return ByteBuffer.wrap(VesperaBridge.dispatchBytes(wire)).asReadOnlyBuffer();
+            }
+            ByteBuffer[] pool = directPool();
+            if (pool[0].capacity() < total) {
+                pool[0] = ByteBuffer.allocateDirect(grownCapacity(total));
+            }
+            // Consume the reusable header buffer into the pooled direct buffer.
+            int written = VesperaWireCodec.assembleInto(hdr.backingArray(), headerLen, bodyBytes, pool[0]);
+            if (written != total) {
+                throw new IllegalStateException(
+                        "assembleInto wrote " + written + ", expected " + total);
+            }
+            return dispatchViaPool(pool, total, retryOnOverflow);
+        } finally {
             VesperaWireCodec.shrinkHeaderBufferIfOversized(hdr);
-            return ByteBuffer.wrap(VesperaBridge.dispatchBytes(wire)).asReadOnlyBuffer();
         }
-        ByteBuffer[] pool = directPool();
-        if (pool[0].capacity() < total) {
-            pool[0] = ByteBuffer.allocateDirect(grownCapacity(total));
-        }
-        // Consume the reusable header buffer into the pooled direct buffer.
-        int written = VesperaWireCodec.assembleInto(hdr.backingArray(), headerLen, bodyBytes, pool[0]);
-        VesperaWireCodec.shrinkHeaderBufferIfOversized(hdr);
-        if (written != total) {
-            throw new IllegalStateException(
-                    "assembleInto wrote " + written + ", expected " + total);
-        }
-        return dispatchViaPool(pool, total, retryOnOverflow);
     }
 
     static ByteBuffer dispatchDirectPooled(
@@ -295,24 +297,26 @@ final class VesperaDirectBufferPool {
         byte[] bodyBytes = body != null ? body : VesperaWireCodec.EMPTY_BODY;
         ExposedByteArrayOutputStream hdr =
                 VesperaWireCodec.fillHeaderJson(appName, method, path, query, headers);
-        int headerLen = hdr.size();
-        int total = VesperaWireCodec.wireTotalLength(headerLen, bodyBytes.length);
-        if (currentThreadIsVirtual || total > DIRECT_MAX_CAPACITY) {
-            byte[] wire = VesperaWireCodec.assembleWire(hdr.backingArray(), headerLen, bodyBytes);
+        try {
+            int headerLen = hdr.size();
+            int total = VesperaWireCodec.wireTotalLength(headerLen, bodyBytes.length);
+            if (currentThreadIsVirtual || total > DIRECT_MAX_CAPACITY) {
+                byte[] wire = VesperaWireCodec.assembleWire(hdr.backingArray(), headerLen, bodyBytes);
+                return ByteBuffer.wrap(VesperaBridge.dispatchBytes(wire)).asReadOnlyBuffer();
+            }
+            ByteBuffer[] pool = directPool();
+            if (pool[0].capacity() < total) {
+                pool[0] = ByteBuffer.allocateDirect(grownCapacity(total));
+            }
+            int written = VesperaWireCodec.assembleInto(hdr.backingArray(), headerLen, bodyBytes, pool[0]);
+            if (written != total) {
+                throw new IllegalStateException(
+                        "assembleInto wrote " + written + ", expected " + total);
+            }
+            return dispatchViaPool(pool, total, retryOnOverflow);
+        } finally {
             VesperaWireCodec.shrinkHeaderBufferIfOversized(hdr);
-            return ByteBuffer.wrap(VesperaBridge.dispatchBytes(wire)).asReadOnlyBuffer();
         }
-        ByteBuffer[] pool = directPool();
-        if (pool[0].capacity() < total) {
-            pool[0] = ByteBuffer.allocateDirect(grownCapacity(total));
-        }
-        int written = VesperaWireCodec.assembleInto(hdr.backingArray(), headerLen, bodyBytes, pool[0]);
-        VesperaWireCodec.shrinkHeaderBufferIfOversized(hdr);
-        if (written != total) {
-            throw new IllegalStateException(
-                    "assembleInto wrote " + written + ", expected " + total);
-        }
-        return dispatchViaPool(pool, total, retryOnOverflow);
     }
 
     /**

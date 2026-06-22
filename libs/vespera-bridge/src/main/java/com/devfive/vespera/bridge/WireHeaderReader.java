@@ -37,11 +37,20 @@ final class WireHeaderReader {
     }
 
     private final ByteBuffer buf;
+    private final byte[] array;
     private int pos;
     private final int end;
 
     private WireHeaderReader(ByteBuffer buf, int off, int len) {
         this.buf = buf;
+        this.array = null;
+        this.pos = off;
+        this.end = off + len;
+    }
+
+    private WireHeaderReader(byte[] array, int off, int len) {
+        this.buf = null;
+        this.array = array;
         this.pos = off;
         this.end = off + len;
     }
@@ -69,7 +78,7 @@ final class WireHeaderReader {
         while ((key = r.nextRootKey()) != KEY_END) {
             seen = r.rejectDuplicateRootKey(seen, key);
             switch (key) {
-                case KEY_STATUS -> status = r.readInt();
+                case KEY_STATUS -> status = r.readStatusCode();
                 case KEY_HEADERS -> {
                     if (r.isObjectStart()) {
                         r.beginObject();
@@ -98,6 +107,48 @@ final class WireHeaderReader {
                 default -> r.skipValue();
             }
         }
+        r.requireFullyConsumed();
+        statusSink.accept(status);
+    }
+
+    static void apply(
+            byte[] buf,
+            int off,
+            int len,
+            IntConsumer statusSink,
+            BiConsumer<String, String> headerSink) {
+        WireHeaderReader r = new WireHeaderReader(buf, off, len);
+        int status = 500;
+        r.requireObjectStart();
+        r.beginObject();
+        int seen = 0;
+        int key;
+        while ((key = r.nextRootKey()) != KEY_END) {
+            seen = r.rejectDuplicateRootKey(seen, key);
+            switch (key) {
+                case KEY_STATUS -> status = r.readStatusCode();
+                case KEY_HEADERS -> {
+                    if (r.isObjectStart()) {
+                        r.beginObject();
+                        String k;
+                        while ((k = r.nextKeyCanonical()) != null) {
+                            if (r.isArrayStart()) {
+                                r.beginArray();
+                                while (r.hasNextElement()) {
+                                    headerSink.accept(k, r.readString());
+                                }
+                            } else {
+                                headerSink.accept(k, r.readString());
+                            }
+                        }
+                    } else {
+                        r.skipValue();
+                    }
+                }
+                default -> r.skipValue();
+            }
+        }
+        r.requireFullyConsumed();
         statusSink.accept(status);
     }
 
@@ -131,78 +182,88 @@ final class WireHeaderReader {
      */
     static Decoded decode(ByteBuffer buf, int off, int len) {
         WireHeaderReader r = new WireHeaderReader(buf, off, len);
+        return r.decodeRoot();
+    }
+
+    static Decoded decode(byte[] buf, int off, int len) {
+        WireHeaderReader r = new WireHeaderReader(buf, off, len);
+        return r.decodeRoot();
+    }
+
+    private Decoded decodeRoot() {
         Decoded out = new Decoded();
-        r.requireObjectStart();
-        r.beginObject();
+        requireObjectStart();
+        beginObject();
         int seen = 0;
         int key;
-        while ((key = r.nextRootKey()) != KEY_END) {
-            seen = r.rejectDuplicateRootKey(seen, key);
+        while ((key = nextRootKey()) != KEY_END) {
+            seen = rejectDuplicateRootKey(seen, key);
             switch (key) {
-                case KEY_STATUS -> out.status = r.readInt();
+                case KEY_STATUS -> out.status = readStatusCode();
                 case KEY_HEADERS -> {
-                    if (r.isObjectStart()) {
-                        r.beginObject();
+                    if (isObjectStart()) {
+                        beginObject();
                         String k;
-                        while ((k = r.nextKeyCanonical()) != null) {
+                        while ((k = nextKeyCanonical()) != null) {
                             if (out.headers == null) {
                                 // Pre-size for a typical response header
                                 // count (content-type, content-length, …).
                                 out.headers = new LinkedHashMap<>(8);
                             }
-                            if (r.isArrayStart()) {
-                                r.beginArray();
+                            if (isArrayStart()) {
+                                beginArray();
                                 List<String> list = new ArrayList<>();
-                                while (r.hasNextElement()) {
-                                    list.add(r.readString());
+                                while (hasNextElement()) {
+                                    list.add(readString());
                                 }
                                 out.headers.put(k, list);
                             } else {
-                                out.headers.put(k, r.readString());
+                                out.headers.put(k, readString());
                             }
                         }
                     } else {
-                        r.skipValue();
+                        skipValue();
                     }
                 }
                 case KEY_METADATA -> {
-                    if (r.isObjectStart()) {
-                        r.beginObject();
-                        out.metadata = r.readStringMap();
+                    if (isObjectStart()) {
+                        beginObject();
+                        out.metadata = readStringMap();
                     } else {
-                        r.skipValue();
+                        skipValue();
                     }
                 }
                 case KEY_VALIDATION -> {
-                    if (r.isArrayStart()) {
-                        r.beginArray();
+                    if (isArrayStart()) {
+                        beginArray();
                         out.validationErrors = new ArrayList<>();
-                        while (r.hasNextElement()) {
-                            if (!r.isObjectStart()) {
+                        while (hasNextElement()) {
+                            if (!isObjectStart()) {
                                 // Fixed schema is an array of objects; a
                                 // non-object element (only on malformed
                                 // input) is skipped so the cursor still
                                 // reaches the array end cleanly.
-                                r.skipValue();
+                                skipValue();
                                 continue;
                             }
-                            r.beginObject();
+                            beginObject();
                             Map<String, Object> entry = new LinkedHashMap<>(4);
                             String k;
-                            while ((k = r.nextKeyCanonical()) != null) {
-                                entry.put(k, r.readPrimitiveValue());
+                            while ((k = nextKeyCanonical()) != null) {
+                                entry.put(k, readPrimitiveValue());
                             }
                             out.validationErrors.add(entry);
                         }
                     } else {
-                        r.skipValue();
+                        skipValue();
                     }
                 }
                 // KEY_OTHER: "v" and any unknown field — value skipped,
                 // never materialised.
-                default -> r.skipValue();
+                default -> skipValue();
             }
         }
+        requireFullyConsumed();
         return out;
     }
 
@@ -237,7 +298,7 @@ final class WireHeaderReader {
 
     private void skipWs() {
         while (pos < end) {
-            int c = buf.get(pos) & 0xFF;
+            int c = byteAt(pos);
             if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
                 pos++;
             } else {
@@ -247,7 +308,18 @@ final class WireHeaderReader {
     }
 
     private int cur() {
-        return pos < end ? buf.get(pos) & 0xFF : -1;
+        return pos < end ? byteAt(pos) : -1;
+    }
+
+    private int byteAt(int index) {
+        return array != null ? array[index] & 0xFF : buf.get(index) & 0xFF;
+    }
+
+    private void requireFullyConsumed() {
+        skipWs();
+        if (pos != end) {
+            throw err("trailing data after root object");
+        }
     }
 
     int peek() {
@@ -327,7 +399,7 @@ final class WireHeaderReader {
         int p = pos + 1;
         int start = p;
         while (p < end) {
-            int b = buf.get(p) & 0xFF;
+            int b = byteAt(p);
             if (b == '"') {
                 break;
             }
@@ -339,7 +411,7 @@ final class WireHeaderReader {
         if (p >= end) {
             return null;
         }
-        String canon = WireHeaderStringSupport.canonicalKey(buf, start, p - start);
+        String canon = canonicalKey(start, p - start);
         if (canon != null) {
             pos = p + 1;
             return canon;
@@ -425,7 +497,7 @@ final class WireHeaderReader {
         int start = pos;
         boolean simple = true;
         while (pos < end) {
-            int b = buf.get(pos) & 0xFF;
+            int b = byteAt(pos);
             if (b == '"') {
                 break;
             }
@@ -463,7 +535,15 @@ final class WireHeaderReader {
     }
 
     private boolean regionEquals(int s, String lit) {
-        return WireHeaderStringSupport.regionEquals(buf, s, lit);
+        return array != null
+                ? WireHeaderStringSupport.regionEquals(array, s, lit)
+                : WireHeaderStringSupport.regionEquals(buf, s, lit);
+    }
+
+    private String canonicalKey(int start, int len) {
+        return array != null
+                ? WireHeaderStringSupport.canonicalKey(array, start, len)
+                : WireHeaderStringSupport.canonicalKey(buf, start, len);
     }
 
     void beginArray() {
@@ -514,13 +594,13 @@ final class WireHeaderReader {
             // call is already optimal for both buffer kinds. The previous outer
             // `if (buf.hasArray()) ... else ...` invoked the identical call in
             // both arms (dead branch); collapsed here.
-            String s = WireHeaderStringSupport.readAsciiString(buf, pos, simpleLen);
+            String s = readAsciiString(pos, simpleLen);
             pos += simpleLen + 1; // consume the run + the closing quote
             return s;
         }
-        StringBuilder sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder(Math.min(end - pos, 256));
         while (pos < end) {
-            int b = buf.get(pos++) & 0xFF;
+            int b = byteAt(pos++);
             if (b == '"') {
                 return sb.toString();
             }
@@ -528,7 +608,7 @@ final class WireHeaderReader {
                 if (pos >= end) {
                     throw err("dangling escape");
                 }
-                int e = buf.get(pos++) & 0xFF;
+                int e = byteAt(pos++);
                 switch (e) {
                     case '"' -> sb.append('"');
                     case '\\' -> sb.append('\\');
@@ -648,7 +728,7 @@ final class WireHeaderReader {
     private boolean readDigits() {
         boolean any = false;
         while (pos < end) {
-            int d = buf.get(pos) & 0xFF;
+            int d = byteAt(pos);
             if (d < '0' || d > '9') {
                 break;
             }
@@ -659,7 +739,13 @@ final class WireHeaderReader {
     }
 
     private String asciiToken(int start, int len) {
-        return WireHeaderStringSupport.readAsciiString(buf, start, len);
+        return readAsciiString(start, len);
+    }
+
+    private String readAsciiString(int start, int len) {
+        return array != null
+                ? WireHeaderStringSupport.readAsciiString(array, start, len)
+                : WireHeaderStringSupport.readAsciiString(buf, start, len);
     }
 
     /**
@@ -672,7 +758,7 @@ final class WireHeaderReader {
     private int simpleAsciiRun() {
         int p = pos;
         while (p < end) {
-            int b = buf.get(p) & 0xFF;
+            int b = byteAt(p);
             if (b == '"') {
                 return p - pos;
             }
@@ -692,7 +778,7 @@ final class WireHeaderReader {
         if (pos >= end) {
             throw err("truncated UTF-8");
         }
-        int b = buf.get(pos++) & 0xFF;
+        int b = byteAt(pos++);
         if ((b & 0xC0) != 0x80) {
             throw err("bad UTF-8 continuation");
         }
@@ -705,7 +791,7 @@ final class WireHeaderReader {
         }
         int v = 0;
         for (int k = 0; k < 4; k++) {
-            int d = buf.get(pos++) & 0xFF;
+            int d = byteAt(pos++);
             int h;
             if (d >= '0' && d <= '9') {
                 h = d - '0';
@@ -724,7 +810,7 @@ final class WireHeaderReader {
     private void appendUnicodeEscape(StringBuilder sb) {
         char c = readHex4();
         if (Character.isHighSurrogate(c)) {
-            if (pos + 6 > end || (buf.get(pos) & 0xFF) != '\\' || (buf.get(pos + 1) & 0xFF) != 'u') {
+            if (pos + 6 > end || byteAt(pos) != '\\' || byteAt(pos + 1) != 'u') {
                 throw err("unpaired unicode surrogate");
             }
             pos += 2;
@@ -741,7 +827,7 @@ final class WireHeaderReader {
         sb.append(c);
     }
 
-    int readInt() {
+    int readStatusCode() {
         skipWs();
         int start = pos;
         boolean neg = cur() == '-';
@@ -752,7 +838,7 @@ final class WireHeaderReader {
         long v = 0;
         long limit = neg ? 2147483648L : Integer.MAX_VALUE;
         while (pos < end) {
-            int d = buf.get(pos) & 0xFF;
+            int d = byteAt(pos);
             if (d < '0' || d > '9') {
                 break;
             }
@@ -777,12 +863,16 @@ final class WireHeaderReader {
             pos = start;
             throw err("expected number");
         }
-        return (int) (neg ? -v : v);
+        int status = (int) (neg ? -v : v);
+        if (status < 100 || status > 999) {
+            throw err("status out of range");
+        }
+        return status;
     }
 
     private void skipNumberTail() {
         while (pos < end) {
-            int d = buf.get(pos) & 0xFF;
+            int d = byteAt(pos);
             if ((d >= '0' && d <= '9') || d == '.' || d == 'e' || d == 'E' || d == '+' || d == '-') {
                 pos++;
             } else {
@@ -796,7 +886,7 @@ final class WireHeaderReader {
      * and exponent) WITHOUT parsing it to an {@code int}.  The skip path
      * discards unknown-field values, so an unknown numeric that is large
      * (beyond {@code int} range) or a decimal must NOT fail decode the way
-     * {@link #readInt} — used for the known, overflow-checked {@code status}
+     * {@link #readStatusCode} — used for the known, overflow-checked {@code status}
      * field — would.  Forward-compatibility for newer / custom wire headers.
      */
     private void skipNumberRaw() {
@@ -835,7 +925,7 @@ final class WireHeaderReader {
     private void skipStringRaw() {
         pos++; // opening quote (peek() guarantees cur() == '"')
         while (pos < end) {
-            int b = buf.get(pos++) & 0xFF;
+            int b = byteAt(pos++);
             if (b == '"') {
                 return;
             }
@@ -855,12 +945,12 @@ final class WireHeaderReader {
     private void skipContainerRaw() {
         int depth = 0;
         while (pos < end) {
-            int b = buf.get(pos++) & 0xFF;
+            int b = byteAt(pos++);
             switch (b) {
                 case '"' -> {
                     // Skip a nested string so its braces/brackets don't count.
                     while (pos < end) {
-                        int x = buf.get(pos++) & 0xFF;
+                        int x = byteAt(pos++);
                         if (x == '"') {
                             break;
                         }
@@ -899,7 +989,7 @@ final class WireHeaderReader {
 
     private void consumeLiteral(String literal) {
         for (int i = 0; i < literal.length(); i++) {
-            if (pos + i >= end || (buf.get(pos + i) & 0xFF) != literal.charAt(i)) {
+            if (pos + i >= end || byteAt(pos + i) != literal.charAt(i)) {
                 throw err("expected " + literal);
             }
         }

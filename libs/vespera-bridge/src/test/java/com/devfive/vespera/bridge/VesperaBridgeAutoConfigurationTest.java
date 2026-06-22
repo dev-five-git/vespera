@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -148,6 +149,17 @@ class VesperaBridgeAutoConfigurationTest {
             }
             assertTrue(name[0].startsWith("vespera-bridge-async-response-"), name[0]);
             assertTrue(daemon[0]);
+        });
+    }
+
+    @Test
+    void defaultAsyncResponseExecutorUsesBoundedQueueWithCallerRunsBackpressure() {
+        runner.run(ctx -> {
+            ThreadPoolExecutor executor = ctx.getBean(
+                    "vesperaBridgeAsyncResponseExecutor", ThreadPoolExecutor.class);
+
+            assertTrue(executor.getQueue().remainingCapacity() < Integer.MAX_VALUE);
+            assertInstanceOf(ThreadPoolExecutor.CallerRunsPolicy.class, executor.getRejectedExecutionHandler());
         });
     }
 

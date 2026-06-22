@@ -560,6 +560,17 @@ impl Serialize for Schema {
                 "invalid Schema: nullable `$ref` serializes through anyOf and cannot also carry explicit any_of",
             ));
         }
+        // A nullable `$ref` is emitted as `anyOf: [{$ref}, {type:null}]`; a
+        // sibling `type` would then describe the SAME node twice and produce
+        // ambiguous/invalid output (`anyOf` AND `type` at one level).  Vespera's
+        // own `Schema::nullable_reference` always leaves `schema_type` None, so
+        // this only fires for a hand-built `Schema` that mixed the two — reject
+        // it like the `any_of` case above instead of serializing broken OpenAPI.
+        if nullable_ref && self.schema_type.is_some() {
+            return Err(serde::ser::Error::custom(
+                "invalid Schema: nullable `$ref` serializes through anyOf and cannot also carry an explicit type; build it via Schema::nullable_reference",
+            ));
+        }
         let mut out = serializer.serialize_struct("Schema", 42)?;
         if let Some(ref_path) = &self.ref_path {
             if nullable_ref {

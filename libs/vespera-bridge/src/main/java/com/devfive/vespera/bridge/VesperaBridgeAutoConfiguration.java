@@ -10,8 +10,10 @@ import org.springframework.beans.factory.annotation.Qualifier;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -152,7 +154,15 @@ public class VesperaBridgeAutoConfiguration {
             thread.setDaemon(true);
             return thread;
         };
-        return Executors.newFixedThreadPool(threads, factory);
+        int queueCapacity = Math.max(256, threads * 256);
+        return new ThreadPoolExecutor(
+                threads,
+                threads,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(queueCapacity),
+                factory,
+                new ThreadPoolExecutor.CallerRunsPolicy());
     }
 
     @Bean

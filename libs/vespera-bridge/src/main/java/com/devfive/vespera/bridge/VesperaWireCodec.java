@@ -79,6 +79,10 @@ final class VesperaWireCodec {
         HEADER_BUF.remove();
     }
 
+    static int currentHeaderBufferCapacityForTest() {
+        return HEADER_BUF.get().capacity();
+    }
+
     /**
      * {@link ByteArrayOutputStream} that exposes its backing array so the
      * serialized header is copied straight into the wire (heap array or
@@ -382,75 +386,85 @@ final class VesperaWireCodec {
             String path, String query, Map<String, String> headers) {
         String normalizedAppName = normalizedAppName(appName);
         ExposedByteArrayOutputStream buf = reusableHeaderBuffer();
-        Objects.requireNonNull(method, "method");
-        Objects.requireNonNull(path, "path");
-        buf.putAscii("{\"v\":");
-        // WIRE_VERSION is a single-digit constant; write its ASCII digit
-        // directly to avoid the per-request `Integer.toString(1)` allocation
-        // the old `writeAsciiInt` made on every encode. Byte-identical output.
-        buf.put((byte) ('0' + WIRE_VERSION));
-        buf.putAscii(",\"method\":");
-        writeJsonString(buf, method);
-        buf.putAscii(",\"path\":");
-        writeJsonString(buf, path);
-        if (query != null && !query.isEmpty()) {
-            buf.putAscii(",\"query\":");
-            writeJsonString(buf, query);
-        }
-        if (headers != null && !headers.isEmpty()) {
-            buf.putAscii(",\"headers\":{");
-            boolean first = true;
-            for (Map.Entry<String, String> e : headers.entrySet()) {
-                if (!first) {
-                    buf.put(',');
+        try {
+            Objects.requireNonNull(method, "method");
+            Objects.requireNonNull(path, "path");
+            buf.putAscii("{\"v\":");
+            // WIRE_VERSION is a single-digit constant; write its ASCII digit
+            // directly to avoid the per-request `Integer.toString(1)` allocation
+            // the old `writeAsciiInt` made on every encode. Byte-identical output.
+            buf.put((byte) ('0' + WIRE_VERSION));
+            buf.putAscii(",\"method\":");
+            writeJsonString(buf, method);
+            buf.putAscii(",\"path\":");
+            writeJsonString(buf, path);
+            if (query != null && !query.isEmpty()) {
+                buf.putAscii(",\"query\":");
+                writeJsonString(buf, query);
+            }
+            if (headers != null && !headers.isEmpty()) {
+                buf.putAscii(",\"headers\":{");
+                boolean first = true;
+                for (Map.Entry<String, String> e : headers.entrySet()) {
+                    if (!first) {
+                        buf.put(',');
+                    }
+                    first = false;
+                    writeJsonString(buf, Objects.requireNonNull(e.getKey(), "header key"));
+                    buf.put(':');
+                    writeJsonString(buf, Objects.requireNonNull(e.getValue(), "header value"));
                 }
-                first = false;
-                writeJsonString(buf, Objects.requireNonNull(e.getKey(), "header key"));
-                buf.put(':');
-                writeJsonString(buf, Objects.requireNonNull(e.getValue(), "header value"));
+                buf.put('}');
+            }
+            if (normalizedAppName != null) {
+                buf.putAscii(",\"app\":");
+                writeJsonString(buf, normalizedAppName);
             }
             buf.put('}');
+            return buf;
+        } catch (RuntimeException | Error failure) {
+            shrinkHeaderBufferIfOversized(buf);
+            throw failure;
         }
-        if (normalizedAppName != null) {
-            buf.putAscii(",\"app\":");
-            writeJsonString(buf, normalizedAppName);
-        }
-        buf.put('}');
-        return buf;
     }
 
     static ExposedByteArrayOutputStream fillHeaderJson(String appName, String method,
             String path, String query, HeaderSource headers) {
         String normalizedAppName = normalizedAppName(appName);
         ExposedByteArrayOutputStream buf = reusableHeaderBuffer();
-        Objects.requireNonNull(method, "method");
-        Objects.requireNonNull(path, "path");
-        buf.putAscii("{\"v\":");
-        // WIRE_VERSION is a single-digit constant; write its ASCII digit
-        // directly to avoid the per-request `Integer.toString(1)` allocation
-        // the old `writeAsciiInt` made on every encode. Byte-identical output.
-        buf.put((byte) ('0' + WIRE_VERSION));
-        buf.putAscii(",\"method\":");
-        writeJsonString(buf, method);
-        buf.putAscii(",\"path\":");
-        writeJsonString(buf, path);
-        if (query != null && !query.isEmpty()) {
-            buf.putAscii(",\"query\":");
-            writeJsonString(buf, query);
-        }
-        if (headers != null) {
-            HeaderJsonSink sink = new HeaderJsonSink(buf);
-            headers.writeTo(sink);
-            if (sink.started) {
-                buf.put('}');
+        try {
+            Objects.requireNonNull(method, "method");
+            Objects.requireNonNull(path, "path");
+            buf.putAscii("{\"v\":");
+            // WIRE_VERSION is a single-digit constant; write its ASCII digit
+            // directly to avoid the per-request `Integer.toString(1)` allocation
+            // the old `writeAsciiInt` made on every encode. Byte-identical output.
+            buf.put((byte) ('0' + WIRE_VERSION));
+            buf.putAscii(",\"method\":");
+            writeJsonString(buf, method);
+            buf.putAscii(",\"path\":");
+            writeJsonString(buf, path);
+            if (query != null && !query.isEmpty()) {
+                buf.putAscii(",\"query\":");
+                writeJsonString(buf, query);
             }
+            if (headers != null) {
+                HeaderJsonSink sink = new HeaderJsonSink(buf);
+                headers.writeTo(sink);
+                if (sink.started) {
+                    buf.put('}');
+                }
+            }
+            if (normalizedAppName != null) {
+                buf.putAscii(",\"app\":");
+                writeJsonString(buf, normalizedAppName);
+            }
+            buf.put('}');
+            return buf;
+        } catch (RuntimeException | Error failure) {
+            shrinkHeaderBufferIfOversized(buf);
+            throw failure;
         }
-        if (normalizedAppName != null) {
-            buf.putAscii(",\"app\":");
-            writeJsonString(buf, normalizedAppName);
-        }
-        buf.put('}');
-        return buf;
     }
 
     static String normalizedAppName(String appName) {
@@ -602,8 +616,8 @@ final class VesperaWireCodec {
         // IOContext allocation.  Output is shape-identical: status (default
         // 500), headers (String | List<String>), metadata (pre-sized),
         // validation_errors, and unknown fields (incl. "v") skipped.
+        WireHeaderReader.Decoded d = WireHeaderReader.decode(wire, 4, headerLen);
         ByteBuffer buf = ByteBuffer.wrap(wire);
-        WireHeaderReader.Decoded d = WireHeaderReader.decode(buf, 4, headerLen);
         buf.position(4 + headerLen).limit(wire.length);
         ByteBuffer body = buf.slice().asReadOnlyBuffer();
         return new DecodedResponse(

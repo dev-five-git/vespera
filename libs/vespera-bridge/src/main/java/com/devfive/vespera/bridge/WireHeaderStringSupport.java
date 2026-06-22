@@ -35,7 +35,28 @@ final class WireHeaderStringSupport {
         return new String(tmp, StandardCharsets.US_ASCII);
     }
 
+    static String readAsciiString(byte[] buf, int start, int len) {
+        return new String(buf, start, len, StandardCharsets.US_ASCII);
+    }
+
     static String canonicalKey(ByteBuffer buf, int start, int len) {
+        return switch (len) {
+            case 4 -> canonicalKeyLen4(buf, start);
+            case 7 -> canonicalKeyLen7(buf, start);
+            case 8 -> regionEquals(buf, start, "location") ? "location" : null;
+            case 10 -> regionEquals(buf, start, "set-cookie") ? "set-cookie" : null;
+            case 12 -> regionEquals(buf, start, "content-type") ? "content-type" : null;
+            case 13 -> regionEquals(buf, start, "cache-control") ? "cache-control" : null;
+            case 14 -> regionEquals(buf, start, "content-length") ? "content-length" : null;
+            case 16 -> regionEquals(buf, start, "content-encoding") ? "content-encoding" : null;
+            case 19 -> regionEquals(buf, start, "content-disposition") ? "content-disposition" : null;
+            case 27 -> regionEquals(buf, start, "access-control-allow-origin")
+                    ? "access-control-allow-origin" : null;
+            default -> null;
+        };
+    }
+
+    static String canonicalKey(byte[] buf, int start, int len) {
         return switch (len) {
             case 4 -> canonicalKeyLen4(buf, start);
             case 7 -> canonicalKeyLen7(buf, start);
@@ -61,7 +82,22 @@ final class WireHeaderStringSupport {
         return null;
     }
 
+    private static String canonicalKeyLen4(byte[] buf, int start) {
+        if (regionEquals(buf, start, "etag")) return "etag";
+        if (regionEquals(buf, start, "date")) return "date";
+        if (regionEquals(buf, start, "vary")) return "vary";
+        if (regionEquals(buf, start, "path")) return "path";
+        if (regionEquals(buf, start, "code")) return "code";
+        return null;
+    }
+
     private static String canonicalKeyLen7(ByteBuffer buf, int start) {
+        if (regionEquals(buf, start, "version")) return "version";
+        if (regionEquals(buf, start, "message")) return "message";
+        return null;
+    }
+
+    private static String canonicalKeyLen7(byte[] buf, int start) {
         if (regionEquals(buf, start, "version")) return "version";
         if (regionEquals(buf, start, "message")) return "message";
         return null;
@@ -70,6 +106,15 @@ final class WireHeaderStringSupport {
     static boolean regionEquals(ByteBuffer buf, int start, String literal) {
         for (int i = 0; i < literal.length(); i++) {
             if ((buf.get(start + i) & 0xFF) != literal.charAt(i)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static boolean regionEquals(byte[] buf, int start, String literal) {
+        for (int i = 0; i < literal.length(); i++) {
+            if ((buf[start + i] & 0xFF) != literal.charAt(i)) {
                 return false;
             }
         }

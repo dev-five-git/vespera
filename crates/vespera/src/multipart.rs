@@ -607,7 +607,28 @@ pub fn register_multipart_part() -> Result<(), TypedMultipartError> {
         .unwrap_or(Ok(()))
 }
 
-fn register_multipart_bytes(field_name: &str, chunk_len: usize) -> Result<(), TypedMultipartError> {
+/// Count `chunk_len` bytes of one multipart field against the request-wide
+/// `max_total_bytes` aggregate limit, returning [`TypedMultipartError::RequestTooLarge`]
+/// once the running total crosses the cap.
+///
+/// The public counterpart of [`register_multipart_part`] for the **byte**
+/// dimension of [`MultipartLimits`]. Vespera's built-in field parsers
+/// ([`read_field_data`] / the `NamedTempFile` path) already call this once per
+/// `field.chunk()`, so typed multipart structs are accounted automatically.
+///
+/// A **custom [`TryFromFieldWithState`] implementation that consumes a field's
+/// bytes itself** (via `field.chunk()` / `field.bytes()`) MUST call this once
+/// per chunk to participate in the aggregate cap — otherwise that field's bytes
+/// are invisible to `max_total_bytes` and a single custom-parsed field can read
+/// unboundedly past the configured policy. The per-field `limit_bytes` passed to
+/// the trait method still bounds that one field, but only this call enforces the
+/// request-wide total. Mirrors the cooperative contract of
+/// [`register_multipart_part`]: outside the extractor's task-local scope (e.g. a
+/// direct unit test of a derived parser) it no-ops rather than failing.
+pub fn register_multipart_bytes(
+    field_name: &str,
+    chunk_len: usize,
+) -> Result<(), TypedMultipartError> {
     MULTIPART_AGGREGATE
         .try_with(|state| {
             let mut state = state.borrow_mut();

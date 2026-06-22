@@ -47,21 +47,34 @@ final class VesperaNativeLoader {
             }
             String suffix = filename.substring(filename.lastIndexOf('.'));
             Path temp = Files.createTempFile("vespera-", suffix);
-            temp.toFile().deleteOnExit();
+            boolean loaded = false;
 
-            try (DigestInputStream din = new DigestInputStream(in, digest)) {
-                Files.copy(din, temp, StandardCopyOption.REPLACE_EXISTING);
-            }
-            byte[] resourceDigest = digest.digest();
-            byte[] extractedDigest = digestOfFile(temp, digest);
-            if (!MessageDigest.isEqual(resourceDigest, extractedDigest)) {
-                throw new UnsatisfiedLinkError(
-                        "Native library integrity check failed for " + resourcePath
-                                + ": extracted file does not match the bundled resource "
-                                + "(corrupted or modified extraction).");
-            }
+            try {
+                try (DigestInputStream din = new DigestInputStream(in, digest)) {
+                    Files.copy(din, temp, StandardCopyOption.REPLACE_EXISTING);
+                }
+                byte[] resourceDigest = digest.digest();
+                byte[] extractedDigest = digestOfFile(temp, digest);
+                if (!MessageDigest.isEqual(resourceDigest, extractedDigest)) {
+                    throw new UnsatisfiedLinkError(
+                            "Native library integrity check failed for " + resourcePath
+                                    + ": extracted file does not match the bundled resource "
+                                    + "(corrupted or modified extraction).");
+                }
 
-            System.load(temp.toAbsolutePath().toString());
+                System.load(temp.toAbsolutePath().toString());
+                loaded = true;
+                temp.toFile().deleteOnExit();
+            } finally {
+                if (!loaded) {
+                    try {
+                        Files.deleteIfExists(temp);
+                    } catch (IOException deleteFailure) {
+                        // The load failure is more important; the temp path is
+                        // still deleteOnExit-free, so do not mask the root cause.
+                    }
+                }
+            }
         } catch (IOException e) {
             UnsatisfiedLinkError ule = new UnsatisfiedLinkError("Extract failed: " + e.getMessage());
             ule.initCause(e);

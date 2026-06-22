@@ -76,6 +76,45 @@ fn temp_file_default_limit_is_bounded_and_configurable() {
     );
 }
 
+#[test]
+fn register_multipart_bytes_lets_custom_parsers_enforce_aggregate_cap() {
+    // A custom `TryFromFieldWithState` impl that consumes a field's bytes itself
+    // can now call the public `register_multipart_bytes` to participate in the
+    // request-wide `max_total_bytes` cap — previously impossible (the counter was
+    // private), so a single custom-parsed field could read unboundedly past the
+    // configured `MultipartLimits`.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("current-thread runtime");
+    let outcome = rt.block_on(async {
+        let limits = MultipartLimits::new(10, DEFAULT_MULTIPART_MAX_FIELDS);
+        MULTIPART_AGGREGATE
+            .scope(RefCell::new(MultipartAggregateState::new(limits)), async {
+                // Under the cap: two 4-byte chunks accepted (8 <= 10).
+                register_multipart_bytes("custom", 4)?;
+                register_multipart_bytes("custom", 4)?;
+                // Crossing the cap (8 + 4 = 12 > 10) trips RequestTooLarge.
+                register_multipart_bytes("custom", 4)
+            })
+            .await
+    });
+    assert!(
+        matches!(
+            outcome,
+            Err(TypedMultipartError::RequestTooLarge {
+                limit_bytes: 10,
+                ..
+            })
+        ),
+        "custom-parser byte accounting must trip the aggregate cap, got {outcome:?}"
+    );
+
+    // Cooperative contract (mirrors `register_multipart_part`): outside the
+    // extractor's task-local scope it no-ops rather than erroring, so a derived
+    // parser can be unit-tested without a live request aggregate.
+    assert!(register_multipart_bytes("custom", usize::MAX).is_ok());
+}
+
 // ─── Display tests for all error variants ───────────────────────────
 
 #[test]

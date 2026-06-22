@@ -198,8 +198,8 @@ fn panic_wire() -> Vec<u8> {
 #[path = "jni_impl_support.rs"]
 mod support;
 use support::{
-    push_unless_header_failed, setup_full_stream, setup_full_stream_with_header, setup_stream,
-    setup_stream_with_header, should_fire_fallback_header, throw_streaming_abort,
+    PanicHeaderAction, panic_post_header_action, push_unless_header_failed, setup_full_stream,
+    setup_full_stream_with_header, setup_stream, setup_stream_with_header, throw_streaming_abort,
 };
 
 /// `com.devfive.vespera.bridge.VesperaBridge.dispatchBytes(byte[]) -> byte[]`
@@ -641,8 +641,11 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
             // the consumer once with a 500 header below so the documented
             // "header consumer invoked exactly once on every code path"
             // contract holds and the Java caller is not left hanging.  A
-            // panic AFTER the header fired leaves Spring's response partially
-            // committed — unrecoverable, but the contract is already met.
+            // panic AFTER the header fired truncates the body past a header the
+            // host already committed; `panic_post_header_action` then throws
+            // IOException to abort the response (symmetric with the body-error /
+            // sink-stop abort on the `Ok` branch) instead of finishing cleanly
+            // over a short body.
             let header_sent = Arc::new(AtomicBool::new(false));
             let header_failed = Arc::new(AtomicBool::new(false));
             let header_sent_cb = Arc::clone(&header_sent);
@@ -694,24 +697,29 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                     }
                 }
                 Err(_) => {
-                    // See `should_fire_fallback_header`: a panic re-enters the
-                    // header consumer ONLY when it was never invoked (neither
-                    // succeeded nor threw), upholding the "invoked exactly once on
-                    // every code path" contract.
-                    if should_fire_fallback_header(
+                    // A panic unwound out of the dispatch future.  The action
+                    // depends on whether the response header was already committed
+                    // (see `panic_post_header_action`).
+                    match panic_post_header_action(
                         header_sent.load(Ordering::Relaxed),
                         header_failed.load(Ordering::Acquire),
                     ) {
-                        let err = panic_wire();
-                        // On the JNI entry thread `header_consumer` is still a
-                        // valid LOCAL ref, so deliver the mandatory fallback
-                        // header through it directly. Promoting it to a
-                        // `Global` here added an avoidable allocation AND a
-                        // failure point: a failed `new_global_ref` (e.g. OOM)
-                        // silently skipped the required single callback and
-                        // hung the Java caller. `call_header_consumer_local`
-                        // exists for exactly this cold on-thread fallback.
-                        let _ = call_header_consumer_local(env, &header_consumer, &err);
+                        // Header never reached the consumer: deliver the one-shot
+                        // 500 fallback through the still-valid LOCAL `header_consumer`
+                        // ref (no `Global` promotion to fail first and hang the
+                        // caller), upholding "invoked exactly once on every code path".
+                        PanicHeaderAction::FireFallbackHeader => {
+                            let err = panic_wire();
+                            let _ = call_header_consumer_local(env, &header_consumer, &err);
+                        }
+                        // Header already committed (or its delivery threw): the body
+                        // is now truncated past a header the host already wrote, so
+                        // throw IOException to abort the response instead of finishing
+                        // cleanly over a short body — symmetric with the body-error /
+                        // sink-stop abort on the `Ok` branch above.
+                        PanicHeaderAction::ThrowAbort => {
+                            throw_streaming_abort(env, header_failed.load(Ordering::Acquire));
+                        }
                     }
                 }
             }
@@ -851,24 +859,29 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                     }
                 }
                 Err(_) => {
-                    // See `should_fire_fallback_header`: a panic re-enters the
-                    // header consumer ONLY when it was never invoked (neither
-                    // succeeded nor threw), upholding the "invoked exactly once on
-                    // every code path" contract.
-                    if should_fire_fallback_header(
+                    // A panic unwound out of the dispatch future.  The action
+                    // depends on whether the response header was already committed
+                    // (see `panic_post_header_action`).
+                    match panic_post_header_action(
                         header_sent.load(Ordering::Relaxed),
                         header_failed.load(Ordering::Acquire),
                     ) {
-                        let err = panic_wire();
-                        // On the JNI entry thread `header_consumer` is still a
-                        // valid LOCAL ref, so deliver the mandatory fallback
-                        // header through it directly. Promoting it to a
-                        // `Global` here added an avoidable allocation AND a
-                        // failure point: a failed `new_global_ref` (e.g. OOM)
-                        // silently skipped the required single callback and
-                        // hung the Java caller. `call_header_consumer_local`
-                        // exists for exactly this cold on-thread fallback.
-                        let _ = call_header_consumer_local(env, &header_consumer, &err);
+                        // Header never reached the consumer: deliver the one-shot
+                        // 500 fallback through the still-valid LOCAL `header_consumer`
+                        // ref (no `Global` promotion to fail first and hang the
+                        // caller), upholding "invoked exactly once on every code path".
+                        PanicHeaderAction::FireFallbackHeader => {
+                            let err = panic_wire();
+                            let _ = call_header_consumer_local(env, &header_consumer, &err);
+                        }
+                        // Header already committed (or its delivery threw): the body
+                        // is now truncated past a header the host already wrote, so
+                        // throw IOException to abort the response instead of finishing
+                        // cleanly over a short body — symmetric with the body-error /
+                        // sink-stop abort on the `Ok` branch above.
+                        PanicHeaderAction::ThrowAbort => {
+                            throw_streaming_abort(env, header_failed.load(Ordering::Acquire));
+                        }
                     }
                 }
             }

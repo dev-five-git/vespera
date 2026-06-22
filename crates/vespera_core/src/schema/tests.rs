@@ -329,6 +329,27 @@ fn nullable_reference_with_explicit_any_of_returns_clean_serialization_error() {
 }
 
 #[test]
+fn nullable_reference_with_explicit_type_returns_clean_serialization_error() {
+    // A hand-built nullable `$ref` that ALSO carries a `schema_type` would
+    // serialize both `anyOf` and a sibling `type` — ambiguous/invalid OpenAPI.
+    // It must fail with a clean serialization error like the `any_of` case,
+    // not silently emit the broken shape. (Vespera's own `nullable_reference`
+    // leaves `schema_type` None, so this only guards external manual construction.)
+    let schema = Schema {
+        schema_type: Some(SchemaType::Object),
+        ..Schema::nullable_reference("#/components/schemas/User".to_owned())
+    };
+
+    let err = serde_json::to_string(&schema).unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("cannot also carry an explicit type"),
+        "unexpected error: {err}",
+    );
+}
+
+#[test]
 fn nullable_primitive_emits_type_array_with_null() {
     let schema = Schema {
         nullable: Some(true),
