@@ -82,7 +82,11 @@ class VesperaWireTest {
         byte[] headerJson = new byte[headerLen];
         System.arraycopy(wire, 4, headerJson, 0, headerLen);
         JsonNode h = MAPPER.readTree(headerJson);
-        assertEquals("page=1", h.path("query").asText());
+        // The query is folded into the `path` field (the full request target)
+        // — there is no separate `query` field — so the Rust dispatch side
+        // borrows it for `Uri` parsing instead of re-joining `path+'?'+query`.
+        assertEquals("/users?page=1", h.path("path").asText());
+        assertEquals("", h.path("query").asText());
         assertEquals("application/json", h.path("headers").path("content-type").asText());
         assertEquals("abc-123", h.path("headers").path("x-trace-id").asText());
 
@@ -103,10 +107,13 @@ class VesperaWireTest {
      * order / escaping / structure breaks its own golden assertion.
      *
      * <p>Field order is fixed by {@code VesperaWireCodec.fillHeaderJson}:
-     * {@code v, method, path, query?, headers?, app?}.
+     * {@code v, method, path, headers?, app?}.  The query string is folded into
+     * {@code path} as the full request target ({@code /users?page=1}) — there
+     * is no separate {@code query} field — so the Rust dispatch side borrows the
+     * target directly instead of re-joining it (see {@code wire_contract.rs}).
      */
     static final String CANONICAL_REQUEST_HEADER_JSON =
-            "{\"v\":1,\"method\":\"POST\",\"path\":\"/users\",\"query\":\"page=1\","
+            "{\"v\":1,\"method\":\"POST\",\"path\":\"/users?page=1\","
                     + "\"headers\":{\"content-type\":\"application/json\"}}";
 
     /** Canonical request body paired with {@link #CANONICAL_REQUEST_HEADER_JSON}. */
@@ -432,8 +439,11 @@ class VesperaWireTest {
         JsonNode h = MAPPER.readTree(headerJson);
 
         assertEquals("POST", h.path("method").asText());
-        assertEquals("/p\"a\\th/한글", h.path("path").asText());
-        assertEquals("q=\"x\"&한=글", h.path("query").asText());
+        // path and query are each JSON-escaped, then joined by a literal '?'
+        // into the single `path` request target — no separate `query` field.
+        // Independently re-parsed by Jackson, so a mis-escape here fails loudly.
+        assertEquals("/p\"a\\th/한글?q=\"x\"&한=글", h.path("path").asText());
+        assertEquals("", h.path("query").asText());
         assertEquals("a\"b\\c\td\ne", h.path("headers").path("x-quote").asText());
         assertEquals("한글-😀", h.path("headers").path("x-unicode").asText());
     }

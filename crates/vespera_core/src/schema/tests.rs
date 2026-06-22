@@ -375,6 +375,30 @@ fn duplicate_single_type_array_deserializes_without_loss() {
 }
 
 #[test]
+fn null_only_type_array_round_trips_to_singular_null() {
+    // Regression: `{"type":["null"]}` previously deserialized to
+    // (schema_type=None, nullable=Some(true)) and re-serialized to `{}`,
+    // silently dropping the null constraint. It must collapse to the
+    // equivalent singular `type:"null"` and round-trip losslessly.
+    let schema: Schema = serde_json::from_str(r#"{"type":["null"]}"#).unwrap();
+    assert_eq!(schema.schema_type, Some(SchemaType::Null));
+    assert_eq!(schema.nullable, None);
+
+    let json = serde_json::to_string(&schema).unwrap();
+    assert_eq!(json, r#"{"type":"null"}"#);
+}
+
+#[test]
+fn repeated_null_only_type_array_round_trips_to_singular_null() {
+    let schema: Schema = serde_json::from_str(r#"{"type":["null","null"]}"#).unwrap();
+    assert_eq!(schema.schema_type, Some(SchemaType::Null));
+    assert_eq!(schema.nullable, None);
+
+    let json = serde_json::to_string(&schema).unwrap();
+    assert_eq!(json, r#"{"type":"null"}"#);
+}
+
+#[test]
 fn multi_type_array_with_null_is_rejected_instead_of_lossy_collapsing() {
     let err =
         serde_json::from_str::<Schema>(r#"{"type":["string","integer","null"]}"#).unwrap_err();

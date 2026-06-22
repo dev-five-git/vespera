@@ -415,6 +415,14 @@ impl SchemaTypeWire {
                     }
                     schema_type = Some(next_type);
                 }
+                // `["null"]` (or `["null","null"]`): a null-only `type` array.
+                // Without this it would yield `(None, Some(true))` and
+                // re-serialize to `{}` — silently dropping the null constraint.
+                // Collapse to the equivalent singular `type:"null"` so the
+                // schema round-trips losslessly.
+                if schema_type.is_none() && nullable == Some(true) {
+                    return Ok((Some(SchemaType::Null), None));
+                }
                 Ok((schema_type, nullable))
             }
         }

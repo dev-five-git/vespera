@@ -355,14 +355,88 @@ pub trait TryFromMultipartWithState<S: Send + Sync>: Sized {
     ) -> impl std::future::Future<Output = Result<Self, TypedMultipartError>> + Send;
 }
 
+/// A multipart [`Field`] wrapper that meters every byte read against the
+/// request-wide `max_total_bytes` aggregate cap — **non-cooperatively**.
+///
+/// `#[derive(Multipart)]` hands each [`TryFromFieldWithState`] parser a
+/// `MeteredField` instead of a raw [`Field`], so a **custom** field parser that
+/// reads bytes via [`MeteredField::chunk`] / [`MeteredField::bytes`] is
+/// accounted automatically: it can no longer read unboundedly past the
+/// configured `max_total_bytes` the way a raw `field.chunk()` could. The
+/// metadata accessors delegate to the wrapped field.
+pub struct MeteredField<'a> {
+    inner: Field<'a>,
+}
+
+impl<'a> MeteredField<'a> {
+    /// Wrap a raw axum field. Public + `#[doc(hidden)]`: the
+    /// `#[derive(Multipart)]` loop constructs this in the user's crate; it is
+    /// not part of the stable hand-written API.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __from_field(inner: Field<'a>) -> Self {
+        Self { inner }
+    }
+
+    /// The field's form name, if present.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.inner.name()
+    }
+
+    /// The original client filename, if present.
+    #[must_use]
+    pub fn file_name(&self) -> Option<&str> {
+        self.inner.file_name()
+    }
+
+    /// The field's declared content type, if present.
+    #[must_use]
+    pub fn content_type(&self) -> Option<&str> {
+        self.inner.content_type()
+    }
+
+    /// Read the next chunk, metering its length against the request-wide
+    /// `max_total_bytes` cap **before** yielding it. Returns
+    /// [`TypedMultipartError::RequestTooLarge`] once the running total crosses
+    /// the cap.
+    pub async fn chunk(&mut self) -> Result<Option<axum::body::Bytes>, TypedMultipartError> {
+        let next = self.inner.chunk().await?;
+        if let Some(chunk) = &next {
+            register_multipart_bytes(self.inner.name().unwrap_or_default(), chunk.len())?;
+        }
+        Ok(next)
+    }
+
+    /// Read the whole field into owned bytes, metering every chunk against the
+    /// aggregate cap.
+    pub async fn bytes(mut self) -> Result<axum::body::Bytes, TypedMultipartError> {
+        let mut acc: Vec<u8> = Vec::new();
+        while let Some(chunk) = self.chunk().await? {
+            acc.extend_from_slice(&chunk);
+        }
+        Ok(axum::body::Bytes::from(acc))
+    }
+}
+
+impl From<&MeteredField<'_>> for FieldMetadata {
+    fn from(field: &MeteredField<'_>) -> Self {
+        Self::from(&field.inner)
+    }
+}
+
 /// Parse a single multipart field into a value.
 ///
 /// Built-in implementations exist for `String`, `bool`, all integer and float
 /// types, `char`, `tempfile::NamedTempFile`, and `FieldData<T>`.
 pub trait TryFromFieldWithState<S: Send + Sync>: Sized {
     /// Parse a single field into `Self`, optionally enforcing a byte-size limit.
+    ///
+    /// The field arrives as a [`MeteredField`]: every byte read through it
+    /// counts against the request-wide `max_total_bytes` aggregate cap, so even
+    /// a hand-written custom parser cannot bypass the limit.
     fn try_from_field_with_state(
-        field: Field<'_>,
+        field: MeteredField<'_>,
         limit_bytes: Option<usize>,
         state: &S,
     ) -> impl std::future::Future<Output = Result<Self, TypedMultipartError>> + Send;
@@ -448,7 +522,7 @@ where
     S: Send + Sync,
 {
     async fn try_from_field_with_state(
-        field: Field<'_>,
+        field: MeteredField<'_>,
         limit_bytes: Option<usize>,
         state: &S,
     ) -> Result<Self, TypedMultipartError> {
@@ -616,15 +690,17 @@ pub fn register_multipart_part() -> Result<(), TypedMultipartError> {
 /// ([`read_field_data`] / the `NamedTempFile` path) already call this once per
 /// `field.chunk()`, so typed multipart structs are accounted automatically.
 ///
-/// A **custom [`TryFromFieldWithState`] implementation that consumes a field's
-/// bytes itself** (via `field.chunk()` / `field.bytes()`) MUST call this once
-/// per chunk to participate in the aggregate cap — otherwise that field's bytes
-/// are invisible to `max_total_bytes` and a single custom-parsed field can read
-/// unboundedly past the configured policy. The per-field `limit_bytes` passed to
-/// the trait method still bounds that one field, but only this call enforces the
-/// request-wide total. Mirrors the cooperative contract of
-/// [`register_multipart_part`]: outside the extractor's task-local scope (e.g. a
-/// direct unit test of a derived parser) it no-ops rather than failing.
+/// Built-in field parsers — and any **custom [`TryFromFieldWithState`]**
+/// implementation — read a field's bytes through [`MeteredField::chunk`] /
+/// [`MeteredField::bytes`], which call this automatically once per chunk. A
+/// custom parser therefore **cannot** bypass the aggregate cap: [`MeteredField`]
+/// owns the only access to the field's bytes (the raw axum [`Field`] is never
+/// exposed), so every byte is counted regardless of how the parser is written.
+/// The per-field `limit_bytes` passed to the trait method still bounds that one
+/// field; this call enforces the request-wide total. Mirrors the cooperative
+/// contract of [`register_multipart_part`]: outside the extractor's task-local
+/// scope (e.g. a direct unit test of a derived parser) it no-ops rather than
+/// failing.
 pub fn register_multipart_bytes(
     field_name: &str,
     chunk_len: usize,
@@ -731,18 +807,20 @@ where
 /// When a limit is set the cumulative size is checked after each chunk
 /// and an over-limit chunk is rejected *before* it is copied in.
 async fn read_field_data(
-    mut field: Field<'_>,
+    mut field: MeteredField<'_>,
     limit: Option<usize>,
     initial_capacity: usize,
-) -> Result<(Field<'_>, Vec<u8>), TypedMultipartError> {
+) -> Result<(MeteredField<'_>, Vec<u8>), TypedMultipartError> {
     // Part counting now happens once per part in the derived loop
     // (`register_multipart_part`), so the field parsers no longer count.
     // Initial capacity is independent from the hard byte limit: tiny scalar
     // fields keep the 256B cap without preallocating 256B per bool/number.
     let capacity = limit.map_or(initial_capacity, |limit| initial_capacity.min(limit));
     let mut buf = Vec::with_capacity(capacity);
+    // `MeteredField::chunk` already counts each chunk against the request-wide
+    // `max_total_bytes` aggregate cap, so the per-field reader no longer calls
+    // `register_multipart_bytes` itself (doing so would double-count).
     while let Some(chunk) = field.chunk().await? {
-        register_multipart_bytes(field.name().unwrap_or_default(), chunk.len())?;
         if let Some(limit) = limit
             && buf.len().saturating_add(chunk.len()) > limit
         {
@@ -844,130 +922,15 @@ pub fn set_default_temp_file_field_limit_bytes(limit_bytes: usize) -> usize {
     DEFAULT_TEMP_FILE_FIELD_LIMIT.swap(limit_bytes, Ordering::Relaxed)
 }
 
-impl<S: Send + Sync> TryFromFieldWithState<S> for String {
-    async fn try_from_field_with_state(
-        field: Field<'_>,
-        limit_bytes: Option<usize>,
-        _state: &S,
-    ) -> Result<Self, TypedMultipartError> {
-        // An ABSENT limit (`None`) applies the generous default cap; an
-        // explicit `#[form_data(limit = "unlimited")]` arrives as
-        // `Some(usize::MAX)` (set by the derive macro) and stays unbounded;
-        // an explicit byte size wins as `Some(n)`.
-        let limit = limit_bytes.unwrap_or(DEFAULT_STRING_FIELD_LIMIT_BYTES);
-        let (field, data) =
-            read_field_data(field, Some(limit), STRING_INITIAL_CAPACITY_BYTES).await?;
-        Self::from_utf8(data).map_err(|e| TypedMultipartError::WrongFieldType {
-            field_name: field.name().unwrap_or_default().to_string(),
-            wanted: Cow::Borrowed("String"),
-            source: e.to_string(),
-        })
-    }
-}
-
-// ─── bool ───────────────────────────────────────────────────────────────────
-
-impl<S: Send + Sync> TryFromFieldWithState<S> for bool {
-    async fn try_from_field_with_state(
-        field: Field<'_>,
-        limit_bytes: Option<usize>,
-        _state: &S,
-    ) -> Result<Self, TypedMultipartError> {
-        let (field, data) = read_field_data(
-            field,
-            Some(tiny_scalar_limit(limit_bytes)),
-            TINY_SCALAR_INITIAL_CAPACITY_BYTES,
-        )
-        .await?;
-        let text = std::str::from_utf8(&data).map_err(|e| TypedMultipartError::WrongFieldType {
-            field_name: field.name().unwrap_or_default().to_string(),
-            wanted: Cow::Borrowed("bool"),
-            source: e.to_string(),
-        })?;
-        str_to_bool(text).ok_or_else(|| TypedMultipartError::WrongFieldType {
-            field_name: field.name().unwrap_or_default().to_string(),
-            wanted: Cow::Borrowed("bool"),
-            source: format!("invalid boolean value: `{text}`"),
-        })
-    }
-}
-
-// ─── Numeric types ──────────────────────────────────────────────────────────
-
-macro_rules! impl_try_from_field_for_number {
-    ($($ty:ty),* $(,)?) => {
-        $(
-                impl<S: Send + Sync> TryFromFieldWithState<S> for $ty {
-                async fn try_from_field_with_state(
-                    field: Field<'_>,
-                    limit_bytes: Option<usize>,
-                    _state: &S,
-                ) -> Result<Self, TypedMultipartError> {
-                    let (field, data) = read_field_data(
-                        field,
-                        Some(tiny_scalar_limit(limit_bytes)),
-                        TINY_SCALAR_INITIAL_CAPACITY_BYTES,
-                    ).await?;
-                    let text = std::str::from_utf8(&data).map_err(|e| {
-                        TypedMultipartError::WrongFieldType {
-                            field_name: field.name().unwrap_or_default().to_string(),
-                            wanted: Cow::Borrowed(stringify!($ty)),
-                            source: e.to_string(),
-                        }
-                    })?;
-                    text.trim().parse::<$ty>().map_err(|e| {
-                        TypedMultipartError::WrongFieldType {
-                            field_name: field.name().unwrap_or_default().to_string(),
-                            wanted: Cow::Borrowed(stringify!($ty)),
-                            source: e.to_string(),
-                        }
-                    })
-                }
-            }
-        )*
-    };
-}
-
-impl_try_from_field_for_number!(
-    i8, i16, i32, i64, i128, u8, u16, u32, u64, u128, isize, usize, f32, f64,
-);
-
-// ─── char ───────────────────────────────────────────────────────────────────
-
-impl<S: Send + Sync> TryFromFieldWithState<S> for char {
-    async fn try_from_field_with_state(
-        field: Field<'_>,
-        limit_bytes: Option<usize>,
-        _state: &S,
-    ) -> Result<Self, TypedMultipartError> {
-        let (field, data) = read_field_data(
-            field,
-            Some(tiny_scalar_limit(limit_bytes)),
-            TINY_SCALAR_INITIAL_CAPACITY_BYTES,
-        )
-        .await?;
-        let text = std::str::from_utf8(&data).map_err(|e| TypedMultipartError::WrongFieldType {
-            field_name: field.name().unwrap_or_default().to_string(),
-            wanted: Cow::Borrowed("char"),
-            source: e.to_string(),
-        })?;
-        let mut chars = text.chars();
-        match (chars.next(), chars.next()) {
-            (Some(c), None) => Ok(c),
-            _ => Err(TypedMultipartError::WrongFieldType {
-                field_name: field.name().unwrap_or_default().to_string(),
-                wanted: Cow::Borrowed("char"),
-                source: "expected exactly one character".to_string(),
-            }),
-        }
-    }
-}
+// Scalar field parsers (`String`, `bool`, integers/floats, `char`) live in a
+// sidecar module so `multipart.rs` stays within the 1000-line source cap.
+mod scalar_parsers;
 
 // ─── NamedTempFile ──────────────────────────────────────────────────────────
 
 impl<S: Send + Sync> TryFromFieldWithState<S> for tempfile::NamedTempFile {
     async fn try_from_field_with_state(
-        mut field: Field<'_>,
+        mut field: MeteredField<'_>,
         limit_bytes: Option<usize>,
         _state: &S,
     ) -> Result<Self, TypedMultipartError> {
@@ -998,7 +961,8 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for tempfile::NamedTempFile {
         let limit_bytes = limit_bytes.unwrap_or_else(default_temp_file_field_limit_bytes);
         let mut total = 0usize;
         while let Some(chunk) = field.chunk().await? {
-            register_multipart_bytes(field.name().unwrap_or_default(), chunk.len())?;
+            // `MeteredField::chunk` already counts the chunk against the
+            // request-wide `max_total_bytes` aggregate cap (no double-count).
             // `saturating_add` (matching `read_field_data`) prevents a
             // pathological chunk size from wrapping `total` and slipping
             // past the limit check below.

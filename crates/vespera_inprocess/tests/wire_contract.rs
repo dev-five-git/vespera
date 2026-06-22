@@ -166,8 +166,15 @@ fn cross_language_request_golden_routes() {
 
     // Byte-identical to the Java cross-language golden — do NOT edit one
     // side without the other (see VesperaWireTest).
+    //
+    // The query string travels EMBEDDED in `path` (`/users?page=1`), not as a
+    // separate `query` field: the Java encoder writes the full request target
+    // into `path` so the Rust dispatch side borrows it directly (no `path +
+    // '?' + query` String join — ~4% per query-GET, see the `query_path`
+    // bench).  Routing still matches `POST /users` (axum routes on the path
+    // component) with `page=1` available as the URI query.
     let header_json =
-        br#"{"v":1,"method":"POST","path":"/users","query":"page=1","headers":{"content-type":"application/json"}}"#;
+        br#"{"v":1,"method":"POST","path":"/users?page=1","headers":{"content-type":"application/json"}}"#;
     let body = br#"{"x":1}"#;
     let mut wire = Vec::with_capacity(4 + header_json.len() + body.len());
     wire.extend_from_slice(&u32::try_from(header_json.len()).unwrap().to_be_bytes());

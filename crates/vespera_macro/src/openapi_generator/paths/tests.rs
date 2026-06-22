@@ -65,6 +65,42 @@ fn route_in_file_cache_appears_in_paths() {
 }
 
 #[test]
+fn duplicate_method_and_path_is_a_compile_error() {
+    // Two distinct handlers mapping to the same (GET, /dup) must be a compile
+    // error that names BOTH handlers — not a silent last-wins overwrite that
+    // drops a route from the generated spec (axum panics on this at runtime).
+    let route_file_path = "/virtual/dup.rs".to_string();
+    let route_src = "pub fn first() -> String { String::new() }\n\
+                     pub fn second() -> String { String::new() }";
+    let parsed: syn::File = syn::parse_str(route_src).expect("route src parses");
+    let mut file_cache: HashMap<String, syn::File> = HashMap::new();
+    file_cache.insert(route_file_path.clone(), parsed);
+
+    let mut metadata = CollectedMetadata::new();
+    metadata
+        .routes
+        .push(route_meta("GET", "/dup", "first", &route_file_path));
+    metadata
+        .routes
+        .push(route_meta("GET", "/dup", "second", &route_file_path));
+
+    let err = super::build_path_items(
+        &metadata,
+        &std::collections::HashSet::new(),
+        &HashMap::new(),
+        &file_cache,
+        &[],
+    )
+    .expect_err("duplicate (GET, /dup) must be rejected");
+    let msg = err.to_string();
+    assert!(msg.contains("duplicate route"), "unexpected message: {msg}");
+    assert!(
+        msg.contains("first") && msg.contains("second"),
+        "message should name both handlers: {msg}"
+    );
+}
+
+#[test]
 fn route_storage_dedup_skips_already_in_ast() {
     // When a route's `fn_sig_str` was already discovered by parsing the
     // source file via `file_cache`, the storage-parse step must skip

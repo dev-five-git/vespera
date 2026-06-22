@@ -162,7 +162,16 @@ public class VesperaBridgeAutoConfiguration {
                 TimeUnit.MILLISECONDS,
                 new LinkedBlockingQueue<>(queueCapacity),
                 factory,
-                new ThreadPoolExecutor.CallerRunsPolicy());
+                // AbortPolicy, NOT CallerRunsPolicy: this executor's tasks are
+                // submitted from the thread that completes the native dispatch
+                // future — a Rust Tokio worker. CallerRunsPolicy would run the
+                // heavy wire-response build on that Tokio worker under
+                // saturation, stealing native dispatch capacity (violating the
+                // documented "no heavy continuations on Tokio workers"
+                // contract). AbortPolicy rejects instead; the proxy's
+                // dispatchAsyncFlow maps the rejection to a 503 backpressure
+                // signal. The bounded queue still absorbs bursts first.
+                new ThreadPoolExecutor.AbortPolicy());
     }
 
     @Bean

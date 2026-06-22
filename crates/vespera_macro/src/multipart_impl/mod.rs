@@ -110,6 +110,12 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
                     // parts cannot slip past the limit the per-field parsers
                     // formerly enforced only for known fields.
                     vespera::multipart::register_multipart_part()?;
+                    // Wrap the raw axum field so EVERY byte a parser reads is
+                    // metered against the request-wide `max_total_bytes` cap —
+                    // even a hand-written custom `TryFromFieldWithState` cannot
+                    // bypass the aggregate limit (it reads through MeteredField).
+                    let __field__ =
+                        vespera::multipart::MeteredField::__from_field(__field__);
                     // Borrowed `&str` — NLL ends the borrow on each match
                     // arm before `__field__` is consumed by the parser, so
                     // no per-field `String` allocation is needed.

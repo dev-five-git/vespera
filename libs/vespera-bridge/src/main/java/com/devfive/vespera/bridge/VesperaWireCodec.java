@@ -397,11 +397,7 @@ final class VesperaWireCodec {
             buf.putAscii(",\"method\":");
             writeJsonString(buf, method);
             buf.putAscii(",\"path\":");
-            writeJsonString(buf, path);
-            if (query != null && !query.isEmpty()) {
-                buf.putAscii(",\"query\":");
-                writeJsonString(buf, query);
-            }
+            writeCombinedPath(buf, path, query);
             if (headers != null && !headers.isEmpty()) {
                 buf.putAscii(",\"headers\":{");
                 boolean first = true;
@@ -443,11 +439,7 @@ final class VesperaWireCodec {
             buf.putAscii(",\"method\":");
             writeJsonString(buf, method);
             buf.putAscii(",\"path\":");
-            writeJsonString(buf, path);
-            if (query != null && !query.isEmpty()) {
-                buf.putAscii(",\"query\":");
-                writeJsonString(buf, query);
-            }
+            writeCombinedPath(buf, path, query);
             if (headers != null) {
                 HeaderJsonSink sink = new HeaderJsonSink(buf);
                 headers.writeTo(sink);
@@ -527,6 +519,44 @@ final class VesperaWireCodec {
      */
     private static void writeJsonString(ExposedByteArrayOutputStream out, String s) {
         out.put('"');
+        writeJsonStringBody(out, s);
+        out.put('"');
+    }
+
+    /**
+     * Write the {@code "path"} field VALUE as the full request target.  When a
+     * query is present, emit {@code "path?query"} as ONE JSON string
+     * (byte-direct — no intermediate Java {@code String} concat); otherwise the
+     * escaped path alone.  Folding the query into {@code path} drops the
+     * separate {@code query} wire field so the Rust dispatch side borrows the
+     * target for {@code Uri} parsing instead of re-joining {@code path + '?' +
+     * query}.  Byte-equivalent to the prior two-field form after URI parsing
+     * (axum routes on the path component, the query is preserved verbatim).
+     */
+    private static void writeCombinedPath(
+            ExposedByteArrayOutputStream out, String path, String query) {
+        if (query == null || query.isEmpty()) {
+            writeJsonString(out, path);
+            return;
+        }
+        out.put('"');
+        writeJsonStringBody(out, path);
+        out.put('?');
+        writeJsonStringBody(out, query);
+        out.put('"');
+    }
+
+    /**
+     * Write the escaped UTF-8 <strong>body</strong> of a JSON string — the same
+     * bytes {@link #writeJsonString} emits but WITHOUT the surrounding quotes —
+     * so a caller can concatenate several escaped segments inside ONE JSON
+     * string.  Used to emit the request target {@code path?query} as a single
+     * {@code "path"} field (no separate {@code query} field), so the Rust
+     * dispatch side borrows the target directly instead of re-joining
+     * {@code path + '?' + query} (~4% per query-GET; see the Rust `query_path`
+     * bench and {@code wire_contract.rs}).
+     */
+    private static void writeJsonStringBody(ExposedByteArrayOutputStream out, String s) {
         int n = s.length();
         for (int i = 0; i < n; i++) {
             char c = s.charAt(i);
@@ -598,7 +628,6 @@ final class VesperaWireCodec {
                 out.put(0x80 | (c & 0x3F));
             }
         }
-        out.put('"');
     }
 
     // ── Decode ─────────────────────────────────────────────────────────

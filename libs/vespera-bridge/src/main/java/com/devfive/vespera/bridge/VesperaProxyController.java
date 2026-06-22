@@ -22,8 +22,10 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * Catch-all proxy controller — autoconfigured by
@@ -70,6 +72,13 @@ public class VesperaProxyController {
     private final Executor asyncResponseExecutor;
     private final boolean directRetryOnOverflow;
     private final long maxBufferedRequestBytes;
+
+    // Adaptive DIRECT-overflow avoidance: routes that overflowed the pooled
+    // direct buffer once are streamed up front thereafter, removing the
+    // repeated DIRECT-overflow-then-stream double dispatch a known-large
+    // (download) route would otherwise pay on every request. Internal state, so
+    // it is created directly rather than injected (no bean-wiring change).
+    private final DirectOverflowMemory directOverflowMemory = new DirectOverflowMemory();
 
     static final long DEFAULT_MAX_BUFFERED_REQUEST_BYTES = 64L * 1024L * 1024L;
 
@@ -135,8 +144,18 @@ public class VesperaProxyController {
         final String query = Objects.toString(request.getQueryString(), "");
         final VesperaBridge.HeaderSource headers = sink -> HeaderPolicy.forEachRequestHeader(request, sink);
 
+        // Adaptive DIRECT-overflow avoidance: a route that overflowed the
+        // pooled direct buffer before is streamed up front, so it dispatches
+        // ONCE instead of paying the DIRECT-overflow-then-stream double
+        // dispatch again. `shouldAvoidDirect` is a single volatile read until
+        // the first overflow is recorded, so non-overflowing apps pay nothing.
+        final DispatchMode effectiveMode =
+                (mode == DispatchMode.DIRECT && directOverflowMemory.shouldAvoidDirect(method, path))
+                        ? DispatchMode.STREAMING
+                        : mode;
+
         if (log.isDebugEnabled()) {
-            log.debug("-> Rust  {} {} app={} mode={}", method, path, appName, mode);
+            log.debug("-> Rust  {} {} app={} mode={}", method, path, appName, effectiveMode);
         }
 
         // For bidirectional streaming, pass the servlet InputStream
@@ -144,7 +163,7 @@ public class VesperaProxyController {
         // mode, materialise the body bytes here (replaces Spring's
         // @RequestBody, which we cannot use because it would consume
         // the InputStream and leave the bidirectional path empty).
-        switch (mode) {
+        switch (effectiveMode) {
             case SYNC:
                 dispatchSync(response, appName, method, path, query, headers,
                         readBody(request, shape, maxBufferedRequestBytes));
@@ -412,7 +431,49 @@ public class VesperaProxyController {
         return VesperaBridge.dispatch(wireReq)
                 .thenApplyAsync(
                         wireResp -> buildResponseEntityFromWire(wireResp, method),
-                        asyncResponseExecutor);
+                        asyncResponseExecutor)
+                // The async executor uses AbortPolicy (NOT CallerRunsPolicy):
+                // under saturation the heavy wire response build must NOT run on
+                // the thread that completed the native future — that is a Rust
+                // Tokio worker, and stealing it degrades native dispatch
+                // throughput (the documented "no heavy continuations on Tokio
+                // workers" contract). A rejected submission surfaces here as a
+                // RejectedExecutionException; translate it to a clean 503
+                // backpressure signal instead of an opaque 500.  `handle` (not
+                // `exceptionally`) so the wildcard `ResponseEntity<?>` result
+                // type infers cleanly across the success / failure arms.
+                .handle((resp, ex) -> ex == null ? resp : asyncFailureToResponse(ex));
+    }
+
+    /**
+     * Map an async-dispatch failure to a response: a saturated-executor
+     * rejection becomes a {@code 503 Service Unavailable} backpressure signal;
+     * every other failure is re-propagated unchanged so Spring's async error
+     * handling maps it exactly as before.  Package-private + static so the
+     * rejection-classification ({@link #isRejectedExecution}) is unit-testable
+     * without a live JNI dispatch.
+     */
+    static ResponseEntity<?> asyncFailureToResponse(Throwable ex) {
+        if (isRejectedExecution(ex)) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .contentType(MediaType.TEXT_PLAIN)
+                    .body("vespera: async response executor saturated"
+                            .getBytes(StandardCharsets.UTF_8));
+        }
+        throw (ex instanceof CompletionException ce) ? ce : new CompletionException(ex);
+    }
+
+    /** Whether {@code ex} (or any cause in its chain) is a rejected submission. */
+    static boolean isRejectedExecution(Throwable ex) {
+        for (Throwable t = ex; t != null; t = t.getCause()) {
+            if (t instanceof RejectedExecutionException) {
+                return true;
+            }
+            if (t == t.getCause()) {
+                break;
+            }
+        }
+        return false;
     }
 
     /**
@@ -531,6 +592,13 @@ public class VesperaProxyController {
                 // re-run is not intended to mutate state, but its response may
                 // differ (timestamps, random IDs). The DIRECT path has not
                 // committed yet, so streaming takes over cleanly.
+                //
+                // Remember this route so the NEXT request to it streams up
+                // front (see DirectOverflowMemory + the effectiveMode downgrade
+                // in proxy()) — avoiding a repeated DIRECT-overflow-then-stream
+                // double dispatch on a known-large route. Recorded only on this
+                // safe + retry path, where we actually fall back to streaming.
+                directOverflowMemory.recordOverflow(method, path);
                 dispatchStreaming(response, appName, method, path, query, headers, body);
                 return;
             }

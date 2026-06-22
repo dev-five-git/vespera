@@ -153,13 +153,19 @@ class VesperaBridgeAutoConfigurationTest {
     }
 
     @Test
-    void defaultAsyncResponseExecutorUsesBoundedQueueWithCallerRunsBackpressure() {
+    void defaultAsyncResponseExecutorUsesBoundedQueueWithAbortBackpressure() {
+        // The executor's tasks are submitted from the thread that completes the
+        // native dispatch future — a Rust Tokio worker. CallerRunsPolicy would
+        // run the heavy wire-response build on that worker under saturation,
+        // stealing native dispatch capacity; AbortPolicy rejects instead and the
+        // proxy maps the rejection to a 503 (see VesperaProxyController
+        // .asyncFailureToResponse). The bounded queue still absorbs bursts.
         runner.run(ctx -> {
             ThreadPoolExecutor executor = ctx.getBean(
                     "vesperaBridgeAsyncResponseExecutor", ThreadPoolExecutor.class);
 
             assertTrue(executor.getQueue().remainingCapacity() < Integer.MAX_VALUE);
-            assertInstanceOf(ThreadPoolExecutor.CallerRunsPolicy.class, executor.getRejectedExecutionHandler());
+            assertInstanceOf(ThreadPoolExecutor.AbortPolicy.class, executor.getRejectedExecutionHandler());
         });
     }
 

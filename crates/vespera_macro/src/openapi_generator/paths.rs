@@ -172,6 +172,24 @@ pub(super) fn build_path_items(
 
     // Deterministic assembly in original route order.
     results.sort_unstable_by_key(|(idx, _, _)| *idx);
+    assemble_path_items(results, metadata, &mut paths, &mut all_tags)?;
+
+    Ok((paths, all_tags))
+}
+
+/// Apply built operations to their `PathItem`s in route order, rejecting a
+/// duplicate `(method, path)` with a compile error that names BOTH conflicting
+/// handlers.  Previously `set_operation` silently discarded the earlier
+/// operation — dropping a route from the generated spec with no diagnostic.
+/// axum itself panics on a duplicate method+path at runtime, so surfacing it at
+/// compile time is strictly better than the silent loss.
+fn assemble_path_items(
+    results: Vec<(usize, HttpMethod, vespera_core::route::Operation)>,
+    metadata: &CollectedMetadata,
+    paths: &mut BTreeMap<String, PathItem>,
+    all_tags: &mut BTreeSet<String>,
+) -> syn::Result<()> {
+    let mut claimed: HashMap<(String, HttpMethod), String> = HashMap::new();
     for (idx, method, operation) in results {
         let route_meta = &metadata.routes[idx];
         if let Some(tags) = &route_meta.tags {
@@ -179,13 +197,27 @@ pub(super) fn build_path_items(
                 all_tags.insert(tag.clone());
             }
         }
-        let path_item = paths
-            .entry(route_meta.path.clone())
-            .or_insert_with(PathItem::default);
-        path_item.set_operation(method, operation);
+        let path_item = paths.entry(route_meta.path.clone()).or_default();
+        if path_item.try_set_operation(method, operation).is_some() {
+            let previous = claimed
+                .get(&(route_meta.path.clone(), method))
+                .map_or("<unknown>", String::as_str);
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!(
+                    "duplicate route: `{method} {path}` is defined by both `{previous}` and \
+                     `{current}` — each (method, path) pair must map to exactly one handler",
+                    path = route_meta.path,
+                    current = route_meta.function_name,
+                ),
+            ));
+        }
+        claimed.insert(
+            (route_meta.path.clone(), method),
+            route_meta.function_name.clone(),
+        );
     }
-
-    Ok((paths, all_tags))
+    Ok(())
 }
 
 fn build_storage_fn_sigs<'a>(

@@ -35,6 +35,28 @@ class ProxyControllerBodyHeaderTest {
         assertEquals("text/html, application/json", headers.get("accept"));
     }
 
+    // ── C-2: async executor backpressure (AbortPolicy → 503) ─────────────
+
+    @Test
+    void asyncRejectionMapsTo503AndOtherFailuresPropagate() {
+        // CompletableFuture delivers an executor rejection wrapped in a
+        // CompletionException. asyncFailureToResponse must turn that into a 503
+        // backpressure response (instead of letting the heavy wire build run on
+        // a Rust Tokio worker, the CallerRunsPolicy hazard this replaces), while
+        // re-propagating every OTHER failure unchanged so Spring maps it as
+        // before.
+        Throwable rejected = new java.util.concurrent.CompletionException(
+                new java.util.concurrent.RejectedExecutionException("queue full"));
+        assertTrue(VesperaProxyController.isRejectedExecution(rejected));
+        assertFalse(VesperaProxyController.isRejectedExecution(new RuntimeException("boom")));
+
+        ResponseEntity<?> resp = VesperaProxyController.asyncFailureToResponse(rejected);
+        assertEquals(503, resp.getStatusCode().value());
+
+        assertThrows(java.util.concurrent.CompletionException.class,
+                () -> VesperaProxyController.asyncFailureToResponse(new RuntimeException("boom")));
+    }
+
     @Test
     void duplicateCookieHeadersAreSemicolonJoined() {
         MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");

@@ -945,8 +945,69 @@ fn bench_request_headers_path(c: &mut Criterion) {
     drop(runtime);
 }
 
+/// Query-string handling A/B (same-run, drift-immune): a GET carrying a query
+/// string dispatched two ways.
+///
+/// - `separate_query_field_join`: the query travels in a SEPARATE wire
+///   `query` field, so the dispatch path joins `path + '?' + query` into a
+///   fresh `String` before `Uri` parsing (the current Java-bridge encoding).
+/// - `combined_in_path_borrow`: the query is EMBEDDED in the `path` field, so
+///   the dispatch path borrows `path` directly and hits the empty-query
+///   zero-join `Uri::try_from(path)` fast path.
+///
+/// The delta isolates the per-query-request `String` join + copy that sending
+/// the combined form removes.  The servlet already has the full request URI,
+/// so the Java bridge can send `path` with the query embedded.
+///
+/// MEASURED (AMD/Windows, mimalloc): `separate_query_field_join` ~865 ns vs
+/// `combined_in_path_borrow` ~831 ns — a ~4% per-query-GET win, statistically
+/// significant (non-overlapping CIs).  REALIZATION IS GATED: embedding the
+/// query in the `path` field changes the request wire header, which is locked
+/// byte-for-byte by a CROSS-LANGUAGE golden on BOTH sides
+/// (`tests/wire_contract.rs::cross_language_request_golden_routes` and the Java
+/// `VesperaWireTest.CANONICAL_REQUEST_HEADER_JSON`).  Honouring that contract,
+/// the change is deferred to an explicit, lock-stepped both-goldens update
+/// rather than taken unilaterally for 4% on one request shape.  This A/B stays
+/// as the permanent decision record (mirrors `async_completion_ab`).
+fn bench_query_path(c: &mut Criterion) {
+    install_bench_app();
+
+    let runtime = Runtime::new().expect("tokio runtime");
+    let mut group = c.benchmark_group("query_path");
+
+    let query = "page=1&limit=20&sort=created_at&order=desc&filter=active&q=hello";
+
+    // SEPARATE: `path` = "/r0" + a distinct wire `query` field → join branch.
+    let wire_separate = {
+        let header = serde_json::json!({
+            "v": 1, "method": "GET", "path": "/r0", "query": query,
+        });
+        let header_bytes = serde_json::to_vec(&header).unwrap();
+        let header_len = u32::try_from(header_bytes.len()).unwrap();
+        let mut wire = Vec::with_capacity(4 + header_bytes.len());
+        wire.extend_from_slice(&header_len.to_be_bytes());
+        wire.extend_from_slice(&header_bytes);
+        wire
+    };
+
+    // COMBINED: query embedded in `path`, no `query` field → borrow branch.
+    let combined_path = format!("/r0?{query}");
+    let wire_combined = assemble_wire("GET", &combined_path, None, &[]);
+
+    group.bench_function("separate_query_field_join", |b| {
+        b.iter(|| dispatch_from_bytes(wire_separate.clone(), &runtime));
+    });
+    group.bench_function("combined_in_path_borrow", |b| {
+        b.iter(|| dispatch_from_bytes(wire_combined.clone(), &runtime));
+    });
+
+    group.finish();
+    drop(runtime);
+}
+
 criterion_group!(
     benches,
+    bench_query_path,
     bench_request_headers_path,
     bench_router_path,
     bench_dispatch_path,

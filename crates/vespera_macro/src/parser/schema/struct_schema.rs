@@ -23,7 +23,8 @@ use crate::schema_macro::type_utils::is_option_type;
 ///
 /// This function extracts:
 /// - Field names and types as properties
-/// - Required fields (non-Option types without defaults)
+/// - Required fields (non-`Option` types; `#[serde(default)]` does NOT relax
+///   `required`, since this schema is shared by request and response bodies)
 /// - Doc comments as descriptions
 /// - Serde attributes (rename, `rename_all`, skip, default)
 ///
@@ -159,7 +160,11 @@ pub fn parse_struct_to_schema(
 
                 // Required is determined solely by nullability (Option<T>).
                 // Fields with #[serde(default)] still have defaults applied in
-                // openapi_generator, but that does NOT affect required status.
+                // openapi_generator, but that does NOT affect required status:
+                // this schema is shared by request AND response bodies, and a
+                // defaulted field is always present on output, so it stays
+                // required (deliberate, documented in README; the query
+                // extractor differs because query params are input-only).
                 let is_optional = is_option_type(field_type);
 
                 if !is_optional {
