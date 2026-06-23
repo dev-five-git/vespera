@@ -222,10 +222,21 @@ fn parse_tag_struct(input: ParseStream) -> syn::Result<TagConfig> {
 
     let mut name: Option<String> = None;
     let mut description: Option<String> = None;
+    // Reject a repeated tag field (e.g. `name = ..., name = ...`) with a
+    // spanned error instead of silently letting the later value overwrite the
+    // earlier one — matches the top-level `vespera!` arg parser and
+    // `parse_security_scheme_struct`.
+    let mut seen_fields = HashSet::<String>::new();
 
     while !content.is_empty() {
         let ident: syn::Ident = content.parse()?;
         let ident_str = ident.to_string();
+        if !seen_fields.insert(ident_str.clone()) {
+            return Err(syn::Error::new(
+                ident.span(),
+                format!("duplicate tag field: `{ident_str}`"),
+            ));
+        }
         content.parse::<syn::Token![=]>()?;
         let value: LitStr = content.parse()?;
 
@@ -616,10 +627,21 @@ fn parse_server_struct(input: ParseStream) -> syn::Result<ServerConfig> {
 
     let mut url: Option<String> = None;
     let mut description: Option<String> = None;
+    // Reject a repeated server field (e.g. `url = ..., url = ...`) with a
+    // spanned error instead of silently letting the later value overwrite the
+    // earlier one — matches the top-level `vespera!` arg parser and
+    // `parse_security_scheme_struct`.
+    let mut seen_fields = HashSet::<String>::new();
 
     while !content.is_empty() {
         let ident: syn::Ident = content.parse()?;
         let ident_str = ident.to_string();
+        if !seen_fields.insert(ident_str.clone()) {
+            return Err(syn::Error::new(
+                ident.span(),
+                format!("duplicate server field: `{ident_str}`"),
+            ));
+        }
 
         match ident_str.as_str() {
             "url" => {

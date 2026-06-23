@@ -57,6 +57,46 @@ class ProxyControllerBodyHeaderTest {
                 () -> VesperaProxyController.asyncFailureToResponse(new RuntimeException("boom")));
     }
 
+    // ── ASYNC buffered-response cap parity with SYNC ─────────────────────
+
+    /** Build a wire response {@code [u32 BE headerLen | header JSON | body]}. */
+    private static byte[] wireResponseWithBody(int bodyLen) {
+        String json =
+                "{\"v\":1,\"status\":200,\"headers\":{\"content-type\":\"application/json\"},"
+                        + "\"metadata\":{\"version\":\"0.1.0\"}}";
+        byte[] hb = json.getBytes(StandardCharsets.UTF_8);
+        byte[] body = new byte[bodyLen];
+        java.util.Arrays.fill(body, (byte) 'x');
+        ByteBuffer buf = ByteBuffer.allocate(4 + hb.length + bodyLen);
+        buf.putInt(hb.length);
+        buf.put(hb);
+        buf.put(body);
+        return buf.array();
+    }
+
+    @Test
+    void asyncResponseEnforcesMaxBufferedResponseCap() {
+        // A custom DispatchModeResolver returning ASYNC must honour the same
+        // max-buffered-response cap as SYNC (dispatchSync), or it heap-buffers
+        // an unbounded Rust response. The capped builder the async flow now
+        // uses rejects an oversized body with 413, lets a within-cap body
+        // through, and treats cap = 0 as unlimited (never rejects).
+        byte[] oversized = wireResponseWithBody(100);
+        ResponseStatusException tooLarge = assertThrows(
+                ResponseStatusException.class,
+                () -> VesperaProxyController.buildCappedResponseEntityFromWire(oversized, "GET", 10));
+        assertEquals(413, tooLarge.getStatusCode().value());
+
+        byte[] small = wireResponseWithBody(5);
+        ResponseEntity<?> ok =
+                VesperaProxyController.buildCappedResponseEntityFromWire(small, "GET", 1000);
+        assertEquals(200, ok.getStatusCode().value());
+
+        ResponseEntity<?> unlimited =
+                VesperaProxyController.buildCappedResponseEntityFromWire(oversized, "GET", 0);
+        assertEquals(200, unlimited.getStatusCode().value());
+    }
+
     @Test
     void duplicateCookieHeadersAreSemicolonJoined() {
         MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");

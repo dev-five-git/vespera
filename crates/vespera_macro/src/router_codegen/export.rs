@@ -30,6 +30,15 @@ impl Parse for ExportAppInput {
 
             match ident_str.as_str() {
                 "dir" => {
+                    // Reject a repeated `dir` with a spanned error instead of
+                    // silently letting the later value overwrite the earlier
+                    // one — matches the `vespera!` arg parser's duplicate guard.
+                    if dir.is_some() {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "duplicate field `dir` in export_app! macro",
+                        ));
+                    }
                     input.parse::<syn::Token![=]>()?;
                     dir = Some(input.parse()?);
                 }
@@ -89,5 +98,22 @@ mod tests {
         let input: ExportAppInput = syn::parse2(tokens).unwrap();
         assert_eq!(input.name.to_string(), "MyApp");
         assert_eq!(input.dir.unwrap().value(), "api");
+    }
+
+    #[test]
+    fn test_export_app_input_duplicate_dir() {
+        // A repeated `dir` must be a spanned compile error, not a silent
+        // last-wins overwrite.
+        let tokens = quote::quote!(MyApp, dir = "api", dir = "other");
+        let result: syn::Result<ExportAppInput> = syn::parse2(tokens);
+        assert!(result.is_err(), "duplicate `dir` must be rejected");
+        assert!(
+            result
+                .err()
+                .unwrap()
+                .to_compile_error()
+                .to_string()
+                .contains("duplicate field `dir`")
+        );
     }
 }

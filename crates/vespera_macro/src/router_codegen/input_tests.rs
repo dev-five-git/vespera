@@ -641,3 +641,36 @@ fn test_security_scheme_duplicate_field_rejected() {
     assert!(result.is_err(), "duplicate scheme field must be rejected");
     assert!(result.err().unwrap().to_string().contains("duplicate"));
 }
+
+#[test]
+fn test_tag_duplicate_field_rejected() {
+    // A repeated tag field (e.g. `name = ..., name = ...`) must be a spanned
+    // compile error, not a silent last-wins overwrite.
+    let tokens = quote::quote!(tags = [{ name = "a", name = "b" }]);
+    let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+    assert!(result.is_err(), "duplicate tag field must be rejected");
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("duplicate tag field")
+    );
+}
+
+#[test]
+fn test_server_duplicate_field_rejected() {
+    // A repeated server field (e.g. `url = ..., url = ...`) must be a spanned
+    // compile error, not a silent last-wins overwrite.
+    let tokens =
+        quote::quote!(servers = [{ url = "http://localhost:3000", url = "http://other:3000" }]);
+    let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
+    assert!(result.is_err(), "duplicate server field must be rejected");
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("duplicate server field")
+    );
+}

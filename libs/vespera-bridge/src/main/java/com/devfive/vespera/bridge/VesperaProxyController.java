@@ -469,7 +469,8 @@ public class VesperaProxyController {
                 appName, method, path, query, headers, body);
         return VesperaBridge.dispatch(wireReq)
                 .thenApplyAsync(
-                        wireResp -> buildResponseEntityFromWire(wireResp, method),
+                        wireResp -> buildCappedResponseEntityFromWire(
+                                wireResp, method, maxBufferedResponseBytes),
                         asyncResponseExecutor)
                 // The async executor uses AbortPolicy (NOT CallerRunsPolicy):
                 // under saturation the heavy wire response build must NOT run on
@@ -909,6 +910,25 @@ public class VesperaProxyController {
         httpHeaders.setContentLength(statusPermitsBody ? bodyLen : 0);
         return new ResponseEntity<>(
                 new WireBodyResource(wire, bodyOff, bytesToExpose), httpHeaders, status);
+    }
+
+    /**
+     * Build the buffered {@code ASYNC} response entity, enforcing the
+     * {@code vespera.bridge.max-buffered-response-bytes} cap FIRST — parity with
+     * the {@code SYNC} path ({@link #dispatchSync} via
+     * {@link #rejectOversizedBufferedResponse}). Without this a custom
+     * {@link DispatchModeResolver} returning {@link DispatchMode#ASYNC} would
+     * heap-buffer an arbitrarily large Rust response (retained through
+     * {@link WireBodyResource} until Spring finishes writing it), defeating the
+     * cap and risking OOM / GC pressure. Runs on the async response executor
+     * (NOT the Tokio completion thread), so the cap check stays off the native
+     * worker. Package-private + static so the cap wiring is unit-testable
+     * without a live JNI dispatch.
+     */
+    static ResponseEntity<?> buildCappedResponseEntityFromWire(
+            byte[] wire, String method, long maxBufferedResponseBytes) {
+        rejectOversizedBufferedResponse(wire, maxBufferedResponseBytes);
+        return buildResponseEntityFromWire(wire, method);
     }
 
     static final class BodyPermittingOutputStream extends OutputStream {
