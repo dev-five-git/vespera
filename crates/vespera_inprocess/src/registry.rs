@@ -1,6 +1,7 @@
 //! App registry: named `Router` factories with a lock-free
 //! `OnceLock` fast path for the default app.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex, OnceLock, PoisonError};
 
@@ -62,6 +63,26 @@ static DEFAULT_ROUTER: OnceLock<Router> = OnceLock::new();
 /// read path ([`resolve_app_router`]) never touches this lock and stays
 /// fully lock-free.
 static REGISTER_LOCK: Mutex<()> = Mutex::new(());
+
+thread_local! {
+    /// Set while a [`try_register_app_named`] call on this thread is running
+    /// its `factory` closure.  A re-entrant `register_app*` call from inside a
+    /// factory would otherwise deadlock the non-reentrant [`REGISTER_LOCK`];
+    /// the flag lets the re-entrant call be rejected with an error instead.
+    static REGISTERING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// RAII reset for the [`REGISTERING`] thread-local flag: clears it on EVERY
+/// exit path of the guarded `factory()` call — including a panic unwinding out
+/// of the factory — so a panicking factory never wedges the thread into the
+/// permanent "re-entrant" state where every future registration fails.
+struct ReentryGuard;
+
+impl Drop for ReentryGuard {
+    fn drop(&mut self) {
+        REGISTERING.with(|r| r.set(false));
+    }
+}
 
 /// Validate an app name for registration / lookup.
 ///
@@ -181,6 +202,18 @@ where
     F: Fn() -> Router + Send + Sync + 'static,
 {
     let name = validate_app_name(name)?.to_owned();
+    // Re-entrancy guard: `factory` runs while [`REGISTER_LOCK`] is held (so a
+    // name's factory runs at most once under a concurrent same-name race).
+    // `std::sync::Mutex` is non-reentrant, so a factory that calls back into
+    // `register_app*` on the SAME thread would deadlock process startup.
+    // Detect that re-entrancy BEFORE taking the lock and return an error
+    // instead of hanging — the documented contract is now enforced, not just
+    // warned about.
+    if REGISTERING.with(Cell::get) {
+        return Err("re-entrant app registration: a router factory must not \
+                    register apps from within itself"
+            .to_owned());
+    }
     // Serialize the registration write path (dispatch reads stay lock-free)
     // so a given name's `factory` runs at most once — see [`REGISTER_LOCK`].
     let _guard = REGISTER_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
@@ -192,8 +225,15 @@ where
     // Build the router OUTSIDE the copy-on-write update so a panicking
     // factory cannot corrupt the registry: the panic propagates before any
     // insert, leaving the registry untouched (the poisoned lock is recovered
-    // by the next registration).
-    let router = factory();
+    // by the next registration).  The re-entrancy flag is set only around the
+    // `factory()` call and cleared by `ReentryGuard::drop` on every exit path
+    // (incl. a factory panic), so a re-entrant `register_app*` from inside the
+    // factory is rejected with an error rather than deadlocking.
+    let router = {
+        REGISTERING.with(|r| r.set(true));
+        let _reentry = ReentryGuard;
+        factory()
+    };
     let is_default = name == DEFAULT_APP_NAME;
     APP_ROUTERS.rcu(|current| {
         let mut next: HashMap<String, Router> = (**current).clone();

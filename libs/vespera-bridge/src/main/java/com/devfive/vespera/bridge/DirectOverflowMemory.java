@@ -4,7 +4,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Remembers which {@code (app, method, path, query)} targets have overflowed
+ * Remembers which {@code (app, method, path)} targets have overflowed
  * the pooled DIRECT response buffer, so the proxy can skip DIRECT and stream
  * those targets directly on subsequent requests.
  *
@@ -26,7 +26,7 @@ final class DirectOverflowMemory {
     static final int DEFAULT_MAX_ENTRIES = 1024;
 
     private final int maxEntries;
-    private final Set<String> overflowed = ConcurrentHashMap.newKeySet();
+    private final Set<RouteKey> overflowed = ConcurrentHashMap.newKeySet();
 
     // Hot-path guard: a single volatile read. Stays false (zero lookups) until
     // the first overflow is recorded; once true it never resets, because an app
@@ -49,7 +49,7 @@ final class DirectOverflowMemory {
         if (!hasEntries) {
             return false;
         }
-        return overflowed.contains(key(appName, method, path, query));
+        return overflowed.contains(RouteKey.of(appName, method, path));
     }
 
     boolean shouldAvoidDirect(String method, String path) {
@@ -61,7 +61,7 @@ final class DirectOverflowMemory {
         if (overflowed.size() >= maxEntries) {
             overflowed.clear();
         }
-        overflowed.add(key(appName, method, path, query));
+        overflowed.add(RouteKey.of(appName, method, path));
         hasEntries = true;
     }
 
@@ -73,8 +73,27 @@ final class DirectOverflowMemory {
         return overflowed.size();
     }
 
-    private static String key(String appName, String method, String path, String query) {
-        return (appName == null || appName.isBlank() ? "_default" : appName)
-                + ' ' + method + ' ' + path + '?' + (query == null ? "" : query);
+    private record RouteKey(String appName, String method, String path, int hash) {
+        static RouteKey of(String appName, String method, String path) {
+            String normalizedApp = appName == null || appName.isBlank() ? "_default" : appName;
+            return new RouteKey(normalizedApp, method, path,
+                    31 * (31 * normalizedApp.hashCode() + method.hashCode()) + path.hashCode());
+        }
+
+        @Override
+        public int hashCode() {
+            return hash;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) {
+                return true;
+            }
+            return obj instanceof RouteKey other
+                    && appName.equals(other.appName)
+                    && method.equals(other.method)
+                    && path.equals(other.path);
+        }
     }
 }

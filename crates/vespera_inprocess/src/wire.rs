@@ -483,6 +483,43 @@ pub fn build_wire_header_bytes(
     out
 }
 
+/// Build wire-format header bytes (`[u32 BE header_len | JSON header]`) for the
+/// header-first streaming paths, **hoisting 422 `validation_errors`** from
+/// `body` into the header — the same contract the buffered [`to_wire_bytes`]
+/// upholds.  Java/FFI decoders can then read validation failures from the wire
+/// header in EVERY dispatch mode (not just buffered / direct); the caller still
+/// delivers the original body verbatim through its chunk sink.
+///
+/// For any non-422 status `body` is ignored and the output is byte-identical to
+/// [`build_wire_header_bytes`] (the hot success path pays nothing).
+pub fn build_wire_header_bytes_hoisting(
+    status: u16,
+    headers: &http::HeaderMap,
+    metadata: &ResponseMetadata,
+    body: &Bytes,
+) -> Vec<u8> {
+    if status != 422 {
+        return build_wire_header_bytes(status, headers, metadata);
+    }
+    let validation_errors = hoist::try_hoist_validation_errors(headers, body);
+    let header_cap = header_capacity_estimate(headers, metadata).max(WIRE_HEADER_RESERVE)
+        + validation_errors
+            .as_deref()
+            .map_or(0, validation_errors_capacity_estimate);
+    let mut out = Vec::with_capacity(4 + header_cap);
+    if !write_wire_header_into(
+        &mut out,
+        status,
+        headers,
+        metadata,
+        validation_errors.as_deref(),
+    ) {
+        // Unreachable for a real `HeaderMap`; never panic on the response path.
+        return error_wire(500, "response header exceeds u32::MAX bytes");
+    }
+    out
+}
+
 /// `io::Write` adapter over a fixed `&mut [u8]`: copies the prefix that
 /// fits and *counts* the rest, so a serializer can fill the caller's
 /// buffer and still report the exact size it needed on overflow —

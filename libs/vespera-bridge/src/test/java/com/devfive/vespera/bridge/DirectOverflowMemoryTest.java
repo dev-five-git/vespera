@@ -37,6 +37,15 @@ class DirectOverflowMemoryTest {
     }
 
     @Test
+    void queryStringDoesNotBustOverflowMemoryKey() {
+        DirectOverflowMemory mem = new DirectOverflowMemory();
+        mem.recordOverflow(null, "GET", "/big", "cacheBust=1");
+
+        assertTrue(mem.shouldAvoidDirect(null, "GET", "/big", "cacheBust=2"));
+        assertFalse(mem.shouldAvoidDirect("admin", "GET", "/big", "cacheBust=2"));
+    }
+
+    @Test
     void reachingTheCapClearsWholesaleThenKeepsLearning() {
         DirectOverflowMemory mem = new DirectOverflowMemory(2);
         mem.recordOverflow("GET", "/a");

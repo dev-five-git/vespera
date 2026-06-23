@@ -1,5 +1,6 @@
 package com.devfive.vespera.bridge;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -11,6 +12,7 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.Resource;
 import org.springframework.http.ResponseEntity;
@@ -133,6 +135,51 @@ class ProxyControllerBodyHeaderTest {
         assertFalse(headers.containsKey("transfer-encoding"));
         assertEquals("application/json", headers.get("content-type"));
         assertEquals("abc123", headers.get("x-trace-id"));
+    }
+
+    @Test
+    void streamingHeaderFastPathMatchesPreviousMergedMapBytesExactly() {
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
+        req.addHeader("Connection", "X-Hop");
+        req.addHeader("X-Hop", "drop-me");
+        req.addHeader("Accept", "text/html");
+        req.addHeader("accept", "application/json");
+        req.addHeader("Cookie", "a=1");
+        req.addHeader("cookie", "b=2");
+        req.addHeader("X-Trace-Id", "abc123");
+
+        Map<String, String> previous = previousLinkedHashMapCollect(req);
+        byte[] expected = VesperaBridge.encodeRequest(null, "GET", "/x", null, previous, null);
+        byte[] actual = VesperaBridge.encodeRequest(null, "GET", "/x", null,
+                (VesperaBridge.HeaderSource) sink -> HeaderPolicy.forEachRequestHeader(req, sink),
+                null);
+
+        assertArrayEquals(expected, actual);
+        assertEquals("text/html, application/json", previous.get("accept"));
+        assertEquals("a=1; b=2", previous.get("cookie"));
+    }
+
+    private static Map<String, String> previousLinkedHashMapCollect(MockHttpServletRequest req) {
+        Map<String, String> merged = new LinkedHashMap<>(32);
+        java.util.Enumeration<String> names = req.getHeaderNames();
+        java.util.Set<String> connectionTokens = null;
+        java.util.Enumeration<String> connections = req.getHeaders("Connection");
+        while (connections.hasMoreElements()) {
+            connectionTokens = HeaderPolicy.addConnectionTokens(connectionTokens, connections.nextElement());
+        }
+        while (names.hasMoreElements()) {
+            String name = names.nextElement();
+            String lowerName = name.toLowerCase(java.util.Locale.ROOT);
+            if (!HeaderPolicy.isHopByHopResponseHeader(lowerName)
+                    && !HeaderPolicy.isConnectionNominatedHeader(lowerName, connectionTokens)) {
+                String value = String.join(
+                        lowerName.equals("cookie") ? "; " : ", ",
+                        java.util.Collections.list(req.getHeaders(name)));
+                merged.merge(lowerName, value, (left, right) ->
+                        left + (lowerName.equals("cookie") ? "; " : ", ") + right);
+            }
+        }
+        return merged;
     }
 
     // ── P1: readBody skips the stream for provably bodyless requests ─────

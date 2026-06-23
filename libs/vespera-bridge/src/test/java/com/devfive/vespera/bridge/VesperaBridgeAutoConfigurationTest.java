@@ -10,11 +10,15 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.mock.web.MockFilterChain;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 
 /**
  * Autoconfigure branch tests for the dispatch-mode policy beans.
@@ -107,6 +111,26 @@ class VesperaBridgeAutoConfigurationTest {
         runner.withPropertyValues("vespera.bridge.direct-retry-on-overflow=false")
                 .run(ctx -> assertFalse(
                         ctx.getBean(VesperaBridgeProperties.class).isDirectRetryOnOverflow()));
+    }
+
+    @Test
+    void perRequestThreadLocalCleanupFilterIsOptInAndClearsInFinally() {
+        runner.run(ctx -> assertTrue(ctx.getBeansOfType(FilterRegistrationBean.class).isEmpty()));
+        runner.withPropertyValues("vespera.bridge.clear-threadlocals-after-request=true")
+                .run(ctx -> {
+                    FilterRegistrationBean<?> bean = ctx.getBean(FilterRegistrationBean.class);
+                    VesperaDirectBufferPool.directPoolForTest();
+                    assertTrue(VesperaDirectBufferPool.directPoolPresentForTest());
+
+                    bean.getFilter().doFilter(
+                            new MockHttpServletRequest("GET", "/x"),
+                            new MockHttpServletResponse(),
+                            new MockFilterChain());
+
+                    assertFalse(VesperaDirectBufferPool.directPoolPresentForTest());
+                    assertTrue(ctx.getBean(VesperaBridgeProperties.class)
+                            .isClearThreadlocalsAfterRequest());
+                });
     }
 
     @Test

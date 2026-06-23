@@ -14,7 +14,10 @@ use http_body_util::BodyExt;
 use crate::config::effective_streaming_channel_capacity;
 use crate::dispatch::{check_ingress_cap, parse_validate_resolve};
 use crate::internal::{dispatch_and_split, dispatch_response_streaming};
-use crate::wire::{WIRE_HEADER_RESERVE, build_wire_header_bytes, error_wire, split_wire_request};
+use crate::wire::{
+    WIRE_HEADER_RESERVE, build_wire_header_bytes, build_wire_header_bytes_hoisting, error_wire,
+    split_wire_request,
+};
 
 /// Outcome of one request-body pull on the bidirectional streaming
 /// path (the `pull_chunk` callback).
@@ -125,10 +128,12 @@ where
         Err((status, msg)) => return error_wire(status, &msg),
     };
     // Emit header-only wire bytes; body was streamed via on_chunk.
-    // NOTE: the streaming path does not hoist 422 validation errors —
-    // hoisting requires materialising the full body, which is
-    // antithetical to the streaming contract.  Callers needing
-    // validation hoisting should use dispatch_from_bytes_async.
+    // NOTE: this header-LAST streaming variant cannot hoist 422 validation
+    // errors — the body has already been streamed through on_chunk before the
+    // header is built, so it is no longer available to hoist (the caller has
+    // received it regardless).  The header-FIRST `*_with_header` variants DO
+    // hoist (they buffer the small 422 body before committing the header);
+    // callers needing hoisting should use those or dispatch_from_bytes_async.
     build_wire_header_bytes(status, &headers, &metadata)
 }
 
@@ -155,6 +160,81 @@ pub enum StreamOutcome {
     /// to stop early (e.g. the host's output sink failed mid-stream).
     /// The response delivered via `on_chunk` is truncated.
     SinkStopped,
+}
+
+/// Shared tail of the **header-first** streaming variants
+/// ([`dispatch_streaming_with_header_async`] and
+/// [`bidirectional_streaming_inner`]): emit the wire-format response header via
+/// `on_header`, then deliver the response body via `on_chunk`.
+///
+/// On the **422 path** the (small, framework-generated) validation body is
+/// collected up front so its errors are hoisted into the wire header — the same
+/// contract the buffered [`crate::wire::to_wire_bytes`] path upholds, so a
+/// Java/FFI decoder reads validation failures from the header in EVERY dispatch
+/// mode, not just buffered/direct.  The body is still delivered verbatim via
+/// `on_chunk`.  Because the 422 body is collected *before* the header is
+/// committed, a body error there cleanly becomes a `500` via `on_header` with
+/// nothing truncated.
+///
+/// Every other status keeps the original behaviour exactly: a hoist-free header
+/// followed by frame-by-frame body streaming (so a 1 GiB response is never
+/// resident), with a post-commit body error / sink stop surfaced via the
+/// returned [`StreamOutcome`].
+async fn emit_header_then_stream_body<H, F>(
+    status: u16,
+    headers: http::HeaderMap,
+    metadata: crate::envelope::ResponseMetadata,
+    mut body: Body,
+    on_header: &mut H,
+    on_chunk: &mut F,
+) -> StreamOutcome
+where
+    H: FnMut(&[u8]),
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+{
+    if status == 422 {
+        // Collect the small validation envelope first so it can be hoisted into
+        // the header. Collecting BEFORE committing the header means a body
+        // error here is a clean 500 (nothing truncated), unlike the post-commit
+        // streaming path below.
+        let Ok(collected) = body.collect().await else {
+            on_header(&error_wire(500, "response body stream error"));
+            return StreamOutcome::Complete;
+        };
+        let collected = collected.to_bytes();
+        on_header(&build_wire_header_bytes_hoisting(
+            status, &headers, &metadata, &collected,
+        ));
+        if !collected.is_empty() && on_chunk(&collected).is_break() {
+            return StreamOutcome::SinkStopped;
+        }
+        return StreamOutcome::Complete;
+    }
+
+    on_header(&build_wire_header_bytes(status, &headers, &metadata));
+    let mut outcome = StreamOutcome::Complete;
+    while let Some(frame_result) = body.frame().await {
+        if let Ok(frame) = frame_result {
+            if let Some(data) = frame.data_ref()
+                && !data.is_empty()
+                && on_chunk(data.as_ref()).is_break()
+            {
+                // The chunk sink asked to stop (e.g. the host's output sink
+                // failed). The header is already committed, so report the
+                // truncation to the caller.
+                outcome = StreamOutcome::SinkStopped;
+                break;
+            }
+        } else {
+            // The response body aborted mid-stream after the header was
+            // committed: status/headers can no longer change, so surface the
+            // truncation so the host can abort the transport instead of sending
+            // a clean terminator over a short body.
+            outcome = StreamOutcome::BodyError;
+            break;
+        }
+    }
+    outcome
 }
 
 /// **Streaming dispatch with explicit header callback** — emits the
@@ -215,7 +295,7 @@ where
     // Streaming is dominated by body throughput, so the owned-path URI
     // zero-copy is not worth threading here — pass `None` (the URI is parsed
     // from the borrowed path by `build_uri`, exactly as before).
-    let (status, headers, metadata, mut body) = match dispatch_and_split(
+    let (status, headers, metadata, body) = match dispatch_and_split(
         router,
         &header.method,
         &header.path,
@@ -234,31 +314,15 @@ where
         }
     };
 
-    on_header(&build_wire_header_bytes(status, &headers, &metadata));
-
-    let mut outcome = StreamOutcome::Complete;
-    while let Some(frame_result) = body.frame().await {
-        if let Ok(frame) = frame_result {
-            if let Some(data) = frame.data_ref()
-                && !data.is_empty()
-                && on_chunk(data.as_ref()).is_break()
-            {
-                // The chunk sink asked to stop (e.g. the host's output sink
-                // failed). The header is already committed, so report the
-                // truncation to the caller.
-                outcome = StreamOutcome::SinkStopped;
-                break;
-            }
-        } else {
-            // The response body aborted mid-stream after the header was
-            // committed: status/headers can no longer change, so surface the
-            // truncation so the host can abort the transport instead of
-            // sending a clean terminator over a short body.
-            outcome = StreamOutcome::BodyError;
-            break;
-        }
-    }
-    outcome
+    emit_header_then_stream_body(
+        status,
+        headers,
+        metadata,
+        body,
+        &mut on_header,
+        &mut on_chunk,
+    )
+    .await
 }
 
 /// **Bidirectional streaming dispatch** — both request and response
@@ -483,7 +547,7 @@ where
     let default_json_when_absent = true;
     // See the response-streaming sibling: streaming is body-throughput bound,
     // so pass `None` rather than threading the owned-path URI zero-copy here.
-    let (status, headers, metadata, mut response_body) = match dispatch_and_split(
+    let (status, headers, metadata, response_body) = match dispatch_and_split(
         router,
         &header.method,
         &header.path,
@@ -507,28 +571,15 @@ where
         }
     };
 
-    on_header(&build_wire_header_bytes(status, &headers, &metadata));
-
-    let mut outcome = StreamOutcome::Complete;
-    while let Some(frame_result) = response_body.frame().await {
-        if let Ok(frame) = frame_result {
-            if let Some(data) = frame.data_ref()
-                && !data.is_empty()
-                && on_chunk(data.as_ref()).is_break()
-            {
-                // Host chunk sink asked to stop (e.g. its output sink failed):
-                // report the truncation past the committed header.
-                outcome = StreamOutcome::SinkStopped;
-                break;
-            }
-        } else {
-            // Response body aborted mid-stream after the header was committed:
-            // surface the truncation so the host can abort the transport rather
-            // than send a clean terminator over a short body.
-            outcome = StreamOutcome::BodyError;
-            break;
-        }
-    }
+    let outcome = emit_header_then_stream_body(
+        status,
+        headers,
+        metadata,
+        response_body,
+        &mut on_header,
+        &mut on_chunk,
+    )
+    .await;
 
     // The response is fully drained, so the handler has finished and will
     // not read more of the request body. If the producer was started (the

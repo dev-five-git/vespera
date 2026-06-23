@@ -4,10 +4,15 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.beans.factory.annotation.Qualifier;
 
+import jakarta.servlet.Filter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -178,6 +183,25 @@ public class VesperaBridgeAutoConfiguration {
     @ConditionalOnMissingBean
     public VesperaBridgeThreadLocalCleanup vesperaBridgeThreadLocalCleanup() {
         return new VesperaBridgeThreadLocalCleanup();
+    }
+
+    @Bean
+    @ConditionalOnProperty(
+            prefix = "vespera.bridge",
+            name = "clear-threadlocals-after-request",
+            havingValue = "true")
+    public FilterRegistrationBean<Filter> vesperaBridgeThreadLocalCleanupFilter() {
+        FilterRegistrationBean<Filter> registration = new FilterRegistrationBean<>();
+        registration.setFilter((ServletRequest request, ServletResponse response, FilterChain chain) -> {
+            try {
+                chain.doFilter(request, response);
+            } finally {
+                VesperaBridge.clearCurrentThreadBuffers();
+            }
+        });
+        registration.setName("vesperaBridgeThreadLocalCleanupFilter");
+        registration.setOrder(Integer.MAX_VALUE);
+        return registration;
     }
 
     @Bean

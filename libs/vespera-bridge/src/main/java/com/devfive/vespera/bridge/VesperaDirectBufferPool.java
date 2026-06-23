@@ -38,8 +38,11 @@ final class VesperaDirectBufferPool {
     /**
      * Maximum per-thread direct buffer capacity (default 4 MiB,
      * overridable via the {@code vespera.direct.maxBufferBytes} system
-     * property, clamped to 64 KiB–256 MiB). Payloads beyond the cap fall
-     * back to {@link VesperaBridge#dispatchBytes(byte[])}.
+     * property, clamped to 64 KiB–256 MiB). Payloads beyond the cap use the
+     * configured {@code vespera.direct.oversize-policy}: the default
+     * {@code heap-fallback} dispatches through {@link VesperaBridge#dispatchBytes(byte[])}
+     * (fully heap-buffered, not streaming), while {@code throw} rejects before
+     * native dispatch.
      */
     private static final int DIRECT_MAX_HARD_CAPACITY = 256 * 1024 * 1024;
     private static final int DIRECT_MAX_CAPACITY = directMaxCapacity();
@@ -84,6 +87,26 @@ final class VesperaDirectBufferPool {
     private static final int DIRECT_SHRINK_IDLE_DISPATCHES = 8;
     private static final ThreadLocal<Integer> DIRECT_UNDER_RETAIN_STREAK =
             ThreadLocal.withInitial(() -> 0);
+
+    private enum OversizePolicy { HEAP_FALLBACK, THROW }
+
+    private static OversizePolicy oversizePolicy() {
+        String configured = System.getProperty("vespera.direct.oversize-policy", "heap-fallback");
+        if ("throw".equalsIgnoreCase(configured)) {
+            return OversizePolicy.THROW;
+        }
+        if ("heap-fallback".equalsIgnoreCase(configured)) {
+            return OversizePolicy.HEAP_FALLBACK;
+        }
+        throw new IllegalArgumentException(
+                "Unrecognized vespera.direct.oversize-policy '" + configured
+                        + "'. Valid values: 'heap-fallback', 'throw'.");
+    }
+
+    private static void rejectPooledFallback(String reason, int required) {
+        throw new BufferTooSmallException(required, reason
+                + " cannot use pooled DIRECT under vespera.direct.oversize-policy=throw");
+    }
 
     /**
      * Handle to {@code Thread.isVirtual()} (final API since Java 21),
@@ -215,11 +238,15 @@ final class VesperaDirectBufferPool {
             byte[] wireRequest, boolean retryOnOverflow, boolean currentThreadIsVirtual) {
         Objects.requireNonNull(wireRequest, "wireRequest");
         if (currentThreadIsVirtual || wireRequest.length > DIRECT_MAX_CAPACITY) {
-            // Virtual thread: the per-thread direct buffer pool would
-            // accumulate off-heap memory per vthread (ThreadLocal binds to
-            // the vthread, not the carrier) — use the GC-managed heap path.
-            // Oversized request (> cap): byte[] fallback is safe for any
-            // method because no dispatch has run yet.
+            if (oversizePolicy() == OversizePolicy.THROW) {
+                rejectPooledFallback(
+                        currentThreadIsVirtual ? "virtual thread" : "oversized request",
+                        wireRequest.length);
+            }
+            // Explicit heap-fallback: virtual threads avoid per-vthread
+            // off-heap ThreadLocal retention, and oversized requests cannot fit
+            // the direct pool. This fully buffers via dispatchBytes; it is not a
+            // streaming fallback.
             return ByteBuffer.wrap(VesperaBridge.dispatchBytes(wireRequest)).asReadOnlyBuffer();
         }
         ByteBuffer[] pool = directPool();
@@ -248,11 +275,14 @@ final class VesperaDirectBufferPool {
             int headerLen = hdr.size();
             int total = VesperaWireCodec.wireTotalLength(headerLen, bodyBytes.length);
             if (currentThreadIsVirtual() || total > DIRECT_MAX_CAPACITY) {
-                // Virtual thread: avoid the per-vthread off-heap direct buffer
-                // accumulation — use the GC-managed heap path.  Oversized
-                // request (> cap): byte[] fallback is safe for any method
-                // because no dispatch has run yet.  The reusable header buffer
-                // is consumed here, before any other fillHeaderJson call.
+                if (oversizePolicy() == OversizePolicy.THROW) {
+                    rejectPooledFallback(
+                            currentThreadIsVirtual() ? "virtual thread" : "oversized request",
+                            total);
+                }
+                // Explicit heap-fallback: fully buffers via dispatchBytes, not
+                // streaming. The reusable header buffer is consumed here, before
+                // any other fillHeaderJson call.
                 byte[] wire = VesperaWireCodec.assembleWire(hdr.backingArray(), headerLen, bodyBytes);
                 return ByteBuffer.wrap(VesperaBridge.dispatchBytes(wire)).asReadOnlyBuffer();
             }
@@ -301,6 +331,11 @@ final class VesperaDirectBufferPool {
             int headerLen = hdr.size();
             int total = VesperaWireCodec.wireTotalLength(headerLen, bodyBytes.length);
             if (currentThreadIsVirtual || total > DIRECT_MAX_CAPACITY) {
+                if (oversizePolicy() == OversizePolicy.THROW) {
+                    rejectPooledFallback(
+                            currentThreadIsVirtual ? "virtual thread" : "oversized request",
+                            total);
+                }
                 byte[] wire = VesperaWireCodec.assembleWire(hdr.backingArray(), headerLen, bodyBytes);
                 return ByteBuffer.wrap(VesperaBridge.dispatchBytes(wire)).asReadOnlyBuffer();
             }

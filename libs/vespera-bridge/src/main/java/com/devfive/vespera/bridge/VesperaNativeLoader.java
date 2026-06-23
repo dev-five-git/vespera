@@ -50,16 +50,25 @@ final class VesperaNativeLoader {
             boolean loaded = false;
 
             try {
+                long copiedBytes;
                 try (DigestInputStream din = new DigestInputStream(in, digest)) {
-                    Files.copy(din, temp, StandardCopyOption.REPLACE_EXISTING);
+                    copiedBytes = Files.copy(din, temp, StandardCopyOption.REPLACE_EXISTING);
                 }
                 byte[] resourceDigest = digest.digest();
-                byte[] extractedDigest = digestOfFile(temp, digest);
-                if (!MessageDigest.isEqual(resourceDigest, extractedDigest)) {
-                    throw new UnsatisfiedLinkError(
-                            "Native library integrity check failed for " + resourcePath
-                                    + ": extracted file does not match the bundled resource "
-                                    + "(corrupted or modified extraction).");
+                long extractedBytes = Files.size(temp);
+                if (copiedBytes != extractedBytes) {
+                    throw new UnsatisfiedLinkError("Native library extraction failed for " + resourcePath
+                            + ": copied " + copiedBytes + " bytes but extracted file has "
+                            + extractedBytes + " bytes.");
+                }
+                if (Boolean.getBoolean("vespera.native.verifyExtractedDigest")) {
+                    byte[] extractedDigest = digestOfFile(temp, digest);
+                    if (!MessageDigest.isEqual(resourceDigest, extractedDigest)) {
+                        throw new UnsatisfiedLinkError(
+                                "Native library integrity check failed for " + resourcePath
+                                        + ": extracted file does not match the bundled resource "
+                                        + "(corrupted or modified extraction).");
+                    }
                 }
 
                 System.load(temp.toAbsolutePath().toString());

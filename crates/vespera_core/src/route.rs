@@ -40,7 +40,7 @@ impl TryFrom<&str> for HttpMethod {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         // Match case-insensitively without allocating an upper-cased copy
         // on the success path (HTTP method names are ASCII per RFC 9110);
-        // the cold error path still reports the upper-cased value so the
+        // the cold error path still reports the ASCII-uppercased value so the
         // message is byte-identical to the previous implementation.
         if value.eq_ignore_ascii_case("GET") {
             Ok(Self::Get)
@@ -59,7 +59,10 @@ impl TryFrom<&str> for HttpMethod {
         } else if value.eq_ignore_ascii_case("TRACE") {
             Ok(Self::Trace)
         } else {
-            Err(format!("unknown HTTP method: {}", value.to_uppercase()))
+            Err(format!(
+                "unknown HTTP method: {}",
+                value.to_ascii_uppercase()
+            ))
         }
     }
 }

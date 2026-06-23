@@ -278,16 +278,21 @@ final class HeaderPolicy {
         int start = 0;
         int len = value.length();
         Set<String> result = tokens;
+        int tokenCount = 0;
         while (start < len) {
             int comma = value.indexOf(',', start);
             int end = comma >= 0 ? comma : len;
             int tokenStart = trimHttpWhitespaceStart(value, start, end);
             int tokenEnd = trimHttpWhitespaceEnd(value, tokenStart, end);
-            if (tokenStart < tokenEnd) {
+            if (tokenStart < tokenEnd && tokenEnd - tokenStart <= 128) {
                 if (result == null) {
                     result = new HashSet<>(4);
                 }
-                result.add(canonicalLowerHeaderName(value.substring(tokenStart, tokenEnd)));
+                result.add(lowerAsciiToken(value, tokenStart, tokenEnd));
+                tokenCount++;
+                if (tokenCount >= 32) {
+                    break;
+                }
             }
             if (comma < 0) {
                 break;
@@ -295,6 +300,15 @@ final class HeaderPolicy {
             start = comma + 1;
         }
         return result;
+    }
+
+    private static String lowerAsciiToken(String value, int start, int end) {
+        char[] chars = new char[end - start];
+        for (int i = start; i < end; i++) {
+            char c = value.charAt(i);
+            chars[i - start] = (c >= 'A' && c <= 'Z') ? (char) (c + ('a' - 'A')) : c;
+        }
+        return new String(chars);
     }
 
     private static int trimHttpWhitespaceStart(String value, int start, int end) {
@@ -342,8 +356,32 @@ final class HeaderPolicy {
         if (names == null) {
             return;
         }
-        Map<String, String> merged = new LinkedHashMap<>(32);
         Set<String> connectionTokens = requestConnectionTokens(request);
+        if (hasMergeRequiredHeaderName(request, names, connectionTokens)) {
+            forEachMergedRequestHeader(request, sink, connectionTokens);
+            return;
+        }
+        names = request.getHeaderNames();
+        if (names == null) {
+            return;
+        }
+        while (names.hasMoreElements()) {
+            String name = names.nextElement();
+            String lowerName = canonicalLowerHeaderName(name);
+            if (!isHopByHopRequestHeader(lowerName)
+                    && !isConnectionNominatedHeader(lowerName, connectionTokens)) {
+                sink.put(lowerName, joinHeaderValues(name, request));
+            }
+        }
+    }
+
+    private static void forEachMergedRequestHeader(
+            HttpServletRequest request, VesperaBridge.HeaderSink sink, Set<String> connectionTokens) {
+        Map<String, String> merged = new LinkedHashMap<>(32);
+        Enumeration<String> names = request.getHeaderNames();
+        if (names == null) {
+            return;
+        }
         while (names.hasMoreElements()) {
             String name = names.nextElement();
             String lowerName = canonicalLowerHeaderName(name);
@@ -355,6 +393,45 @@ final class HeaderPolicy {
             }
         }
         merged.forEach(sink::put);
+    }
+
+    private static boolean hasMergeRequiredHeaderName(
+            HttpServletRequest request, Enumeration<String> names, Set<String> connectionTokens) {
+        String seen0 = null, seen1 = null, seen2 = null, seen3 = null;
+        String seen4 = null, seen5 = null, seen6 = null, seen7 = null;
+        Set<String> overflowSeen = null;
+        int count = 0;
+        while (names.hasMoreElements()) {
+            String lowerName = canonicalLowerHeaderName(names.nextElement());
+            if (isHopByHopRequestHeader(lowerName)
+                    || isConnectionNominatedHeader(lowerName, connectionTokens)) {
+                continue;
+            }
+            if (lowerName.equals(seen0) || lowerName.equals(seen1)
+                    || lowerName.equals(seen2) || lowerName.equals(seen3)
+                    || lowerName.equals(seen4) || lowerName.equals(seen5)
+                    || lowerName.equals(seen6) || lowerName.equals(seen7)
+                    || (overflowSeen != null && !overflowSeen.add(lowerName))) {
+                return true;
+            }
+            switch (count++) {
+                case 0 -> seen0 = lowerName;
+                case 1 -> seen1 = lowerName;
+                case 2 -> seen2 = lowerName;
+                case 3 -> seen3 = lowerName;
+                case 4 -> seen4 = lowerName;
+                case 5 -> seen5 = lowerName;
+                case 6 -> seen6 = lowerName;
+                case 7 -> seen7 = lowerName;
+                default -> {
+                    if (overflowSeen == null) {
+                        overflowSeen = new HashSet<>(8);
+                    }
+                    overflowSeen.add(lowerName);
+                }
+            }
+        }
+        return false;
     }
 
     private static Set<String> requestConnectionTokens(HttpServletRequest request) {

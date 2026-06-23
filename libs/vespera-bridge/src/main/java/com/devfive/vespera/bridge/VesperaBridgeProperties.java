@@ -22,6 +22,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *     direct-retry-on-overflow: false # surface DIRECT overflow instead of retrying
  *     max-buffered-request-bytes: 10485760 # cap SYNC/ASYNC/DIRECT/STREAMING request buffering
  *     max-buffered-response-bytes: 67108864 # cap SYNC heap-buffered response bodies
+ *     clear-threadlocals-after-request: false # clear per-thread buffers after each proxied request
  * }</pre>
  */
 @ConfigurationProperties(prefix = "vespera.bridge")
@@ -109,6 +110,15 @@ public class VesperaBridgeProperties {
      */
     private int asyncPoolSize = 0;
 
+    /**
+     * When true, an autoconfigured servlet filter clears vespera's per-thread
+     * direct/header/scratch buffers in a {@code finally} block after every
+     * request. Default false keeps hot servlet threads pooled for throughput;
+     * enable for containers/redeploy setups where idle worker threads outlive
+     * the Spring context and ThreadLocal retention is more important than reuse.
+     */
+    private boolean clearThreadlocalsAfterRequest = false;
+
     public String getAppHeader() {
         return appHeader;
     }
@@ -163,5 +173,13 @@ public class VesperaBridgeProperties {
 
     public void setAsyncPoolSize(int asyncPoolSize) {
         this.asyncPoolSize = asyncPoolSize;
+    }
+
+    public boolean isClearThreadlocalsAfterRequest() {
+        return clearThreadlocalsAfterRequest;
+    }
+
+    public void setClearThreadlocalsAfterRequest(boolean clearThreadlocalsAfterRequest) {
+        this.clearThreadlocalsAfterRequest = clearThreadlocalsAfterRequest;
     }
 }

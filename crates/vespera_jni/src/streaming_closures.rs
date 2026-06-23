@@ -123,11 +123,25 @@ impl MethodCache {
 /// cost this cache exists to eliminate — to guard against a multi-JVM
 /// configuration the platform already forbids. Trading hot-path throughput
 /// for that guard would be a net regression.
-static METHOD_CACHE: OnceLock<MethodCache> = OnceLock::new();
+enum MethodCacheState {
+    Ready(MethodCache),
+    Failed,
+}
+
+static METHOD_CACHE: OnceLock<MethodCacheState> = OnceLock::new();
+
+const ZERO_READ_YIELD_THRESHOLD: u32 = 16;
+
+fn should_yield_after_zero_read(consecutive_empty_reads: u32) -> bool {
+    consecutive_empty_reads >= ZERO_READ_YIELD_THRESHOLD
+}
 
 fn method_cache(env: &mut jni::Env<'_>) -> Option<&'static MethodCache> {
-    if let Some(cache) = METHOD_CACHE.get() {
-        return Some(cache);
+    if let Some(state) = METHOD_CACHE.get() {
+        return match state {
+            MethodCacheState::Ready(cache) => Some(cache),
+            MethodCacheState::Failed => None,
+        };
     }
 
     let Ok(cache) = MethodCache::resolve(env) else {
@@ -137,11 +151,15 @@ fn method_cache(env: &mut jni::Env<'_>) -> Option<&'static MethodCache> {
         if env.exception_check() {
             env.exception_clear();
         }
+        let _ = METHOD_CACHE.set(MethodCacheState::Failed);
         return None;
     };
 
-    let _ = METHOD_CACHE.set(cache);
-    METHOD_CACHE.get()
+    let _ = METHOD_CACHE.set(MethodCacheState::Ready(cache));
+    match METHOD_CACHE.get() {
+        Some(MethodCacheState::Ready(cache)) => Some(cache),
+        Some(MethodCacheState::Failed) | None => None,
+    }
 }
 
 fn can_call_unchecked(obj: &Global<JObject<'static>>) -> bool {
@@ -298,11 +316,12 @@ fn call_future_complete(
 /// truncated).
 pub fn make_pull_closure(
     jvm: jni::JavaVM,
-    stream: Global<JObject<'static>>,
+    stream: Arc<Global<JObject<'static>>>,
     buf: Arc<Global<jni::objects::JByteArray<'static>>>,
 ) -> impl FnMut() -> vespera_inprocess::RequestChunk + Send + 'static {
     use vespera_inprocess::RequestChunk;
     let chunk_size = streaming_chunk_size();
+    let mut consecutive_empty_reads = 0_u32;
     move || -> RequestChunk {
         // Daemon-attach this (Tokio `spawn_blocking`) thread once,
         // cached in TLS, instead of attach+detach per chunk.  No local
@@ -330,11 +349,17 @@ pub fn make_pull_closure(
                 // chunks and keeps pulling, so report `0` as an empty
                 // chunk rather than end-of-stream.
                 if n < 0 {
+                    consecutive_empty_reads = 0;
                     return Ok(RequestChunk::End);
                 }
                 if n == 0 {
+                    consecutive_empty_reads = consecutive_empty_reads.saturating_add(1);
+                    if should_yield_after_zero_read(consecutive_empty_reads) {
+                        std::thread::yield_now();
+                    }
                     return Ok(RequestChunk::Data(Vec::new()));
                 }
+                consecutive_empty_reads = 0;
                 // `n > 0` here (the `< 0` and `== 0` cases returned above), so a
                 // positive `jint` always fits `usize`.  Avoid a panic site on
                 // this FFI hot path: an impossible conversion failure aborts the
@@ -366,6 +391,7 @@ pub fn make_pull_closure(
         result.unwrap_or(RequestChunk::Error)
     }
 }
+
 /// Build the response-body push closure shared by all four
 /// streaming JNI entry points.
 ///
@@ -636,4 +662,19 @@ pub fn complete_future(
         env.exception_clear();
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_yield_after_zero_read;
+
+    #[test]
+    fn zero_read_backoff_starts_after_repeated_empty_reads() {
+        // Given: a JNI InputStream that repeatedly reports empty reads.
+        // When: the count reaches the JNI-side threshold.
+        // Then: the pull closure yields the blocking worker instead of only
+        // relying on the inprocess producer's hard cap.
+        assert!(!should_yield_after_zero_read(15));
+        assert!(should_yield_after_zero_read(16));
+    }
 }

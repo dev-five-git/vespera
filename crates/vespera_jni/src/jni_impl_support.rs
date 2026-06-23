@@ -3,7 +3,10 @@
 //! change.  All items are pub(super) (used only by the Java_... symbols in
 //! [crate::jni_impl]).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use jni::objects::{Global, JObject};
 
@@ -116,6 +119,12 @@ pub(super) fn setup_stream_with_header(
     header_consumer: &JObject<'_>,
     output_stream: &JObject<'_>,
 ) -> jni::errors::Result<StreamHeaderSetup> {
+    if header_consumer.is_null() {
+        return Err(jni::errors::Error::NullPtr("header_consumer"));
+    }
+    if output_stream.is_null() {
+        return Err(jni::errors::Error::NullPtr("output_stream"));
+    }
     let header_global: Global<JObject<'static>> = env.new_global_ref(header_consumer)?;
     let stream_global: Global<JObject<'static>> = env.new_global_ref(output_stream)?;
     let jvm = env.get_java_vm()?;
@@ -129,8 +138,7 @@ pub(super) fn setup_stream_with_header(
 /// streaming-with-header dispatch.  Aliased to stay under `type_complexity`.
 pub(super) type FullStreamHeaderSetup = (
     Global<JObject<'static>>,
-    Global<JObject<'static>>,
-    Global<JObject<'static>>,
+    Arc<Global<JObject<'static>>>,
     Global<JObject<'static>>,
     jni::JavaVM,
     PullPushBuffers,
@@ -146,24 +154,23 @@ pub(super) fn setup_full_stream_with_header(
     input_stream: &JObject<'_>,
     output_stream: &JObject<'_>,
 ) -> jni::errors::Result<FullStreamHeaderSetup> {
+    if header_consumer.is_null() {
+        return Err(jni::errors::Error::NullPtr("header_consumer"));
+    }
+    if input_stream.is_null() {
+        return Err(jni::errors::Error::NullPtr("input_stream"));
+    }
+    if output_stream.is_null() {
+        return Err(jni::errors::Error::NullPtr("output_stream"));
+    }
     let header_global: Global<JObject<'static>> = env.new_global_ref(header_consumer)?;
-    let input_global: Global<JObject<'static>> = env.new_global_ref(input_stream)?;
-    // Second InputStream ref for the post-response close (the first is moved
-    // into the pull closure; `Global` is not `Clone`).
-    let input_for_close: Global<JObject<'static>> = env.new_global_ref(input_stream)?;
+    let input_global: Arc<Global<JObject<'static>>> = Arc::new(env.new_global_ref(input_stream)?);
     let output_global: Global<JObject<'static>> = env.new_global_ref(output_stream)?;
     let jvm = env.get_java_vm()?;
     // Pull and push run concurrently on different threads (the pull lease is
     // released for us if the push checkout fails).
     let buffers = checkout_pull_push_buffers(env)?;
-    Ok((
-        header_global,
-        input_global,
-        input_for_close,
-        output_global,
-        jvm,
-        buffers,
-    ))
+    Ok((header_global, input_global, output_global, jvm, buffers))
 }
 
 /// Promoted output-stream ref + a checked-out push chunk buffer for a
@@ -187,6 +194,9 @@ pub(super) fn setup_stream(
     env: &mut jni::Env<'_>,
     output_stream: &JObject<'_>,
 ) -> jni::errors::Result<StreamSetup> {
+    if output_stream.is_null() {
+        return Err(jni::errors::Error::NullPtr("output_stream"));
+    }
     let stream_global: Global<JObject<'static>> = env.new_global_ref(output_stream)?;
     let jvm = env.get_java_vm()?;
     let (push_buf, push_buf_lease) =
@@ -194,13 +204,11 @@ pub(super) fn setup_stream(
     Ok((stream_global, jvm, push_buf, push_buf_lease))
 }
 
-/// Promoted input/output refs (+ a second input ref for the post-response
-/// close, since `Global` is not `Clone`) and both chunk buffers for a
-/// bidirectional streaming dispatch (no header consumer).  Aliased to stay
-/// under `type_complexity`.
+/// Promoted input/output refs and both chunk buffers for a bidirectional
+/// streaming dispatch (no header consumer).  The input ref is `Arc`-wrapped so
+/// pull and post-response close share one JVM global ref.
 pub(super) type FullStreamSetup = (
-    Global<JObject<'static>>,
-    Global<JObject<'static>>,
+    Arc<Global<JObject<'static>>>,
     Global<JObject<'static>>,
     jni::JavaVM,
     PullPushBuffers,
@@ -216,10 +224,15 @@ pub(super) fn setup_full_stream(
     input_stream: &JObject<'_>,
     output_stream: &JObject<'_>,
 ) -> jni::errors::Result<FullStreamSetup> {
-    let input_global: Global<JObject<'static>> = env.new_global_ref(input_stream)?;
-    let input_for_close: Global<JObject<'static>> = env.new_global_ref(input_stream)?;
+    if input_stream.is_null() {
+        return Err(jni::errors::Error::NullPtr("input_stream"));
+    }
+    if output_stream.is_null() {
+        return Err(jni::errors::Error::NullPtr("output_stream"));
+    }
+    let input_global: Arc<Global<JObject<'static>>> = Arc::new(env.new_global_ref(input_stream)?);
     let output_global: Global<JObject<'static>> = env.new_global_ref(output_stream)?;
     let jvm = env.get_java_vm()?;
     let buffers = checkout_pull_push_buffers(env)?;
-    Ok((input_global, input_for_close, output_global, jvm, buffers))
+    Ok((input_global, output_global, jvm, buffers))
 }

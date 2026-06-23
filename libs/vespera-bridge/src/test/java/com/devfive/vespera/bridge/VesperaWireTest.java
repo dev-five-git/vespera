@@ -216,6 +216,25 @@ class VesperaWireTest {
         assertEquals(256, VesperaWireCodec.currentHeaderBufferCapacityForTest());
     }
 
+    @Test
+    void directPoolThrowPolicyRejectsHeapFallbackBeforeNativeDispatch() {
+        String previous = System.getProperty("vespera.direct.oversize-policy");
+        System.setProperty("vespera.direct.oversize-policy", "throw");
+        try {
+            VesperaBridge.BufferTooSmallException ex = assertThrows(
+                    VesperaBridge.BufferTooSmallException.class,
+                    () -> VesperaDirectBufferPool.dispatchDirectPooled(new byte[8], false, true));
+            assertTrue(ex.getMessage().contains("vespera.direct.oversize-policy=throw"));
+            assertEquals(8, ex.requiredSize());
+        } finally {
+            if (previous == null) {
+                System.clearProperty("vespera.direct.oversize-policy");
+            } else {
+                System.setProperty("vespera.direct.oversize-policy", previous);
+            }
+        }
+    }
+
     /** Build a synthetic wire response (mimics what Rust would emit). */
     private static byte[] buildWireResponse(int status, String contentType, byte[] body) throws Exception {
         return buildWireResponseWithExtras(status, contentType, body, null);
@@ -402,6 +421,34 @@ class VesperaWireTest {
         Object setCookie = decoded.headers().get("set-cookie");
         assertTrue(setCookie instanceof List, "multi-valued header must decode to a List");
         assertEquals(List.of("a=1; Path=/", "b=2; HttpOnly"), setCookie);
+    }
+
+    @Test
+    void decodeResponse_publicCollectionsAreImmutableCopies() throws Exception {
+        Map<String, Object> headers = new LinkedHashMap<>();
+        headers.put("set-cookie", List.of("a=1", "b=2"));
+        List<Map<String, Object>> errors = new ArrayList<>();
+        Map<String, Object> error = new LinkedHashMap<>();
+        error.put("path", "name");
+        errors.add(error);
+
+        DecodedResponse decoded = VesperaBridge.decodeResponse(buildWireResponseWithExtras(
+                422, "application/json", new byte[0], errors));
+        DecodedResponse multiHeader = VesperaBridge.decodeResponse(
+                buildWireResponseWithHeaders(200, headers, new byte[0]));
+
+        assertThrows(UnsupportedOperationException.class,
+                () -> decoded.metadata().put("x", "y"));
+        assertThrows(UnsupportedOperationException.class,
+                () -> decoded.validationErrors().add(Map.of()));
+        assertThrows(UnsupportedOperationException.class,
+                () -> decoded.validationErrors().get(0).put("message", "changed"));
+        assertThrows(UnsupportedOperationException.class,
+                () -> multiHeader.headers().put("x", "y"));
+        @SuppressWarnings("unchecked")
+        List<String> setCookie = (List<String>) multiHeader.headers().get("set-cookie");
+        assertThrows(UnsupportedOperationException.class,
+                () -> setCookie.add("c=3"));
     }
 
     @Test

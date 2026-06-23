@@ -149,8 +149,16 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
     in_len: jint,
     out_buf: JByteBuffer<'local>,
 ) -> jint {
-    unowned_env
-        .with_env(|env| -> jni::errors::Result<jint> {
+    let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<jint> {
+            if in_buf.is_null() || out_buf.is_null() {
+                let _ = env.throw_new(
+                    jni::jni_str!("java/lang/IllegalArgumentException"),
+                    jni::jni_str!("in and out direct buffers must not be null"),
+                );
+                return Ok(DIRECT_UNREPRESENTABLE);
+            }
             let mut out_region: Option<(*mut u8, usize)> = None;
             let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                 || -> jni::errors::Result<jint> {
@@ -285,8 +293,10 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                     },
                 )
             })
-        })
-        .resolve::<ThrowRuntimeExAndDefault>()
+            })
+            .resolve::<ThrowRuntimeExAndDefault>()
+    }));
+    guarded.unwrap_or(DIRECT_UNREPRESENTABLE)
 }
 
 #[cfg(test)]

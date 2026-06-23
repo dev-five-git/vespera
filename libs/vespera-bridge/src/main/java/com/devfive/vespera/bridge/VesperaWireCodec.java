@@ -651,9 +651,31 @@ final class VesperaWireCodec {
         ByteBuffer body = buf.slice().asReadOnlyBuffer();
         return new DecodedResponse(
                 d.status,
-                d.headers == null ? Map.of() : d.headers,
-                d.metadata,
+                copyDecodedHeaders(d.headers),
+                d.metadata == null ? Map.of() : Map.copyOf(d.metadata),
                 body,
-                d.validationErrors);
+                copyValidationErrors(d.validationErrors));
+    }
+
+    private static Map<String, Object> copyDecodedHeaders(Map<String, Object> headers) {
+        if (headers == null || headers.isEmpty()) {
+            return Map.of();
+        }
+        java.util.LinkedHashMap<String, Object> copy = new java.util.LinkedHashMap<>(headers.size());
+        headers.forEach((key, value) -> copy.put(key,
+                value instanceof java.util.List<?> list ? java.util.List.copyOf(list) : value));
+        return Map.copyOf(copy);
+    }
+
+    private static java.util.List<Map<String, Object>> copyValidationErrors(
+            java.util.List<Map<String, Object>> validationErrors) {
+        if (validationErrors == null) {
+            return null;
+        }
+        java.util.ArrayList<Map<String, Object>> copy = new java.util.ArrayList<>(validationErrors.size());
+        for (Map<String, Object> error : validationErrors) {
+            copy.add(Map.copyOf(error));
+        }
+        return java.util.List.copyOf(copy);
     }
 }

@@ -548,6 +548,11 @@ public class VesperaBridge {
             this.requiredSize = requiredSize;
         }
 
+        BufferTooSmallException(int requiredSize, String message) {
+            super(message);
+            this.requiredSize = requiredSize;
+        }
+
         /** Exact out-buffer capacity needed for a successful retry. */
         public int requiredSize() {
             return requiredSize;

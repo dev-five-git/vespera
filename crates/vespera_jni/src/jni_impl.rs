@@ -137,6 +137,12 @@ fn read_request_byte_array(
     env: &mut jni::Env<'_>,
     request_bytes: &JByteArray<'_>,
 ) -> Result<Vec<u8>, Vec<u8>> {
+    if request_bytes.is_null() {
+        return Err(vespera_inprocess::error_wire(
+            400,
+            "invalid input byte array (null)",
+        ));
+    }
     let Ok(len) = request_bytes.len(env) else {
         clear_pending_exception(env);
         return Err(vespera_inprocess::error_wire(
@@ -187,8 +193,8 @@ fn read_request_byte_array(
 /// `Env` is available to complete anything anyway.  Matches the
 /// whole-body guard already used by `configureRuntime0` /
 /// `configureStreaming0`.
-fn guard_void_symbol(body: impl FnOnce()) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+fn guard_void_symbol(body: impl FnOnce()) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).is_err()
 }
 
 fn panic_wire() -> Vec<u8> {
@@ -198,9 +204,213 @@ fn panic_wire() -> Vec<u8> {
 #[path = "jni_impl_support.rs"]
 mod support;
 use support::{
-    PanicHeaderAction, panic_post_header_action, push_unless_header_failed, setup_full_stream,
-    setup_full_stream_with_header, setup_stream, setup_stream_with_header, throw_streaming_abort,
+    FullStreamHeaderSetup, PanicHeaderAction, panic_post_header_action, push_unless_header_failed,
+    setup_full_stream, setup_full_stream_with_header, setup_stream, setup_stream_with_header,
+    throw_streaming_abort,
 };
+
+fn handle_header_dispatch_panic(
+    env: &mut jni::Env<'_>,
+    header_consumer: &JObject<'_>,
+    header_sent: &AtomicBool,
+    header_failed: &AtomicBool,
+    header_notified: &AtomicBool,
+) {
+    match panic_post_header_action(
+        header_sent.load(Ordering::Relaxed),
+        header_failed.load(Ordering::Acquire),
+    ) {
+        PanicHeaderAction::FireFallbackHeader => {
+            let err = panic_wire();
+            let _ = call_header_consumer_local(env, header_consumer, &err);
+            header_notified.store(true, Ordering::Release);
+        }
+        PanicHeaderAction::ThrowAbort => {
+            throw_streaming_abort(env, header_failed.load(Ordering::Acquire));
+        }
+    }
+}
+
+fn reject_null_header_consumer(
+    env: &mut jni::Env<'_>,
+    header_consumer: &JObject<'_>,
+    header_notified: &AtomicBool,
+) -> bool {
+    if !header_consumer.is_null() {
+        return false;
+    }
+    let _ = env.throw_new(
+        jni::jni_str!("java/lang/IllegalArgumentException"),
+        jni::jni_str!("headerConsumer must not be null"),
+    );
+    header_notified.store(true, Ordering::Release);
+    true
+}
+
+fn notify_local_header(
+    env: &mut jni::Env<'_>,
+    header_consumer: &JObject<'_>,
+    header_bytes: &[u8],
+    header_notified: &AtomicBool,
+) {
+    let _ = call_header_consumer_local(env, header_consumer, header_bytes);
+    header_notified.store(true, Ordering::Release);
+}
+
+fn record_header_callback_result(
+    delivered: bool,
+    header_sent: &AtomicBool,
+    header_failed: &AtomicBool,
+    header_notified: &AtomicBool,
+) {
+    header_notified.store(true, Ordering::Release);
+    if delivered {
+        header_sent.store(true, Ordering::Relaxed);
+    } else {
+        header_failed.store(true, Ordering::Release);
+    }
+}
+
+fn read_header_or_notify(
+    env: &mut jni::Env<'_>,
+    header_bytes: &JByteArray<'_>,
+    header_consumer: &JObject<'_>,
+    header_notified: &AtomicBool,
+) -> Option<Vec<u8>> {
+    match read_request_byte_array(env, header_bytes) {
+        Ok(buf) => Some(buf),
+        Err(err) => {
+            notify_local_header(env, header_consumer, &err, header_notified);
+            None
+        }
+    }
+}
+
+fn setup_full_header_or_notify(
+    env: &mut jni::Env<'_>,
+    header_consumer: &JObject<'_>,
+    input_stream: &JObject<'_>,
+    output_stream: &JObject<'_>,
+    header_notified: &AtomicBool,
+) -> Option<FullStreamHeaderSetup> {
+    setup_full_stream_with_header(env, header_consumer, input_stream, output_stream).map_or_else(
+        |_| {
+            notify_local_header(env, header_consumer, &panic_wire(), header_notified);
+            None
+        },
+        Some,
+    )
+}
+
+struct FullHeaderArgs<'a, 'local> {
+    header_bytes: &'a JByteArray<'local>,
+    header_consumer: &'a JObject<'local>,
+    input_stream: &'a JObject<'local>,
+    output_stream: &'a JObject<'local>,
+    header_notified: &'a Arc<AtomicBool>,
+}
+
+fn dispatch_full_streaming_with_header_body(env: &mut jni::Env<'_>, args: &FullHeaderArgs<'_, '_>) {
+    if reject_null_header_consumer(env, args.header_consumer, args.header_notified) {
+        return;
+    }
+    let Some(header_input) = read_header_or_notify(
+        env,
+        args.header_bytes,
+        args.header_consumer,
+        args.header_notified,
+    ) else {
+        return;
+    };
+    let Some((header_global, input_global, output_global, jvm, buffers)) =
+        setup_full_header_or_notify(
+            env,
+            args.header_consumer,
+            args.input_stream,
+            args.output_stream,
+            args.header_notified,
+        )
+    else {
+        return;
+    };
+    let PullPushBuffers {
+        pull_buf,
+        pull_buf_lease,
+        push_buf,
+        push_buf_lease,
+    } = buffers;
+
+    let pull_jvm = jvm.clone();
+    let pull_global = Arc::clone(&input_global);
+    let push_jvm = jvm.clone();
+    let push_global = output_global;
+    let close_jvm = jvm.clone();
+    let input_for_close = input_global;
+    let header_jvm = jvm;
+    let header_for_cb = header_global;
+
+    let header_sent = Arc::new(AtomicBool::new(false));
+    let header_failed = Arc::new(AtomicBool::new(false));
+    let header_sent_cb = Arc::clone(&header_sent);
+    let header_failed_cb = Arc::clone(&header_failed);
+    let header_notified_cb = Arc::clone(args.header_notified);
+    let header_failed_push = Arc::clone(&header_failed);
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut push = make_push_closure(push_jvm, push_global, push_buf);
+        RUNTIME.block_on(
+            vespera_inprocess::dispatch_bidirectional_streaming_with_header_closing(
+                header_input,
+                make_pull_closure(pull_jvm, pull_global, pull_buf),
+                move |chunk: &[u8]| {
+                    push_unless_header_failed(&header_failed_push, &mut push, chunk)
+                },
+                |header_bytes: &[u8]| {
+                    let delivered = with_cached_daemon_env(
+                        &header_jvm,
+                        |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
+                            call_header_consumer(env, &header_for_cb, header_bytes)
+                        },
+                    )
+                    .is_ok();
+                    record_header_callback_result(
+                        delivered,
+                        &header_sent_cb,
+                        &header_failed_cb,
+                        &header_notified_cb,
+                    );
+                },
+                move || {
+                    let _ = with_cached_daemon_env(&close_jvm, |env| {
+                        close_input_stream(env, &input_for_close)
+                    });
+                },
+            ),
+        )
+    }));
+    match panic_result {
+        Ok(outcome) => {
+            mark_streaming_buffer_reusable(pull_buf_lease);
+            mark_streaming_buffer_reusable(push_buf_lease);
+            let failed_header = header_failed.load(Ordering::Acquire);
+            if failed_header
+                || matches!(
+                    outcome,
+                    vespera_inprocess::StreamOutcome::BodyError
+                        | vespera_inprocess::StreamOutcome::SinkStopped
+                )
+            {
+                throw_streaming_abort(env, failed_header);
+            }
+        }
+        Err(_) => handle_header_dispatch_panic(
+            env,
+            args.header_consumer,
+            &header_sent,
+            &header_failed,
+            args.header_notified,
+        ),
+    }
+}
 
 /// `com.devfive.vespera.bridge.VesperaBridge.dispatchBytes(byte[]) -> byte[]`
 ///
@@ -219,25 +429,35 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchByt
     _class: JClass<'local>,
     request_bytes: JByteArray<'local>,
 ) -> jbyteArray {
-    unowned_env
-        .with_env(|env| -> jni::errors::Result<JObject<'local>> {
-            // Read + dispatch under ONE guard: a panic in the ingress read
-            // (e.g. allocation failure for an unbounded request) now also
-            // degrades to a wire `500` instead of a thrown Java exception.
-            let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                match read_request_byte_array(env, &request_bytes) {
-                    Ok(input) => {
-                        block_on_sync_runtime(vespera_inprocess::dispatch_from_bytes_async(input))
+    let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<JObject<'local>> {
+                // Read + dispatch under ONE guard: a panic in the ingress read
+                // (e.g. allocation failure for an unbounded request) now also
+                // degrades to a wire `500` instead of a thrown Java exception.
+                let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    match read_request_byte_array(env, &request_bytes) {
+                        Ok(input) => block_on_sync_runtime(
+                            vespera_inprocess::dispatch_from_bytes_async(input),
+                        ),
+                        Err(err_wire) => err_wire,
                     }
-                    Err(err_wire) => err_wire,
-                }
-            }))
-            .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
+                }))
+                .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
 
-            Ok(env.byte_array_from_slice(&response)?.into())
-        })
-        .resolve::<ThrowRuntimeExAndDefault>()
-        .into_raw()
+                Ok(env.byte_array_from_slice(&response)?.into())
+            })
+            .resolve::<ThrowRuntimeExAndDefault>()
+            .into_raw()
+    }));
+    guarded.unwrap_or_else(|_| {
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<JObject<'local>> {
+                Ok(env.byte_array_from_slice(&panic_wire())?.into())
+            })
+            .resolve::<ThrowRuntimeExAndDefault>()
+            .into_raw()
+    })
 }
 
 #[path = "jni_impl_direct.rs"]
@@ -292,6 +512,8 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
     future_obj: JObject<'local>,
     request_bytes: JByteArray<'local>,
 ) {
+    let future_notified = Arc::new(AtomicBool::new(false));
+    let future_notified_body = Arc::clone(&future_notified);
     // The only unrecoverable path is failing to promote the future to a
     // GlobalRef (below): without that ref there is nothing to complete,
     // and a failure there means the JVM is already in trouble.  Every
@@ -302,8 +524,16 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
     // JNI-03: the entire body runs under `guard_void_symbol` so a panic
     // in the setup that precedes the inner dispatch guard cannot unwind
     // across this `extern "system"` boundary.
-    guard_void_symbol(|| {
+    let panicked = guard_void_symbol(|| {
         let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
+            if future_obj.is_null() {
+                let _ = env.throw_new(
+                    jni::jni_str!("java/lang/IllegalArgumentException"),
+                    jni::jni_str!("future must not be null"),
+                );
+                future_notified_body.store(true, Ordering::Release);
+                return Ok(());
+            }
             // On-thread cold paths (oversized, JNI conversion failure, VM
             // promotion / scheduling failure) complete the future via the
             // still-valid LOCAL `future_obj` ref, so only the spawned task
@@ -313,6 +543,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
                 Ok(buf) => buf,
                 Err(err) => {
                     let _ = complete_future_local(env, &future_obj, &err);
+                    future_notified_body.store(true, Ordering::Release);
                     return Ok(());
                 }
             };
@@ -327,6 +558,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
                         &future_obj,
                         &vespera_inprocess::error_wire(500, "JNI VM promotion failed"),
                     );
+                    future_notified_body.store(true, Ordering::Release);
                     return Err(e);
                 }
             };
@@ -343,6 +575,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
                         &future_obj,
                         &vespera_inprocess::error_wire(500, "JNI global ref failed"),
                     );
+                    future_notified_body.store(true, Ordering::Release);
                     return Err(e);
                 }
             };
@@ -399,11 +632,19 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
                     &future_obj,
                     &vespera_inprocess::error_wire(500, "failed to schedule Rust dispatch"),
                 );
+                future_notified_body.store(true, Ordering::Release);
+            } else {
+                future_notified_body.store(true, Ordering::Release);
             }
 
             Ok(())
         });
     });
+    if panicked && !future_notified.load(Ordering::Acquire) && !future_obj.is_null() {
+        let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
+            complete_future_local(env, &future_obj, &panic_wire())
+        });
+    }
 }
 
 /// `com.devfive.vespera.bridge.VesperaBridge.dispatchStreaming(byte[], OutputStream) -> byte[]`
@@ -437,52 +678,70 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
     request_bytes: JByteArray<'local>,
     output_stream: JObject<'local>,
 ) -> jbyteArray {
-    unowned_env
-        .with_env(|env| -> jni::errors::Result<JObject<'local>> {
-            let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                || -> jni::errors::Result<JObject<'local>> {
-                    let input = match read_request_byte_array(env, &request_bytes) {
-                        Ok(buf) => buf,
-                        Err(err) => return Ok(env.byte_array_from_slice(&err)?.into()),
-                    };
+    let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<JObject<'local>> {
+                let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> jni::errors::Result<JObject<'local>> {
+                        if output_stream.is_null() {
+                            return Ok(env
+                                .byte_array_from_slice(&vespera_inprocess::error_wire(
+                                    400,
+                                    "outputStream must not be null",
+                                ))?
+                                .into());
+                        }
+                        let input = match read_request_byte_array(env, &request_bytes) {
+                            Ok(buf) => buf,
+                            Err(err) => return Ok(env.byte_array_from_slice(&err)?.into()),
+                        };
 
-                    // Promote the OutputStream to a Global (so the streaming
-                    // callback can call .write() from a daemon-attached worker
-                    // thread), grab the VM, and check out the per-thread push
-                    // chunk buffer.  On ANY setup failure (rare, OOM-driven) the
-                    // previous bare `?` returned an ignored `Err` from `with_env`
-                    // → `resolve::<ThrowRuntimeExAndDefault>` threw a Java
-                    // exception + returned `null`, breaking the "every failure is
-                    // a valid wire response" contract.  Return a `500` wire
-                    // response instead so the Java decoder is never handed `null`.
-                    let Ok((stream_global, jvm, push_buf, push_buf_lease)) =
-                        setup_stream(env, &output_stream)
-                    else {
-                        clear_pending_exception(env);
-                        return Ok(env
-                            .byte_array_from_slice(&vespera_inprocess::error_wire(
-                                500,
-                                "JNI streaming setup failed",
-                            ))?
-                            .into());
-                    };
+                        // Promote the OutputStream to a Global (so the streaming
+                        // callback can call .write() from a daemon-attached worker
+                        // thread), grab the VM, and check out the per-thread push
+                        // chunk buffer.  On ANY setup failure (rare, OOM-driven) the
+                        // previous bare `?` returned an ignored `Err` from `with_env`
+                        // → `resolve::<ThrowRuntimeExAndDefault>` threw a Java
+                        // exception + returned `null`, breaking the "every failure is
+                        // a valid wire response" contract.  Return a `500` wire
+                        // response instead so the Java decoder is never handed `null`.
+                        let Ok((stream_global, jvm, push_buf, push_buf_lease)) =
+                            setup_stream(env, &output_stream)
+                        else {
+                            clear_pending_exception(env);
+                            return Ok(env
+                                .byte_array_from_slice(&vespera_inprocess::error_wire(
+                                    500,
+                                    "JNI streaming setup failed",
+                                ))?
+                                .into());
+                        };
 
-                    let header_bytes =
-                        RUNTIME.block_on(vespera_inprocess::dispatch_streaming_async(
-                            input,
-                            make_push_closure(jvm, stream_global, push_buf),
-                        ));
-                    mark_streaming_buffer_reusable(push_buf_lease);
+                        let header_bytes =
+                            RUNTIME.block_on(vespera_inprocess::dispatch_streaming_async(
+                                input,
+                                make_push_closure(jvm, stream_global, push_buf),
+                            ));
+                        mark_streaming_buffer_reusable(push_buf_lease);
 
-                    Ok(env.byte_array_from_slice(&header_bytes)?.into())
-                },
-            ))
-            .unwrap_or_else(|_| Ok(env.byte_array_from_slice(&panic_wire())?.into()))?;
+                        Ok(env.byte_array_from_slice(&header_bytes)?.into())
+                    },
+                ))
+                .unwrap_or_else(|_| Ok(env.byte_array_from_slice(&panic_wire())?.into()))?;
 
-            Ok(response)
-        })
-        .resolve::<ThrowRuntimeExAndDefault>()
-        .into_raw()
+                Ok(response)
+            })
+            .resolve::<ThrowRuntimeExAndDefault>()
+            .into_raw()
+    }));
+    guarded.unwrap_or_else(|_| {
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<JObject<'local>> {
+                Ok(env.byte_array_from_slice(&panic_wire())?.into())
+            })
+            .resolve::<ThrowRuntimeExAndDefault>()
+            .into_raw()
+    })
 }
 
 /// `com.devfive.vespera.bridge.VesperaBridge.dispatchFullStreaming(byte[], InputStream, OutputStream) -> byte[]`
@@ -519,87 +778,106 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
     input_stream: JObject<'local>,
     output_stream: JObject<'local>,
 ) -> jbyteArray {
-    unowned_env
-        .with_env(|env| -> jni::errors::Result<JObject<'local>> {
-            let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                || -> jni::errors::Result<JObject<'local>> {
-                    // Read the header byte[] through the shared ingress contract
-                    // (length cap honoured + pending-exception scrub on failure)
-                    // rather than a raw `convert_byte_array`, so an oversized header
-                    // byte[] is rejected before a full Rust-side copy — parity with
-                    // the buffered dispatch symbols.
-                    let header_input = match read_request_byte_array(env, &header_bytes) {
-                        Ok(buf) => buf,
-                        Err(err) => return Ok(env.byte_array_from_slice(&err)?.into()),
-                    };
+    let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<JObject<'local>> {
+                let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> jni::errors::Result<JObject<'local>> {
+                        if input_stream.is_null() || output_stream.is_null() {
+                            return Ok(env
+                                .byte_array_from_slice(&vespera_inprocess::error_wire(
+                                    400,
+                                    "inputStream and outputStream must not be null",
+                                ))?
+                                .into());
+                        }
+                        // Read the header byte[] through the shared ingress contract
+                        // (length cap honoured + pending-exception scrub on failure)
+                        // rather than a raw `convert_byte_array`, so an oversized header
+                        // byte[] is rejected before a full Rust-side copy — parity with
+                        // the buffered dispatch symbols.
+                        let header_input = match read_request_byte_array(env, &header_bytes) {
+                            Ok(buf) => buf,
+                            Err(err) => return Ok(env.byte_array_from_slice(&err)?.into()),
+                        };
 
-                    // Promote the input/output refs (+ a second input ref for the
-                    // post-response close, since `Global` is not `Clone`), grab the
-                    // VM, and check out both per-thread chunk buffers.  On ANY setup
-                    // failure (rare, OOM-driven) the previous bare `?` surfaced to
-                    // Java as a thrown exception + `null` return; return a `500` wire
-                    // response instead so the decoder is never handed `null`.  A
-                    // half-acquired buffer pair cannot leak a lease (see
-                    // `setup_full_stream` / `checkout_pull_push_buffers`).
-                    let Ok((input_global, input_for_close, output_global, jvm, buffers)) =
-                        setup_full_stream(env, &input_stream, &output_stream)
-                    else {
-                        clear_pending_exception(env);
-                        return Ok(env
-                            .byte_array_from_slice(&vespera_inprocess::error_wire(
-                                500,
-                                "JNI streaming setup failed",
-                            ))?
-                            .into());
-                    };
-                    let PullPushBuffers {
-                        pull_buf,
-                        pull_buf_lease,
-                        push_buf,
-                        push_buf_lease,
-                    } = buffers;
+                        // Promote the input/output refs (+ a second input ref for the
+                        // post-response close, since `Global` is not `Clone`), grab the
+                        // VM, and check out both per-thread chunk buffers.  On ANY setup
+                        // failure (rare, OOM-driven) the previous bare `?` surfaced to
+                        // Java as a thrown exception + `null` return; return a `500` wire
+                        // response instead so the decoder is never handed `null`.  A
+                        // half-acquired buffer pair cannot leak a lease (see
+                        // `setup_full_stream` / `checkout_pull_push_buffers`).
+                        let Ok((input_global, output_global, jvm, buffers)) =
+                            setup_full_stream(env, &input_stream, &output_stream)
+                        else {
+                            clear_pending_exception(env);
+                            return Ok(env
+                                .byte_array_from_slice(&vespera_inprocess::error_wire(
+                                    500,
+                                    "JNI streaming setup failed",
+                                ))?
+                                .into());
+                        };
+                        let PullPushBuffers {
+                            pull_buf,
+                            pull_buf_lease,
+                            push_buf,
+                            push_buf_lease,
+                        } = buffers;
 
-                    // Closures capture clones of the JavaVM and Globals;
-                    // both types are Send+Sync.
-                    let pull_jvm = jvm.clone();
-                    let pull_global = input_global;
-                    let close_jvm = jvm.clone();
-                    let push_jvm = jvm;
-                    let push_global = output_global;
+                        // Closures capture clones of the JavaVM and Globals;
+                        // both types are Send+Sync.
+                        let pull_jvm = jvm.clone();
+                        let pull_global = Arc::clone(&input_global);
+                        let close_jvm = jvm.clone();
+                        let input_for_close = input_global;
+                        let push_jvm = jvm;
+                        let push_global = output_global;
 
-                    let header_response = RUNTIME.block_on(
-                        vespera_inprocess::dispatch_bidirectional_streaming_closing(
-                            header_input,
-                            // Pull request body chunks from Java InputStream.
-                            // Runs on a tokio blocking thread (spawn_blocking
-                            // inside dispatch_bidirectional_streaming).
-                            make_pull_closure(pull_jvm, pull_global, pull_buf),
-                            // Push response body chunks to Java OutputStream.
-                            // Runs on the tokio worker driving the dispatch.
-                            make_push_closure(push_jvm, push_global, push_buf),
-                            // Close the InputStream once the response is fully
-                            // streamed, so a producer parked in a blocking read is
-                            // unblocked and the dispatch cannot hang on a stuck
-                            // upload that never reaches EOF.
-                            move || {
-                                let _ = with_cached_daemon_env(&close_jvm, |env| {
-                                    close_input_stream(env, &input_for_close)
-                                });
-                            },
-                        ),
-                    );
-                    mark_streaming_buffer_reusable(pull_buf_lease);
-                    mark_streaming_buffer_reusable(push_buf_lease);
+                        let header_response = RUNTIME.block_on(
+                            vespera_inprocess::dispatch_bidirectional_streaming_closing(
+                                header_input,
+                                // Pull request body chunks from Java InputStream.
+                                // Runs on a tokio blocking thread (spawn_blocking
+                                // inside dispatch_bidirectional_streaming).
+                                make_pull_closure(pull_jvm, pull_global, pull_buf),
+                                // Push response body chunks to Java OutputStream.
+                                // Runs on the tokio worker driving the dispatch.
+                                make_push_closure(push_jvm, push_global, push_buf),
+                                // Close the InputStream once the response is fully
+                                // streamed, so a producer parked in a blocking read is
+                                // unblocked and the dispatch cannot hang on a stuck
+                                // upload that never reaches EOF.
+                                move || {
+                                    let _ = with_cached_daemon_env(&close_jvm, |env| {
+                                        close_input_stream(env, &input_for_close)
+                                    });
+                                },
+                            ),
+                        );
+                        mark_streaming_buffer_reusable(pull_buf_lease);
+                        mark_streaming_buffer_reusable(push_buf_lease);
 
-                    Ok(env.byte_array_from_slice(&header_response)?.into())
-                },
-            ))
-            .unwrap_or_else(|_| Ok(env.byte_array_from_slice(&panic_wire())?.into()))?;
+                        Ok(env.byte_array_from_slice(&header_response)?.into())
+                    },
+                ))
+                .unwrap_or_else(|_| Ok(env.byte_array_from_slice(&panic_wire())?.into()))?;
 
-            Ok(response)
-        })
-        .resolve::<ThrowRuntimeExAndDefault>()
-        .into_raw()
+                Ok(response)
+            })
+            .resolve::<ThrowRuntimeExAndDefault>()
+            .into_raw()
+    }));
+    guarded.unwrap_or_else(|_| {
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<JObject<'local>> {
+                Ok(env.byte_array_from_slice(&panic_wire())?.into())
+            })
+            .resolve::<ThrowRuntimeExAndDefault>()
+            .into_raw()
+    })
 }
 
 /// `com.devfive.vespera.bridge.VesperaBridge.dispatchStreamingWithHeader(byte[], Consumer<byte[]>, OutputStream) -> void`
@@ -624,18 +902,18 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
     header_consumer: JObject<'local>,
     output_stream: JObject<'local>,
 ) {
+    let header_notified = Arc::new(AtomicBool::new(false));
+    let header_notified_body = Arc::clone(&header_notified);
     // JNI-03: whole-body panic guard (see `guard_void_symbol`).
-    guard_void_symbol(|| {
+    let panicked = guard_void_symbol(|| {
         let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
-            let input = match read_request_byte_array(env, &request_bytes) {
-                Ok(buf) => buf,
-                Err(err) => {
-                    // Deliver the wire error through the LOCAL consumer ref — no
-                    // global-ref promotion to fail first, so the single header
-                    // callback fires even under the failure that triggered this.
-                    let _ = call_header_consumer_local(env, &header_consumer, &err);
-                    return Ok(());
-                }
+            if reject_null_header_consumer(env, &header_consumer, &header_notified_body) {
+                return Ok(());
+            }
+            let Some(input) =
+                read_header_or_notify(env, &request_bytes, &header_consumer, &header_notified_body)
+            else {
+                return Ok(());
             };
 
             // Promote refs + check out the chunk buffer. On ANY setup failure
@@ -648,7 +926,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
             let Ok((header_global, stream_global, jvm, push_buf, push_buf_lease)) =
                 setup_stream_with_header(env, &header_consumer, &output_stream)
             else {
-                let _ = call_header_consumer_local(env, &header_consumer, &panic_wire());
+                notify_local_header(env, &header_consumer, &panic_wire(), &header_notified_body);
                 return Ok(());
             };
 
@@ -669,6 +947,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
             let header_failed = Arc::new(AtomicBool::new(false));
             let header_sent_cb = Arc::clone(&header_sent);
             let header_failed_cb = Arc::clone(&header_failed);
+            let header_notified_cb = Arc::clone(&header_notified_body);
             let header_failed_push = Arc::clone(&header_failed);
             let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let header_for_cb = header_global;
@@ -677,18 +956,19 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                 RUNTIME.block_on(vespera_inprocess::dispatch_streaming_with_header_async(
                     input,
                     |header_bytes: &[u8]| {
-                        if with_cached_daemon_env(
+                        let delivered = with_cached_daemon_env(
                             &jvm_for_cb,
                             |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
                                 call_header_consumer(env, &header_for_cb, header_bytes)
                             },
                         )
-                        .is_ok()
-                        {
-                            header_sent_cb.store(true, Ordering::Relaxed);
-                        } else {
-                            header_failed_cb.store(true, Ordering::Release);
-                        }
+                        .is_ok();
+                        record_header_callback_result(
+                            delivered,
+                            &header_sent_cb,
+                            &header_failed_cb,
+                            &header_notified_cb,
+                        );
                     },
                     move |chunk: &[u8]| {
                         push_unless_header_failed(&header_failed_push, &mut push, chunk)
@@ -716,36 +996,25 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                     }
                 }
                 Err(_) => {
-                    // A panic unwound out of the dispatch future.  The action
-                    // depends on whether the response header was already committed
-                    // (see `panic_post_header_action`).
-                    match panic_post_header_action(
-                        header_sent.load(Ordering::Relaxed),
-                        header_failed.load(Ordering::Acquire),
-                    ) {
-                        // Header never reached the consumer: deliver the one-shot
-                        // 500 fallback through the still-valid LOCAL `header_consumer`
-                        // ref (no `Global` promotion to fail first and hang the
-                        // caller), upholding "invoked exactly once on every code path".
-                        PanicHeaderAction::FireFallbackHeader => {
-                            let err = panic_wire();
-                            let _ = call_header_consumer_local(env, &header_consumer, &err);
-                        }
-                        // Header already committed (or its delivery threw): the body
-                        // is now truncated past a header the host already wrote, so
-                        // throw IOException to abort the response instead of finishing
-                        // cleanly over a short body — symmetric with the body-error /
-                        // sink-stop abort on the `Ok` branch above.
-                        PanicHeaderAction::ThrowAbort => {
-                            throw_streaming_abort(env, header_failed.load(Ordering::Acquire));
-                        }
-                    }
+                    handle_header_dispatch_panic(
+                        env,
+                        &header_consumer,
+                        &header_sent,
+                        &header_failed,
+                        &header_notified_body,
+                    );
                 }
             }
 
             Ok(())
         });
     });
+    if panicked && !header_notified.load(Ordering::Acquire) && !header_consumer.is_null() {
+        let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
+            notify_local_header(env, &header_consumer, &panic_wire(), &header_notified);
+            Ok(())
+        });
+    }
 }
 
 /// `com.devfive.vespera.bridge.VesperaBridge.dispatchFullStreamingWithHeader(byte[], Consumer<byte[]>, InputStream, OutputStream) -> void`
@@ -766,148 +1035,30 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
     input_stream: JObject<'local>,
     output_stream: JObject<'local>,
 ) {
+    let header_notified = Arc::new(AtomicBool::new(false));
+    let header_notified_body = Arc::clone(&header_notified);
     // JNI-03: whole-body panic guard (see `guard_void_symbol`).
-    guard_void_symbol(|| {
+    let panicked = guard_void_symbol(|| {
         let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
-            // Read the header byte[] through the shared ingress contract
-            // (length cap honoured + pending-exception scrub on failure)
-            // rather than a raw `convert_byte_array`, so an oversized header
-            // byte[] is rejected before a full Rust-side copy — parity with
-            // the buffered dispatch symbols.  The wire error is delivered
-            // through the header callback (this is a void symbol).
-            let header_input = match read_request_byte_array(env, &header_bytes_in) {
-                Ok(buf) => buf,
-                Err(err) => {
-                    // Deliver the wire error through the LOCAL consumer ref — no
-                    // global-ref promotion to fail first, so the single header
-                    // callback fires even under the failure that triggered this.
-                    let _ = call_header_consumer_local(env, &header_consumer, &err);
-                    return Ok(());
-                }
-            };
-
-            // Promote refs + check out both chunk buffers. On ANY setup failure
-            // (rare, OOM-driven) fire the header consumer once with a 500 via
-            // the still-valid LOCAL ref so the "header consumer invoked exactly
-            // once on every code path" contract holds and the Java caller never
-            // hangs. The previous bare `?` here returned an ignored `Err` from
-            // `with_env`, exiting silently without the callback.
-            let Ok((header_global, input_global, input_for_close, output_global, jvm, buffers)) =
-                setup_full_stream_with_header(env, &header_consumer, &input_stream, &output_stream)
-            else {
-                let _ = call_header_consumer_local(env, &header_consumer, &panic_wire());
-                return Ok(());
-            };
-            let PullPushBuffers {
-                pull_buf,
-                pull_buf_lease,
-                push_buf,
-                push_buf_lease,
-            } = buffers;
-
-            let pull_jvm = jvm.clone();
-            let pull_global = input_global;
-            let push_jvm = jvm.clone();
-            let push_global = output_global;
-            let close_jvm = jvm.clone();
-            let header_jvm = jvm;
-            let header_for_cb = header_global;
-
-            // See dispatchStreamingWithHeader: `header_sent` lets us honour
-            // the "header consumer invoked exactly once on every code path"
-            // contract — if a panic unwinds before the header callback fires
-            // (e.g. the handler panicked before producing status/headers),
-            // we fire the consumer once with a 500 below instead of leaving
-            // the Java caller hanging.
-            let header_sent = Arc::new(AtomicBool::new(false));
-            let header_failed = Arc::new(AtomicBool::new(false));
-            let header_sent_cb = Arc::clone(&header_sent);
-            let header_failed_cb = Arc::clone(&header_failed);
-            let header_failed_push = Arc::clone(&header_failed);
-            let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut push = make_push_closure(push_jvm, push_global, push_buf);
-                RUNTIME.block_on(
-                    vespera_inprocess::dispatch_bidirectional_streaming_with_header_closing(
-                        header_input,
-                        make_pull_closure(pull_jvm, pull_global, pull_buf),
-                        move |chunk: &[u8]| {
-                            push_unless_header_failed(&header_failed_push, &mut push, chunk)
-                        },
-                        |header_bytes: &[u8]| {
-                            if with_cached_daemon_env(
-                                &header_jvm,
-                                |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
-                                    call_header_consumer(env, &header_for_cb, header_bytes)
-                                },
-                            )
-                            .is_ok()
-                            {
-                                header_sent_cb.store(true, Ordering::Relaxed);
-                            } else {
-                                header_failed_cb.store(true, Ordering::Release);
-                            }
-                        },
-                        // Close the InputStream once the response is fully
-                        // streamed, to unblock a producer parked in a blocking
-                        // read so the dispatch cannot hang on a stuck upload.
-                        move || {
-                            let _ = with_cached_daemon_env(&close_jvm, |env| {
-                                close_input_stream(env, &input_for_close)
-                            });
-                        },
-                    ),
-                )
-            }));
-            match panic_result {
-                Ok(outcome) => {
-                    mark_streaming_buffer_reusable(pull_buf_lease);
-                    mark_streaming_buffer_reusable(push_buf_lease);
-                    let failed_header = header_failed.load(Ordering::Acquire);
-                    // Header already committed: a post-header body abort can no
-                    // longer change the status, so throw IOException to make the
-                    // servlet container abort the response rather than finish
-                    // cleanly over a truncated body.
-                    if failed_header
-                        || matches!(
-                            outcome,
-                            vespera_inprocess::StreamOutcome::BodyError
-                                | vespera_inprocess::StreamOutcome::SinkStopped
-                        )
-                    {
-                        throw_streaming_abort(env, failed_header);
-                    }
-                }
-                Err(_) => {
-                    // A panic unwound out of the dispatch future.  The action
-                    // depends on whether the response header was already committed
-                    // (see `panic_post_header_action`).
-                    match panic_post_header_action(
-                        header_sent.load(Ordering::Relaxed),
-                        header_failed.load(Ordering::Acquire),
-                    ) {
-                        // Header never reached the consumer: deliver the one-shot
-                        // 500 fallback through the still-valid LOCAL `header_consumer`
-                        // ref (no `Global` promotion to fail first and hang the
-                        // caller), upholding "invoked exactly once on every code path".
-                        PanicHeaderAction::FireFallbackHeader => {
-                            let err = panic_wire();
-                            let _ = call_header_consumer_local(env, &header_consumer, &err);
-                        }
-                        // Header already committed (or its delivery threw): the body
-                        // is now truncated past a header the host already wrote, so
-                        // throw IOException to abort the response instead of finishing
-                        // cleanly over a short body — symmetric with the body-error /
-                        // sink-stop abort on the `Ok` branch above.
-                        PanicHeaderAction::ThrowAbort => {
-                            throw_streaming_abort(env, header_failed.load(Ordering::Acquire));
-                        }
-                    }
-                }
-            }
-
+            dispatch_full_streaming_with_header_body(
+                env,
+                &FullHeaderArgs {
+                    header_bytes: &header_bytes_in,
+                    header_consumer: &header_consumer,
+                    input_stream: &input_stream,
+                    output_stream: &output_stream,
+                    header_notified: &header_notified_body,
+                },
+            );
             Ok(())
         });
     });
+    if panicked && !header_notified.load(Ordering::Acquire) && !header_consumer.is_null() {
+        let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
+            notify_local_header(env, &header_consumer, &panic_wire(), &header_notified);
+            Ok(())
+        });
+    }
 }
 
 #[cfg(test)]
