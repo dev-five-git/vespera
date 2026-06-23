@@ -205,6 +205,15 @@ impl std::error::Error for TypedMultipartError {
 }
 
 impl TypedMultipartError {
+    /// Build an invalid-enum error while bounding the attacker-controlled value stored in it.
+    #[must_use]
+    pub fn invalid_enum_value(field_name: String, value: &str) -> Self {
+        Self::InvalidEnumValue {
+            field_name,
+            value: truncate_reflected_value(value).into_owned(),
+        }
+    }
+
     /// The offending field name when the error carries one — used as the
     /// `path` in the JSON error envelope.
     fn field_name(&self) -> Option<&str> {
@@ -410,12 +419,45 @@ impl<'a> MeteredField<'a> {
 
     /// Read the whole field into owned bytes, metering every chunk against the
     /// aggregate cap.
-    pub async fn bytes(mut self) -> Result<axum::body::Bytes, TypedMultipartError> {
-        let mut acc: Vec<u8> = Vec::new();
+    pub async fn bytes(self) -> Result<axum::body::Bytes, TypedMultipartError> {
+        self.bytes_with_limit_inner(None, 0)
+            .await
+            .map(axum::body::Bytes::from)
+    }
+
+    /// Read the whole field into owned bytes with a hard per-field limit.
+    ///
+    /// The limit is checked before copying each chunk into the accumulator, and
+    /// every chunk is still counted against the request-wide aggregate cap.
+    pub async fn bytes_with_limit(
+        self,
+        limit_bytes: usize,
+        initial_capacity: usize,
+    ) -> Result<axum::body::Bytes, TypedMultipartError> {
+        self.bytes_with_limit_inner(Some(limit_bytes), initial_capacity)
+            .await
+            .map(axum::body::Bytes::from)
+    }
+
+    async fn bytes_with_limit_inner(
+        mut self,
+        limit: Option<usize>,
+        initial_capacity: usize,
+    ) -> Result<Vec<u8>, TypedMultipartError> {
+        let capacity = limit.map_or(initial_capacity, |limit| initial_capacity.min(limit));
+        let mut acc: Vec<u8> = Vec::with_capacity(capacity);
         while let Some(chunk) = self.chunk().await? {
+            if let Some(limit) = limit
+                && acc.len().saturating_add(chunk.len()) > limit
+            {
+                return Err(TypedMultipartError::FieldTooLarge {
+                    field_name: self.name().unwrap_or_default().to_string(),
+                    limit_bytes: limit,
+                });
+            }
             acc.extend_from_slice(&chunk);
         }
-        Ok(axum::body::Bytes::from(acc))
+        Ok(acc)
     }
 }
 
@@ -807,35 +849,19 @@ where
 /// When a limit is set the cumulative size is checked after each chunk
 /// and an over-limit chunk is rejected *before* it is copied in.
 async fn read_field_data(
-    mut field: MeteredField<'_>,
+    field: MeteredField<'_>,
     limit: Option<usize>,
     initial_capacity: usize,
-) -> Result<(MeteredField<'_>, Vec<u8>), TypedMultipartError> {
+) -> Result<(String, Vec<u8>), TypedMultipartError> {
     // Part counting now happens once per part in the derived loop
     // (`register_multipart_part`), so the field parsers no longer count.
     // Initial capacity is independent from the hard byte limit: tiny scalar
     // fields keep the 256B cap without preallocating 256B per bool/number.
-    let capacity = limit.map_or(initial_capacity, |limit| initial_capacity.min(limit));
-    let mut buf = Vec::with_capacity(capacity);
-    // `MeteredField::chunk` already counts each chunk against the request-wide
-    // `max_total_bytes` aggregate cap, so the per-field reader no longer calls
-    // `register_multipart_bytes` itself (doing so would double-count).
-    while let Some(chunk) = field.chunk().await? {
-        if let Some(limit) = limit
-            && buf.len().saturating_add(chunk.len()) > limit
-        {
-            // Reject BEFORE copying the over-limit chunk into the
-            // buffer — same acceptance condition (total <= limit),
-            // no wasted copy.
-            return Err(TypedMultipartError::FieldTooLarge {
-                field_name: field.name().unwrap_or_default().to_string(),
-                limit_bytes: limit,
-            });
-        }
-        buf.extend_from_slice(&chunk);
-    }
-
-    Ok((field, buf))
+    let field_name = field.name().unwrap_or_default().to_string();
+    let buf = field
+        .bytes_with_limit_inner(limit, initial_capacity)
+        .await?;
+    Ok((field_name, buf))
 }
 
 /// Default cap for tiny scalar multipart fields when no explicit

@@ -13,8 +13,7 @@ use super::{
     cache::{
         CACHE_FORMAT, MergeSpecCache, VesperaCache, compute_config_hash_with_merge_cache,
         compute_export_config_hash, compute_macro_dev_fingerprint, compute_schema_hash,
-        get_cache_path, get_export_cache_path, hash_str, path_fingerprint, read_cache,
-        sidecar_matches, write_cache,
+        get_cache_path, get_export_cache_path, hash_str, read_cache, sidecar_matches, write_cache,
     },
     openapi_io::{
         ensure_openapi_files_from_cache, generate_and_write_openapi, load_validated_sidecar_specs,
@@ -155,8 +154,10 @@ pub fn process_vespera_macro(
 
         let spec_json_hash = openapi.spec_json.as_deref().map(hash_str);
         let spec_pretty_hash = openapi.spec_pretty.as_deref().map(hash_str);
-        write_pretty_sidecar(openapi.spec_pretty.as_deref());
-        let spec_tokens = write_spec_for_embedding(openapi.spec_json)?;
+        let spec_pretty_fingerprint = write_pretty_sidecar(openapi.spec_pretty.as_deref());
+        let embed_spec = write_spec_for_embedding(openapi.spec_json)?;
+        let (spec_tokens, spec_json_fingerprint) =
+            embed_spec.map_or((None, None), |spec| (Some(spec.tokens), spec.fingerprint));
         stage("write_spec_for_embedding");
 
         // Persist cache (best-effort, failures are silent) — spec
@@ -170,13 +171,11 @@ pub fn process_vespera_macro(
                 file_fingerprints: fingerprints,
                 schema_hash,
                 config_hash,
-                metadata: cache_metadata.clone(),
+                metadata: cache_metadata,
                 spec_json_hash,
                 spec_pretty_hash,
-                spec_json_fingerprint: spec_json_hash
-                    .and_then(|_| path_fingerprint(&super::openapi_io::embed_spec_path())),
-                spec_pretty_fingerprint: spec_pretty_hash
-                    .and_then(|_| path_fingerprint(&super::openapi_io::pretty_sidecar_path())),
+                spec_json_fingerprint: spec_json_hash.and(spec_json_fingerprint),
+                spec_pretty_fingerprint: spec_pretty_hash.and(spec_pretty_fingerprint),
             },
         );
         stage("write_cache");
@@ -335,9 +334,7 @@ pub fn process_export_app(
 
         // Write spec to temp file for compile-time merging by parent apps
         std::fs::create_dir_all(&vespera_dir).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to create build cache directory '{}'. Error: {}. Ensure the target directory is writable.", vespera_dir.display(), e)))?;
-        if !super::openapi_io::content_unchanged(&spec_file, &spec_json) {
-            std::fs::write(&spec_file, &spec_json).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to write OpenAPI spec file '{}'. Error: {}. Ensure the file path is writable.", spec_file.display(), e)))?;
-        }
+        let spec_json_fingerprint = super::openapi_io::write_if_changed(&spec_file, &spec_json).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to write OpenAPI spec file '{}'. Error: {}. Ensure the file path is writable.", spec_file.display(), e)))?;
         let spec_json_hash = Some(hash_str(&spec_json));
         write_cache(
             &cache_path,
@@ -351,7 +348,7 @@ pub fn process_export_app(
                 metadata: cache_metadata.clone(),
                 spec_json_hash,
                 spec_pretty_hash: None,
-                spec_json_fingerprint: spec_json_hash.and_then(|_| path_fingerprint(&spec_file)),
+                spec_json_fingerprint: spec_json_hash.and(spec_json_fingerprint),
                 spec_pretty_fingerprint: None,
             },
         );

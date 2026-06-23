@@ -19,8 +19,10 @@ import jakarta.servlet.http.HttpServletRequest;
  *       (POST / PUT / PATCH / DELETE) up to the SYNC gate
  *       ({@link #DEFAULT_MAX_SYNC_BYTES}, 256 KiB).  SYNC never re-runs
  *       the handler, so it is safe for any method, but it fully buffers
- *       the response on the heap — so its gate is kept lower than the
- *       DIRECT gate, above which streaming wins.</li>
+     *       the response on the heap — so its gate is kept lower than the
+     *       DIRECT gate, above which streaming wins.  The Spring proxy also
+     *       enforces {@code vespera.bridge.max-buffered-response-bytes}
+     *       (64 MiB default) before serving a SYNC response.</li>
  *   <li>{@link DispatchMode#BIDIRECTIONAL_STREAMING} — everything
  *       else (larger or unknown-length bodies).</li>
  * </ul>

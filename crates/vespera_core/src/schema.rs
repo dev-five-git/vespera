@@ -2,7 +2,7 @@
 
 use serde::{
     Deserialize, Serialize,
-    de::{Error as DeError, MapAccess},
+    de::{Error as DeError, IgnoredAny, MapAccess},
     ser::{SerializeSeq, SerializeStruct},
 };
 use std::collections::BTreeMap;
@@ -51,34 +51,228 @@ impl<'de> serde::de::Visitor<'de> for SchemaRefVisitor {
     where
         M: MapAccess<'de>,
     {
-        use serde::de::Error as _;
-
+        let mut schema = Schema::default();
+        let mut pure_ref = true;
+        let mut has_inline_fields = false;
         let mut ref_path = None;
-        let mut inline = serde_json::Map::new();
-        while let Some(key) = access.next_key::<String>()? {
-            let value = access.next_value::<serde_json::Value>()?;
-            if key == "$ref"
-                && ref_path.is_none()
-                && inline.is_empty()
-                && let serde_json::Value::String(path) = value
-            {
-                ref_path = Some(path);
-            } else {
-                if let Some(path) = ref_path.take() {
-                    inline.insert("$ref".to_owned(), serde_json::Value::String(path));
+        let mut type_nullable = None;
+        let mut nullable = None;
+
+        while let Some(key) = access.next_key::<SchemaField>()? {
+            match key {
+                SchemaField::RefPath => {
+                    let path = access.next_value::<String>()?;
+                    if pure_ref && ref_path.is_none() && !has_inline_fields {
+                        ref_path = Some(path);
+                    } else {
+                        pure_ref = false;
+                        has_inline_fields = true;
+                        schema.ref_path = Some(path);
+                    }
                 }
-                inline.insert(key, value);
+                other => {
+                    if let Some(path) = ref_path.take() {
+                        schema.ref_path = Some(path);
+                    }
+                    pure_ref = false;
+                    has_inline_fields = true;
+                    apply_schema_field(
+                        other,
+                        &mut schema,
+                        &mut type_nullable,
+                        &mut nullable,
+                        &mut access,
+                    )?;
+                }
             }
         }
 
-        if let Some(path) = ref_path {
+        if pure_ref && let Some(path) = ref_path {
             return Ok(SchemaRef::Ref(Reference::new(path)));
         }
-
-        serde_json::from_value::<Schema>(serde_json::Value::Object(inline))
-            .map(|schema| SchemaRef::Inline(Box::new(schema)))
-            .map_err(M::Error::custom)
+        schema.nullable = match type_nullable {
+            Some(true) => Some(true),
+            None => nullable,
+            Some(false) => nullable.or(Some(false)),
+        };
+        Ok(SchemaRef::Inline(Box::new(schema)))
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SchemaField {
+    RefPath,
+    Type,
+    Format,
+    Title,
+    Description,
+    Default,
+    Example,
+    Examples,
+    Minimum,
+    Maximum,
+    ExclusiveMinimum,
+    ExclusiveMaximum,
+    MultipleOf,
+    MinLength,
+    MaxLength,
+    Pattern,
+    Items,
+    PrefixItems,
+    MinItems,
+    MaxItems,
+    UniqueItems,
+    Properties,
+    Required,
+    AdditionalProperties,
+    MinProperties,
+    MaxProperties,
+    Enum,
+    AllOf,
+    AnyOf,
+    OneOf,
+    Not,
+    Discriminator,
+    Nullable,
+    ReadOnly,
+    WriteOnly,
+    ExternalDocs,
+    Defs,
+    DynamicAnchor,
+    DynamicRef,
+    Unknown,
+}
+
+impl<'de> Deserialize<'de> for SchemaField {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct SchemaFieldVisitor;
+
+        impl serde::de::Visitor<'_> for SchemaFieldVisitor {
+            type Value = SchemaField;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON Schema field name")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                Ok(match value {
+                    "$ref" => SchemaField::RefPath,
+                    "type" => SchemaField::Type,
+                    "format" => SchemaField::Format,
+                    "title" => SchemaField::Title,
+                    "description" => SchemaField::Description,
+                    "default" => SchemaField::Default,
+                    "example" => SchemaField::Example,
+                    "examples" => SchemaField::Examples,
+                    "minimum" => SchemaField::Minimum,
+                    "maximum" => SchemaField::Maximum,
+                    "exclusiveMinimum" => SchemaField::ExclusiveMinimum,
+                    "exclusiveMaximum" => SchemaField::ExclusiveMaximum,
+                    "multipleOf" => SchemaField::MultipleOf,
+                    "minLength" => SchemaField::MinLength,
+                    "maxLength" => SchemaField::MaxLength,
+                    "pattern" => SchemaField::Pattern,
+                    "items" => SchemaField::Items,
+                    "prefixItems" => SchemaField::PrefixItems,
+                    "minItems" => SchemaField::MinItems,
+                    "maxItems" => SchemaField::MaxItems,
+                    "uniqueItems" => SchemaField::UniqueItems,
+                    "properties" => SchemaField::Properties,
+                    "required" => SchemaField::Required,
+                    "additionalProperties" => SchemaField::AdditionalProperties,
+                    "minProperties" => SchemaField::MinProperties,
+                    "maxProperties" => SchemaField::MaxProperties,
+                    "enum" => SchemaField::Enum,
+                    "allOf" => SchemaField::AllOf,
+                    "anyOf" => SchemaField::AnyOf,
+                    "oneOf" => SchemaField::OneOf,
+                    "not" => SchemaField::Not,
+                    "discriminator" => SchemaField::Discriminator,
+                    "nullable" => SchemaField::Nullable,
+                    "readOnly" => SchemaField::ReadOnly,
+                    "writeOnly" => SchemaField::WriteOnly,
+                    "externalDocs" => SchemaField::ExternalDocs,
+                    "$defs" => SchemaField::Defs,
+                    "$dynamicAnchor" => SchemaField::DynamicAnchor,
+                    "$dynamicRef" => SchemaField::DynamicRef,
+                    _ => SchemaField::Unknown,
+                })
+            }
+        }
+
+        deserializer.deserialize_identifier(SchemaFieldVisitor)
+    }
+}
+
+fn apply_schema_field<'de, M>(
+    field: SchemaField,
+    schema: &mut Schema,
+    type_nullable: &mut Option<bool>,
+    nullable: &mut Option<bool>,
+    access: &mut M,
+) -> Result<(), M::Error>
+where
+    M: MapAccess<'de>,
+{
+    match field {
+        SchemaField::RefPath => schema.ref_path = Some(access.next_value()?),
+        SchemaField::Type => {
+            let (schema_type, next_nullable) = access
+                .next_value::<SchemaTypeWire>()?
+                .into_schema_type_and_nullable::<M::Error>()?;
+            schema.schema_type = schema_type;
+            *type_nullable = next_nullable;
+        }
+        SchemaField::Format => schema.format = Some(access.next_value()?),
+        SchemaField::Title => schema.title = Some(access.next_value()?),
+        SchemaField::Description => schema.description = Some(access.next_value()?),
+        SchemaField::Default => schema.default = Some(access.next_value()?),
+        SchemaField::Example => schema.example = Some(access.next_value()?),
+        SchemaField::Examples => schema.examples = Some(access.next_value()?),
+        SchemaField::Minimum => schema.minimum = Some(access.next_value()?),
+        SchemaField::Maximum => schema.maximum = Some(access.next_value()?),
+        SchemaField::ExclusiveMinimum => schema.exclusive_minimum = Some(access.next_value()?),
+        SchemaField::ExclusiveMaximum => schema.exclusive_maximum = Some(access.next_value()?),
+        SchemaField::MultipleOf => schema.multiple_of = Some(access.next_value()?),
+        SchemaField::MinLength => schema.min_length = Some(access.next_value()?),
+        SchemaField::MaxLength => schema.max_length = Some(access.next_value()?),
+        SchemaField::Pattern => schema.pattern = Some(access.next_value()?),
+        SchemaField::Items => schema.items = Some(access.next_value()?),
+        SchemaField::PrefixItems => schema.prefix_items = Some(access.next_value()?),
+        SchemaField::MinItems => schema.min_items = Some(access.next_value()?),
+        SchemaField::MaxItems => schema.max_items = Some(access.next_value()?),
+        SchemaField::UniqueItems => schema.unique_items = Some(access.next_value()?),
+        SchemaField::Properties => schema.properties = Some(access.next_value()?),
+        SchemaField::Required => schema.required = Some(access.next_value()?),
+        SchemaField::AdditionalProperties => {
+            schema.additional_properties = Some(access.next_value()?);
+        }
+        SchemaField::MinProperties => schema.min_properties = Some(access.next_value()?),
+        SchemaField::MaxProperties => schema.max_properties = Some(access.next_value()?),
+        SchemaField::Enum => schema.r#enum = Some(access.next_value()?),
+        SchemaField::AllOf => schema.all_of = Some(access.next_value()?),
+        SchemaField::AnyOf => schema.any_of = Some(access.next_value()?),
+        SchemaField::OneOf => schema.one_of = Some(access.next_value()?),
+        SchemaField::Not => schema.not = Some(access.next_value()?),
+        SchemaField::Discriminator => schema.discriminator = Some(access.next_value()?),
+        SchemaField::Nullable => *nullable = Some(access.next_value()?),
+        SchemaField::ReadOnly => schema.read_only = Some(access.next_value()?),
+        SchemaField::WriteOnly => schema.write_only = Some(access.next_value()?),
+        SchemaField::ExternalDocs => schema.external_docs = Some(access.next_value()?),
+        SchemaField::Defs => schema.defs = Some(access.next_value()?),
+        SchemaField::DynamicAnchor => schema.dynamic_anchor = Some(access.next_value()?),
+        SchemaField::DynamicRef => schema.dynamic_ref = Some(access.next_value()?),
+        SchemaField::Unknown => {
+            let _ = access.next_value::<IgnoredAny>()?;
+        }
+    }
+    Ok(())
 }
 
 /// Reference definition
@@ -788,6 +982,12 @@ impl Schema {
         }
     }
 
+    /// Create an object schema without allocating empty `properties` or `required` collections.
+    #[must_use]
+    pub fn object_empty() -> Self {
+        Self::new(SchemaType::Object)
+    }
+
     /// Build a **nullable reference** schema that serializes as OpenAPI 3.1
     /// `anyOf`: `[{ "$ref": <path> }, { "type": "null" }]`.
     ///
@@ -803,7 +1003,7 @@ impl Schema {
             ref_path: Some(ref_path),
             schema_type: None,
             nullable: Some(true),
-            ..Self::new(SchemaType::Object)
+            ..Self::object_empty()
         }
     }
 

@@ -4,8 +4,11 @@
 //! into OpenAPI-compatible JSON Schema references and inline schemas.
 
 use std::{
+    borrow::Borrow,
     cell::Cell,
     collections::{HashMap, HashSet},
+    hash::Hash,
+    rc::Rc,
 };
 
 use syn::Type;
@@ -24,6 +27,20 @@ use super::super::{
     serde_attrs::{capitalize_first, extract_schema_name_from_entity, extract_schema_ref_override},
     struct_schema::parse_struct_to_schema,
 };
+
+/// Parse a known schema's definition into a shared `syn::ItemStruct`.
+///
+/// MUST NOT memoise the parsed AST in a `thread_local` (or any storage that
+/// outlives the macro invocation).  A `syn::ItemStruct` parsed during real
+/// proc-macro expansion holds bridge-backed `proc_macro2` tokens whose `Drop`
+/// calls into the proc-macro bridge; if such a value survived in TLS until the
+/// proc-macro server thread exits, that drop would run with NO active expansion
+/// and abort the compile ("procedural macro API is used outside of a procedural
+/// macro" -> STATUS_STACK_BUFFER_OVERRUN).  Every AST returned here is therefore
+/// dropped within the same invocation that parsed it.
+fn parse_struct_def(def: &str) -> Option<Rc<syn::ItemStruct>> {
+    syn::parse_str::<syn::ItemStruct>(def).ok().map(Rc::new)
+}
 
 /// Check if a type is a primitive Rust type that maps directly to a JSON Schema type.
 /// Inline integer schema with an OpenAPI format string.
@@ -72,8 +89,8 @@ pub fn is_primitive_type(ty: &Type) -> bool {
 /// This is the main entry point for type-to-schema conversion.
 pub fn parse_type_to_schema_ref(
     ty: &Type,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> SchemaRef {
     parse_type_to_schema_ref_with_schemas(ty, known_schemas, struct_definitions)
 }
@@ -90,8 +107,8 @@ pub fn parse_type_to_schema_ref(
 /// - Generic type instantiation
 pub fn parse_type_to_schema_ref_with_schemas(
     ty: &Type,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> SchemaRef {
     SCHEMA_RECURSION_DEPTH.with(|depth| {
         let current = depth.get();
@@ -115,8 +132,8 @@ pub fn parse_type_to_schema_ref_with_schemas(
 #[allow(clippy::too_many_lines)]
 fn parse_type_impl(
     ty: &Type,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> SchemaRef {
     match ty {
         Type::Path(type_path) => {
@@ -302,12 +319,12 @@ fn parse_type_impl(
                         // Rust identifiers are guaranteed non-empty
                         let pascal_name = format!("{}Schema", capitalize_first(&parent_name));
 
-                        if known_schemas.contains(&pascal_name) {
+                        if known_schemas.contains(pascal_name.as_str()) {
                             pascal_name
                         } else {
                             // Try lowercase version: "userSchema"
                             let lower_name = format!("{parent_name}Schema");
-                            if known_schemas.contains(&lower_name) {
+                            if known_schemas.contains(lower_name.as_str()) {
                                 lower_name
                             } else {
                                 type_name
@@ -317,7 +334,7 @@ fn parse_type_impl(
                         type_name
                     };
 
-                    if known_schemas.contains(&resolved_name) {
+                    if known_schemas.contains(resolved_name.as_str()) {
                         // Parse the struct definition ONCE (when present) and reuse it for
                         // BOTH the `#[schema(ref=...)]` override check and the
                         // generic-substitution path below.  `syn::parse_str::<ItemStruct>`
@@ -325,8 +342,8 @@ fn parse_type_impl(
                         // parse replaces the two that the override branch and the generic
                         // branch each used to run for a generic schema type.
                         let parsed_def = struct_definitions
-                            .get(&resolved_name)
-                            .and_then(|def| syn::parse_str::<syn::ItemStruct>(def).ok());
+                            .get(resolved_name.as_str())
+                            .and_then(|def| parse_struct_def(def.as_ref()));
 
                         if let Some(parsed_struct) = &parsed_def
                             && let Some((schema_name, nullable)) =
@@ -344,7 +361,10 @@ fn parse_type_impl(
                         if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                             // This is a concrete generic type like GenericStruct<String>
                             // Inline the schema by substituting generic parameters with concrete types
-                            if let Some(mut parsed) = parsed_def {
+                            if let Some(parsed_rc) = parsed_def {
+                                // Clone the memoised AST before mutating it for generic
+                                // substitution (cheaper than the prior re-parse).
+                                let mut parsed = (*parsed_rc).clone();
                                 // Extract generic parameter names from the struct definition
                                 let generic_params: Vec<String> = parsed
                                     .generics
@@ -423,6 +443,15 @@ fn parse_type_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_known() -> HashSet<String> {
+        HashSet::new()
+    }
+
+    fn empty_struct_definitions() -> HashMap<String, String> {
+        HashMap::new()
+    }
+
     // ========== Coverage: generic known schema edge cases ==========
 
     #[test]
@@ -432,7 +461,7 @@ mod tests {
         known.insert("Wrapper".to_string());
         // Do NOT insert into struct_definitions
         let ty: Type = syn::parse_str("Wrapper<String>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known, &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions());
         // Should fall through to non-generic ref path
         assert!(
             matches!(schema_ref, SchemaRef::Ref(_)),
@@ -512,7 +541,7 @@ mod tests {
     #[test]
     fn test_nested_vec_vec_string() {
         let ty: Type = syn::parse_str("Vec<Vec<String>>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Array));
             if let Some(SchemaRef::Inline(inner)) = schema.items.as_ref() {
@@ -533,7 +562,7 @@ mod tests {
     #[test]
     fn test_option_vec_i32() {
         let ty: Type = syn::parse_str("Option<Vec<i32>>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Array));
             assert_eq!(schema.nullable, Some(true));
@@ -551,7 +580,7 @@ mod tests {
     fn test_box_box_i32() {
         // Box<Box<i32>> → transparent twice → integer
         let ty: Type = syn::parse_str("Box<Box<i32>>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Integer));
         } else {
@@ -566,7 +595,7 @@ mod tests {
         let mut known = HashSet::new();
         known.insert("User".to_string());
         let ty: Type = syn::parse_str("HashMap<String, User>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known, &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Object));
             let additional = schema.additional_properties.as_ref().unwrap();
@@ -582,7 +611,7 @@ mod tests {
     #[test]
     fn test_btreemap_with_inline_value() {
         let ty: Type = syn::parse_str("BTreeMap<String, Vec<i32>>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Object));
             let additional = schema.additional_properties.as_ref().unwrap();
@@ -602,7 +631,7 @@ mod tests {
     fn test_hashmap_single_arg_falls_through() {
         // HashMap<String> — only 1 type arg, need 2 → falls through to unknown type
         let ty: Type = syn::parse_str("HashMap<String>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Object));
             // Should NOT have additional_properties since it fell through
@@ -617,7 +646,7 @@ mod tests {
     #[test]
     fn test_mutable_reference_delegates_to_inner() {
         let ty: Type = syn::parse_str("&mut String").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::String));
         } else {
@@ -630,7 +659,7 @@ mod tests {
     #[test]
     fn test_hashset_string_produces_unique_items_array() {
         let ty: Type = syn::parse_str("HashSet<String>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Array));
             assert_eq!(schema.unique_items, Some(true));
@@ -647,7 +676,7 @@ mod tests {
     #[test]
     fn test_btreeset_i32_produces_unique_items_array() {
         let ty: Type = syn::parse_str("BTreeSet<i32>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Array));
             assert_eq!(schema.unique_items, Some(true));
@@ -664,7 +693,7 @@ mod tests {
     #[test]
     fn test_option_hashset_is_nullable_unique_array() {
         let ty: Type = syn::parse_str("Option<HashSet<i64>>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Array));
             assert_eq!(schema.unique_items, Some(true));
@@ -682,7 +711,7 @@ mod tests {
     #[test]
     fn test_vec_does_not_have_unique_items() {
         let ty: Type = syn::parse_str("Vec<String>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = &schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Array));
             assert!(schema.unique_items.is_none());
@@ -695,14 +724,14 @@ mod tests {
     fn test_bare_hashset_without_generics() {
         // HashSet without angle brackets → falls through to bare-name match
         let ty: Type = syn::parse_str("HashSet").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         assert!(matches!(schema_ref, SchemaRef::Inline(_)));
     }
 
     #[test]
     fn test_bare_btreeset_without_generics() {
         let ty: Type = syn::parse_str("BTreeSet").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         assert!(matches!(schema_ref, SchemaRef::Inline(_)));
     }
 

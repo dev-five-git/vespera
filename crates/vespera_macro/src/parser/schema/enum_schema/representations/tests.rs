@@ -18,7 +18,11 @@ fn test_internally_tagged_enum_unit_variants() {
     )
     .unwrap();
 
-    let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
 
     // Should have discriminator
     let discriminator = schema
@@ -55,7 +59,11 @@ fn test_internally_tagged_enum_struct_variants() {
     )
     .unwrap();
 
-    let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
 
     // Should have discriminator with custom tag name
     let discriminator = schema
@@ -91,7 +99,11 @@ fn test_internally_tagged_enum_with_rename_all() {
     )
     .unwrap();
 
-    let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
 
     let one_of = schema.one_of.expect("one_of missing");
     if let SchemaRef::Inline(active) = &one_of[0] {
@@ -117,7 +129,11 @@ fn test_adjacently_tagged_enum_basic() {
     )
     .unwrap();
 
-    let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
 
     // Should have discriminator
     let discriminator = schema
@@ -156,7 +172,11 @@ fn test_adjacently_tagged_enum_with_unit_variant() {
     )
     .unwrap();
 
-    let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
 
     let one_of = schema.one_of.expect("one_of missing");
     assert_eq!(one_of.len(), 2);
@@ -193,7 +213,11 @@ fn test_adjacently_tagged_enum_tuple_variant() {
     )
     .unwrap();
 
-    let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
 
     let one_of = schema.one_of.expect("one_of missing");
     assert_eq!(one_of.len(), 2);
@@ -235,7 +259,11 @@ fn test_untagged_enum_basic() {
     )
     .unwrap();
 
-    let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
 
     // Should NOT have discriminator
     assert!(schema.discriminator.is_none());
@@ -271,7 +299,11 @@ fn test_untagged_enum_struct_variants() {
     )
     .unwrap();
 
-    let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
 
     assert!(schema.discriminator.is_none());
 
@@ -300,7 +332,11 @@ fn test_untagged_enum_unit_variant() {
     )
     .unwrap();
 
-    let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
 
     let one_of = schema.one_of.expect("one_of missing");
     assert_eq!(one_of.len(), 2);
@@ -326,7 +362,11 @@ fn test_internally_tagged_snapshot() {
     )
     .unwrap();
 
-    let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     with_settings!({ snapshot_path => "../../snapshots", snapshot_suffix => "internally_tagged" }, {
         assert_debug_snapshot!(schema);
     });
@@ -346,7 +386,11 @@ fn test_adjacently_tagged_snapshot() {
     )
     .unwrap();
 
-    let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     with_settings!({ snapshot_path => "../../snapshots", snapshot_suffix => "adjacently_tagged" }, {
         assert_debug_snapshot!(schema);
     });
@@ -368,7 +412,11 @@ fn test_untagged_snapshot() {
     )
     .unwrap();
 
-    let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     with_settings!({ snapshot_path => "../../snapshots", snapshot_suffix => "untagged" }, {
         assert_debug_snapshot!(schema);
     });
@@ -388,7 +436,11 @@ fn test_externally_tagged_empty_struct_variant() {
     )
     .unwrap();
 
-    let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
 
     let one_of = schema.clone().one_of.expect("one_of missing");
     assert_eq!(one_of.len(), 2);
@@ -427,7 +479,11 @@ fn test_internally_tagged_skips_tuple_variant() {
     )
     .unwrap();
 
-    let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
 
     // Tuple variant `Number(i32)` should be skipped, only 2 variants should remain
     let one_of = schema.clone().one_of.expect("one_of missing");
@@ -463,7 +519,11 @@ fn test_untagged_tuple_variant_with_known_schema_ref() {
     let mut known_schemas = HashSet::new();
     known_schemas.insert("UserData".to_string());
 
-    let schema = parse_enum_to_schema(&enum_item, &known_schemas, &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &known_schemas,
+        &HashMap::<String, String>::new(),
+    );
 
     assert!(schema.discriminator.is_none());
 
@@ -510,7 +570,11 @@ fn test_untagged_multi_field_tuple_variant() {
     )
     .unwrap();
 
-    let schema = parse_enum_to_schema(&enum_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
 
     assert!(schema.discriminator.is_none());
 

@@ -18,8 +18,8 @@ use crate::{
 pub(super) fn parse_query_extractor(
     param_name: &str,
     ty: &Type,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
 ) -> Option<Vec<Parameter>> {
     let Type::Path(type_path) = ty else {
         return None;
@@ -64,8 +64,8 @@ pub(super) fn parse_query_extractor(
 
 pub(super) fn parse_query_struct_to_parameters(
     ty: &Type,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
 ) -> Option<Vec<Parameter>> {
     let Type::Path(type_path) = ty else {
         return None;
@@ -76,7 +76,7 @@ pub(super) fn parse_query_struct_to_parameters(
     }
 
     let ident_str = path.segments.last().unwrap().ident.to_string();
-    if let Some(struct_def) = struct_definitions.get(&ident_str)
+    if let Some(struct_def) = struct_definitions.get(ident_str.as_str())
         && let Ok(struct_item) = syn::parse_str::<syn::ItemStruct>(struct_def)
     {
         let mut parameters = Vec::new();
@@ -151,15 +151,14 @@ mod tests {
         let mut known_schemas = HashSet::new();
 
         struct_definitions.insert(
-            "QueryParams".to_string(),
+            "QueryParams",
             r#"#[serde(rename_all = "camelCase")]
             pub struct QueryParams {
                 pub page: i32,
                 #[serde(rename = "per_page")]
                 pub limit: Option<i32>,
                 pub search: String,
-            }"#
-            .to_string(),
+            }"#,
         );
 
         let ty: Type = syn::parse_str("QueryParams").unwrap();
@@ -173,15 +172,9 @@ mod tests {
         assert_eq!(params[2].name, "search");
         assert_eq!(params[2].r#in, ParameterLocation::Query);
 
-        struct_definitions.insert(
-            "NestedQuery".to_string(),
-            r"pub struct NestedQuery { pub user: User }".to_string(),
-        );
-        struct_definitions.insert(
-            "User".to_string(),
-            r"pub struct User { pub id: i32 }".to_string(),
-        );
-        known_schemas.insert("User".to_string());
+        struct_definitions.insert("NestedQuery", r"pub struct NestedQuery { pub user: User }");
+        struct_definitions.insert("User", r"pub struct User { pub id: i32 }");
+        known_schemas.insert("User");
 
         let ty: Type = syn::parse_str("NestedQuery").unwrap();
         assert!(
@@ -197,9 +190,8 @@ mod tests {
         );
 
         struct_definitions.insert(
-            "OptionalQuery".to_string(),
-            r"pub struct OptionalQuery { pub required: i32, pub optional: Option<String> }"
-                .to_string(),
+            "OptionalQuery",
+            r"pub struct OptionalQuery { pub required: i32, pub optional: Option<String> }",
         );
         let ty: Type = syn::parse_str("OptionalQuery").unwrap();
         let params = parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions)
@@ -212,10 +204,10 @@ mod tests {
     #[test]
     fn query_single_non_struct_known_type() {
         let mut known_schemas = HashSet::new();
-        known_schemas.insert("CustomId".to_string());
+        known_schemas.insert("CustomId");
         let func: syn::ItemFn = syn::parse_str("fn test(id: Query<CustomId>) {}").unwrap();
         let path_params: Vec<String> = vec![];
-        let path_param_set: HashSet<String> = HashSet::new();
+        let path_param_set: HashSet<&str> = HashSet::new();
 
         for arg in &func.sig.inputs {
             let result = parse_function_parameter(
@@ -223,7 +215,7 @@ mod tests {
                 &path_params,
                 &path_param_set,
                 &known_schemas,
-                &HashMap::new(),
+                &HashMap::<&str, &str>::new(),
             );
             assert!(result.is_some(), "Expected single Query parameter");
             let params = result.unwrap();
@@ -243,20 +235,28 @@ mod tests {
                 segments: Punctuated::new(),
             },
         });
-        assert!(parse_query_struct_to_parameters(&ty, &HashSet::new(), &HashMap::new()).is_none());
+        assert!(
+            parse_query_struct_to_parameters(
+                &ty,
+                &HashSet::<&str>::new(),
+                &HashMap::<&str, &str>::new()
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn schema_ref_to_inline_conversion_optional() {
         let mut struct_definitions = HashMap::new();
         struct_definitions.insert(
-            "QueryWithOptional".to_string(),
-            r"pub struct QueryWithOptional { pub count: Option<i32> }".to_string(),
+            "QueryWithOptional",
+            r"pub struct QueryWithOptional { pub count: Option<i32> }",
         );
 
         let ty: Type = syn::parse_str("QueryWithOptional").unwrap();
-        let params = parse_query_struct_to_parameters(&ty, &HashSet::new(), &struct_definitions)
-            .expect("query should parse");
+        let params =
+            parse_query_struct_to_parameters(&ty, &HashSet::<&str>::new(), &struct_definitions)
+                .expect("query should parse");
         assert_eq!(params.len(), 1);
         assert_eq!(params[0].required, Some(false));
         match &params[0].schema {
@@ -270,10 +270,10 @@ mod tests {
         let mut struct_definitions = HashMap::new();
         let mut known_schemas = HashSet::new();
         struct_definitions.insert(
-            "QueryWithRef".to_string(),
-            r"pub struct QueryWithRef { pub item: RefType }".to_string(),
+            "QueryWithRef",
+            r"pub struct QueryWithRef { pub item: RefType }",
         );
-        known_schemas.insert("RefType".to_string());
+        known_schemas.insert("RefType");
 
         let ty: Type = syn::parse_str("QueryWithRef").unwrap();
         let params = parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions)
@@ -289,14 +289,11 @@ mod tests {
         let mut struct_definitions = HashMap::new();
         let mut known_schemas = HashSet::new();
         struct_definitions.insert(
-            "QueryWithNested".to_string(),
-            r"pub struct QueryWithNested { pub nested: NestedType }".to_string(),
+            "QueryWithNested",
+            r"pub struct QueryWithNested { pub nested: NestedType }",
         );
-        known_schemas.insert("NestedType".to_string());
-        struct_definitions.insert(
-            "NestedType".to_string(),
-            r"pub struct NestedType { pub value: i32 }".to_string(),
-        );
+        known_schemas.insert("NestedType");
+        struct_definitions.insert("NestedType", r"pub struct NestedType { pub value: i32 }");
 
         let ty: Type = syn::parse_str("QueryWithNested").unwrap();
         let params = parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions)
@@ -309,14 +306,11 @@ mod tests {
         let mut struct_definitions = HashMap::new();
         let mut known_schemas = HashSet::new();
         struct_definitions.insert(
-            "FilterParams".to_string(),
-            r"pub struct FilterParams { pub status: Status, pub page: i32 }".to_string(),
+            "FilterParams",
+            r"pub struct FilterParams { pub status: Status, pub page: i32 }",
         );
-        known_schemas.insert("Status".to_string());
-        struct_definitions.insert(
-            "Status".to_string(),
-            r"pub enum Status { Active, Inactive, Pending }".to_string(),
-        );
+        known_schemas.insert("Status");
+        struct_definitions.insert("Status", r"pub enum Status { Active, Inactive, Pending }");
 
         let ty: Type = syn::parse_str("FilterParams").unwrap();
         let params = parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions)
@@ -345,17 +339,17 @@ mod tests {
         // request inputs (it can be omitted; the server fills the default).
         let mut struct_definitions = HashMap::new();
         struct_definitions.insert(
-            "Paged".to_string(),
+            "Paged",
             r"pub struct Paged {
                 #[serde(default)]
                 pub page: i32,
                 pub q: String,
-            }"
-            .to_string(),
+            }",
         );
         let ty: Type = syn::parse_str("Paged").unwrap();
-        let params = parse_query_struct_to_parameters(&ty, &HashSet::new(), &struct_definitions)
-            .expect("query should parse");
+        let params =
+            parse_query_struct_to_parameters(&ty, &HashSet::<&str>::new(), &struct_definitions)
+                .expect("query should parse");
         assert_eq!(params.len(), 2);
         assert_eq!(params[0].name, "page");
         assert_eq!(params[0].required, Some(false)); // default → optional
@@ -368,14 +362,11 @@ mod tests {
         let mut struct_definitions = HashMap::new();
         let mut known_schemas = HashSet::new();
         struct_definitions.insert(
-            "FilterParams".to_string(),
-            r"pub struct FilterParams { pub status: Option<Status> }".to_string(),
+            "FilterParams",
+            r"pub struct FilterParams { pub status: Option<Status> }",
         );
-        known_schemas.insert("Status".to_string());
-        struct_definitions.insert(
-            "Status".to_string(),
-            r"pub enum Status { Active, Inactive }".to_string(),
-        );
+        known_schemas.insert("Status");
+        struct_definitions.insert("Status", r"pub enum Status { Active, Inactive }");
 
         let ty: Type = syn::parse_str("FilterParams").unwrap();
         let params = parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions)

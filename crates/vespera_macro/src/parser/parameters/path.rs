@@ -8,8 +8,8 @@ use crate::parser::schema::parse_type_to_schema_ref_with_schemas;
 pub(super) fn parse_path_extractor(
     ty: &Type,
     path_params: &[String],
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
 ) -> Option<Vec<Parameter>> {
     let Type::Path(type_path) = ty else {
         return None;
@@ -67,9 +67,9 @@ pub(super) fn parse_path_extractor(
 pub(super) fn parse_bare_path_parameter(
     param_name: &str,
     ty: &Type,
-    path_param_set: &HashSet<String>,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    path_param_set: &HashSet<&str>,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
 ) -> Option<Vec<Parameter>> {
     path_param_set.contains(param_name).then(|| {
         vec![Parameter {
@@ -99,7 +99,7 @@ mod tests {
     fn path_param_by_name_match() {
         let func: syn::ItemFn = syn::parse_str("fn test(user_id: i32) {}").unwrap();
         let path_params = vec!["user_id".to_string()];
-        let path_param_set: HashSet<String> = path_params.iter().cloned().collect();
+        let path_param_set: HashSet<&str> = path_params.iter().map(String::as_str).collect();
 
         for arg in &func.sig.inputs {
             let result = parse_function_parameter(

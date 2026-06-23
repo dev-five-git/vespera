@@ -30,8 +30,8 @@ pub(super) fn parse_option_typed_header(param_name: &str, ty: &Type) -> Option<V
 pub(super) fn parse_header_extractor(
     param_name: &str,
     ty: &Type,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
 ) -> Option<Vec<Parameter>> {
     let Type::Path(type_path) = ty else {
         return None;
@@ -47,8 +47,8 @@ pub(super) fn parse_header_extractor(
 fn parse_header(
     param_name: &str,
     segment: &syn::PathSegment,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
 ) -> Option<Vec<Parameter>> {
     let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
         return None;

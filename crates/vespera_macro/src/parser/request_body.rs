@@ -22,8 +22,8 @@ fn is_string_like(ty: &Type) -> bool {
 #[allow(clippy::too_many_lines)]
 pub fn parse_request_body(
     arg: &FnArg,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &std::collections::HashMap<String, String>,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &std::collections::HashMap<&str, &str>,
 ) -> Option<RequestBody> {
     match arg {
         FnArg::Receiver(_) => None,

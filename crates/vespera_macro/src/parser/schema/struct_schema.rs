@@ -3,7 +3,11 @@
 //! This module handles the conversion of Rust structs (as parsed by syn)
 //! into OpenAPI-compatible JSON Schema definitions.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::{
+    borrow::Borrow,
+    collections::{BTreeMap, HashMap, HashSet},
+    hash::Hash,
+};
 
 use syn::Fields;
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
@@ -35,8 +39,8 @@ use crate::schema_macro::type_utils::is_option_type;
 #[allow(clippy::too_many_lines)]
 pub fn parse_struct_to_schema(
     struct_item: &syn::ItemStruct,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
     let mut properties = BTreeMap::new();
     let mut required = Vec::with_capacity(8);

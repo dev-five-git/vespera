@@ -37,8 +37,8 @@ pub struct OperationRouteConfig<'a> {
 pub fn build_operation_from_function(
     sig: &syn::Signature,
     path: &str,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &std::collections::HashMap<String, String>,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &std::collections::HashMap<&str, &str>,
     config: OperationRouteConfig<'_>,
 ) -> Operation {
     let path_params = extract_path_parameters(path);
@@ -159,7 +159,7 @@ pub fn build_operation_from_function(
     }
 
     // Build HashSet once for O(1) path-param membership tests in parse_function_parameter
-    let path_param_set: HashSet<String> = path_params.iter().cloned().collect();
+    let path_param_set: HashSet<&str> = path_params.iter().map(String::as_str).collect();
 
     // Parse function parameters (skip Path extractor as we already handled it)
     for input in &sig.inputs {
@@ -319,6 +319,12 @@ pub fn build_operation_from_function(
         responses,
         security: config.security.map(security_requirements),
         deprecated: config.deprecated.then_some(true),
+        // OpenAPI 3.1 Operation Object members vespera does not populate from
+        // `#[route]` (no DSL for externalDocs / callbacks / operation-level
+        // servers): `None` so they are skip-serialized — output is unchanged.
+        external_docs: None,
+        callbacks: None,
+        servers: None,
     }
 }
 

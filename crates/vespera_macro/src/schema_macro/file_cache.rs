@@ -152,6 +152,12 @@ struct FileCache {
     /// on insert; both become single-word `Arc::clone`s.
     file_contents: HashMap<PathBuf, (FileFingerprint, Arc<String>)>,
 
+    /// Epoch-scoped negative cache for paths whose metadata/content lookup
+    /// fails. Missing `{module}.rs` / `{module}/mod.rs` candidates are probed
+    /// repeatedly during path resolution; once a path is known absent in the
+    /// current macro invocation, avoid re-running `read_to_string` for it.
+    missing_file_content_epoch: HashMap<PathBuf, u64>,
+
     /// Per-`src_dir` struct identifier index: struct name → files that
     /// define it (as a top-level `struct <Name>` declaration found via
     /// cheap source-text tokenisation in [`extract_struct_names`]).
@@ -252,6 +258,7 @@ thread_local! {
     static FILE_CACHE: RefCell<FileCache> = RefCell::new(FileCache {
         file_lists: HashMap::with_capacity(4),
         file_contents: HashMap::with_capacity(32),
+        missing_file_content_epoch: HashMap::with_capacity(32),
         struct_index: HashMap::with_capacity(4),
         file_struct_names: HashMap::with_capacity(32),
         file_disk_reads: 0,
@@ -650,6 +657,7 @@ pub fn get_struct_definition(path: &Path, struct_name: &str) -> Option<String> {
 /// cloning the whole file body per lookup.
 fn get_file_content_inner(cache: &mut FileCache, path: &Path) -> Option<Arc<String>> {
     let current_fp = get_fingerprint_cached(cache, path);
+    let current_epoch = cache.epoch;
 
     if let Some(fp) = current_fp
         && let Some((cached_fp, content)) = cache.file_contents.get(path)
@@ -659,10 +667,27 @@ fn get_file_content_inner(cache: &mut FileCache, path: &Path) -> Option<Arc<Stri
         return Some(Arc::clone(content));
     }
 
-    let content = Arc::new(std::fs::read_to_string(path).ok()?);
+    if current_fp.is_none()
+        && cache
+            .missing_file_content_epoch
+            .get(path)
+            .is_some_and(|epoch| *epoch == current_epoch)
+    {
+        return None;
+    }
+
+    let Some(content) = std::fs::read_to_string(path).ok().map(Arc::new) else {
+        if current_fp.is_none() {
+            cache
+                .missing_file_content_epoch
+                .insert(path.to_path_buf(), current_epoch);
+        }
+        return None;
+    };
     cache.file_disk_reads += 1;
 
     if let Some(fp) = current_fp {
+        cache.missing_file_content_epoch.remove(path);
         cache
             .file_contents
             .insert(path.to_path_buf(), (fp, Arc::clone(&content)));

@@ -21,22 +21,8 @@ pub struct RouteArgs {
 }
 
 impl syn::parse::Parse for RouteArgs {
-    #[allow(clippy::too_many_lines)]
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let mut method: Option<syn::Ident> = None;
-        let mut path: Option<syn::LitStr> = None;
-        let mut error_status: Option<syn::ExprArray> = None;
-        let mut responses: Option<syn::ExprArray> = None;
-        let mut success_status: Option<u16> = None;
-        let mut tags: Option<syn::ExprArray> = None;
-        let mut security: Option<syn::ExprArray> = None;
-        let mut headers: Option<Vec<HeaderParam>> = None;
-        let mut operation_id: Option<syn::LitStr> = None;
-        let mut summary: Option<syn::LitStr> = None;
-        let mut request_example: Option<syn::LitStr> = None;
-        let mut response_example: Option<syn::LitStr> = None;
-        let mut deprecated = false;
-        let mut description: Option<syn::LitStr> = None;
+        let mut args = RouteArgsBuilder::default();
 
         // Parse comma-separated list of arguments
         while !input.is_empty() {
@@ -46,84 +32,7 @@ impl syn::parse::Parse for RouteArgs {
                 // Try to parse as method identifier (get, post, etc.)
                 let ident: syn::Ident = input.parse()?;
                 let ident_str = ident.to_string().to_lowercase();
-                if is_http_method(&ident_str) {
-                    reject_duplicate(method.as_ref(), &ident, "HTTP method")?;
-                    method = Some(ident);
-                } else if ident_str == "path" {
-                    reject_duplicate(path.as_ref(), &ident, "path")?;
-                    input.parse::<syn::Token![=]>()?;
-                    let lit: syn::LitStr = input.parse()?;
-                    path = Some(lit);
-                } else if ident_str == "error_status" {
-                    reject_duplicate(error_status.as_ref(), &ident, "error_status")?;
-                    input.parse::<syn::Token![=]>()?;
-                    let array: syn::ExprArray = input.parse()?;
-                    validate_error_status_array(&array)?;
-                    error_status = Some(array);
-                } else if ident_str == "responses" {
-                    reject_duplicate(responses.as_ref(), &ident, "responses")?;
-                    input.parse::<syn::Token![=]>()?;
-                    let array: syn::ExprArray = input.parse()?;
-                    validate_responses_array(&array)?;
-                    responses = Some(array);
-                } else if ident_str == "status" {
-                    reject_duplicate(success_status.as_ref(), &ident, "status")?;
-                    input.parse::<syn::Token![=]>()?;
-                    let lit: LitInt = input.parse()?;
-                    let code = lit.base10_parse::<u16>()?;
-                    if !(200..300).contains(&code) {
-                        return Err(syn::Error::new(
-                            lit.span(),
-                            "#[route] `status` must be a 2xx success status code (200-299).",
-                        ));
-                    }
-                    success_status = Some(code);
-                } else if ident_str == "tags" {
-                    reject_duplicate(tags.as_ref(), &ident, "tags")?;
-                    input.parse::<syn::Token![=]>()?;
-                    let array: syn::ExprArray = input.parse()?;
-                    tags = Some(array);
-                } else if ident_str == "security" {
-                    reject_duplicate(security.as_ref(), &ident, "security")?;
-                    input.parse::<syn::Token![=]>()?;
-                    let array: syn::ExprArray = input.parse()?;
-                    security = Some(array);
-                } else if ident_str == "headers" {
-                    reject_duplicate(headers.as_ref(), &ident, "headers")?;
-                    headers = Some(parse_header_values(input)?);
-                } else if ident_str == "operation_id" {
-                    reject_duplicate(operation_id.as_ref(), &ident, "operation_id")?;
-                    input.parse::<syn::Token![=]>()?;
-                    let lit: syn::LitStr = input.parse()?;
-                    operation_id = Some(lit);
-                } else if ident_str == "summary" {
-                    reject_duplicate(summary.as_ref(), &ident, "summary")?;
-                    input.parse::<syn::Token![=]>()?;
-                    let lit: syn::LitStr = input.parse()?;
-                    summary = Some(lit);
-                } else if ident_str == "request_example" {
-                    reject_duplicate(request_example.as_ref(), &ident, "request_example")?;
-                    input.parse::<syn::Token![=]>()?;
-                    let lit: syn::LitStr = input.parse()?;
-                    request_example = Some(lit);
-                } else if ident_str == "response_example" {
-                    reject_duplicate(response_example.as_ref(), &ident, "response_example")?;
-                    input.parse::<syn::Token![=]>()?;
-                    let lit: syn::LitStr = input.parse()?;
-                    response_example = Some(lit);
-                } else if ident_str == "deprecated" {
-                    if deprecated {
-                        return Err(duplicate_error(&ident, "deprecated"));
-                    }
-                    deprecated = true;
-                } else if ident_str == "description" {
-                    reject_duplicate(description.as_ref(), &ident, "description")?;
-                    input.parse::<syn::Token![=]>()?;
-                    let lit: syn::LitStr = input.parse()?;
-                    description = Some(lit);
-                } else {
-                    return Err(lookahead.error());
-                }
+                args.parse_ident(input, &ident, &ident_str, lookahead)?;
 
                 // Check if there's a comma
                 if input.peek(syn::Token![,]) {
@@ -136,22 +45,228 @@ impl syn::parse::Parse for RouteArgs {
             }
         }
 
-        Ok(Self {
-            method,
-            path,
-            error_status,
-            responses,
-            success_status,
-            tags,
-            security,
-            headers,
-            operation_id,
-            summary,
-            request_example,
-            response_example,
-            deprecated,
-            description,
-        })
+        Ok(args.finish())
+    }
+}
+
+#[derive(Default)]
+struct RouteArgsBuilder {
+    method: Option<syn::Ident>,
+    path: Option<syn::LitStr>,
+    error_status: Option<syn::ExprArray>,
+    responses: Option<syn::ExprArray>,
+    success_status: Option<u16>,
+    tags: Option<syn::ExprArray>,
+    security: Option<syn::ExprArray>,
+    headers: Option<Vec<HeaderParam>>,
+    operation_id: Option<syn::LitStr>,
+    summary: Option<syn::LitStr>,
+    request_example: Option<syn::LitStr>,
+    response_example: Option<syn::LitStr>,
+    deprecated: bool,
+    description: Option<syn::LitStr>,
+}
+
+impl RouteArgsBuilder {
+    fn parse_ident(
+        &mut self,
+        input: syn::parse::ParseStream,
+        ident: &syn::Ident,
+        ident_str: &str,
+        lookahead: syn::parse::Lookahead1,
+    ) -> syn::Result<()> {
+        if is_http_method(ident_str) {
+            return self.parse_method(ident);
+        }
+        match ident_str {
+            "path" => self.parse_path(input, ident),
+            "error_status" => self.parse_error_status(input, ident),
+            "responses" => self.parse_responses(input, ident),
+            "status" => self.parse_status(input, ident),
+            "tags" => self.parse_tags(input, ident),
+            "security" => self.parse_security(input, ident),
+            "headers" => self.parse_headers(input, ident),
+            "operation_id" => self.parse_operation_id(input, ident),
+            "summary" => self.parse_summary(input, ident),
+            "request_example" => self.parse_request_example(input, ident),
+            "response_example" => self.parse_response_example(input, ident),
+            "deprecated" => self.parse_deprecated(ident),
+            "description" => self.parse_description(input, ident),
+            _ => Err(lookahead.error()),
+        }
+    }
+
+    fn parse_method(&mut self, ident: &syn::Ident) -> syn::Result<()> {
+        reject_duplicate(self.method.as_ref(), ident, "HTTP method")?;
+        self.method = Some(ident.clone());
+        Ok(())
+    }
+
+    fn parse_path(
+        &mut self,
+        input: syn::parse::ParseStream,
+        ident: &syn::Ident,
+    ) -> syn::Result<()> {
+        reject_duplicate(self.path.as_ref(), ident, "path")?;
+        input.parse::<syn::Token![=]>()?;
+        self.path = Some(input.parse()?);
+        Ok(())
+    }
+
+    fn parse_error_status(
+        &mut self,
+        input: syn::parse::ParseStream,
+        ident: &syn::Ident,
+    ) -> syn::Result<()> {
+        reject_duplicate(self.error_status.as_ref(), ident, "error_status")?;
+        input.parse::<syn::Token![=]>()?;
+        let array: syn::ExprArray = input.parse()?;
+        validate_error_status_array(&array)?;
+        self.error_status = Some(array);
+        Ok(())
+    }
+
+    fn parse_responses(
+        &mut self,
+        input: syn::parse::ParseStream,
+        ident: &syn::Ident,
+    ) -> syn::Result<()> {
+        reject_duplicate(self.responses.as_ref(), ident, "responses")?;
+        input.parse::<syn::Token![=]>()?;
+        let array: syn::ExprArray = input.parse()?;
+        validate_responses_array(&array)?;
+        self.responses = Some(array);
+        Ok(())
+    }
+
+    fn parse_status(
+        &mut self,
+        input: syn::parse::ParseStream,
+        ident: &syn::Ident,
+    ) -> syn::Result<()> {
+        reject_duplicate(self.success_status.as_ref(), ident, "status")?;
+        input.parse::<syn::Token![=]>()?;
+        let lit: LitInt = input.parse()?;
+        let code = lit.base10_parse::<u16>()?;
+        if !(200..300).contains(&code) {
+            return Err(syn::Error::new(
+                lit.span(),
+                "#[route] `status` must be a 2xx success status code (200-299).",
+            ));
+        }
+        self.success_status = Some(code);
+        Ok(())
+    }
+
+    fn parse_tags(
+        &mut self,
+        input: syn::parse::ParseStream,
+        ident: &syn::Ident,
+    ) -> syn::Result<()> {
+        reject_duplicate(self.tags.as_ref(), ident, "tags")?;
+        input.parse::<syn::Token![=]>()?;
+        self.tags = Some(input.parse()?);
+        Ok(())
+    }
+
+    fn parse_security(
+        &mut self,
+        input: syn::parse::ParseStream,
+        ident: &syn::Ident,
+    ) -> syn::Result<()> {
+        reject_duplicate(self.security.as_ref(), ident, "security")?;
+        input.parse::<syn::Token![=]>()?;
+        self.security = Some(input.parse()?);
+        Ok(())
+    }
+
+    fn parse_headers(
+        &mut self,
+        input: syn::parse::ParseStream,
+        ident: &syn::Ident,
+    ) -> syn::Result<()> {
+        reject_duplicate(self.headers.as_ref(), ident, "headers")?;
+        self.headers = Some(parse_header_values(input)?);
+        Ok(())
+    }
+
+    fn parse_lit_str_slot(
+        input: syn::parse::ParseStream,
+        ident: &syn::Ident,
+        slot: &mut Option<syn::LitStr>,
+        name: &str,
+    ) -> syn::Result<()> {
+        reject_duplicate(slot.as_ref(), ident, name)?;
+        input.parse::<syn::Token![=]>()?;
+        *slot = Some(input.parse()?);
+        Ok(())
+    }
+
+    fn parse_operation_id(
+        &mut self,
+        input: syn::parse::ParseStream,
+        ident: &syn::Ident,
+    ) -> syn::Result<()> {
+        Self::parse_lit_str_slot(input, ident, &mut self.operation_id, "operation_id")
+    }
+
+    fn parse_summary(
+        &mut self,
+        input: syn::parse::ParseStream,
+        ident: &syn::Ident,
+    ) -> syn::Result<()> {
+        Self::parse_lit_str_slot(input, ident, &mut self.summary, "summary")
+    }
+
+    fn parse_request_example(
+        &mut self,
+        input: syn::parse::ParseStream,
+        ident: &syn::Ident,
+    ) -> syn::Result<()> {
+        Self::parse_lit_str_slot(input, ident, &mut self.request_example, "request_example")
+    }
+
+    fn parse_response_example(
+        &mut self,
+        input: syn::parse::ParseStream,
+        ident: &syn::Ident,
+    ) -> syn::Result<()> {
+        Self::parse_lit_str_slot(input, ident, &mut self.response_example, "response_example")
+    }
+
+    fn parse_deprecated(&mut self, ident: &syn::Ident) -> syn::Result<()> {
+        if self.deprecated {
+            return Err(duplicate_error(ident, "deprecated"));
+        }
+        self.deprecated = true;
+        Ok(())
+    }
+
+    fn parse_description(
+        &mut self,
+        input: syn::parse::ParseStream,
+        ident: &syn::Ident,
+    ) -> syn::Result<()> {
+        Self::parse_lit_str_slot(input, ident, &mut self.description, "description")
+    }
+
+    fn finish(self) -> RouteArgs {
+        RouteArgs {
+            method: self.method,
+            path: self.path,
+            error_status: self.error_status,
+            responses: self.responses,
+            success_status: self.success_status,
+            tags: self.tags,
+            security: self.security,
+            headers: self.headers,
+            operation_id: self.operation_id,
+            summary: self.summary,
+            request_example: self.request_example,
+            response_example: self.response_example,
+            deprecated: self.deprecated,
+            description: self.description,
+        }
     }
 }
 

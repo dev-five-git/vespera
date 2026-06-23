@@ -4,10 +4,12 @@
 //!
 //! ```ignore
 //! use vespera::{Validated, Schema, axum::Json};
+//! use garde::Validate;
 //!
-//! #[derive(serde::Deserialize, Schema)]
+//! #[derive(serde::Deserialize, Schema, Validate)]
 //! struct CreateUser {
 //!     #[schema(min_length = 3, max_length = 32)]
+//!     #[garde(length(min = 3, max = 32))]
 //!     username: String,
 //! }
 //!
@@ -34,7 +36,11 @@ use ::axum::{
 };
 use ::garde::Validate;
 use ::serde::{Serialize, Serializer, ser::SerializeStruct};
-use std::{fmt::Display, marker::PhantomData};
+use std::{
+    fmt::Display,
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
 
 /// Extractor wrapper that validates the inner extractor's output via
 /// [`garde::Validate`] before handing it to the handler.
@@ -150,6 +156,32 @@ impl<C, T> ValidatedWith<C, T> {
     #[must_use]
     pub fn into_inner(self) -> T {
         self.0
+    }
+
+    /// Borrow the extracted value.
+    #[must_use]
+    pub const fn get(&self) -> &T {
+        &self.0
+    }
+
+    /// Mutably borrow the extracted value.
+    #[must_use]
+    pub const fn get_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
+impl<C, T> Deref for ValidatedWith<C, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<C, T> DerefMut for ValidatedWith<C, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 

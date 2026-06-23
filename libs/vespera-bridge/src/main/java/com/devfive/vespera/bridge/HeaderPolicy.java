@@ -72,23 +72,163 @@ final class HeaderPolicy {
     }
 
     static boolean containsConnectionHeaderKey(byte[] wire, int off, int len) {
-        int end = off + len - 12;
+        int headersObject = findHeadersObjectStart(wire, off, len);
+        return headersObject >= 0 && containsConnectionMemberName(wire, headersObject, off + len);
+    }
+
+    static boolean containsConnectionHeaderKey(ByteBuffer wire, int off, int len) {
+        int headersObject = findHeadersObjectStart(wire, off, len);
+        return headersObject >= 0 && containsConnectionMemberName(wire, headersObject, off + len);
+    }
+
+    private static int findHeadersObjectStart(byte[] wire, int off, int len) {
+        int end = off + len - 10;
         for (int i = off; i <= end; i++) {
-            if ((wire[i] & 0xFF) == '"' && isConnectionLiteralAt(wire, i + 1)) {
-                return true;
+            if ((wire[i] & 0xFF) == '"' && isHeadersLiteralAt(wire, i + 1)) {
+                int colon = skipJsonWhitespace(wire, i + 9, off + len);
+                if (colon < off + len && (wire[colon] & 0xFF) == ':') {
+                    int object = skipJsonWhitespace(wire, colon + 1, off + len);
+                    if (object < off + len && (wire[object] & 0xFF) == '{') {
+                        return object + 1;
+                    }
+                }
+            }
+        }
+        return -1;
+    }
+
+    private static int findHeadersObjectStart(ByteBuffer wire, int off, int len) {
+        int end = off + len - 10;
+        for (int i = off; i <= end; i++) {
+            if ((wire.get(i) & 0xFF) == '"' && isHeadersLiteralAt(wire, i + 1)) {
+                int colon = skipJsonWhitespace(wire, i + 9, off + len);
+                if (colon < off + len && (wire.get(colon) & 0xFF) == ':') {
+                    int object = skipJsonWhitespace(wire, colon + 1, off + len);
+                    if (object < off + len && (wire.get(object) & 0xFF) == '{') {
+                        return object + 1;
+                    }
+                }
+            }
+        }
+        return -1;
+    }
+
+    private static boolean containsConnectionMemberName(byte[] wire, int pos, int end) {
+        boolean expectName = true;
+        for (int i = pos; i < end; i++) {
+            int b = wire[i] & 0xFF;
+            if (b == '}') {
+                return false;
+            }
+            if (expectName && b == '"' && isConnectionLiteralAt(wire, i + 1)) {
+                int colon = skipJsonWhitespace(wire, i + 12, end);
+                if (colon < end && (wire[colon] & 0xFF) == ':') {
+                    return true;
+                }
+            }
+            if (b == '"') {
+                i = skipJsonString(wire, i + 1, end);
+            } else if (b == ',') {
+                expectName = true;
+            } else if (b == ':') {
+                expectName = false;
             }
         }
         return false;
     }
 
-    static boolean containsConnectionHeaderKey(ByteBuffer wire, int off, int len) {
-        int end = off + len - 12;
-        for (int i = off; i <= end; i++) {
-            if ((wire.get(i) & 0xFF) == '"' && isConnectionLiteralAt(wire, i + 1)) {
-                return true;
+    private static boolean containsConnectionMemberName(ByteBuffer wire, int pos, int end) {
+        boolean expectName = true;
+        for (int i = pos; i < end; i++) {
+            int b = wire.get(i) & 0xFF;
+            if (b == '}') {
+                return false;
+            }
+            if (expectName && b == '"' && isConnectionLiteralAt(wire, i + 1)) {
+                int colon = skipJsonWhitespace(wire, i + 12, end);
+                if (colon < end && (wire.get(colon) & 0xFF) == ':') {
+                    return true;
+                }
+            }
+            if (b == '"') {
+                i = skipJsonString(wire, i + 1, end);
+            } else if (b == ',') {
+                expectName = true;
+            } else if (b == ':') {
+                expectName = false;
             }
         }
         return false;
+    }
+
+    private static int skipJsonWhitespace(byte[] wire, int pos, int end) {
+        int p = pos;
+        while (p < end) {
+            int b = wire[p] & 0xFF;
+            if (b != ' ' && b != '\n' && b != '\r' && b != '\t') {
+                break;
+            }
+            p++;
+        }
+        return p;
+    }
+
+    private static int skipJsonWhitespace(ByteBuffer wire, int pos, int end) {
+        int p = pos;
+        while (p < end) {
+            int b = wire.get(p) & 0xFF;
+            if (b != ' ' && b != '\n' && b != '\r' && b != '\t') {
+                break;
+            }
+            p++;
+        }
+        return p;
+    }
+
+    private static int skipJsonString(byte[] wire, int pos, int end) {
+        for (int i = pos; i < end; i++) {
+            int b = wire[i] & 0xFF;
+            if (b == '\\') {
+                i++;
+            } else if (b == '"') {
+                return i;
+            }
+        }
+        return end;
+    }
+
+    private static int skipJsonString(ByteBuffer wire, int pos, int end) {
+        for (int i = pos; i < end; i++) {
+            int b = wire.get(i) & 0xFF;
+            if (b == '\\') {
+                i++;
+            } else if (b == '"') {
+                return i;
+            }
+        }
+        return end;
+    }
+
+    private static boolean isHeadersLiteralAt(byte[] bytes, int pos) {
+        return (bytes[pos] & 0xFF) == 'h'
+                && (bytes[pos + 1] & 0xFF) == 'e'
+                && (bytes[pos + 2] & 0xFF) == 'a'
+                && (bytes[pos + 3] & 0xFF) == 'd'
+                && (bytes[pos + 4] & 0xFF) == 'e'
+                && (bytes[pos + 5] & 0xFF) == 'r'
+                && (bytes[pos + 6] & 0xFF) == 's'
+                && (bytes[pos + 7] & 0xFF) == '"';
+    }
+
+    private static boolean isHeadersLiteralAt(ByteBuffer bytes, int pos) {
+        return (bytes.get(pos) & 0xFF) == 'h'
+                && (bytes.get(pos + 1) & 0xFF) == 'e'
+                && (bytes.get(pos + 2) & 0xFF) == 'a'
+                && (bytes.get(pos + 3) & 0xFF) == 'd'
+                && (bytes.get(pos + 4) & 0xFF) == 'e'
+                && (bytes.get(pos + 5) & 0xFF) == 'r'
+                && (bytes.get(pos + 6) & 0xFF) == 's'
+                && (bytes.get(pos + 7) & 0xFF) == '"';
     }
 
     private static boolean isConnectionLiteralAt(byte[] bytes, int pos) {
@@ -202,15 +342,19 @@ final class HeaderPolicy {
         if (names == null) {
             return;
         }
+        Map<String, String> merged = new LinkedHashMap<>(32);
         Set<String> connectionTokens = requestConnectionTokens(request);
         while (names.hasMoreElements()) {
             String name = names.nextElement();
             String lowerName = canonicalLowerHeaderName(name);
             if (!isHopByHopRequestHeader(lowerName)
                     && !isConnectionNominatedHeader(lowerName, connectionTokens)) {
-                sink.put(lowerName, joinHeaderValues(name, request));
+                String value = joinHeaderValues(name, request);
+                merged.merge(lowerName, value, (left, right) ->
+                        left + (lowerName.equals("cookie") ? "; " : ", ") + right);
             }
         }
+        merged.forEach(sink::put);
     }
 
     private static Set<String> requestConnectionTokens(HttpServletRequest request) {

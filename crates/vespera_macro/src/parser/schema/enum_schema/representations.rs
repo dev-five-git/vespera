@@ -1,4 +1,8 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::{
+    borrow::Borrow,
+    collections::{BTreeMap, HashMap, HashSet},
+    hash::Hash,
+};
 
 use vespera_core::schema::{Discriminator, Schema, SchemaRef, SchemaType};
 
@@ -14,8 +18,8 @@ pub(super) fn parse_externally_tagged_enum(
     enum_item: &syn::ItemEnum,
     description: Option<String>,
     rename_all: Option<&str>,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
     let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
 
@@ -127,8 +131,8 @@ pub(super) fn parse_internally_tagged_enum(
     description: Option<String>,
     rename_all: Option<&str>,
     tag: &str,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
     let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
 
@@ -218,8 +222,8 @@ pub(super) fn parse_adjacently_tagged_enum(
     rename_all: Option<&str>,
     tag: &str,
     content: &str,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
     let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
 
@@ -282,8 +286,8 @@ pub(super) fn parse_untagged_enum(
     enum_item: &syn::ItemEnum,
     description: Option<String>,
     rename_all: Option<&str>,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
     let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
 

@@ -100,16 +100,23 @@ pub static ROUTE_STORAGE: LazyLock<Mutex<HashMap<String, Vec<StoredRouteInfo>>>>
 
 fn same_route_source(left: &StoredRouteInfo, right: &StoredRouteInfo) -> bool {
     left.fn_name == right.fn_name
-        && left
-            .file_path
-            .as_deref()
-            .unwrap_or_default()
-            .replace('\\', "/")
-            == right
-                .file_path
-                .as_deref()
-                .unwrap_or_default()
-                .replace('\\', "/")
+        && paths_equal_normalized(left.file_path.as_deref(), right.file_path.as_deref())
+}
+
+/// Compare two optional source paths treating `\` and `/` as equivalent,
+/// WITHOUT allocating a normalized copy of either side.
+///
+/// `register_route` calls this once per already-registered route on every
+/// `#[route]` expansion, i.e. O(routes²) comparisons over a full build.  The
+/// previous `.replace('\\', "/")` on BOTH sides allocated two fresh `String`s
+/// per comparison — a quadratic compile-time allocation source.  Folding `\`
+/// to `/` byte-by-byte (the remap is length-preserving, so a length mismatch
+/// short-circuits) removes every one of those allocations.
+fn paths_equal_normalized(left: Option<&str>, right: Option<&str>) -> bool {
+    let (left, right) = (left.unwrap_or_default(), right.unwrap_or_default());
+    let norm = |b: u8| if b == b'\\' { b'/' } else { b };
+    left.len() == right.len()
+        && std::iter::zip(left.bytes(), right.bytes()).all(|(l, r)| norm(l) == norm(r))
 }
 
 /// Replace-insert a `#[route]` metadata entry in the current crate's bucket.

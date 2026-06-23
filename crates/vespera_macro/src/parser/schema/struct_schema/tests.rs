@@ -13,7 +13,11 @@ fn test_parse_struct_to_schema_required_optional() {
         ",
     )
     .unwrap();
-    let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &struct_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     let props = schema.properties.as_ref().unwrap();
     assert!(props.contains_key("id"));
     assert!(props.contains_key("name"));
@@ -47,7 +51,11 @@ fn test_parse_struct_to_schema_rename_all_and_field_rename() {
     )
     .unwrap();
 
-    let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &struct_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     let props = schema.properties.as_ref().expect("props missing");
     assert!(props.contains_key("id")); // field-level rename wins
     assert!(props.contains_key("displayName")); // rename_all applied
@@ -61,7 +69,11 @@ fn test_parse_struct_to_schema_rename_all_and_field_rename() {
 #[case("struct Empty;")]
 fn test_parse_struct_to_schema_tuple_and_unit_structs(#[case] struct_src: &str) {
     let struct_item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
-    let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &struct_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     assert!(schema.properties.is_none());
     assert!(schema.required.is_none());
 }
@@ -78,7 +90,11 @@ fn test_parse_struct_to_schema_serde_transparent_named_wrapper_uses_inner_schema
     )
     .unwrap();
 
-    let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &struct_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     assert_eq!(schema.schema_type, Some(SchemaType::String));
     assert!(schema.properties.is_none());
 }
@@ -95,7 +111,11 @@ fn test_parse_struct_to_schema_schema_ref_override() {
     )
     .unwrap();
 
-    let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &struct_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     assert_eq!(
         schema.ref_path.as_deref(),
         Some("#/components/schemas/UserSchema")
@@ -117,7 +137,11 @@ fn test_parse_struct_to_schema_with_skip_field() {
         ",
     )
     .unwrap();
-    let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &struct_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     let props = schema.properties.as_ref().unwrap();
     assert!(props.contains_key("id"));
     assert!(props.contains_key("name"));
@@ -137,7 +161,11 @@ fn test_parse_struct_to_schema_skip_takes_precedence_over_skip_serializing_if() 
         "#,
     )
     .unwrap();
-    let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &struct_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     let props = schema.properties.as_ref().unwrap();
     assert!(props.contains_key("id"));
     assert!(props.contains_key("name"));
@@ -160,7 +188,11 @@ fn test_parse_struct_to_schema_with_default_fields() {
         "#,
     )
     .unwrap();
-    let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &struct_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     let props = schema.properties.as_ref().unwrap();
     assert!(props.contains_key("required_field"));
     assert!(props.contains_key("with_default"));
@@ -187,7 +219,11 @@ fn test_parse_struct_to_schema_with_description() {
             }
         ";
     let struct_item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
-    let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &struct_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     assert_eq!(
         schema.description,
         Some("User struct description".to_string())
@@ -241,7 +277,11 @@ fn test_parse_struct_to_schema_description_strips_slash_prefix() {
         "#,
     )
     .unwrap();
-    let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &struct_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     assert_eq!(schema.description, Some("Struct description".to_string()));
     let props = schema.properties.unwrap();
     if let SchemaRef::Inline(id_schema) = props.get("id").unwrap() {
@@ -346,7 +386,11 @@ fn test_parse_struct_to_schema_no_flatten() {
     )
     .unwrap();
 
-    let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &struct_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     assert!(
         schema.all_of.is_none(),
         "Simple struct should not have allOf"
@@ -393,7 +437,11 @@ fn test_parse_struct_to_schema_transparent_multi_field_tuple_falls_back() {
     )
     .unwrap();
 
-    let schema = parse_struct_to_schema(&struct_item, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &struct_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     assert_eq!(schema.schema_type, Some(SchemaType::Object));
     assert!(schema.properties.is_none());
     assert!(schema.all_of.is_none());
@@ -421,7 +469,11 @@ fn schema_constraints_min_max_length_and_pattern_on_string_field() {
             "#,
     )
     .unwrap();
-    let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &s,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     let field = field_schema(&schema, "username");
     assert_eq!(field.min_length, Some(3));
     assert_eq!(field.max_length, Some(32));
@@ -439,7 +491,11 @@ fn schema_constraints_minimum_maximum_on_numeric_field() {
             ",
     )
     .unwrap();
-    let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &s,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     let field = field_schema(&schema, "age");
     assert_eq!(field.minimum, Some(0.0));
     assert_eq!(field.maximum, Some(150.0));
@@ -456,7 +512,11 @@ fn schema_constraints_format_email_on_string_field() {
             "#,
     )
     .unwrap();
-    let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &s,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     let field = field_schema(&schema, "email");
     assert_eq!(field.format.as_deref(), Some("email"));
 }
@@ -474,7 +534,11 @@ fn schema_constraints_read_only_write_only_example() {
             "#,
     )
     .unwrap();
-    let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &s,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     let id_field = field_schema(&schema, "id");
     assert_eq!(id_field.read_only, Some(true));
     assert_eq!(id_field.example, Some(serde_json::json!("abc-123")));
@@ -493,7 +557,11 @@ fn schema_constraints_min_max_items_unique_on_vec_field() {
             ",
     )
     .unwrap();
-    let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &s,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     let field = field_schema(&schema, "tags");
     assert_eq!(field.min_items, Some(1));
     assert_eq!(field.max_items, Some(5));
@@ -511,7 +579,11 @@ fn schema_constraints_exclusive_bounds_and_multiple_of() {
             ",
     )
     .unwrap();
-    let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &s,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     let field = field_schema(&schema, "amount");
     assert_eq!(field.minimum, Some(0.0));
     assert_eq!(field.exclusive_minimum, Some(0.0));
@@ -534,7 +606,7 @@ fn schema_constraints_on_ref_field_promote_to_allof_wrapper() {
             ",
     )
     .unwrap();
-    let schema = parse_struct_to_schema(&s, &known, &HashMap::new());
+    let schema = parse_struct_to_schema(&s, &known, &HashMap::<String, String>::new());
     let field = field_schema(&schema, "shipping");
     assert_eq!(field.read_only, Some(true));
     let all_of = field.all_of.as_ref().expect("allOf wrap missing");
@@ -559,7 +631,7 @@ fn schema_constraints_coexist_with_doc_comment_on_ref_field() {
             ",
     )
     .unwrap();
-    let schema = parse_struct_to_schema(&s, &known, &HashMap::new());
+    let schema = parse_struct_to_schema(&s, &known, &HashMap::<String, String>::new());
     let field = field_schema(&schema, "shipping");
     assert!(field.description.is_some(), "doc comment lost");
     assert_eq!(field.read_only, Some(true));
@@ -580,7 +652,11 @@ fn schema_constraints_unknown_keys_on_field_are_silently_ignored() {
             "#,
     )
     .unwrap();
-    let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &s,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     let field = field_schema(&schema, "pin");
     assert_eq!(field.min_length, Some(4));
 }
@@ -604,7 +680,11 @@ fn schema_exclusive_maximum_and_minimum_land_on_emitted_field_schema() {
             ",
         )
         .unwrap();
-    let schema = parse_struct_to_schema(&s, &HashSet::new(), &HashMap::new());
+    let schema = parse_struct_to_schema(
+        &s,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
     let amount = field_schema(&schema, "amount");
     assert_eq!(amount.exclusive_minimum, Some(0.0));
     assert_eq!(amount.exclusive_maximum, Some(100.0));

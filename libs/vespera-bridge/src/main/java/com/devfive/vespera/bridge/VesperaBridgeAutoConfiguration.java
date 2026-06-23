@@ -175,6 +175,12 @@ public class VesperaBridgeAutoConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean
+    public VesperaBridgeThreadLocalCleanup vesperaBridgeThreadLocalCleanup() {
+        return new VesperaBridgeThreadLocalCleanup();
+    }
+
+    @Bean
     @ConditionalOnProperty(
         prefix = "vespera.bridge",
         name = "controller-enabled",
@@ -191,6 +197,7 @@ public class VesperaBridgeAutoConfiguration {
                 modeResolver,
                 asyncResponseExecutor,
                 props.isDirectRetryOnOverflow(),
-                props.getMaxBufferedRequestBytes());
+                props.getMaxBufferedRequestBytes(),
+                props.getMaxBufferedResponseBytes());
     }
 }

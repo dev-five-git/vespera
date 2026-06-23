@@ -196,8 +196,8 @@ fn response_content_types(ty: &Type) -> (&'static str, &'static str) {
 fn content_for_type(
     ty: &Type,
     content_type: &str,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
 ) -> Option<BTreeMap<String, MediaType>> {
     if is_keyword_type(ty, &KeywordType::StatusCode) {
         return None;
@@ -241,8 +241,8 @@ fn insert_result_responses(
     err_ty: &Type,
     ok_content_type: &str,
     err_content_type: &str,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
 ) {
     let (ok_payload_ty, ok_headers) = extract_ok_payload_and_headers(ok_ty);
     let ok_content = content_for_type(
@@ -280,8 +280,8 @@ fn insert_plain_response(
     responses: &mut BTreeMap<String, Response>,
     ty: &Type,
     content_type: &str,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
 ) {
     let unwrapped_ty = unwrap_json(ty);
     let content = content_for_type(
@@ -296,8 +296,8 @@ fn insert_plain_response(
 /// Analyze return type and convert to Responses map
 pub fn parse_return_type(
     return_type: &ReturnType,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
 ) -> BTreeMap<String, Response> {
     let mut responses = BTreeMap::new();
 

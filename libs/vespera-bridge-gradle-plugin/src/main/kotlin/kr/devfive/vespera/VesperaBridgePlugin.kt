@@ -144,31 +144,32 @@ class VesperaBridgePlugin : Plugin<Project> {
             }
         })
 
-        // Hook into Java resource processing + dependency wiring.
-        project.afterEvaluate(object : org.gradle.api.Action<Project> {
-            override fun execute(p: Project) {
-                p.tasks.withType(ProcessResources::class.java).configureEach {
-                    dependsOn(bundleTask)
-                    from(generatedResourcesDir)
-                }
+        // Hook into Java resource processing + dependency wiring lazily when a
+        // Java plugin creates `processResources` / `implementation`.  Avoid
+        // afterEvaluate so configuration-cache snapshots do not depend on a
+        // late mutable project callback.
+        project.pluginManager.withPlugin("java") {
+            project.tasks.withType(ProcessResources::class.java).configureEach {
+                dependsOn(bundleTask)
+                from(generatedResourcesDir)
+            }
 
-                // Repository configuration is intentionally left to
-                // the user's settings.gradle.kts (dependencyResolution
-                // Management) — Gradle's "fail-on-project-repos" mode
-                // requires us not to mutate project.repositories from
-                // a plugin.  Users typically add mavenCentral() (and
-                // mavenLocal() for development) at the settings level.
-                val version = ext.bridgeVersion.orNull
-                    ?: error(
+            // Repository configuration is intentionally left to
+            // the user's settings.gradle.kts (dependencyResolution
+            // Management) — Gradle's "fail-on-project-repos" mode
+            // requires us not to mutate project.repositories from
+            // a plugin.  Users typically add mavenCentral() (and
+            // mavenLocal() for development) at the settings level.
+            val bridgeDependency = ext.bridgeVersion
+                .map { version -> "kr.devfive:vespera-bridge:$version" }
+                .orElse(project.provider {
+                    error(
                         "vespera.bridgeVersion must be set explicitly. " +
                             "Example: vespera { bridgeVersion.set(\"<bridge-version>\") }"
                     )
-                p.dependencies.add(
-                    "implementation",
-                    "kr.devfive:vespera-bridge:$version",
-                )
-            }
-        })
+                })
+            project.dependencies.addProvider("implementation", bridgeDependency)
+        }
     }
 
     private fun detectOs(): String {

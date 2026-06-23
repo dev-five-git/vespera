@@ -14,9 +14,9 @@ mod shared;
 pub fn parse_function_parameter(
     arg: &FnArg,
     path_params: &[String],
-    path_param_set: &HashSet<String>,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    path_param_set: &HashSet<&str>,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
 ) -> Option<Vec<Parameter>> {
     match arg {
         FnArg::Receiver(_) => None,
@@ -74,24 +74,23 @@ mod tests {
 
     use super::*;
 
-    fn setup_test_data(func_src: &str) -> (HashSet<String>, HashMap<String, String>) {
+    fn setup_test_data(
+        func_src: &str,
+    ) -> (HashSet<&'static str>, HashMap<&'static str, &'static str>) {
         let mut struct_definitions = HashMap::new();
-        let mut known_schemas: HashSet<String> = HashSet::new();
+        let mut known_schemas = HashSet::new();
 
         if func_src.contains("QueryParams") {
-            known_schemas.insert("QueryParams".to_string());
+            known_schemas.insert("QueryParams");
             struct_definitions.insert(
-                "QueryParams".to_string(),
-                r"pub struct QueryParams { pub page: i32, pub limit: Option<i32> }".to_string(),
+                "QueryParams",
+                r"pub struct QueryParams { pub page: i32, pub limit: Option<i32> }",
             );
         }
 
         if func_src.contains("User") {
-            known_schemas.insert("User".to_string());
-            struct_definitions.insert(
-                "User".to_string(),
-                r"pub struct User { pub id: i32, pub name: String }".to_string(),
-            );
+            known_schemas.insert("User");
+            struct_definitions.insert("User", r"pub struct User { pub id: i32, pub name: String }");
         }
 
         (known_schemas, struct_definitions)
@@ -125,7 +124,7 @@ mod tests {
     ) {
         let func: syn::ItemFn = syn::parse_str(func_src).unwrap();
         let (known_schemas, struct_definitions) = setup_test_data(func_src);
-        let path_param_set: HashSet<String> = path_params.iter().cloned().collect();
+        let path_param_set: HashSet<&str> = path_params.iter().map(String::as_str).collect();
         let mut parameters = Vec::new();
 
         for (idx, arg) in func.sig.inputs.iter().enumerate() {
@@ -175,12 +174,9 @@ mod tests {
     ) {
         let func: syn::ItemFn = syn::parse_str(func_src).unwrap();
         let (mut known_schemas, mut struct_definitions) = setup_test_data(func_src);
-        struct_definitions.insert(
-            "User".to_string(),
-            "pub struct User { pub id: i32 }".to_string(),
-        );
-        known_schemas.insert("CustomHeader".to_string());
-        let path_param_set: HashSet<String> = path_params.iter().cloned().collect();
+        struct_definitions.insert("User", "pub struct User { pub id: i32 }");
+        known_schemas.insert("CustomHeader");
+        let path_param_set: HashSet<&str> = path_params.iter().map(String::as_str).collect();
 
         for (idx, arg) in func.sig.inputs.iter().enumerate() {
             let result = parse_function_parameter(

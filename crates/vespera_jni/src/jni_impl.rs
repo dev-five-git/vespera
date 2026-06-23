@@ -369,9 +369,28 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
                     .await
                     .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
 
-                    let _ = with_cached_daemon_env(&jvm, |env| -> jni::errors::Result<()> {
-                        complete_future(env, &future_for_task, &response)
-                    });
+                    // ALWAYS-COMPLETE CONTRACT: the Java CompletableFuture must
+                    // resolve on every path or `dispatchAsync` callers hang
+                    // forever.  The cached-daemon completion can fail (daemon
+                    // attach during VM shutdown, or an OOM allocating the
+                    // response byte[]); on failure make a best-effort second
+                    // attempt with a tiny error payload (far less likely to OOM
+                    // than the full response) so the future still resolves with
+                    // an error rather than never.  If even that fails the JVM is
+                    // unrecoverable and nothing could complete it.
+                    let completed =
+                        with_cached_daemon_env(&jvm, |env| -> jni::errors::Result<()> {
+                            complete_future(env, &future_for_task, &response)
+                        });
+                    if completed.is_err() {
+                        let _ = with_cached_daemon_env(&jvm, |env| -> jni::errors::Result<()> {
+                            complete_future(
+                                env,
+                                &future_for_task,
+                                &vespera_inprocess::error_wire(500, "async completion failed"),
+                            )
+                        });
+                    }
                 });
             }));
             if scheduled.is_err() {

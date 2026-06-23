@@ -204,6 +204,42 @@ fn test_error_display_invalid_enum_value() {
 }
 
 #[test]
+fn invalid_enum_value_constructor_stores_bounded_value() {
+    // A clearly-oversized attacker value (far beyond the cap), so the bounded
+    // reflection is unambiguously shorter than the input.  The real security
+    // property is the CONSTANT ceiling (`cap + marker`), which holds no matter
+    // how huge the input is — a value only marginally over the cap can render a
+    // few chars longer than the input once the marker is appended, but it is
+    // still bounded, so that constant bound is what we assert.
+    let oversized = "가".repeat(MAX_REFLECTED_VALUE_CHARS * 4);
+    let err = TypedMultipartError::invalid_enum_value("status".to_string(), &oversized);
+
+    match err {
+        TypedMultipartError::InvalidEnumValue { value, .. } => {
+            assert!(value.ends_with("... (truncated)"));
+            assert!(
+                value.chars().count()
+                    <= MAX_REFLECTED_VALUE_CHARS + "... (truncated)".chars().count()
+            );
+            assert!(value.chars().count() < oversized.chars().count());
+        }
+        _ => panic!("expected InvalidEnumValue"),
+    }
+}
+
+#[test]
+fn invalid_bool_message_reflects_bounded_value() {
+    let oversized = "x".repeat(MAX_REFLECTED_VALUE_CHARS + 10);
+    let message = format!(
+        "invalid boolean value: `{}`",
+        truncate_reflected_value(&oversized)
+    );
+
+    assert!(message.contains("... (truncated)"));
+    assert!(!message.contains(&oversized));
+}
+
+#[test]
 fn test_error_display_nameless_field() {
     let err = TypedMultipartError::NamelessField;
     assert_eq!(err.to_string(), "Encountered a field without a name");

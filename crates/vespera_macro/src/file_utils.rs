@@ -47,7 +47,10 @@ pub fn path_to_include_str_literal(path: impl AsRef<Path>) -> String {
     normalize_display_path(path)
 }
 
-#[allow(dead_code)]
+// `#[cfg(test)]`: the only caller left is the test-only `collector::collect_metadata`
+// (plus this module's own tests); production scanning goes through
+// `collect_files_with_mtimes`, so the path-only wrapper never ships.
+#[cfg(test)]
 pub fn collect_files(folder_path: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(collect_files_with_mtimes(folder_path)?
         .into_iter()

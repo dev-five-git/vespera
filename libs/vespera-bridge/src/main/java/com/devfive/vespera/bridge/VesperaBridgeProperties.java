@@ -21,6 +21,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *     controller-enabled: false   # disable our controller (BYO controller)
  *     direct-retry-on-overflow: false # surface DIRECT overflow instead of retrying
  *     max-buffered-request-bytes: 10485760 # cap SYNC/ASYNC/DIRECT/STREAMING request buffering
+ *     max-buffered-response-bytes: 67108864 # cap SYNC heap-buffered response bodies
  * }</pre>
  */
 @ConfigurationProperties(prefix = "vespera.bridge")
@@ -91,6 +92,14 @@ public class VesperaBridgeProperties {
     private long maxBufferedRequestBytes = VesperaProxyController.DEFAULT_MAX_BUFFERED_REQUEST_BYTES;
 
     /**
+     * Maximum response-body bytes the Spring proxy will serve from the
+     * heap-buffered SYNC path. Default 64 MiB keeps SmartDispatch's small
+     * unsafe fast path bounded; set {@code 0} to restore unlimited SYNC
+     * response buffering. Large/unknown downloads should use streaming modes.
+     */
+    private long maxBufferedResponseBytes = VesperaProxyController.DEFAULT_MAX_BUFFERED_RESPONSE_BYTES;
+
+    /**
      * Thread count for the autoconfigured {@code vesperaBridgeAsyncResponseExecutor}
      * — the JVM-side pool that parses the ASYNC wire response off the native
      * completion thread.  Default {@code 0} preserves the historical sizing
@@ -138,6 +147,14 @@ public class VesperaBridgeProperties {
 
     public void setMaxBufferedRequestBytes(long maxBufferedRequestBytes) {
         this.maxBufferedRequestBytes = maxBufferedRequestBytes;
+    }
+
+    public long getMaxBufferedResponseBytes() {
+        return maxBufferedResponseBytes;
+    }
+
+    public void setMaxBufferedResponseBytes(long maxBufferedResponseBytes) {
+        this.maxBufferedResponseBytes = maxBufferedResponseBytes;
     }
 
     public int getAsyncPoolSize() {

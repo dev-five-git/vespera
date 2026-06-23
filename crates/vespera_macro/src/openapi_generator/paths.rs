@@ -36,8 +36,8 @@ type StorageFnSigs<'a> = HashMap<(Option<String>, &'a str), Option<&'a str>>;
 /// have an entry (e.g., during tests or for routes added without the attribute).
 pub(super) fn build_path_items(
     metadata: &CollectedMetadata,
-    known_schema_names: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schema_names: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
     file_cache: &HashMap<String, syn::File>,
     route_storage: &[StoredRouteInfo],
 ) -> syn::Result<(BTreeMap<String, PathItem>, BTreeSet<String>)> {

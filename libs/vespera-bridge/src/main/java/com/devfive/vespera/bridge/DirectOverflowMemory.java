@@ -4,9 +4,9 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Remembers which {@code (method, path)} routes have overflowed the pooled
- * DIRECT response buffer, so the proxy can skip DIRECT and stream those routes
- * directly on subsequent requests.
+ * Remembers which {@code (app, method, path, query)} targets have overflowed
+ * the pooled DIRECT response buffer, so the proxy can skip DIRECT and stream
+ * those targets directly on subsequent requests.
  *
  * <p>Without this, a known-large (e.g. download) route routed to
  * {@link DispatchMode#DIRECT} pays the DIRECT-overflow-then-stream
@@ -45,27 +45,36 @@ final class DirectOverflowMemory {
      * Whether a prior DIRECT dispatch of this route overflowed the pooled
      * buffer (and so should stream up front instead of re-attempting DIRECT).
      */
-    boolean shouldAvoidDirect(String method, String path) {
+    boolean shouldAvoidDirect(String appName, String method, String path, String query) {
         if (!hasEntries) {
             return false;
         }
-        return overflowed.contains(key(method, path));
+        return overflowed.contains(key(appName, method, path, query));
+    }
+
+    boolean shouldAvoidDirect(String method, String path) {
+        return shouldAvoidDirect(null, method, path, null);
     }
 
     /** Record that this route overflowed DIRECT so future requests stream. */
-    void recordOverflow(String method, String path) {
+    void recordOverflow(String appName, String method, String path, String query) {
         if (overflowed.size() >= maxEntries) {
             overflowed.clear();
         }
-        overflowed.add(key(method, path));
+        overflowed.add(key(appName, method, path, query));
         hasEntries = true;
+    }
+
+    void recordOverflow(String method, String path) {
+        recordOverflow(null, method, path, null);
     }
 
     int size() {
         return overflowed.size();
     }
 
-    private static String key(String method, String path) {
-        return method + ' ' + path;
+    private static String key(String appName, String method, String path, String query) {
+        return (appName == null || appName.isBlank() ? "_default" : appName)
+                + ' ' + method + ' ' + path + '?' + (query == null ? "" : query);
     }
 }

@@ -35,7 +35,6 @@ expression: "serde_json::to_string_pretty(&doc).unwrap()"
       }
     }
   },
-  "components": {},
   "tags": [
     {
       "name": "admin",

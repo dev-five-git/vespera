@@ -17,13 +17,13 @@ use crate::{
 /// `schema_type!` generated types can reference them.
 pub(super) fn build_schema_lookups(
     metadata: &CollectedMetadata,
-) -> (HashSet<String>, HashMap<String, String>) {
+) -> (HashSet<&str>, HashMap<&str, &str>) {
     let mut known_schema_names = HashSet::with_capacity(metadata.structs.len());
     let mut struct_definitions = HashMap::with_capacity(metadata.structs.len());
 
     for struct_meta in &metadata.structs {
-        struct_definitions.insert(struct_meta.name.clone(), struct_meta.definition.clone());
-        known_schema_names.insert(struct_meta.name.clone());
+        struct_definitions.insert(struct_meta.name.as_str(), struct_meta.definition.as_str());
+        known_schema_names.insert(struct_meta.name.as_str());
     }
 
     (known_schema_names, struct_definitions)
@@ -76,8 +76,8 @@ pub(super) fn build_struct_file_index(
 /// instead of scanning all route files per struct.
 pub(super) fn parse_component_schemas(
     metadata: &CollectedMetadata,
-    known_schema_names: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schema_names: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
     file_cache: &HashMap<String, syn::File>,
     struct_file_index: &HashMap<String, &str>,
 ) -> syn::Result<BTreeMap<String, vespera_core::schema::Schema>> {
@@ -245,7 +245,7 @@ mod tests {
 
         assert!(known_schema_names.contains("Hidden"));
         assert_eq!(
-            struct_definitions.get("Hidden").unwrap(),
+            *struct_definitions.get("Hidden").unwrap(),
             "struct Hidden { id: i32 }"
         );
     }

@@ -12,7 +12,7 @@ pub use path_scan::{fingerprints_from_scan, scan_route_folder};
 
 use crate::{
     error::{MacroResult, err_call_site},
-    file_utils::{collect_files, file_to_segments, normalize_display_path},
+    file_utils::{file_to_segments, normalize_display_path},
     metadata::{CollectedMetadata, RouteMetadata},
     route::{extract_doc_comment, extract_route_info},
     route_impl::StoredRouteInfo,
@@ -53,13 +53,19 @@ fn kebab_case_path(path: &str) -> String {
 ///
 /// Returns the metadata AND the parsed file ASTs, so downstream consumers
 /// (e.g., `openapi_generator`) can reuse them without re-reading files from disk.
-#[allow(dead_code, clippy::option_if_let_else, clippy::too_many_lines)]
+// Test-only convenience wrapper: `vespera!` / `export_app!` reach the collector
+// through `collect_metadata_from_files` (which reuses the cache's single
+// directory walk), so this folder-walking variant exists purely for the unit
+// tests that exercise the collector end-to-end. `#[cfg(test)]` keeps it (and its
+// `collect_files` dependency) out of the shipped proc-macro entirely.
+#[cfg(test)]
+#[allow(clippy::option_if_let_else, clippy::too_many_lines)]
 pub fn collect_metadata(
     folder_path: &Path,
     folder_name: &str,
     route_storage: &[StoredRouteInfo],
 ) -> MacroResult<(CollectedMetadata, HashMap<String, syn::File>)> {
-    let files = collect_files(folder_path).map_err(|e| err_call_site(format!("vespera! macro: failed to scan route folder '{}': {}. Verify the folder exists and is readable.", folder_path.display(), e)))?;
+    let files = crate::file_utils::collect_files(folder_path).map_err(|e| err_call_site(format!("vespera! macro: failed to scan route folder '{}': {}. Verify the folder exists and is readable.", folder_path.display(), e)))?;
     collect_metadata_from_files(
         files.iter().map(std::path::PathBuf::as_path),
         folder_path,

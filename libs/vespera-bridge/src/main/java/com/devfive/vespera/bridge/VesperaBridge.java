@@ -801,6 +801,7 @@ public class VesperaBridge {
             String query,
             Map<String, String> headers,
             byte[] body) {
+        requireRequestInputs(method, path, headers);
         return VesperaWireCodec.encodeRequest(null, method, path, query, headers, body);
     }
 
@@ -810,6 +811,7 @@ public class VesperaBridge {
             String query,
             HeaderSource headers,
             byte[] body) {
+        requireRequestInputs(method, path);
         return VesperaWireCodec.encodeRequest(null, method, path, query, headers, body);
     }
 
@@ -868,6 +870,10 @@ public class VesperaBridge {
     private static void requireRequestInputs(String method, String path) {
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(path, "path");
+        if (path.indexOf('?') >= 0) {
+            throw new IllegalArgumentException(
+                    "path must not contain '?' — pass the raw query string via the query parameter");
+        }
     }
 
     /**

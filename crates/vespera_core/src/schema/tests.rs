@@ -37,6 +37,19 @@ fn object_helper_initializes_collections() {
 }
 
 #[test]
+fn object_empty_helper_avoids_empty_collection_allocations() {
+    let schema = Schema::object_empty();
+
+    assert_eq!(schema.schema_type, Some(SchemaType::Object));
+    assert!(schema.properties.is_none());
+    assert!(schema.required.is_none());
+    assert_eq!(
+        serde_json::to_string(&schema).unwrap(),
+        r#"{"type":"object"}"#
+    );
+}
+
+#[test]
 fn serialize_number_constraint_none_serializes_null() {
     // Direct call bypasses skip_serializing_if to cover the None branch
     let result = super::serialize_number_constraint(&None, serde_json::value::Serializer).unwrap();
@@ -238,7 +251,7 @@ fn compiled_json_parse_failure_sentinel_is_machine_detectable() {
 fn additional_properties_bool_serializes_bare() {
     let schema = Schema {
         additional_properties: Some(AdditionalProperties::Bool(false)),
-        ..Schema::object()
+        ..Schema::object_empty()
     };
     let json = serde_json::to_string(&schema).unwrap();
     assert!(
@@ -253,7 +266,7 @@ fn additional_properties_schema_ref_serializes_as_ref() {
         additional_properties: Some(AdditionalProperties::Schema(SchemaRef::Ref(
             Reference::schema("User"),
         ))),
-        ..Schema::object()
+        ..Schema::object_empty()
     };
     let json = serde_json::to_string(&schema).unwrap();
     assert!(

@@ -1,4 +1,8 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::{
+    borrow::Borrow,
+    collections::{BTreeMap, HashMap, HashSet},
+    hash::Hash,
+};
 
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
@@ -16,8 +20,8 @@ pub(super) fn build_struct_variant_properties(
     fields_named: &syn::FieldsNamed,
     enum_rename_all: Option<&str>,
     variant_attrs: &[syn::Attribute],
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> (BTreeMap<String, SchemaRef>, Vec<String>) {
     let mut variant_properties = BTreeMap::new();
     let mut variant_required = Vec::with_capacity(fields_named.named.len());
@@ -80,8 +84,8 @@ pub(super) fn build_struct_variant_properties(
 pub(super) fn build_variant_data_schema(
     variant: &syn::Variant,
     enum_rename_all: Option<&str>,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Option<SchemaRef> {
     match &variant.fields {
         syn::Fields::Unit => None,

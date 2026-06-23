@@ -10,7 +10,7 @@ use crate::{
 use proc_macro2::Span;
 
 use super::{
-    cache::{MergeSpecCache, MergeSpecRead},
+    cache::{MergeSpecCache, MergeSpecRead, path_fingerprint},
     path_utils::{current_crate_tag, find_target_dir},
 };
 
@@ -24,6 +24,11 @@ pub struct OpenApiWriteResult {
     pub spec_pretty: Option<String>,
 }
 
+pub(super) struct EmbeddedSpecWrite {
+    pub(super) tokens: proc_macro2::TokenStream,
+    pub(super) fingerprint: Option<u64>,
+}
+
 /// Whether `path` already holds exactly `content`.
 ///
 /// A cheap `metadata().len()` pre-check skips the full `read_to_string`
@@ -35,6 +40,13 @@ pub struct OpenApiWriteResult {
 pub(super) fn content_unchanged(path: &Path, content: &str) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.len() == content.len() as u64)
         && std::fs::read_to_string(path).is_ok_and(|existing| existing == content)
+}
+
+pub(super) fn write_if_changed(path: &Path, content: &str) -> std::io::Result<Option<u64>> {
+    if !content_unchanged(path, content) {
+        std::fs::write(path, content)?;
+    }
+    Ok(path_fingerprint(path))
 }
 
 /// Generate `OpenAPI` JSON and write to files, returning docs info
@@ -262,24 +274,19 @@ pub(super) fn load_validated_sidecar_specs(
 
 /// Write the pretty-spec sidecar (write-if-differs).  Best-effort like
 /// the cache itself: failures only cost a future cache miss.
-pub(super) fn write_pretty_sidecar(spec_pretty: Option<&str>) {
-    let Some(pretty) = spec_pretty else {
-        return;
-    };
+pub(super) fn write_pretty_sidecar(spec_pretty: Option<&str>) -> Option<u64> {
+    let pretty = spec_pretty?;
     let path = pretty_sidecar_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let should_write = !content_unchanged(&path, pretty);
-    if should_write {
-        let _ = std::fs::write(&path, pretty);
-    }
+    write_if_changed(&path, pretty).ok().flatten()
 }
 
 /// Write compact spec JSON to target dir for `include_str!` embedding.
 pub(super) fn write_spec_for_embedding(
     spec_json: Option<String>,
-) -> syn::Result<Option<proc_macro2::TokenStream>> {
+) -> syn::Result<Option<EmbeddedSpecWrite>> {
     let Some(json) = spec_json else {
         return Ok(None);
     };
@@ -296,20 +303,20 @@ pub(super) fn write_spec_for_embedding(
             )
         })?;
     }
-    let should_write = !content_unchanged(&spec_file, &json);
-    if should_write {
-        std::fs::write(&spec_file, &json).map_err(|e| {
-            syn::Error::new(
-                Span::call_site(),
-                format!(
-                    "vespera! macro: failed to write spec file '{}': {}",
-                    spec_file.display(),
-                    e
-                ),
-            )
-        })?;
-    }
-    Ok(Some(embed_tokens(&spec_file)))
+    let fingerprint = write_if_changed(&spec_file, &json).map_err(|e| {
+        syn::Error::new(
+            Span::call_site(),
+            format!(
+                "vespera! macro: failed to write spec file '{}': {}",
+                spec_file.display(),
+                e
+            ),
+        )
+    })?;
+    Ok(Some(EmbeddedSpecWrite {
+        tokens: embed_tokens(&spec_file),
+        fingerprint,
+    }))
 }
 
 #[cfg(test)]

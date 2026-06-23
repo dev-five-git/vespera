@@ -32,8 +32,8 @@ pub(super) fn convert_to_inline_schema(field_schema: SchemaRef, is_optional: boo
 
 pub(super) fn is_known_type(
     ty: &Type,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &HashMap<String, String>,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
 ) -> bool {
     if is_primitive_type(ty) {
         return true;
@@ -47,7 +47,9 @@ pub(super) fn is_known_type(
 
         let segment = path.segments.last().unwrap();
         let ident_str = segment.ident.to_string();
-        if struct_definitions.contains_key(&ident_str) || known_schemas.contains(&ident_str) {
+        if struct_definitions.contains_key(ident_str.as_str())
+            || known_schemas.contains(ident_str.as_str())
+        {
             return true;
         }
 
@@ -102,12 +104,12 @@ mod tests {
     #[case("i32", HashSet::new(), HashMap::new(), true)]
     #[case("User", HashSet::new(), {
         let mut map = HashMap::new();
-        map.insert("User".to_string(), "pub struct User { id: i32 }".to_string());
+        map.insert("User", "pub struct User { id: i32 }");
         map
     }, true)]
     #[case("Product", {
         let mut set = HashSet::new();
-        set.insert("Product".to_string());
+        set.insert("Product");
         set
     }, HashMap::new(), true)]
     #[case("Vec<i32>", HashSet::new(), HashMap::new(), true)]
@@ -115,8 +117,8 @@ mod tests {
     #[case("UnknownType", HashSet::new(), HashMap::new(), false)]
     fn known_type(
         #[case] type_str: &str,
-        #[case] known_schemas: HashSet<String>,
-        #[case] struct_definitions: HashMap<String, String>,
+        #[case] known_schemas: HashSet<&str>,
+        #[case] struct_definitions: HashMap<&str, &str>,
         #[case] expected: bool,
     ) {
         let ty: Type = syn::parse_str(type_str).unwrap();

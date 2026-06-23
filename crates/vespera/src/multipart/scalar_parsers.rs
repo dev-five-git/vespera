@@ -10,8 +10,8 @@ use std::borrow::Cow;
 
 use super::{
     DEFAULT_STRING_FIELD_LIMIT_BYTES, MeteredField, STRING_INITIAL_CAPACITY_BYTES,
-    TINY_SCALAR_INITIAL_CAPACITY_BYTES, TryFromFieldWithState, TypedMultipartError, read_field_data,
-    str_to_bool, tiny_scalar_limit,
+    TINY_SCALAR_INITIAL_CAPACITY_BYTES, TryFromFieldWithState, TypedMultipartError,
+    read_field_data, str_to_bool, tiny_scalar_limit, truncate_reflected_value,
 };
 
 impl<S: Send + Sync> TryFromFieldWithState<S> for String {
@@ -25,10 +25,10 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for String {
         // `Some(usize::MAX)` (set by the derive macro) and stays unbounded;
         // an explicit byte size wins as `Some(n)`.
         let limit = limit_bytes.unwrap_or(DEFAULT_STRING_FIELD_LIMIT_BYTES);
-        let (field, data) =
+        let (field_name, data) =
             read_field_data(field, Some(limit), STRING_INITIAL_CAPACITY_BYTES).await?;
         Self::from_utf8(data).map_err(|e| TypedMultipartError::WrongFieldType {
-            field_name: field.name().unwrap_or_default().to_string(),
+            field_name,
             wanted: Cow::Borrowed("String"),
             source: e.to_string(),
         })
@@ -43,21 +43,24 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for bool {
         limit_bytes: Option<usize>,
         _state: &S,
     ) -> Result<Self, TypedMultipartError> {
-        let (field, data) = read_field_data(
+        let (field_name, data) = read_field_data(
             field,
             Some(tiny_scalar_limit(limit_bytes)),
             TINY_SCALAR_INITIAL_CAPACITY_BYTES,
         )
         .await?;
         let text = std::str::from_utf8(&data).map_err(|e| TypedMultipartError::WrongFieldType {
-            field_name: field.name().unwrap_or_default().to_string(),
+            field_name: field_name.clone(),
             wanted: Cow::Borrowed("bool"),
             source: e.to_string(),
         })?;
         str_to_bool(text).ok_or_else(|| TypedMultipartError::WrongFieldType {
-            field_name: field.name().unwrap_or_default().to_string(),
+            field_name,
             wanted: Cow::Borrowed("bool"),
-            source: format!("invalid boolean value: `{text}`"),
+            source: format!(
+                "invalid boolean value: `{}`",
+                truncate_reflected_value(text)
+            ),
         })
     }
 }
@@ -73,21 +76,21 @@ macro_rules! impl_try_from_field_for_number {
                     limit_bytes: Option<usize>,
                     _state: &S,
                 ) -> Result<Self, TypedMultipartError> {
-                    let (field, data) = read_field_data(
+                    let (field_name, data) = read_field_data(
                         field,
                         Some(tiny_scalar_limit(limit_bytes)),
                         TINY_SCALAR_INITIAL_CAPACITY_BYTES,
                     ).await?;
                     let text = std::str::from_utf8(&data).map_err(|e| {
                         TypedMultipartError::WrongFieldType {
-                            field_name: field.name().unwrap_or_default().to_string(),
+                            field_name: field_name.clone(),
                             wanted: Cow::Borrowed(stringify!($ty)),
                             source: e.to_string(),
                         }
                     })?;
                     text.trim().parse::<$ty>().map_err(|e| {
                         TypedMultipartError::WrongFieldType {
-                            field_name: field.name().unwrap_or_default().to_string(),
+                            field_name,
                             wanted: Cow::Borrowed(stringify!($ty)),
                             source: e.to_string(),
                         }
@@ -110,14 +113,14 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for char {
         limit_bytes: Option<usize>,
         _state: &S,
     ) -> Result<Self, TypedMultipartError> {
-        let (field, data) = read_field_data(
+        let (field_name, data) = read_field_data(
             field,
             Some(tiny_scalar_limit(limit_bytes)),
             TINY_SCALAR_INITIAL_CAPACITY_BYTES,
         )
         .await?;
         let text = std::str::from_utf8(&data).map_err(|e| TypedMultipartError::WrongFieldType {
-            field_name: field.name().unwrap_or_default().to_string(),
+            field_name: field_name.clone(),
             wanted: Cow::Borrowed("char"),
             source: e.to_string(),
         })?;
@@ -125,7 +128,7 @@ impl<S: Send + Sync> TryFromFieldWithState<S> for char {
         match (chars.next(), chars.next()) {
             (Some(c), None) => Ok(c),
             _ => Err(TypedMultipartError::WrongFieldType {
-                field_name: field.name().unwrap_or_default().to_string(),
+                field_name,
                 wanted: Cow::Borrowed("char"),
                 source: "expected exactly one character".to_string(),
             }),

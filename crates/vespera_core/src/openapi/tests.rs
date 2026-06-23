@@ -35,6 +35,9 @@ fn create_path_item(summary: &str) -> PathItem {
             responses: BTreeMap::new(),
             security: None,
             deprecated: None,
+            external_docs: None,
+            callbacks: None,
+            servers: None,
         }),
         ..Default::default()
     }
@@ -84,6 +87,9 @@ fn create_post_path_item(summary: &str) -> PathItem {
             responses: BTreeMap::new(),
             security: None,
             deprecated: None,
+            external_docs: None,
+            callbacks: None,
+            servers: None,
         }),
         ..Default::default()
     }
@@ -151,7 +157,7 @@ fn test_merge_same_path_same_method_self_wins() {
 fn test_merge_schemas() {
     let mut base = create_base_openapi();
     let mut base_schemas = BTreeMap::new();
-    base_schemas.insert("User".to_string(), Schema::object());
+    base_schemas.insert("User".to_string(), Schema::object_empty());
     base.components = Some(Components {
         schemas: Some(base_schemas),
         responses: None,
@@ -164,7 +170,7 @@ fn test_merge_schemas() {
 
     let mut other = create_base_openapi();
     let mut other_schemas = BTreeMap::new();
-    other_schemas.insert("Post".to_string(), Schema::object());
+    other_schemas.insert("Post".to_string(), Schema::object_empty());
     other_schemas.insert("User".to_string(), Schema::string()); // Conflict
     other.components = Some(Components {
         schemas: Some(other_schemas),
@@ -195,7 +201,7 @@ fn test_merge_schemas_when_self_has_no_components() {
 
     let mut other = create_base_openapi();
     let mut other_schemas = BTreeMap::new();
-    other_schemas.insert("Post".to_string(), Schema::object());
+    other_schemas.insert("Post".to_string(), Schema::object_empty());
     other.components = Some(Components {
         schemas: Some(other_schemas),
         responses: None,
@@ -429,9 +435,37 @@ fn test_merge_empty_component_maps_are_absent() {
 }
 
 #[test]
+fn empty_components_do_not_serialize() {
+    let api = OpenApi {
+        components: Some(Components::default()),
+        ..create_base_openapi()
+    };
+
+    let json = serde_json::to_string(&api).unwrap();
+
+    assert!(
+        !json.contains("components"),
+        "empty components should be omitted: {json}"
+    );
+}
+
+#[test]
+fn license_identifier_serializes_when_present() {
+    let license = License {
+        name: "Apache-2.0".to_string(),
+        identifier: Some("Apache-2.0".to_string()),
+        url: None,
+    };
+
+    let json = serde_json::to_string(&license).unwrap();
+
+    assert_eq!(json, r#"{"name":"Apache-2.0","identifier":"Apache-2.0"}"#);
+}
+
+#[test]
 fn test_merge_empty_component_maps_do_not_create_empty_sections() {
     let mut schemas = BTreeMap::new();
-    schemas.insert("User".to_string(), Schema::object());
+    schemas.insert("User".to_string(), Schema::object_empty());
 
     let mut base = create_base_openapi();
     base.components = Some(Components {

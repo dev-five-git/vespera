@@ -203,6 +203,26 @@ fn test_epoch_skips_metadata_syscall() {
     );
 }
 
+#[serial_test::serial]
+#[test]
+fn test_missing_file_content_is_negative_cached_within_epoch() {
+    let temp_dir = TempDir::new().unwrap();
+    let missing_path = temp_dir.path().join("missing.rs");
+
+    reset_metadata_call_count();
+    bump_epoch();
+    let before = metadata_call_count();
+
+    assert!(get_struct_definition(&missing_path, "Missing").is_none());
+    assert!(get_struct_definition(&missing_path, "Missing").is_none());
+
+    assert_eq!(
+        metadata_call_count() - before,
+        1,
+        "missing file should be stat'd once in one epoch"
+    );
+}
+
 /// Verify cross-entry invalidation semantics.
 ///
 /// In a long-lived rust-analyzer proc-macro server the same thread handles

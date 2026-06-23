@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::SchemaRef;
+use crate::{SchemaRef, openapi::Server, schema::ExternalDocumentation};
 
 /// HTTP method
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -196,12 +196,24 @@ pub struct Operation {
     /// Whether this operation is deprecated
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deprecated: Option<bool>,
+    /// External documentation for this operation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_docs: Option<ExternalDocumentation>,
+    /// Callback definitions keyed by runtime expression.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callbacks: Option<BTreeMap<String, Box<PathItem>>>,
+    /// Alternative servers for this operation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub servers: Option<Vec<Server>>,
 }
 
 /// Path Item definition (all HTTP methods for a specific path)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PathItem {
+    /// Reference to another path item.
+    #[serde(rename = "$ref", skip_serializing_if = "Option::is_none")]
+    pub ref_path: Option<String>,
     /// GET method
     #[serde(skip_serializing_if = "Option::is_none")]
     pub get: Option<Operation>,
@@ -235,6 +247,9 @@ pub struct PathItem {
     /// Description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Alternative servers for all operations in this path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub servers: Option<Vec<Server>>,
 }
 
 impl PathItem {
@@ -349,6 +364,9 @@ mod tests {
             responses: BTreeMap::new(),
             security: None,
             deprecated: None,
+            external_docs: None,
+            callbacks: None,
+            servers: None,
         };
 
         // Test setting GET operation
@@ -420,6 +438,9 @@ mod tests {
             responses: BTreeMap::new(),
             security: None,
             deprecated: None,
+            external_docs: None,
+            callbacks: None,
+            servers: None,
         };
 
         let operation2 = Operation {
@@ -432,6 +453,9 @@ mod tests {
             responses: BTreeMap::new(),
             security: None,
             deprecated: None,
+            external_docs: None,
+            callbacks: None,
+            servers: None,
         };
 
         // Set first operation
@@ -447,6 +471,49 @@ mod tests {
             path_item.get.as_ref().unwrap().operation_id,
             Some("second".to_string())
         );
+    }
+
+    #[test]
+    fn operation_and_path_item_optional_openapi_fields_serialize_when_present() {
+        let mut callbacks = BTreeMap::new();
+        callbacks.insert(
+            "{$request.body#/callbackUrl}".to_string(),
+            Box::new(PathItem::default()),
+        );
+        let operation = Operation {
+            operation_id: None,
+            tags: None,
+            summary: None,
+            description: None,
+            parameters: None,
+            request_body: None,
+            responses: BTreeMap::new(),
+            security: None,
+            deprecated: None,
+            external_docs: None,
+            callbacks: Some(callbacks),
+            servers: Some(vec![Server {
+                url: "https://api.example.com".to_string(),
+                description: None,
+                variables: None,
+            }]),
+        };
+        let path_item = PathItem {
+            ref_path: Some("#/paths/~1users".to_string()),
+            get: Some(operation),
+            servers: Some(vec![Server {
+                url: "https://path.example.com".to_string(),
+                description: None,
+                variables: None,
+            }]),
+            ..PathItem::default()
+        };
+
+        let json = serde_json::to_string(&path_item).unwrap();
+
+        assert!(json.contains("\"$ref\":\"#/paths/~1users\""));
+        assert!(json.contains("callbacks"));
+        assert!(json.contains("servers"));
     }
 
     #[rstest]

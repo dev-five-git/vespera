@@ -42,9 +42,19 @@ pub struct Contact {
 pub struct License {
     /// License name
     pub name: String,
+    /// SPDX license expression or identifier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identifier: Option<String>,
     /// License URL
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+}
+
+#[allow(clippy::ref_option)] // serde skip_serializing_if mandates &Option<T> signature
+fn is_empty_components(value: &Option<Components>) -> bool {
+    value
+        .as_ref()
+        .is_none_or(|components| !has_any_component_map(components))
 }
 
 /// API information
@@ -132,7 +142,7 @@ pub struct OpenApi {
     /// Path definitions
     pub paths: BTreeMap<String, PathItem>,
     /// Components (reusable components)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "is_empty_components")]
     pub components: Option<Components>,
     /// Security requirements
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -216,6 +226,8 @@ fn merge_path_item(into: &mut PathItem, other: PathItem) {
         parameters,
         summary,
         description,
+        ref_path,
+        servers,
     } = other;
     if into.get.is_none() {
         into.get = get;
@@ -249,6 +261,12 @@ fn merge_path_item(into: &mut PathItem, other: PathItem) {
     }
     if into.description.is_none() {
         into.description = description;
+    }
+    if into.ref_path.is_none() {
+        into.ref_path = ref_path;
+    }
+    if into.servers.is_none() {
+        into.servers = servers;
     }
 }
 

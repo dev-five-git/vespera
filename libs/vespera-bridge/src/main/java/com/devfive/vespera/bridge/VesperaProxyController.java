@@ -72,6 +72,7 @@ public class VesperaProxyController {
     private final Executor asyncResponseExecutor;
     private final boolean directRetryOnOverflow;
     private final long maxBufferedRequestBytes;
+    private final long maxBufferedResponseBytes;
 
     // Adaptive DIRECT-overflow avoidance: routes that overflowed the pooled
     // direct buffer once are streamed up front thereafter, removing the
@@ -81,6 +82,7 @@ public class VesperaProxyController {
     private final DirectOverflowMemory directOverflowMemory = new DirectOverflowMemory();
 
     static final long DEFAULT_MAX_BUFFERED_REQUEST_BYTES = 64L * 1024L * 1024L;
+    static final long DEFAULT_MAX_BUFFERED_RESPONSE_BYTES = 64L * 1024L * 1024L;
 
     /**
      * One-time guard for the "custom resolver routed an UNSAFE method to
@@ -96,7 +98,7 @@ public class VesperaProxyController {
     public VesperaProxyController(AppNameResolver appResolver,
                                   DispatchModeResolver modeResolver) {
         this(appResolver, modeResolver, ForkJoinPool.commonPool(), true,
-                DEFAULT_MAX_BUFFERED_REQUEST_BYTES);
+                DEFAULT_MAX_BUFFERED_REQUEST_BYTES, DEFAULT_MAX_BUFFERED_RESPONSE_BYTES);
     }
 
     public VesperaProxyController(AppNameResolver appResolver,
@@ -104,19 +106,30 @@ public class VesperaProxyController {
                                     Executor asyncResponseExecutor,
                                     boolean directRetryOnOverflow) {
         this(appResolver, modeResolver, asyncResponseExecutor, directRetryOnOverflow,
-                DEFAULT_MAX_BUFFERED_REQUEST_BYTES);
+                DEFAULT_MAX_BUFFERED_REQUEST_BYTES, DEFAULT_MAX_BUFFERED_RESPONSE_BYTES);
+    }
+
+    public VesperaProxyController(AppNameResolver appResolver,
+                                  DispatchModeResolver modeResolver,
+                                   Executor asyncResponseExecutor,
+                                   boolean directRetryOnOverflow,
+                                   long maxBufferedRequestBytes) {
+        this(appResolver, modeResolver, asyncResponseExecutor, directRetryOnOverflow,
+                maxBufferedRequestBytes, DEFAULT_MAX_BUFFERED_RESPONSE_BYTES);
     }
 
     public VesperaProxyController(AppNameResolver appResolver,
                                   DispatchModeResolver modeResolver,
                                   Executor asyncResponseExecutor,
                                   boolean directRetryOnOverflow,
-                                  long maxBufferedRequestBytes) {
+                                  long maxBufferedRequestBytes,
+                                  long maxBufferedResponseBytes) {
         this.appResolver = Objects.requireNonNull(appResolver, "appResolver");
         this.modeResolver = Objects.requireNonNull(modeResolver, "modeResolver");
         this.asyncResponseExecutor = Objects.requireNonNull(asyncResponseExecutor, "asyncResponseExecutor");
         this.directRetryOnOverflow = directRetryOnOverflow;
         this.maxBufferedRequestBytes = Math.max(0, maxBufferedRequestBytes);
+        this.maxBufferedResponseBytes = Math.max(0, maxBufferedResponseBytes);
     }
 
     @RequestMapping(value = "/**", consumes = MediaType.ALL_VALUE)
@@ -150,7 +163,8 @@ public class VesperaProxyController {
         // dispatch again. `shouldAvoidDirect` is a single volatile read until
         // the first overflow is recorded, so non-overflowing apps pay nothing.
         final DispatchMode effectiveMode =
-                (mode == DispatchMode.DIRECT && directOverflowMemory.shouldAvoidDirect(method, path))
+                (mode == DispatchMode.DIRECT
+                        && directOverflowMemory.shouldAvoidDirect(appName, method, path, query))
                         ? DispatchMode.STREAMING
                         : mode;
 
@@ -166,7 +180,8 @@ public class VesperaProxyController {
         switch (effectiveMode) {
             case SYNC:
                 dispatchSync(response, appName, method, path, query, headers,
-                        readBody(request, shape, maxBufferedRequestBytes));
+                        readBody(request, shape, maxBufferedRequestBytes),
+                        maxBufferedResponseBytes);
                 return null;
             case ASYNC:
                 return dispatchAsyncFlow(appName, method, path, query, headers,
@@ -369,10 +384,34 @@ public class VesperaProxyController {
             HttpServletResponse response,
             String appName, String method, String path, String query,
             VesperaBridge.HeaderSource headers, byte[] body) throws IOException {
+        dispatchSync(response, appName, method, path, query, headers, body, 0);
+    }
+
+    private static void dispatchSync(
+            HttpServletResponse response,
+            String appName, String method, String path, String query,
+            VesperaBridge.HeaderSource headers, byte[] body,
+            long maxBufferedResponseBytes) throws IOException {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
         byte[] wireResp = VesperaBridge.dispatchBytes(wireReq);
+        rejectOversizedBufferedResponse(wireResp, maxBufferedResponseBytes);
         writeWireResponse(wireResp, response, method);
+    }
+
+    private static void rejectOversizedBufferedResponse(byte[] wireResp, long maxBufferedResponseBytes) {
+        long cap = Math.max(0, maxBufferedResponseBytes);
+        if (cap <= 0) {
+            return;
+        }
+        int headerLen = VesperaWireCodec.readHeaderLength(wireResp);
+        long bodyLen = (long) wireResp.length - 4L - headerLen;
+        if (bodyLen > cap) {
+            throw new ResponseStatusException(
+                    HttpStatus.PAYLOAD_TOO_LARGE,
+                    "buffered response body exceeds vespera.bridge.max-buffered-response-bytes="
+                            + cap + " (actual " + bodyLen + " bytes); use streaming dispatch");
+        }
     }
 
     /**
@@ -567,7 +606,8 @@ public class VesperaProxyController {
                 log.debug("DispatchModeResolver routed unsafe method {} to DIRECT; "
                         + "downgrading to SYNC.", method);
             }
-            dispatchSync(response, appName, method, path, query, headers, body);
+            dispatchSync(response, appName, method, path, query, headers, body,
+                    maxBufferedResponseBytes);
             return;
         }
         ByteBuffer wireResp;
@@ -598,7 +638,7 @@ public class VesperaProxyController {
                 // in proxy()) — avoiding a repeated DIRECT-overflow-then-stream
                 // double dispatch on a known-large route. Recorded only on this
                 // safe + retry path, where we actually fall back to streaming.
-                directOverflowMemory.recordOverflow(method, path);
+                directOverflowMemory.recordOverflow(appName, method, path, query);
                 dispatchStreaming(response, appName, method, path, query, headers, body);
                 return;
             }

@@ -785,10 +785,7 @@ fn test_non_path_extractor_generates_params_and_extends() {
     let sig: syn::Signature = syn::parse_str("fn search(Query(params): Query<SearchParams>, TypedHeader(auth): TypedHeader<Authorization>) -> String").unwrap();
 
     let mut struct_definitions = HashMap::new();
-    struct_definitions.insert(
-        "SearchParams".to_string(),
-        "pub struct SearchParams { pub q: String }".to_string(),
-    );
+    struct_definitions.insert("SearchParams", "pub struct SearchParams { pub q: String }");
 
     let op = build_operation_from_function(
         &sig,

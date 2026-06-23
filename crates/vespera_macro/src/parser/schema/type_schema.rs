@@ -19,6 +19,14 @@ mod tests {
     use super::conversion::{MAX_SCHEMA_RECURSION_DEPTH, SCHEMA_RECURSION_DEPTH};
     use super::*;
 
+    fn empty_known() -> HashSet<String> {
+        HashSet::new()
+    }
+
+    fn empty_struct_definitions() -> HashMap<String, String> {
+        HashMap::new()
+    }
+
     #[rstest]
     #[case("HashMap<String, i32>", Some(SchemaType::Object), true)]
     #[case("Option<String>", Some(SchemaType::String), false)] // nullable check
@@ -28,7 +36,7 @@ mod tests {
         #[case] expect_additional_props: bool,
     ) {
         let ty: syn::Type = syn::parse_str(ty_src).unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(schema.schema_type, expected_type);
             if expect_additional_props {
@@ -48,7 +56,7 @@ mod tests {
         known.insert("User".to_string());
 
         let ty: syn::Type = syn::parse_str("Option<User>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known, &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions());
 
         match schema_ref {
             SchemaRef::Inline(schema) => {
@@ -73,12 +81,12 @@ mod tests {
                 segments: syn::punctuated::Punctuated::new(),
             },
         });
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         assert!(matches!(schema_ref, SchemaRef::Inline(_)));
 
         // Reference type delegates to inner
         let ty: Type = syn::parse_str("&i32").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Integer));
         } else {
@@ -92,11 +100,11 @@ mod tests {
         known_schemas.insert("Known".to_string());
 
         let ty: Type = syn::parse_str("Known").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &empty_struct_definitions());
         assert!(matches!(schema_ref, SchemaRef::Ref(_)));
 
         let ty: Type = syn::parse_str("UnknownType").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &empty_struct_definitions());
         assert!(matches!(schema_ref, SchemaRef::Inline(_)));
     }
 
@@ -156,7 +164,7 @@ mod tests {
         known_schemas.insert("Value".to_string());
 
         let ty: Type = syn::parse_str(ty_src).unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &known_schemas, &empty_struct_definitions());
         match expected_ref {
             Some(expected) => {
                 let SchemaRef::Inline(schema) = schema_ref else {
@@ -190,7 +198,7 @@ mod tests {
     #[test]
     fn test_parse_type_to_schema_ref_vec_without_args() {
         let ty: Type = syn::parse_str("Vec").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         // Vec without angle brackets should return object schema
         assert!(matches!(schema_ref, SchemaRef::Inline(_)));
     }
@@ -200,7 +208,7 @@ mod tests {
     fn test_parse_type_to_schema_ref_unknown_custom_type() {
         // MyUnknownType is not in known_schemas, should return inline object schema
         let ty: Type = syn::parse_str("MyUnknownType").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Object));
         } else {
@@ -213,7 +221,7 @@ mod tests {
     fn test_parse_type_to_schema_ref_qualified_unknown_type() {
         // crate::models::UnknownStruct is not in known_schemas
         let ty: Type = syn::parse_str("crate::models::UnknownStruct").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Object));
         } else {
@@ -225,7 +233,7 @@ mod tests {
     #[test]
     fn test_parse_type_to_schema_ref_btreemap() {
         let ty: Type = syn::parse_str("BTreeMap<String, i32>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Object));
             assert!(schema.additional_properties.is_some());
@@ -238,7 +246,7 @@ mod tests {
     #[test]
     fn test_parse_type_to_schema_ref_box_type() {
         let ty: Type = syn::parse_str("Box<String>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         // Box<T> should be transparent - returns T's schema
         match schema_ref {
             SchemaRef::Inline(schema) => {
@@ -253,7 +261,7 @@ mod tests {
         let mut known = HashSet::new();
         known.insert("User".to_string());
         let ty: Type = syn::parse_str("Box<User>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known, &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions());
         // Box<User> should return User's schema ref
         match schema_ref {
             SchemaRef::Ref(reference) => {
@@ -268,7 +276,7 @@ mod tests {
     fn test_parse_type_to_schema_ref_has_one_entity() {
         // HasOne<super::user::Entity> should produce nullable ref to UserSchema
         let ty: Type = syn::parse_str("HasOne<super::user::Entity>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         match schema_ref {
             SchemaRef::Inline(schema) => {
                 // Should have ref_path to UserSchema and be nullable
@@ -286,7 +294,7 @@ mod tests {
     fn test_parse_type_to_schema_ref_has_one_fallback() {
         // HasOne<i32> should fallback to generic object (no Entity)
         let ty: Type = syn::parse_str("HasOne<i32>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         match schema_ref {
             SchemaRef::Inline(schema) => {
                 // Fallback: generic object
@@ -301,7 +309,7 @@ mod tests {
     fn test_parse_type_to_schema_ref_has_one_non_entity_path() {
         // HasOne<crate::models::User> - path doesn't end with Entity
         let ty: Type = syn::parse_str("HasOne<crate::models::User>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         match schema_ref {
             SchemaRef::Inline(schema) => {
                 // Fallback: generic object since not "Entity"
@@ -316,7 +324,7 @@ mod tests {
     fn test_parse_type_to_schema_ref_has_many_entity() {
         // HasMany<super::comment::Entity> should produce array of refs
         let ty: Type = syn::parse_str("HasMany<super::comment::Entity>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         match schema_ref {
             SchemaRef::Inline(schema) => {
                 // Should be array type
@@ -336,7 +344,7 @@ mod tests {
     fn test_parse_type_to_schema_ref_has_many_fallback() {
         // HasMany<String> should fallback to array of objects
         let ty: Type = syn::parse_str("HasMany<String>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         match schema_ref {
             SchemaRef::Inline(schema) => {
                 assert_eq!(schema.schema_type, Some(SchemaType::Array));
@@ -358,7 +366,7 @@ mod tests {
         let mut known = HashSet::new();
         known.insert("UserSchema".to_string());
         let ty: Type = syn::parse_str("crate::models::user::Schema").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known, &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions());
         match schema_ref {
             SchemaRef::Ref(reference) => {
                 assert_eq!(reference.ref_path, "#/components/schemas/UserSchema");
@@ -373,7 +381,7 @@ mod tests {
         let mut known = HashSet::new();
         known.insert("userSchema".to_string());
         let ty: Type = syn::parse_str("crate::models::user::Schema").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known, &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions());
         match schema_ref {
             SchemaRef::Ref(reference) => {
                 assert_eq!(reference.ref_path, "#/components/schemas/userSchema");
@@ -386,7 +394,7 @@ mod tests {
     fn test_parse_type_to_schema_ref_module_schema_path_fallback() {
         // crate::models::user::Schema with no known schemas should use Schema as-is
         let ty: Type = syn::parse_str("crate::models::user::Schema").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         // Falls through to unknown type handling
         match schema_ref {
             SchemaRef::Inline(schema) => {
@@ -407,7 +415,7 @@ mod tests {
         let mut known = HashSet::new();
         known.insert("Schema".to_string());
 
-        let schema_ref = parse_type_to_schema_ref(&ty, &known, &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions());
         match schema_ref {
             SchemaRef::Ref(reference) => {
                 assert_eq!(reference.ref_path, "#/components/schemas/Schema");
@@ -430,7 +438,7 @@ mod tests {
         #[case] expected_format: &str,
     ) {
         let ty: Type = syn::parse_str(ty_name).unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
 
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(
@@ -459,7 +467,7 @@ mod tests {
         #[case] expected_format: &str,
     ) {
         let ty: Type = syn::parse_str(ty_name).unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
 
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(
@@ -481,7 +489,7 @@ mod tests {
     #[test]
     fn test_parse_type_to_schema_ref_duration() {
         let ty: Type = syn::parse_str("Duration").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
 
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::String));
@@ -503,7 +511,8 @@ mod tests {
 
         for (ty_str, expected_format) in qualified_types {
             let ty: Type = syn::parse_str(ty_str).unwrap();
-            let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+            let schema_ref =
+                parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
 
             if let SchemaRef::Inline(schema) = schema_ref {
                 assert_eq!(
@@ -532,7 +541,7 @@ mod tests {
         #[case] expected_format: &str,
     ) {
         let ty: Type = syn::parse_str(ty_str).unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
 
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::String));
@@ -547,7 +556,7 @@ mod tests {
     #[test]
     fn test_parse_type_to_schema_ref_vec_date_time_types() {
         let ty: Type = syn::parse_str("Vec<DateTime>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
 
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Array));
@@ -566,7 +575,7 @@ mod tests {
     #[test]
     fn test_parse_type_to_schema_ref_box_date_time_types() {
         let ty: Type = syn::parse_str("Box<NaiveDate>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
 
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::String));
@@ -695,7 +704,7 @@ mod tests {
     #[test]
     fn test_parse_type_field_data_binary_format() {
         let ty: Type = syn::parse_str("FieldData").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::String));
             assert_eq!(schema.format, Some("binary".to_string()));
@@ -707,7 +716,7 @@ mod tests {
     #[test]
     fn test_parse_type_named_temp_file_binary_format() {
         let ty: Type = syn::parse_str("NamedTempFile").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::String));
             assert_eq!(schema.format, Some("binary".to_string()));
@@ -721,7 +730,7 @@ mod tests {
     #[test]
     fn test_parse_type_status_code_integer() {
         let ty: Type = syn::parse_str("StatusCode").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Integer));
         } else {
@@ -733,7 +742,7 @@ mod tests {
     fn test_parse_type_qualified_status_code_integer() {
         // axum::http::StatusCode should also map to integer (last segment matching)
         let ty: Type = syn::parse_str("axum::http::StatusCode").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(schema.schema_type, Some(SchemaType::Integer));
         } else {
@@ -752,7 +761,7 @@ mod tests {
     #[case("Header")]
     fn test_parse_type_non_generic_wrappers_return_object(#[case] ty_src: &str) {
         let ty: Type = syn::parse_str(ty_src).unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &HashSet::new(), &HashMap::new());
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         if let SchemaRef::Inline(schema) = schema_ref {
             assert_eq!(
                 schema.schema_type,
@@ -772,8 +781,11 @@ mod tests {
             let previous = depth.get();
             depth.set(MAX_SCHEMA_RECURSION_DEPTH);
             let ty: Type = syn::parse_str("String").unwrap();
-            let schema_ref =
-                parse_type_to_schema_ref_with_schemas(&ty, &HashSet::new(), &HashMap::new());
+            let schema_ref = parse_type_to_schema_ref_with_schemas(
+                &ty,
+                &empty_known(),
+                &empty_struct_definitions(),
+            );
             // Should return object fallback, NOT string
             if let SchemaRef::Inline(schema) = &schema_ref {
                 assert_eq!(schema.schema_type, Some(SchemaType::Object));
@@ -791,7 +803,8 @@ mod tests {
             assert_eq!(depth.get(), 0, "Depth should start at 0");
         });
         let ty: Type = syn::parse_str("Vec<Option<String>>").unwrap();
-        let _ = parse_type_to_schema_ref_with_schemas(&ty, &HashSet::new(), &HashMap::new());
+        let _ =
+            parse_type_to_schema_ref_with_schemas(&ty, &empty_known(), &empty_struct_definitions());
         SCHEMA_RECURSION_DEPTH.with(|depth| {
             assert_eq!(depth.get(), 0, "Depth should reset to 0 after call");
         });
