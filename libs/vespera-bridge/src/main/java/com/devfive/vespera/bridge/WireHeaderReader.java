@@ -69,7 +69,30 @@ final class WireHeaderReader {
             int len,
             IntConsumer statusSink,
             BiConsumer<String, String> headerSink) {
-        WireHeaderReader r = new WireHeaderReader(buf, off, len);
+        applyInner(new WireHeaderReader(buf, off, len), statusSink, headerSink);
+    }
+
+    static void apply(
+            byte[] buf,
+            int off,
+            int len,
+            IntConsumer statusSink,
+            BiConsumer<String, String> headerSink) {
+        applyInner(new WireHeaderReader(buf, off, len), statusSink, headerSink);
+    }
+
+    /**
+     * Shared tokenizer body for both {@link #apply(ByteBuffer, int, int,
+     * IntConsumer, BiConsumer)} and {@link #apply(byte[], int, int,
+     * IntConsumer, BiConsumer)} — they differ only in which constructor
+     * built the reader, and the reader's {@link #byteAt} already branches
+     * on whichever backing storage is non-null, so the parse loop is
+     * byte-identical between the two overloads.
+     */
+    private static void applyInner(
+            WireHeaderReader r,
+            IntConsumer statusSink,
+            BiConsumer<String, String> headerSink) {
         int status = 500;
         r.requireObjectStart();
         r.beginObject();
@@ -104,47 +127,6 @@ final class WireHeaderReader {
                 }
                 // KEY_OTHER: "v", "metadata", "validation_errors", … —
                 // matched by bytes, value skipped, never materialised.
-                default -> r.skipValue();
-            }
-        }
-        r.requireFullyConsumed();
-        statusSink.accept(status);
-    }
-
-    static void apply(
-            byte[] buf,
-            int off,
-            int len,
-            IntConsumer statusSink,
-            BiConsumer<String, String> headerSink) {
-        WireHeaderReader r = new WireHeaderReader(buf, off, len);
-        int status = 500;
-        r.requireObjectStart();
-        r.beginObject();
-        int seen = 0;
-        int key;
-        while ((key = r.nextRootKey()) != KEY_END) {
-            seen = r.rejectDuplicateRootKey(seen, key);
-            switch (key) {
-                case KEY_STATUS -> status = r.readStatusCode();
-                case KEY_HEADERS -> {
-                    if (r.isObjectStart()) {
-                        r.beginObject();
-                        String k;
-                        while ((k = r.nextKeyCanonical()) != null) {
-                            if (r.isArrayStart()) {
-                                r.beginArray();
-                                while (r.hasNextElement()) {
-                                    headerSink.accept(k, r.readString());
-                                }
-                            } else {
-                                headerSink.accept(k, r.readString());
-                            }
-                        }
-                    } else {
-                        r.skipValue();
-                    }
-                }
                 default -> r.skipValue();
             }
         }
