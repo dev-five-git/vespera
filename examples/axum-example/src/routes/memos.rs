@@ -62,6 +62,7 @@ pub struct MemoCommentInMemoDetail {
 
 schema_type!(
     MemoDetailResponse from crate::models::memo::Model,
+    relation_adapters = [("user", UserInMemoDetail)],
     add = [("memo_comments": Vec<MemoCommentInMemoDetail>)]
 );
 
@@ -80,6 +81,7 @@ pub struct UserInMemoSummary {
 schema_type!(
     MemoSummaryResponse from crate::models::memo::Model,
     omit = ["updated_at", "memo_comments"],
+    relation_adapters = [("user", UserInMemoSummary)],
     add = [("note": String)]
 );
 

@@ -336,6 +336,7 @@ fn test_is_map_type(#[case] type_str: &str, #[case] expected: bool) {
     Some(serde_json::Value::Number(serde_json::Number::from(0)))
 )]
 #[case("bool", Some(serde_json::Value::Bool(false)))]
+#[case("Option<String>", Some(serde_json::Value::Null))]
 #[case("f64", Some(serde_json::Value::Number(serde_json::Number::from_f64(0.0).unwrap())))]
 #[case("CustomType", None)]
 fn test_get_type_default(#[case] type_str: &str, #[case] expected: Option<serde_json::Value>) {

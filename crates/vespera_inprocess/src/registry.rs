@@ -104,8 +104,8 @@ fn validate_app_name(name: &str) -> Result<&str, String> {
         ));
     }
     if !trimmed
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     {
         return Err(format!(
             "app name '{trimmed}' contains invalid characters (allowed: alphanumeric, '_', '-')"

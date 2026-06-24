@@ -183,6 +183,7 @@ struct FileCache {
     /// genuinely changed file pays the O(file_size) tokenisation. The index
     /// rebuild then costs one tokenisation per *edited* file instead of one
     /// per file in the directory.
+    #[cfg(test)]
     file_struct_names: HashMap<PathBuf, (FileFingerprint, Arc<[String]>)>,
 
     // NOTE: We CANNOT cache `syn::File` or `syn::ItemStruct` across proc-macro
@@ -260,6 +261,7 @@ thread_local! {
         file_contents: HashMap::with_capacity(32),
         missing_file_content_epoch: HashMap::with_capacity(32),
         struct_index: HashMap::with_capacity(4),
+        #[cfg(test)]
         file_struct_names: HashMap::with_capacity(32),
         file_disk_reads: 0,
         content_cache_hits: 0,
@@ -486,6 +488,7 @@ fn ensure_file_list(cache: &mut FileCache, src_dir: &Path) -> Arc<[PathBuf]> {
 /// [`get_struct_definition`] still does the exact match), but `struct`
 /// keywords inside string literals are exceedingly rare in real source
 /// and false negatives are not possible for any actually-defined struct.
+#[cfg(test)]
 fn extract_struct_names(content: &str) -> Vec<String> {
     #[cfg(test)]
     EXTRACT_STRUCT_NAMES_COUNT.with(|c| c.set(c.get() + 1));
@@ -518,6 +521,7 @@ fn extract_struct_names(content: &str) -> Vec<String> {
 /// cache) and re-tokenised once, then cached. A file that cannot be read
 /// yields an empty name list — the caller simply contributes no candidates
 /// for it, matching the prior inline `continue`-on-read-miss behaviour.
+#[cfg(test)]
 fn get_file_struct_names(cache: &mut FileCache, path: &Path) -> Arc<[String]> {
     let current_fp = get_fingerprint_cached(cache, path);
 
@@ -555,6 +559,7 @@ fn get_file_struct_names(cache: &mut FileCache, path: &Path) -> Arc<[String]> {
 /// fingerprint changes (file added/removed/modified), so newly added
 /// `.rs` files become visible after the next `bump_epoch` in long-lived
 /// rust-analyzer servers.
+#[cfg(test)]
 pub fn get_struct_candidates(src_dir: &Path, struct_name: &str) -> Arc<[PathBuf]> {
     FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();

@@ -294,7 +294,12 @@ pub const WIRE_HEADER_RESERVE: usize = 192;
 /// callers, so a small-header response never reserves less than before.
 pub fn header_capacity_estimate(headers: &http::HeaderMap, metadata: &ResponseMetadata) -> usize {
     // {"v":1,"status":NNN,"headers":{},"metadata":{"version":""}} scaffold.
-    const SCAFFOLD: usize = 56;
+    // The 3 `NNN` status bytes are part of the fixed scaffold: `http::StatusCode`
+    // is constrained to 100..=999, so the serialized status is *always* exactly
+    // 3 digits. The prior value of 56 omitted them, under-counting every
+    // estimate by 3 bytes (one needless Vec growth on header-heavy responses
+    // whose estimate beat the WIRE_HEADER_RESERVE floor).
+    const SCAFFOLD: usize = 59;
     let mut est = SCAFFOLD + metadata.version.len();
     for (name, value) in headers {
         est += name.as_str().len() + value.len() + 8;

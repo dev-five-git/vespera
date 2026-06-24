@@ -419,7 +419,7 @@ impl<'a> MeteredField<'a> {
 
     /// Read the whole field into owned bytes, metering every chunk against the
     /// aggregate cap.
-    pub async fn bytes(self) -> Result<axum::body::Bytes, TypedMultipartError> {
+    pub async fn bytes(mut self) -> Result<axum::body::Bytes, TypedMultipartError> {
         self.bytes_with_limit_inner(None, 0)
             .await
             .map(axum::body::Bytes::from)
@@ -430,7 +430,7 @@ impl<'a> MeteredField<'a> {
     /// The limit is checked before copying each chunk into the accumulator, and
     /// every chunk is still counted against the request-wide aggregate cap.
     pub async fn bytes_with_limit(
-        self,
+        mut self,
         limit_bytes: usize,
         initial_capacity: usize,
     ) -> Result<axum::body::Bytes, TypedMultipartError> {
@@ -440,7 +440,7 @@ impl<'a> MeteredField<'a> {
     }
 
     async fn bytes_with_limit_inner(
-        mut self,
+        &mut self,
         limit: Option<usize>,
         initial_capacity: usize,
     ) -> Result<Vec<u8>, TypedMultipartError> {
@@ -848,20 +848,24 @@ where
 ///
 /// When a limit is set the cumulative size is checked after each chunk
 /// and an over-limit chunk is rejected *before* it is copied in.
+struct FieldBytes<'a> {
+    field: MeteredField<'a>,
+    data: Vec<u8>,
+}
+
 async fn read_field_data(
-    field: MeteredField<'_>,
+    mut field: MeteredField<'_>,
     limit: Option<usize>,
     initial_capacity: usize,
-) -> Result<(String, Vec<u8>), TypedMultipartError> {
+) -> Result<FieldBytes<'_>, TypedMultipartError> {
     // Part counting now happens once per part in the derived loop
     // (`register_multipart_part`), so the field parsers no longer count.
     // Initial capacity is independent from the hard byte limit: tiny scalar
     // fields keep the 256B cap without preallocating 256B per bool/number.
-    let field_name = field.name().unwrap_or_default().to_string();
     let buf = field
         .bytes_with_limit_inner(limit, initial_capacity)
         .await?;
-    Ok((field_name, buf))
+    Ok(FieldBytes { field, data: buf })
 }
 
 /// Default cap for tiny scalar multipart fields when no explicit

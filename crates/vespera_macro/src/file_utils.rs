@@ -8,6 +8,21 @@ pub fn normalize_display_path(path: impl AsRef<Path>) -> String {
     path.as_ref().display().to_string().replace('\\', "/")
 }
 
+/// Compare two optional source paths treating `\` and `/` as equivalent,
+/// WITHOUT allocating a normalized copy of either side.
+///
+/// Route and cron registration call this once per already-registered item on
+/// every attribute expansion. Folding `\` to `/` byte-by-byte removes the two
+/// `String` allocations from `.replace('\\', "/")` per comparison while keeping
+/// the previous comparison semantics exactly.
+pub fn paths_equal_normalized(left: Option<&str>, right: Option<&str>) -> bool {
+    let (left, right) = (left.unwrap_or_default(), right.unwrap_or_default());
+    let norm = |b: u8| if b == b'\\' { b'/' } else { b };
+    left.len() == right.len()
+        && std::iter::zip(left.bytes(), right.bytes())
+            .all(|(left, right)| norm(left) == norm(right))
+}
+
 /// Normalize a path string into a comparison key **without touching the filesystem**.
 ///
 /// Relative paths are absolutized against `cwd`, `.`/`..` components are folded,

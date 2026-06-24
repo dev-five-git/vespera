@@ -1,4 +1,7 @@
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use proc_macro2::Span;
 use quote::quote;
@@ -199,6 +202,7 @@ pub fn process_vespera_macro(
                 crate::file_utils::normalize_display_path(canonical)
             })
             .unwrap_or_default();
+        let mut canonical_paths = HashMap::new();
         storage
             .iter()
             .map(|s| {
@@ -207,21 +211,13 @@ pub fn process_vespera_macro(
                     .file_path
                     .as_ref()
                     .map(|fp| {
-                        let canonical = std::path::Path::new(fp)
-                            .canonicalize()
-                            .map_or_else(|_| fp.clone(), |p| p.display().to_string());
-                        let normalized = canonical.replace('\\', "/");
+                        let normalized = canonicalized_cron_path(fp, &mut canonical_paths);
                         let relative = normalized
                             .strip_prefix(&src_dir)
                             .map_or(&*normalized, |rest| rest.trim_start_matches('/'));
                         // Convert path to module path: strip .rs, replace / with ::, strip mod
                         // Replace hyphens with underscores (Rust module convention)
-                        relative
-                            .trim_end_matches(".rs")
-                            .replace('/', "::")
-                            .replace('-', "_")
-                            .trim_end_matches("::mod")
-                            .to_string()
+                        cron_module_path(relative)
                     })
                     .unwrap_or_default();
                 crate::metadata::CronMetadata {
@@ -253,6 +249,34 @@ pub fn process_vespera_macro(
     }
 
     result
+}
+
+fn canonicalized_cron_path(fp: &str, cache: &mut HashMap<PathBuf, String>) -> String {
+    let path = PathBuf::from(fp);
+    cache
+        .entry(path)
+        .or_insert_with_key(|path| {
+            path.canonicalize()
+                .map_or_else(|_| fp.to_string(), |path| path.display().to_string())
+                .replace('\\', "/")
+        })
+        .clone()
+}
+
+fn cron_module_path(relative: &str) -> String {
+    let stem = relative.strip_suffix(".rs").unwrap_or(relative);
+    let mut module_path = String::with_capacity(stem.len());
+    for ch in stem.chars() {
+        match ch {
+            '/' => module_path.push_str("::"),
+            '-' => module_path.push('_'),
+            _ => module_path.push(ch),
+        }
+    }
+    if module_path.ends_with("::mod") {
+        module_path.truncate(module_path.len() - "::mod".len());
+    }
+    module_path
 }
 
 /// Process `export_app` macro - extracted for testability

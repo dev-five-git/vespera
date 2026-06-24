@@ -3848,9 +3848,7 @@
         },
         "required": [
           "name",
-          "email5",
           "email6",
-          "num",
           "in_skip",
           "in_skip3"
         ]

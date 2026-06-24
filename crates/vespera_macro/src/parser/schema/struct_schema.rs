@@ -122,8 +122,18 @@ pub fn parse_struct_to_schema(
 
                 let field_type = &field.ty;
 
-                let mut schema_ref =
-                    parse_type_to_schema_ref(field_type, known_schemas, struct_definitions);
+                // Extract field-level `#[schema(...)]` constraints ONCE up-front.
+                // A field marked `#[schema(any)]` SHORT-CIRCUITS type conversion:
+                // the emitted schema is forced to the generic `{type: "object"}`
+                // regardless of the field's Rust type (matching the derive-Schema
+                // leaf-type assertion that also exempts `any` fields), so we never
+                // even consult `parse_type_to_schema_ref` for them.
+                let constraints = extract_schema_constraints(&field.attrs);
+                let mut schema_ref = if constraints.is_any() {
+                    SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)))
+                } else {
+                    parse_type_to_schema_ref(field_type, known_schemas, struct_definitions)
+                };
 
                 // Extract doc comment from field and set as description
                 if let Some(doc) = extract_doc_comment(&field.attrs) {
@@ -157,7 +167,6 @@ pub fn parse_struct_to_schema(
                 // promote it to an `allOf` wrapper (mirroring the
                 // description-on-ref pattern above) so the constraints can
                 // sit alongside the reference.
-                let constraints = extract_schema_constraints(&field.attrs);
                 if !constraints.is_empty() {
                     apply_constraints_to_schema_ref(&mut schema_ref, &constraints);
                 }

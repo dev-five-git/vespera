@@ -1,7 +1,6 @@
-//! Same-file relation override: route-local DTOs named
-//! `{RelationPascal}In{ResponseBase}` replace single-value relation
-//! schemas without changing handler construction code (see README
-//! "Same-File Relation Adapters").
+//! Same-file relation override: explicitly listed route-local DTOs replace
+//! single-value relation schemas without changing handler construction code
+//! (see README "Same-File Relation Adapters").
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -16,17 +15,6 @@ use crate::metadata::StructMetadata;
 #[cfg(test)]
 pub(super) struct __VesperaSameFileLookupFixture {
     value: i32,
-}
-
-pub(super) fn derive_response_base_name(name: &str) -> String {
-    for suffix in ["Response", "Request", "Schema"] {
-        if let Some(stripped) = name.strip_suffix(suffix)
-            && !stripped.is_empty()
-        {
-            return stripped.to_string();
-        }
-    }
-    name.to_string()
 }
 
 pub(super) fn find_same_file_struct_metadata<'a>(
@@ -201,21 +189,51 @@ fn dto_schema_ref_name(dto_struct: &syn::ItemStruct, dto_name: &str) -> String {
         .unwrap_or_else(|| dto_name.to_string())
 }
 
+fn explicit_adapter_struct(
+    field_name: &str,
+    adapter_name: &syn::Ident,
+    schema_storage: &HashMap<String, StructMetadata>,
+) -> syn::Result<(String, syn::ItemStruct)> {
+    let dto_name = adapter_name.to_string();
+    let Some(dto_meta) = find_same_file_struct_metadata(&dto_name, schema_storage) else {
+        return Err(syn::Error::new_spanned(
+            adapter_name,
+            format!(
+                "schema_type!: relation field `{field_name}` explicitly requested adapter `{dto_name}`, but no same-file struct named `{dto_name}` was found"
+            ),
+        ));
+    };
+
+    let dto_struct = file_cache::parse_struct_cached(&dto_meta.definition)
+        .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e.to_string()))?;
+    Ok((dto_name, dto_struct))
+}
+
+fn explicit_adapter_model_type(
+    field_name: &str,
+    adapter_name: &syn::Ident,
+    dto_name: &str,
+    rel_info: &RelationFieldInfo,
+) -> syn::Result<syn::Type> {
+    related_model_type_from_schema_path(&rel_info.schema_path).ok_or_else(|| {
+        syn::Error::new_spanned(
+            adapter_name,
+            format!(
+                "schema_type!: relation field `{field_name}` explicitly requested adapter `{dto_name}`, but the related model type could not be resolved from its schema path"
+            ),
+        )
+    })
+}
+
 pub(super) fn maybe_generate_same_file_relation_override(
     new_type_name: &syn::Ident,
     field_name: &str,
+    adapter_name: &syn::Ident,
     rel_info: &RelationFieldInfo,
     schema_storage: &HashMap<String, StructMetadata>,
-) -> syn::Result<Option<(TokenStream, TokenStream)>> {
-    let response_base = derive_response_base_name(&new_type_name.to_string());
-    let dto_name = format!("{}In{}", snake_to_pascal_case(field_name), response_base);
-    let Some(dto_meta) = find_same_file_struct_metadata(&dto_name, schema_storage) else {
-        return Ok(None);
-    };
-
-    let dto_struct: syn::ItemStruct = file_cache::parse_struct_cached(&dto_meta.definition)
-        .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e.to_string()))?;
-    let dto_ident = syn::Ident::new(&dto_name, proc_macro2::Span::call_site());
+) -> syn::Result<(TokenStream, TokenStream)> {
+    let (dto_name, dto_struct) = explicit_adapter_struct(field_name, adapter_name, schema_storage)?;
+    let dto_ident = adapter_name;
     let wrapper_ident = syn::Ident::new(
         &format!(
             "__Vespera{}{}Relation",
@@ -250,9 +268,7 @@ pub(super) fn maybe_generate_same_file_relation_override(
     let proxy_fields = build_proxy_fields(&dto_struct)?;
     let proxy_to_dto = build_proxy_to_dto_assignments(&dto_struct)?;
     let clone_assignments = build_clone_assignments(&dto_struct)?;
-    let Some(model_ty) = related_model_type_from_schema_path(&rel_info.schema_path) else {
-        return Ok(None);
-    };
+    let model_ty = explicit_adapter_model_type(field_name, adapter_name, &dto_name, rel_info)?;
     let source_expr = quote! { source };
     let from_model_assignments = build_named_struct_field_assignments(&dto_struct, &source_expr)?;
 
@@ -325,7 +341,7 @@ pub(super) fn maybe_generate_same_file_relation_override(
         }
     };
 
-    Ok(Some((quote! { #wrapper_ident }, helpers)))
+    Ok((quote! { #wrapper_ident }, helpers))
 }
 
 #[cfg(test)]
@@ -345,14 +361,6 @@ mod tests {
 
     fn to_storage(items: Vec<StructMetadata>) -> HashMap<String, StructMetadata> {
         items.into_iter().map(|s| (s.name.clone(), s)).collect()
-    }
-
-    #[test]
-    fn test_derive_response_base_name_handles_known_suffixes_and_fallback() {
-        assert_eq!(derive_response_base_name("UserResponse"), "User");
-        assert_eq!(derive_response_base_name("UserRequest"), "User");
-        assert_eq!(derive_response_base_name("UserSchema"), "User");
-        assert_eq!(derive_response_base_name("User"), "User");
     }
 
     #[test]
@@ -417,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn test_maybe_generate_same_file_relation_override_returns_none_when_dto_is_missing() {
+    fn test_maybe_generate_same_file_relation_override_errors_when_explicit_dto_is_missing() {
         let rel_info = RelationFieldInfo {
             field_name: syn::Ident::new("user", proc_macro2::Span::call_site()),
             relation_type: "HasOne".to_string(),
@@ -431,15 +439,22 @@ mod tests {
 
         let storage: HashMap<String, StructMetadata> = HashMap::new();
         let new_type_name = syn::Ident::new("ArticleResponse", proc_macro2::Span::call_site());
+        let adapter_name = syn::Ident::new("MissingUserAdapter", proc_macro2::Span::call_site());
 
-        let result =
-            maybe_generate_same_file_relation_override(&new_type_name, "user", &rel_info, &storage)
-                .expect("missing dto should not error");
-        assert!(result.is_none());
+        let error = maybe_generate_same_file_relation_override(
+            &new_type_name,
+            "user",
+            &adapter_name,
+            &rel_info,
+            &storage,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("MissingUserAdapter"));
+        assert!(error.to_string().contains("relation field `user`"));
     }
 
     #[test]
-    fn test_maybe_generate_same_file_relation_override_returns_none_for_invalid_model_type() {
+    fn test_maybe_generate_same_file_relation_override_errors_for_invalid_model_type() {
         let rel_info = RelationFieldInfo {
             field_name: syn::Ident::new("user", proc_macro2::Span::call_site()),
             relation_type: "HasOne".to_string(),
@@ -456,11 +471,18 @@ mod tests {
             "struct UserInArticle { id: i32 }",
         )]);
         let new_type_name = syn::Ident::new("ArticleResponse", proc_macro2::Span::call_site());
+        let adapter_name = syn::Ident::new("UserInArticle", proc_macro2::Span::call_site());
 
-        let result =
-            maybe_generate_same_file_relation_override(&new_type_name, "user", &rel_info, &storage)
-                .expect("invalid model type should not error");
-        assert!(result.is_none());
+        let error = maybe_generate_same_file_relation_override(
+            &new_type_name,
+            "user",
+            &adapter_name,
+            &rel_info,
+            &storage,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("UserInArticle"));
+        assert!(error.to_string().contains("related model type"));
     }
 
     #[test]
@@ -537,11 +559,16 @@ mod tests {
             r#"#[schema(name = "ArticleUser")] struct UserInArticle { id: i32, name: String }"#,
         )]);
         let new_type_name = syn::Ident::new("ArticleResponse", proc_macro2::Span::call_site());
+        let adapter_name = syn::Ident::new("UserInArticle", proc_macro2::Span::call_site());
 
-        let (_field_ty, helpers) =
-            maybe_generate_same_file_relation_override(&new_type_name, "user", &rel_info, &storage)
-                .expect("override generation should succeed")
-                .expect("DTO present → override generated");
+        let (_field_ty, helpers) = maybe_generate_same_file_relation_override(
+            &new_type_name,
+            "user",
+            &adapter_name,
+            &rel_info,
+            &storage,
+        )
+        .expect("override generation should succeed");
 
         let output = helpers.to_string();
         assert!(

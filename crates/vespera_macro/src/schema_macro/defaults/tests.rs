@@ -618,6 +618,7 @@ fn test_generate_schema_type_code_preserves_struct_doc() {
         omit: None,
         pick: None,
         rename: None,
+        relation_adapters: Vec::new(),
         add: None,
         derive_clone: true,
         partial: None,

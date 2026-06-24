@@ -22,6 +22,31 @@ pub use vespera_core::openapi::OpenApi;
 // Re-export macros from vespera_macro
 pub use vespera_macro::{Multipart, Schema, cron, export_app, route, schema, schema_type, vespera};
 
+/// Marker trait implemented by every `#[derive(Schema)]` type.
+///
+/// The derive macro auto-implements this trait, which is intentionally
+/// empty — it carries no methods.  Its purpose is to anchor the
+/// compile-time leaf-type assertions emitted by `#[derive(Schema)]`:
+/// for every field whose type is not a builtin OpenAPI primitive,
+/// not `serde_json::Value`, and not marked `#[schema(any)]`, the
+/// derive emits a `T: ::vespera::Schema` bound assertion against the
+/// field's leaf type.  An unbound leaf — typically a custom struct
+/// that forgot its own `#[derive(Schema)]` — becomes a compile error
+/// at the field site instead of silently emitting `{type:object}`
+/// into the OpenAPI document.
+///
+/// Users normally never name this trait directly — `#[derive(Schema)]`
+/// is the entire user surface.  If you intentionally want a field to
+/// stay as opaque `{type:object}` (arbitrary JSON), mark it with
+/// `#[schema(any)]` to skip the assertion AND lock the schema to
+/// `object`.  `serde_json::Value` fields are allowlisted automatically.
+///
+/// The trait and the `vespera::Schema` derive macro share the same
+/// name but live in different namespaces (trait vs. derive-macro), so
+/// the existing `#[derive(Schema)]` syntax continues to work
+/// unchanged.
+pub trait Schema {}
+
 // Re-export serde_json for merge feature (runtime spec merging)
 pub use serde_json;
 

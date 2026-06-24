@@ -388,6 +388,17 @@ impl<'a> Parser<'a> {
                     .saturating_add(u32::from(byte - b'0'));
                 self.pos += 1;
                 digits += 1;
+                // Defense-in-depth: `v` must fit in u8 (the wire protocol
+                // version, in practice `1`). Once the accumulator exceeds 255
+                // the value is already out of range, so stop instead of
+                // consuming a pathologically long digit run (bounded by the
+                // 1 MiB header cap, but still up to ~1M wasted iterations on
+                // hostile `"v":999…9` input). `u8::try_from` below would reject
+                // it anyway, so this is accept/reject-identical to serde — the
+                // value can never round-trip to a valid `u8`.
+                if value > u32::from(u8::MAX) {
+                    return Err("`v` out of range for u8".to_owned());
+                }
             } else {
                 break;
             }
@@ -662,7 +673,16 @@ impl<'a> Parser<'a> {
 
     /// Consume an exact ASCII literal (e.g. `null`), or error.
     fn expect_literal(&mut self, literal: &[u8]) -> Result<(), String> {
-        if self.input[self.pos..].starts_with(literal) {
+        // `self.input.get(self.pos..)` instead of `self.input[self.pos..]`:
+        // the parser invariant keeps `pos <= len`, but the slice index would
+        // panic if a future edit ever broke it. `.get` returns `None` past the
+        // end, which folds into the error arm — byte-identical for every
+        // reachable state, panic-free if the invariant is ever violated.
+        if self
+            .input
+            .get(self.pos..)
+            .is_some_and(|rest| rest.starts_with(literal))
+        {
             self.pos += literal.len();
             Ok(())
         } else {

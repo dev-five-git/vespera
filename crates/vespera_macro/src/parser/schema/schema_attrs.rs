@@ -80,6 +80,17 @@ pub struct SchemaConstraints {
     /// `garde::Validate` (e.g. `chrono::DateTime`, `uuid::Uuid`,
     /// most third-party newtypes).
     pub dive: Option<bool>,
+
+    // ── schema-generation override ───────────────────────────────────
+    /// When `Some(true)`, the field's OpenAPI schema is forced to the
+    /// generic `{type: "object"}` regardless of its Rust type, AND the
+    /// compile-time `#[derive(Schema)]` leaf-type assertion is skipped
+    /// for this field.  Use this to opt a field out of strict
+    /// "every-custom-type-must-derive-Schema" checking when the field
+    /// is intentionally arbitrary / opaque JSON.  Bare form
+    /// `#[schema(any)]` sets it to `true`; an explicit
+    /// `#[schema(any = false)]` is also accepted.
+    pub any: Option<bool>,
 }
 
 impl SchemaConstraints {
@@ -102,6 +113,15 @@ impl SchemaConstraints {
             && self.read_only.is_none()
             && self.write_only.is_none()
             && self.dive.is_none()
+            && self.any.is_none()
+    }
+
+    /// `true` when the field is marked `#[schema(any)]` (intentionally
+    /// opaque object — skips the derive-Schema leaf-type assertion AND
+    /// overrides the emitted schema to `{type: "object"}`).
+    #[must_use]
+    pub fn is_any(&self) -> bool {
+        self.any == Some(true)
     }
 
     /// `true` when at least one constraint produces a `garde` runtime rule
@@ -202,6 +222,16 @@ pub fn try_extract_schema_constraints(attrs: &[Attribute]) -> syn::Result<Schema
                 // `HashMap<_, Validate>` are validated transparently
                 // and errors carry dotted paths like "address.city".
                 out.dive = Some(parse_bool_or_default_true(&meta)?);
+            } else if meta.path.is_ident("any") {
+                // Bare `#[schema(any)]` (or explicit `any = true/false`)
+                // opts the field out of strict schema enforcement: the
+                // emitted schema is `{type: "object"}` (intentionally
+                // opaque arbitrary JSON), and the derive-Schema
+                // compile-time leaf-type assertion is skipped for
+                // this field. Use for fields whose Rust type is some
+                // custom shape the OpenAPI document is meant to leave
+                // unspecified.
+                out.any = Some(parse_bool_or_default_true(&meta)?);
             } else {
                 // Unknown key — could be a struct-level key like `name`,
                 // `ref`, `nullable`, `default` that lives on the same
@@ -609,5 +639,41 @@ mod tests {
         // parse_nested_meta moves on.
         let c = parse(&[parse_quote!(#[schema(unknown_bare_kw, min_length = 3)])]);
         assert_eq!(c.min_length, Some(3));
+    }
+
+    // ── `any` flag tests ────────────────────────────────────────────
+
+    #[test]
+    fn bare_any_defaults_to_true() {
+        let c = parse(&[parse_quote!(#[schema(any)])]);
+        assert_eq!(c.any, Some(true));
+        assert!(c.is_any());
+        // `any` is NOT a runtime rule — it's a schema-shape override.
+        assert!(!c.has_runtime_rule());
+    }
+
+    #[test]
+    fn any_explicit_false_disables_override() {
+        let c = parse(&[parse_quote!(#[schema(any = false)])]);
+        assert_eq!(c.any, Some(false));
+        assert!(!c.is_any());
+    }
+
+    #[test]
+    fn any_combines_with_other_constraints() {
+        // `any` overrides the schema to object, but a user might still
+        // ask for OpenAPI documentation annotations to ride along.
+        let c = parse(&[parse_quote!(#[schema(any, read_only)])]);
+        assert_eq!(c.any, Some(true));
+        assert_eq!(c.read_only, Some(true));
+    }
+
+    #[test]
+    fn is_empty_accounts_for_any() {
+        let c = parse(&[parse_quote!(#[schema(any)])]);
+        assert!(
+            !c.is_empty(),
+            "a field carrying only `#[schema(any)]` must not be reported empty"
+        );
     }
 }

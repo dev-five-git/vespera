@@ -531,6 +531,10 @@ pub struct CategoryInArticle {
 
 schema_type!(
     ArticleResponse from crate::models::article::Model,
+    relation_adapters = [
+        ("user", UserInArticle),
+        ("category", CategoryInArticle),
+    ],
     add = [("article_review_users": Vec<ArticleReviewUserInArticle>)]
 );
 
@@ -545,11 +549,12 @@ Ok(ArticleResponse {
 Rules:
 
 - Only applies to single-value relations (`HasOne` / `BelongsTo`)
-- The local DTO name must follow `{RelationNamePascal}In{ResponseBase}`
-  - `user` on `ArticleResponse` → `UserInArticle`
-  - `category` on `ArticleResponse` → `CategoryInArticle`
+- Must be opted in explicitly with `relation_adapters = [("field", AdapterStruct)]`
+- The adapter struct name is used verbatim; Vespera does not infer adapter names by convention
+- Missing explicitly named adapter structs are compile errors
 - Vespera generates local compile adapters so `Option<Model>.into()` works without changing the route
-- The adapter wrapper is hidden from OpenAPI; the spec still references the original related schema (`UserSchema`, `CategorySchema`)
+- OpenAPI references the adapter DTO's own schema (`UserInArticle`, `CategoryInArticle`), honoring any `#[schema(name = "...")]` override
+- Single-value relations not listed in `relation_adapters` keep the default base-schema relation type
 - `HasMany` relations remain excluded by default unless explicitly `pick`ed or `add`ed
 
 ### Complete Example

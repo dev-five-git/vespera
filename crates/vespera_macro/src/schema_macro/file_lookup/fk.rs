@@ -74,9 +74,7 @@ pub fn find_fk_column_from_target_entity(
 
 #[cfg(test)]
 mod tests {
-    use crate::schema_macro::file_lookup::{
-        find_struct_by_name_in_all_files, find_struct_from_path,
-    };
+    use crate::schema_macro::file_lookup::find_struct_from_path;
 
     use super::*;
     use serial_test::serial;
@@ -318,77 +316,6 @@ pub struct Model {
         assert!(
             result.is_none(),
             "Field without 'from' attribute should return None"
-        );
-    }
-    #[test]
-    #[serial]
-    fn test_find_struct_candidate_unparseable_file() {
-        let temp_dir = TempDir::new().unwrap();
-        let src_dir = temp_dir.path();
-        std::fs::write(
-            src_dir.join("user.rs"),
-            "pub struct Model {{{{ broken syntax",
-        )
-        .unwrap();
-        std::fs::write(src_dir.join("valid.rs"), "pub struct Model { pub id: i32 }").unwrap();
-        let result = find_struct_by_name_in_all_files(src_dir, "Model", Some("UserSchema"));
-        assert!(
-            result.is_some(),
-            "Should find Model in valid.rs after skipping unparseable candidate user.rs"
-        );
-    }
-    #[test]
-    #[serial]
-    fn test_find_struct_exact_filename_disambiguation() {
-        let temp_dir = TempDir::new().unwrap();
-        let src_dir = temp_dir.path();
-        std::fs::write(src_dir.join("user.rs"), "pub struct Model { pub id: i32 }").unwrap();
-        std::fs::write(
-            src_dir.join("user_extended.rs"),
-            "pub struct Model { pub name: String }",
-        )
-        .unwrap();
-        let result = find_struct_by_name_in_all_files(src_dir, "Model", Some("UserSchema"));
-        assert!(result.is_some(), "Should resolve via exact filename match");
-        let (metadata, _) = result.unwrap();
-        assert!(
-            metadata.definition.contains("id"),
-            "Should return user.rs Model (with id field)"
-        );
-    }
-    #[test]
-    #[serial]
-    fn test_find_struct_no_match_in_candidates_falls_to_rest() {
-        let temp_dir = TempDir::new().unwrap();
-        let src_dir = temp_dir.path();
-        std::fs::write(
-            src_dir.join("user.rs"),
-            "pub struct Other { pub x: i32 } // Model ref",
-        )
-        .unwrap();
-        std::fs::write(src_dir.join("data.rs"), "pub struct Model { pub id: i32 }").unwrap();
-        let result = find_struct_by_name_in_all_files(src_dir, "Model", Some("UserSchema"));
-        assert!(
-            result.is_some(),
-            "Should find Model in data.rs after candidates had no match"
-        );
-    }
-    #[test]
-    #[serial]
-    fn test_find_struct_full_scan_unparseable_file() {
-        let temp_dir = TempDir::new().unwrap();
-        let src_dir = temp_dir.path();
-        std::fs::write(
-            src_dir.join("user.rs"),
-            "pub struct Other { pub x: i32 } // Model",
-        )
-        .unwrap();
-        std::fs::write(src_dir.join("broken.rs"), "Model unparseable {{{{{").unwrap();
-        std::fs::write(src_dir.join("valid.rs"), "pub struct Model { pub id: i32 }").unwrap();
-        let result = find_struct_by_name_in_all_files(src_dir, "Model", Some("UserSchema"));
-        assert!(
-            result.is_some(),
-            "Should find Model in valid.rs after skipping unparseable broken.rs in rest"
         );
     }
     #[test]

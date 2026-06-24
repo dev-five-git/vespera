@@ -6,7 +6,7 @@
 //! 3. `#[serde(default)]` / `#[serde(default = "fn_name")]` attributes
 //!    (the function variant needs a parsed file AST)
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::{
     parser::{
@@ -69,11 +69,11 @@ pub(super) fn process_default_functions(
         return;
     };
 
-    // Fields carrying a `#[serde(default)]` whose default value cannot be
-    // resolved at compile time. A non-`Option` such field would otherwise be
-    // `required` with no `default` — impossible for a client to satisfy — so it
-    // is demoted to optional after the field walk.
-    let mut unresolved_default_fields: BTreeSet<String> = BTreeSet::new();
+    // Every `#[serde(default)]` field is wire-optional: serde accepts payloads
+    // with that key omitted. Requiredness therefore depends on wire presence,
+    // not on whether we could statically extract the default value.
+    let mut serde_default_fields: BTreeSet<String> = BTreeSet::new();
+    let function_index = file_ast.map(function_index_by_name);
 
     // Process each field in the struct
     if let Some(properties) = target.properties.as_mut()
@@ -115,41 +115,43 @@ pub(super) fn process_default_functions(
 
             // Priority 2: #[serde(default)] / #[serde(default = "fn")]
             let default_info = match extract_default(&field.attrs) {
-                Some(Some(func_name)) => func_name, // default = "function_name"
+                Some(Some(func_name)) => {
+                    serde_default_fields.insert(field_name.clone());
+                    func_name
+                }
                 Some(None) => {
+                    serde_default_fields.insert(field_name.clone());
                     // Simple default (no function): use the type-specific default
-                    // when known; otherwise serde fills a value we cannot
-                    // express, so demote the field from `required`.
+                    // when known. Unresolvable defaults are rejected earlier by
+                    // `#[derive(Schema)]`, so this fallback only preserves unit
+                    // test behaviour when called directly.
                     if let Some(default_value) = utils_get_type_default(&field.ty) {
                         set_property_default(properties, &field_name, default_value);
-                    } else {
-                        unresolved_default_fields.insert(field_name);
                     }
                     continue;
                 }
                 None => continue, // No default attribute
             };
 
-            // Priority 2 (function form) is the only step that needs the AST, so
-            // it degrades gracefully when none is available. When the value
-            // cannot be extracted (function missing or non-literal body), the
-            // field has a serde default we cannot express → demote it.
-            let resolved = file_ast
-                .and_then(|ast| find_function_in_file(ast, &default_info))
+            // Priority 2 (function form) is the only step that needs the AST.
+            // Unresolvable values are rejected earlier by `#[derive(Schema)]`;
+            // this path simply omits the `default` when invoked directly in
+            // tests without that derive-time validation.
+            let resolved = function_index
+                .as_ref()
+                .and_then(|index| find_function_in_index(index, &default_info))
                 .and_then(extract_default_value_from_function);
             if let Some(default_value) = resolved {
                 set_property_default(properties, &field_name, default_value);
-            } else {
-                unresolved_default_fields.insert(field_name);
             }
         }
     }
 
-    // Demote fields with an unexpressible serde default from `required` so the
-    // spec never advertises a required field a client cannot provide.
-    if !unresolved_default_fields.is_empty() {
+    // Demote every serde-default field from `required`: it is optional on the
+    // wire regardless of how the default value was obtained.
+    if !serde_default_fields.is_empty() {
         if let Some(required) = target.required.as_mut() {
-            required.retain(|name| !unresolved_default_fields.contains(name));
+            required.retain(|name| !serde_default_fields.contains(name));
         }
         if target.required.as_ref().is_some_and(Vec::is_empty) {
             target.required = None;
@@ -221,15 +223,33 @@ pub(super) fn parse_default_string_to_json_value(value: &str) -> serde_json::Val
 }
 
 /// Find a function by name in the file AST
+#[cfg(test)]
 pub fn find_function_in_file<'a>(
     file_ast: &'a syn::File,
     function_name: &str,
 ) -> Option<&'a syn::ItemFn> {
+    let index = function_index_by_name(file_ast);
+    find_function_in_index(&index, function_name)
+}
+
+fn function_index_by_name(file_ast: &syn::File) -> HashMap<String, &syn::ItemFn> {
+    let mut functions = HashMap::new();
+    for item in &file_ast.items {
+        if let syn::Item::Fn(fn_item) = item {
+            functions
+                .entry(fn_item.sig.ident.to_string())
+                .or_insert(fn_item);
+        }
+    }
+    functions
+}
+
+fn find_function_in_index<'a>(
+    function_index: &HashMap<String, &'a syn::ItemFn>,
+    function_name: &str,
+) -> Option<&'a syn::ItemFn> {
     let local_name = function_name.rsplit("::").next().unwrap_or(function_name);
-    file_ast.items.iter().find_map(|item| match item {
-        syn::Item::Fn(fn_item) if fn_item.sig.ident == local_name => Some(fn_item),
-        _ => None,
-    })
+    function_index.get(local_name).copied()
 }
 
 /// Extract default value from function body
@@ -797,9 +817,9 @@ mod tests {
     }
 
     #[test]
-    fn process_default_functions_keeps_required_when_default_resolvable() {
-        // A resolvable default keeps the field `required` AND sets `default`
-        // (the user's required+default strategy is preserved).
+    fn process_default_functions_demotes_required_when_default_resolvable() {
+        // A resolvable default still means the field is wire-optional: serde
+        // accepts the payload with the key omitted and fills the value locally.
         let file_ast: syn::File =
             syn::parse_str(r#"fn default_sort() -> String { "asc".to_string() }"#).unwrap();
         let struct_item: syn::ItemStruct = syn::parse_str(
@@ -815,14 +835,7 @@ mod tests {
 
         process_default_functions(&struct_item, Some(&file_ast), &mut schema, &BTreeMap::new());
 
-        assert!(
-            schema
-                .required
-                .as_ref()
-                .unwrap()
-                .contains(&"sort".to_string()),
-            "resolvable default keeps the field required"
-        );
+        assert!(schema.required.is_none(), "serde-default field is optional");
         assert_inline_default(schema.properties.as_ref().unwrap(), "sort", &json!("asc"));
     }
 }

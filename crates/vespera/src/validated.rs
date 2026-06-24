@@ -30,8 +30,8 @@
 
 use ::axum::{
     Json,
-    extract::{FromRequest, Request},
-    http::{StatusCode, header::CONTENT_TYPE},
+    extract::{FromRequest, FromRequestParts, Request},
+    http::{HeaderValue, StatusCode, header::CONTENT_TYPE, request::Parts},
     response::{IntoResponse, Response},
 };
 use ::garde::Validate;
@@ -185,53 +185,14 @@ impl<C, T> DerefMut for ValidatedWith<C, T> {
     }
 }
 
-impl<U> ValidatePayload for Json<U>
+impl<T> ValidatePayload for T
 where
-    U: Validate<Context = ()>,
+    T: ValidatePayloadWith<()>,
 {
-    type Inner = U;
-    fn payload(&self) -> &U {
-        &self.0
-    }
-}
+    type Inner = <T as ValidatePayloadWith<()>>::Inner;
 
-impl<U> ValidatePayload for ::axum::Form<U>
-where
-    U: Validate<Context = ()>,
-{
-    type Inner = U;
-    fn payload(&self) -> &U {
-        &self.0
-    }
-}
-
-impl<U> ValidatePayload for ::axum::extract::Query<U>
-where
-    U: Validate<Context = ()>,
-{
-    type Inner = U;
-    fn payload(&self) -> &U {
-        &self.0
-    }
-}
-
-impl<U> ValidatePayload for ::axum::extract::Path<U>
-where
-    U: Validate<Context = ()>,
-{
-    type Inner = U;
-    fn payload(&self) -> &U {
-        &self.0
-    }
-}
-
-impl<U> ValidatePayload for crate::multipart::TypedMultipart<U>
-where
-    U: Validate<Context = ()>,
-{
-    type Inner = U;
-    fn payload(&self) -> &U {
-        &self.0
+    fn payload(&self) -> &Self::Inner {
+        <Self as ValidatePayloadWith<()>>::payload(self)
     }
 }
 
@@ -253,6 +214,24 @@ where
     }
 }
 
+impl<S, T> FromRequestParts<S> for Validated<T>
+where
+    S: Send + Sync,
+    T: FromRequestParts<S> + ValidatePayload + Send,
+{
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let extracted = T::from_request_parts(parts, state)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        match extracted.payload().validate() {
+            Ok(()) => Ok(Self(extracted)),
+            Err(report) => Err(build_validation_response(&report)),
+        }
+    }
+}
+
 impl<S, C, T> FromRequest<S> for ValidatedWith<C, T>
 where
     S: Send + Sync + ValidationContext<C>,
@@ -263,6 +242,28 @@ where
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let extracted = T::from_request(req, state)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        match extracted
+            .payload()
+            .validate_with(state.validation_context())
+        {
+            Ok(()) => Ok(Self::new(extracted)),
+            Err(report) => Err(build_validation_response(&report)),
+        }
+    }
+}
+
+impl<S, C, T> FromRequestParts<S> for ValidatedWith<C, T>
+where
+    S: Send + Sync + ValidationContext<C>,
+    C: Send + Sync + 'static,
+    T: FromRequestParts<S> + ValidatePayloadWith<C> + Send,
+{
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let extracted = T::from_request_parts(parts, state)
             .await
             .map_err(IntoResponse::into_response)?;
         match extracted
@@ -374,10 +375,10 @@ fn build_validation_response(report: &::garde::Report) -> Response {
         br#"{"errors":[{"message":"request validation failed","path":""}]}"#.to_vec()
     });
 
-    let mut response = (StatusCode::UNPROCESSABLE_ENTITY, body).into_response();
-    response.headers_mut().insert(
-        CONTENT_TYPE,
-        ::axum::http::HeaderValue::from_static("application/json"),
-    );
-    response
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        [(CONTENT_TYPE, HeaderValue::from_static("application/json"))],
+        body,
+    )
+        .into_response()
 }

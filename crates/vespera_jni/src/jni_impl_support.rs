@@ -15,7 +15,7 @@ use super::streaming_buffer::{
     checkout_pull_push_buffers, checkout_streaming_chunk_buffer,
 };
 
-pub(super) fn throw_streaming_abort(env: &mut jni::Env<'_>, header_failed: bool) {
+pub fn throw_streaming_abort(env: &mut jni::Env<'_>, header_failed: bool) {
     if header_failed {
         let _ = env.throw_new(
             jni::jni_str!("java/io/IOException"),
@@ -29,7 +29,7 @@ pub(super) fn throw_streaming_abort(env: &mut jni::Env<'_>, header_failed: bool)
     }
 }
 
-pub(super) fn push_unless_header_failed(
+pub fn push_unless_header_failed(
     header_failed: &AtomicBool,
     push: &mut impl FnMut(&[u8]) -> std::ops::ControlFlow<()>,
     chunk: &[u8],
@@ -57,7 +57,7 @@ pub(super) fn push_unless_header_failed(
 /// consumer in the rare "callback threw, then the dispatch future panicked"
 /// edge; this predicate closes that gap and is unit-tested in
 /// `jni_impl_streaming_abort_tests.rs`.)
-pub(super) fn should_fire_fallback_header(header_sent: bool, header_failed: bool) -> bool {
+pub fn should_fire_fallback_header(header_sent: bool, header_failed: bool) -> bool {
     !header_sent && !header_failed
 }
 
@@ -72,7 +72,7 @@ pub(super) fn should_fire_fallback_header(header_sent: bool, header_failed: bool
 /// past a header the host already wrote — so it must abort the transport too,
 /// not return cleanly over a short body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PanicHeaderAction {
+pub enum PanicHeaderAction {
     /// The header consumer was never invoked (`!header_sent && !header_failed`):
     /// deliver the one-shot `500` fallback header so the Java caller is never
     /// left without a header.
@@ -87,10 +87,7 @@ pub(super) enum PanicHeaderAction {
 /// Decide the panic-branch action from the two header flags.  Splitting it out
 /// (like [`should_fire_fallback_header`], which it reuses) keeps the decision
 /// unit-testable without a live JVM — see `jni_impl_streaming_abort_tests.rs`.
-pub(super) fn panic_post_header_action(
-    header_sent: bool,
-    header_failed: bool,
-) -> PanicHeaderAction {
+pub fn panic_post_header_action(header_sent: bool, header_failed: bool) -> PanicHeaderAction {
     if should_fire_fallback_header(header_sent, header_failed) {
         PanicHeaderAction::FireFallbackHeader
     } else {
@@ -101,7 +98,7 @@ pub(super) fn panic_post_header_action(
 /// Promoted refs + a checked-out chunk buffer for a response
 /// streaming-with-header dispatch.  Aliased so the helper return type stays
 /// under clippy's `type_complexity` cap.
-pub(super) type StreamHeaderSetup = (
+pub type StreamHeaderSetup = (
     Global<JObject<'static>>,
     Global<JObject<'static>>,
     jni::JavaVM,
@@ -114,7 +111,7 @@ pub(super) type StreamHeaderSetup = (
 /// dispatcher handles a (rare, OOM-driven) setup failure with a `let ... else`
 /// that fires the header consumer exactly once, instead of a silently-ignored
 /// `?` that would leave the Java caller hanging.
-pub(super) fn setup_stream_with_header(
+pub fn setup_stream_with_header(
     env: &mut jni::Env<'_>,
     header_consumer: &JObject<'_>,
     output_stream: &JObject<'_>,
@@ -136,7 +133,7 @@ pub(super) fn setup_stream_with_header(
 
 /// Promoted refs + both chunk buffers for a bidirectional
 /// streaming-with-header dispatch.  Aliased to stay under `type_complexity`.
-pub(super) type FullStreamHeaderSetup = (
+pub type FullStreamHeaderSetup = (
     Global<JObject<'static>>,
     Arc<Global<JObject<'static>>>,
     Global<JObject<'static>>,
@@ -148,7 +145,7 @@ pub(super) type FullStreamHeaderSetup = (
 /// [`Java_..._dispatchFullStreamingWithHeader`].  Split out both to keep that
 /// dispatcher under the line cap and so a setup failure is handled with a
 /// `let ... else` that fires the header consumer exactly once.
-pub(super) fn setup_full_stream_with_header(
+pub fn setup_full_stream_with_header(
     env: &mut jni::Env<'_>,
     header_consumer: &JObject<'_>,
     input_stream: &JObject<'_>,
@@ -176,7 +173,7 @@ pub(super) fn setup_full_stream_with_header(
 /// Promoted output-stream ref + a checked-out push chunk buffer for a
 /// response-streaming dispatch (no header consumer).  Aliased to stay under
 /// clippy's `type_complexity` cap.
-pub(super) type StreamSetup = (
+pub type StreamSetup = (
     Global<JObject<'static>>,
     jni::JavaVM,
     StreamingChunkBuffer,
@@ -190,7 +187,7 @@ pub(super) type StreamSetup = (
 /// thrown exception + `null` return — breaking the "every failure is a valid
 /// wire response" contract the other dispatch symbols uphold.  The buffer
 /// checkout is last, so an earlier ref/VM failure never leaves a lease held.
-pub(super) fn setup_stream(
+pub fn setup_stream(
     env: &mut jni::Env<'_>,
     output_stream: &JObject<'_>,
 ) -> jni::errors::Result<StreamSetup> {
@@ -207,7 +204,7 @@ pub(super) fn setup_stream(
 /// Promoted input/output refs and both chunk buffers for a bidirectional
 /// streaming dispatch (no header consumer).  The input ref is `Arc`-wrapped so
 /// pull and post-response close share one JVM global ref.
-pub(super) type FullStreamSetup = (
+pub type FullStreamSetup = (
     Arc<Global<JObject<'static>>>,
     Global<JObject<'static>>,
     jni::JavaVM,
@@ -219,7 +216,7 @@ pub(super) type FullStreamSetup = (
 /// `500` wire response instead of a silently-ignored `?` (see [`setup_stream`]).
 /// `checkout_pull_push_buffers` releases the pull lease for us if the push
 /// checkout fails, and no lease is held if an earlier ref/VM promotion fails.
-pub(super) fn setup_full_stream(
+pub fn setup_full_stream(
     env: &mut jni::Env<'_>,
     input_stream: &JObject<'_>,
     output_stream: &JObject<'_>,

@@ -5,13 +5,13 @@ mod lookup;
 
 #[allow(unused_imports)]
 pub use fk::find_fk_column_from_target_entity;
+#[cfg(test)]
+pub use lookup::find_struct_from_path;
 #[allow(unused_imports)]
 pub use lookup::{
     collect_rs_files_recursive, file_path_to_module_path, find_model_from_schema_path,
     find_struct_from_path_detailed, find_struct_from_schema_path,
 };
-#[cfg(test)]
-pub use lookup::{find_struct_by_name_in_all_files, find_struct_from_path};
 
 #[cfg(test)]
 mod schema_type_lookup_tests {
@@ -77,8 +77,10 @@ pub struct Model {
 
     #[test]
     #[serial]
-    fn test_generate_schema_type_code_simple_name_file_lookup_fallback() {
-        // Tests: simple name (not in storage) found via file lookup with schema_name hint
+    fn test_generate_schema_type_code_simple_name_requires_call_site_struct() {
+        // Unit tests have no proc-macro call-site file for the temp fixture. A
+        // bare source name must now fail loudly instead of scanning src/**/*.rs
+        // and guessing from the schema-name hint.
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -100,8 +102,6 @@ pub struct Model {
         // SAFETY: This is a test that runs single-threaded
         unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
 
-        // Use simple name with schema_name hint - file lookup should find it via hint
-        // name = "UserSchema" provides hint to look in user.rs
         let tokens = quote!(Schema from Model, name = "UserSchema");
         let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
         let storage: HashMap<String, StructMetadata> = HashMap::new(); // Empty storage - force file lookup
@@ -118,15 +118,11 @@ pub struct Model {
             }
         }
 
-        assert!(result.is_ok());
-        let (tokens, metadata) = result.unwrap();
-        let output = tokens.to_string();
-        assert!(output.contains("Schema"));
-        assert!(output.contains("id"));
-        assert!(output.contains("username"));
-        // Metadata should be returned for custom name
-        assert!(metadata.is_some());
-        assert_eq!(metadata.unwrap().name, "UserSchema");
+        let err = result.expect_err("bare cross-file lookup must fail");
+        assert!(
+            err.to_string().contains("not found in this file"),
+            "unexpected error: {err}"
+        );
     }
 
     // ============================================================

@@ -42,6 +42,66 @@ fn parse_struct_def(def: &str) -> Option<Rc<syn::ItemStruct>> {
     syn::parse_str::<syn::ItemStruct>(def).ok().map(Rc::new)
 }
 
+/// Whether `ident` names a type that this crate already knows how to map to
+/// an OpenAPI schema — Rust primitives, `String`/`str`, the chrono/time
+/// date-time set, `Uuid`/`Decimal`/`StatusCode`, `FieldData`/`NamedTempFile`
+/// (multipart binary), and the framework wrapper idents (`Vec`, `Option`,
+/// `Box`, `HashSet`, `BTreeSet`, `HashMap`, `BTreeMap`, `HasOne`, `HasMany`,
+/// `BelongsTo`, `Result`, `Json`, `Path`, `Query`, `Header`).
+///
+/// This is the **single source of truth** consulted by both:
+///
+/// 1. [`parse_type_impl`] below — to decide whether the type maps to a
+///    specific schema arm (covered by the `matches!` arms at the bottom of
+///    the match) or falls through to the unknown-fallback (`SchemaRef::Inline
+///    (Object)`).
+/// 2. `#[derive(Schema)]` codegen in `schema_impl::process_derive_schema` —
+///    to decide whether a field's leaf type needs a compile-time
+///    `T: ::vespera::Schema` assertion (only NON-builtin leaves do).
+///
+/// Adding a new builtin to the match arms below MUST also add it here, and
+/// vice-versa — the [`tests::is_builtin_openapi_type_matches_conversion_arms`]
+/// test pins the two lists in sync.
+#[must_use]
+pub const fn is_builtin_openapi_type(ident: &str) -> bool {
+    matches!(
+        ident.as_bytes(),
+        // Signed integers
+        b"i8" | b"i16" | b"i32" | b"i64" | b"i128" | b"isize" | b"StatusCode"
+        // Unsigned integers
+        | b"u8" | b"u16" | b"u32" | b"u64" | b"u128" | b"usize"
+        // Floats
+        | b"f32" | b"f64"
+        // Decimal (rust_decimal / sea_orm re-export — serialized as string)
+        | b"Decimal"
+        // Bool / char / Uuid
+        | b"bool" | b"char" | b"Uuid"
+        // String / str
+        | b"String" | b"str"
+        // Date-time set (chrono + time crates + sea_orm re-exports)
+        | b"DateTime"
+        | b"NaiveDateTime"
+        | b"DateTimeWithTimeZone"
+        | b"DateTimeUtc"
+        | b"DateTimeLocal"
+        | b"OffsetDateTime"
+        | b"PrimitiveDateTime"
+        | b"NaiveDate" | b"Date"
+        | b"NaiveTime" | b"Time"
+        | b"Duration"
+        // File upload (vespera::multipart / tempfile)
+        | b"FieldData" | b"NamedTempFile"
+        // Wrappers / std container types handled BEFORE the leaf match
+        // (transparent for schema OR mapped to array/object via generic args).
+        | b"Vec" | b"HashSet" | b"BTreeSet" | b"Option" | b"Box"
+        | b"HashMap" | b"BTreeMap"
+        // SeaORM relation wrappers
+        | b"HasOne" | b"HasMany" | b"BelongsTo"
+        // Result + axum extractor wrappers that have no schema themselves
+        | b"Result" | b"Json" | b"Path" | b"Query" | b"Header"
+    )
+}
+
 /// Check if a type is a primitive Rust type that maps directly to a JSON Schema type.
 /// Inline integer schema with an OpenAPI format string.
 fn integer_with_format(format: &str) -> SchemaRef {

@@ -141,7 +141,11 @@ mod jni_buf;
 #[cfg(not(tarpaulin_include))]
 // SAFETY SCOPE: JNI exports and direct-buffer submodule contain FFI entry points.
 #[allow(unsafe_code)]
-mod jni_impl;
+pub(crate) mod jni_impl;
+#[cfg(not(tarpaulin_include))]
+// SAFETY SCOPE: streaming-with-header JNI exports contain FFI entry points.
+#[allow(unsafe_code)]
+pub(crate) mod jni_impl_streaming_header;
 #[cfg(not(tarpaulin_include))]
 // SAFETY SCOPE: streaming callbacks use cached JMethodID calls and signed-byte views.
 #[allow(unsafe_code)]

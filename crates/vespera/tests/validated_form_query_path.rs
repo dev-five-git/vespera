@@ -4,7 +4,7 @@
 //! integration test in `validated_extractor.rs`.
 //!
 //! Each test drives a real `Router::oneshot` round-trip so the
-//! `Validated<...>::from_request` path runs end-to-end, including the
+//! `Validated<...>` extraction path runs end-to-end, including the
 //! 422 envelope on validation failure and pass-through on success.
 
 #![cfg(feature = "validation")]
@@ -14,7 +14,7 @@ use ::axum::{
     body::Body,
     extract::{Path, Query},
     http::Request,
-    routing::post,
+    routing::{get, post},
 };
 use ::serde::Deserialize;
 use ::tower::ServiceExt;
@@ -78,17 +78,12 @@ async fn validated_form_short_password_returns_422() {
     );
 }
 
-// ── Query / Path payload() impls ─────────────────────────────────────
+// ── Query / Path handler arguments ───────────────────────────────────
 //
 // Axum's `Query<T>` and `Path<T>` impl `FromRequestParts` (not
-// `FromRequest` directly), and axum 0.8 does NOT provide a blanket
-// `FromRequestParts → FromRequest` bridge.  That means
-// `Validated<Query<T>>` / `Validated<Path<T>>` can't be installed as
-// handler arguments today, but the `ValidatePayload` impls for both
-// wrappers are still part of the public surface — and trivially
-// exercisable by calling [`ValidatePayload::payload`] on a hand-built
-// wrapper.  This locks in the contract for future axum versions that
-// reintroduce the blanket.
+// `FromRequest` directly). `Validated<Query<T>>` / `Validated<Path<T>>`
+// therefore exercise `Validated`'s `FromRequestParts` impl when installed
+// as handler arguments, including alongside a body extractor.
 
 #[derive(Deserialize, Schema)]
 #[allow(dead_code)]
@@ -97,6 +92,43 @@ struct SearchParams {
     q: String,
     #[schema(minimum = 1, maximum = 100)]
     limit: u32,
+}
+
+async fn search(Validated(Query(_q)): Validated<Query<SearchParams>>) -> &'static str {
+    "ok"
+}
+
+fn query_router() -> Router {
+    Router::new().route("/search", get(search))
+}
+
+#[tokio::test]
+async fn validated_query_handler_arg_valid_payload_returns_200() {
+    let req = Request::builder()
+        .method("GET")
+        .uri("/search?q=hello&limit=10")
+        .body(Body::empty())
+        .unwrap();
+    let res = query_router().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), 200);
+}
+
+#[tokio::test]
+async fn validated_query_handler_arg_invalid_payload_returns_422() {
+    let req = Request::builder()
+        .method("GET")
+        .uri("/search?q=&limit=999")
+        .body(Body::empty())
+        .unwrap();
+    let res = query_router().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), 422);
+    let body: ::serde_json::Value =
+        ::serde_json::from_str(&body_to_string(res.into_body()).await).unwrap();
+    let errors = body["errors"].as_array().expect("errors");
+    assert!(
+        errors.iter().any(|e| e["path"].as_str() == Some("q")),
+        "expected `q` error, got {body:#}"
+    );
 }
 
 #[test]
@@ -131,6 +163,57 @@ fn validated_query_payload_invalid_inner_value_is_rejected_by_garde() {
 struct UserPath {
     #[schema(min_length = 3, max_length = 32, pattern = "^[a-z0-9_]+$")]
     username: String,
+}
+
+#[derive(Deserialize, Schema)]
+#[allow(dead_code)]
+struct UpdateBody {
+    #[schema(min_length = 3, max_length = 32)]
+    display_name: String,
+}
+
+async fn update_user(
+    Validated(Path(_path)): Validated<Path<UserPath>>,
+    Validated(::axum::Json(_body)): Validated<::axum::Json<UpdateBody>>,
+) -> &'static str {
+    "ok"
+}
+
+fn path_and_body_router() -> Router {
+    Router::new().route("/users/{username}", post(update_user))
+}
+
+#[tokio::test]
+async fn validated_path_handler_arg_can_coexist_with_body_extractor() {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/users/alice_99")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"display_name":"Alice"}"#))
+        .unwrap();
+    let res = path_and_body_router().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), 200);
+}
+
+#[tokio::test]
+async fn validated_path_handler_arg_invalid_payload_returns_422() {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/users/BAD")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"display_name":"Alice"}"#))
+        .unwrap();
+    let res = path_and_body_router().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), 422);
+    let body: ::serde_json::Value =
+        ::serde_json::from_str(&body_to_string(res.into_body()).await).unwrap();
+    let errors = body["errors"].as_array().expect("errors");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e["path"].as_str() == Some("username")),
+        "expected `username` error, got {body:#}"
+    );
 }
 
 #[test]

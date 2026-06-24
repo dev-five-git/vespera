@@ -1,6 +1,5 @@
 ---
 source: examples/axum-example/tests/integration_test.rs
-assertion_line: 442
 expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
 ---
 {
@@ -3853,9 +3852,7 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         },
         "required": [
           "name",
-          "email5",
           "email6",
-          "num",
           "in_skip",
           "in_skip3"
         ]

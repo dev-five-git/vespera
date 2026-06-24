@@ -37,6 +37,7 @@ use std::{
 };
 
 use crate::metadata::StructMetadata;
+use crate::parser::{extract_default, strip_raw_prefix_owned};
 use crate::schema_macro::file_cache::{FileFingerprint, get_file_fingerprint};
 
 /// Per-crate registry of `#[derive(Schema)]` metadata.
@@ -48,7 +49,10 @@ use crate::schema_macro::file_cache::{FileFingerprint, get_file_fingerprint};
 /// A's schemas into crate B's generated `openapi.json`. A plain `cargo build`
 /// runs each crate in its own process, so the outer map only ever holds one
 /// bucket there; the scoping matters only for the shared-server (IDE) case.
-pub static SCHEMA_STORAGE: LazyLock<Mutex<HashMap<String, HashMap<String, StructMetadata>>>> =
+type SchemaBucket = Arc<HashMap<String, StructMetadata>>;
+type SchemaStorage = HashMap<String, SchemaBucket>;
+
+pub static SCHEMA_STORAGE: LazyLock<Mutex<SchemaStorage>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 static DEFAULT_FUNCTION_CACHE: LazyLock<Mutex<HashMap<PathBuf, DefaultFunctionCacheEntry>>> =
@@ -63,7 +67,7 @@ static DEFAULT_FUNCTION_CACHE: LazyLock<Mutex<HashMap<PathBuf, DefaultFunctionCa
 /// un-scoped global behaviour, which is correct for that single-build case.
 #[must_use]
 pub fn current_crate_key() -> String {
-    std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default()
+    crate::schema_macro::file_cache::get_manifest_dir().unwrap_or_default()
 }
 
 /// Register a `#[derive(Schema)]` metadata entry for the current crate.
@@ -77,7 +81,11 @@ pub fn register_schema(name: String, metadata: StructMetadata) -> Result<(), ()>
     let mut guard = SCHEMA_STORAGE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let bucket = guard.entry(current_crate_key()).or_default();
+    let bucket = Arc::make_mut(
+        guard
+            .entry(current_crate_key())
+            .or_insert_with(|| Arc::new(HashMap::new())),
+    );
     if let Some(existing) = bucket.get(&name) {
         if existing.definition == metadata.definition
             || (existing.source_identity.is_some()
@@ -102,26 +110,62 @@ fn derive_source_identity(input: &syn::DeriveInput) -> Option<String> {
 /// `schema_type!(.., ignore)` pre-registration path, which has no
 /// duplicate-name semantics.
 pub fn insert_schema(name: String, metadata: StructMetadata) {
-    SCHEMA_STORAGE
+    let mut guard = SCHEMA_STORAGE
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .entry(current_crate_key())
-        .or_default()
-        .insert(name, metadata);
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::make_mut(
+        guard
+            .entry(current_crate_key())
+            .or_insert_with(|| Arc::new(HashMap::new())),
+    )
+    .insert(name, metadata);
 }
 
-/// Snapshot of the current crate's registered schemas — a clone of just this
-/// crate's bucket (small at compile time), so every consumer keeps operating
-/// on a `HashMap<String, StructMetadata>` exactly as before the per-crate
-/// scoping was introduced.
+/// Snapshot of the current crate's registered schemas — a cheap `Arc` clone of
+/// this crate's bucket, so consumers never deep-clone every stored definition.
 #[must_use]
-pub fn current_crate_schemas() -> HashMap<String, StructMetadata> {
+pub fn current_crate_schemas() -> Arc<HashMap<String, StructMetadata>> {
     SCHEMA_STORAGE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&current_crate_key())
         .cloned()
-        .unwrap_or_default()
+        .unwrap_or_else(|| Arc::new(HashMap::new()))
+}
+
+#[derive(Default)]
+struct SchemaAttributeSummary {
+    name: Option<String>,
+    has_ref_override: bool,
+}
+
+fn collect_schema_attribute_summary(attrs: &[syn::Attribute]) -> SchemaAttributeSummary {
+    let mut summary = SchemaAttributeSummary::default();
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("schema")) {
+        let mut attr_name = None;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("name") {
+                let value = meta.value()?;
+                let lit: syn::LitStr = value.parse()?;
+                attr_name = Some(lit.value());
+            } else {
+                if meta.path.is_ident("ref") {
+                    summary.has_ref_override = true;
+                }
+                if let Ok(value) = meta.value() {
+                    let _ = value.parse::<syn::Lit>();
+                }
+            }
+            Ok(())
+        });
+        if summary.name.is_none() {
+            summary.name = attr_name;
+        }
+        if summary.name.is_some() && summary.has_ref_override {
+            break;
+        }
+    }
+    summary
 }
 
 #[derive(Clone)]
@@ -135,31 +179,7 @@ struct DefaultFunctionCacheEntry {
 
 /// Extract custom schema name from #[schema(name = "...")] attribute
 pub fn extract_schema_name_attr(attrs: &[syn::Attribute]) -> Option<String> {
-    for attr in attrs {
-        if attr.path().is_ident("schema") {
-            let mut custom_name = None;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("name") {
-                    let value = meta.value()?;
-                    let lit: syn::LitStr = value.parse()?;
-                    custom_name = Some(lit.value());
-                } else if let Ok(value) = meta.value() {
-                    // Consume (and discard) other `key = <lit>` items — e.g.
-                    // `ref`, or any field-level constraint key — so
-                    // `parse_nested_meta` does NOT bail before reaching a
-                    // later `name`. Those keys are handled by their own
-                    // parsers; here we only extract `name`. Bare flags have no
-                    // `= value` and are simply skipped.
-                    let _ = value.parse::<syn::Lit>();
-                }
-                Ok(())
-            });
-            if custom_name.is_some() {
-                return custom_name;
-            }
-        }
-    }
-    None
+    collect_schema_attribute_summary(attrs).name
 }
 
 /// Process derive input and return metadata + expanded code
@@ -180,45 +200,30 @@ pub fn process_derive_schema(
         }
     }
 
-    // Check for custom schema name from #[schema(name = "...")] attribute
-    let schema_name = extract_schema_name_attr(&input.attrs).unwrap_or_else(|| name.to_string());
+    // Check for custom schema settings from #[schema(...)] attributes in one pass.
+    let schema_attr = collect_schema_attribute_summary(&input.attrs);
+    let schema_name = schema_attr.name.unwrap_or_else(|| name.to_string());
 
     // Extract default values from serde(default = "fn_name") attributes at derive time.
     // Span::call_site().local_file() returns None in unit tests — the map/unwrap_or_default
     // chain ensures the line is always executed even when the closure is not entered.
-    let field_defaults = proc_macro2::Span::call_site()
-        .local_file()
-        .map(|file_path| extract_field_defaults_from_path(input, &file_path))
+    let call_site_file = proc_macro2::Span::call_site().local_file();
+    let field_defaults = call_site_file
+        .as_deref()
+        .map(|file_path| extract_field_defaults_from_path(input, file_path))
         .unwrap_or_default();
+
+    if let Err(error) = validate_serde_default_values(input, &field_defaults) {
+        return (None, error.to_compile_error());
+    }
 
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
     let mut metadata = StructMetadata::new(schema_name, quote::quote!(#input).to_string());
     if let Some(source_identity) = derive_source_identity(input) {
         metadata = metadata.with_source_identity(source_identity);
     }
-    if input
-        .attrs
-        .iter()
-        .any(|attr| attr.path().is_ident("schema"))
-    {
-        let mut has_ref_override = false;
-        for attr in &input.attrs {
-            if !attr.path().is_ident("schema") {
-                continue;
-            }
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("ref") {
-                    has_ref_override = true;
-                }
-                Ok(())
-            });
-            if has_ref_override {
-                break;
-            }
-        }
-        if has_ref_override {
-            metadata.include_in_openapi = false;
-        }
+    if schema_attr.has_ref_override {
+        metadata.include_in_openapi = false;
     }
     metadata.field_defaults = field_defaults;
 
@@ -228,7 +233,17 @@ pub fn process_derive_schema(
     // constraints carry runtime checks alongside their OpenAPI metadata.
     // The emit function returns an empty `TokenStream` when no field
     // requests a runtime rule or when the feature is off.
-    let expanded = crate::garde_emit::emit_garde_validate(input);
+    let garde = crate::garde_emit::emit_garde_validate(input);
+    // Emit the `::vespera::Schema` marker impl + per-field
+    // `T: ::vespera::Schema` leaf assertions: a field of a custom type
+    // that forgot its own `#[derive(Schema)]` becomes a compile error
+    // instead of a silent `{type:"object"}` in the spec. Additive — it
+    // does not change the emitted OpenAPI bytes for any field.
+    let supplements = crate::schema_assertions::emit_schema_supplements(input);
+    let expanded = quote::quote! {
+        #garde
+        #supplements
+    };
     (Some(metadata), expanded)
 }
 
@@ -275,6 +290,79 @@ pub fn extract_field_defaults_from_path(
 
     defaults.extend(extract_defaults_from_path(&fn_defaults, file_path));
     defaults
+}
+
+fn validate_serde_default_values(
+    input: &syn::DeriveInput,
+    field_defaults: &BTreeMap<String, serde_json::Value>,
+) -> Result<(), syn::Error> {
+    let fields = match &input.data {
+        syn::Data::Struct(data) => match &data.fields {
+            syn::Fields::Named(named) => &named.named,
+            _ => return Ok(()),
+        },
+        _ => return Ok(()),
+    };
+
+    let mut errors: Option<syn::Error> = None;
+    for field in fields {
+        let Some(default_kind) = extract_default(&field.attrs) else {
+            continue;
+        };
+        if has_schema_default(&field.attrs)
+            || serde_default_is_resolvable(field, default_kind.as_ref(), field_defaults)
+        {
+            continue;
+        }
+
+        let field_name = field.ident.as_ref().map_or_else(
+            || "unknown".to_string(),
+            |ident| strip_raw_prefix_owned(ident.to_string()),
+        );
+        let error = syn::Error::new_spanned(
+            field,
+            format!(
+                "cannot statically determine the OpenAPI default for field `{field_name}` which has `#[serde(default)]`; add an explicit `#[schema(default = \"...\")]`"
+            ),
+        );
+        if let Some(existing) = &mut errors {
+            existing.combine(error);
+        } else {
+            errors = Some(error);
+        }
+    }
+
+    errors.map_or(Ok(()), Err)
+}
+
+fn serde_default_is_resolvable(
+    field: &syn::Field,
+    default_kind: Option<&String>,
+    field_defaults: &BTreeMap<String, serde_json::Value>,
+) -> bool {
+    match default_kind {
+        Some(_) => field
+            .ident
+            .as_ref()
+            .is_some_and(|ident| field_defaults.contains_key(&ident.to_string())),
+        None => crate::schema_macro::type_utils::get_type_default(&field.ty).is_some(),
+    }
+}
+
+fn has_schema_default(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("schema"))
+        .any(|attr| {
+            let mut found = false;
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("default") {
+                    found = true;
+                }
+                Ok(())
+            });
+            found
+        })
 }
 
 fn extract_defaults_from_path(
@@ -591,7 +679,12 @@ mod tests {
         let metadata = metadata.expect("valid schema metadata");
         assert_eq!(metadata.name, "Unit");
         assert!(metadata.definition.contains("Unit"));
-        assert!(tokens.is_empty(), "Token stream should be empty");
+        assert!(
+            tokens
+                .to_string()
+                .contains("impl :: vespera :: Schema for Unit"),
+            "unit structs should emit the Schema marker impl: {tokens}"
+        );
     }
 
     #[test]
@@ -603,7 +696,12 @@ mod tests {
         let metadata = metadata.expect("valid schema metadata");
         assert_eq!(metadata.name, "Pair");
         assert!(metadata.definition.contains("Pair"));
-        assert!(tokens.is_empty());
+        assert!(
+            tokens
+                .to_string()
+                .contains("impl :: vespera :: Schema for Pair"),
+            "tuple structs should emit the Schema marker impl: {tokens}"
+        );
     }
 
     #[test]
@@ -686,7 +784,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(bucket) = guard.get_mut(&current_crate_key()) {
-            bucket.remove(key);
+            Arc::make_mut(bucket).remove(key);
         }
     }
 
@@ -836,7 +934,12 @@ mod tests {
             }
         };
         let (metadata, tokens) = process_derive_schema(&valid);
-        assert!(tokens.is_empty());
+        assert!(
+            tokens
+                .to_string()
+                .contains("impl :: vespera :: Schema for __InvalidConstraintDoesNotPoison"),
+            "valid re-registration should emit the Schema marker impl: {tokens}"
+        );
         let metadata = metadata.expect("valid schema metadata");
         assert!(register_schema(key.clone(), metadata).is_ok());
         remove_current_crate_schema(&key);
@@ -853,7 +956,12 @@ mod tests {
             let mut guard = SCHEMA_STORAGE
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            guard.entry(fake_crate.clone()).or_default().insert(
+            Arc::make_mut(
+                guard
+                    .entry(fake_crate.clone())
+                    .or_insert_with(|| Arc::new(HashMap::new())),
+            )
+            .insert(
                 key.clone(),
                 StructMetadata::new(key.clone(), "struct Isolated {}".to_string()),
             );
@@ -977,6 +1085,11 @@ struct Config {
         let metadata = metadata.expect("valid schema metadata");
         assert_eq!(metadata.name, "UserSchema");
         assert!(!metadata.include_in_openapi);
-        assert!(tokens.is_empty());
+        assert!(
+            tokens
+                .to_string()
+                .contains("impl :: vespera :: Schema for UserSchema"),
+            "ref overrides should still emit the Schema marker impl: {tokens}"
+        );
     }
 }

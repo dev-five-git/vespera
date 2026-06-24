@@ -438,6 +438,7 @@ pub fn get_type_default(ty: &Type) -> Option<serde_json::Value> {
                         .unwrap_or_else(|| serde_json::Number::from(0)),
                 )),
                 "bool" => Some(serde_json::Value::Bool(false)),
+                "Option" => Some(serde_json::Value::Null),
                 "Uuid" => Some(serde_json::Value::String(
                     "00000000-0000-0000-0000-000000000000".to_string(),
                 )),

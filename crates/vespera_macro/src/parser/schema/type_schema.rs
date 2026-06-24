@@ -3,7 +3,8 @@
 mod conversion;
 
 pub use conversion::{
-    is_primitive_type, parse_type_to_schema_ref, parse_type_to_schema_ref_with_schemas,
+    is_builtin_openapi_type, is_primitive_type, parse_type_to_schema_ref,
+    parse_type_to_schema_ref_with_schemas,
 };
 
 #[cfg(test)]

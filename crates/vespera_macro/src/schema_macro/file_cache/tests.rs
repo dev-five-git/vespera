@@ -378,10 +378,8 @@ fn test_file_list_skips_walk_within_same_epoch() {
 }
 
 /// Sanity check: the struct identifier index returns *every* file
-/// that defines a struct of the given name. Disambiguation by
-/// schema-name hint happens in
-/// [`super::file_lookup::find_struct_by_name_in_all_files`] *after*
-/// the candidate set is returned, so this layer must not pre-filter.
+/// that defines a struct of the given name. This layer must not pre-filter;
+/// callers that still need a candidate set own their own resolution policy.
 #[serial_test::serial]
 #[test]
 fn test_struct_index_preserves_disambiguation_candidates() {

@@ -56,6 +56,7 @@ mod parser;
 mod route;
 mod route_impl;
 mod router_codegen;
+mod schema_assertions;
 mod schema_impl;
 mod schema_macro;
 mod vespera_impl;

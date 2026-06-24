@@ -656,6 +656,10 @@ pub struct CategoryInArticle {
 
 schema_type!(
     ArticleResponse from crate::models::article::Model,
+    relation_adapters = [
+        ("user", UserInArticle),
+        ("category", CategoryInArticle),
+    ],
     add = [("article_review_users": Vec<ArticleReviewUserInArticle>)]
 );
 
@@ -670,14 +674,14 @@ Ok(ArticleResponse {
 
 How it works:
 
-- `schema_type!` looks for same-file DTOs named `{RelationNamePascal}In{ResponseBase}`
-  - `user` on `ArticleResponse` → `UserInArticle`
-  - `category` on `ArticleResponse` → `CategoryInArticle`
-- It generates local compile adapters so `Option<Model>.into()` works unchanged in the handler
+- `relation_adapters = [("field", AdapterStruct)]` is an explicit opt-in for single-value relation fields (`HasOne` / `BelongsTo`)
+- The adapter struct name is used verbatim; Vespera does not infer adapter names by convention
+- If an explicitly named adapter struct cannot be found in the same file, compilation fails instead of silently falling back
+- Vespera generates local compile adapters so `Option<Model>.into()` works unchanged in the handler
 - The internal `__Vespera…Relation` wrapper type stays private to Rust typing
 - OpenAPI references the **adapter DTO's own schema** (`UserInArticle`, `CategoryInArticle`) — so the documented response shape matches exactly what the handler serializes, instead of over-promising the base relation schema (`UserSchema`, `CategorySchema`)
 
-Use this when you want route-local response DTOs for single-value relations (`HasOne` / `BelongsTo`) without rewriting the route construction logic.
+Use this when you want route-local response DTOs for single-value relations without rewriting the route construction logic. Relation fields not listed in `relation_adapters` keep the default base-schema relation type.
 
 ### Multipart Mode
 

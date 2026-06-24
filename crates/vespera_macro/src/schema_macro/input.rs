@@ -117,6 +117,9 @@ pub struct SchemaTypeInput {
     pub pick: Option<Vec<String>>,
     /// Field renames: (`source_field_name`, `new_field_name`)
     pub rename: Option<Vec<(String, String)>>,
+    /// Explicit same-file adapter DTOs for single-value relation fields:
+    /// (`relation_field_name`, `AdapterStructIdent`)
+    pub relation_adapters: Vec<(String, Ident)>,
     /// New fields to add: (`field_name`, `field_type`)
     pub add: Option<Vec<(String, Type)>>,
     /// Whether to derive Clone (default: true)
@@ -193,6 +196,26 @@ impl Parse for RenamePair {
     }
 }
 
+/// Helper struct to parse a relation adapter pair: ("`field_name`", AdapterIdent)
+struct RelationAdapterPair {
+    field_name: String,
+    adapter: Ident,
+}
+
+impl Parse for RelationAdapterPair {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let content;
+        parenthesized!(content in input);
+        let field_name: LitStr = content.parse()?;
+        content.parse::<Token![,]>()?;
+        let adapter: Ident = content.parse()?;
+        Ok(Self {
+            field_name: field_name.value(),
+            adapter,
+        })
+    }
+}
+
 impl Parse for SchemaTypeInput {
     #[allow(clippy::too_many_lines)]
     fn parse(input: ParseStream) -> syn::Result<Self> {
@@ -216,6 +239,7 @@ impl Parse for SchemaTypeInput {
         let mut omit = None;
         let mut pick = None;
         let mut rename = None;
+        let mut relation_adapters = Vec::new();
         let mut add = None;
         let mut derive_clone = true;
         let mut partial = None;
@@ -270,6 +294,17 @@ impl Parse for SchemaTypeInput {
                     let pairs: Punctuated<RenamePair, Token![,]> =
                         content.parse_terminated(RenamePair::parse, Token![,])?;
                     rename = Some(pairs.into_iter().map(|p| (p.from, p.to)).collect());
+                }
+                "relation_adapters" => {
+                    input.parse::<Token![=]>()?;
+                    let content;
+                    let _ = bracketed!(content in input);
+                    let pairs: Punctuated<RelationAdapterPair, Token![,]> =
+                        content.parse_terminated(RelationAdapterPair::parse, Token![,])?;
+                    relation_adapters = pairs
+                        .into_iter()
+                        .map(|p| (p.field_name, p.adapter))
+                        .collect();
                 }
                 "add" => {
                     input.parse::<Token![=]>()?;
@@ -331,7 +366,7 @@ impl Parse for SchemaTypeInput {
                     return Err(syn::Error::new(
                         ident.span(),
                         format!(
-                            "unknown parameter: `{ident_str}`. Expected `omit`, `pick`, `rename`, `add`, `clone`, `partial`, `ignore`, `name`, `rename_all`, `multipart`, or `omit_default`"
+                            "unknown parameter: `{ident_str}`. Expected `omit`, `pick`, `rename`, `relation_adapters`, `add`, `clone`, `partial`, `ignore`, `name`, `rename_all`, `multipart`, or `omit_default`"
                         ),
                     ));
                 }
@@ -352,6 +387,7 @@ impl Parse for SchemaTypeInput {
             omit,
             pick,
             rename,
+            relation_adapters,
             add,
             derive_clone,
             partial,
@@ -425,6 +461,7 @@ mod tests {
         assert!(input.omit.is_none());
         assert!(input.pick.is_none());
         assert!(input.rename.is_none());
+        assert!(input.relation_adapters.is_empty());
         assert!(input.derive_clone);
     }
 
@@ -456,6 +493,18 @@ mod tests {
         let rename = input.rename.unwrap();
         assert_eq!(rename.len(), 1);
         assert_eq!(rename[0], ("id".to_string(), "user_id".to_string()));
+    }
+
+    #[test]
+    fn test_parse_schema_type_input_with_relation_adapters() {
+        let tokens = quote::quote!(MemoResponse from Memo, relation_adapters = [("user", UserInMemo), ("category", CategoryInMemo)]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+
+        assert_eq!(input.relation_adapters.len(), 2);
+        assert_eq!(input.relation_adapters[0].0, "user");
+        assert_eq!(input.relation_adapters[0].1.to_string(), "UserInMemo");
+        assert_eq!(input.relation_adapters[1].0, "category");
+        assert_eq!(input.relation_adapters[1].1.to_string(), "CategoryInMemo");
     }
 
     #[test]

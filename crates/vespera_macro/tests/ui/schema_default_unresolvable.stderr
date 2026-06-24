@@ -1,0 +1,6 @@
+error: cannot statically determine the OpenAPI default for field `tags` which has `#[serde(default)]`; add an explicit `#[schema(default = "...")]`
+  --> tests/ui/schema_default_unresolvable.rs:14:5
+   |
+14 | /     #[serde(default = "non_literal_default")]
+15 | |     pub tags: Vec<String>,
+   | |_________________________^

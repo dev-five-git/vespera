@@ -317,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_schema_type_code_same_file_relation_adapters_for_add_mode() {
+    fn test_generate_schema_type_code_same_file_relation_adapters_when_explicit() {
         let storage = to_storage(vec![
             create_test_struct_metadata(
                 "Model",
@@ -342,6 +342,7 @@ mod tests {
 
         let tokens = quote!(
             ArticleResponse from Model,
+            relation_adapters = [("user", UserInArticle), ("category", CategoryInArticle)],
             add = [("article_review_users": Vec<ArticleReviewUserInArticle>)]
         );
         let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
@@ -386,11 +387,16 @@ mod tests {
             struct UserInArticle { id: i32, name: String }",
         )]);
         let new_type_name = syn::Ident::new("ArticleResponse", proc_macro2::Span::call_site());
+        let adapter_name = syn::Ident::new("UserInArticle", proc_macro2::Span::call_site());
 
-        let (override_field_ty, helper_tokens) =
-            maybe_generate_same_file_relation_override(&new_type_name, "user", &rel_info, &storage)
-                .expect("override generation should succeed")
-                .expect("DTO is present in storage → override should be generated");
+        let (override_field_ty, helper_tokens) = maybe_generate_same_file_relation_override(
+            &new_type_name,
+            "user",
+            &adapter_name,
+            &rel_info,
+            &storage,
+        )
+        .expect("override generation should succeed");
 
         let output = helper_tokens.to_string();
         let field_ty = override_field_ty.to_string();

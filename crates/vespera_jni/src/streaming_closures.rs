@@ -17,6 +17,7 @@
 
 use std::ops::ControlFlow;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use jni::ids::JMethodID;
 use jni::objects::{JClass, JObject};
@@ -131,9 +132,12 @@ enum MethodCacheState {
 static METHOD_CACHE: OnceLock<MethodCacheState> = OnceLock::new();
 
 const ZERO_READ_YIELD_THRESHOLD: u32 = 16;
+const ZERO_READ_BACKOFF_STEP: Duration = Duration::from_micros(50);
+const ZERO_READ_BACKOFF_CAP: Duration = Duration::from_millis(1);
 
-fn should_yield_after_zero_read(consecutive_empty_reads: u32) -> bool {
-    consecutive_empty_reads >= ZERO_READ_YIELD_THRESHOLD
+fn zero_read_backoff(consecutive_empty_reads: u32) -> Option<Duration> {
+    let over_threshold = consecutive_empty_reads.checked_sub(ZERO_READ_YIELD_THRESHOLD)?;
+    Some((ZERO_READ_BACKOFF_STEP * (over_threshold + 1)).min(ZERO_READ_BACKOFF_CAP))
 }
 
 fn method_cache(env: &mut jni::Env<'_>) -> Option<&'static MethodCache> {
@@ -354,8 +358,8 @@ pub fn make_pull_closure(
                 }
                 if n == 0 {
                     consecutive_empty_reads = consecutive_empty_reads.saturating_add(1);
-                    if should_yield_after_zero_read(consecutive_empty_reads) {
-                        std::thread::yield_now();
+                    if let Some(delay) = zero_read_backoff(consecutive_empty_reads) {
+                        std::thread::sleep(delay);
                     }
                     return Ok(RequestChunk::Data(Vec::new()));
                 }
@@ -666,15 +670,18 @@ pub fn complete_future(
 
 #[cfg(test)]
 mod tests {
-    use super::should_yield_after_zero_read;
+    use std::time::Duration;
+
+    use super::zero_read_backoff;
 
     #[test]
     fn zero_read_backoff_starts_after_repeated_empty_reads() {
         // Given: a JNI InputStream that repeatedly reports empty reads.
         // When: the count reaches the JNI-side threshold.
-        // Then: the pull closure yields the blocking worker instead of only
-        // relying on the inprocess producer's hard cap.
-        assert!(!should_yield_after_zero_read(15));
-        assert!(should_yield_after_zero_read(16));
+        // Then: the pull closure stays on the fast path below the threshold,
+        // then sleeps with a tiny capped backoff instead of busy-yielding forever.
+        assert_eq!(zero_read_backoff(15), None);
+        assert_eq!(zero_read_backoff(16), Some(Duration::from_micros(50)));
+        assert_eq!(zero_read_backoff(35), Some(Duration::from_millis(1)));
     }
 }

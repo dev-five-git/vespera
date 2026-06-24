@@ -240,7 +240,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                         return Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) });
                     }
 
-                    let dispatched = {
+                    let Some(dispatched) = ({
                         // SAFETY: invariants 1–3 above.  `in_addr..in_addr+in_len`
                         // (`in_len <= in_cap`) is a readable region and
                         // `out_addr..out_addr+out_cap` a writable region, both of
@@ -257,6 +257,13 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                         block_on_sync_runtime(vespera_inprocess::dispatch_into_async_borrowed(
                             input, out,
                         ))
+                    }) else {
+                        let err =
+                            vespera_inprocess::error_wire(500, "failed to create Tokio runtime");
+                        // SAFETY: same direct-buffer invariants as above; this branch
+                        // writes only a freshly allocated wire error into the caller's
+                        // resolved output buffer.
+                        return Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) });
                     };
 
                     let code = match dispatched {

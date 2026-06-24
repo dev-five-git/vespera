@@ -18,11 +18,8 @@ pub enum LookupError {
         struct_name: String,
         searched: Vec<PathBuf>,
     },
-    /// Multiple files define the requested struct and no hint disambiguated it.
-    Ambiguous {
-        struct_name: String,
-        candidates: Vec<PathBuf>,
-    },
+    /// A bare source name was not found in the macro call-site file.
+    BareNotFound { struct_name: String },
 }
 
 impl LookupError {
@@ -47,14 +44,10 @@ impl LookupError {
                     render_paths(searched)
                 ),
             ),
-            Self::Ambiguous {
-                struct_name,
-                candidates,
-            } => syn::Error::new_spanned(
+            Self::BareNotFound { struct_name } => syn::Error::new_spanned(
                 span,
                 format!(
-                    "schema_type! found multiple structs named `{struct_name}`. Add a fully-qualified path or a `name = \"...\"` hint. Candidates: {}",
-                    render_paths(candidates)
+                    "struct `{struct_name}` not found in this file; use a qualified path like `crate::models::<module>::{struct_name}`"
                 ),
             ),
         }
@@ -99,15 +92,12 @@ pub(super) fn candidate_file_paths(src_dir: &Path, module_segments: &[&str]) -> 
 /// 2. Convert to file path (e.g., `src/models/memo.rs`)
 /// 3. Read and parse the file to find the struct definition
 ///
-/// For simple names (e.g., just `Model` without module path), it will scan all `.rs`
-/// files in `src/` to find the struct. This supports same-file usage like:
+/// For simple names (e.g., just `Model` without module path), it only checks the
+/// macro call-site file. This supports same-file usage like:
 /// ```ignore
 /// pub struct Model { ... }
 /// vespera::schema_type!(Schema from Model, name = "UserSchema");
 /// ```
-///
-/// The `schema_name_hint` is used to disambiguate when multiple structs with the same
-/// name exist. For example, with `name = "UserSchema"`, it will prefer `user.rs`.
 ///
 /// Returns `(StructMetadata, Vec<String>)` where the Vec is the module path.
 /// For qualified paths, this is extracted from the type itself.
@@ -123,7 +113,7 @@ pub fn find_struct_from_path(
 /// Detailed variant of [`find_struct_from_path`] that preserves failure reasons.
 pub fn find_struct_from_path_detailed(
     ty: &Type,
-    schema_name_hint: Option<&str>,
+    _schema_name_hint: Option<&str>,
 ) -> Result<(StructMetadata, Vec<String>), LookupError> {
     // Get CARGO_MANIFEST_DIR to locate src folder (cached to avoid repeated syscalls)
     let manifest_dir = crate::schema_macro::file_cache::get_manifest_dir()
@@ -158,9 +148,12 @@ pub fn find_struct_from_path_detailed(
         .map(std::string::String::as_str)
         .collect();
 
-    // If no module path (simple name like `Model`), scan all files with schema_name hint
+    // If no module path (simple name like `Model`), resolve only in the macro
+    // call-site file. Cross-file bare lookup is action-at-a-distance: callers
+    // must use a qualified path for anything outside the file that invokes the
+    // macro.
     if module_segments.is_empty() {
-        return find_struct_by_name_in_all_files_detailed(&src_dir, &struct_name, schema_name_hint);
+        return find_bare_struct_in_call_site(&src_dir, &struct_name);
     }
 
     // For qualified paths, the module path is extracted from the type itself
@@ -192,171 +185,26 @@ pub fn find_struct_from_path_detailed(
     })
 }
 
-/// Find a struct by name by scanning all `.rs` files in the src directory.
-///
-/// This is used as a fallback when the type path doesn't include module information
-/// (e.g., just `Model` instead of `crate::models::user::Model`).
-///
-/// Resolution strategy:
-/// 1. If exactly one struct with the name exists -> use it
-/// 2. If multiple exist and `schema_name_hint` is provided (e.g., "UserSchema"):
-///    -> Prefer file whose name contains the hint prefix (e.g., "user.rs" for "`UserSchema`")
-/// 3. Otherwise -> return None (ambiguous)
-///
-/// The `schema_name_hint` is the custom schema name (e.g., "`UserSchema`", "`MemoSchema`")
-/// which often contains a hint about the module name.
-///
-/// Returns `(StructMetadata, Vec<String>)` where the Vec is the inferred module path
-/// from the file location (e.g., `["crate", "models", "user"]`).
-#[allow(clippy::too_many_lines)]
-#[cfg(test)]
-pub fn find_struct_by_name_in_all_files(
+fn find_bare_struct_in_call_site(
     src_dir: &Path,
     struct_name: &str,
-    schema_name_hint: Option<&str>,
-) -> Option<(StructMetadata, Vec<String>)> {
-    find_struct_by_name_in_all_files_detailed(src_dir, struct_name, schema_name_hint).ok()
-}
-
-/// Detailed variant of [`find_struct_by_name_in_all_files`].
-#[allow(clippy::too_many_lines)]
-pub fn find_struct_by_name_in_all_files_detailed(
-    src_dir: &Path,
-    struct_name: &str,
-    schema_name_hint: Option<&str>,
 ) -> Result<(StructMetadata, Vec<String>), LookupError> {
-    // Use cached struct-candidate index: files already filtered by text
-    // search.  `Arc<[PathBuf]>` — iterate by reference; only matched
-    // paths are cloned.
-    let all_files = crate::schema_macro::file_cache::get_struct_candidates(src_dir, struct_name);
-    let mut rs_files: Vec<&std::path::PathBuf> = all_files.iter().collect();
-
-    // Pre-compute hint prefix once (used in fast path and fallback disambiguation)
-    let prefix_normalized = schema_name_hint.map(derive_hint_prefix);
-
-    // FAST PATH: If schema_name_hint is provided, try matching files first.
-    // This avoids parsing ALL files for the common same-file pattern:
-    //   schema_type!(Schema from Model, name = "UserSchema")  in user.rs
-    if let Some(prefix_normalized) = &prefix_normalized {
-        // Partition files: candidate files (filename matches hint prefix) vs rest
-        let (candidates, rest): (Vec<_>, Vec<_>) = rs_files.into_iter().partition(|path| {
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .is_some_and(|name| {
-                    let norm = normalize_name(name);
-                    norm == *prefix_normalized || norm.contains(prefix_normalized.as_str())
-                })
+    let Some(file_path) = proc_macro2::Span::call_site().local_file() else {
+        return Err(LookupError::BareNotFound {
+            struct_name: struct_name.to_string(),
         });
-
-        // Parse only candidate files first
-        let mut found_in_candidates: Vec<(std::path::PathBuf, StructMetadata)> = Vec::new();
-        for file_path in &candidates {
-            if let Some(definition) =
-                crate::schema_macro::file_cache::get_struct_definition(file_path, struct_name)
-            {
-                found_in_candidates.push((
-                    (*file_path).clone(),
-                    StructMetadata::new_model(struct_name.to_string(), definition),
-                ));
-            }
-        }
-
-        // If exactly one match in candidates, return immediately (fast path hit!)
-        if found_in_candidates.len() == 1 {
-            let (path, metadata) = found_in_candidates.remove(0);
-            let module_path = file_path_to_module_path(&path, src_dir);
-            return Ok((metadata, module_path));
-        }
-
-        // If candidates found multiple, try disambiguation by exact filename match
-        if found_in_candidates.len() > 1 {
-            let exact_match: Vec<_> = found_in_candidates
-                .iter()
-                .filter(|(path, _)| {
-                    path.file_stem()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|name| normalize_name(name) == *prefix_normalized)
-                })
-                .collect();
-
-            if exact_match.len() == 1 {
-                let (path, metadata) = exact_match[0];
-                let module_path = file_path_to_module_path(path, src_dir);
-                return Ok((metadata.clone(), module_path));
-            }
-
-            // Still ambiguous among candidates
-            return Err(LookupError::Ambiguous {
-                struct_name: struct_name.to_string(),
-                candidates: found_in_candidates
-                    .into_iter()
-                    .map(|(path, _)| path)
-                    .collect(),
-            });
-        }
-
-        // No match in candidates — fall through to scan remaining files
-        rs_files = rest;
-    }
-
-    // FULL SCAN: Parse all remaining files (or all files if no hint)
-    let mut found_structs: Vec<(std::path::PathBuf, StructMetadata)> = Vec::new();
-
-    for file_path in rs_files {
-        if let Some(definition) =
-            crate::schema_macro::file_cache::get_struct_definition(file_path, struct_name)
-        {
-            found_structs.push((
-                file_path.clone(),
-                StructMetadata::new_model(struct_name.to_string(), definition),
-            ));
-        }
-    }
-
-    match found_structs.len() {
-        1 => {
-            let (path, metadata) = found_structs.remove(0);
-            let module_path = file_path_to_module_path(&path, src_dir);
-            Ok((metadata, module_path))
-        }
-        0 => Err(LookupError::NotFound {
+    };
+    let Some(definition) =
+        crate::schema_macro::file_cache::get_struct_definition(&file_path, struct_name)
+    else {
+        return Err(LookupError::BareNotFound {
             struct_name: struct_name.to_string(),
-            searched: all_files.iter().cloned().collect(),
-        }),
-        _ => Err(LookupError::Ambiguous {
-            struct_name: struct_name.to_string(),
-            candidates: found_structs.into_iter().map(|(path, _)| path).collect(),
-        }),
-    }
-}
-
-/// Derive a normalized prefix from a schema name hint for file matching.
-///
-/// Strips common suffixes ("Schema", "Response", "Request") and normalizes
-/// by removing underscores and lowercasing.
-///
-/// # Examples
-/// - "UserSchema" → "user"
-/// - "MemoResponse" → "memo"
-/// - "AdminUserSchema" → "adminuser"
-fn derive_hint_prefix(hint: &str) -> String {
-    let hint_lower = hint.to_lowercase();
-    let prefix = hint_lower
-        .strip_suffix("schema")
-        .or_else(|| hint_lower.strip_suffix("response"))
-        .or_else(|| hint_lower.strip_suffix("request"))
-        .unwrap_or(&hint_lower);
-    normalize_name(prefix)
-}
-
-/// Normalize a name by lowercasing and removing underscores in a single pass.
-/// Replaces the two-allocation `s.to_lowercase().replace('_', "")` pattern.
-#[inline]
-fn normalize_name(s: &str) -> String {
-    s.chars()
-        .filter(|&c| c != '_')
-        .map(|c| c.to_ascii_lowercase())
-        .collect()
+        });
+    };
+    Ok((
+        StructMetadata::new_model(struct_name.to_string(), definition),
+        file_path_to_module_path(&file_path, src_dir),
+    ))
 }
 
 /// Recursively collect all `.rs` files in a directory.
@@ -391,9 +239,12 @@ pub fn collect_rs_files_recursive(dir: &Path, files: &mut Vec<std::path::PathBuf
 /// - `src/models/user/mod.rs` -> `["crate", "models", "user"]`
 /// - `src/lib.rs` -> `["crate"]`
 pub fn file_path_to_module_path(file_path: &Path, src_dir: &Path) -> Vec<String> {
-    let Ok(relative) = file_path.strip_prefix(src_dir) else {
-        return vec!["crate".to_string()];
-    };
+    let relative = file_path
+        .strip_prefix(src_dir)
+        .ok()
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| relative_path_after_src(file_path))
+        .unwrap_or_default();
 
     let mut segments = vec!["crate".to_string()];
 
@@ -415,6 +266,22 @@ pub fn file_path_to_module_path(file_path: &Path, src_dir: &Path) -> Vec<String>
     }
 
     segments
+}
+
+fn relative_path_after_src(file_path: &Path) -> Option<PathBuf> {
+    let mut seen_src = false;
+    let mut relative = PathBuf::new();
+    for component in file_path.components() {
+        let std::path::Component::Normal(os_str) = component else {
+            continue;
+        };
+        if seen_src {
+            relative.push(os_str);
+        } else if os_str == "src" {
+            seen_src = true;
+        }
+    }
+    seen_src.then_some(relative)
 }
 
 /// Find struct definition from a schema path string (e.g., "`crate::models::user::Schema`").

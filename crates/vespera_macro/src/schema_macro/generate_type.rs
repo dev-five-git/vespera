@@ -272,15 +272,19 @@ pub fn generate_schema_type_code(
                             }
                         } else {
                             // BelongsTo/HasOne: Include by default
-                            if input.add.is_some()
-                                && let Some((override_field_ty, helper_tokens)) =
+                            if let Some((_, adapter_name)) = input
+                                .relation_adapters
+                                .iter()
+                                .find(|(field_name, _)| field_name == &rust_field_name)
+                            {
+                                let (override_field_ty, helper_tokens) =
                                     maybe_generate_same_file_relation_override(
                                         new_type_name,
                                         &rust_field_name,
+                                        adapter_name,
                                         &rel_info,
                                         schema_storage,
-                                    )?
-                            {
+                                    )?;
                                 relation_override_helpers.push(helper_tokens);
                                 (Box::new(override_field_ty), Some(rel_info))
                             } else
