@@ -658,22 +658,27 @@ fn check_header_len(header_len: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Split a wire-format request into its header-JSON region and body —
-/// both true zero-copy O(1) refcount views of the input allocation
-/// (unlike `Vec::split_off`, which allocates a new vector and memcpys
-/// the tail).
+/// Validate the wire frame prefix and return the absolute byte offset at
+/// which the request body region begins (= `4 + header_len`).  Shared by
+/// [`split_wire_request`] (owned) and [`split_wire_borrowed`] (borrowed) —
+/// the two used to inline the same prefix/length/range validation;
+/// centralising it removes the duplicate logic and guarantees the two
+/// paths can never drift in their error messages (the existing
+/// [`crate::tests::wire_contract`] and [`crate::tests::wire_robustness`]
+/// behavioural goldens stay byte-identical because the validation bytes
+/// are the same).
 ///
-/// Two-phase with [`parse_wire_header`] so the deserialized header
-/// can **borrow** its strings from the returned header bytes (the
-/// caller keeps them alive on its stack frame).
-pub fn split_wire_request(input: Vec<u8>) -> Result<(Bytes, Bytes), String> {
+/// `#[inline]` so both callers inline the helper exactly as before the
+/// extraction — the helper has one branch per error site, so the inlined
+/// codegen at the call site matches the pre-refactor codegen.
+#[inline]
+fn parse_wire_header_len(input: &[u8]) -> Result<usize, String> {
     if input.len() < 4 {
         return Err(format!(
             "wire input too short: {} bytes, need at least 4",
             input.len()
         ));
     }
-    let mut input = Bytes::from(input);
     let mut len_bytes = [0u8; 4];
     len_bytes.copy_from_slice(&input[..4]);
     let header_len = u32::from_be_bytes(len_bytes) as usize;
@@ -685,6 +690,22 @@ pub fn split_wire_request(input: Vec<u8>) -> Result<(Bytes, Bytes), String> {
             input.len() - 4
         ));
     }
+    Ok(total_header_end)
+}
+
+/// Split a wire-format request into its header-JSON region and body —
+/// both true zero-copy O(1) refcount views of the input allocation
+/// (unlike `Vec::split_off`, which allocates a new vector and memcpys
+/// the tail).
+///
+/// Two-phase with [`parse_wire_header`] so the deserialized header
+/// can **borrow** its strings from the returned header bytes (the
+/// caller keeps them alive on its stack frame).
+pub fn split_wire_request(input: Vec<u8>) -> Result<(Bytes, Bytes), String> {
+    let total_header_end = parse_wire_header_len(&input)?;
+    // `Bytes::from(Vec<u8>)` is O(1) (Arc wrap, no copy), so the order of
+    // validation vs Bytes wrap has no runtime effect.
+    let mut input = Bytes::from(input);
     // O(1) splits: all views share the original allocation.
     let body = input.split_off(total_header_end);
     let header_json = input.slice(4..);
@@ -697,23 +718,7 @@ pub fn split_wire_request(input: Vec<u8>) -> Result<(Bytes, Bytes), String> {
 /// a `Bytes`).  The caller MUST keep `input` alive for as long as the
 /// returned slices — and anything borrowing from them — are used.
 pub fn split_wire_borrowed(input: &[u8]) -> Result<(&[u8], &[u8]), String> {
-    if input.len() < 4 {
-        return Err(format!(
-            "wire input too short: {} bytes, need at least 4",
-            input.len()
-        ));
-    }
-    let mut len_bytes = [0u8; 4];
-    len_bytes.copy_from_slice(&input[..4]);
-    let header_len = u32::from_be_bytes(len_bytes) as usize;
-    check_header_len(header_len)?;
-    let total_header_end = 4usize.saturating_add(header_len);
-    if total_header_end > input.len() {
-        return Err(format!(
-            "wire header_len ({header_len}) exceeds remaining input ({} bytes)",
-            input.len() - 4
-        ));
-    }
+    let total_header_end = parse_wire_header_len(input)?;
     Ok((&input[4..total_header_end], &input[total_header_end..]))
 }
 
