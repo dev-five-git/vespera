@@ -137,6 +137,32 @@ final class VesperaWireCodec {
         }
 
         /**
+         * Bulk-append the ASCII bytes of {@code s[from..to)} — single bound
+         * check + tight per-char store loop. Caller MUST guarantee every char
+         * in the range is {@code < 0x80} (which the {@link #writeJsonStringBody}
+         * fast path does — it batches ONLY the verbatim ASCII run, not escapes
+         * or multi-byte UTF-8). No-op for {@code to <= from}.
+         *
+         * <p>Mirrors the Rust-side {@code wire/header_write.rs::write_json_string}
+         * bulk-run amortisation: that side already flushes verbatim ASCII runs
+         * via {@code sink.put(&bytes[start..i])}; this method closes the
+         * asymmetry so the Java per-request encode hot path pays one bound
+         * check per run instead of one per character.
+         */
+        void putAsciiSlice(String s, int from, int to) {
+            int n = to - from;
+            if (n <= 0) {
+                return;
+            }
+            if (count + n > buf.length) {
+                buf = java.util.Arrays.copyOf(buf, growCap(buf.length, count + n));
+            }
+            for (int i = from; i < to; i++) {
+                buf[count++] = (byte) s.charAt(i);
+            }
+        }
+
+        /**
          * Smallest power-of-two growth of {@code current} that holds
          * {@code needed} bytes, capped at {@link #MAX_HEADER_BUFFER_BYTES}.
          * The cap is only ever consulted on a (rare) reallocation, so the
@@ -557,15 +583,26 @@ final class VesperaWireCodec {
      * bench and {@code wire_contract.rs}).
      */
     private static void writeJsonStringBody(ExposedByteArrayOutputStream out, String s) {
+        // Accumulate runs of verbatim ASCII chars ([0x20, 0x80) minus " and \)
+        // and flush each run as ONE bulk write through putAsciiSlice, instead
+        // of paying a per-char bound check via put(int). Mirrors the Rust-side
+        // wire/header_write.rs::write_json_string bulk-run amortisation. The
+        // emitted bytes are byte-identical for every input — only the batching
+        // of the verbatim path changes; every escape / UTF-8 branch below is
+        // copied verbatim from the prior implementation.
         int n = s.length();
+        int runStart = 0;
         for (int i = 0; i < n; i++) {
             char c = s.charAt(i);
-            if (c >= 0x20 && c < 0x80) {
-                if (c == '"' || c == '\\') {
-                    out.put('\\');
-                }
-                out.put(c);
-            } else if (c < 0x20) {
+            // ASCII verbatim — extend the run.
+            if (c >= 0x20 && c < 0x80 && c != '"' && c != '\\') {
+                continue;
+            }
+            // Flush whatever verbatim ASCII prefix accumulated.
+            if (i > runStart) {
+                out.putAsciiSlice(s, runStart, i);
+            }
+            if (c < 0x20) {
                 switch (c) {
                     case '\b' -> {
                         out.put('\\');
@@ -596,6 +633,12 @@ final class VesperaWireCodec {
                         out.put(HEX[c & 0xF]);
                     }
                 }
+            } else if (c < 0x80) {
+                // ASCII " or \\ — the only verbatim-path exclusions in the
+                // [0x20, 0x80) range. Same two bytes the prior implementation
+                // emitted (out.put('\\'); out.put(c)).
+                out.put('\\');
+                out.put(c);
             } else if (c < 0x800) {
                 out.put(0xC0 | (c >> 6));
                 out.put(0x80 | (c & 0x3F));
@@ -627,6 +670,12 @@ final class VesperaWireCodec {
                 out.put(0x80 | ((c >> 6) & 0x3F));
                 out.put(0x80 | (c & 0x3F));
             }
+            // For the surrogate-pair branch ++i already moved i past the low
+            // surrogate inside the branch body, so i+1 is correct here too.
+            runStart = i + 1;
+        }
+        if (n > runStart) {
+            out.putAsciiSlice(s, runStart, n);
         }
     }
 
