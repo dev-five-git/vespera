@@ -183,21 +183,31 @@ fn write_json_string<S: JsonSink>(sink: &mut S, s: &str) {
     sink.put(b"\"");
 }
 
-/// Append the decimal representation of `v` (no leading zeros, `0` for
-/// zero) — byte-identical to `serde_json`'s `itoa` integer output for
-/// the `u8`/`u16` header fields.
-fn write_u64<S: JsonSink>(sink: &mut S, mut v: u64) {
-    let mut buf = [0u8; 20];
-    let mut i = buf.len();
-    loop {
-        i -= 1;
-        buf[i] = b'0' + u8::try_from(v % 10).unwrap_or(0);
-        v /= 10;
-        if v == 0 {
-            break;
-        }
-    }
-    sink.put(&buf[i..]);
+/// Append a 3-digit HTTP status code (100-999) as ASCII — the
+/// byte-identical replacement for the prior generic
+/// `write_u64(sink, u64::from(status))` call.  `http::StatusCode`
+/// enforces the 100..=999 range (`axum::response::Response::status()`
+/// returns it), so the loop, the 20-byte stack buffer, and the
+/// `u16 → u64` widening the generic writer carried are all redundant
+/// for the sole caller.  Mirrors the Rust-side fast paths in
+/// `write_headers` (0/1-key) and the Java-side inlined-digit pattern
+/// in `VesperaWireCodec.java::fillHeaderJson` (`'0' + WIRE_VERSION`).
+/// Byte-identical output — locked by `hand_serialize_matches_serde_serialize`
+/// in `wire/tests.rs` and the end-to-end `tests/wire_contract.rs`.
+fn write_status_code<S: JsonSink>(sink: &mut S, status: u16) {
+    debug_assert!(
+        (100..=999).contains(&status),
+        "HTTP status must be 100..=999"
+    );
+    // Each digit is bounded to 0..=9 (1..=9 for `hundreds`) so the `u8`
+    // conversion never truncates in practice; `u8::try_from` is the
+    // pedantic-clippy-clean form (matches the original `write_u64`'s
+    // `u8::try_from(v % 10).unwrap_or(0)` and compiles to the same
+    // no-op truncation in release builds).
+    let hundreds = u8::try_from(status / 100).unwrap_or(0);
+    let tens = u8::try_from((status / 10) % 10).unwrap_or(0);
+    let ones = u8::try_from(status % 10).unwrap_or(0);
+    sink.put(&[b'0' + hundreds, b'0' + tens, b'0' + ones]);
 }
 
 /// Serialize an [`http::HeaderMap`] as the wire's sorted name -> value
@@ -353,7 +363,7 @@ pub(super) fn write_response_header<S: JsonSink>(
     // wire-contract test uses to lock the envelope shape.
     const _: () = assert!(WIRE_VERSION == 1);
     sink.put(b"{\"v\":1,\"status\":");
-    write_u64(sink, u64::from(status));
+    write_status_code(sink, status);
     sink.put(b",\"headers\":");
     write_headers(sink, headers);
     // COUPLING: this hand-written `metadata` object mirrors
