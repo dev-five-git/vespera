@@ -301,9 +301,20 @@ pub(super) fn write_response_header<S: JsonSink>(
     metadata: &ResponseMetadata,
     validation_errors: Option<&[ValidationErrorItem]>,
 ) {
-    sink.put(b"{\"v\":");
-    write_u64(sink, u64::from(WIRE_VERSION));
-    sink.put(b",\"status\":");
+    // `WIRE_VERSION` is a single-digit constant; write its ASCII digit
+    // directly in the scaffolding literal to avoid the per-response
+    // `write_u64` digit-extraction loop and one `JsonSink::put` indirection
+    // every wire response (buffered / direct-write / streaming) used to pay.
+    // Byte-identical output — locked by `hand_serialize_matches_serde_serialize`
+    // in `wire/tests.rs` and the end-to-end `tests/wire_contract.rs`.
+    // Mirrors the Java request-side encoder in `VesperaWireCodec.java::fillHeaderJson`
+    // which already inlines `'0' + WIRE_VERSION` at the encode hot path.
+    // The const assertion is the safety pin: bumping `WIRE_VERSION` past 1
+    // fails to compile here with a clear pointer to the inlined literal that
+    // needs updating in lockstep — same compile-time discipline the
+    // wire-contract test uses to lock the envelope shape.
+    const _: () = assert!(WIRE_VERSION == 1);
+    sink.put(b"{\"v\":1,\"status\":");
     write_u64(sink, u64::from(status));
     sink.put(b",\"headers\":");
     write_headers(sink, headers);
