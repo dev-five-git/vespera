@@ -661,6 +661,26 @@ final class VesperaWireCodec {
         if (headers == null || headers.isEmpty()) {
             return Map.of();
         }
+        // Fast path: no multi-value (List) headers -- the common case for HTTP
+        // responses (single content-type, content-length, etag, etc.).  The
+        // inner String values are already immutable, so Map.copyOf produces the
+        // byte-identical destination MapN in one allocation -- no intermediate
+        // LinkedHashMap.
+        boolean hasMultiValue = false;
+        for (Object v : headers.values()) {
+            if (v instanceof java.util.List<?>) {
+                hasMultiValue = true;
+                break;
+            }
+        }
+        if (!hasMultiValue) {
+            return Map.copyOf(headers);
+        }
+        // Slow path (multi-value headers like set-cookie): deep-copy the mutable
+        // inner ArrayList<String> instances to immutable List<String>, then
+        // Map.copyOf the outer.  Two allocations are required here because
+        // the inner Lists must be made immutable (locked by
+        // decodeResponse_publicCollectionsAreImmutableCopies in VesperaWireTest).
         java.util.LinkedHashMap<String, Object> copy = new java.util.LinkedHashMap<>(headers.size());
         headers.forEach((key, value) -> copy.put(key,
                 value instanceof java.util.List<?> list ? java.util.List.copyOf(list) : value));
