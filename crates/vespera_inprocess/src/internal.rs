@@ -130,28 +130,80 @@ fn build_uri(path: &str, query: &str) -> Result<Uri, (u16, String)> {
     parsed.map_err(|e| (400, format!("invalid request: {e}")))
 }
 
-/// Build the axum request shared by the buffered ([`dispatch_parts`]) and
-/// response-streaming ([`dispatch_response_streaming`]) paths — both take a
-/// fully-buffered [`Bytes`] body and default a missing `Content-Type`.
-///
-/// One borrowed-iterator pass applies every header while detecting
-/// `Content-Type` (case-insensitive, RFC 7230 §3.2); a non-empty body with
-/// no `Content-Type` defaults to `application/json`.  Returns `Err((405, _))`
-/// for an unparseable method and `Err((400, _))` for a malformed path / header,
-/// upholding the "every failure returns a wire response" contract.
+/// Shared inner request build for [`build_request_from_bytes`] (the buffered /
+/// response-streaming paths) and [`dispatch_and_split`] (the wire / streaming
+/// / direct-write paths).  Both call sites used to inline the same
+/// `Request::new(body)` → `method_mut()` / `uri_mut()` → `headers.reserve` →
+/// single-pass header insert with case-insensitive `Content-Type` detection →
+/// default-`application/json` sequence; this helper carries that sequence once.
 ///
 /// Constructs the [`Request`] **directly** — `Request::new(body)` then
 /// in-place method / URI / header assignment — instead of threading the
 /// `http::request::Builder` state machine, which re-checks an internal
 /// `Result<Parts>` and is moved by value on every `.method`/`.uri`/`.header`
-/// call.  The `HeaderMap` is pre-reserved from the header count so insertion
-/// never triggers an incremental grow; a bodyless, headerless request
-/// reserves `0` and never allocates a bucket (preserving the DIRECT-`GET`
-/// zero-allocation sweet spot).  Header names/values are parsed with the same
-/// `HeaderName::from_bytes` / `HeaderValue::from_str` the builder used and are
-/// `append`ed (not `insert`ed), so the built request is byte-identical
-/// including duplicate-name multi-value semantics.  `#[inline]` so the two
-/// call sites keep inlined codegen.
+/// call.  The `HeaderMap` is pre-reserved from the header `size_hint().0`
+/// plus the possible default-content-type slot, so header insertion never
+/// triggers an incremental grow; a bodyless, headerless request without a
+/// default reserves `0` and never allocates a bucket (preserving the
+/// DIRECT-`GET` zero-allocation sweet spot).  Header names/values are parsed
+/// with `HeaderName::from_bytes` / `header_value_from_owner` (the same parsers
+/// each call site used) and are `append`ed (not `insert`ed), preserving
+/// duplicate-name multi-value semantics byte-for-byte.  Case-insensitive
+/// `Content-Type` detection (RFC 7230 §3.2) is tracked inside the single
+/// insertion pass — `HeaderName::from_bytes` already ASCII-lowercased the
+/// name, so the `== CONTENT_TYPE` standard-header comparison is the same
+/// cheap discriminant compare each site already used.  `default_json_when_absent`
+/// requests the `application/json` default when no `Content-Type` was seen.
+/// Returns `Err((400, _))` for a malformed header, upholding the "every
+/// failure returns a wire response" contract.  `#[inline]` so both call sites
+/// keep the same inlined codegen as the prior copy-pasted shape.
+#[inline]
+fn build_axum_request_inner<'h>(
+    http_method: Method,
+    uri: Uri,
+    body: Body,
+    headers: impl Iterator<Item = (&'h str, &'h str)>,
+    header_bytes_owner: Option<&Bytes>,
+    default_json_when_absent: bool,
+) -> Result<Request<Body>, (u16, String)> {
+    let mut request = Request::new(body);
+    *request.method_mut() = http_method;
+    *request.uri_mut() = uri;
+
+    let reserve = headers
+        .size_hint()
+        .0
+        .saturating_add(usize::from(default_json_when_absent));
+    let header_map = request.headers_mut();
+    if reserve > 0 {
+        header_map.reserve(reserve);
+    }
+
+    let mut has_content_type = false;
+    for (name, value) in headers {
+        let header_name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|e| (400, format!("invalid request: {e}")))?;
+        let header_value = header_value_from_owner(value, header_bytes_owner)
+            .map_err(|e| (400, format!("invalid request: {e}")))?;
+        has_content_type = has_content_type || header_name == CONTENT_TYPE;
+        header_map.append(header_name, header_value);
+    }
+    if default_json_when_absent && !has_content_type {
+        header_map.append(
+            CONTENT_TYPE,
+            http::HeaderValue::from_static("application/json"),
+        );
+    }
+    Ok(request)
+}
+
+/// Build the axum request shared by the buffered ([`dispatch_parts`]) and
+/// response-streaming ([`dispatch_response_streaming`]) paths — both take a
+/// fully-buffered [`Bytes`] body and default a missing `Content-Type` when
+/// the body is non-empty.  Parses the method (`Err((405, _))` on failure) and
+/// the URI (`Err((400, _))` on failure), then delegates the in-place
+/// `Request` construction to [`build_axum_request_inner`].  `#[inline]` so
+/// the two call sites keep inlined codegen.
 #[inline]
 fn build_request_from_bytes<'h>(
     method_str: &str,
@@ -169,48 +221,14 @@ fn build_request_from_bytes<'h>(
     };
     let uri = build_uri(path, query)?;
     let body_is_empty = body_bytes.is_empty();
-
-    let mut request = Request::new(Body::from(body_bytes));
-    *request.method_mut() = http_method;
-    *request.uri_mut() = uri;
-
-    // Reserve exactly what we append: the wire headers plus, for a non-empty
-    // body, the possible default content-type.  A bodyless, headerless
-    // request reserves 0 and never allocates a HeaderMap bucket.
-    let reserve = headers
-        .size_hint()
-        .0
-        .saturating_add(usize::from(!body_is_empty));
-    let header_map = request.headers_mut();
-    if reserve > 0 {
-        header_map.reserve(reserve);
-    }
-
-    // Case-insensitive Content-Type detection (RFC 7230 §3.2), tracked
-    // inside the single header pass.
-    let mut has_content_type = false;
-    for (name, value) in headers {
-        let header_name = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|e| (400, format!("invalid request: {e}")))?;
-        let header_value = header_value_from_owner(value, header_bytes_owner)
-            .map_err(|e| (400, format!("invalid request: {e}")))?;
-        // `HeaderName::from_bytes` already ASCII-lowercased the name, so the
-        // `== CONTENT_TYPE` standard-header comparison replaces the raw
-        // `eq_ignore_ascii_case` byte-fold scan with a (typically) cheap
-        // standard-header discriminant compare.  Behaviour is identical: a
-        // name that case-insensitively equals "content-type" is always a
-        // valid token that `from_bytes` normalises to `CONTENT_TYPE`, and the
-        // comparison still happens before `append` consumes `header_name`.
-        has_content_type = has_content_type || header_name == CONTENT_TYPE;
-        header_map.append(header_name, header_value);
-    }
-    if !body_is_empty && !has_content_type {
-        header_map.append(
-            CONTENT_TYPE,
-            http::HeaderValue::from_static("application/json"),
-        );
-    }
-    Ok(request)
+    build_axum_request_inner(
+        http_method,
+        uri,
+        Body::from(body_bytes),
+        headers,
+        header_bytes_owner,
+        !body_is_empty,
+    )
 }
 
 /// **Bench-only** `http::request::Builder` twin of
@@ -513,48 +531,20 @@ pub async fn dispatch_and_split<'h>(
         None => build_uri(path, query)?,
     };
 
-    // Direct construction — see [`build_request_from_bytes`]: bypass the
-    // `http::request::Builder` state machine and pre-reserve the HeaderMap so
-    // header insertion never triggers an incremental grow.  Headers are
-    // `append`ed (multi-value preserving); the body is opaque here, so
-    // content-type defaulting follows the caller's `default_json_content_type`
-    // flag rather than body-emptiness detection.
-    let mut request = Request::new(body);
-    *request.method_mut() = http_method;
-    *request.uri_mut() = uri;
-
-    let reserve = headers
-        .size_hint()
-        .0
-        .saturating_add(usize::from(default_json_when_absent));
-    let header_map = request.headers_mut();
-    if reserve > 0 {
-        header_map.reserve(reserve);
-    }
-    // Detect Content-Type during the single insertion pass (RFC 7230 §3.2
-    // case-insensitive) instead of a separate caller-side pre-scan.
-    let mut has_content_type = false;
-    for (name, value) in headers {
-        let header_name = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|e| (400, format!("invalid request: {e}")))?;
-        let header_value = header_value_from_owner(value, header_bytes_owner)
-            .map_err(|e| (400, format!("invalid request: {e}")))?;
-        // `HeaderName::from_bytes` already ASCII-lowercased the name, so the
-        // `== CONTENT_TYPE` standard-header comparison replaces the raw
-        // `eq_ignore_ascii_case` byte-fold scan with a (typically) cheap
-        // standard-header discriminant compare.  Behaviour is identical: a
-        // name that case-insensitively equals "content-type" is always a
-        // valid token that `from_bytes` normalises to `CONTENT_TYPE`, and the
-        // comparison still happens before `append` consumes `header_name`.
-        has_content_type = has_content_type || header_name == CONTENT_TYPE;
-        header_map.append(header_name, header_value);
-    }
-    if default_json_when_absent && !has_content_type {
-        header_map.append(
-            CONTENT_TYPE,
-            http::HeaderValue::from_static("application/json"),
-        );
-    }
+    // Delegate the in-place `Request` construction / `HeaderMap` reserve /
+    // single-pass header insert + case-insensitive `Content-Type` detection +
+    // optional `application/json` default to the shared helper.  The body is
+    // opaque here (already-built `Body`, not a `Bytes` we can probe for
+    // emptiness), so content-type defaulting follows the caller's
+    // `default_json_when_absent` flag rather than body-emptiness detection.
+    let request = build_axum_request_inner(
+        http_method,
+        uri,
+        body,
+        headers,
+        header_bytes_owner,
+        default_json_when_absent,
+    )?;
 
     let response = match router.oneshot(request).await {
         Ok(response) => response,
