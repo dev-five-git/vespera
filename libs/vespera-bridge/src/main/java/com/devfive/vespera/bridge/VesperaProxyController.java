@@ -415,6 +415,80 @@ public class VesperaProxyController {
     }
 
     /**
+     * Unified wire-header → servlet-response sink shared by every dispatch
+     * mode's response-commit site (sync, direct, response-streaming header
+     * callback). Builds a {@link HeaderPolicy.ResponseHeaderAccumulator} in
+     * one pass — its {@code accept} captures every Connection-nominated
+     * token as a side-effect of seeing a {@code "connection"} header — then
+     * applies the buffered headers through
+     * {@link HeaderPolicy#addServletResponseHeaders}, which honours those
+     * tokens. Replaces a per-response {@code containsConnectionHeaderKey}
+     * pre-scan that walked the entire wire header byte-by-byte to decide
+     * between an accumulator path and a direct path: the pre-scan is more
+     * work than the accumulator's single internal {@code ArrayList} +
+     * iterate-at-end (typical responses carry a handful of headers), so the
+     * accumulator is the cheapest correct path in every case. Returns the
+     * status the wire response carried, which the caller uses for the
+     * existing body-permission checks.
+     */
+    private static int applyWireHeaderToResponse(
+            byte[] wire, int off, int len, HttpServletResponse response) {
+        HeaderPolicy.ResponseHeaderAccumulator acc = new HeaderPolicy.ResponseHeaderAccumulator();
+        int[] statusHolder = {500};
+        WireHeaderReader.apply(wire, off, len,
+                s -> {
+                    statusHolder[0] = s;
+                    response.setStatus(s);
+                },
+                acc);
+        HeaderPolicy.addServletResponseHeaders(response, acc);
+        return statusHolder[0];
+    }
+
+    private static int applyWireHeaderToResponse(
+            ByteBuffer wire, int off, int len, HttpServletResponse response) {
+        HeaderPolicy.ResponseHeaderAccumulator acc = new HeaderPolicy.ResponseHeaderAccumulator();
+        int[] statusHolder = {500};
+        WireHeaderReader.apply(wire, off, len,
+                s -> {
+                    statusHolder[0] = s;
+                    response.setStatus(s);
+                },
+                acc);
+        HeaderPolicy.addServletResponseHeaders(response, acc);
+        return statusHolder[0];
+    }
+
+    /**
+     * Sibling of {@link #applyWireHeaderToResponse(byte[], int, int, HttpServletResponse)}
+     * that emits into a Spring {@link HttpHeaders} instead of a servlet
+     * response — used by {@link #buildResponseEntityFromWire} on the ASYNC
+     * dispatch path. Same accumulator-first shape (one pass through the wire
+     * header, Connection-nominated tokens captured as a side-effect), then
+     * the buffered headers are filtered through the same trio
+     * ({@link HeaderPolicy#isHopByHopResponseHeader},
+     * {@link HeaderPolicy#isContentLengthHeader},
+     * {@link HeaderPolicy#isConnectionNominatedHeader}) before reaching
+     * {@code HttpHeaders}.
+     */
+    private static int applyWireHeaderToHttpHeaders(
+            byte[] wire, int off, int len, HttpHeaders httpHeaders) {
+        HeaderPolicy.ResponseHeaderAccumulator acc = new HeaderPolicy.ResponseHeaderAccumulator();
+        int[] statusHolder = {500};
+        WireHeaderReader.apply(wire, off, len,
+                s -> statusHolder[0] = s,
+                acc);
+        for (HeaderPolicy.HeaderPair header : acc.headers) {
+            if (!HeaderPolicy.isHopByHopResponseHeader(header.name())
+                    && !HeaderPolicy.isContentLengthHeader(header.name())
+                    && !HeaderPolicy.isConnectionNominatedHeader(header.name(), acc.connectionTokens)) {
+                httpHeaders.add(header.name(), header.value());
+            }
+        }
+        return statusHolder[0];
+    }
+
+    /**
      * Write a complete wire response ({@code [u32 BE header_len | JSON
      * header | body]}) straight to the servlet response: status + headers
      * applied from the header region via the allocation-lean
@@ -431,29 +505,10 @@ public class VesperaProxyController {
     private static void writeWireResponse(byte[] wire, HttpServletResponse response, String method)
             throws IOException {
         int headerLen = VesperaWireCodec.readHeaderLength(wire);
-        int[] statusHolder = {500};
-        if (HeaderPolicy.containsConnectionHeaderKey(wire, 4, headerLen)) {
-            HeaderPolicy.ResponseHeaderAccumulator headerAccumulator = new HeaderPolicy.ResponseHeaderAccumulator();
-            WireHeaderReader.apply(
-                    wire, 4, headerLen,
-                    s -> {
-                        statusHolder[0] = s;
-                        response.setStatus(s);
-                    },
-                    headerAccumulator);
-            HeaderPolicy.addServletResponseHeaders(response, headerAccumulator);
-        } else {
-            WireHeaderReader.apply(
-                    wire, 4, headerLen,
-                    s -> {
-                        statusHolder[0] = s;
-                        response.setStatus(s);
-                    },
-                    (name, value) -> HeaderPolicy.addServletResponseHeader(response, name, value, null));
-        }
+        int status = applyWireHeaderToResponse(wire, 4, headerLen, response);
         int bodyOff = 4 + headerLen;
         int bodyLen = wire.length - bodyOff;
-        boolean statusPermitsBody = responseStatusPermitsBody(statusHolder[0]);
+        boolean statusPermitsBody = responseStatusPermitsBody(status);
         boolean methodPermitsBody = requestMethodPermitsBody(method);
         int bytesToWrite = statusPermitsBody && methodPermitsBody ? bodyLen : 0;
         response.setContentLength(statusPermitsBody ? bodyLen : 0);
@@ -707,33 +762,10 @@ public class VesperaProxyController {
     static int applyDirectHeaderAndPositionBody(
             ByteBuffer wireResp, HttpServletResponse response, String method) {
         int headerLen = readValidatedHeaderLen(wireResp);
-        int[] statusHolder = {500};
-        if (HeaderPolicy.containsConnectionHeaderKey(wireResp, 4, headerLen)) {
-            HeaderPolicy.ResponseHeaderAccumulator headerAccumulator = new HeaderPolicy.ResponseHeaderAccumulator();
-            WireHeaderReader.apply(
-                    wireResp,
-                    4,
-                    headerLen,
-                    s -> {
-                        statusHolder[0] = s;
-                        response.setStatus(s);
-                    },
-                    headerAccumulator);
-            HeaderPolicy.addServletResponseHeaders(response, headerAccumulator);
-        } else {
-            WireHeaderReader.apply(
-                    wireResp,
-                    4,
-                    headerLen,
-                    s -> {
-                        statusHolder[0] = s;
-                        response.setStatus(s);
-                    },
-                    (name, value) -> HeaderPolicy.addServletResponseHeader(response, name, value, null));
-        }
+        int status = applyWireHeaderToResponse(wireResp, 4, headerLen, response);
         int bodyOff = 4 + headerLen;
         int bodyLen = wireResp.limit() - bodyOff;
-        boolean statusPermitsBody = responseStatusPermitsBody(statusHolder[0]);
+        boolean statusPermitsBody = responseStatusPermitsBody(status);
         boolean methodPermitsBody = requestMethodPermitsBody(method);
         int bytesToWrite = statusPermitsBody && methodPermitsBody ? bodyLen : 0;
         response.setContentLength(statusPermitsBody ? bodyLen : 0);
@@ -826,27 +858,8 @@ public class VesperaProxyController {
         // header's first value and appends for multi-valued headers
         // (e.g. set-cookie), preserving the prior semantics.
         int headerLen = VesperaWireCodec.readHeaderLength(headerBytes);
-        int[] statusHolder = {500};
-        if (HeaderPolicy.containsConnectionHeaderKey(headerBytes, 4, headerLen)) {
-            HeaderPolicy.ResponseHeaderAccumulator headerAccumulator = new HeaderPolicy.ResponseHeaderAccumulator();
-            WireHeaderReader.apply(
-                    headerBytes, 4, headerLen,
-                    s -> {
-                        statusHolder[0] = s;
-                        response.setStatus(s);
-                    },
-                    headerAccumulator);
-            HeaderPolicy.addServletResponseHeaders(response, headerAccumulator);
-        } else {
-            WireHeaderReader.apply(
-                    headerBytes, 4, headerLen,
-                    s -> {
-                        statusHolder[0] = s;
-                        response.setStatus(s);
-                    },
-                    (name, value) -> HeaderPolicy.addServletResponseHeader(response, name, value, null));
-        }
-        return responsePermitsBody(statusHolder[0], method);
+        int status = applyWireHeaderToResponse(headerBytes, 4, headerLen, response);
+        return responsePermitsBody(status, method);
     }
 
     /**
@@ -874,38 +887,11 @@ public class VesperaProxyController {
     static ResponseEntity<?> buildResponseEntityFromWire(byte[] wire, String method) {
         int headerLen = VesperaWireCodec.readHeaderLength(wire);
         HttpHeaders httpHeaders = new HttpHeaders();
-        int[] statusHolder = {500};
-        if (HeaderPolicy.containsConnectionHeaderKey(wire, 4, headerLen)) {
-            HeaderPolicy.ResponseHeaderAccumulator headerAccumulator = new HeaderPolicy.ResponseHeaderAccumulator();
-            WireHeaderReader.apply(
-                    wire,
-                    4,
-                    headerLen,
-                    s -> statusHolder[0] = s,
-                    headerAccumulator);
-            for (HeaderPolicy.HeaderPair header : headerAccumulator.headers) {
-                if (!HeaderPolicy.isHopByHopResponseHeader(header.name())
-                        && !HeaderPolicy.isContentLengthHeader(header.name())
-                        && !HeaderPolicy.isConnectionNominatedHeader(header.name(), headerAccumulator.connectionTokens)) {
-                    httpHeaders.add(header.name(), header.value());
-                }
-            }
-        } else {
-            WireHeaderReader.apply(
-                    wire,
-                    4,
-                    headerLen,
-                    s -> statusHolder[0] = s,
-                    (name, value) -> {
-                        if (!HeaderPolicy.isHopByHopResponseHeader(name) && !HeaderPolicy.isContentLengthHeader(name)) {
-                            httpHeaders.add(name, value);
-                        }
-                    });
-        }
-        HttpStatusCode status = HttpStatusCode.valueOf(statusHolder[0]);
+        int statusCode = applyWireHeaderToHttpHeaders(wire, 4, headerLen, httpHeaders);
+        HttpStatusCode status = HttpStatusCode.valueOf(statusCode);
         int bodyOff = 4 + headerLen;
         int bodyLen = wire.length - bodyOff;
-        boolean statusPermitsBody = responseStatusPermitsBody(statusHolder[0]);
+        boolean statusPermitsBody = responseStatusPermitsBody(statusCode);
         int bytesToExpose = statusPermitsBody && requestMethodPermitsBody(method) ? bodyLen : 0;
         httpHeaders.setContentLength(statusPermitsBody ? bodyLen : 0);
         return new ResponseEntity<>(
