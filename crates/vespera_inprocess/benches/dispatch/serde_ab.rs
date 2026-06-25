@@ -180,6 +180,62 @@ pub fn bench_request_build_path(c: &mut Criterion) {
     group.finish();
 }
 
+/// `metadata_segment_*` within-run A/B: the pre-baked metadata-segment fast
+/// path vs the general `write_json_string` path, both invoked on the SAME
+/// small `HeaderMap` + status fixture in the SAME criterion run so the
+/// per-response metadata-block delta is read without cross-run drift.
+///
+/// - `metadata_static_fast`: `ResponseMetadata::current()` — the
+///   `Cow::Borrowed(env!("CARGO_PKG_VERSION"))` pointer that the production
+///   fast path detects (one bulk `sink.put` of the pre-baked const segment).
+/// - `metadata_owned_general`: `ResponseMetadata { version: Cow::Owned(...) }`
+///   over the SAME version bytes — forces the general path (three `sink.put`
+///   calls + per-byte ESCAPE scan).
+///
+/// Fixture: a small `HeaderMap` with one `content-type` entry + `status:200`,
+/// matching the single-content-type response shape that dominates the DIRECT
+/// dispatch hot path.  Output is byte-identical between the two arms (SemVer
+/// never trips the ESCAPE table), so the delta is the metadata block's
+/// scan + extra `sink.put`s — exactly what the fast path skips.  The decision
+/// guard: if `metadata_static_fast` does NOT beat `metadata_owned_general` on
+/// the median of 5 runs the production fast-path-detect is providing no
+/// measurable benefit and should be reverted.
+pub fn bench_metadata_segment(c: &mut Criterion) {
+    use std::borrow::Cow;
+    use vespera_inprocess::ResponseMetadata;
+    use vespera_inprocess::bench_support::bench_write_hand;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("content-type"),
+        "application/json".parse().expect("static header value"),
+    );
+
+    // Production fast path: borrowed `'static` SemVer (pointer-eq vs
+    // `VESPERA_VERSION` in `wire/header_write.rs`).
+    let meta_current = ResponseMetadata::current();
+    // General path: SAME bytes but `Cow::Owned`, so the production fast-path
+    // detect fails and the existing `write_json_string` block runs.
+    let meta_owned = ResponseMetadata {
+        version: Cow::Owned(env!("CARGO_PKG_VERSION").to_owned()),
+    };
+
+    // Size the out buffer once outside the timed loop (mirrors the pooled
+    // direct buffer the JNI bridge hands in).
+    let required = bench_write_hand(&mut [0u8; 256], 200, &headers, &meta_current);
+
+    let mut group = c.benchmark_group("metadata_segment_ab");
+    group.bench_function("metadata_static_fast", |b| {
+        let mut out = vec![0u8; required];
+        b.iter(|| bench_write_hand(&mut out, 200, &headers, &meta_current));
+    });
+    group.bench_function("metadata_owned_general", |b| {
+        let mut out = vec![0u8; required];
+        b.iter(|| bench_write_hand(&mut out, 200, &headers, &meta_owned));
+    });
+    group.finish();
+}
+
 /// Typed-deserialize vs `serde_json::Value` DOM for the 422 validation-error
 /// hoist (within-run A/B).  Both arms parse the same framework-generated
 /// `{"errors":[{"path","message"}]}` envelope in the SAME criterion run, so

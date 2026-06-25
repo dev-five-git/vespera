@@ -1034,7 +1034,8 @@ criterion_group!(
     ab_benches,
     serde_ab::bench_wire_header_serde,
     serde_ab::bench_request_build_path,
-    serde_ab::bench_hoist_422_path
+    serde_ab::bench_hoist_422_path,
+    serde_ab::bench_metadata_segment
 );
 
 #[cfg(feature = "bench-support")]

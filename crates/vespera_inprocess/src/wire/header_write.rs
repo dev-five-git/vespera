@@ -17,6 +17,8 @@
 //! escaped; `/` and 0x7F pass through, and every byte `>= 0x80` is
 //! copied through verbatim (raw UTF-8).
 
+use std::borrow::Cow;
+
 use crate::envelope::ResponseMetadata;
 
 use super::{ValidationErrorItem, WIRE_VERSION};
@@ -102,6 +104,42 @@ static ESCAPE: [u8; 256] = [
 ];
 
 const HEX: &[u8; 16] = b"0123456789abcdef";
+
+// ── pre-baked metadata segment for the production fast path ──────────
+//
+// `ResponseMetadata::current()` ([`crate::envelope`]) — the version constructor
+// every production response producer reaches for — stores
+// `Cow::Borrowed(env!("CARGO_PKG_VERSION"))`.  That `'static` string is also
+// the only value the byte-identity guard `hand_serialize_matches_serde_serialize`
+// in `wire/tests.rs` exercises through the current() path.
+//
+// SemVer (`[0-9a-zA-Z.+-]`) never trips the `ESCAPE` table, so
+// `write_json_string` over `metadata.version` here would emit exactly the
+// bytes already baked into the const below.  Skipping the per-byte escape
+// scan + the two surrounding `sink.put` calls saves ~5-10 ESCAPE lookups
+// + 3 indirect sink puts on EVERY wire response (buffered / direct-write /
+// streaming) when the metadata is `current()`.  Manually-constructed
+// `ResponseMetadata` (tests, custom callers) or any `Cow::Owned` version
+// falls through to the general path, so the slow-path output is byte-for-byte
+// unchanged for non-`current()` inputs.
+
+/// Engine version — the `&'static str` `ResponseMetadata::current()` stores
+/// in its `version` field.  Used by the production fast path below to
+/// pointer-eq detect that exact constructor at zero runtime cost.
+const VESPERA_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Pre-baked `,"metadata":{"version":"X.Y.Z"}` segment for the production
+/// fast path — byte-identical to what the general `write_json_string` path
+/// produces for `ResponseMetadata::current()`'s SemVer version (SemVer is
+/// drawn from `[0-9a-zA-Z.+-]`, none of which trip the `ESCAPE` table).
+/// Emitted in one bulk `sink.put` instead of three calls + a per-byte scan
+/// over the same string.
+const METADATA_SEGMENT_CURRENT: &[u8] = concat!(
+    ",\"metadata\":{\"version\":\"",
+    env!("CARGO_PKG_VERSION"),
+    "\"}"
+)
+.as_bytes();
 
 /// Append `s` as a quoted, escaped JSON string straight into `sink` —
 /// the byte-for-byte analogue of `serde_json`'s `format_escaped_str`.
@@ -324,9 +362,34 @@ pub(super) fn write_response_header<S: JsonSink>(
     // updating this line breaks the byte-identity guard
     // `hand_serialize_matches_serde_serialize` (wire/tests.rs) — that test
     // is the drift tripwire, so keep the two in lockstep.
-    sink.put(b",\"metadata\":{\"version\":");
-    write_json_string(sink, &metadata.version);
-    sink.put(b"}");
+    //
+    // Fast path: every production response producer constructs
+    // `ResponseMetadata::current()`, whose `version` is
+    // `Cow::Borrowed(env!("CARGO_PKG_VERSION"))` — the same `'static`
+    // pointer as `VESPERA_VERSION` (string-literal deduplication within
+    // this crate).  Detect that exact constructor by pointer-eq and emit
+    // the pre-baked segment in one `sink.put`; everything else (owned
+    // versions, manually-constructed metadata in tests / custom callers)
+    // falls through to the unchanged general path.  Byte-identity for the
+    // fast path is locked by `hand_serialize_matches_serde_serialize` in
+    // `wire/tests.rs` (which writes `ResponseMetadata::current()` through
+    // both hand and serde and asserts byte equality).
+    match &metadata.version {
+        Cow::Borrowed(v) if std::ptr::eq(v.as_ptr(), VESPERA_VERSION.as_ptr()) => {
+            // Defense in depth: in debug builds, assert byte-identity so a
+            // (theoretical) compiler that fails to dedupe the literal still
+            // catches any drift via tests.  The slow path below would
+            // produce byte-identical output anyway — this only triggers if
+            // pointer-eq somehow held on differing bytes, which it cannot.
+            debug_assert_eq!(*v, VESPERA_VERSION);
+            sink.put(METADATA_SEGMENT_CURRENT);
+        }
+        _ => {
+            sink.put(b",\"metadata\":{\"version\":");
+            write_json_string(sink, &metadata.version);
+            sink.put(b"}");
+        }
+    }
     if let Some(items) = validation_errors {
         sink.put(b",\"validation_errors\":[");
         for (idx, item) in items.iter().enumerate() {
