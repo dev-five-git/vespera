@@ -84,7 +84,11 @@ pub fn parse_validate_resolve(
 /// function returns `None` and the caller falls back to the copying path.  So a
 /// returned `Some(bytes)` is guaranteed to hold exactly `s`'s bytes — there is
 /// no provenance-confusion path, and `slice` itself never panics.
-fn slice_from_owner(owner: &Bytes, s: &str) -> Option<Bytes> {
+///
+/// `pub` (inside this private `dispatch` module, so reachable only crate-side)
+/// so [`super::internal`] can share the same provenance check when it builds
+/// zero-copy `HeaderValue`s from wire-borrowed value strings.
+pub fn slice_from_owner(owner: &Bytes, s: &str) -> Option<Bytes> {
     let base = owner.as_ptr() as usize;
     let off = (s.as_ptr() as usize).checked_sub(base)?;
     let end = off.checked_add(s.len())?;
@@ -133,6 +137,11 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
         &query,
         headers.iter().map(|(k, v)| (k.as_str(), v.as_str())),
         Bytes::from(body),
+        // Envelope dispatch: `headers` are owned `String`s with no wire
+        // owner, so the zero-copy fast path does not apply — pass `None`
+        // and let `header_value_from_owner` fall back to `from_str` (same
+        // bytes, same errors, no behaviour change).
+        None,
     )
     .await
     {
@@ -231,6 +240,13 @@ pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
         &header.query,
         path_bytes,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
+        // Owned wire path: the parsed header values borrow from
+        // `header_bytes` (plain values are `Cow::Borrowed` straight out of
+        // the wire input).  Pass the owning `Bytes` so each `HeaderValue`
+        // is constructed zero-copy via `HeaderValue::from_maybe_shared`
+        // (escaped `Cow::Owned` values cleanly miss the in-range bound
+        // check and fall back to the copy path).
+        Some(&header_bytes),
         Body::from(body_bytes),
         default_json_when_absent,
     )
@@ -404,6 +420,10 @@ pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteR
         &header.query,
         path_bytes,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
+        // Owned wire path: share `header_bytes` so plain-value `HeaderValue`s
+        // are constructed zero-copy via `HeaderValue::from_maybe_shared`.
+        // See `dispatch_from_bytes_async` for the contract.
+        Some(&header_bytes),
         Body::from(body_bytes),
         default_json_when_absent,
     )
@@ -467,6 +487,8 @@ pub async fn dispatch_into_async_borrowed(input: &[u8], out: &mut [u8]) -> Direc
     // Borrowed path: `input` is not owned, so there is no request-lifetime
     // `Bytes` to share into the URI — pass `None` and let `build_uri` parse the
     // borrowed path (the zero-copy URI win applies only to the owned paths).
+    // Same reasoning for the header-owner argument: no owning `Bytes`, so
+    // `header_value_from_owner` falls back to `from_str` exactly as before.
     let (status, headers, metadata, resp_body) = match dispatch_and_split(
         router,
         &header.method,
@@ -474,6 +496,7 @@ pub async fn dispatch_into_async_borrowed(input: &[u8], out: &mut [u8]) -> Direc
         &header.query,
         None,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
+        None,
         body,
         default_json_when_absent,
     )

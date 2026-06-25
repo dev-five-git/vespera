@@ -120,6 +120,10 @@ where
         &header.query,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
         body_bytes,
+        // Owned wire path: share `header_bytes` so plain-value
+        // `HeaderValue`s are constructed zero-copy via
+        // `HeaderValue::from_maybe_shared` (see `dispatch_from_bytes_async`).
+        Some(&header_bytes),
         &mut on_chunk,
     )
     .await
@@ -294,7 +298,10 @@ where
     let default_json_when_absent = !body_bytes.is_empty();
     // Streaming is dominated by body throughput, so the owned-path URI
     // zero-copy is not worth threading here — pass `None` (the URI is parsed
-    // from the borrowed path by `build_uri`, exactly as before).
+    // from the borrowed path by `build_uri`, exactly as before).  Header
+    // values, however, are still inserted into the request `HeaderMap` per
+    // request — share `header_bytes` so each plain value is constructed
+    // zero-copy via `HeaderValue::from_maybe_shared`.
     let (status, headers, metadata, body) = match dispatch_and_split(
         router,
         &header.method,
@@ -302,6 +309,7 @@ where
         &header.query,
         None,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
+        Some(&header_bytes),
         Body::from(body_bytes),
         default_json_when_absent,
     )
@@ -547,6 +555,8 @@ where
     let default_json_when_absent = true;
     // See the response-streaming sibling: streaming is body-throughput bound,
     // so pass `None` rather than threading the owned-path URI zero-copy here.
+    // Share `header_bytes` for the per-request `HeaderValue` insertions so
+    // each plain value is constructed zero-copy.
     let (status, headers, metadata, response_body) = match dispatch_and_split(
         router,
         &header.method,
@@ -554,6 +564,7 @@ where
         &header.query,
         None,
         header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
+        Some(&header_bytes),
         body,
         default_json_when_absent,
     )

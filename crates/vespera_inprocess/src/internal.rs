@@ -23,6 +23,40 @@ use crate::envelope::{HeaderValue, ResponseEnvelope, ResponseMetadata};
 /// envelope path ([`to_response_envelope_text`]).
 pub type ResponseParts = (u16, http::HeaderMap, Bytes, ResponseMetadata);
 
+/// Build an [`http::HeaderValue`] from a wire-borrowed value string,
+/// sharing bytes with the request's owning `header_bytes` when the value
+/// lies inside it.
+///
+/// `HeaderValue::from_maybe_shared` specializes on `Bytes` via the http
+/// crate's `if_downcast_into!(T, Bytes, ...)` and stores the slice with
+/// **zero copy** when the input is a [`bytes::Bytes`]; the byte-range
+/// validation is byte-identical to [`http::HeaderValue::from_str`], so an
+/// invalid value still yields the same `InvalidHeaderValue` error (the
+/// 400 wire-response path is preserved).  When `owner` is `None`, or
+/// when `value` does not lie inside `owner` (an escaped `Cow::Owned`, an
+/// envelope-path header on the non-wire dispatch, …), this falls back to
+/// the copying `from_str` exactly as before — same bytes, same errors.
+///
+/// `slice_from_owner` already guards provenance: a returned `Some(bytes)`
+/// is the exact sub-`Bytes` of `owner` covering `value`, so the
+/// constructed `HeaderValue` shares the wire allocation and the
+/// allocation stays alive via `Bytes`' refcount for the request's
+/// lifetime (axum drops the request, the `HeaderValue`s drop, the
+/// refcount falls to zero, the wire buffer is freed — exactly as today).
+#[inline]
+fn header_value_from_owner(
+    value: &str,
+    owner: Option<&Bytes>,
+) -> Result<http::HeaderValue, http::header::InvalidHeaderValue> {
+    if let Some(owner) = owner
+        && let Some(slice) = crate::dispatch::slice_from_owner(owner, value)
+    {
+        http::HeaderValue::from_maybe_shared(slice)
+    } else {
+        http::HeaderValue::from_str(value)
+    }
+}
+
 /// Drive a [`Router`] with the supplied envelope fields and return
 /// raw response parts.
 ///
@@ -30,6 +64,13 @@ pub type ResponseParts = (u16, http::HeaderMap, Bytes, ResponseMetadata);
 /// (currently only "invalid HTTP method" → 405).  Router/handler
 /// errors cannot occur because axum routers are
 /// `Service<_, Error = Infallible>`.
+///
+/// `header_bytes_owner` is the request's owning wire `Bytes` (the wire
+/// header-JSON region) when the headers are borrowed slices of it; this
+/// enables zero-copy `HeaderValue` construction via
+/// [`header_value_from_owner`].  Pass `None` on non-wire paths (envelope
+/// dispatch) where the header strings are owned and unrelated to any
+/// `Bytes` allocation — the helper falls back to the existing copy path.
 pub async fn dispatch_parts<'h>(
     router: Router,
     method_str: &str,
@@ -37,8 +78,10 @@ pub async fn dispatch_parts<'h>(
     query: &str,
     headers: impl Iterator<Item = (&'h str, &'h str)>,
     body_bytes: Bytes,
+    header_bytes_owner: Option<&Bytes>,
 ) -> Result<ResponseParts, (u16, String)> {
-    let request = build_request_from_bytes(method_str, path, query, headers, body_bytes)?;
+    let request =
+        build_request_from_bytes(method_str, path, query, headers, body_bytes, header_bytes_owner)?;
 
     let response = match router.oneshot(request).await {
         Ok(response) => response,
@@ -116,6 +159,7 @@ fn build_request_from_bytes<'h>(
     query: &str,
     headers: impl Iterator<Item = (&'h str, &'h str)>,
     body_bytes: Bytes,
+    header_bytes_owner: Option<&Bytes>,
 ) -> Result<Request<Body>, (u16, String)> {
     let Ok(http_method) = method_str.parse::<Method>() else {
         return Err((
@@ -148,7 +192,7 @@ fn build_request_from_bytes<'h>(
     for (name, value) in headers {
         let header_name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|e| (400, format!("invalid request: {e}")))?;
-        let header_value = http::HeaderValue::from_str(value)
+        let header_value = header_value_from_owner(value, header_bytes_owner)
             .map_err(|e| (400, format!("invalid request: {e}")))?;
         // `HeaderName::from_bytes` already ASCII-lowercased the name, so the
         // `== CONTENT_TYPE` standard-header comparison replaces the raw
@@ -230,7 +274,11 @@ pub fn bench_build_request_new(
     headers: &[(&str, &str)],
     body: Bytes,
 ) -> usize {
-    build_request_from_bytes(method, path, query, headers.iter().copied(), body)
+    // Bench A/B: no wire-owning `Bytes` is plumbed through this surface
+    // (the bench measures the request-build cost in isolation, not the
+    // wire prelude), so pass `None` — the helper falls back to the same
+    // `from_str` copy path the old shape used, keeping the A/B fair.
+    build_request_from_bytes(method, path, query, headers.iter().copied(), body, None)
         .map_or(usize::MAX, |req| request_field_len_sum(&req))
 }
 
@@ -261,6 +309,13 @@ pub fn bench_build_request_old(
 /// success — a truncated body must never be presented as complete.
 /// (Chunks emitted via `on_chunk` before the error have already left,
 /// but the 500 status the caller returns signals the failure.)
+// 8 params: the request line (method / path / query), the borrowed header
+// iterator, the body, the optional wire-`Bytes` owner for zero-copy
+// `HeaderValue` construction, and the chunk sink are each distinct per-request
+// inputs.  Bundling them into a struct would add indirection on this hot path
+// without removing any genuinely-needed data — same reasoning as
+// [`dispatch_and_split`].
+#[allow(clippy::too_many_arguments)]
 pub async fn dispatch_response_streaming<'h, F>(
     router: Router,
     method_str: &str,
@@ -268,12 +323,14 @@ pub async fn dispatch_response_streaming<'h, F>(
     query: &str,
     headers: impl Iterator<Item = (&'h str, &'h str)>,
     body_bytes: Bytes,
+    header_bytes_owner: Option<&Bytes>,
     on_chunk: &mut F,
 ) -> Result<(u16, http::HeaderMap, ResponseMetadata), (u16, String)>
 where
     F: FnMut(&[u8]) -> ControlFlow<()>,
 {
-    let request = build_request_from_bytes(method_str, path, query, headers, body_bytes)?;
+    let request =
+        build_request_from_bytes(method_str, path, query, headers, body_bytes, header_bytes_owner)?;
 
     let response = match router.oneshot(request).await {
         Ok(response) => response,
@@ -415,10 +472,11 @@ pub fn to_response_envelope_text(parts: ResponseParts) -> ResponseEnvelope {
 /// Callers that know the body is non-empty pass `!body.is_empty()`;
 /// streaming callers whose body emptiness is unknowable up front pass
 /// `true` (default whenever absent).
-// 8 params: the request line (method / path / query / path_bytes), the
-// borrowed header iterator, the body, and the content-type-default flag are
-// each distinct per-request inputs.  Bundling them into a struct would add
-// indirection on this hot path without removing any genuinely-needed data.
+// 9 params: the request line (method / path / query / path_bytes /
+// header_bytes_owner), the borrowed header iterator, the body, and the
+// content-type-default flag are each distinct per-request inputs.  Bundling
+// them into a struct would add indirection on this hot path without removing
+// any genuinely-needed data.
 #[allow(clippy::too_many_arguments)]
 pub async fn dispatch_and_split<'h>(
     router: Router,
@@ -427,6 +485,7 @@ pub async fn dispatch_and_split<'h>(
     query: &str,
     path_bytes: Option<Bytes>,
     headers: impl Iterator<Item = (&'h str, &'h str)>,
+    header_bytes_owner: Option<&Bytes>,
     body: Body,
     default_json_when_absent: bool,
 ) -> Result<(u16, http::HeaderMap, ResponseMetadata, Body), (u16, String)> {
@@ -478,7 +537,7 @@ pub async fn dispatch_and_split<'h>(
     for (name, value) in headers {
         let header_name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|e| (400, format!("invalid request: {e}")))?;
-        let header_value = http::HeaderValue::from_str(value)
+        let header_value = header_value_from_owner(value, header_bytes_owner)
             .map_err(|e| (400, format!("invalid request: {e}")))?;
         // `HeaderName::from_bytes` already ASCII-lowercased the name, so the
         // `== CONTENT_TYPE` standard-header comparison replaces the raw
@@ -541,6 +600,7 @@ mod tests {
                 "",
                 std::iter::empty(),
                 Bytes::new(),
+                None,
             )
             .await
         });
@@ -564,6 +624,7 @@ mod tests {
                 "",
                 std::iter::empty(),
                 Bytes::new(),
+                None,
                 &mut sink,
             )
             .await
@@ -584,6 +645,7 @@ mod tests {
                 "",
                 None,
                 std::iter::empty(),
+                None,
                 Body::empty(),
                 false,
             )
