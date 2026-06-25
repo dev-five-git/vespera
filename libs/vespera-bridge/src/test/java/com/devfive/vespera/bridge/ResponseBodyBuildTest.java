@@ -175,11 +175,11 @@ class ResponseBodyBuildTest {
         return h;
     }
 
-    /** NEW: lean WireHeaderReader straight into HttpHeaders. */
+    /** NEW: lean WireHeaderReader straight into HttpHeaders; status returned. */
     private static HttpHeaders leanHeaders(byte[] w, int[] status) {
         HttpHeaders h = new HttpHeaders();
-        WireHeaderReader.apply(
-                java.nio.ByteBuffer.wrap(w), 4, headerLen(w), s -> status[0] = s, h::add);
+        status[0] = WireHeaderReader.apply(
+                java.nio.ByteBuffer.wrap(w), 4, headerLen(w), h::add);
         return h;
     }
 
@@ -231,10 +231,9 @@ class ResponseBodyBuildTest {
     private static int newFull(byte[] w) {
         int hl = headerLen(w);
         HttpHeaders h = new HttpHeaders();
-        int[] st = {500};
-        WireHeaderReader.apply(java.nio.ByteBuffer.wrap(w), 4, hl, s -> st[0] = s, h::add);
+        int st = WireHeaderReader.apply(java.nio.ByteBuffer.wrap(w), 4, hl, h::add);
         int bodyOff = 4 + hl;
-        return st[0] + h.size() + Arrays.copyOfRange(w, bodyOff, w.length).length;
+        return st + h.size() + Arrays.copyOfRange(w, bodyOff, w.length).length;
     }
 
     @Test

@@ -434,29 +434,27 @@ public class VesperaProxyController {
     private static int applyWireHeaderToResponse(
             byte[] wire, int off, int len, HttpServletResponse response) {
         HeaderPolicy.ResponseHeaderAccumulator acc = new HeaderPolicy.ResponseHeaderAccumulator();
-        int[] statusHolder = {500};
-        WireHeaderReader.apply(wire, off, len,
-                s -> {
-                    statusHolder[0] = s;
-                    response.setStatus(s);
-                },
-                acc);
+        // apply() returns the parsed status (default 500). Previously this
+        // call site allocated an int[1] holder + capturing lambda just to
+        // thread the status back; the returned int drops both per-response
+        // allocations on every sync/direct/streaming/async-build response.
+        // The order matters: setStatus must run AFTER apply() finishes
+        // parsing — which is exactly what the prior IntConsumer did (fired
+        // once at the very end of applyInner), preserving byte-identical
+        // semantics with the response.setStatus(...) the lambda invoked.
+        int status = WireHeaderReader.apply(wire, off, len, acc);
+        response.setStatus(status);
         HeaderPolicy.addServletResponseHeaders(response, acc);
-        return statusHolder[0];
+        return status;
     }
 
     private static int applyWireHeaderToResponse(
             ByteBuffer wire, int off, int len, HttpServletResponse response) {
         HeaderPolicy.ResponseHeaderAccumulator acc = new HeaderPolicy.ResponseHeaderAccumulator();
-        int[] statusHolder = {500};
-        WireHeaderReader.apply(wire, off, len,
-                s -> {
-                    statusHolder[0] = s;
-                    response.setStatus(s);
-                },
-                acc);
+        int status = WireHeaderReader.apply(wire, off, len, acc);
+        response.setStatus(status);
         HeaderPolicy.addServletResponseHeaders(response, acc);
-        return statusHolder[0];
+        return status;
     }
 
     /**
@@ -474,10 +472,7 @@ public class VesperaProxyController {
     private static int applyWireHeaderToHttpHeaders(
             byte[] wire, int off, int len, HttpHeaders httpHeaders) {
         HeaderPolicy.ResponseHeaderAccumulator acc = new HeaderPolicy.ResponseHeaderAccumulator();
-        int[] statusHolder = {500};
-        WireHeaderReader.apply(wire, off, len,
-                s -> statusHolder[0] = s,
-                acc);
+        int statusCode = WireHeaderReader.apply(wire, off, len, acc);
         for (HeaderPolicy.HeaderPair header : acc.headers) {
             if (!HeaderPolicy.isHopByHopResponseHeader(header.name())
                     && !HeaderPolicy.isContentLengthHeader(header.name())
@@ -485,7 +480,7 @@ public class VesperaProxyController {
                 httpHeaders.add(header.name(), header.value());
             }
         }
-        return statusHolder[0];
+        return statusCode;
     }
 
     /**

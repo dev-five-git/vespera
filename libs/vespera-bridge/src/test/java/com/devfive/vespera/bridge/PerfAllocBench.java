@@ -6,7 +6,6 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.function.BiConsumer;
-import java.util.function.IntConsumer;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
@@ -72,23 +71,104 @@ class PerfAllocBench {
         ByteBuffer buf = ByteBuffer.wrap(RESP_WIRE);
 
         long[] keyLenSink = {0};
-        int[] statusSink = {0};
-        IntConsumer onStatus = s -> statusSink[0] = s;
         BiConsumer<String, String> onHeader = (k, v) -> keyLenSink[0] += k.length() + v.length();
+        int statusSink = 0;
 
         for (int i = 0; i < WARMUP; i++) {
-            WireHeaderReader.apply(buf, 4, hb, onStatus, onHeader);
+            statusSink = WireHeaderReader.apply(buf, 4, hb, onHeader);
         }
         long before = tmx.getThreadAllocatedBytes(tid);
         for (int i = 0; i < MEASURE; i++) {
-            WireHeaderReader.apply(buf, 4, hb, onStatus, onHeader);
+            statusSink = WireHeaderReader.apply(buf, 4, hb, onHeader);
         }
         long after = tmx.getThreadAllocatedBytes(tid);
         long bytesPerOp = (after - before) / MEASURE;
         System.out.printf(
                 "VESPERA_ALLOC p3_apply bytes_per_op=%d (6 headers: 5 canonical + 1 other;"
                         + " status=%d keyLenSink=%d)%n",
-                bytesPerOp, statusSink[0], keyLenSink[0]);
+                bytesPerOp, statusSink, keyLenSink[0]);
+    }
+
+    /**
+     * Per-call allocation bench that MIRRORS the production call sites in
+     * {@link VesperaProxyController} — the prior {@link #p3_apply_bytesPerOp}
+     * lifts the consumer ABOVE the loop, so escape analysis hides the per-
+     * response holder + lambda cost.  Production allocates a fresh {@code int[1]}
+     * + capturing lambda per request (the lambda captures the holder AND the
+     * outer {@link jakarta.servlet.http.HttpServletResponse}, both as Object
+     * refs), so the BEFORE shape constructs them inside the measurement loop.
+     * AFTER drops both — the int returned by {@code apply} replaces the entire
+     * round-trip. The delta between this method's output and the production
+     * shape is the per-response saving the controller change unlocks.
+     */
+    @Test
+    void p3_apply_perCallAllocs_bytesPerOp() {
+        ThreadMXBean tmx = threadMx();
+        long tid = Thread.currentThread().getId();
+        int hb = RESP_WIRE.length - 4;
+        ByteBuffer buf = ByteBuffer.wrap(RESP_WIRE);
+
+        long[] keyLenSink = {0};
+        BiConsumer<String, String> onHeader = (k, v) -> keyLenSink[0] += k.length() + v.length();
+
+        // Warm both shapes so the JIT has compiled them.
+        long bh = 0;
+        for (int i = 0; i < WARMUP; i++) {
+            bh += measureOnceAfter(buf, hb, onHeader);
+            bh += measureOnceBefore(buf, hb, onHeader);
+        }
+
+        // BEFORE — fresh holder + capturing lambda inside the measurement loop,
+        // exactly the shape applyWireHeaderToResponse used to build per
+        // response.  This is what production paid before the change.
+        long beforeStart = tmx.getThreadAllocatedBytes(tid);
+        for (int i = 0; i < MEASURE; i++) {
+            bh += measureOnceBefore(buf, hb, onHeader);
+        }
+        long beforeEnd = tmx.getThreadAllocatedBytes(tid);
+        long beforeBpo = (beforeEnd - beforeStart) / MEASURE;
+
+        // AFTER — apply returns the int directly; no holder, no lambda.
+        long afterStart = tmx.getThreadAllocatedBytes(tid);
+        for (int i = 0; i < MEASURE; i++) {
+            bh += measureOnceAfter(buf, hb, onHeader);
+        }
+        long afterEnd = tmx.getThreadAllocatedBytes(tid);
+        long afterBpo = (afterEnd - afterStart) / MEASURE;
+
+        System.out.printf(
+                "VESPERA_ALLOC p3_apply_percall_before bytes_per_op=%d (holder+lambda per call;"
+                        + " keyLenSink=%d bh=%d)%n",
+                beforeBpo, keyLenSink[0], bh & 1);
+        System.out.printf(
+                "VESPERA_ALLOC p3_apply_percall_after  bytes_per_op=%d (int return; same args)%n",
+                afterBpo);
+    }
+
+    // Helpers kept package-private so the JIT cannot trivially eliminate the
+    // per-call allocations the BEFORE shape models (the holder + lambda escape
+    // through `WireHeaderReader.apply`, which is in another class and is not
+    // guaranteed to inline). Same body shape as the production call site that
+    // changed from holder+lambda+void to int-return.
+    @SuppressWarnings("PMD.UnusedPrivateMethod")
+    private static int measureOnceBefore(
+            ByteBuffer buf, int hb, BiConsumer<String, String> onHeader) {
+        int[] holder = {0};
+        java.util.function.IntConsumer onStatus = s -> holder[0] = s;
+        // BEFORE-shape adapter: call the same apply(), but mirror the
+        // legacy shape (holder + IntConsumer) the production sites used to
+        // build per response. Reading the returned int back into the holder
+        // models the prior `statusSink.accept(status)` round-trip, so the
+        // per-call alloc delta isolates the holder+lambda allocations
+        // (~32 B/op JVM-dependent) without changing the apply() signature.
+        onStatus.accept(WireHeaderReader.apply(buf, 4, hb, onHeader));
+        return holder[0];
+    }
+
+    @SuppressWarnings("PMD.UnusedPrivateMethod")
+    private static int measureOnceAfter(
+            ByteBuffer buf, int hb, BiConsumer<String, String> onHeader) {
+        return WireHeaderReader.apply(buf, 4, hb, onHeader);
     }
 
     @Test

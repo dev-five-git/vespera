@@ -40,11 +40,10 @@ class WireHeaderReaderTest {
                 direct ? ByteBuffer.allocateDirect(4 + hb.length) : ByteBuffer.allocate(4 + hb.length);
         buf.putInt(hb.length);
         buf.put(hb);
-        int[] status = {-1};
         List<String> headers = new ArrayList<>();
-        WireHeaderReader.apply(
-                buf, 4, hb.length, s -> status[0] = s, (k, v) -> headers.add(k + "=" + v));
-        return new Captured(status[0], headers);
+        int status = WireHeaderReader.apply(
+                buf, 4, hb.length, (k, v) -> headers.add(k + "=" + v));
+        return new Captured(status, headers);
     }
 
     private static void assertRejected(byte[] headerBytes) {
@@ -244,7 +243,7 @@ class WireHeaderReaderTest {
         buf.putInt(hb.length);
         buf.put(hb);
         String[] applyKey = {null};
-        WireHeaderReader.apply(buf, 4, hb.length, s -> {}, (k, v) -> applyKey[0] = k);
+        WireHeaderReader.apply(buf, 4, hb.length, (k, v) -> applyKey[0] = k);
 
         ByteBuffer buf2 = ByteBuffer.allocate(4 + hb.length);
         buf2.putInt(hb.length);

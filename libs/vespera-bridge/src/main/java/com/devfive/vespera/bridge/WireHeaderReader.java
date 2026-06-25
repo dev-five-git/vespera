@@ -6,7 +6,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
-import java.util.function.IntConsumer;
 
 /**
  * Zero-copy reader for the response wire header, used by the DIRECT
@@ -56,42 +55,47 @@ final class WireHeaderReader {
     }
 
     /**
-     * Parse the header JSON in {@code buf[off .. off+len]} and apply it:
-     * {@code statusSink} is invoked exactly once (default {@code 500}
-     * when the {@code status} field is absent, matching
-     * {@code decodeResponse}); {@code headerSink} is invoked once per
-     * header value (multiple times for multi-valued headers such as
-     * {@code set-cookie}).
+     * Parse the header JSON in {@code buf[off .. off+len]} and apply
+     * the headers via {@code headerSink} (invoked once per header value;
+     * multiple times for multi-valued headers such as {@code set-cookie}).
+     * Returns the parsed status — defaults to {@code 500} when the
+     * {@code status} field is absent, matching {@code decodeResponse}.
+     *
+     * <p>The status was previously delivered through an {@code IntConsumer
+     * statusSink} parameter that callers had to thread through an
+     * {@code int[1]} holder + capturing lambda; returning the status
+     * directly drops both per-response allocations at every call site
+     * (sync, direct, streaming header callback, async build).
      */
-    static void apply(
+    static int apply(
             ByteBuffer buf,
             int off,
             int len,
-            IntConsumer statusSink,
             BiConsumer<String, String> headerSink) {
-        applyInner(new WireHeaderReader(buf, off, len), statusSink, headerSink);
+        return applyInner(new WireHeaderReader(buf, off, len), headerSink);
     }
 
-    static void apply(
+    static int apply(
             byte[] buf,
             int off,
             int len,
-            IntConsumer statusSink,
             BiConsumer<String, String> headerSink) {
-        applyInner(new WireHeaderReader(buf, off, len), statusSink, headerSink);
+        return applyInner(new WireHeaderReader(buf, off, len), headerSink);
     }
 
     /**
      * Shared tokenizer body for both {@link #apply(ByteBuffer, int, int,
-     * IntConsumer, BiConsumer)} and {@link #apply(byte[], int, int,
-     * IntConsumer, BiConsumer)} — they differ only in which constructor
-     * built the reader, and the reader's {@link #byteAt} already branches
-     * on whichever backing storage is non-null, so the parse loop is
-     * byte-identical between the two overloads.
+     * BiConsumer)} and {@link #apply(byte[], int, int, BiConsumer)} —
+     * they differ only in which constructor built the reader, and the
+     * reader's {@link #byteAt} already branches on whichever backing
+     * storage is non-null, so the parse loop is byte-identical between
+     * the two overloads. Returns the parsed status (default {@code 500}
+     * when absent) — the {@code IntConsumer} sink the previous shape
+     * called exactly once at the very end was a per-response holder +
+     * lambda the caller could now skip.
      */
-    private static void applyInner(
+    private static int applyInner(
             WireHeaderReader r,
-            IntConsumer statusSink,
             BiConsumer<String, String> headerSink) {
         int status = 500;
         r.requireObjectStart();
@@ -131,7 +135,7 @@ final class WireHeaderReader {
             }
         }
         r.requireFullyConsumed();
-        statusSink.accept(status);
+        return status;
     }
 
     /** Decoded response-header components (see {@link #decode}). */
