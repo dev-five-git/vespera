@@ -147,7 +147,7 @@ pub fn parse_struct_to_schema(
                             // by converting to inline schema with description + allOf[$ref]
                             let ref_schema = std::mem::replace(
                                 &mut schema_ref,
-                                SchemaRef::Inline(Box::new(Schema::object())),
+                                SchemaRef::Inline(Box::new(Schema::object_empty())),
                             );
                             if let SchemaRef::Ref(reference) = ref_schema {
                                 schema_ref = SchemaRef::Inline(Box::new(Schema {
@@ -208,7 +208,7 @@ pub fn parse_struct_to_schema(
             } else {
                 Some(required)
             },
-            ..Schema::object()
+            ..Schema::object_empty()
         }
     } else {
         // Create the inline schema for non-flattened properties
@@ -224,7 +224,7 @@ pub fn parse_struct_to_schema(
             } else {
                 Some(required)
             },
-            ..Schema::object()
+            ..Schema::object_empty()
         };
 
         // Build allOf: [inline_schema, ...flattened_refs]
@@ -250,8 +250,10 @@ fn apply_constraints_to_schema_ref(schema_ref: &mut SchemaRef, c: &SchemaConstra
             // mem::replace lets us move the Ref out without leaving an
             // invalid value behind; the placeholder is overwritten
             // before the function returns.
-            let taken =
-                std::mem::replace(schema_ref, SchemaRef::Inline(Box::new(Schema::object())));
+            let taken = std::mem::replace(
+                schema_ref,
+                SchemaRef::Inline(Box::new(Schema::object_empty())),
+            );
             if let SchemaRef::Ref(reference) = taken {
                 let mut wrapper = Schema {
                     all_of: Some(vec![SchemaRef::Ref(reference)]),
