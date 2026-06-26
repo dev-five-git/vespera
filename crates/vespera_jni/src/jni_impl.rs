@@ -110,26 +110,6 @@ where
     })
 }
 
-/// Build a `413` wire response when `len` exceeds the configured
-/// request-size cap ([`vespera_inprocess::max_request_bytes`]); `None`
-/// when within the limit (the default — unlimited).  Lets the buffered
-/// JNI entry points reject an oversized request **before** allocating
-/// the Rust-side body copy that would otherwise double the Java
-/// `byte[]` already resident.
-fn oversized_request_wire(len: usize) -> Option<Vec<u8>> {
-    if vespera_inprocess::request_exceeds_limit(len) {
-        Some(vespera_inprocess::error_wire(
-            413,
-            &format!(
-                "request size {len} bytes exceeds configured maximum of {} bytes",
-                vespera_inprocess::max_request_bytes()
-            ),
-        ))
-    } else {
-        None
-    }
-}
-
 /// Clear a pending Java exception (if any) so subsequent JNI calls in
 /// the same `with_env` scope are not issued with an exception in flight.
 ///
@@ -174,7 +154,7 @@ pub fn read_request_byte_array(
     // Ingress cap: reject an oversized request with 413 BEFORE allocating
     // the Rust-side body copy (the amplification the Java `byte[]` would
     // otherwise double).
-    if let Some(err) = oversized_request_wire(len) {
+    if let Some(err) = vespera_inprocess::check_ingress_cap(len) {
         return Err(err);
     }
     // Read straight into uninitialised capacity — no zero-fill that

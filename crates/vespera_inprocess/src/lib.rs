@@ -85,8 +85,9 @@ pub use config::{
     streaming_channel_capacity, streaming_chunk_bytes,
 };
 pub use dispatch::{
-    DirectWriteResult, dispatch, dispatch_from_bytes, dispatch_from_bytes_async, dispatch_into,
-    dispatch_into_async, dispatch_into_async_borrowed, dispatch_owned, dispatch_typed,
+    DirectWriteResult, check_ingress_cap, dispatch, dispatch_from_bytes,
+    dispatch_from_bytes_async, dispatch_into, dispatch_into_async, dispatch_into_async_borrowed,
+    dispatch_owned, dispatch_typed,
 };
 pub use envelope::{
     HeaderValue, RequestEnvelope, ResponseEnvelope, ResponseMetadata, error_envelope,
