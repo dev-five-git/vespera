@@ -58,6 +58,23 @@ pub(super) fn process_default_functions(
 ) {
     use syn::Fields;
 
+    // Cheap O(field_attrs) precheck: when `stored_defaults` is empty AND no
+    // field carries a `serde` or `schema` attribute, NONE of the three
+    // priority paths below can fire and the `required` demotion stays empty
+    // — so the rest of this function is provably a no-op. The early-return
+    // is observably equivalent to the full walk: the emitted `Schema` stays
+    // byte-identical (the `insta` snapshots in `crates/vespera_macro/src/
+    // snapshots/` are the runtime-neutrality lock).
+    //
+    // Bench fixture (`benches/macro-compile-bench`) has 14 component schemas
+    // and NONE carry `#[serde(default)]` / `#[schema(default)]`, so the
+    // pre-extracted `field_defaults` is empty for all of them — every full
+    // `macro_expand_crate` previously paid ~14 struct-level walks + ~70
+    // per-field iterations of `parse_nested_meta` for pure no-op work.
+    if stored_defaults.is_empty() && !any_field_carries_default_relevant_attr(struct_item) {
+        return;
+    }
+
     // Extract rename_all from struct level
     let struct_rename_all = extract_rename_all(&struct_item.attrs);
 
@@ -157,6 +174,26 @@ pub(super) fn process_default_functions(
             target.required = None;
         }
     }
+}
+
+/// Returns `true` if any named field on `struct_item` carries a `#[serde(...)]`
+/// or `#[schema(...)]` attribute — the only attributes that can possibly
+/// trigger any of `process_default_functions`'s three priority paths.
+///
+/// Only inspects the attribute path (an `Ident` comparison) — never calls
+/// `parse_nested_meta`, so this stays O(sum of field attr counts) byte
+/// comparisons. Tuple/unit structs return `false` immediately (matching the
+/// `Fields::Named` branch in the caller).
+fn any_field_carries_default_relevant_attr(struct_item: &syn::ItemStruct) -> bool {
+    let syn::Fields::Named(fields) = &struct_item.fields else {
+        return false;
+    };
+    fields.named.iter().any(|field| {
+        field
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("serde") || attr.path().is_ident("schema"))
+    })
 }
 
 /// Return the object schema that actually carries the struct's fields: the
@@ -837,5 +874,176 @@ mod tests {
 
         assert!(schema.required.is_none(), "serde-default field is optional");
         assert_inline_default(schema.properties.as_ref().unwrap(), "sort", &json!("asc"));
+    }
+
+    // ---------- any_field_carries_default_relevant_attr ----------
+
+    #[rstest]
+    // No fields / no attrs: nothing to do, helper returns false.
+    #[case::no_fields("pub struct Empty;", false)]
+    #[case::tuple_struct("pub struct T(i32, String);", false)]
+    #[case::unit_struct("pub struct U;", false)]
+    #[case::plain_fields("pub struct P { pub a: i32, pub b: String }", false)]
+    // Non-serde/non-schema attrs: helper returns false, early-return fires.
+    #[case::doc_only(
+        "pub struct D { /// docs\n pub a: i32 }",
+        false,
+    )]
+    #[case::garde_only(
+        r"pub struct G { #[garde(length(min = 1))] pub a: String }",
+        false,
+    )]
+    // Serde attrs of ANY kind (rename, default, skip, ...): return true.
+    #[case::serde_rename(
+        r#"pub struct S { #[serde(rename = "a")] pub field: String }"#,
+        true,
+    )]
+    #[case::serde_default_bare(
+        "pub struct S { #[serde(default)] pub field: String }",
+        true,
+    )]
+    #[case::serde_default_fn(
+        r#"pub struct S { #[serde(default = "f")] pub field: String }"#,
+        true,
+    )]
+    // Schema attrs of ANY kind: return true.
+    #[case::schema_default(
+        r#"pub struct S { #[schema(default = "1")] pub field: i32 }"#,
+        true,
+    )]
+    // Mixed attr lists: any one match is enough.
+    #[case::serde_on_second_field(
+        r#"pub struct M { pub a: i32, #[serde(rename = "x")] pub b: String }"#,
+        true,
+    )]
+    fn any_field_carries_default_relevant_attr_cases(#[case] src: &str, #[case] expected: bool) {
+        let struct_item: syn::ItemStruct = syn::parse_str(src).expect("struct parses");
+        assert_eq!(
+            any_field_carries_default_relevant_attr(&struct_item),
+            expected
+        );
+    }
+
+    // ---------- early-return short-circuit ----------
+
+    #[test]
+    fn process_default_functions_early_returns_when_no_defaults_possible() {
+        // The bench-fixture pattern: empty `stored_defaults`, no serde/schema
+        // attrs anywhere. Every priority path is provably a no-op, so the
+        // function must early-return WITHOUT mutating the schema and WITHOUT
+        // demoting the field from `required`.
+        let struct_item: syn::ItemStruct =
+            syn::parse_str("pub struct Plain { pub id: i32, pub name: String }").unwrap();
+        let mut schema = Schema::object();
+        let props = schema.properties.get_or_insert_with(BTreeMap::new);
+        props.insert(
+            "id".to_string(),
+            SchemaRef::Inline(Box::new(Schema::integer())),
+        );
+        props.insert(
+            "name".to_string(),
+            SchemaRef::Inline(Box::new(Schema::string())),
+        );
+        schema.required = Some(vec!["id".to_string(), "name".to_string()]);
+
+        process_default_functions(&struct_item, None, &mut schema, &BTreeMap::new());
+
+        let properties = schema.properties.as_ref().unwrap();
+        let SchemaRef::Inline(id) = properties.get("id").unwrap() else {
+            panic!("expected inline");
+        };
+        let SchemaRef::Inline(name) = properties.get("name").unwrap() else {
+            panic!("expected inline");
+        };
+        assert!(id.default.is_none(), "no default must be set on `id`");
+        assert!(name.default.is_none(), "no default must be set on `name`");
+        // `required` must be unchanged — no serde-default field exists.
+        assert_eq!(
+            schema.required.as_deref(),
+            Some(["id".to_string(), "name".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn process_default_functions_falls_through_for_serde_rename_only() {
+        // `#[serde(rename = ...)]` is not a default attribute, but the helper
+        // intentionally treats ANY `serde` attr as relevant — so the full walk
+        // must still run (no early-return). The OUTCOME is the same as the
+        // early-return path (no defaults set, `required` unchanged) because
+        // `rename` is not a default, but we lock that behaviour here so a
+        // future change to the helper (e.g. narrowing to `default`-only attrs)
+        // does not silently flip semantics.
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r#"
+            pub struct R {
+                #[serde(rename = "n")]
+                pub name: String,
+            }
+            "#,
+        )
+        .unwrap();
+        let mut schema = Schema::object();
+        let props = schema.properties.get_or_insert_with(BTreeMap::new);
+        props.insert(
+            "n".to_string(),
+            SchemaRef::Inline(Box::new(Schema::string())),
+        );
+        schema.required = Some(vec!["n".to_string()]);
+
+        process_default_functions(&struct_item, None, &mut schema, &BTreeMap::new());
+
+        let properties = schema.properties.as_ref().unwrap();
+        let SchemaRef::Inline(n) = properties.get("n").unwrap() else {
+            panic!("expected inline");
+        };
+        assert!(n.default.is_none(), "rename-only does not set a default");
+        assert_eq!(
+            schema.required.as_deref(),
+            Some(["n".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn process_default_functions_falls_through_when_stored_defaults_present() {
+        // `stored_defaults` populated by `#[derive(Schema)]`: even without any
+        // field-level attrs the early-return MUST NOT fire — the Priority-0
+        // path must apply the stored default.
+        let struct_item: syn::ItemStruct =
+            syn::parse_str("pub struct Plain { pub count: i32 }").unwrap();
+        let mut schema = Schema::object();
+        schema.properties.get_or_insert_with(BTreeMap::new).insert(
+            "count".to_string(),
+            SchemaRef::Inline(Box::new(Schema::integer())),
+        );
+        let stored: BTreeMap<String, Value> =
+            BTreeMap::from([("count".to_string(), json!(7))]);
+
+        process_default_functions(&struct_item, None, &mut schema, &stored);
+
+        assert_inline_default(schema.properties.as_ref().unwrap(), "count", &json!(7));
+    }
+
+    #[test]
+    fn process_default_functions_falls_through_for_schema_default_attr() {
+        // `#[schema(default = "...")]` with empty `stored_defaults`: the
+        // early-return MUST NOT fire because Priority-1 needs to run.
+        let struct_item: syn::ItemStruct = syn::parse_str(
+            r#"
+            pub struct S {
+                #[schema(default = "42")]
+                pub count: i32,
+            }
+            "#,
+        )
+        .unwrap();
+        let mut schema = Schema::object();
+        schema.properties.get_or_insert_with(BTreeMap::new).insert(
+            "count".to_string(),
+            SchemaRef::Inline(Box::new(Schema::integer())),
+        );
+
+        process_default_functions(&struct_item, None, &mut schema, &BTreeMap::new());
+
+        assert_inline_default(schema.properties.as_ref().unwrap(), "count", &json!(42));
     }
 }
