@@ -9,6 +9,36 @@ use crate::{
 
 use super::docs::{REDOC_HTML, SWAGGER_UI_HTML, generate_docs_route_tokens};
 
+/// Build `crate::<module_path>::<function_name>` as a `syn::Path`.
+/// Empty segments inside `module_path` (from accidental `::` doubling)
+/// are dropped, matching the existing behaviour of both call sites.
+fn crate_path_to(module_path: &str, function_name: &str) -> syn::Path {
+    let mut segments: syn::punctuated::Punctuated<syn::PathSegment, syn::Token![::]> =
+        syn::punctuated::Punctuated::new();
+    segments.push(syn::PathSegment {
+        ident: syn::Ident::new("crate", Span::call_site()),
+        arguments: syn::PathArguments::None,
+    });
+    segments.extend(module_path.split("::").filter_map(|s| {
+        if s.is_empty() {
+            None
+        } else {
+            Some(syn::PathSegment {
+                ident: syn::Ident::new(s, Span::call_site()),
+                arguments: syn::PathArguments::None,
+            })
+        }
+    }));
+    segments.push(syn::PathSegment {
+        ident: syn::Ident::new(function_name, Span::call_site()),
+        arguments: syn::PathArguments::None,
+    });
+    syn::Path {
+        leading_colon: None,
+        segments,
+    }
+}
+
 /// Generate cron scheduler spawn code from collected cron metadata.
 fn generate_cron_scheduler_code(cron_jobs: &[CronMetadata]) -> proc_macro2::TokenStream {
     if cron_jobs.is_empty() {
@@ -23,23 +53,7 @@ fn generate_cron_scheduler_code(cron_jobs: &[CronMetadata]) -> proc_macro2::Toke
             let function_name = &cron.function_name;
 
             // Build the full path: crate::module::function
-            let mut p: syn::punctuated::Punctuated<syn::PathSegment, syn::Token![::]> =
-                syn::punctuated::Punctuated::new();
-            p.push(syn::PathSegment {
-                ident: syn::Ident::new("crate", Span::call_site()),
-                arguments: syn::PathArguments::None,
-            });
-            p.extend(module_path.split("::").filter_map(|s| {
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(syn::PathSegment {
-                        ident: syn::Ident::new(s, Span::call_site()),
-                        arguments: syn::PathArguments::None,
-                    })
-                }
-            }));
-            let func_ident = syn::Ident::new(function_name, Span::call_site());
+            let call_path = crate_path_to(module_path, function_name);
 
             let err_create = format!("vespera: failed to create cron job '{function_name}'");
             let err_add = format!("vespera: failed to add cron job '{function_name}'");
@@ -52,7 +66,7 @@ fn generate_cron_scheduler_code(cron_jobs: &[CronMetadata]) -> proc_macro2::Toke
                 // swallow as a silent `JoinError`, hiding the failure entirely).
                 match vespera::tokio_cron_scheduler::Job::new_async(#expression, |_uuid, _l| {
                     Box::pin(async move {
-                        #p::#func_ident().await;
+                        #call_path().await;
                     })
                 }) {
                     Ok(__vespera_job) => {
@@ -118,25 +132,9 @@ pub fn generate_router_code(
         let module_path = &route.module_path;
         let function_name = &route.function_name;
 
-        let mut p: syn::punctuated::Punctuated<syn::PathSegment, syn::Token![::]> =
-            syn::punctuated::Punctuated::new();
-        p.push(syn::PathSegment {
-            ident: syn::Ident::new("crate", Span::call_site()),
-            arguments: syn::PathArguments::None,
-        });
-        p.extend(module_path.split("::").filter_map(|s| {
-            if s.is_empty() {
-                None
-            } else {
-                Some(syn::PathSegment {
-                    ident: syn::Ident::new(s, Span::call_site()),
-                    arguments: syn::PathArguments::None,
-                })
-            }
-        }));
-        let func_name = syn::Ident::new(function_name, Span::call_site());
+        let call_path = crate_path_to(module_path, function_name);
         router_nests.push(quote!(
-            .route(#path, #method_path(#p::#func_name))
+            .route(#path, #method_path(#call_path))
         ));
     }
 
