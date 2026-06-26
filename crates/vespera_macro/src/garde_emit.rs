@@ -30,6 +30,12 @@
 use proc_macro2::TokenStream;
 use syn::DeriveInput;
 
+// `SchemaConstraints` appears in the public signature of
+// `emit_garde_validate`, so it must be in scope in BOTH the
+// `validation`-on and `validation`-off arms — the off-arm signature still
+// names the slice type even though it ignores the argument.
+use crate::parser::schema::schema_attrs::SchemaConstraints;
+
 #[cfg(feature = "validation")]
 use proc_macro2::Span;
 #[cfg(feature = "validation")]
@@ -37,27 +43,36 @@ use quote::{format_ident, quote};
 #[cfg(feature = "validation")]
 use syn::{Data, Fields, Type};
 
-#[cfg(feature = "validation")]
-use crate::parser::schema::schema_attrs::{SchemaConstraints, try_extract_schema_constraints};
-
 /// Public entry point used by `process_derive_schema`.
 ///
 /// When `validation` is **off** on `vespera_macro`, this expands to an
 /// empty stub via the `#[cfg(...)]` switch at the bottom of this file.
+///
+/// `field_constraints` is the pre-parsed `#[schema(...)]` slice already
+/// produced by `process_derive_schema` (one entry per named field, in
+/// declaration order). Threading it through here removes the third walk
+/// over every field's `attrs` the previous code performed inside
+/// `emit_impl`.
 #[cfg(feature = "validation")]
 #[must_use]
-pub fn emit_garde_validate(input: &DeriveInput) -> TokenStream {
-    emit_impl(input)
+pub fn emit_garde_validate(
+    input: &DeriveInput,
+    field_constraints: &[SchemaConstraints],
+) -> TokenStream {
+    emit_impl(input, field_constraints)
 }
 
 #[cfg(not(feature = "validation"))]
 #[must_use]
-pub fn emit_garde_validate(_input: &DeriveInput) -> TokenStream {
+pub fn emit_garde_validate(
+    _input: &DeriveInput,
+    _field_constraints: &[SchemaConstraints],
+) -> TokenStream {
     TokenStream::new()
 }
 
 #[cfg(feature = "validation")]
-fn emit_impl(input: &DeriveInput) -> TokenStream {
+fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> TokenStream {
     // Only structs with named fields are validated; everything else
     // produces an empty token stream so the derive remains a no-op.
     let Data::Struct(data_struct) = &input.data else {
@@ -67,17 +82,16 @@ fn emit_impl(input: &DeriveInput) -> TokenStream {
         return TokenStream::new();
     };
 
-    // Collect per-field constraints up-front so we can short-circuit
-    // when nothing on the struct opts into validation.
-    let per_field = fields_named
+    // `process_derive_schema` parsed every field's `#[schema(...)]` once and
+    // bailed early on the `Err` arm via `to_compile_error`, so by the time we
+    // reach this function we already have a slice with one valid entry per
+    // named field. Pairwise zip recovers the `(&Field, &SchemaConstraints)`
+    // view the previous code reproduced by re-parsing the attrs.
+    let per_field: Vec<(&syn::Field, &SchemaConstraints)> = fields_named
         .named
         .iter()
-        .map(|f| try_extract_schema_constraints(&f.attrs).map(|constraints| (f, constraints)))
-        .collect::<syn::Result<_>>();
-    let per_field: Vec<(&syn::Field, SchemaConstraints)> = match per_field {
-        Ok(per_field) => per_field,
-        Err(error) => return error.to_compile_error(),
-    };
+        .zip(field_constraints)
+        .collect();
 
     if per_field.iter().all(|(_, c)| !c.has_runtime_rule()) {
         // No field requested a runtime rule — skip Validate emission.

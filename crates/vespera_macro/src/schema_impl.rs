@@ -189,14 +189,23 @@ pub fn process_derive_schema(
 ) -> (Option<StructMetadata>, proc_macro2::TokenStream) {
     let name = &input.ident;
 
+    // Parse every field's `#[schema(...)]` constraints ONCE here and thread the
+    // resulting slice into the supplement emitter (and, behind the `validation`
+    // feature gate, into garde's `Validate` emitter). The previous codepath
+    // re-ran `try_extract_schema_constraints` per field inside each callee — two
+    // walks by default, three with `validation` on — for byte-identical output.
+    let mut field_constraints: Vec<crate::parser::schema::schema_attrs::SchemaConstraints> =
+        Vec::new();
     if let syn::Data::Struct(data_struct) = &input.data
         && let syn::Fields::Named(fields_named) = &data_struct.fields
     {
+        field_constraints.reserve(fields_named.named.len());
         for field in &fields_named.named {
-            if let Err(error) =
-                crate::parser::schema::schema_attrs::try_extract_schema_constraints(&field.attrs)
-            {
-                return (None, error.to_compile_error());
+            match crate::parser::schema::schema_attrs::try_extract_schema_constraints(
+                &field.attrs,
+            ) {
+                Ok(constraints) => field_constraints.push(constraints),
+                Err(error) => return (None, error.to_compile_error()),
             }
         }
     }
@@ -234,13 +243,13 @@ pub fn process_derive_schema(
     // constraints carry runtime checks alongside their OpenAPI metadata.
     // The emit function returns an empty `TokenStream` when no field
     // requests a runtime rule or when the feature is off.
-    let garde = crate::garde_emit::emit_garde_validate(input);
+    let garde = crate::garde_emit::emit_garde_validate(input, &field_constraints);
     // Emit the `::vespera::Schema` marker impl + per-field
     // `T: ::vespera::Schema` leaf assertions: a field of a custom type
     // that forgot its own `#[derive(Schema)]` becomes a compile error
     // instead of a silent `{type:"object"}` in the spec. Additive — it
     // does not change the emitted OpenAPI bytes for any field.
-    let supplements = crate::schema_assertions::emit_schema_supplements(input);
+    let supplements = crate::schema_assertions::emit_schema_supplements(input, &field_constraints);
     let expanded = quote::quote! {
         #garde
         #supplements

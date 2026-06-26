@@ -3,7 +3,26 @@ use syn::parse_quote;
 
 #[allow(clippy::needless_pass_by_value)] // test helper takes owned input by convention
 fn emit_to_string(input: DeriveInput) -> String {
-    emit_garde_validate(&input).to_string()
+    let constraints = constraints_for(&input);
+    emit_garde_validate(&input, &constraints).to_string()
+}
+
+/// Recompute the per-field `SchemaConstraints` slice the way
+/// `process_derive_schema` does in production code, so the tests can
+/// drive `emit_garde_validate` (which now takes the slice as a
+/// parameter) without re-stating the parse pass at every call site.
+fn constraints_for(input: &DeriveInput) -> Vec<SchemaConstraints> {
+    use crate::parser::schema::schema_attrs::try_extract_schema_constraints;
+    if let Data::Struct(d) = &input.data
+        && let Fields::Named(f) = &d.fields
+    {
+        return f
+            .named
+            .iter()
+            .map(|fld| try_extract_schema_constraints(&fld.attrs).unwrap_or_default())
+            .collect();
+    }
+    Vec::new()
 }
 
 #[test]

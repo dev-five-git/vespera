@@ -41,9 +41,7 @@ use quote::{quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{GenericArgument, PathArguments, Type};
 
-use crate::parser::schema::{
-    is_builtin_openapi_type, schema_attrs::try_extract_schema_constraints,
-};
+use crate::parser::schema::{is_builtin_openapi_type, schema_attrs::SchemaConstraints};
 
 /// Emit BOTH the marker-trait impl AND the per-field leaf-type
 /// assertions for `input` — the single entry point called from
@@ -51,10 +49,20 @@ use crate::parser::schema::{
 /// the input shape would otherwise miscompile (e.g. parse-failed
 /// `#[schema(...)]` attrs on a field — surfaced upstream as a
 /// `compile_error!`).
+///
+/// `field_constraints` is the slice of already-parsed `#[schema(...)]`
+/// values produced by `process_derive_schema` in a single walk; it is
+/// indexed pairwise with `fields_named.named` inside
+/// `emit_field_assertions`. Passing the slice avoids re-running
+/// `try_extract_schema_constraints` here (the parser had already been
+/// invoked once per field for validation).
 #[must_use]
-pub fn emit_schema_supplements(input: &syn::DeriveInput) -> TokenStream {
+pub fn emit_schema_supplements(
+    input: &syn::DeriveInput,
+    field_constraints: &[SchemaConstraints],
+) -> TokenStream {
     let marker = emit_marker_impl(input);
-    let assertions = emit_field_assertions(input);
+    let assertions = emit_field_assertions(input, field_constraints);
     quote! {
         #marker
         #assertions
@@ -91,7 +99,16 @@ fn emit_marker_impl(input: &syn::DeriveInput) -> TokenStream {
 /// Returns an empty stream for non-structs, non-named-field structs,
 /// and structs where every leaf is exempt — keeping the existing
 /// emitted bytes for those cases byte-identical.
-fn emit_field_assertions(input: &syn::DeriveInput) -> TokenStream {
+///
+/// `field_constraints` is the pre-parsed `#[schema(...)]` slice (one
+/// entry per named field, in declaration order). `process_derive_schema`
+/// already collected it during the per-field validation walk, so
+/// indexing pairwise with `fields_named.named` here removes a
+/// duplicate parse pass over every field's attrs.
+fn emit_field_assertions(
+    input: &syn::DeriveInput,
+    field_constraints: &[SchemaConstraints],
+) -> TokenStream {
     let syn::Data::Struct(data_struct) = &input.data else {
         return TokenStream::new();
     };
@@ -113,16 +130,19 @@ fn emit_field_assertions(input: &syn::DeriveInput) -> TokenStream {
         .collect();
 
     let mut blocks: Vec<TokenStream> = Vec::new();
-    for field in &fields_named.named {
+    // `process_derive_schema` constructs `field_constraints` with exactly one
+    // entry per named field, in declaration order. `zip` therefore yields the
+    // full pairing here; when the caller forwards an empty slice (e.g. unit /
+    // tuple structs short-circuit above never reach this loop) we degenerate
+    // to zero iterations like the previous code.
+    for (field, constraints) in fields_named.named.iter().zip(field_constraints) {
         // `#[schema(any)]` is the documented escape hatch — the field
         // explicitly opted out of type-driven schema generation, so
         // there's no leaf to assert.  Parse errors on `#[schema(...)]`
-        // are surfaced separately by `process_derive_schema`, so an
-        // `Err` here means we already reported a diagnostic upstream
-        // and should not pile on a noisy "missing Schema" assertion.
-        let Ok(constraints) = try_extract_schema_constraints(&field.attrs) else {
-            continue;
-        };
+        // are surfaced upstream by `process_derive_schema`, so a field
+        // that would have produced an `Err` here never makes it into
+        // `field_constraints` (the early `to_compile_error` return
+        // upstream supersedes the `continue` the previous code took).
         if constraints.is_any() {
             continue;
         }
@@ -312,6 +332,24 @@ mod tests {
             .collect()
     }
 
+    /// Recompute the per-field `SchemaConstraints` slice the way
+    /// `process_derive_schema` does in production code, so tests can
+    /// drive `emit_field_assertions` (which now takes the slice as a
+    /// parameter) without re-stating the parse pass at every call site.
+    fn constraints_for(input: &syn::DeriveInput) -> Vec<SchemaConstraints> {
+        use crate::parser::schema::schema_attrs::try_extract_schema_constraints;
+        if let syn::Data::Struct(d) = &input.data
+            && let syn::Fields::Named(f) = &d.fields
+        {
+            return f
+                .named
+                .iter()
+                .map(|fld| try_extract_schema_constraints(&fld.attrs).unwrap_or_default())
+                .collect();
+        }
+        Vec::new()
+    }
+
     // ── collect_leaf_custom_types ──────────────────────────────────
 
     #[test]
@@ -497,7 +535,7 @@ mod tests {
                 map: HashMap<String, bool>,
             }
         };
-        let out = emit_field_assertions(&input).to_string();
+        let out = emit_field_assertions(&input, &constraints_for(&input)).to_string();
         assert!(
             out.is_empty(),
             "builtins-only struct must emit zero assertions, got: {out}"
@@ -511,7 +549,7 @@ mod tests {
                 inner: MyUnknown,
             }
         };
-        let out = emit_field_assertions(&input).to_string();
+        let out = emit_field_assertions(&input, &constraints_for(&input)).to_string();
         assert!(
             out.contains("__vespera_assert_schema") && out.contains("MyUnknown"),
             "expected assertion on MyUnknown, got: {out}"
@@ -527,7 +565,7 @@ mod tests {
                 via: Option<Vec<serde_json::Value>>,
             }
         };
-        let out = emit_field_assertions(&input).to_string();
+        let out = emit_field_assertions(&input, &constraints_for(&input)).to_string();
         assert!(
             out.is_empty(),
             "Value fields must not emit assertions, got: {out}"
@@ -542,7 +580,7 @@ mod tests {
                 opaque: MyUnknown,
             }
         };
-        let out = emit_field_assertions(&input).to_string();
+        let out = emit_field_assertions(&input, &constraints_for(&input)).to_string();
         assert!(
             out.is_empty(),
             "`#[schema(any)]` must skip the assertion, got: {out}"
@@ -559,7 +597,7 @@ mod tests {
                 name: String,
             }
         };
-        let out = emit_field_assertions(&input).to_string();
+        let out = emit_field_assertions(&input, &constraints_for(&input)).to_string();
         assert!(
             out.is_empty(),
             "fields whose leaf is the struct's generic param must not emit assertions, got: {out}"
@@ -578,7 +616,7 @@ mod tests {
                 e: WhateverType,
             }
         };
-        let out = emit_field_assertions(&input).to_string();
+        let out = emit_field_assertions(&input, &constraints_for(&input)).to_string();
         // Three assertions (a, b, c) for the three non-exempt leaves.
         assert_eq!(
             out.matches("let _ = __vespera_assert_schema").count(),
@@ -599,16 +637,28 @@ mod tests {
         let input: syn::DeriveInput = parse_quote! {
             pub enum E { A(MyUnknown) }
         };
-        assert!(emit_field_assertions(&input).to_string().is_empty());
+        assert!(
+            emit_field_assertions(&input, &constraints_for(&input))
+                .to_string()
+                .is_empty()
+        );
 
         let input: syn::DeriveInput = parse_quote! {
             pub struct Tuple(MyUnknown);
         };
-        assert!(emit_field_assertions(&input).to_string().is_empty());
+        assert!(
+            emit_field_assertions(&input, &constraints_for(&input))
+                .to_string()
+                .is_empty()
+        );
 
         let input: syn::DeriveInput = parse_quote! {
             pub struct Unit;
         };
-        assert!(emit_field_assertions(&input).to_string().is_empty());
+        assert!(
+            emit_field_assertions(&input, &constraints_for(&input))
+                .to_string()
+                .is_empty()
+        );
     }
 }
