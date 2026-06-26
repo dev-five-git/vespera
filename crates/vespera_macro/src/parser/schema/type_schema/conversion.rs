@@ -395,15 +395,34 @@ fn parse_type_impl(
                     };
 
                     if known_schemas.contains(resolved_name.as_str()) {
-                        // Parse the struct definition ONCE (when present) and reuse it for
-                        // BOTH the `#[schema(ref=...)]` override check and the
-                        // generic-substitution path below.  `syn::parse_str::<ItemStruct>`
-                        // tokenises + parses the whole definition string, so this single
-                        // parse replaces the two that the override branch and the generic
-                        // branch each used to run for a generic schema type.
-                        let parsed_def = struct_definitions
+                        // Parse the struct definition lazily, ONLY when the parsed AST
+                        // will actually be consumed downstream.  `parsed_def` feeds two
+                        // sites: the `#[schema(ref = ...)]` override check below and
+                        // the generic-substitution branch.  In the common case (a
+                        // non-generic field referencing a schema whose source carries
+                        // no `#[schema(...)]` attribute) the AST is dropped unused, so
+                        // the full `syn::parse_str::<ItemStruct>` tokenise+parse pass
+                        // is pure waste.  A byte-scan over the cached
+                        // `quote!`-stringified definition (`extract_schema_ref_override`
+                        // only fires on `#[schema(...)]`, which `quote!` always emits
+                        // as the substring `[schema`) is enough to short-circuit that
+                        // case; the generic branch is gated on `is_generic` anyway.
+                        // Token output is byte-identical: when both gates miss, the
+                        // arm now skips straight to `SchemaRef::Ref(...)`, which is
+                        // exactly the value the unconditional-parse path computed via
+                        // `parsed_def -> None override -> not generic -> fallback`.
+                        let def_str = struct_definitions
                             .get(resolved_name.as_str())
-                            .and_then(|def| parse_struct_def(def.as_ref()));
+                            .map(AsRef::as_ref);
+                        let is_generic =
+                            matches!(&segment.arguments, syn::PathArguments::AngleBracketed(_));
+                        let maybe_has_schema_attr =
+                            def_str.is_some_and(|d| d.contains("[schema"));
+                        let parsed_def = if is_generic || maybe_has_schema_attr {
+                            def_str.and_then(parse_struct_def)
+                        } else {
+                            None
+                        };
 
                         if let Some(parsed_struct) = &parsed_def
                             && let Some((schema_name, nullable)) =
