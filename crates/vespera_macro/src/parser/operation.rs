@@ -13,7 +13,7 @@ use super::{
     path::extract_path_parameters,
     request_body::parse_request_body,
     response::parse_return_type,
-    schema::parse_type_to_schema_ref_with_schemas,
+    schema::parse_type_to_schema_ref,
 };
 
 #[derive(Clone, Copy, Default)]
@@ -82,7 +82,7 @@ pub fn build_operation_from_function(
                             r#in: ParameterLocation::Path,
                             description: None,
                             required: Some(true),
-                            schema: Some(parse_type_to_schema_ref_with_schemas(
+                            schema: Some(parse_type_to_schema_ref(
                                 elem_ty,
                                 known_schemas,
                                 struct_definitions,
@@ -96,7 +96,7 @@ pub fn build_operation_from_function(
                             r#in: ParameterLocation::Path,
                             description: None,
                             required: Some(true),
-                            schema: Some(parse_type_to_schema_ref_with_schemas(
+                            schema: Some(parse_type_to_schema_ref(
                                 string_type
                                     .get_or_init(|| syn::parse_str::<Type>("String").unwrap()),
                                 known_schemas,
@@ -114,7 +114,7 @@ pub fn build_operation_from_function(
                         r#in: ParameterLocation::Path,
                         description: None,
                         required: Some(true),
-                        schema: Some(parse_type_to_schema_ref_with_schemas(
+                        schema: Some(parse_type_to_schema_ref(
                             &ty,
                             known_schemas,
                             struct_definitions,
@@ -129,7 +129,7 @@ pub fn build_operation_from_function(
                             r#in: ParameterLocation::Path,
                             description: None,
                             required: Some(true),
-                            schema: Some(parse_type_to_schema_ref_with_schemas(
+                            schema: Some(parse_type_to_schema_ref(
                                 &ty,
                                 known_schemas,
                                 struct_definitions,
@@ -147,7 +147,7 @@ pub fn build_operation_from_function(
                     r#in: ParameterLocation::Path,
                     description: None,
                     required: Some(true),
-                    schema: Some(parse_type_to_schema_ref_with_schemas(
+                    schema: Some(parse_type_to_schema_ref(
                         string_type.get_or_init(|| syn::parse_str::<Type>("String").unwrap()),
                         known_schemas,
                         struct_definitions,

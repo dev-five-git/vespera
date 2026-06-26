@@ -144,20 +144,9 @@ pub fn is_primitive_type(ty: &Type) -> bool {
     }
 }
 
-/// Converts a Rust type to an `OpenAPI` `SchemaRef`.
+/// Converts a Rust type to an `OpenAPI` `SchemaRef` with depth-guarded recursion.
 ///
-/// This is the main entry point for type-to-schema conversion.
-pub fn parse_type_to_schema_ref(
-    ty: &Type,
-    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
-    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
-) -> SchemaRef {
-    parse_type_to_schema_ref_with_schemas(ty, known_schemas, struct_definitions)
-}
-
-/// Type-to-schema conversion with depth-guarded recursion.
-///
-/// Handles:
+/// This is the single entry point for type-to-schema conversion. Handles:
 /// - Primitive types (i32, String, bool, etc.)
 /// - Generic wrappers (Vec, Option, Box)
 /// - `SeaORM` relations (`HasOne`, `HasMany`)
@@ -165,7 +154,7 @@ pub fn parse_type_to_schema_ref(
 /// - Date/time types (`DateTime`, `NaiveDate`, etc.)
 /// - Known schema references
 /// - Generic type instantiation
-pub fn parse_type_to_schema_ref_with_schemas(
+pub fn parse_type_to_schema_ref(
     ty: &Type,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
@@ -416,8 +405,7 @@ fn parse_type_impl(
                             .map(AsRef::as_ref);
                         let is_generic =
                             matches!(&segment.arguments, syn::PathArguments::AngleBracketed(_));
-                        let maybe_has_schema_attr =
-                            def_str.is_some_and(|d| d.contains("[schema"));
+                        let maybe_has_schema_attr = def_str.is_some_and(|d| d.contains("[schema"));
                         let parsed_def = if is_generic || maybe_has_schema_attr {
                             def_str.and_then(parse_struct_def)
                         } else {

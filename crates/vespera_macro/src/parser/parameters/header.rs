@@ -7,7 +7,7 @@ use vespera_core::{
 };
 
 use super::shared::is_primitive_or_like;
-use crate::parser::schema::parse_type_to_schema_ref_with_schemas;
+use crate::parser::schema::parse_type_to_schema_ref;
 
 pub(super) fn parse_option_typed_header(param_name: &str, ty: &Type) -> Option<Vec<Parameter>> {
     let Type::Path(type_path) = ty else {
@@ -64,7 +64,7 @@ fn parse_header(
         r#in: ParameterLocation::Header,
         description: None,
         required: Some(true),
-        schema: Some(parse_type_to_schema_ref_with_schemas(
+        schema: Some(parse_type_to_schema_ref(
             inner_ty,
             known_schemas,
             struct_definitions,

@@ -10,7 +10,7 @@ use super::shared::{convert_to_inline_schema, is_known_type, is_primitive_or_lik
 use crate::{
     parser::schema::{
         extract_default, extract_field_rename, extract_rename_all, parse_struct_to_schema,
-        parse_type_to_schema_ref_with_schemas, rename_field,
+        parse_type_to_schema_ref, rename_field,
     },
     schema_macro::type_utils::{is_map_type as utils_is_map_type, is_option_type},
 };
@@ -53,7 +53,7 @@ pub(super) fn parse_query_extractor(
         r#in: ParameterLocation::Query,
         description: None,
         required: Some(true),
-        schema: Some(parse_type_to_schema_ref_with_schemas(
+        schema: Some(parse_type_to_schema_ref(
             inner_ty,
             known_schemas,
             struct_definitions,
@@ -95,7 +95,7 @@ pub(super) fn parse_query_struct_to_parameters(
                 // #[serde(default)] fields are optional in request inputs even
                 // when the Rust type is non-Option (B4: request optional).
                 let has_default = extract_default(&field.attrs).is_some();
-                let mut field_schema = parse_type_to_schema_ref_with_schemas(
+                let mut field_schema = parse_type_to_schema_ref(
                     field_type,
                     known_schemas,
                     struct_definitions,

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use syn::Type;
 use vespera_core::route::{Parameter, ParameterLocation};
 
-use crate::parser::schema::parse_type_to_schema_ref_with_schemas;
+use crate::parser::schema::parse_type_to_schema_ref;
 
 pub(super) fn parse_path_extractor(
     ty: &Type,
@@ -36,7 +36,7 @@ pub(super) fn parse_path_extractor(
                     r#in: ParameterLocation::Path,
                     description: None,
                     required: Some(true),
-                    schema: Some(parse_type_to_schema_ref_with_schemas(
+                    schema: Some(parse_type_to_schema_ref(
                         elem_ty,
                         known_schemas,
                         struct_definitions,
@@ -54,7 +54,7 @@ pub(super) fn parse_path_extractor(
             r#in: ParameterLocation::Path,
             description: None,
             required: Some(true),
-            schema: Some(parse_type_to_schema_ref_with_schemas(
+            schema: Some(parse_type_to_schema_ref(
                 inner_ty,
                 known_schemas,
                 struct_definitions,
@@ -77,7 +77,7 @@ pub(super) fn parse_bare_path_parameter(
             r#in: ParameterLocation::Path,
             description: None,
             required: Some(true),
-            schema: Some(parse_type_to_schema_ref_with_schemas(
+            schema: Some(parse_type_to_schema_ref(
                 ty,
                 known_schemas,
                 struct_definitions,

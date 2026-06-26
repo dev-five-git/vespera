@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use syn::{ReturnType, Type};
 use vespera_core::route::{Header, MediaType, Response};
 
-use super::schema::parse_type_to_schema_ref_with_schemas;
+use super::schema::parse_type_to_schema_ref;
 use crate::parser::is_keyword_type::{KeywordType, is_keyword_type, is_keyword_type_by_type_path};
 
 /// Unwrap Json<T> to get T
@@ -203,7 +203,7 @@ fn content_for_type(
         return None;
     }
 
-    let schema = parse_type_to_schema_ref_with_schemas(ty, known_schemas, struct_definitions);
+    let schema = parse_type_to_schema_ref(ty, known_schemas, struct_definitions);
     let mut content = BTreeMap::new();
     content.insert(
         content_type.to_string(),

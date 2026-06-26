@@ -4,7 +4,7 @@ use syn::{FnArg, PatType, Type};
 use vespera_core::route::{MediaType, RequestBody};
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
-use super::{extractors::unwrap_validated_type, schema::parse_type_to_schema_ref_with_schemas};
+use super::{extractors::unwrap_validated_type, schema::parse_type_to_schema_ref};
 
 fn is_string_like(ty: &Type) -> bool {
     match ty {
@@ -40,7 +40,7 @@ pub fn parse_request_body(
                     && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
                     && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
                 {
-                    let schema = parse_type_to_schema_ref_with_schemas(
+                    let schema = parse_type_to_schema_ref(
                         inner_ty,
                         known_schemas,
                         struct_definitions,
@@ -66,7 +66,7 @@ pub fn parse_request_body(
                     && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
                     && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
                 {
-                    let schema = parse_type_to_schema_ref_with_schemas(
+                    let schema = parse_type_to_schema_ref(
                         inner_ty,
                         known_schemas,
                         struct_definitions,
@@ -92,7 +92,7 @@ pub fn parse_request_body(
                     && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
                     && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
                 {
-                    let schema = parse_type_to_schema_ref_with_schemas(
+                    let schema = parse_type_to_schema_ref(
                         inner_ty,
                         known_schemas,
                         struct_definitions,
@@ -137,7 +137,7 @@ pub fn parse_request_body(
 
             if is_string_like(ty) {
                 let schema =
-                    parse_type_to_schema_ref_with_schemas(ty, known_schemas, struct_definitions);
+                    parse_type_to_schema_ref(ty, known_schemas, struct_definitions);
                 let mut content = BTreeMap::new();
                 content.insert(
                     "text/plain".to_string(),

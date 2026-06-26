@@ -45,6 +45,4 @@ pub use serde_attrs::{
 pub use struct_schema::parse_struct_to_schema;
 // Re-export for internal use within the parser module. `parse_type_to_schema_ref`
 // is reached directly via the `type_schema` submodule path where needed.
-pub use type_schema::{
-    is_builtin_openapi_type, is_primitive_type, parse_type_to_schema_ref_with_schemas,
-};
+pub use type_schema::{is_builtin_openapi_type, is_primitive_type, parse_type_to_schema_ref};

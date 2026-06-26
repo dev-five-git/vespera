@@ -2,10 +2,7 @@
 
 mod conversion;
 
-pub use conversion::{
-    is_builtin_openapi_type, is_primitive_type, parse_type_to_schema_ref,
-    parse_type_to_schema_ref_with_schemas,
-};
+pub use conversion::{is_builtin_openapi_type, is_primitive_type, parse_type_to_schema_ref};
 
 #[cfg(test)]
 mod tests {
@@ -782,7 +779,7 @@ mod tests {
             let previous = depth.get();
             depth.set(MAX_SCHEMA_RECURSION_DEPTH);
             let ty: Type = syn::parse_str("String").unwrap();
-            let schema_ref = parse_type_to_schema_ref_with_schemas(
+            let schema_ref = parse_type_to_schema_ref(
                 &ty,
                 &empty_known(),
                 &empty_struct_definitions(),
@@ -805,7 +802,7 @@ mod tests {
         });
         let ty: Type = syn::parse_str("Vec<Option<String>>").unwrap();
         let _ =
-            parse_type_to_schema_ref_with_schemas(&ty, &empty_known(), &empty_struct_definitions());
+            parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         SCHEMA_RECURSION_DEPTH.with(|depth| {
             assert_eq!(depth.get(), 0, "Depth should reset to 0 after call");
         });
