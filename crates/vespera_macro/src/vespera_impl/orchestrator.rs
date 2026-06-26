@@ -329,8 +329,20 @@ pub fn process_export_app(
             && sidecar_matches(&spec_file, c.spec_json_hash, c.spec_json_fingerprint)
     });
 
-    let mut metadata = if let (true, Some(cache)) = (cache_hit, cached) {
-        cache.metadata
+    // Build a single fully-extended `metadata` per branch — previously the
+    // cache-miss path did extend+merge+check twice (once inside this `else`
+    // for the OpenAPI generation, once again in the outer block below) and
+    // returned the un-extended snapshot, forcing the redundant re-work. Now
+    // each branch returns the already-extended `CollectedMetadata` and the
+    // duplicated outer pass is removed.
+    let metadata = if let (true, Some(cache)) = (cache_hit, cached) {
+        let mut metadata = cache.metadata;
+        metadata.structs.extend(schema_storage.values().cloned());
+        merge_route_storage_data(&mut metadata, route_storage);
+        metadata.check_duplicate_schema_names().map_err(|msg| {
+            syn::Error::new(Span::call_site(), format!("export_app! macro: {msg}"))
+        })?;
+        metadata
     } else {
         let (mut metadata, file_asts) = crate::collector::collect_metadata_from_files(scanned.iter().map(|(path, _)| path.as_path()), &folder_path, folder_name, route_storage).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to scan route folder '{folder_name}'. Error: {e}. Check that all .rs files have valid Rust syntax.")))?;
         let cache_metadata = metadata.clone();
@@ -369,20 +381,15 @@ pub fn process_export_app(
                 file_fingerprints: fingerprints,
                 schema_hash,
                 config_hash,
-                metadata: cache_metadata.clone(),
+                metadata: cache_metadata,
                 spec_json_hash,
                 spec_pretty_hash: None,
                 spec_json_fingerprint: spec_json_hash.and(spec_json_fingerprint),
                 spec_pretty_fingerprint: None,
             },
         );
-        cache_metadata
+        metadata
     };
-    metadata.structs.extend(schema_storage.values().cloned());
-    merge_route_storage_data(&mut metadata, route_storage);
-    metadata
-        .check_duplicate_schema_names()
-        .map_err(|msg| syn::Error::new(Span::call_site(), format!("export_app! macro: {msg}")))?;
     let spec_path_str = crate::file_utils::path_to_include_str_literal(&spec_file);
 
     // Generate router code (without docs routes, no merge)
