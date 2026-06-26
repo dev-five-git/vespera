@@ -196,19 +196,24 @@ fn collect_leaf_custom_types(ty: &Type) -> Vec<Type> {
         return Vec::new();
     };
 
-    let ident = segment.ident.to_string();
-    match ident.as_str() {
-        "Vec" | "Option" | "Box" | "HashSet" | "BTreeSet" => {
-            return first_generic_type_arg(segment)
-                .map(collect_leaf_custom_types)
-                .unwrap_or_default();
-        }
-        "HashMap" | "BTreeMap" => {
-            return second_generic_type_arg(segment)
-                .map(collect_leaf_custom_types)
-                .unwrap_or_default();
-        }
-        _ => {}
+    // Compare on the `syn::Ident` directly (PartialEq<str>) so this
+    // hot per-field leaf walker doesn't allocate an owned `String` per
+    // call — same pattern `is_serde_json_value_leaf` below uses for the
+    // `Value` check.
+    if segment.ident == "Vec"
+        || segment.ident == "Option"
+        || segment.ident == "Box"
+        || segment.ident == "HashSet"
+        || segment.ident == "BTreeSet"
+    {
+        return first_generic_type_arg(segment)
+            .map(collect_leaf_custom_types)
+            .unwrap_or_default();
+    }
+    if segment.ident == "HashMap" || segment.ident == "BTreeMap" {
+        return second_generic_type_arg(segment)
+            .map(collect_leaf_custom_types)
+            .unwrap_or_default();
     }
     vec![ty.clone()]
 }
