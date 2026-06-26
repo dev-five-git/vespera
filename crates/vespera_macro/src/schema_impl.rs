@@ -100,10 +100,11 @@ pub fn register_schema(name: String, metadata: StructMetadata) -> Result<(), ()>
     Ok(())
 }
 
-fn derive_source_identity(input: &syn::DeriveInput) -> Option<String> {
-    proc_macro2::Span::call_site()
-        .local_file()
-        .map(|path| format!("{}::{}", path.display(), input.ident))
+fn derive_source_identity(
+    input: &syn::DeriveInput,
+    call_site_file: Option<&Path>,
+) -> Option<String> {
+    call_site_file.map(|path| format!("{}::{}", path.display(), input.ident))
 }
 
 /// Overwrite-insert a schema for the current crate — the
@@ -219,7 +220,7 @@ pub fn process_derive_schema(
 
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
     let mut metadata = StructMetadata::new(schema_name, quote::quote!(#input).to_string());
-    if let Some(source_identity) = derive_source_identity(input) {
+    if let Some(source_identity) = derive_source_identity(input, call_site_file.as_deref()) {
         metadata = metadata.with_source_identity(source_identity);
     }
     if schema_attr.has_ref_override {
