@@ -24,15 +24,15 @@ use crate::streaming_closures::{
 struct StreamingFlags {
     sent: AtomicBool,
     failed: AtomicBool,
-    notified: Arc<AtomicBool>,
+    notified: AtomicBool,
 }
 
 impl StreamingFlags {
-    fn new(header_notified: Arc<AtomicBool>) -> Self {
+    fn new() -> Self {
         Self {
             sent: AtomicBool::new(false),
             failed: AtomicBool::new(false),
-            notified: header_notified,
+            notified: AtomicBool::new(false),
         }
     }
 
@@ -234,8 +234,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
     header_consumer: JObject<'local>,
     output_stream: JObject<'local>,
 ) {
-    let header_notified = Arc::new(AtomicBool::new(false));
-    let flags = Arc::new(StreamingFlags::new(Arc::clone(&header_notified)));
+    let flags = Arc::new(StreamingFlags::new());
     let flags_body = Arc::clone(&flags);
     let panicked = guard_void_symbol(|| {
         let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
@@ -300,7 +299,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
             Ok(())
         });
     });
-    if panicked && !header_notified.load(Ordering::Acquire) && !header_consumer.is_null() {
+    if panicked && !flags.notified.load(Ordering::Acquire) && !header_consumer.is_null() {
         let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
             notify_local_header(env, &header_consumer, &panic_wire(), &flags);
             Ok(())
@@ -319,8 +318,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
     input_stream: JObject<'local>,
     output_stream: JObject<'local>,
 ) {
-    let header_notified = Arc::new(AtomicBool::new(false));
-    let flags = Arc::new(StreamingFlags::new(Arc::clone(&header_notified)));
+    let flags = Arc::new(StreamingFlags::new());
     let flags_body = Arc::clone(&flags);
     let panicked = guard_void_symbol(|| {
         let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
@@ -337,7 +335,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
             Ok(())
         });
     });
-    if panicked && !header_notified.load(Ordering::Acquire) && !header_consumer.is_null() {
+    if panicked && !flags.notified.load(Ordering::Acquire) && !header_consumer.is_null() {
         let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
             notify_local_header(env, &header_consumer, &panic_wire(), &flags);
             Ok(())
