@@ -302,34 +302,43 @@ fn parse_type_impl(
             // For standard OpenAPI format types (i32, i64, f32, f64), use `format`
             // per the OAS 3.1 Data Type Format spec. For non-standard types, fall
             // back to `minimum`/`maximum` constraints.
-            match ident_str.as_str() {
+            //
+            // The primitive table returns `Option<SchemaRef>` so the unknown-type
+            // fallback can MOVE `ident_str` (rather than `.clone()` it) once the
+            // outer match borrow ends — a duplicate-allocation cleanup. Token
+            // output is byte-identical: every primitive arm still produces the
+            // same `SchemaRef`, and the fallback path consumes the same
+            // `resolved_name` string.
+            let primitive_result: Option<SchemaRef> = match ident_str.as_str() {
                 // Signed integers: use OpenAPI format registry
                 // https://spec.openapis.org/registry/format/index.html
-                "i8" => integer_with_format("int8"),
-                "i16" => integer_with_format("int16"),
-                "i32" => integer_with_format("int32"),
-                "i64" => integer_with_format("int64"),
+                "i8" => Some(integer_with_format("int8")),
+                "i16" => Some(integer_with_format("int16")),
+                "i32" => Some(integer_with_format("int32")),
+                "i64" => Some(integer_with_format("int64")),
                 // Unsigned integers: use OpenAPI format registry
-                "u8" => integer_with_format("uint8"),
-                "u16" => integer_with_format("uint16"),
-                "u32" => integer_with_format("uint32"),
-                "u64" => integer_with_format("uint64"),
+                "u8" => Some(integer_with_format("uint8")),
+                "u16" => Some(integer_with_format("uint16")),
+                "u32" => Some(integer_with_format("uint32")),
+                "u64" => Some(integer_with_format("uint64")),
                 // i128, isize, StatusCode: no standard format in the registry
-                "i128" | "isize" | "StatusCode" => SchemaRef::Inline(Box::new(Schema::integer())),
+                "i128" | "isize" | "StatusCode" => {
+                    Some(SchemaRef::Inline(Box::new(Schema::integer())))
+                }
                 // u128, usize: unsigned with no standard format — use minimum: 0
-                "u128" | "usize" => SchemaRef::Inline(Box::new(Schema {
+                "u128" | "usize" => Some(SchemaRef::Inline(Box::new(Schema {
                     minimum: Some(0.0),
                     ..Schema::integer()
-                })),
-                "f32" => number_with_format("float"),
-                "f64" => number_with_format("double"),
+                }))),
+                "f32" => Some(number_with_format("float")),
+                "f64" => Some(number_with_format("double")),
                 // `rust_decimal` serializes `Decimal` as a JSON *string* (to
                 // preserve precision), so the wire type is string, not number.
-                "Decimal" => string_with_format("decimal"),
-                "bool" => SchemaRef::Inline(Box::new(Schema::boolean())),
-                "char" => string_with_format("char"),
-                "Uuid" => string_with_format("uuid"),
-                "String" | "str" => SchemaRef::Inline(Box::new(Schema::string())),
+                "Decimal" => Some(string_with_format("decimal")),
+                "bool" => Some(SchemaRef::Inline(Box::new(Schema::boolean()))),
+                "char" => Some(string_with_format("char")),
+                "Uuid" => Some(string_with_format("uuid")),
+                "String" | "str" => Some(SchemaRef::Inline(Box::new(Schema::string()))),
                 // Date-time types from chrono and time crates
                 "DateTime"
                 | "NaiveDateTime"
@@ -337,162 +346,166 @@ fn parse_type_impl(
                 | "DateTimeUtc"
                 | "DateTimeLocal"
                 | "OffsetDateTime"
-                | "PrimitiveDateTime" => string_with_format("date-time"),
-                "NaiveDate" | "Date" => string_with_format("date"),
-                "NaiveTime" | "Time" => string_with_format("time"),
+                | "PrimitiveDateTime" => Some(string_with_format("date-time")),
+                "NaiveDate" | "Date" => Some(string_with_format("date")),
+                "NaiveTime" | "Time" => Some(string_with_format("time")),
                 // Duration types
-                "Duration" => string_with_format("duration"),
+                "Duration" => Some(string_with_format("duration")),
                 // File upload types (vespera::multipart / tempfile)
                 // FieldData<NamedTempFile> → string with binary format
-                "FieldData" | "NamedTempFile" => string_with_format("binary"),
+                "FieldData" | "NamedTempFile" => Some(string_with_format("binary")),
                 // Standard library types that should not be referenced
                 // Note: HashMap and BTreeMap are handled above in generic types
                 "Vec" | "HashSet" | "BTreeSet" | "Option" | "Result" | "Json" | "Path"
                 | "Query" | "Header" => {
                     // These are not schema types, return object schema
-                    SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)))
+                    Some(SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))))
                 }
-                _ => {
-                    // Check if this is a known schema (struct with Schema derive)
-                    // Use just the type name (handles both crate::TestStruct and TestStruct)
-                    let type_name = ident_str.clone();
+                _ => None,
+            };
+            if let Some(result) = primitive_result {
+                return result;
+            }
 
-                    // For paths like `module::Schema`, try to find the schema name
-                    // by checking if there's a schema named `ModuleSchema` or `ModuleNameSchema`
-                    let resolved_name = if type_name == "Schema" && path.segments.len() > 1 {
-                        // Get the parent module name (e.g., "user" from "crate::models::user::Schema")
-                        let parent_segment = &path.segments[path.segments.len() - 2];
-                        let parent_name = parent_segment.ident.to_string();
+            // Unknown-type fallback: check if this is a known schema (struct
+            // with Schema derive). `ident_str` is no longer borrowed by the
+            // outer match — MOVE it into `type_name` (was `ident_str.clone()`).
+            let type_name = ident_str;
 
-                        // Try PascalCase version: "user" -> "UserSchema"
-                        // Rust identifiers are guaranteed non-empty
-                        let pascal_name = format!("{}Schema", capitalize_first(&parent_name));
+            // For paths like `module::Schema`, try to find the schema name
+            // by checking if there's a schema named `ModuleSchema` or `ModuleNameSchema`
+            let resolved_name = if type_name == "Schema" && path.segments.len() > 1 {
+                // Get the parent module name (e.g., "user" from "crate::models::user::Schema")
+                let parent_segment = &path.segments[path.segments.len() - 2];
+                let parent_name = parent_segment.ident.to_string();
 
-                        if known_schemas.contains(pascal_name.as_str()) {
-                            pascal_name
-                        } else {
-                            // Try lowercase version: "userSchema"
-                            let lower_name = format!("{parent_name}Schema");
-                            if known_schemas.contains(lower_name.as_str()) {
-                                lower_name
-                            } else {
-                                type_name
-                            }
-                        }
+                // Try PascalCase version: "user" -> "UserSchema"
+                // Rust identifiers are guaranteed non-empty
+                let pascal_name = format!("{}Schema", capitalize_first(&parent_name));
+
+                if known_schemas.contains(pascal_name.as_str()) {
+                    pascal_name
+                } else {
+                    // Try lowercase version: "userSchema"
+                    let lower_name = format!("{parent_name}Schema");
+                    if known_schemas.contains(lower_name.as_str()) {
+                        lower_name
                     } else {
                         type_name
-                    };
-
-                    if known_schemas.contains(resolved_name.as_str()) {
-                        // Parse the struct definition lazily, ONLY when the parsed AST
-                        // will actually be consumed downstream.  `parsed_def` feeds two
-                        // sites: the `#[schema(ref = ...)]` override check below and
-                        // the generic-substitution branch.  In the common case (a
-                        // non-generic field referencing a schema whose source carries
-                        // no `#[schema(...)]` attribute) the AST is dropped unused, so
-                        // the full `syn::parse_str::<ItemStruct>` tokenise+parse pass
-                        // is pure waste.  A byte-scan over the cached
-                        // `quote!`-stringified definition (`extract_schema_ref_override`
-                        // only fires on `#[schema(...)]`, which `quote!` always emits
-                        // as the substring `[schema`) is enough to short-circuit that
-                        // case; the generic branch is gated on `is_generic` anyway.
-                        // Token output is byte-identical: when both gates miss, the
-                        // arm now skips straight to `SchemaRef::Ref(...)`, which is
-                        // exactly the value the unconditional-parse path computed via
-                        // `parsed_def -> None override -> not generic -> fallback`.
-                        let def_str = struct_definitions
-                            .get(resolved_name.as_str())
-                            .map(AsRef::as_ref);
-                        let is_generic =
-                            matches!(&segment.arguments, syn::PathArguments::AngleBracketed(_));
-                        let maybe_has_schema_attr = def_str.is_some_and(|d| d.contains("[schema"));
-                        let parsed_def = if is_generic || maybe_has_schema_attr {
-                            def_str.and_then(parse_struct_def)
-                        } else {
-                            None
-                        };
-
-                        if let Some(parsed_struct) = &parsed_def
-                            && let Some((schema_name, nullable)) =
-                                extract_schema_ref_override(&parsed_struct.attrs)
-                        {
-                            return SchemaRef::Inline(Box::new(Schema {
-                                ref_path: Some(format!("#/components/schemas/{schema_name}")),
-                                schema_type: None,
-                                nullable: nullable.then_some(true),
-                                ..Schema::new(SchemaType::Object)
-                            }));
-                        }
-
-                        // Check if this is a generic type with type parameters
-                        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                            // This is a concrete generic type like GenericStruct<String>
-                            // Inline the schema by substituting generic parameters with concrete types
-                            if let Some(parsed_rc) = parsed_def {
-                                // Clone the memoised AST before mutating it for generic
-                                // substitution (cheaper than the prior re-parse).
-                                let mut parsed = (*parsed_rc).clone();
-                                // Extract generic parameter names from the struct definition
-                                let generic_params: Vec<String> = parsed
-                                    .generics
-                                    .params
-                                    .iter()
-                                    .filter_map(|param| {
-                                        if let syn::GenericParam::Type(type_param) = param {
-                                            Some(type_param.ident.to_string())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect();
-
-                                // Extract concrete type arguments
-                                let concrete_types: Vec<&Type> = args
-                                    .args
-                                    .iter()
-                                    .filter_map(|arg| {
-                                        if let syn::GenericArgument::Type(ty) = arg {
-                                            Some(ty)
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect();
-
-                                // Substitute generic parameters with concrete types in all fields
-                                if generic_params.len() == concrete_types.len() {
-                                    if let syn::Fields::Named(fields_named) = &mut parsed.fields {
-                                        for field in &mut fields_named.named {
-                                            field.ty = substitute_type(
-                                                &field.ty,
-                                                &generic_params,
-                                                &concrete_types,
-                                            );
-                                        }
-                                    }
-
-                                    // Remove generics from the struct (it's now concrete)
-                                    parsed.generics.params.clear();
-                                    parsed.generics.where_clause = None;
-
-                                    // Parse the substituted struct to schema (inline)
-                                    let schema = parse_struct_to_schema(
-                                        &parsed,
-                                        known_schemas,
-                                        struct_definitions,
-                                    );
-                                    return SchemaRef::Inline(Box::new(schema));
-                                }
-                            }
-                        }
-                        // Non-generic type or generic without parameters - use reference
-                        SchemaRef::Ref(Reference::schema(&resolved_name))
-                    } else {
-                        // For unknown custom types, return object schema instead of reference
-                        // This prevents creating invalid references to non-existent schemas
-                        SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)))
                     }
                 }
+            } else {
+                type_name
+            };
+
+            if known_schemas.contains(resolved_name.as_str()) {
+                // Parse the struct definition lazily, ONLY when the parsed AST
+                // will actually be consumed downstream.  `parsed_def` feeds two
+                // sites: the `#[schema(ref = ...)]` override check below and
+                // the generic-substitution branch.  In the common case (a
+                // non-generic field referencing a schema whose source carries
+                // no `#[schema(...)]` attribute) the AST is dropped unused, so
+                // the full `syn::parse_str::<ItemStruct>` tokenise+parse pass
+                // is pure waste.  A byte-scan over the cached
+                // `quote!`-stringified definition (`extract_schema_ref_override`
+                // only fires on `#[schema(...)]`, which `quote!` always emits
+                // as the substring `[schema`) is enough to short-circuit that
+                // case; the generic branch is gated on `is_generic` anyway.
+                // Token output is byte-identical: when both gates miss, the
+                // arm now skips straight to `SchemaRef::Ref(...)`, which is
+                // exactly the value the unconditional-parse path computed via
+                // `parsed_def -> None override -> not generic -> fallback`.
+                let def_str = struct_definitions
+                    .get(resolved_name.as_str())
+                    .map(AsRef::as_ref);
+                let is_generic =
+                    matches!(&segment.arguments, syn::PathArguments::AngleBracketed(_));
+                let maybe_has_schema_attr = def_str.is_some_and(|d| d.contains("[schema"));
+                let parsed_def = if is_generic || maybe_has_schema_attr {
+                    def_str.and_then(parse_struct_def)
+                } else {
+                    None
+                };
+
+                if let Some(parsed_struct) = &parsed_def
+                    && let Some((schema_name, nullable)) =
+                        extract_schema_ref_override(&parsed_struct.attrs)
+                {
+                    return SchemaRef::Inline(Box::new(Schema {
+                        ref_path: Some(format!("#/components/schemas/{schema_name}")),
+                        schema_type: None,
+                        nullable: nullable.then_some(true),
+                        ..Schema::new(SchemaType::Object)
+                    }));
+                }
+
+                // Check if this is a generic type with type parameters
+                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                    // This is a concrete generic type like GenericStruct<String>
+                    // Inline the schema by substituting generic parameters with concrete types
+                    if let Some(parsed_rc) = parsed_def {
+                        // Clone the memoised AST before mutating it for generic
+                        // substitution (cheaper than the prior re-parse).
+                        let mut parsed = (*parsed_rc).clone();
+                        // Extract generic parameter names from the struct definition
+                        let generic_params: Vec<String> = parsed
+                            .generics
+                            .params
+                            .iter()
+                            .filter_map(|param| {
+                                if let syn::GenericParam::Type(type_param) = param {
+                                    Some(type_param.ident.to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
+                        // Extract concrete type arguments
+                        let concrete_types: Vec<&Type> = args
+                            .args
+                            .iter()
+                            .filter_map(|arg| {
+                                if let syn::GenericArgument::Type(ty) = arg {
+                                    Some(ty)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
+                        // Substitute generic parameters with concrete types in all fields
+                        if generic_params.len() == concrete_types.len() {
+                            if let syn::Fields::Named(fields_named) = &mut parsed.fields {
+                                for field in &mut fields_named.named {
+                                    field.ty = substitute_type(
+                                        &field.ty,
+                                        &generic_params,
+                                        &concrete_types,
+                                    );
+                                }
+                            }
+
+                            // Remove generics from the struct (it's now concrete)
+                            parsed.generics.params.clear();
+                            parsed.generics.where_clause = None;
+
+                            // Parse the substituted struct to schema (inline)
+                            let schema = parse_struct_to_schema(
+                                &parsed,
+                                known_schemas,
+                                struct_definitions,
+                            );
+                            return SchemaRef::Inline(Box::new(schema));
+                        }
+                    }
+                }
+                // Non-generic type or generic without parameters - use reference
+                SchemaRef::Ref(Reference::schema(&resolved_name))
+            } else {
+                // For unknown custom types, return object schema instead of reference
+                // This prevents creating invalid references to non-existent schemas
+                SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)))
             }
         }
         Type::Reference(type_ref) => {
