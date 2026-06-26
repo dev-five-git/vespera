@@ -1,37 +1,12 @@
 use crate::{args::RouteArgs, http::is_http_method, metadata::HeaderParam};
 
-/// Extract doc comments from attributes
-/// Returns concatenated doc comment string or None if no doc comments
-pub fn extract_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
-    let mut doc_lines = Vec::new();
-
-    for attr in attrs {
-        if attr.path().is_ident("doc")
-            && let syn::Meta::NameValue(meta_nv) = &attr.meta
-            && let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(lit_str),
-                ..
-            }) = &meta_nv.value
-        {
-            let line = lit_str.value();
-            // Strip `" / "` or `"/ "` prefixes that can appear when doc-comment
-            // markers leak through TokenStream → string → parse roundtrips,
-            // then trim any remaining whitespace.
-            let trimmed = line
-                .strip_prefix(" / ")
-                .or_else(|| line.strip_prefix("/ "))
-                .unwrap_or(&line)
-                .trim();
-            doc_lines.push(trimmed.to_string());
-        }
-    }
-
-    if doc_lines.is_empty() {
-        None
-    } else {
-        Some(doc_lines.join("\n"))
-    }
-}
+// Re-export the canonical `extract_doc_comment` implementation from the
+// parser/schema/serde_attrs module so `crate::route::extract_doc_comment`
+// (via `route/mod.rs`'s `pub use utils::*;`) continues to resolve for every
+// production caller — `route_impl.rs` (route-attribute description fallback)
+// and `collector.rs` (slow-path description fallback) — without holding a
+// second byte-identical copy of the function.
+pub use crate::parser::schema::extract_doc_comment;
 
 #[derive(Debug)]
 pub struct RouteInfo {

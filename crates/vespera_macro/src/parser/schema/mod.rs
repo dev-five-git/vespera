@@ -39,8 +39,8 @@ mod type_schema;
 // Re-export public API
 pub use enum_schema::parse_enum_to_schema;
 pub use serde_attrs::{
-    extract_default, extract_field_rename, extract_rename_all, extract_skip, rename_field,
-    strip_raw_prefix_owned,
+    extract_default, extract_doc_comment, extract_field_rename, extract_rename_all, extract_skip,
+    rename_field, strip_raw_prefix_owned,
 };
 pub use struct_schema::parse_struct_to_schema;
 // Re-export for internal use within the parser module. `parse_type_to_schema_ref`
