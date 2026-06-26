@@ -271,16 +271,15 @@ fn is_serde_json_value_leaf(ty: &Type) -> bool {
     let Type::Path(type_path) = ty else {
         return false;
     };
-    let mut segments = type_path
-        .path
-        .segments
-        .iter()
-        .map(|segment| segment.ident.to_string());
-    let segments: Vec<String> = segments.by_ref().collect();
+    let segments = &type_path.path.segments;
+    // Reject early on the trivial last-segment check so non-`Value`
+    // leaves (the overwhelming common case) pay zero allocation.
+    // `syn::Ident: PartialEq<str>` is a direct byte compare — no
+    // intermediate `String`.
     let Some(last) = segments.last() else {
         return false;
     };
-    if last != "Value" {
+    if last.ident != "Value" {
         return false;
     }
     // Bare `Value` — allowlisted (matches design literal "match the
@@ -293,7 +292,7 @@ fn is_serde_json_value_leaf(ty: &Type) -> bool {
     // catches `serde_json::Value` (2-segment, the canonical case),
     // `::serde_json::Value` (3-segment with leading colon stripped),
     // and `vespera::serde_json::Value` (3-segment re-export path).
-    segments.iter().any(|segment| segment == "serde_json")
+    segments.iter().any(|segment| segment.ident == "serde_json")
 }
 
 #[cfg(test)]
