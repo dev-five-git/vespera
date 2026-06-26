@@ -194,40 +194,50 @@ pub fn process_vespera_macro(
         // shared rust-analyzer proc-macro server this never picks up another
         // crate's `#[cron]` jobs.
         let storage = crate::cron_impl::current_crate_crons();
-        let src_dir = std::env::var("CARGO_MANIFEST_DIR")
-            .map(|d| {
-                let p = std::path::PathBuf::from(d).join("src");
-                // Canonicalize for reliable prefix stripping
-                let canonical = p.canonicalize().unwrap_or(p);
-                crate::file_utils::normalize_display_path(canonical)
-            })
-            .unwrap_or_default();
-        let mut canonical_paths = HashMap::new();
-        storage
-            .iter()
-            .map(|s| {
-                // Derive module path from file_path relative to src/
-                let module_path = s
-                    .file_path
-                    .as_ref()
-                    .map(|fp| {
-                        let normalized = canonicalized_cron_path(fp, &mut canonical_paths);
-                        let relative = normalized
-                            .strip_prefix(&src_dir)
-                            .map_or(&*normalized, |rest| rest.trim_start_matches('/'));
-                        // Convert path to module path: strip .rs, replace / with ::, strip mod
-                        // Replace hyphens with underscores (Rust module convention)
-                        cron_module_path(relative)
-                    })
-                    .unwrap_or_default();
-                crate::metadata::CronMetadata {
-                    expression: s.expression.clone(),
-                    function_name: s.fn_name.clone(),
-                    module_path,
-                    file_path: s.file_path.clone().unwrap_or_default(),
-                }
-            })
-            .collect()
+        // Fast path: most projects declare no `#[vespera::cron]` jobs, so the
+        // final `collect()` would just produce `Vec::new()` anyway. Skip the
+        // `fs::canonicalize` syscall on `<manifest>/src` and the
+        // `HashMap`/`PathBuf` allocations entirely when there is nothing to
+        // discover. Mirrors the early-return pattern in
+        // `process_default_functions`.
+        if storage.is_empty() {
+            Vec::new()
+        } else {
+            let src_dir = std::env::var("CARGO_MANIFEST_DIR")
+                .map(|d| {
+                    let p = std::path::PathBuf::from(d).join("src");
+                    // Canonicalize for reliable prefix stripping
+                    let canonical = p.canonicalize().unwrap_or(p);
+                    crate::file_utils::normalize_display_path(canonical)
+                })
+                .unwrap_or_default();
+            let mut canonical_paths = HashMap::new();
+            storage
+                .iter()
+                .map(|s| {
+                    // Derive module path from file_path relative to src/
+                    let module_path = s
+                        .file_path
+                        .as_ref()
+                        .map(|fp| {
+                            let normalized = canonicalized_cron_path(fp, &mut canonical_paths);
+                            let relative = normalized
+                                .strip_prefix(&src_dir)
+                                .map_or(&*normalized, |rest| rest.trim_start_matches('/'));
+                            // Convert path to module path: strip .rs, replace / with ::, strip mod
+                            // Replace hyphens with underscores (Rust module convention)
+                            cron_module_path(relative)
+                        })
+                        .unwrap_or_default();
+                    crate::metadata::CronMetadata {
+                        expression: s.expression.clone(),
+                        function_name: s.fn_name.clone(),
+                        module_path,
+                        file_path: s.file_path.clone().unwrap_or_default(),
+                    }
+                })
+                .collect()
+        }
     };
 
     let result = Ok(generate_router_code(
