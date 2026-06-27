@@ -80,8 +80,14 @@ pub async fn dispatch_parts<'h>(
     body_bytes: Bytes,
     header_bytes_owner: Option<&Bytes>,
 ) -> Result<ResponseParts, (u16, String)> {
-    let request =
-        build_request_from_bytes(method_str, path, query, headers, body_bytes, header_bytes_owner)?;
+    let request = build_request_from_bytes(
+        method_str,
+        path,
+        query,
+        headers,
+        body_bytes,
+        header_bytes_owner,
+    )?;
 
     let response = match router.oneshot(request).await {
         Ok(response) => response,
@@ -347,8 +353,14 @@ pub async fn dispatch_response_streaming<'h, F>(
 where
     F: FnMut(&[u8]) -> ControlFlow<()>,
 {
-    let request =
-        build_request_from_bytes(method_str, path, query, headers, body_bytes, header_bytes_owner)?;
+    let request = build_request_from_bytes(
+        method_str,
+        path,
+        query,
+        headers,
+        body_bytes,
+        header_bytes_owner,
+    )?;
 
     let response = match router.oneshot(request).await {
         Ok(response) => response,
@@ -409,17 +421,21 @@ fn collect_header_map(headers: &http::HeaderMap) -> BTreeMap<String, HeaderValue
             Entry::Vacant(e) => {
                 e.insert(HeaderValue::Single(val_str));
             }
-            Entry::Occupied(mut e) => {
-                let slot = e.get_mut();
-                let new_slot = match std::mem::replace(slot, HeaderValue::Single(String::new())) {
-                    HeaderValue::Single(prev) => HeaderValue::Multi(vec![prev, val_str]),
-                    HeaderValue::Multi(mut v) => {
-                        v.push(val_str);
-                        HeaderValue::Multi(v)
-                    }
-                };
-                *slot = new_slot;
-            }
+            Entry::Occupied(mut e) => match e.get_mut() {
+                HeaderValue::Multi(v) => v.push(val_str),
+                slot @ HeaderValue::Single(_) => {
+                    // `slot` is currently the Single variant — swap it out
+                    // to take ownership of `prev`, then overwrite the slot
+                    // with the new Multi.  The intermediate `Multi(Vec::new())`
+                    // is never observed by another reader.
+                    let HeaderValue::Single(prev) =
+                        std::mem::replace(slot, HeaderValue::Multi(Vec::new()))
+                    else {
+                        unreachable!("matched Single arm above")
+                    };
+                    *slot = HeaderValue::Multi(vec![prev, val_str]);
+                }
+            },
         }
     }
     resp_headers

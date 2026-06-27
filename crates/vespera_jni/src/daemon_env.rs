@@ -215,7 +215,12 @@ where
             {
                 *slot = None;
             }
-            if slot.is_none() {
+            // Populate-and-return in a single expression so no second read
+            // of the slot is needed — eliminates the `.expect(...)` panic
+            // site that previously guarded the just-populated invariant.
+            if let Some(cached) = slot.as_ref() {
+                cached.env_ptr
+            } else {
                 let (env_ptr, owned) = resolve_current_env(jvm)?;
                 *slot = Some(CachedEnv {
                     env_ptr,
@@ -223,10 +228,8 @@ where
                     jvm: jvm.clone(),
                     owned,
                 });
+                env_ptr
             }
-            slot.as_ref()
-                .map(|cached| cached.env_ptr)
-                .expect("cache populated above")
         };
 
         // SAFETY: `env_ptr` was resolved for this exact OS thread (see
