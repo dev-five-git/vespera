@@ -120,6 +120,79 @@ fn path_bytes_for_owned(header_bytes: &Bytes, header: &WireRequestHeader<'_>) ->
     }
 }
 
+/// Shared prelude of the owned-wire dispatchers
+/// ([`dispatch_from_bytes_async`] and [`dispatch_into_async`]):
+/// ingress cap → wire split → parse/validate/resolve → zero-copy URI
+/// fast-path → [`dispatch_and_split`].  Returns the dispatched response
+/// parts on success, or ready-to-deliver wire error bytes (`error_wire`
+/// shape) on any pre-dispatch failure.
+///
+/// Centralising the 6-step prelude eliminates a real drift hazard: the
+/// two owned-wire entry points previously inlined ~45 lines of
+/// structurally identical code carrying many subtle invariants
+/// (zero-copy URI fast-path, header-bytes owner threading, Content-Type
+/// defaulting), and a one-sided edit (e.g. inserting a pre-dispatch
+/// hook, adjusting `default_json_when_absent` semantics, swapping the
+/// URI fast-path) would silently desynchronise them.  The borrowed
+/// sibling [`dispatch_into_async_borrowed`] is intentionally NOT a
+/// third caller — it uses `split_wire_borrowed`, has no owning `Bytes`
+/// to feed `path_bytes_for_owned`, and copies only the body region.
+///
+/// Caller tail-delivery shape (buffered `Vec` vs direct-write
+/// `&mut [u8]`) stays at the call site: each caller routes `Ok` to its
+/// finisher and `Err` to its appropriate sink (return directly /
+/// `write_wire_into`).  The helper has a single caller per use, so it
+/// inlines cleanly and adds no synthetic await point — byte-identical
+/// to the prior copy-pasted shape.
+async fn dispatch_owned_to_parts(
+    input: Vec<u8>,
+) -> Result<(u16, http::HeaderMap, ResponseMetadata, Body), Vec<u8>> {
+    // Ingress cap (defense-in-depth): reject an oversized buffered request
+    // with 413 before any further work.  Unlimited by default; bidirectional
+    // streaming is exempt.  See [`check_ingress_cap`].
+    if let Some(err) = check_ingress_cap(input.len()) {
+        return Err(err);
+    }
+    // Malformed input must report parse errors regardless of whether an app
+    // is registered, so split first, then the shared parse/version/resolve.
+    let (header_bytes, body_bytes) =
+        split_wire_request(input).map_err(|msg| error_wire(400, &msg))?;
+    let (header, router) = parse_validate_resolve(&header_bytes)?;
+
+    // Content-Type defaulting (non-empty body with no explicit
+    // content-type → application/json) is applied inside dispatch_and_split,
+    // which detects the header during its build pass; we only signal that a
+    // non-empty body should default.  Computed before `body_bytes` is moved.
+    let default_json_when_absent = !body_bytes.is_empty();
+
+    // Owned path: with no query and a path borrowed from the owning header
+    // `Bytes`, hand its sub-`Bytes` to the URI builder so the URI SHARES those
+    // bytes instead of `Uri::try_from(&str)` copying them — one fewer
+    // per-request allocation (`path_bytes_for_owned` / `slice_from_owner` /
+    // `dispatch_and_split`).
+    let path_bytes = path_bytes_for_owned(&header_bytes, &header);
+
+    dispatch_and_split(
+        router,
+        &header.method,
+        &header.path,
+        &header.query,
+        path_bytes,
+        header.iter_str_pairs(),
+        // Owned wire path: the parsed header values borrow from
+        // `header_bytes` (plain values are `Cow::Borrowed` straight out of
+        // the wire input).  Pass the owning `Bytes` so each `HeaderValue`
+        // is constructed zero-copy via `HeaderValue::from_maybe_shared`
+        // (escaped `Cow::Owned` values cleanly miss the in-range bound
+        // check and fall back to the copy path).
+        Some(&header_bytes),
+        Body::from(body_bytes),
+        default_json_when_absent,
+    )
+    .await
+    .map_err(|(status, msg)| error_wire(status, &msg))
+}
+
 // ── Dispatch (direct API — backward compatible) ──────────────────────
 
 /// Dispatch a [`RequestEnvelope`] through an axum [`Router`] and
@@ -225,60 +298,18 @@ pub fn dispatch_from_bytes(input: Vec<u8>, runtime: &tokio::runtime::Runtime) ->
 /// guarantees as [`dispatch_from_bytes`]), including `404` when no app
 /// is registered under the requested name.
 pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
-    // Ingress cap (defense-in-depth): reject an oversized buffered request
-    // with 413 before any further work.  Unlimited by default; bidirectional
-    // streaming is exempt.  See [`check_ingress_cap`].
-    if let Some(err) = check_ingress_cap(input.len()) {
-        return err;
+    // Shared owned-wire prelude: ingress cap → split → parse/validate/resolve
+    // → zero-copy URI fast-path → dispatch_and_split.  Centralised in
+    // [`dispatch_owned_to_parts`] so the two owned-wire dispatchers cannot
+    // drift; this caller's tail just routes Ok to `finish_buffered_wire` and
+    // Err to the buffered shape (the wire bytes go straight back to the
+    // caller).
+    match dispatch_owned_to_parts(input).await {
+        Ok((status, headers, metadata, body)) => {
+            finish_buffered_wire(status, headers, metadata, body).await
+        }
+        Err(wire) => wire,
     }
-    // Malformed input must report parse errors regardless of whether an app
-    // is registered, so split first, then the shared parse/version/resolve.
-    let (header_bytes, body_bytes) = match split_wire_request(input) {
-        Ok(parts) => parts,
-        Err(msg) => return error_wire(400, &msg),
-    };
-    let (header, router) = match parse_validate_resolve(&header_bytes) {
-        Ok(parts) => parts,
-        Err(wire) => return wire,
-    };
-
-    // Content-Type defaulting (non-empty body with no explicit
-    // content-type → application/json) is applied inside dispatch_and_split,
-    // which detects the header during its build pass; we only signal that a
-    // non-empty body should default.  Computed before `body_bytes` is moved.
-    let default_json_when_absent = !body_bytes.is_empty();
-
-    // Owned path: with no query and a path borrowed from the owning header
-    // `Bytes`, hand its sub-`Bytes` to the URI builder so the URI SHARES those
-    // bytes instead of `Uri::try_from(&str)` copying them — one fewer
-    // per-request allocation (`path_bytes_for_owned` / `slice_from_owner` /
-    // `dispatch_and_split`).
-    let path_bytes = path_bytes_for_owned(&header_bytes, &header);
-
-    let (status, headers, metadata, body) = match dispatch_and_split(
-        router,
-        &header.method,
-        &header.path,
-        &header.query,
-        path_bytes,
-        header.iter_str_pairs(),
-        // Owned wire path: the parsed header values borrow from
-        // `header_bytes` (plain values are `Cow::Borrowed` straight out of
-        // the wire input).  Pass the owning `Bytes` so each `HeaderValue`
-        // is constructed zero-copy via `HeaderValue::from_maybe_shared`
-        // (escaped `Cow::Owned` values cleanly miss the in-range bound
-        // check and fall back to the copy path).
-        Some(&header_bytes),
-        Body::from(body_bytes),
-        default_json_when_absent,
-    )
-    .await
-    {
-        Ok(parts) => parts,
-        Err((status, msg)) => return error_wire(status, &msg),
-    };
-
-    finish_buffered_wire(status, headers, metadata, body).await
 }
 
 /// Materialise a `422 Unprocessable Entity` response into wire bytes so the
@@ -430,51 +461,18 @@ pub fn dispatch_into(
 /// way the handler has already run; retrying runs it again — callers must
 /// gate retries on idempotency.
 pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResult {
-    // Ingress cap (defense-in-depth) — same policy as
-    // `dispatch_from_bytes_async`; 413 written into the caller buffer.
-    if let Some(err) = check_ingress_cap(input.len()) {
-        return write_wire_into(out, &err);
+    // Shared owned-wire prelude lives in [`dispatch_owned_to_parts`] — same
+    // ingress cap / split / parse-validate-resolve / zero-copy URI fast-path
+    // as `dispatch_from_bytes_async`.  This caller's tail diverges only in
+    // shape: Ok streams straight into `out` via `finish_direct_write`; Err is
+    // the same wire bytes, written into `out` via `write_wire_into` instead
+    // of returned directly.
+    match dispatch_owned_to_parts(input).await {
+        Ok((status, headers, metadata, body)) => {
+            finish_direct_write(out, status, headers, metadata, body).await
+        }
+        Err(wire) => write_wire_into(out, &wire),
     }
-    let (header_bytes, body_bytes) = match split_wire_request(input) {
-        Ok(parts) => parts,
-        Err(msg) => return write_wire_into(out, &error_wire(400, &msg)),
-    };
-    let (header, router) = match parse_validate_resolve(&header_bytes) {
-        Ok(parts) => parts,
-        Err(wire) => return write_wire_into(out, &wire),
-    };
-
-    // Content-Type defaulting (body present, no content-type →
-    // application/json) is applied inside dispatch_and_split, which detects
-    // the header during its build pass; the body's emptiness is known here,
-    // so we just signal that a non-empty body should default.
-    let default_json_when_absent = !body_bytes.is_empty();
-
-    // Owned path: share the borrowed path's sub-`Bytes` with the URI builder
-    // (no query) so the URI is built zero-copy — see `dispatch_from_bytes_async`.
-    let path_bytes = path_bytes_for_owned(&header_bytes, &header);
-
-    let (status, headers, metadata, body) = match dispatch_and_split(
-        router,
-        &header.method,
-        &header.path,
-        &header.query,
-        path_bytes,
-        header.iter_str_pairs(),
-        // Owned wire path: share `header_bytes` so plain-value `HeaderValue`s
-        // are constructed zero-copy via `HeaderValue::from_maybe_shared`.
-        // See `dispatch_from_bytes_async` for the contract.
-        Some(&header_bytes),
-        Body::from(body_bytes),
-        default_json_when_absent,
-    )
-    .await
-    {
-        Ok(parts) => parts,
-        Err((status, msg)) => return write_wire_into(out, &error_wire(status, &msg)),
-    };
-
-    finish_direct_write(out, status, headers, metadata, body).await
 }
 
 /// Dispatch a wire request from a **borrowed** input slice, writing the

@@ -22,6 +22,25 @@ use crate::envelope::{HeaderValue, ResponseEnvelope, ResponseMetadata};
 /// envelope path ([`to_response_envelope_text`]).
 pub type ResponseParts = (u16, http::HeaderMap, Bytes, ResponseMetadata);
 
+/// Parse the wire `method` string into an [`http::Method`], surfacing the
+/// invalid-method failure as the canonical `405 Method Not Allowed` wire
+/// error.  The two owned-wire entry points
+/// ([`build_request_from_bytes`] and [`dispatch_and_split`]) used to inline
+/// this exact 6-line block; a single-site edit to the error string would
+/// have silently drifted the other path — see the prior
+/// `tests/method_validation.rs` golden, which exercises BOTH paths.
+/// `#[inline]` so the helper folds back into each caller, keeping codegen
+/// byte-identical to the prior copy-pasted shape.
+#[inline]
+fn parse_method_or_405(method_str: &str) -> Result<Method, (u16, String)> {
+    method_str.parse::<Method>().map_err(|_| {
+        (
+            405,
+            format!("Method Not Allowed: '{method_str}' is not a valid HTTP method"),
+        )
+    })
+}
+
 /// Build an [`http::HeaderValue`] from a wire-borrowed value string,
 /// sharing bytes with the request's owning `header_bytes` when the value
 /// lies inside it.
@@ -231,12 +250,7 @@ fn build_request_from_bytes<'h>(
     body_bytes: Bytes,
     header_bytes_owner: Option<&Bytes>,
 ) -> Result<Request<Body>, (u16, String)> {
-    let Ok(http_method) = method_str.parse::<Method>() else {
-        return Err((
-            405,
-            format!("Method Not Allowed: '{method_str}' is not a valid HTTP method"),
-        ));
-    };
+    let http_method = parse_method_or_405(method_str)?;
     let uri = build_uri(path, query)?;
     let body_is_empty = body_bytes.is_empty();
     build_axum_request_inner(
@@ -531,12 +545,7 @@ pub async fn dispatch_and_split<'h>(
     body: Body,
     default_json_when_absent: bool,
 ) -> Result<(u16, http::HeaderMap, ResponseMetadata, Body), (u16, String)> {
-    let Ok(http_method) = method_str.parse::<Method>() else {
-        return Err((
-            405,
-            format!("Method Not Allowed: '{method_str}' is not a valid HTTP method"),
-        ));
-    };
+    let http_method = parse_method_or_405(method_str)?;
     // Same contract as dispatch_parts: a malformed path/header must surface as
     // a 400 wire response, not a panic.
     //
