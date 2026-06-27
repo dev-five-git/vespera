@@ -415,7 +415,23 @@ pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
     // `content-type`, so it can never approach `u32::MAX`; the
     // `write_wire_header_into` overflow signal is unreachable here and ignored.
     let body = msg.as_bytes();
-    let header_cap = header_capacity_estimate(&headers, &metadata).max(WIRE_HEADER_RESERVE);
+    // The fixed single `content-type: text/plain; charset=utf-8` header plus
+    // the SemVer version field stays well under `WIRE_HEADER_RESERVE` (192
+    // bytes): `SCAFFOLD(59) + version.len() + (12 + 26 + 8) = 105 +
+    // version.len()`.  Even a pathological 80-byte SemVer still fits, so the
+    // `.max(WIRE_HEADER_RESERVE)` floor of the prior
+    // `header_capacity_estimate(...).max(WIRE_HEADER_RESERVE)` call ALWAYS
+    // won — the estimate call and its `HeaderMap` iteration were pure wasted
+    // work on every error response (called from every malformed-wire /
+    // wrong-version / unknown-app / panic-fallback path).  The debug-assert
+    // below locks the invariant: if a future change (a longer SemVer, a
+    // second baked-in header) ever pushes the estimate over the floor, debug
+    // builds fail loudly so the floor can be revisited.
+    debug_assert!(
+        header_capacity_estimate(&headers, &metadata) <= WIRE_HEADER_RESERVE,
+        "error_wire header estimate must fit WIRE_HEADER_RESERVE"
+    );
+    let header_cap = WIRE_HEADER_RESERVE;
     let mut out = Vec::with_capacity(4 + header_cap + body.len());
     let _ = write_wire_header_into(&mut out, status, &headers, &metadata, None);
     out.extend_from_slice(body);

@@ -88,6 +88,7 @@ pub fn parse_validate_resolve(
 /// `pub` (inside this private `dispatch` module, so reachable only crate-side)
 /// so [`super::internal`] can share the same provenance check when it builds
 /// zero-copy `HeaderValue`s from wire-borrowed value strings.
+#[inline]
 pub fn slice_from_owner(owner: &Bytes, s: &str) -> Option<Bytes> {
     let base = owner.as_ptr() as usize;
     let off = (s.as_ptr() as usize).checked_sub(base)?;

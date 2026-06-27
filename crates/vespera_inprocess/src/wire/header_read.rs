@@ -267,9 +267,37 @@ impl<'a> Parser<'a> {
         // short escaped value early in a large request from over-reserving.
         let prefix = self.pos - start;
         let mut buf: Vec<u8> = Vec::with_capacity(prefix.saturating_mul(2).saturating_add(16));
-        buf.extend_from_slice(&self.input[start..self.pos]);
+        // Copy the `&'a [u8]` reference out of `self` so the inner run-scan
+        // and bulk-copy borrow `input` without re-borrowing `self.input` on
+        // every iteration (mirrors the plain `read_string` at line 230).
+        let input = self.input;
+        buf.extend_from_slice(&input[start..self.pos]);
         loop {
-            match self.input.get(self.pos) {
+            // Bulk-copy the verbatim run up to the next terminator / escape
+            // / control char.  Hand-written scalar scan (NOT memchr/SIMD):
+            // the same in-file note at lines 232-237 records that a
+            // `memchr2(b'"', b'\\')` variant regressed `request_parse_hand`
+            // ~13% and `request_headers_path` ~3-4% on the plain path —
+            // header values are short enough that the branchy scalar loop
+            // beats the vectorised setup cost.  The sibling `read_string`
+            // plain path uses the same shape; before this change only this
+            // escape tail still walked byte-by-byte between escapes.
+            let run_start = self.pos;
+            while let Some(&b) = input.get(self.pos) {
+                if b == b'"' || b == b'\\' || b < 0x20 {
+                    break;
+                }
+                self.pos += 1;
+            }
+            if self.pos > run_start {
+                buf.extend_from_slice(&input[run_start..self.pos]);
+            }
+            // Inner-scan invariant: only `b'"'`, `b'\\'`, `b < 0x20`, or
+            // end-of-input can reach this match — every other byte was
+            // already consumed by the scan, so the `Some(_)` catch-all is
+            // the control-char path (same error message as the prior
+            // `Some(&b) if b < 0x20 =>` arm).
+            match input.get(self.pos) {
                 None => return Err("unterminated string".to_owned()),
                 Some(&b'"') => {
                     self.pos += 1;
@@ -281,13 +309,7 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     self.decode_escape(&mut buf)?;
                 }
-                Some(&b) if b < 0x20 => {
-                    return Err("control character in string".to_owned());
-                }
-                Some(&b) => {
-                    buf.push(b);
-                    self.pos += 1;
-                }
+                Some(_) => return Err("control character in string".to_owned()),
             }
         }
     }
