@@ -784,7 +784,13 @@ fn spawn_request_producer(
         // hostile/buggy producer returning multi-MiB chunks defeats the
         // `O(chunk)` RAM guarantee and can OOM the host under load.
         let max_chunk = crate::config::streaming_chunk_bytes();
-        loop {
+        // `'producer:` lets every early-exit path (panic in `pull`, sustained
+        // empty reads, explicit `End`/`Error`, receiver-side channel drop in
+        // the inner chunk-splitter `while`) exit the same `loop` directly
+        // without a `receiver_gone` flag + post-`while` check.  All four
+        // existing exits already broke this outer loop directly; labelling it
+        // gives the inner `while` the same uniform shape.
+        'producer: loop {
             // A panic inside the user / JNI-supplied `pull()` must NOT be
             // turned into a clean end-of-stream — that would accept a
             // TRUNCATED upload as a complete request body (silent data
@@ -793,7 +799,7 @@ fn spawn_request_producer(
             // rejects the body instead of seeing a short, "successful" read.
             let Ok(next) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut pull)) else {
                 let _ = tx.blocking_send(Err(StreamAbort));
-                break;
+                break 'producer;
             };
             match next {
                 RequestChunk::Data(chunk) => {
@@ -808,7 +814,7 @@ fn spawn_request_producer(
                         consecutive_empty += 1;
                         if consecutive_empty >= MAX_CONSECUTIVE_EMPTY_READS {
                             let _ = tx.blocking_send(Err(StreamAbort));
-                            break;
+                            break 'producer;
                         }
                         std::thread::yield_now();
                         continue;
@@ -824,28 +830,27 @@ fn spawn_request_producer(
                     // benches pre-chunk at `chunk_bytes`) sends in a single
                     // iteration exactly as before.
                     let mut bytes = Bytes::from(chunk);
-                    let mut receiver_gone = false;
                     while !bytes.is_empty() {
                         let piece = if bytes.len() > max_chunk {
                             bytes.split_to(max_chunk)
                         } else {
                             std::mem::take(&mut bytes)
                         };
+                        // Receiver gone → axum dropped the body half (the
+                        // dispatch finished or the handler abandoned the
+                        // request).  Stop the whole producer, identical
+                        // outcome to the prior `receiver_gone` flag.
                         if tx.blocking_send(Ok(piece)).is_err() {
-                            receiver_gone = true;
-                            break;
+                            break 'producer;
                         }
                     }
-                    if receiver_gone {
-                        break;
-                    }
                 }
-                RequestChunk::End => break,
+                RequestChunk::End => break 'producer,
                 RequestChunk::Error => {
                     // Best-effort: if the receiver is already gone there
                     // is nothing to abort.
                     let _ = tx.blocking_send(Err(StreamAbort));
-                    break;
+                    break 'producer;
                 }
             }
         }

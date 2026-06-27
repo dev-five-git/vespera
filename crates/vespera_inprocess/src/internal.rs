@@ -433,32 +433,44 @@ where
 /// Collapse an [`http::HeaderMap`] into the wire's name → value map.
 /// Headers with repeated names (e.g. `set-cookie`) are preserved as
 /// [`HeaderValue::Multi`] so their semantics survive the conversion.
+///
+/// Iterates over `headers.keys()` (each distinct name exactly once) and
+/// fans the values out with `headers.get_all(name)` — the same shape the
+/// wire-side response serializer
+/// ([`super::wire::header_write::write_headers`]) uses, so the two
+/// header-collapse sites stay in lockstep.  The previous `for (name, value)
+/// in headers` shape yielded ONE iteration per (name, value) pair, paid an
+/// `O(log M)` `BTreeMap::get_mut` traversal on each, and on the
+/// Single→Multi upgrade did a `mem::take` plus slot overwrite — replaced
+/// here by a single `insert` per distinct name with an exact-sized `Vec`
+/// for the rare-but-not-zero multi-valued case.
 fn collect_header_map(headers: &http::HeaderMap) -> BTreeMap<String, HeaderValue> {
     let mut resp_headers: BTreeMap<String, HeaderValue> = BTreeMap::new();
-    for (name, value) in headers {
-        let val_str = value.to_str().unwrap_or("").to_owned();
-        let name_str = name.as_str();
-        // Split the lookup so the owned key (`name_str.to_owned()`) is only
-        // allocated on the Vacant insert branch. The previous
-        // `entry(name.as_str().to_owned())` shape allocated a fresh `String`
-        // key on EVERY iteration even when the entry turned out to be
-        // Occupied (e.g. repeated `set-cookie`), where the new key was
-        // dropped immediately — N-1 wasted allocs per N-valued name.
-        if let Some(existing) = resp_headers.get_mut(name_str) {
-            match existing {
-                HeaderValue::Multi(v) => v.push(val_str),
-                HeaderValue::Single(prev_str) => {
-                    // Take ownership of the existing single value, then
-                    // overwrite the slot with the new Multi.  Final state
-                    // is byte-identical to the prior `mem::replace` +
-                    // `unreachable!()` form, but with no panic landing pad.
-                    let prev = std::mem::take(prev_str);
-                    *existing = HeaderValue::Multi(vec![prev, val_str]);
+    for name in headers.keys() {
+        let mut values = headers.get_all(name).iter();
+        // `keys()` only yields present names, but stay panic-free anyway:
+        // skip the impossible `None` instead of `expect`-ing.
+        let Some(first) = values.next() else { continue };
+        let first_str = first.to_str().unwrap_or("").to_owned();
+        let value = match values.next() {
+            // Single value: emit the scalar string (overwhelmingly common).
+            None => HeaderValue::Single(first_str),
+            // Multiple values: pre-size the `Vec` for the remaining slots
+            // (`size_hint().0` is exact for `get_all`'s `ValueIter`) and
+            // push them in insertion order, matching `HeaderMap`'s
+            // repeated-name semantics.
+            Some(second) => {
+                let remaining = values.size_hint().0;
+                let mut multi = Vec::with_capacity(2 + remaining);
+                multi.push(first_str);
+                multi.push(second.to_str().unwrap_or("").to_owned());
+                for v in values {
+                    multi.push(v.to_str().unwrap_or("").to_owned());
                 }
+                HeaderValue::Multi(multi)
             }
-        } else {
-            resp_headers.insert(name_str.to_owned(), HeaderValue::Single(val_str));
-        }
+        };
+        resp_headers.insert(name.as_str().to_owned(), value);
     }
     resp_headers
 }

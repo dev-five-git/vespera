@@ -503,6 +503,50 @@ pub fn call_header_consumer(
     })
 }
 
+/// Run the cold-path scrub → `byte_array_from_slice` → `invoke` → scrub
+/// recipe shared by [`call_header_consumer_local`] and [`complete_future_local`].
+///
+/// The five-step contract used by the cold setup-failure / fallback paths is:
+/// 1. Scrub any pending exception from the failed JNI call that routed
+///    us here — `byte_array_from_slice` must NOT be invoked with an
+///    exception in flight.
+/// 2. Allocate the Java `byte[]` for `bytes`.  If allocation ITSELF
+///    leaves a pending exception (e.g. OOM), scrub it before surfacing
+///    the error so it does not leak into the caller's next JNI call.
+/// 3. Invoke `invoke(env, &arr_obj)` to deliver the array to its
+///    Java-side consumer (`Consumer.accept` / `CompletableFuture.complete`
+///    today; the FnOnce makes this open to future cold-path consumers
+///    without re-duplicating the scrub framing).
+/// 4. Scrub on BOTH success and failure so a throwing consumer cannot
+///    poison the thread's next JNI call.
+/// 5. Propagate `invoke`'s result verbatim.
+///
+/// Keeping the scrub contract in one place is the whole point — both
+/// existing call sites previously inlined the recipe with comments
+/// re-explaining the invariant per copy, exactly the shape that drifts
+/// when someone updates only one site.
+fn cold_path_byte_array_call<F>(
+    env: &mut jni::Env<'_>,
+    bytes: &[u8],
+    invoke: F,
+) -> jni::errors::Result<()>
+where
+    F: FnOnce(&mut jni::Env<'_>, &JObject<'_>) -> jni::errors::Result<()>,
+{
+    clear_pending_exception(env);
+    let arr = match env.byte_array_from_slice(bytes) {
+        Ok(arr) => arr,
+        Err(e) => {
+            clear_pending_exception(env);
+            return Err(e);
+        }
+    };
+    let arr_obj: JObject = arr.into();
+    let result = invoke(env, &arr_obj);
+    clear_pending_exception(env);
+    result
+}
+
 /// Fire `Consumer.accept(byte[])` through a **local** consumer reference,
 /// for the cold setup-failure / fallback paths of the streaming-with-header
 /// dispatchers that run on the JNI entry thread (where the original
@@ -520,33 +564,15 @@ pub fn call_header_consumer_local(
     consumer: &JObject<'_>,
     header_bytes: &[u8],
 ) -> jni::errors::Result<()> {
-    // Scrub any exception already pending from the failed setup call that
-    // routed us here, so `byte_array_from_slice` below is not issued with an
-    // exception in flight.
-    clear_pending_exception(env);
-    // If the array allocation ITSELF fails (e.g. OOM), it leaves a NEW pending
-    // exception; clear it before surfacing the error so it does not leak into
-    // the caller's next JNI call on this thread (the `?` would otherwise return
-    // before the post-call scrub below).
-    let arr = match env.byte_array_from_slice(header_bytes) {
-        Ok(arr) => arr,
-        Err(e) => {
-            clear_pending_exception(env);
-            return Err(e);
-        }
-    };
-    let arr_obj: JObject = arr.into();
-    let result = env.call_method(
-        consumer,
-        jni_str!("accept"),
-        jni_sig!("(Ljava/lang/Object;)V"),
-        &[JValue::Object(&arr_obj)],
-    );
-    // Scrub on BOTH paths so a throwing `accept` doesn't poison the thread's
-    // next JNI call (this is a cold best-effort delivery).
-    clear_pending_exception(env);
-    result?;
-    Ok(())
+    cold_path_byte_array_call(env, header_bytes, |env, arr_obj| {
+        env.call_method(
+            consumer,
+            jni_str!("accept"),
+            jni_sig!("(Ljava/lang/Object;)V"),
+            &[JValue::Object(arr_obj)],
+        )
+        .map(|_| ())
+    })
 }
 
 /// Complete a `CompletableFuture` via a **local** reference, for the
@@ -560,46 +586,26 @@ pub fn call_header_consumer_local(
 /// worker thread.  This lets `dispatchAsync` hold a **single** `Global`
 /// ref (for the spawned task) instead of a second one kept solely for
 /// these on-thread completions.
+///
+/// On a failed completion the `CompletableFuture` is left uncompleted by
+/// THIS helper; the caller treats the `Err` as a failed best-effort
+/// completion rather than hanging on a poisoned thread.  The original
+/// exception is intentionally discarded — we are converting a JNI failure
+/// into a best-effort `500` completion, not surfacing the inner throw.
 pub fn complete_future_local(
     env: &mut jni::Env<'_>,
     future: &JObject<'_>,
     bytes: &[u8],
 ) -> jni::errors::Result<()> {
-    // Clear any exception ALREADY pending from the failed JNI call that routed
-    // us into this cold path (e.g. an `OutOfMemoryError` from `new_global_ref`
-    // / `get_java_vm`, or a failed request-array read).  JNI functions must not
-    // be invoked with an exception pending — `byte_array_from_slice` below
-    // would otherwise fail and leave the Java `CompletableFuture` uncompleted
-    // (the caller hangs forever).  We are converting that JNI failure into a
-    // best-effort `500` completion, so the original exception is intentionally
-    // discarded.
-    clear_pending_exception(env);
-    // If the array allocation ITSELF fails (e.g. OOM), it leaves a NEW pending
-    // exception; clear it before surfacing the error so the cold path does not
-    // leak it into the caller's next JNI call (the `?` would otherwise return
-    // before the post-call scrub below) — the `CompletableFuture` is then left
-    // uncompleted by THIS helper, but the caller treats the `Err` as a failed
-    // best-effort completion rather than hanging on a poisoned thread.
-    let arr = match env.byte_array_from_slice(bytes) {
-        Ok(arr) => arr,
-        Err(e) => {
-            clear_pending_exception(env);
-            return Err(e);
-        }
-    };
-    let arr_obj: JObject = arr.into();
-    let result = env.call_method(
-        future,
-        jni_str!("complete"),
-        jni_sig!("(Ljava/lang/Object;)Z"),
-        &[JValue::Object(&arr_obj)],
-    );
-    // Scrub a pending Java exception on BOTH success and failure: a throwing
-    // `CompletableFuture.complete` must not leave the exception set for the
-    // caller's next JNI call (the result here is a cold-path best effort).
-    clear_pending_exception(env);
-    result?;
-    Ok(())
+    cold_path_byte_array_call(env, bytes, |env, arr_obj| {
+        env.call_method(
+            future,
+            jni_str!("complete"),
+            jni_sig!("(Ljava/lang/Object;)Z"),
+            &[JValue::Object(arr_obj)],
+        )
+        .map(|_| ())
+    })
 }
 
 /// Best-effort `InputStream.close()` — invoked after a bidirectional
