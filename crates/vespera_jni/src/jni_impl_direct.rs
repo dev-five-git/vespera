@@ -10,7 +10,7 @@ use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{JByteBuffer, JClass};
 use jni::sys::jint;
 
-use super::{block_on_sync_runtime, panic_wire};
+use super::{block_on_sync_runtime, panic_wire, runtime_unavailable_wire};
 
 /// Sentinel for [`Java_..._dispatchDirect`]: the response (or its
 /// required size) cannot be represented in the `jint` return value
@@ -258,8 +258,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                             input, out,
                         ))
                     }) else {
-                        let err =
-                            vespera_inprocess::error_wire(500, "failed to create Tokio runtime");
+                        let err = runtime_unavailable_wire();
                         // SAFETY: same direct-buffer invariants as above; this branch
                         // writes only a freshly allocated wire error into the caller's
                         // resolved output buffer.

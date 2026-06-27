@@ -52,7 +52,7 @@ pub fn runtime() -> Option<&'static tokio::runtime::Runtime> {
         .as_ref()
 }
 
-fn runtime_unavailable_wire() -> Vec<u8> {
+pub fn runtime_unavailable_wire() -> Vec<u8> {
     vespera_inprocess::error_wire(500, "failed to create Tokio runtime")
 }
 
@@ -253,7 +253,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchByt
                         Err(err_wire) => err_wire,
                     }
                 }))
-                .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
+                .unwrap_or_else(|_| panic_wire());
 
                 Ok(env.byte_array_from_slice(&response)?.into())
             })
@@ -413,7 +413,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
                     )
                     .catch_unwind()
                     .await
-                    .unwrap_or_else(|_| vespera_inprocess::error_wire(500, "panic in Rust engine"));
+                    .unwrap_or_else(|_| panic_wire());
 
                     // ALWAYS-COMPLETE CONTRACT: the Java CompletableFuture must
                     // resolve on every path or `dispatchAsync` callers hang
