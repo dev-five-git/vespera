@@ -87,11 +87,8 @@ fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> To
     // reach this function we already have a slice with one valid entry per
     // named field. Pairwise zip recovers the `(&Field, &SchemaConstraints)`
     // view the previous code reproduced by re-parsing the attrs.
-    let per_field: Vec<(&syn::Field, &SchemaConstraints)> = fields_named
-        .named
-        .iter()
-        .zip(field_constraints)
-        .collect();
+    let per_field: Vec<(&syn::Field, &SchemaConstraints)> =
+        fields_named.named.iter().zip(field_constraints).collect();
 
     if per_field.iter().all(|(_, c)| !c.has_runtime_rule()) {
         // No field requested a runtime rule — skip Validate emission.

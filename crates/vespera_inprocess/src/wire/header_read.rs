@@ -81,7 +81,7 @@ impl<'a> Parser<'a> {
         let mut app_seen = false;
 
         self.skip_ws();
-        if self.peek() == Some(b'}') {
+        if self.cur() == Some(b'}') {
             self.pos += 1;
             // Empty object: method/path missing -> reported below.
         } else {
@@ -170,7 +170,7 @@ impl<'a> Parser<'a> {
     fn read_headers(&mut self) -> Result<CowPairs<'a>, String> {
         self.expect(b'{')?;
         self.skip_ws();
-        if self.peek() == Some(b'}') {
+        if self.cur() == Some(b'}') {
             // Zero-allocation fast path for the common bodyless /
             // headerless request — no capacity is reserved for `{}`.
             self.pos += 1;
@@ -652,12 +652,6 @@ impl<'a> Parser<'a> {
     /// Current byte without advancing.
     fn cur(&self) -> Option<u8> {
         self.input.get(self.pos).copied()
-    }
-
-    /// Skip whitespace, then return the current byte without advancing.
-    fn peek(&mut self) -> Option<u8> {
-        self.skip_ws();
-        self.cur()
     }
 
     /// Skip whitespace and consume the expected byte, or error.

@@ -40,11 +40,8 @@ pub fn parse_request_body(
                     && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
                     && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
                 {
-                    let schema = parse_type_to_schema_ref(
-                        inner_ty,
-                        known_schemas,
-                        struct_definitions,
-                    );
+                    let schema =
+                        parse_type_to_schema_ref(inner_ty, known_schemas, struct_definitions);
                     let mut content = BTreeMap::new();
                     content.insert(
                         "application/json".to_string(),
@@ -66,11 +63,8 @@ pub fn parse_request_body(
                     && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
                     && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
                 {
-                    let schema = parse_type_to_schema_ref(
-                        inner_ty,
-                        known_schemas,
-                        struct_definitions,
-                    );
+                    let schema =
+                        parse_type_to_schema_ref(inner_ty, known_schemas, struct_definitions);
                     let mut content = BTreeMap::new();
                     content.insert(
                         "application/x-www-form-urlencoded".to_string(),
@@ -92,11 +86,8 @@ pub fn parse_request_body(
                     && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
                     && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
                 {
-                    let schema = parse_type_to_schema_ref(
-                        inner_ty,
-                        known_schemas,
-                        struct_definitions,
-                    );
+                    let schema =
+                        parse_type_to_schema_ref(inner_ty, known_schemas, struct_definitions);
                     let mut content = BTreeMap::new();
                     content.insert(
                         "multipart/form-data".to_string(),
@@ -136,8 +127,7 @@ pub fn parse_request_body(
             }
 
             if is_string_like(ty) {
-                let schema =
-                    parse_type_to_schema_ref(ty, known_schemas, struct_definitions);
+                let schema = parse_type_to_schema_ref(ty, known_schemas, struct_definitions);
                 let mut content = BTreeMap::new();
                 content.insert(
                     "text/plain".to_string(),

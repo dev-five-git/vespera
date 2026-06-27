@@ -779,11 +779,8 @@ mod tests {
             let previous = depth.get();
             depth.set(MAX_SCHEMA_RECURSION_DEPTH);
             let ty: Type = syn::parse_str("String").unwrap();
-            let schema_ref = parse_type_to_schema_ref(
-                &ty,
-                &empty_known(),
-                &empty_struct_definitions(),
-            );
+            let schema_ref =
+                parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
             // Should return object fallback, NOT string
             if let SchemaRef::Inline(schema) = &schema_ref {
                 assert_eq!(schema.schema_type, Some(SchemaType::Object));
@@ -801,8 +798,7 @@ mod tests {
             assert_eq!(depth.get(), 0, "Depth should start at 0");
         });
         let ty: Type = syn::parse_str("Vec<Option<String>>").unwrap();
-        let _ =
-            parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
+        let _ = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
         SCHEMA_RECURSION_DEPTH.with(|depth| {
             assert_eq!(depth.get(), 0, "Depth should reset to 0 after call");
         });

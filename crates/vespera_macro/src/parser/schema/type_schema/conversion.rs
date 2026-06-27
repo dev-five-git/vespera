@@ -491,11 +491,8 @@ fn parse_type_impl(
                             parsed.generics.where_clause = None;
 
                             // Parse the substituted struct to schema (inline)
-                            let schema = parse_struct_to_schema(
-                                &parsed,
-                                known_schemas,
-                                struct_definitions,
-                            );
+                            let schema =
+                                parse_struct_to_schema(&parsed, known_schemas, struct_definitions);
                             return SchemaRef::Inline(Box::new(schema));
                         }
                     }

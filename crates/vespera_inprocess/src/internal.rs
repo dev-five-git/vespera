@@ -2,7 +2,6 @@
 //! request building, router oneshot driving, and response collection.
 
 use std::collections::BTreeMap;
-use std::collections::btree_map::Entry;
 use std::ops::ControlFlow;
 
 use axum::body::Body;
@@ -417,11 +416,15 @@ fn collect_header_map(headers: &http::HeaderMap) -> BTreeMap<String, HeaderValue
     let mut resp_headers: BTreeMap<String, HeaderValue> = BTreeMap::new();
     for (name, value) in headers {
         let val_str = value.to_str().unwrap_or("").to_owned();
-        match resp_headers.entry(name.as_str().to_owned()) {
-            Entry::Vacant(e) => {
-                e.insert(HeaderValue::Single(val_str));
-            }
-            Entry::Occupied(mut e) => match e.get_mut() {
+        let name_str = name.as_str();
+        // Split the lookup so the owned key (`name_str.to_owned()`) is only
+        // allocated on the Vacant insert branch. The previous
+        // `entry(name.as_str().to_owned())` shape allocated a fresh `String`
+        // key on EVERY iteration even when the entry turned out to be
+        // Occupied (e.g. repeated `set-cookie`), where the new key was
+        // dropped immediately — N-1 wasted allocs per N-valued name.
+        if let Some(existing) = resp_headers.get_mut(name_str) {
+            match existing {
                 HeaderValue::Multi(v) => v.push(val_str),
                 slot @ HeaderValue::Single(_) => {
                     // `slot` is currently the Single variant — swap it out
@@ -435,7 +438,9 @@ fn collect_header_map(headers: &http::HeaderMap) -> BTreeMap<String, HeaderValue
                     };
                     *slot = HeaderValue::Multi(vec![prev, val_str]);
                 }
-            },
+            }
+        } else {
+            resp_headers.insert(name_str.to_owned(), HeaderValue::Single(val_str));
         }
     }
     resp_headers

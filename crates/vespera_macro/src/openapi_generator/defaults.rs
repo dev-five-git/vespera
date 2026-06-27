@@ -885,36 +885,18 @@ mod tests {
     #[case::unit_struct("pub struct U;", false)]
     #[case::plain_fields("pub struct P { pub a: i32, pub b: String }", false)]
     // Non-serde/non-schema attrs: helper returns false, early-return fires.
-    #[case::doc_only(
-        "pub struct D { /// docs\n pub a: i32 }",
-        false,
-    )]
-    #[case::garde_only(
-        r"pub struct G { #[garde(length(min = 1))] pub a: String }",
-        false,
-    )]
+    #[case::doc_only("pub struct D { /// docs\n pub a: i32 }", false)]
+    #[case::garde_only(r"pub struct G { #[garde(length(min = 1))] pub a: String }", false)]
     // Serde attrs of ANY kind (rename, default, skip, ...): return true.
-    #[case::serde_rename(
-        r#"pub struct S { #[serde(rename = "a")] pub field: String }"#,
-        true,
-    )]
-    #[case::serde_default_bare(
-        "pub struct S { #[serde(default)] pub field: String }",
-        true,
-    )]
-    #[case::serde_default_fn(
-        r#"pub struct S { #[serde(default = "f")] pub field: String }"#,
-        true,
-    )]
+    #[case::serde_rename(r#"pub struct S { #[serde(rename = "a")] pub field: String }"#, true)]
+    #[case::serde_default_bare("pub struct S { #[serde(default)] pub field: String }", true)]
+    #[case::serde_default_fn(r#"pub struct S { #[serde(default = "f")] pub field: String }"#, true)]
     // Schema attrs of ANY kind: return true.
-    #[case::schema_default(
-        r#"pub struct S { #[schema(default = "1")] pub field: i32 }"#,
-        true,
-    )]
+    #[case::schema_default(r#"pub struct S { #[schema(default = "1")] pub field: i32 }"#, true)]
     // Mixed attr lists: any one match is enough.
     #[case::serde_on_second_field(
         r#"pub struct M { pub a: i32, #[serde(rename = "x")] pub b: String }"#,
-        true,
+        true
     )]
     fn any_field_carries_default_relevant_attr_cases(#[case] src: &str, #[case] expected: bool) {
         let struct_item: syn::ItemStruct = syn::parse_str(src).expect("struct parses");
@@ -1015,8 +997,7 @@ mod tests {
             "count".to_string(),
             SchemaRef::Inline(Box::new(Schema::integer())),
         );
-        let stored: BTreeMap<String, Value> =
-            BTreeMap::from([("count".to_string(), json!(7))]);
+        let stored: BTreeMap<String, Value> = BTreeMap::from([("count".to_string(), json!(7))]);
 
         process_default_functions(&struct_item, None, &mut schema, &stored);
 

@@ -95,11 +95,8 @@ pub(super) fn parse_query_struct_to_parameters(
                 // #[serde(default)] fields are optional in request inputs even
                 // when the Rust type is non-Option (B4: request optional).
                 let has_default = extract_default(&field.attrs).is_some();
-                let mut field_schema = parse_type_to_schema_ref(
-                    field_type,
-                    known_schemas,
-                    struct_definitions,
-                );
+                let mut field_schema =
+                    parse_type_to_schema_ref(field_type, known_schemas, struct_definitions);
 
                 if let SchemaRef::Ref(ref_ref) = &field_schema
                     && let Some(type_name) = ref_ref.ref_path.strip_prefix("#/components/schemas/")

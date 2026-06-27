@@ -680,11 +680,6 @@ type RequestProducerHandle = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;
 type PullChunk = Box<dyn FnMut() -> RequestChunk + Send + 'static>;
 type RequestFrame = Result<Bytes, StreamAbort>;
 
-struct RequestProducer {
-    pull_chunk: PullChunk,
-    capacity: usize,
-}
-
 /// Minimal `http_body::Body` implementation backed by an mpsc
 /// `Receiver<Result<Bytes, StreamAbort>>` — used by
 /// [`dispatch_bidirectional_streaming`] to feed request body chunks
@@ -692,7 +687,18 @@ struct RequestProducer {
 /// truncated upload is not seen as a clean EOF.
 struct ChannelBody {
     rx: Option<tokio::sync::mpsc::Receiver<RequestFrame>>,
-    producer: Option<RequestProducer>,
+    /// One-shot producer slot: `Some` until the first `poll_frame` lazily
+    /// spawns the producer task, then permanently `None`. `Option::take`
+    /// on this field is the same atomic transition that the prior
+    /// `Option<RequestProducer>` provided, so the lazy-start semantics
+    /// (channel + producer NOT created until the handler polls the body)
+    /// are preserved.
+    pull_chunk: Option<PullChunk>,
+    /// Product-capped channel capacity (chunk_bytes * slots <= 64 MiB)
+    /// so a large configured chunk size can't multiply with the channel
+    /// capacity into multi-GB peak buffering. See
+    /// [`effective_streaming_channel_capacity`].
+    capacity: usize,
     producer_handle: RequestProducerHandle,
 }
 
@@ -703,14 +709,8 @@ impl ChannelBody {
     {
         Self {
             rx: None,
-            producer: Some(RequestProducer {
-                pull_chunk: Box::new(pull_chunk),
-                // Product-capped (chunk_bytes * slots <= 64 MiB) so a large
-                // configured chunk size can't multiply with the channel
-                // capacity into multi-GB peak buffering. See
-                // `effective_streaming_channel_capacity`.
-                capacity: effective_streaming_channel_capacity(),
-            }),
+            pull_chunk: Some(Box::new(pull_chunk)),
+            capacity: effective_streaming_channel_capacity(),
             producer_handle,
         }
     }
@@ -720,7 +720,7 @@ impl ChannelBody {
             return;
         }
 
-        let Some(producer) = self.producer.take() else {
+        let Some(pull) = self.pull_chunk.take() else {
             return;
         };
 
@@ -728,9 +728,9 @@ impl ChannelBody {
         // — gives natural backpressure between the pull_chunk producer
         // thread and the axum handler consumer. The channel is created
         // with the producer so unpolled bodies avoid both pieces of setup.
-        let (tx, rx) = tokio::sync::mpsc::channel::<RequestFrame>(producer.capacity);
+        let (tx, rx) = tokio::sync::mpsc::channel::<RequestFrame>(self.capacity);
         self.rx = Some(rx);
-        let handle = spawn_request_producer(producer.pull_chunk, tx);
+        let handle = spawn_request_producer(pull, tx);
         store_request_producer_handle(&self.producer_handle, handle);
     }
 }
