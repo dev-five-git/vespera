@@ -22,6 +22,21 @@ use crate::envelope::{HeaderValue, ResponseEnvelope, ResponseMetadata};
 /// envelope path ([`to_response_envelope_text`]).
 pub type ResponseParts = (u16, http::HeaderMap, Bytes, ResponseMetadata);
 
+/// Canonical 500-fallback message emitted when a response body stream
+/// errors mid-drain (a truncated body must never be reported as a clean
+/// success).  Used by every wire / direct-write / streaming finisher —
+/// declared once here so the seven previous copies cannot drift.  Was
+/// previously inlined as `"response body stream error"`; the byte sequence
+/// is identical, so wire output stays byte-for-byte the same.
+pub const BODY_STREAM_ERROR_MSG: &str = "response body stream error";
+
+/// Canonical 500-fallback message emitted when the response body sink
+/// (e.g. the host's `OutputStream`) stops accepting chunks before the
+/// stream finishes — same truncation-vs-clean-success invariant as
+/// [`BODY_STREAM_ERROR_MSG`].  Declared once here so the previous two
+/// copies cannot drift.
+pub const BODY_SINK_STOPPED_MSG: &str = "response body sink stopped before completion";
+
 /// Parse the wire `method` string into an [`http::Method`], surfacing the
 /// invalid-method failure as the canonical `405 Method Not Allowed` wire
 /// error.  The two owned-wire entry points
@@ -410,14 +425,11 @@ where
                     // like the body-error arm below — instead of falling
                     // through to the original success header, which would
                     // report a short, truncated response as a clean success.
-                    return Err((
-                        500,
-                        "response body sink stopped before completion".to_owned(),
-                    ));
+                    return Err((500, BODY_SINK_STOPPED_MSG.to_owned()));
                 }
             }
             Some(Err(_)) => {
-                return Err((500, "response body stream error".to_owned()));
+                return Err((500, BODY_STREAM_ERROR_MSG.to_owned()));
             }
             None => break,
         }
@@ -494,7 +506,7 @@ async fn collect_response_parts(
         .collect()
         .await
         .map(http_body_util::Collected::to_bytes)
-        .map_err(|_| (500u16, "response body stream error".to_owned()))?;
+        .map_err(|_| (500u16, BODY_STREAM_ERROR_MSG.to_owned()))?;
 
     Ok((
         parts.status.as_u16(),

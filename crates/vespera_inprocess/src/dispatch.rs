@@ -10,7 +10,9 @@ use http_body_util::BodyExt;
 
 use crate::Router;
 use crate::envelope::{RequestEnvelope, ResponseEnvelope, ResponseMetadata};
-use crate::internal::{dispatch_and_split, dispatch_parts, to_response_envelope_text};
+use crate::internal::{
+    BODY_STREAM_ERROR_MSG, dispatch_and_split, dispatch_parts, to_response_envelope_text,
+};
 use crate::registry::resolve_app_router;
 use crate::wire::{
     WIRE_VERSION, WireRequestHeader, error_wire, header_capacity_with_floor, parse_wire_header,
@@ -324,8 +326,8 @@ pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
 /// non-422 paths in [`finish_buffered_wire`] / [`finish_direct_write`] and
 /// the [`crate::internal::collect_response_parts`] contract.
 ///
-/// Shared by both finish_* tails so the `"response body stream error"`
-/// string + the 422 hoist-preservation invariant live in exactly one place.
+/// Shared by both finish_* tails so the [`BODY_STREAM_ERROR_MSG`] string +
+/// the 422 hoist-preservation invariant live in exactly one place.
 async fn build_422_wire(
     status: u16,
     headers: http::HeaderMap,
@@ -336,7 +338,7 @@ async fn build_422_wire(
         // Body aborted mid-collect: a failed 422 must surface as a 500,
         // never as a clean (empty-bodied) 422 — same contract as the
         // non-422 path and `collect_response_parts`.
-        return error_wire(500, "response body stream error");
+        return error_wire(500, BODY_STREAM_ERROR_MSG);
     };
     let body_bytes = collected.to_bytes();
     to_wire_bytes((status, headers, body_bytes, metadata))
@@ -402,7 +404,7 @@ async fn finish_buffered_wire(
             // yet (we return only at the end), so discard the partial buffer
             // and emit a 500 rather than a truncated body — mirrors the
             // collect_response_parts 500-on-body-error contract.
-            Some(Err(_)) => return error_wire(500, "response body stream error"),
+            Some(Err(_)) => return error_wire(500, BODY_STREAM_ERROR_MSG),
             None => break,
         }
     }
@@ -571,7 +573,7 @@ async fn finish_direct_write(
     if status == 422 {
         // Materialise via the shared [`build_422_wire`] helper to preserve
         // the `validation_errors` hoisting in the wire header byte-for-byte
-        // and to keep the `"response body stream error"` 500 fallback in one
+        // and to keep the [`BODY_STREAM_ERROR_MSG`] 500 fallback in one
         // place (see the helper's contract docs).
         let wire = build_422_wire(status, headers, metadata, body).await;
         return write_wire_into(out, &wire);
@@ -635,7 +637,7 @@ async fn finish_direct_write(
             // so discard the partial write and emit a 500 error wire instead
             // of reporting truncated bytes as a successful response.
             Some(Err(_)) => {
-                let wire = error_wire(500, "response body stream error");
+                let wire = error_wire(500, BODY_STREAM_ERROR_MSG);
                 return write_wire_into(out, &wire);
             }
             None => break,

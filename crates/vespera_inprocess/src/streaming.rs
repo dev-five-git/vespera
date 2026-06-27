@@ -13,7 +13,9 @@ use http_body_util::BodyExt;
 
 use crate::config::effective_streaming_channel_capacity;
 use crate::dispatch::{check_ingress_cap, parse_validate_resolve};
-use crate::internal::{dispatch_and_split, dispatch_response_streaming};
+use crate::internal::{
+    BODY_SINK_STOPPED_MSG, BODY_STREAM_ERROR_MSG, dispatch_and_split, dispatch_response_streaming,
+};
 use crate::wire::{
     WIRE_HEADER_RESERVE, build_wire_header_bytes, build_wire_header_bytes_hoisting, error_wire,
     split_wire_request,
@@ -208,7 +210,7 @@ where
         // error here is a clean 500 (nothing truncated), unlike the post-commit
         // streaming path below.
         let Ok(collected) = body.collect().await else {
-            on_header(&error_wire(500, "response body stream error"));
+            on_header(&error_wire(500, BODY_STREAM_ERROR_MSG));
             return StreamOutcome::Complete;
         };
         let collected = collected.to_bytes();
@@ -429,10 +431,8 @@ where
         // body is truncated.  Replace the captured success header with a 500
         // so a truncated bidirectional response is never returned as a clean
         // success (mirrors `dispatch_streaming_async`).
-        StreamOutcome::BodyError => error_wire(500, "response body stream error"),
-        StreamOutcome::SinkStopped => {
-            error_wire(500, "response body sink stopped before completion")
-        }
+        StreamOutcome::BodyError => error_wire(500, BODY_STREAM_ERROR_MSG),
+        StreamOutcome::SinkStopped => error_wire(500, BODY_SINK_STOPPED_MSG),
     }
 }
 

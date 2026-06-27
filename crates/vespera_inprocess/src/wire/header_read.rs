@@ -46,6 +46,16 @@ const INLINE_SKIP_DEPTH: usize = 128;
 /// realloc on the larger, common request shape is the priority (speed first).
 const TYPICAL_HEADER_CAP: usize = 16;
 
+/// Error message returned when the wire header `v` field is numerically
+/// out of range for `u8`.  Locked in one place so a future wording change
+/// cannot drift between the in-loop early-out (the accumulator-overflow
+/// fast path in [`Parser::read_u8`]) and the trailing defensive
+/// `u8::try_from` that mirrors it (kept structurally as the project's
+/// no-panic discipline favours over micro-collapsing an unreachable
+/// branch on this FFI-adjacent parse path).  Byte-identical to the prior
+/// inlined literals, so the wire 400 error body remains the same.
+const V_OUT_OF_RANGE_MSG: &str = "`v` out of range for u8";
+
 /// Parse the request wire header, borrowing every plain string straight
 /// from `input`.  Returns a bare error message; the caller
 /// ([`super::parse_wire_header`]) adds the `wire header JSON parse
@@ -419,7 +429,7 @@ impl<'a> Parser<'a> {
                 // it anyway, so this is accept/reject-identical to serde — the
                 // value can never round-trip to a valid `u8`.
                 if value > u32::from(u8::MAX) {
-                    return Err("`v` out of range for u8".to_owned());
+                    return Err(V_OUT_OF_RANGE_MSG.to_owned());
                 }
             } else {
                 break;
@@ -434,7 +444,7 @@ impl<'a> Parser<'a> {
         if matches!(self.cur(), Some(b'.' | b'e' | b'E')) {
             return Err("invalid non-integer value for `v`".to_owned());
         }
-        u8::try_from(value).map_err(|_| "`v` out of range for u8".to_owned())
+        u8::try_from(value).map_err(|_| V_OUT_OF_RANGE_MSG.to_owned())
     }
 
     /// Iteratively **validate-and-skip** one JSON value — the value of an

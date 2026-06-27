@@ -25,14 +25,33 @@ static RUNTIME_WORKER_THREADS: std::sync::OnceLock<Option<usize>> = std::sync::O
 /// 2. `VESPERA_RUNTIME_WORKERS` environment variable
 /// 3. `None` — Tokio's default (number of logical CPUs)
 ///
-/// Values are clamped to `[1, 1024]`.
+/// Values are clamped to `[1, 1024]`.  An env value that is present but
+/// fails to parse as a non-negative integer (e.g. `VESPERA_RUNTIME_WORKERS=abc`)
+/// emits a one-time stderr warning and falls back to the Tokio default —
+/// matching the observability contract of the sibling streaming /
+/// max-request-bytes knobs handled by
+/// [`vespera_inprocess::config::parse_config_value`].  The warning fires AT
+/// MOST ONCE per process via [`OnceLock::get_or_init`], so a misconfigured
+/// multi-thread JVM does not spam logs.
 #[must_use]
 pub fn runtime_worker_threads() -> Option<usize> {
     *RUNTIME_WORKER_THREADS.get_or_init(|| {
-        std::env::var("VESPERA_RUNTIME_WORKERS")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<usize>().ok())
-            .map(|v| v.clamp(MIN_RUNTIME_WORKERS, MAX_RUNTIME_WORKERS))
+        // Absent env var: silently fall through to the Tokio default — only a
+        // PRESENT-but-INVALID value triggers the warning, matching
+        // `parse_config_value`'s contract (a missing knob is intentional, an
+        // unparseable knob is a typo the operator wants to know about).
+        let raw = std::env::var("VESPERA_RUNTIME_WORKERS").ok()?;
+        raw.trim().parse::<usize>().map_or_else(
+            |_| {
+                eprintln!(
+                    "vespera: ignoring invalid VESPERA_RUNTIME_WORKERS={raw:?} \
+                     (expected a positive integer); using the Tokio default \
+                     (logical CPU count)"
+                );
+                None
+            },
+            |v| Some(v.clamp(MIN_RUNTIME_WORKERS, MAX_RUNTIME_WORKERS)),
+        )
     })
 }
 
