@@ -322,6 +322,20 @@ pub fn header_capacity_estimate(headers: &http::HeaderMap, metadata: &ResponseMe
     est
 }
 
+/// Adaptive response wire-header capacity estimate, floored at
+/// [`WIRE_HEADER_RESERVE`] so small-header responses never reserve less
+/// than before. Locks the floor invariant in one place — every buffered
+/// wire-header sizing site goes through this helper, so a future sizing
+/// site cannot accidentally forget the `.max(WIRE_HEADER_RESERVE)` call.
+///
+/// `#[inline]` so the codegen at each call site matches the prior inlined
+/// `header_capacity_estimate(...).max(WIRE_HEADER_RESERVE)` expression
+/// byte-for-byte.
+#[inline]
+pub fn header_capacity_with_floor(headers: &http::HeaderMap, metadata: &ResponseMetadata) -> usize {
+    header_capacity_estimate(headers, metadata).max(WIRE_HEADER_RESERVE)
+}
+
 /// Cheap upper-ish estimate of the serialized `validation_errors` JSON
 /// array byte length, added to the response-`Vec` capacity **only on the
 /// 422 path** (`validation_errors` is `None` for every other status, so the
@@ -468,7 +482,7 @@ pub fn to_wire_bytes(parts: ResponseParts) -> Vec<u8> {
     } else {
         None
     };
-    let header_cap = header_capacity_estimate(&headers, &metadata).max(WIRE_HEADER_RESERVE)
+    let header_cap = header_capacity_with_floor(&headers, &metadata)
         + validation_errors
             .as_deref()
             .map_or(0, validation_errors_capacity_estimate);
@@ -510,7 +524,7 @@ pub fn build_wire_header_bytes(
     headers: &http::HeaderMap,
     metadata: &ResponseMetadata,
 ) -> Vec<u8> {
-    let header_cap = header_capacity_estimate(headers, metadata).max(WIRE_HEADER_RESERVE);
+    let header_cap = header_capacity_with_floor(headers, metadata);
     let mut out = Vec::with_capacity(4 + header_cap);
     if !write_wire_header_into(&mut out, status, headers, metadata, None) {
         // Unreachable for a real `HeaderMap`; never panic on the response path.
@@ -538,7 +552,7 @@ pub fn build_wire_header_bytes_hoisting(
         return build_wire_header_bytes(status, headers, metadata);
     }
     let validation_errors = hoist::try_hoist_validation_errors(headers, body);
-    let header_cap = header_capacity_estimate(headers, metadata).max(WIRE_HEADER_RESERVE)
+    let header_cap = header_capacity_with_floor(headers, metadata)
         + validation_errors
             .as_deref()
             .map_or(0, validation_errors_capacity_estimate);

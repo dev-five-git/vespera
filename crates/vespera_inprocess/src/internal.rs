@@ -433,17 +433,13 @@ fn collect_header_map(headers: &http::HeaderMap) -> BTreeMap<String, HeaderValue
         if let Some(existing) = resp_headers.get_mut(name_str) {
             match existing {
                 HeaderValue::Multi(v) => v.push(val_str),
-                slot @ HeaderValue::Single(_) => {
-                    // `slot` is currently the Single variant — swap it out
-                    // to take ownership of `prev`, then overwrite the slot
-                    // with the new Multi.  The intermediate `Multi(Vec::new())`
-                    // is never observed by another reader.
-                    let HeaderValue::Single(prev) =
-                        std::mem::replace(slot, HeaderValue::Multi(Vec::new()))
-                    else {
-                        unreachable!("matched Single arm above")
-                    };
-                    *slot = HeaderValue::Multi(vec![prev, val_str]);
+                HeaderValue::Single(prev_str) => {
+                    // Take ownership of the existing single value, then
+                    // overwrite the slot with the new Multi.  Final state
+                    // is byte-identical to the prior `mem::replace` +
+                    // `unreachable!()` form, but with no panic landing pad.
+                    let prev = std::mem::take(prev_str);
+                    *existing = HeaderValue::Multi(vec![prev, val_str]);
                 }
             }
         } else {

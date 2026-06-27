@@ -13,9 +13,9 @@ use crate::envelope::{RequestEnvelope, ResponseEnvelope, ResponseMetadata};
 use crate::internal::{dispatch_and_split, dispatch_parts, to_response_envelope_text};
 use crate::registry::resolve_app_router;
 use crate::wire::{
-    WIRE_HEADER_RESERVE, WIRE_VERSION, WireRequestHeader, error_wire, header_capacity_estimate,
-    parse_wire_header, split_wire_borrowed, split_wire_request, to_wire_bytes,
-    write_wire_header_into_slice, write_wire_header_into_vec,
+    WIRE_VERSION, WireRequestHeader, error_wire, header_capacity_with_floor, parse_wire_header,
+    split_wire_borrowed, split_wire_request, to_wire_bytes, write_wire_header_into_slice,
+    write_wire_header_into_vec,
 };
 
 // ── Shared wire prelude (used by every wire entry point) ─────────────
@@ -345,7 +345,7 @@ async fn finish_buffered_wire(
     // never reserve less than before) + the body's exact size when the body
     // reports one (Full bodies do), so a single-frame response serializes
     // with zero reallocations.
-    let header_cap = header_capacity_estimate(&headers, &metadata).max(WIRE_HEADER_RESERVE);
+    let header_cap = header_capacity_with_floor(&headers, &metadata);
     let body_cap = usize::try_from(body.size_hint().exact().unwrap_or(0)).unwrap_or(0);
     // Saturating so a pathological/oversized exact body hint cannot wrap the
     // capacity arithmetic (debug panic / release wrap → under-reserve); the
