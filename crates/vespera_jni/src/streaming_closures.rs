@@ -28,7 +28,7 @@ use jni::sys::{jint, jvalue};
 use jni::{JValue, JValueOwned, jni_sig, jni_str};
 
 use crate::daemon_env::with_cached_daemon_env_no_frame;
-use crate::jni_impl::streaming_chunk_size;
+use crate::jni_impl::{clear_pending_exception, streaming_chunk_size};
 
 struct CachedMethod {
     _class: Global<JClass<'static>>,
@@ -152,9 +152,7 @@ fn method_cache(env: &mut jni::Env<'_>) -> Option<&'static MethodCache> {
         // Cache init is best-effort.  If class lookup, method lookup,
         // or global-ref promotion fails, clear only that init-time
         // exception and run the exact old string-based call path below.
-        if env.exception_check() {
-            env.exception_clear();
-        }
+        clear_pending_exception(env);
         let _ = METHOD_CACHE.set(MethodCacheState::Failed);
         return None;
     };
@@ -525,9 +523,7 @@ pub fn call_header_consumer_local(
     // Scrub any exception already pending from the failed setup call that
     // routed us here, so `byte_array_from_slice` below is not issued with an
     // exception in flight.
-    if env.exception_check() {
-        env.exception_clear();
-    }
+    clear_pending_exception(env);
     // If the array allocation ITSELF fails (e.g. OOM), it leaves a NEW pending
     // exception; clear it before surfacing the error so it does not leak into
     // the caller's next JNI call on this thread (the `?` would otherwise return
@@ -535,9 +531,7 @@ pub fn call_header_consumer_local(
     let arr = match env.byte_array_from_slice(header_bytes) {
         Ok(arr) => arr,
         Err(e) => {
-            if env.exception_check() {
-                env.exception_clear();
-            }
+            clear_pending_exception(env);
             return Err(e);
         }
     };
@@ -550,9 +544,7 @@ pub fn call_header_consumer_local(
     );
     // Scrub on BOTH paths so a throwing `accept` doesn't poison the thread's
     // next JNI call (this is a cold best-effort delivery).
-    if env.exception_check() {
-        env.exception_clear();
-    }
+    clear_pending_exception(env);
     result?;
     Ok(())
 }
@@ -581,9 +573,7 @@ pub fn complete_future_local(
     // (the caller hangs forever).  We are converting that JNI failure into a
     // best-effort `500` completion, so the original exception is intentionally
     // discarded.
-    if env.exception_check() {
-        env.exception_clear();
-    }
+    clear_pending_exception(env);
     // If the array allocation ITSELF fails (e.g. OOM), it leaves a NEW pending
     // exception; clear it before surfacing the error so the cold path does not
     // leak it into the caller's next JNI call (the `?` would otherwise return
@@ -593,9 +583,7 @@ pub fn complete_future_local(
     let arr = match env.byte_array_from_slice(bytes) {
         Ok(arr) => arr,
         Err(e) => {
-            if env.exception_check() {
-                env.exception_clear();
-            }
+            clear_pending_exception(env);
             return Err(e);
         }
     };
@@ -609,9 +597,7 @@ pub fn complete_future_local(
     // Scrub a pending Java exception on BOTH success and failure: a throwing
     // `CompletableFuture.complete` must not leave the exception set for the
     // caller's next JNI call (the result here is a cold-path best effort).
-    if env.exception_check() {
-        env.exception_clear();
-    }
+    clear_pending_exception(env);
     result?;
     Ok(())
 }
@@ -631,9 +617,7 @@ pub fn close_input_stream(
     // result and clearing BEFORE `?` so a throwing `close()` still leaves the
     // thread clean, matching `complete_future{,_local}`'s self-contained
     // contract (the prior `?`-before-clear returned early on a throw).
-    if env.exception_check() {
-        env.exception_clear();
-    }
+    clear_pending_exception(env);
     result?;
     Ok(())
 }
@@ -662,9 +646,7 @@ pub fn complete_future(
     // via a buggy whenComplete handler): we MUST NOT leave the attached
     // thread in a faulted state because subsequent JNI calls will misbehave
     // silently.
-    if env.exception_check() {
-        env.exception_clear();
-    }
+    clear_pending_exception(env);
     result
 }
 
