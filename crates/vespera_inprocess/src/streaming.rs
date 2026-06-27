@@ -359,7 +359,7 @@ where
 /// which is inherently blocking.  That blocking producer is started
 /// lazily on the first request-body poll, so handlers that never read
 /// the body never touch the `InputStream`. Backpressure is enforced by
-/// a bounded mpsc channel ([`streaming_channel_capacity`] slots,
+/// a bounded mpsc channel ([`effective_streaming_channel_capacity`] slots,
 /// default 16): if axum reads slowly, the `pull_chunk` call blocks
 /// naturally.
 ///
@@ -724,7 +724,7 @@ impl ChannelBody {
             return;
         };
 
-        // Bounded mpsc (default 16 slots, see streaming_channel_capacity)
+        // Bounded mpsc (default 16 slots, see effective_streaming_channel_capacity)
         // — gives natural backpressure between the pull_chunk producer
         // thread and the axum handler consumer. The channel is created
         // with the producer so unpolled bodies avoid both pieces of setup.
