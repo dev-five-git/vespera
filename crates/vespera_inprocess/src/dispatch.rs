@@ -96,6 +96,30 @@ pub fn slice_from_owner(owner: &Bytes, s: &str) -> Option<Bytes> {
     (end <= owner.len()).then(|| owner.slice(off..end))
 }
 
+/// Compute the zero-copy URI fast-path `path_bytes` for an **owned** wire
+/// entry point: when the request has no query and the parsed path borrows
+/// from the owning `header_bytes`, return the sub-`Bytes` covering it so
+/// `dispatch_and_split` can build the [`http::Uri`] via
+/// `Uri::from_maybe_shared` instead of paying the `Uri::try_from(&str)` copy.
+/// Any non-empty query or any escaped/owned path returns `None` and the
+/// caller falls back to the copying `build_uri` path.
+///
+/// Shared by [`dispatch_from_bytes_async`] and [`dispatch_into_async`] —
+/// the two owned-wire entry points whose tail-delivery shape differs
+/// (buffered `Vec` vs direct-write `&mut [u8]`) but whose URI-prelude is
+/// identical.  The borrowed entry point ([`dispatch_into_async_borrowed`])
+/// is deliberately *not* a third call site: it has no owning `Bytes` to
+/// share and so unconditionally passes `None`.  `#[inline]` keeps codegen
+/// identical to the prior copy-pasted shape.
+#[inline]
+fn path_bytes_for_owned(header_bytes: &Bytes, header: &WireRequestHeader<'_>) -> Option<Bytes> {
+    if header.query.is_empty() {
+        slice_from_owner(header_bytes, &header.path)
+    } else {
+        None
+    }
+}
+
 // ── Dispatch (direct API — backward compatible) ──────────────────────
 
 /// Dispatch a [`RequestEnvelope`] through an axum [`Router`] and
@@ -227,12 +251,9 @@ pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
     // Owned path: with no query and a path borrowed from the owning header
     // `Bytes`, hand its sub-`Bytes` to the URI builder so the URI SHARES those
     // bytes instead of `Uri::try_from(&str)` copying them — one fewer
-    // per-request allocation (`slice_from_owner` / `dispatch_and_split`).
-    let path_bytes = if header.query.is_empty() {
-        slice_from_owner(&header_bytes, &header.path)
-    } else {
-        None
-    };
+    // per-request allocation (`path_bytes_for_owned` / `slice_from_owner` /
+    // `dispatch_and_split`).
+    let path_bytes = path_bytes_for_owned(&header_bytes, &header);
 
     let (status, headers, metadata, body) = match dispatch_and_split(
         router,
@@ -260,6 +281,36 @@ pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
     finish_buffered_wire(status, headers, metadata, body).await
 }
 
+/// Materialise a `422 Unprocessable Entity` response into wire bytes so the
+/// `validation_errors` hoisting into the wire header (performed inside
+/// [`to_wire_bytes`]) is preserved **byte-for-byte** — validation failures
+/// are tiny + cold so the materialise cost is in the noise, and the hoist
+/// invariant is non-negotiable (Java decoders rely on it).
+///
+/// On a body-stream error mid-collect, returns `error_wire(500, ...)`
+/// instead of falling through to an empty-bodied 422 — a truncated/failed
+/// response must never be reported as a clean success.  This matches the
+/// non-422 paths in [`finish_buffered_wire`] / [`finish_direct_write`] and
+/// the [`crate::internal::collect_response_parts`] contract.
+///
+/// Shared by both finish_* tails so the `"response body stream error"`
+/// string + the 422 hoist-preservation invariant live in exactly one place.
+async fn build_422_wire(
+    status: u16,
+    headers: http::HeaderMap,
+    metadata: ResponseMetadata,
+    body: Body,
+) -> Vec<u8> {
+    let Ok(collected) = body.collect().await else {
+        // Body aborted mid-collect: a failed 422 must surface as a 500,
+        // never as a clean (empty-bodied) 422 — same contract as the
+        // non-422 path and `collect_response_parts`.
+        return error_wire(500, "response body stream error");
+    };
+    let body_bytes = collected.to_bytes();
+    to_wire_bytes((status, headers, body_bytes, metadata))
+}
+
 /// Buffered sibling of [`finish_direct_write`]: assemble the full wire
 /// response `Vec` by streaming the response body **frames straight into
 /// the final buffer**, instead of collecting the body into an intermediate
@@ -274,10 +325,10 @@ pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
 ///   keeps peak memory at ~one body (the growing `Vec`) instead of
 ///   body-plus-collected.
 ///
-/// `status == 422` keeps the materialise path so the `validation_errors`
-/// hoisting into the wire header is preserved byte-for-byte (validation
-/// failures are tiny + cold).  A body-stream error mid-drain discards the
-/// partial buffer and returns `error_wire(500, ...)`, matching the previous
+/// `status == 422` is routed through [`build_422_wire`] to preserve the
+/// `validation_errors` hoisting byte-for-byte; a body-stream error mid-drain
+/// on the non-422 path discards the partial buffer and returns
+/// `error_wire(500, ...)`, matching the previous
 /// [`crate::internal::dispatch_parts`] 500-on-body-error contract.
 async fn finish_buffered_wire(
     status: u16,
@@ -286,14 +337,7 @@ async fn finish_buffered_wire(
     mut body: Body,
 ) -> Vec<u8> {
     if status == 422 {
-        let Ok(collected) = body.collect().await else {
-            // Body aborted mid-collect: a failed 422 must surface as a 500,
-            // never as a clean (empty-bodied) 422 — same contract as the
-            // non-422 path below and `collect_response_parts`.
-            return error_wire(500, "response body stream error");
-        };
-        let body_bytes = collected.to_bytes();
-        return to_wire_bytes((status, headers, body_bytes, metadata));
+        return build_422_wire(status, headers, metadata, body).await;
     }
 
     // Size the final buffer up front: 4-byte length prefix + adaptive header
@@ -408,11 +452,7 @@ pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteR
 
     // Owned path: share the borrowed path's sub-`Bytes` with the URI builder
     // (no query) so the URI is built zero-copy — see `dispatch_from_bytes_async`.
-    let path_bytes = if header.query.is_empty() {
-        slice_from_owner(&header_bytes, &header.path)
-    } else {
-        None
-    };
+    let path_bytes = path_bytes_for_owned(&header_bytes, &header);
 
     let (status, headers, metadata, body) = match dispatch_and_split(
         router,
@@ -523,17 +563,11 @@ async fn finish_direct_write(
     mut body: Body,
 ) -> DirectWriteResult {
     if status == 422 {
-        // Materialise to preserve validation_errors hoisting in the
-        // wire header — identical bytes to dispatch_from_bytes.
-        let Ok(collected) = body.collect().await else {
-            // Body aborted mid-collect: a failed 422 must surface as a 500,
-            // never as a clean (empty-bodied) 422 — same "truncated/failed
-            // response is never a success" contract as the streaming path
-            // below and `collect_response_parts`.
-            return write_wire_into(out, &error_wire(500, "response body stream error"));
-        };
-        let body_bytes = collected.to_bytes();
-        let wire = to_wire_bytes((status, headers, body_bytes, metadata));
+        // Materialise via the shared [`build_422_wire`] helper to preserve
+        // the `validation_errors` hoisting in the wire header byte-for-byte
+        // and to keep the `"response body stream error"` 500 fallback in one
+        // place (see the helper's contract docs).
+        let wire = build_422_wire(status, headers, metadata, body).await;
         return write_wire_into(out, &wire);
     }
 

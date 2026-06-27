@@ -56,6 +56,25 @@ fn header_value_from_owner(
     }
 }
 
+/// Drive a [`Router`] with the request and return the resulting response.
+///
+/// Carries the axum `Service<_, Error = Infallible>` contract once: the `Err`
+/// variant is uninhabited, so the `match err {}` is exhaustive and emits
+/// **no panic/unwind site on this FFI-adjacent hot path**.  Used by every
+/// dispatcher in this module ([`dispatch_parts`], [`dispatch_response_streaming`],
+/// [`dispatch_and_split`]).  `#[inline]` so the state machine collapses into
+/// each caller exactly as the prior copy-pasted `match` shape did.
+#[inline]
+async fn router_oneshot(router: Router, request: Request<Body>) -> axum::response::Response {
+    match router.oneshot(request).await {
+        Ok(response) => response,
+        // axum routers are `Service<_, Error = Infallible>`; the `Err`
+        // variant is uninhabited, so this match is exhaustive and emits
+        // no panic/unwind site on this FFI-adjacent hot path.
+        Err(err) => match err {},
+    }
+}
+
 /// Drive a [`Router`] with the supplied envelope fields and return
 /// raw response parts.
 ///
@@ -88,13 +107,7 @@ pub async fn dispatch_parts<'h>(
         header_bytes_owner,
     )?;
 
-    let response = match router.oneshot(request).await {
-        Ok(response) => response,
-        // axum routers are `Service<_, Error = Infallible>`; the `Err`
-        // variant is uninhabited, so this match is exhaustive and emits
-        // no panic/unwind site on this FFI-adjacent hot path.
-        Err(err) => match err {},
-    };
+    let response = router_oneshot(router, request).await;
 
     collect_response_parts(response).await
 }
@@ -361,13 +374,7 @@ where
         header_bytes_owner,
     )?;
 
-    let response = match router.oneshot(request).await {
-        Ok(response) => response,
-        // axum routers are `Service<_, Error = Infallible>`; the `Err`
-        // variant is uninhabited, so this match is exhaustive and emits
-        // no panic/unwind site on this FFI-adjacent hot path.
-        Err(err) => match err {},
-    };
+    let response = router_oneshot(router, request).await;
 
     let (parts, mut body) = response.into_parts();
 
@@ -567,13 +574,7 @@ pub async fn dispatch_and_split<'h>(
         default_json_when_absent,
     )?;
 
-    let response = match router.oneshot(request).await {
-        Ok(response) => response,
-        // axum routers are `Service<_, Error = Infallible>`; the `Err`
-        // variant is uninhabited, so this match is exhaustive and emits
-        // no panic/unwind site on this FFI-adjacent hot path.
-        Err(err) => match err {},
-    };
+    let response = router_oneshot(router, request).await;
 
     let (parts, body) = response.into_parts();
     Ok((
