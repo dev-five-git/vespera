@@ -78,6 +78,21 @@ pub struct WireRequestHeader<'a> {
     pub app: Option<Cow<'a, str>>,
 }
 
+impl WireRequestHeader<'_> {
+    /// Iterate the parsed request headers as `(&str, &str)` pairs — the
+    /// only shape every wire dispatch entry point hands to
+    /// `dispatch_and_split` / `dispatch_response_streaming` /
+    /// `dispatch_parts`.  Centralised so every call site stays a single
+    /// `header.iter_str_pairs()` call instead of duplicating the same
+    /// `map(|(k, v)| (k.as_ref(), v.as_ref()))` closure across six
+    /// dispatch / streaming sites.  `#[inline]` keeps the generated code
+    /// byte-identical to the prior inlined closures.
+    #[inline]
+    pub fn iter_str_pairs(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
+        self.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref()))
+    }
+}
+
 /// `Cow<str>` wrapper whose `Deserialize` impl borrows from the input
 /// when the JSON string carries no escape sequences.  Bench-only — feeds
 /// the `serde` A/B twin; production parsing is hand-rolled ([`header_read`]).

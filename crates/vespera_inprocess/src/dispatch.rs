@@ -261,7 +261,7 @@ pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
         &header.path,
         &header.query,
         path_bytes,
-        header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
+        header.iter_str_pairs(),
         // Owned wire path: the parsed header values borrow from
         // `header_bytes` (plain values are `Cow::Borrowed` straight out of
         // the wire input).  Pass the owning `Bytes` so each `HeaderValue`
@@ -460,7 +460,7 @@ pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteR
         &header.path,
         &header.query,
         path_bytes,
-        header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
+        header.iter_str_pairs(),
         // Owned wire path: share `header_bytes` so plain-value `HeaderValue`s
         // are constructed zero-copy via `HeaderValue::from_maybe_shared`.
         // See `dispatch_from_bytes_async` for the contract.
@@ -536,7 +536,7 @@ pub async fn dispatch_into_async_borrowed(input: &[u8], out: &mut [u8]) -> Direc
         &header.path,
         &header.query,
         None,
-        header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
+        header.iter_str_pairs(),
         None,
         body,
         default_json_when_absent,

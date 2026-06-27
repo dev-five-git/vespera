@@ -118,7 +118,7 @@ where
         &header.method,
         &header.path,
         &header.query,
-        header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
+        header.iter_str_pairs(),
         body_bytes,
         // Owned wire path: share `header_bytes` so plain-value
         // `HeaderValue`s are constructed zero-copy via
@@ -308,7 +308,7 @@ where
         &header.path,
         &header.query,
         None,
-        header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
+        header.iter_str_pairs(),
         Some(&header_bytes),
         Body::from(body_bytes),
         default_json_when_absent,
@@ -563,7 +563,7 @@ where
         &header.path,
         &header.query,
         None,
-        header.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
+        header.iter_str_pairs(),
         Some(&header_bytes),
         body,
         default_json_when_absent,
