@@ -241,7 +241,7 @@ async fn streaming_with_header_emits_header_before_chunks() {
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
-    dispatch_streaming_with_header_async(
+    let _ = dispatch_streaming_with_header_async(
         wire,
         move |bytes| h.lock().unwrap().extend_from_slice(bytes),
         move |chunk| {
@@ -270,7 +270,7 @@ async fn streaming_with_header_error_on_short_input_skips_chunk_callback() {
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
-    dispatch_streaming_with_header_async(
+    let _ = dispatch_streaming_with_header_async(
         bad_wire,
         move |bytes| h.lock().unwrap().extend_from_slice(bytes),
         move |chunk| {
@@ -299,7 +299,7 @@ async fn streaming_with_header_error_on_version_mismatch() {
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
-    dispatch_streaming_with_header_async(
+    let _ = dispatch_streaming_with_header_async(
         bad,
         move |bytes| h.lock().unwrap().extend_from_slice(bytes),
         move |chunk| {
@@ -323,7 +323,7 @@ async fn streaming_with_header_error_on_unknown_app() {
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
-    dispatch_streaming_with_header_async(
+    let _ = dispatch_streaming_with_header_async(
         bad,
         move |bytes| h.lock().unwrap().extend_from_slice(bytes),
         move |chunk| {
@@ -347,7 +347,7 @@ async fn streaming_with_header_invalid_method_returns_405_via_header_callback() 
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
-    dispatch_streaming_with_header_async(
+    let _ = dispatch_streaming_with_header_async(
         wire,
         move |bytes| h.lock().unwrap().extend_from_slice(bytes),
         move |chunk| {
@@ -384,7 +384,7 @@ async fn streaming_with_header_forwards_query_string_via_dispatch_and_split() {
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
-    dispatch_streaming_with_header_async(
+    let _ = dispatch_streaming_with_header_async(
         wire,
         move |bytes| h.lock().unwrap().extend_from_slice(bytes),
         move |chunk| {
@@ -411,7 +411,7 @@ async fn streaming_with_header_triple_header_collapses_into_multi() {
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
-    dispatch_streaming_with_header_async(
+    let _ = dispatch_streaming_with_header_async(
         wire,
         move |bytes| h.lock().unwrap().extend_from_slice(bytes),
         move |chunk| {
@@ -462,7 +462,7 @@ async fn bidirectional_with_header_roundtrips_body() {
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         wire,
         pull,
         move |chunk| {
@@ -487,7 +487,7 @@ async fn bidirectional_with_header_error_on_short_input() {
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         bad,
         pull,
         move |chunk| {
@@ -514,7 +514,7 @@ async fn bidirectional_with_header_error_on_version_mismatch() {
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         bad,
         pull,
         move |chunk| {
@@ -540,7 +540,7 @@ async fn bidirectional_with_header_error_on_unknown_app() {
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         bad,
         pull,
         move |chunk| {
@@ -566,7 +566,7 @@ async fn bidirectional_with_header_invalid_method_returns_405() {
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         wire,
         pull,
         move |chunk| {
@@ -616,7 +616,7 @@ async fn bidirectional_with_header_break_when_receiver_dropped_mid_stream() {
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         wire,
         pull,
         move |chunk| {
@@ -666,7 +666,7 @@ async fn bidirectional_with_header_slow_producer_yields_poll_pending() {
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         wire,
         pull,
         move |chunk| {
@@ -711,7 +711,7 @@ async fn bidirectional_with_header_empty_pull_chunks_are_skipped() {
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         wire,
         pull,
         move |chunk| {
@@ -744,7 +744,7 @@ async fn streaming_with_header_handler_panic_does_not_emit_header() {
     // Drive it on a spawned task so the handler panic surfaces as a
     // JoinError instead of unwinding the test thread.
     let join = tokio::spawn(async move {
-        dispatch_streaming_with_header_async(
+        let _ = dispatch_streaming_with_header_async(
             wire,
             move |_header: &[u8]| {
                 hs.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -846,7 +846,7 @@ async fn bidirectional_with_header_closing_invokes_close_after_full_read() {
     let close_calls = Arc::new(AtomicUsize::new(0));
     let cc = Arc::clone(&close_calls);
 
-    dispatch_bidirectional_streaming_with_header_closing(
+    let _ = dispatch_bidirectional_streaming_with_header_closing(
         wire,
         pull,
         move |chunk| {
@@ -887,7 +887,7 @@ async fn bidirectional_with_header_closing_skips_close_when_body_ignored() {
     let close_calls = Arc::new(AtomicUsize::new(0));
     let cc = Arc::clone(&close_calls);
 
-    dispatch_bidirectional_streaming_with_header_closing(
+    let _ = dispatch_bidirectional_streaming_with_header_closing(
         wire,
         pull,
         move |chunk| {
@@ -940,7 +940,7 @@ async fn bidirectional_closing_invokes_close_on_handler_panic() {
     // Run on a spawned task so the handler panic surfaces as a JoinError
     // instead of unwinding the test thread.
     let join = tokio::spawn(async move {
-        dispatch_bidirectional_streaming_with_header_closing(
+        let _ = dispatch_bidirectional_streaming_with_header_closing(
             wire,
             pull,
             |_chunk: &[u8]| ControlFlow::Continue(()),

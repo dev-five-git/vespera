@@ -126,7 +126,7 @@ fn oversized_streaming_with_header_request_returns_413() {
 
     let header_seen: RefCell<Option<Vec<u8>>> = RefCell::new(None);
     let chunks = Cell::new(0usize);
-    block_on(dispatch_streaming_with_header_async(
+    let _ = block_on(dispatch_streaming_with_header_async(
         wire,
         |header: &[u8]| *header_seen.borrow_mut() = Some(header.to_vec()),
         |_chunk: &[u8]| {

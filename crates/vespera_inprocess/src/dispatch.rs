@@ -410,6 +410,14 @@ async fn finish_buffered_wire(
 }
 
 /// Outcome of [`dispatch_into_async`] / [`dispatch_into`].
+///
+/// Carries the truncation/overflow discriminant the FFI bridge relies on
+/// to decide whether `out[..n]` is a complete wire response or the
+/// response needs a larger buffer.  Dropping this value silently treats
+/// `Overflow(required)` as `Complete(n)`, exposing the
+/// read-uninitialised-prefix hazard documented on
+/// [`DirectWriteResult::Overflow`] — hence `#[must_use]`.
+#[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirectWriteResult {
     /// A complete wire response occupies `out[0..n]`.

@@ -151,6 +151,12 @@ where
 /// failure to the host so it can abort the transport (drop the
 /// connection / skip the clean chunked terminator) instead of letting a
 /// truncated body masquerade as a complete `2xx` response.
+///
+/// Dropping this value silently turns a `BodyError` / `SinkStopped`
+/// (truncated response) into what looks like a clean `Complete`,
+/// erasing the abort signal the FFI bridge relies on — hence
+/// `#[must_use]`.
+#[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamOutcome {
     /// The response body drained to clean EOF — every chunk delivered,

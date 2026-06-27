@@ -9,6 +9,8 @@ use jni::EnvUnowned;
 use jni::objects::JClass;
 use jni::sys::jint;
 
+use super::guard_void_symbol;
+
 const MIN_RUNTIME_WORKERS: usize = 1;
 const MAX_RUNTIME_WORKERS: usize = 1024;
 
@@ -57,10 +59,13 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_configureRu
     _class: JClass<'local>,
     worker_threads: jint,
 ) {
-    // Defensive `catch_unwind`: this body cannot panic today, but it is
-    // an `extern "system"` JNI symbol, so guard it for consistency with
-    // the dispatch symbols — an unwind must never cross the FFI boundary.
-    let _ = std::panic::catch_unwind(|| {
+    // Defensive panic guard: this body cannot panic today, but it is
+    // an `extern "system"` JNI symbol, so guard it through the shared
+    // `guard_void_symbol` helper (single source of truth for the
+    // void-symbol panic policy — every other void JNI symbol uses it).
+    // The returned `bool` (panic-caught flag) is intentionally
+    // discarded: defense-in-depth, matching the dispatch symbols.
+    let _ = guard_void_symbol(|| {
         if let Ok(workers) = usize::try_from(worker_threads)
             && workers > 0
         {
@@ -97,10 +102,11 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_configureSt
     chunk_bytes: jint,
     channel_capacity: jint,
 ) {
-    // Defensive `catch_unwind` — see `configureRuntime0`: keep every JNI
-    // `extern "system"` symbol panic-safe even though this body cannot
-    // panic with the current setters.
-    let _ = std::panic::catch_unwind(|| {
+    // Defensive panic guard — see `configureRuntime0`: keep every JNI
+    // `extern "system"` symbol panic-safe through the shared
+    // `guard_void_symbol` helper even though this body cannot panic
+    // with the current setters.
+    let _ = guard_void_symbol(|| {
         if let Ok(bytes) = usize::try_from(chunk_bytes)
             && bytes > 0
         {
