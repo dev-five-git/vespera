@@ -124,6 +124,25 @@ pub fn clear_pending_exception(env: &mut jni::Env<'_>) {
     }
 }
 
+/// Canonical `400` wire response for an invalid JNI input byte array.
+/// `detail` is rendered in the parenthesised tail (`null`,
+/// `length query failed`, `JNI conversion failed`) so the prefix
+/// `"invalid input byte array ("` stays in one place across the three
+/// ingress failure modes [`read_request_byte_array`] produces.
+///
+/// Same drift-prevention pattern as `vespera_inprocess`'s
+/// `BODY_STREAM_ERROR_MSG` / `HEADER_TOO_LARGE_MSG` / `invalid_request_err`
+/// — a future wording change (e.g. "invalid JNI input byte array") that
+/// touched only one of the three call sites would silently desync the
+/// wire `400` body for one of the failure modes; centralising the prefix
+/// makes that impossible.
+///
+/// The format string is byte-identical to the prior inlined literals,
+/// so wire `400` bodies for the three failure modes are unchanged.
+fn invalid_input_array_err(detail: &str) -> Vec<u8> {
+    vespera_inprocess::error_wire(400, &format!("invalid input byte array ({detail})"))
+}
+
 /// Read a request `byte[]` into an owned buffer, centralizing the
 /// ingress contract for every buffered JNI dispatch symbol:
 ///
@@ -139,17 +158,11 @@ pub fn read_request_byte_array(
     request_bytes: &JByteArray<'_>,
 ) -> Result<Vec<u8>, Vec<u8>> {
     if request_bytes.is_null() {
-        return Err(vespera_inprocess::error_wire(
-            400,
-            "invalid input byte array (null)",
-        ));
+        return Err(invalid_input_array_err("null"));
     }
     let Ok(len) = request_bytes.len(env) else {
         clear_pending_exception(env);
-        return Err(vespera_inprocess::error_wire(
-            400,
-            "invalid input byte array (length query failed)",
-        ));
+        return Err(invalid_input_array_err("length query failed"));
     };
     // Ingress cap: reject an oversized request with 413 BEFORE allocating
     // the Rust-side body copy (the amplification the Java `byte[]` would
@@ -174,10 +187,7 @@ pub fn read_request_byte_array(
         }
         Err(_) => {
             clear_pending_exception(env);
-            Err(vespera_inprocess::error_wire(
-                400,
-                "invalid input byte array (JNI conversion failed)",
-            ))
+            Err(invalid_input_array_err("JNI conversion failed"))
         }
     }
 }

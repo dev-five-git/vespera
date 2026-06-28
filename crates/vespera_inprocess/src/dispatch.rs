@@ -11,7 +11,8 @@ use http_body_util::BodyExt;
 use crate::Router;
 use crate::envelope::{RequestEnvelope, ResponseEnvelope, ResponseMetadata};
 use crate::internal::{
-    BODY_STREAM_ERROR_MSG, dispatch_and_split, dispatch_parts, to_response_envelope_text,
+    BODY_STREAM_ERROR_MSG, HEADER_TOO_LARGE_MSG, dispatch_and_split, dispatch_parts,
+    to_response_envelope_text,
 };
 use crate::registry::resolve_app_router;
 use crate::wire::{
@@ -388,7 +389,7 @@ async fn finish_buffered_wire(
     if !write_wire_header_into_vec(&mut out, status, &headers, &metadata) {
         // Unreachable for a real `HeaderMap` (4 GiB+ of header JSON); never
         // panic on the response path — emit a 500 wire response instead.
-        return error_wire(500, "response header exceeds u32::MAX bytes");
+        return error_wire(500, HEADER_TOO_LARGE_MSG);
     }
 
     loop {

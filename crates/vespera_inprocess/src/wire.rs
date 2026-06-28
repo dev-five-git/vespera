@@ -12,7 +12,7 @@ use bytes::Bytes;
 use serde::Serialize;
 
 use crate::envelope::ResponseMetadata;
-use crate::internal::ResponseParts;
+use crate::internal::{HEADER_TOO_LARGE_MSG, ResponseParts};
 
 /// Hand-rolled request-header parser (byte-compatible replacement for
 /// the `serde_json` derive path; the serde version is retained as
@@ -505,7 +505,7 @@ pub fn to_wire_bytes(parts: ResponseParts) -> Vec<u8> {
     ) {
         // Unreachable for a real `HeaderMap` (would need 4 GiB+ of header
         // JSON); never panic on the response path — emit a 500 instead.
-        return error_wire(500, "response header exceeds u32::MAX bytes");
+        return error_wire(500, HEADER_TOO_LARGE_MSG);
     }
     out.extend_from_slice(&body_bytes);
     out
@@ -528,7 +528,7 @@ pub fn build_wire_header_bytes(
     let mut out = Vec::with_capacity(4 + header_cap);
     if !write_wire_header_into(&mut out, status, headers, metadata, None) {
         // Unreachable for a real `HeaderMap`; never panic on the response path.
-        return error_wire(500, "response header exceeds u32::MAX bytes");
+        return error_wire(500, HEADER_TOO_LARGE_MSG);
     }
     out
 }
@@ -565,7 +565,7 @@ pub fn build_wire_header_bytes_hoisting(
         validation_errors.as_deref(),
     ) {
         // Unreachable for a real `HeaderMap`; never panic on the response path.
-        return error_wire(500, "response header exceeds u32::MAX bytes");
+        return error_wire(500, HEADER_TOO_LARGE_MSG);
     }
     out
 }

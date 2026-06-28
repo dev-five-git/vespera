@@ -37,6 +37,19 @@ pub const BODY_STREAM_ERROR_MSG: &str = "response body stream error";
 /// copies cannot drift.
 pub const BODY_SINK_STOPPED_MSG: &str = "response body sink stopped before completion";
 
+/// Canonical 500-fallback message emitted when the serialized response-
+/// header JSON would exceed the wire's `u32 BE` length prefix
+/// (`u32::MAX` bytes — 4 GiB).  Unreachable for any real `HeaderMap`, but
+/// `write_wire_header_into` / `write_wire_header_into_slice` guard
+/// against the overflow so the response path never panics.  Declared
+/// once here so the four call sites (dispatch.rs `finish_buffered_wire`,
+/// wire.rs `to_wire_bytes` / `build_wire_header_bytes` /
+/// `build_wire_header_bytes_hoisting`) cannot drift in their error
+/// wording — same single-source-of-truth pattern as
+/// [`BODY_STREAM_ERROR_MSG`] / [`BODY_SINK_STOPPED_MSG`].  The string
+/// literal is unchanged, so wire output stays byte-for-byte the same.
+pub const HEADER_TOO_LARGE_MSG: &str = "response header exceeds u32::MAX bytes";
+
 /// Parse the wire `method` string into an [`http::Method`], surfacing the
 /// invalid-method failure as the canonical `405 Method Not Allowed` wire
 /// error.  The two owned-wire entry points
@@ -54,6 +67,29 @@ fn parse_method_or_405(method_str: &str) -> Result<Method, (u16, String)> {
             format!("Method Not Allowed: '{method_str}' is not a valid HTTP method"),
         )
     })
+}
+
+/// Canonical `(400, "invalid request: <error>")` mapping for any
+/// `Display` error from URI / header-name / header-value parsing.
+///
+/// The same closure shape used to be inlined at four production call
+/// sites (`build_uri`, `build_axum_request_inner` header name + value,
+/// `dispatch_and_split` shared-bytes URI); a single-site edit to the
+/// wording would have silently drifted the wire `400` body between
+/// paths.  Locks the wording in one place — same single-source-of-truth
+/// pattern as [`parse_method_or_405`] / [`BODY_STREAM_ERROR_MSG`] /
+/// [`HEADER_TOO_LARGE_MSG`].
+///
+/// `#[inline]` keeps codegen byte-identical to the prior copy-pasted
+/// closures: at each `.map_err(invalid_request_err)` call site the
+/// helper collapses to the same `format!` the closure compiled to.
+/// The bench-only `_old` twin
+/// ([`build_request_from_bytes_builder_old`]) intentionally keeps the
+/// inlined closure shape so the `request_build_ab` criterion A/B arm
+/// stays byte-identical to the prior production shape.
+#[inline]
+fn invalid_request_err<E: std::fmt::Display>(e: E) -> (u16, String) {
+    (400, format!("invalid request: {e}"))
 }
 
 /// Build an [`http::HeaderValue`] from a wire-borrowed value string,
@@ -179,7 +215,7 @@ fn build_uri(path: &str, query: &str) -> Result<Uri, (u16, String)> {
         uri.push_str(query);
         Uri::try_from(uri)
     };
-    parsed.map_err(|e| (400, format!("invalid request: {e}")))
+    parsed.map_err(invalid_request_err)
 }
 
 /// Shared inner request build for [`build_request_from_bytes`] (the buffered /
@@ -233,10 +269,9 @@ fn build_axum_request_inner<'h>(
 
     let mut has_content_type = false;
     for (name, value) in headers {
-        let header_name = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|e| (400, format!("invalid request: {e}")))?;
-        let header_value = header_value_from_owner(value, header_bytes_owner)
-            .map_err(|e| (400, format!("invalid request: {e}")))?;
+        let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(invalid_request_err)?;
+        let header_value =
+            header_value_from_owner(value, header_bytes_owner).map_err(invalid_request_err)?;
         has_content_type = has_content_type || header_name == CONTENT_TYPE;
         header_map.append(header_name, header_value);
     }
@@ -582,9 +617,7 @@ pub async fn dispatch_and_split<'h>(
     // `build_uri`); any owned/escaped path or non-empty query passes `None` and
     // falls back to the copying join.
     let uri = match path_bytes {
-        Some(bytes) => {
-            Uri::from_maybe_shared(bytes).map_err(|e| (400, format!("invalid request: {e}")))?
-        }
+        Some(bytes) => Uri::from_maybe_shared(bytes).map_err(invalid_request_err)?,
         None => build_uri(path, query)?,
     };
 
