@@ -65,6 +65,26 @@ impl JsonSink for SliceSink<'_> {
     }
 }
 
+/// `io::Write` adapter so the bench-only `serde_json::to_writer` arm in
+/// [`super::write_wire_header_into_slice_serde`] can drive the same
+/// overflow-counting sink the production hand-rolled path uses — locking
+/// `SliceSink` as the single source of truth and removing the structurally
+/// identical `SliceWriter` duplicate that used to live in `wire.rs`.
+///
+/// Gated on `test` / `bench-support` because that A/B twin is the only
+/// caller; production reaches `SliceSink` through [`JsonSink`].
+#[cfg(any(test, feature = "bench-support"))]
+impl std::io::Write for SliceSink<'_> {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        JsonSink::put(self, data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 // ── serde_json-exact string escaping ─────────────────────────────────
 //
 // Reproduces `serde_json`'s `ESCAPE` lookup table + `write_char_escape`
@@ -157,14 +177,16 @@ fn write_json_string<S: JsonSink>(sink: &mut S, s: &str) {
         if start < i {
             sink.put(&bytes[start..i]);
         }
+        // For every short-form escape the `ESCAPE` table's value IS the literal
+        // escape character the JSON spec specifies — `ESCAPE[0x08] = b'b'`,
+        // `ESCAPE[0x22] = b'"'`, `ESCAPE[0x5C] = b'\\'`, etc. — so `[b'\\', escape]`
+        // is byte-identical to the per-arm literal (`b"\\b"`, `b"\\\""`, ...) it
+        // replaces.  Collapsing the seven copy-pasted arms removes the drift hazard
+        // of one of them diverging during refactoring.  Byte-identity is locked by
+        // `hand_serialize_matches_serde_serialize` + `hand_serialize_matches_serde_for_tiny_header_maps`
+        // in `wire/tests.rs` and the end-to-end `tests/wire_contract.rs`.
         match escape {
-            BB => sink.put(b"\\b"),
-            TT => sink.put(b"\\t"),
-            NN => sink.put(b"\\n"),
-            FF => sink.put(b"\\f"),
-            RR => sink.put(b"\\r"),
-            QU => sink.put(b"\\\""),
-            BS => sink.put(b"\\\\"),
+            BB | TT | NN | FF | RR | QU | BS => sink.put(&[b'\\', escape]),
             // `UU`: a C0 control with no short form -> `\u00XX` (lowercase hex).
             _ => sink.put(&[
                 b'\\',

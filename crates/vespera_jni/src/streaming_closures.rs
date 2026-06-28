@@ -137,7 +137,15 @@ const ZERO_READ_BACKOFF_CAP: Duration = Duration::from_millis(1);
 
 fn zero_read_backoff(consecutive_empty_reads: u32) -> Option<Duration> {
     let over_threshold = consecutive_empty_reads.checked_sub(ZERO_READ_YIELD_THRESHOLD)?;
-    Some((ZERO_READ_BACKOFF_STEP * (over_threshold + 1)).min(ZERO_READ_BACKOFF_CAP))
+    // `over_threshold + 1` would panic in debug (or wrap in release) at
+    // `consecutive_empty_reads == u32::MAX` — unreachable in practice (the
+    // backoff caps at 1 ms, so ~4 G empty reads × ≥ 50 µs ≈ 60 hours of
+    // pure backoff per stream), but aligned here with the panic-free
+    // discipline the rest of this FFI-adjacent file documents
+    // explicitly (cf. `make_push_closure`'s `i32::try_from(...).unwrap_or(chunk_size_i32)`
+    // and `make_pull_closure`'s `usize::try_from` fallback).
+    let step_count = over_threshold.saturating_add(1);
+    Some((ZERO_READ_BACKOFF_STEP * step_count).min(ZERO_READ_BACKOFF_CAP))
 }
 
 fn method_cache(env: &mut jni::Env<'_>) -> Option<&'static MethodCache> {

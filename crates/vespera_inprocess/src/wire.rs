@@ -570,44 +570,6 @@ pub fn build_wire_header_bytes_hoisting(
     out
 }
 
-/// `io::Write` adapter over a fixed `&mut [u8]`: copies the prefix that
-/// fits and *counts* the rest, so a serializer can fill the caller's
-/// buffer and still report the exact size it needed on overflow —
-/// without allocating or panicking.  `pos` is the running total of bytes
-/// the writer was asked to write (it may exceed `buf.len()`).
-#[cfg(any(test, feature = "bench-support"))]
-struct SliceWriter<'a> {
-    buf: &'a mut [u8],
-    pos: usize,
-}
-
-#[cfg(any(test, feature = "bench-support"))]
-impl<'a> SliceWriter<'a> {
-    fn new(buf: &'a mut [u8]) -> Self {
-        Self { buf, pos: 0 }
-    }
-
-    fn put(&mut self, data: &[u8]) {
-        if self.pos < self.buf.len() {
-            let n = data.len().min(self.buf.len() - self.pos);
-            self.buf[self.pos..self.pos + n].copy_from_slice(&data[..n]);
-        }
-        self.pos += data.len();
-    }
-}
-
-#[cfg(any(test, feature = "bench-support"))]
-impl std::io::Write for SliceWriter<'_> {
-    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        self.put(data);
-        Ok(data.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 /// Write `[u32 BE header_len | JSON header]` **straight into `out`**
 /// with the hand-rolled [`header_write`] serializer, returning the exact
 /// total header byte count regardless of whether it fit.  The
@@ -668,7 +630,7 @@ fn write_wire_header_into_slice_serde(
         validation_errors: None,
     };
     let header_total = {
-        let mut writer = SliceWriter::new(out);
+        let mut writer = header_write::SliceSink::new(out);
         writer.put(&[0u8; 4]);
         serde_json::to_writer(&mut writer, &view)
             .expect("WireResponseHeader serialization is infallible");
