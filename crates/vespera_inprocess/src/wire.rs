@@ -240,7 +240,8 @@ impl Serialize for WireHeaders<'_> {
         // heap `Vec`; header sets larger than the stack cap fall back to a
         // heap `Vec`.  Output is byte-identical either way (same sorted
         // order over the same names), as locked by tests/wire_contract.rs.
-        const STACK_CAP: usize = 32;
+        // `STACK_CAP` is declared at module scope so the bench A/B twin
+        // and the production `write_headers` stay locked to the same cap.
         let key_count = self.0.keys_len();
         let mut stack_names: [&str; STACK_CAP] = [""; STACK_CAP];
         let mut heap_names: Vec<&str>;
@@ -298,6 +299,16 @@ impl Serialize for WireHeaderValues<'_> {
 /// serializer usually writes without reallocating.
 pub const WIRE_HEADER_RESERVE: usize = 192;
 
+/// Header-name sort stack-buffer capacity — shared by the production
+/// [`header_write::write_headers`] serializer and the bench-only serde
+/// twin [`WireHeaders::serialize`].  Both arms of the same-run
+/// `wire_header_serde` criterion A/B must size their stack buffer
+/// identically (the bench's invariant is "same code, different
+/// serializer" — diverging caps would silently compare unequal
+/// stack/heap fallback behaviour).  Declaring this once here makes the
+/// invariant impossible to break by editing only one site.
+const STACK_CAP: usize = 32;
+
 /// Cheap upper-ish estimate of the serialized response wire-header JSON
 /// byte length (excluding the 4-byte length prefix), so the response
 /// `Vec` can be sized to serialize a header-heavy response **without
@@ -308,13 +319,16 @@ pub const WIRE_HEADER_RESERVE: usize = 192;
 /// emitted bytes.  Always combined with a [`WIRE_HEADER_RESERVE`] floor by
 /// callers, so a small-header response never reserves less than before.
 pub fn header_capacity_estimate(headers: &http::HeaderMap, metadata: &ResponseMetadata) -> usize {
-    // {"v":1,"status":NNN,"headers":{},"metadata":{"version":""}} scaffold.
-    // The 3 `NNN` status bytes are part of the fixed scaffold: `http::StatusCode`
-    // is constrained to 100..=999, so the serialized status is *always* exactly
-    // 3 digits. The prior value of 56 omitted them, under-counting every
-    // estimate by 3 bytes (one needless Vec growth on header-heavy responses
-    // whose estimate beat the WIRE_HEADER_RESERVE floor).
-    const SCAFFOLD: usize = 59;
+    // `{"v":1,"status":NNN,"headers":{},"metadata":{"version":""}}` scaffold —
+    // self-documenting via `str::len()` of the literal so a future scaffold
+    // edit (new metadata field, renamed key, …) auto-recomputes the floor
+    // instead of silently desynchronising a hand-counted constant.  The 3
+    // `NNN` status bytes are baked into the literal: `http::StatusCode` is
+    // constrained to 100..=999, so the serialized status is *always* exactly
+    // 3 digits.  `str::len()` has been `const` since Rust 1.39, so this
+    // still evaluates at compile time (== 59 bytes, byte-identical capacity).
+    const SCAFFOLD: usize =
+        "{\"v\":1,\"status\":NNN,\"headers\":{},\"metadata\":{\"version\":\"\"}}".len();
     let mut est = SCAFFOLD + metadata.version.len();
     for (name, value) in headers {
         est += name.as_str().len() + value.len() + 8;
@@ -348,9 +362,14 @@ pub fn header_capacity_with_floor(headers: &http::HeaderMap, metadata: &Response
 /// emitted bytes.
 fn validation_errors_capacity_estimate(items: &[ValidationErrorItem]) -> usize {
     // `,"validation_errors":[]` wrapper, plus per item the
-    // `{"path":"","code":"","message":""},` scaffold.
-    const WRAPPER: usize = 24;
-    const ITEM_SCAFFOLD: usize = 36;
+    // `{"path":"","code":"","message":""},` scaffold — both sized via
+    // `str::len()` of the literals they document so a future shape change
+    // (renamed field, extra field) auto-recomputes the floor instead of
+    // silently desynchronising a hand-counted constant.  The literals'
+    // empty values are themselves the worst case: absent `code`/`message`
+    // only shrink the rendered output, so this stays a safe upper bound.
+    const WRAPPER: usize = ",\"validation_errors\":[]".len();
+    const ITEM_SCAFFOLD: usize = "{\"path\":\"\",\"code\":\"\",\"message\":\"\"},".len();
     let mut est = WRAPPER;
     for item in items {
         est += ITEM_SCAFFOLD

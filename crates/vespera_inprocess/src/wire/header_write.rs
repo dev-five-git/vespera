@@ -21,7 +21,7 @@ use std::borrow::Cow;
 
 use crate::envelope::ResponseMetadata;
 
-use super::{ValidationErrorItem, WIRE_VERSION};
+use super::{STACK_CAP, ValidationErrorItem, WIRE_VERSION};
 
 /// Byte sink abstraction so one serializer serves both the growable
 /// `Vec<u8>` path ([`super::write_wire_header_into`]) and the fixed
@@ -240,7 +240,8 @@ fn write_status_code<S: JsonSink>(sink: &mut S, status: u16) {
 ///   JSON array in insertion order;
 /// - non-UTF-8 values render as `""` (same `to_str().unwrap_or("")`).
 fn write_headers<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap) {
-    const STACK_CAP: usize = 32;
+    // `STACK_CAP` is `use`d from the parent `wire` module so the bench
+    // A/B twin and this production path stay locked to the same cap.
     let key_count = headers.keys_len();
     // Fast paths for the overwhelmingly common tiny-header responses: skip
     // initialising the 32-slot stack name array AND the (no-op) sort that the
