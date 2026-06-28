@@ -8,7 +8,7 @@ use jni::objects::{JByteArray, JClass, JObject};
 
 use crate::daemon_env::with_cached_daemon_env;
 use crate::jni_impl::{
-    guard_void_symbol, panic_wire, read_request_byte_array, runtime,
+    guard_void_symbol, panic_wire, read_request_byte_array, runtime, runtime_unavailable_wire,
     streaming_buffer::{PullPushBuffers, mark_streaming_buffer_reusable},
     support::{
         FullStreamHeaderSetup, PanicHeaderAction, panic_post_header_action,
@@ -135,10 +135,6 @@ struct FullHeaderArgs<'a, 'local> {
     flags: &'a Arc<StreamingFlags>,
 }
 
-fn runtime_unavailable_header() -> vespera_inprocess::StreamOutcome {
-    vespera_inprocess::StreamOutcome::BodyError
-}
-
 fn dispatch_full_streaming_with_header_body(env: &mut jni::Env<'_>, args: &FullHeaderArgs<'_, '_>) {
     if reject_null_header_consumer(env, args.header_consumer, args.flags) {
         return;
@@ -166,6 +162,29 @@ fn dispatch_full_streaming_with_header_body(env: &mut jni::Env<'_>, args: &FullH
         push_buf_lease,
     } = buffers;
 
+    // Hoist the shared-runtime availability check OUT of `catch_unwind`: when
+    // the OnceLock-cached Tokio runtime failed to initialize (OS resource
+    // exhaustion at first dispatch), the documented "header consumer invoked
+    // exactly once on every code path" contract REQUIRES delivering the wire
+    // error THROUGH the header consumer — mirroring the read-failure and
+    // setup-failure pre-dispatch shapes above.  The prior `.map_or_else` shape
+    // inside the closure returned `StreamOutcome::BodyError`, which surfaced
+    // as a misleading `IOException("...body stream aborted after the header
+    // was committed")` for a body that was never produced and a header that
+    // was never delivered — Java callers had no chance to handle the failure
+    // through their `headerConsumer`.
+    let Some(runtime) = runtime() else {
+        mark_streaming_buffer_reusable(pull_buf_lease);
+        mark_streaming_buffer_reusable(push_buf_lease);
+        notify_local_header(
+            env,
+            args.header_consumer,
+            &runtime_unavailable_wire(),
+            args.flags,
+        );
+        return;
+    };
+
     let pull_jvm = jvm.clone();
     let pull_global = Arc::clone(&input_global);
     let push_jvm = jvm.clone();
@@ -178,32 +197,30 @@ fn dispatch_full_streaming_with_header_body(env: &mut jni::Env<'_>, args: &FullH
     let flags_for_push = Arc::clone(args.flags);
     let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut push = make_push_closure(push_jvm, push_global, push_buf);
-        runtime().map_or_else(runtime_unavailable_header, |runtime| {
-            runtime.block_on(
-                vespera_inprocess::dispatch_bidirectional_streaming_with_header_closing(
-                    header_input,
-                    make_pull_closure(pull_jvm, pull_global, pull_buf),
-                    move |chunk: &[u8]| {
-                        push_unless_header_failed(&flags_for_push.failed, &mut push, chunk)
-                    },
-                    |header_bytes: &[u8]| {
-                        let delivered = with_cached_daemon_env(
-                            &header_jvm,
-                            |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
-                                call_header_consumer(env, &header_for_cb, header_bytes)
-                            },
-                        )
-                        .is_ok();
-                        flags_for_cb.record_header_callback_result(delivered);
-                    },
-                    move || {
-                        let _ = with_cached_daemon_env(&close_jvm, |env| {
-                            close_input_stream(env, &input_for_close)
-                        });
-                    },
-                ),
-            )
-        })
+        runtime.block_on(
+            vespera_inprocess::dispatch_bidirectional_streaming_with_header_closing(
+                header_input,
+                make_pull_closure(pull_jvm, pull_global, pull_buf),
+                move |chunk: &[u8]| {
+                    push_unless_header_failed(&flags_for_push.failed, &mut push, chunk)
+                },
+                |header_bytes: &[u8]| {
+                    let delivered = with_cached_daemon_env(
+                        &header_jvm,
+                        |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
+                            call_header_consumer(env, &header_for_cb, header_bytes)
+                        },
+                    )
+                    .is_ok();
+                    flags_for_cb.record_header_callback_result(delivered);
+                },
+                move || {
+                    let _ = with_cached_daemon_env(&close_jvm, |env| {
+                        close_input_stream(env, &input_for_close)
+                    });
+                },
+            ),
+        )
     }));
     match panic_result {
         Ok(outcome) => {
@@ -254,30 +271,49 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                 return Ok(());
             };
 
+            // Hoist the shared-runtime availability check OUT of `catch_unwind`:
+            // when the OnceLock-cached Tokio runtime failed to initialize, the
+            // documented "header consumer invoked exactly once on every code
+            // path" contract REQUIRES delivering the wire error THROUGH the
+            // header consumer (see the matching comment in
+            // `dispatch_full_streaming_with_header_body`).  The prior
+            // `.map_or_else` shape returned `StreamOutcome::BodyError`, which
+            // surfaced as a misleading `IOException("...body stream aborted
+            // after the header was committed")` for a body that was never
+            // produced and a header that was never delivered.
+            let Some(runtime) = runtime() else {
+                mark_streaming_buffer_reusable(push_buf_lease);
+                notify_local_header(
+                    env,
+                    &header_consumer,
+                    &runtime_unavailable_wire(),
+                    &flags_body,
+                );
+                return Ok(());
+            };
+
             let flags_for_cb = Arc::clone(&flags_body);
             let flags_for_push = Arc::clone(&flags_body);
             let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let header_for_cb = header_global;
                 let jvm_for_cb = jvm.clone();
                 let mut push = make_push_closure(jvm, stream_global, push_buf);
-                runtime().map_or_else(runtime_unavailable_header, |runtime| {
-                    runtime.block_on(vespera_inprocess::dispatch_streaming_with_header_async(
-                        input,
-                        |header_bytes: &[u8]| {
-                            let delivered = with_cached_daemon_env(
-                                &jvm_for_cb,
-                                |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
-                                    call_header_consumer(env, &header_for_cb, header_bytes)
-                                },
-                            )
-                            .is_ok();
-                            flags_for_cb.record_header_callback_result(delivered);
-                        },
-                        move |chunk: &[u8]| {
-                            push_unless_header_failed(&flags_for_push.failed, &mut push, chunk)
-                        },
-                    ))
-                })
+                runtime.block_on(vespera_inprocess::dispatch_streaming_with_header_async(
+                    input,
+                    |header_bytes: &[u8]| {
+                        let delivered = with_cached_daemon_env(
+                            &jvm_for_cb,
+                            |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
+                                call_header_consumer(env, &header_for_cb, header_bytes)
+                            },
+                        )
+                        .is_ok();
+                        flags_for_cb.record_header_callback_result(delivered);
+                    },
+                    move |chunk: &[u8]| {
+                        push_unless_header_failed(&flags_for_push.failed, &mut push, chunk)
+                    },
+                ))
             }));
             match panic_result {
                 Ok(outcome) => {

@@ -705,9 +705,14 @@ fn parse_wire_header_len(input: &[u8]) -> Result<usize, String> {
             input.len()
         ));
     }
-    let mut len_bytes = [0u8; 4];
-    len_bytes.copy_from_slice(&input[..4]);
-    let header_len = u32::from_be_bytes(len_bytes) as usize;
+    // `try_into()` cannot fail: the `input.len() < 4` guard above proves the
+    // slice is exactly four bytes long.  The `.expect` is structural
+    // documentation of that invariant, never reached at runtime.  Byte-identical
+    // codegen to the prior `let mut + copy_from_slice` triplet (LLVM lowers both
+    // to the same `bswap`-style instruction) — the wire-contract goldens and
+    // the hand-vs-serde round-trip property test lock the byte behaviour.
+    let header_len =
+        u32::from_be_bytes(input[..4].try_into().expect("bounds checked above")) as usize;
     check_header_len(header_len)?;
     let total_header_end = 4usize.saturating_add(header_len);
     if total_header_end > input.len() {
