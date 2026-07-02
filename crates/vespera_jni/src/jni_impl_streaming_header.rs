@@ -55,17 +55,20 @@ fn handle_header_dispatch_panic(
     header_consumer: &JObject<'_>,
     flags: &StreamingFlags,
 ) {
-    match panic_post_header_action(
-        flags.sent.load(Ordering::Relaxed),
-        flags.failed.load(Ordering::Acquire),
-    ) {
+    // Cache once so `panic_post_header_action` and `throw_streaming_abort`
+    // observe the exact same `failed` snapshot — the two loads happen
+    // back-to-back on the panic path with no intervening writer, so a
+    // second Acquire load could only ever see the same value.  Avoids a
+    // duplicate atomic through opaque function boundaries.
+    let failed = flags.failed.load(Ordering::Acquire);
+    match panic_post_header_action(flags.sent.load(Ordering::Relaxed), failed) {
         PanicHeaderAction::FireFallbackHeader => {
             let err = panic_wire();
             let _ = call_header_consumer_local(env, header_consumer, &err);
             flags.notified.store(true, Ordering::Release);
         }
         PanicHeaderAction::ThrowAbort => {
-            throw_streaming_abort(env, flags.failed.load(Ordering::Acquire));
+            throw_streaming_abort(env, failed);
         }
     }
 }

@@ -501,8 +501,7 @@ pub fn call_header_consumer(
         // the body keeps streaming over a failed header instead of aborting.
         // Scrub on BOTH paths so the thread is left clean, then fail if a
         // throw was detected.
-        let threw = env.exception_check();
-        if threw {
+        if env.exception_check() {
             env.exception_clear();
             return Err(jni::errors::Error::JavaException);
         }

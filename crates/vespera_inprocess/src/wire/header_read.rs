@@ -34,6 +34,16 @@ use super::{CowPairs, WireRequestHeader};
 /// the `catch_unwind` guards at the JNI entry points).
 const INLINE_SKIP_DEPTH: usize = 128;
 
+// Lock the inline-bitset sizing invariant at compile time: the `ContainerStack`
+// inline path stores one bit per depth level in `[u64; INLINE_SKIP_DEPTH / 64]`,
+// so a value that is not a multiple of 64 would silently round the bitset
+// capacity down and leave the topmost depth levels un-addressable — same
+// discipline as the `WIRE_VERSION == 1` pin in `header_write.rs`.
+const _: () = assert!(
+    INLINE_SKIP_DEPTH.is_multiple_of(64),
+    "INLINE_SKIP_DEPTH must be a multiple of 64 to size the u64 inline bitset without silent truncation"
+);
+
 /// Initial capacity for the request-header `(name, value)` pair `Vec`.
 ///
 /// Sized for a realistic browser / reverse-proxy / API request header set
