@@ -486,6 +486,19 @@ where
     ))
 }
 
+/// Non-UTF-8 header values collapse to the empty string on the text-envelope
+/// path — same "empty on non-UTF-8" contract as the wire-path sibling
+/// `super::wire::header_write::header_value_as_str` (borrowed `&str`
+/// there vs owned `String` here — the split is deliberate so the wire
+/// path stays zero-copy).  Declared once here so the three
+/// [`collect_header_map`] call sites cannot silently drift from each
+/// other if the fallback ever changes.  `#[inline]` folds it back into
+/// each caller so the codegen matches the previous inline expression.
+#[inline]
+fn header_value_to_owned(v: &http::HeaderValue) -> String {
+    v.to_str().unwrap_or_default().to_owned()
+}
+
 /// Collapse an [`http::HeaderMap`] into the wire's name → value map.
 /// Headers with repeated names (e.g. `set-cookie`) are preserved as
 /// [`HeaderValue::Multi`] so their semantics survive the conversion.
@@ -507,7 +520,7 @@ fn collect_header_map(headers: &http::HeaderMap) -> BTreeMap<String, HeaderValue
         // `keys()` only yields present names, but stay panic-free anyway:
         // skip the impossible `None` instead of `expect`-ing.
         let Some(first) = values.next() else { continue };
-        let first_str = first.to_str().unwrap_or("").to_owned();
+        let first_str = header_value_to_owned(first);
         let value = match values.next() {
             // Single value: emit the scalar string (overwhelmingly common).
             None => HeaderValue::Single(first_str),
@@ -519,9 +532,9 @@ fn collect_header_map(headers: &http::HeaderMap) -> BTreeMap<String, HeaderValue
                 let remaining = values.size_hint().0;
                 let mut multi = Vec::with_capacity(2 + remaining);
                 multi.push(first_str);
-                multi.push(second.to_str().unwrap_or("").to_owned());
+                multi.push(header_value_to_owned(second));
                 for v in values {
-                    multi.push(v.to_str().unwrap_or("").to_owned());
+                    multi.push(header_value_to_owned(v));
                 }
                 HeaderValue::Multi(multi)
             }

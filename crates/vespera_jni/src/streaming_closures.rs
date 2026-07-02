@@ -314,6 +314,35 @@ fn call_future_complete(
     Ok(())
 }
 
+/// Check-and-clear variant of [`clear_pending_exception`]: returns
+/// whether an exception was pending (and cleared).
+///
+/// Every cached-`JMethodID` call site above (`call_input_stream_read`,
+/// `call_output_stream_write`, `call_consumer_accept`) uses
+/// `call_method_unchecked` on the fast path, which returns `Ok` while
+/// leaving a thrown Java exception PENDING on the thread instead of
+/// surfacing it as `Err` (only the checked fallback surfaces it).  The
+/// three streaming closures below (`make_pull_closure`,
+/// `make_push_closure`, `call_header_consumer`) have to convert that
+/// pending exception into an abort with per-caller-specific return
+/// values (`RequestChunk::Error` for pull; `JavaException` `Err` for
+/// push / header-consumer), so they share the check-clear preamble
+/// while keeping their return type distinct.  Centralising the
+/// check-clear here means a future policy change (e.g. logging the
+/// exception before clearing, or `exception_describe()` in debug
+/// builds) needs to touch ONE site instead of drifting across three.
+/// `#[inline]` folds it back into each caller so codegen matches the
+/// previous inline expression.
+#[inline]
+fn take_pending_exception(env: &mut jni::Env<'_>) -> bool {
+    if env.exception_check() {
+        env.exception_clear();
+        true
+    } else {
+        false
+    }
+}
+
 /// Build the request-body pull closure shared by the two
 /// full-streaming JNI entry points.
 ///
@@ -349,8 +378,7 @@ pub fn make_pull_closure(
                 // checked fallback in `call_input_stream_read` already aborts via
                 // `?`; acting on the pending exception here gives the unchecked
                 // path identical semantics instead of interpreting the garbage `n`.)
-                if env.exception_check() {
-                    env.exception_clear();
+                if take_pending_exception(env) {
                     return Ok(RequestChunk::Error);
                 }
                 // InputStream.read(byte[]) contract (mirrored in the
@@ -466,8 +494,7 @@ pub fn make_push_closure(
                 // the remaining segments/frames into a broken sink — instead of
                 // clearing it and futilely streaming the rest of the body to a
                 // dead stream. (The checked fallback already latches via `?`.)
-                if env.exception_check() {
-                    env.exception_clear();
+                if take_pending_exception(env) {
                     return Err(jni::errors::Error::JavaException);
                 }
             }
@@ -501,8 +528,7 @@ pub fn call_header_consumer(
         // the body keeps streaming over a failed header instead of aborting.
         // Scrub on BOTH paths so the thread is left clean, then fail if a
         // throw was detected.
-        if env.exception_check() {
-            env.exception_clear();
+        if take_pending_exception(env) {
             return Err(jni::errors::Error::JavaException);
         }
         result?;

@@ -28,7 +28,17 @@ fn body_is_json(headers: &http::HeaderMap) -> bool {
             // slice), so an exotic non-ASCII value can never panic on a
             // non-char-boundary index — and `/json` (e.g. `text/json`) now
             // hoists too, matching the documented contract.
-            let mime = s.split(';').next().unwrap_or("").trim().as_bytes();
+            //
+            // `split_once(';')` returns `Some((head, _))` when a parameter
+            // list is present (`application/json; charset=utf-8`) and
+            // `None` when it isn't (`application/json`), so the media type
+            // is the head slice or the whole string — no dead `Split::next`
+            // fallback (`.next()` on `&str` never yields `None`).
+            let mime = s
+                .split_once(';')
+                .map_or(s, |(head, _)| head)
+                .trim()
+                .as_bytes();
             mime.len() >= 5 && {
                 let suffix = &mime[mime.len() - 5..];
                 suffix.eq_ignore_ascii_case(b"/json") || suffix.eq_ignore_ascii_case(b"+json")
