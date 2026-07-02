@@ -253,20 +253,23 @@ fn write_headers<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap) {
         return;
     }
     if key_count == 1 {
-        // `keys_len() == 1` guarantees exactly one key.  On the impossible
-        // `None` we emit an empty object instead of panicking, keeping this
-        // FFI-adjacent response serializer free of unwind sites (mirrors the
-        // no-panic/unwind discipline the dispatch internals document).
-        if let Some(name) = headers.keys().next() {
-            sink.put(b"{");
-            write_header_name_json_string(sink, name.as_str());
-            sink.put(b":");
-            write_header_value(sink, headers, name.as_str());
-            sink.put(b"}");
-        } else {
+        // `keys_len() == 1` guarantees exactly one key.  `let-else` flattens
+        // the happy path — the always-taken branch is no longer nested under
+        // an `if let` whose only alternative is a paranoid fallback.  On the
+        // impossible `None` we still emit an empty object instead of
+        // panicking, keeping this FFI-adjacent response serializer free of
+        // unwind sites (mirrors the no-panic/unwind discipline the dispatch
+        // internals document).  Byte-identical output either way.
+        let Some(name) = headers.keys().next() else {
             debug_assert!(false, "keys_len()==1 yields exactly one name");
             sink.put(b"{}");
-        }
+            return;
+        };
+        sink.put(b"{");
+        write_header_name_json_string(sink, name.as_str());
+        sink.put(b":");
+        write_header_value(sink, headers, name.as_str());
+        sink.put(b"}");
         return;
     }
 

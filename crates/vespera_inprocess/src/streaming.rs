@@ -771,102 +771,131 @@ fn spawn_request_producer(
     tx: tokio::sync::mpsc::Sender<RequestFrame>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
-        // `End` ends the stream; an empty `Data(_)` is skipped (it's not
-        // EOF); `Error` forwards a `StreamAbort` so the body errors out
-        // instead of ending cleanly.  A failed `blocking_send` means the
-        // receiver — axum's request body — was dropped because the
-        // handler aborted mid-stream, so we stop pulling.
-        let mut consecutive_empty: u32 = 0;
-        // Read once: the configured max bytes per queued frame. A host
-        // `pull()` may return an arbitrarily large `Vec`; splitting it into
-        // `<= max_chunk` pieces below keeps the channel's `slots * chunk_bytes`
-        // memory bound REAL instead of `slots * arbitrary` — without it a
-        // hostile/buggy producer returning multi-MiB chunks defeats the
-        // `O(chunk)` RAM guarantee and can OOM the host under load.
-        let max_chunk = crate::config::streaming_chunk_bytes();
-        // `'producer:` lets every early-exit path (panic in `pull`, sustained
-        // empty reads, explicit `End`/`Error`, receiver-side channel drop in
-        // the inner chunk-splitter `while`) exit the same `loop` directly
-        // without a `receiver_gone` flag + post-`while` check.  All four
-        // existing exits already broke this outer loop directly; labelling it
-        // gives the inner `while` the same uniform shape.
-        'producer: loop {
-            // A panic inside the user / JNI-supplied `pull()` must NOT be
-            // turned into a clean end-of-stream — that would accept a
-            // TRUNCATED upload as a complete request body (silent data
-            // loss).  Catch it and forward a `StreamAbort`, exactly like the
-            // explicit `RequestChunk::Error` path, so axum/the handler
-            // rejects the body instead of seeing a short, "successful" read.
-            let Ok(next) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut pull)) else {
-                let _ = tx.blocking_send(Err(StreamAbort));
-                break 'producer;
-            };
-            match next {
-                RequestChunk::Data(chunk) => {
-                    if chunk.is_empty() {
-                        // A conformant blocking `InputStream.read(byte[])`
-                        // never returns 0 for a non-empty buffer — it
-                        // blocks until ≥1 byte or returns -1 at EOF.
-                        // Sustained empty reads therefore mean a stuck or
-                        // hostile producer; cap them (with a yield so we
-                        // don't peg a blocking-pool core) and abort instead
-                        // of busy-spinning this thread forever.
-                        //
-                        // `saturating_add` aligns this producer-side counter
-                        // with its sibling `consecutive_empty_reads` in
-                        // `crates/vespera_jni/src/streaming_closures.rs` —
-                        // a directly comparable layered-defence counter with
-                        // the same panic-free discipline documented at
-                        // `streaming_closures.rs:141-146`.  Release codegen
-                        // is byte-identical to `+= 1` (LLVM lowers both to
-                        // `add.i32`); the change removes a theoretical
-                        // debug-only overflow panic that MAX_CONSECUTIVE_
-                        // EMPTY_READS = 1024 already prevents in practice.
-                        consecutive_empty = consecutive_empty.saturating_add(1);
-                        if consecutive_empty >= MAX_CONSECUTIVE_EMPTY_READS {
-                            let _ = tx.blocking_send(Err(StreamAbort));
-                            break 'producer;
+        // Fallback sender for the OUTER panic guard: if any panic escapes
+        // the producer loop below (not just `pull()`, but `Bytes::from`, the
+        // chunk-splitter `while`, or `tx.blocking_send`), the catch below
+        // surfaces it as `StreamAbort` so axum sees an errored body — the
+        // same "no silent truncation" discipline the prior per-pull catch
+        // enforced, now extended to the whole loop body.  `mpsc::Sender`'s
+        // `Clone` is a single `Arc` bump paid ONCE per producer spawn (not
+        // per chunk); the outer `tx` still moves into the closure below so
+        // the happy path uses exactly one sender.
+        let tx_fallback = tx.clone();
+        // ONE outer `catch_unwind` replaces the previous per-pull catch.
+        // Two independent wins over the old per-pull shape:
+        //   1. Cost — installing a landing-pad frame ONCE per producer spawn
+        //      instead of once per chunk (~4K setups per 1 GiB / 256 KiB
+        //      stream) removes an unnecessary per-chunk cost on the happy
+        //      path.  Every code path already handled a caught panic
+        //      identically to `RequestChunk::Error`, so an outer catch
+        //      preserves the observable outcome for a panicking `pull()`.
+        //   2. Semantics — a panic ANYWHERE ELSE in the loop body (`Bytes::
+        //      from(chunk)`, the chunk-splitter `while`, `tx.blocking_send`,
+        //      `consecutive_empty.saturating_add`) used to unwind past the
+        //      per-pull catch, abort the `spawn_blocking` task, and surface
+        //      as a `JoinError` that `await_request_producer` silently
+        //      discards (`let _ = handle.await;`) — axum then saw a CLEAN
+        //      end-of-stream instead of a `StreamAbort`, i.e. a TRUNCATED
+        //      upload accepted as a complete request body (silent data
+        //      loss, the exact failure the per-pull catch was written to
+        //      prevent).  The outer catch closes that hole so ANY loop-body
+        //      panic now surfaces as `StreamAbort`.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            // `End` ends the stream; an empty `Data(_)` is skipped (it's not
+            // EOF); `Error` forwards a `StreamAbort` so the body errors out
+            // instead of ending cleanly.  A failed `blocking_send` means the
+            // receiver — axum's request body — was dropped because the
+            // handler aborted mid-stream, so we stop pulling.
+            let mut consecutive_empty: u32 = 0;
+            // Read once: the configured max bytes per queued frame. A host
+            // `pull()` may return an arbitrarily large `Vec`; splitting it into
+            // `<= max_chunk` pieces below keeps the channel's `slots * chunk_bytes`
+            // memory bound REAL instead of `slots * arbitrary` — without it a
+            // hostile/buggy producer returning multi-MiB chunks defeats the
+            // `O(chunk)` RAM guarantee and can OOM the host under load.
+            let max_chunk = crate::config::streaming_chunk_bytes();
+            // `'producer:` lets every early-exit path (sustained empty reads,
+            // explicit `End`/`Error`, receiver-side channel drop in the inner
+            // chunk-splitter `while`) exit the same `loop` directly without a
+            // `receiver_gone` flag + post-`while` check.  A panic anywhere
+            // in this body no longer breaks out of the loop — it unwinds
+            // straight to the outer `catch_unwind`'s `Err` arm above, which
+            // sends the same `StreamAbort` on `tx_fallback`.
+            'producer: loop {
+                let next = pull();
+                match next {
+                    RequestChunk::Data(chunk) => {
+                        if chunk.is_empty() {
+                            // A conformant blocking `InputStream.read(byte[])`
+                            // never returns 0 for a non-empty buffer — it
+                            // blocks until ≥1 byte or returns -1 at EOF.
+                            // Sustained empty reads therefore mean a stuck or
+                            // hostile producer; cap them (with a yield so we
+                            // don't peg a blocking-pool core) and abort instead
+                            // of busy-spinning this thread forever.
+                            //
+                            // `saturating_add` aligns this producer-side counter
+                            // with its sibling `consecutive_empty_reads` in
+                            // `crates/vespera_jni/src/streaming_closures.rs` —
+                            // a directly comparable layered-defence counter with
+                            // the same panic-free discipline documented at
+                            // `streaming_closures.rs:141-146`.  Release codegen
+                            // is byte-identical to `+= 1` (LLVM lowers both to
+                            // `add.i32`); the change removes a theoretical
+                            // debug-only overflow panic that MAX_CONSECUTIVE_
+                            // EMPTY_READS = 1024 already prevents in practice.
+                            consecutive_empty = consecutive_empty.saturating_add(1);
+                            if consecutive_empty >= MAX_CONSECUTIVE_EMPTY_READS {
+                                let _ = tx.blocking_send(Err(StreamAbort));
+                                break 'producer;
+                            }
+                            std::thread::yield_now();
+                            continue;
                         }
-                        std::thread::yield_now();
-                        continue;
-                    }
-                    consecutive_empty = 0;
-                    // Enforce the per-frame size cap: split an oversized host
-                    // chunk into `<= max_chunk` pieces so each QUEUED frame is
-                    // bounded and the channel's slot accounting reflects real
-                    // bytes (a 100 MiB host chunk no longer occupies a slot as
-                    // 100 MiB).  `Bytes::split_to` is an O(1) refcount slice —
-                    // no copy — and a conformant `<= max_chunk` chunk (the JNI
-                    // reader always reads into a `chunk_bytes` buffer, and the
-                    // benches pre-chunk at `chunk_bytes`) sends in a single
-                    // iteration exactly as before.
-                    let mut bytes = Bytes::from(chunk);
-                    while !bytes.is_empty() {
-                        let piece = if bytes.len() > max_chunk {
-                            bytes.split_to(max_chunk)
-                        } else {
-                            std::mem::take(&mut bytes)
-                        };
-                        // Receiver gone → axum dropped the body half (the
-                        // dispatch finished or the handler abandoned the
-                        // request).  Stop the whole producer, identical
-                        // outcome to the prior `receiver_gone` flag.
-                        if tx.blocking_send(Ok(piece)).is_err() {
-                            break 'producer;
+                        consecutive_empty = 0;
+                        // Enforce the per-frame size cap: split an oversized host
+                        // chunk into `<= max_chunk` pieces so each QUEUED frame is
+                        // bounded and the channel's slot accounting reflects real
+                        // bytes (a 100 MiB host chunk no longer occupies a slot as
+                        // 100 MiB).  `Bytes::split_to` is an O(1) refcount slice —
+                        // no copy — and a conformant `<= max_chunk` chunk (the JNI
+                        // reader always reads into a `chunk_bytes` buffer, and the
+                        // benches pre-chunk at `chunk_bytes`) sends in a single
+                        // iteration exactly as before.
+                        let mut bytes = Bytes::from(chunk);
+                        while !bytes.is_empty() {
+                            let piece = if bytes.len() > max_chunk {
+                                bytes.split_to(max_chunk)
+                            } else {
+                                std::mem::take(&mut bytes)
+                            };
+                            // Receiver gone → axum dropped the body half (the
+                            // dispatch finished or the handler abandoned the
+                            // request).  Stop the whole producer, identical
+                            // outcome to the prior `receiver_gone` flag.
+                            if tx.blocking_send(Ok(piece)).is_err() {
+                                break 'producer;
+                            }
                         }
                     }
-                }
-                RequestChunk::End => break 'producer,
-                RequestChunk::Error => {
-                    // Best-effort: if the receiver is already gone there
-                    // is nothing to abort.
-                    let _ = tx.blocking_send(Err(StreamAbort));
-                    break 'producer;
+                    RequestChunk::End => break 'producer,
+                    RequestChunk::Error => {
+                        // Best-effort: if the receiver is already gone there
+                        // is nothing to abort.
+                        let _ = tx.blocking_send(Err(StreamAbort));
+                        break 'producer;
+                    }
                 }
             }
+        }));
+        // Any panic that escaped the loop above surfaces here as a
+        // `StreamAbort` on the pre-cloned fallback sender — best-effort,
+        // a no-op if the receiver is already gone.
+        if outcome.is_err() {
+            let _ = tx_fallback.blocking_send(Err(StreamAbort));
         }
-        // tx dropped at end of scope → axum sees end-of-stream (or the
-        // forwarded error above).
+        // tx / tx_fallback dropped at end of scope → axum sees end-of-stream
+        // (or the forwarded error above).
     })
 }
 
