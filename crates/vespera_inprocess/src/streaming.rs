@@ -811,7 +811,18 @@ fn spawn_request_producer(
                         // hostile producer; cap them (with a yield so we
                         // don't peg a blocking-pool core) and abort instead
                         // of busy-spinning this thread forever.
-                        consecutive_empty += 1;
+                        //
+                        // `saturating_add` aligns this producer-side counter
+                        // with its sibling `consecutive_empty_reads` in
+                        // `crates/vespera_jni/src/streaming_closures.rs` —
+                        // a directly comparable layered-defence counter with
+                        // the same panic-free discipline documented at
+                        // `streaming_closures.rs:141-146`.  Release codegen
+                        // is byte-identical to `+= 1` (LLVM lowers both to
+                        // `add.i32`); the change removes a theoretical
+                        // debug-only overflow panic that MAX_CONSECUTIVE_
+                        // EMPTY_READS = 1024 already prevents in practice.
+                        consecutive_empty = consecutive_empty.saturating_add(1);
                         if consecutive_empty >= MAX_CONSECUTIVE_EMPTY_READS {
                             let _ = tx.blocking_send(Err(StreamAbort));
                             break 'producer;

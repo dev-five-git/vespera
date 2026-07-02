@@ -311,6 +311,16 @@ fn write_header_name_json_string<S: JsonSink>(sink: &mut S, name: &str) {
     sink.put(b"\"");
 }
 
+/// Decode a `HeaderValue` for JSON serialization.  Non-UTF-8 values render as
+/// the empty string `""` — the same discipline the module doc calls out at the
+/// top of this file (`"non-UTF-8 values render as `""` (same
+/// to_str().unwrap_or(""))"`).  `#[inline]` keeps the call-site codegen
+/// byte-identical to the previous inline `.to_str().unwrap_or("")` sites.
+#[inline]
+fn header_value_as_str(v: &http::HeaderValue) -> &str {
+    v.to_str().unwrap_or("")
+}
+
 /// Write the JSON value for header `name`: a scalar string for a single value,
 /// or a JSON array (insertion order) for a repeated name (e.g. `set-cookie`).
 /// Reuses the already-advanced `get_all` iterator for the multi-value case
@@ -327,16 +337,16 @@ fn write_header_value<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap, name
     };
     match values.next() {
         // Single value: emit the scalar string.
-        None => write_json_string(sink, first.to_str().unwrap_or("")),
+        None => write_json_string(sink, header_value_as_str(first)),
         // Multiple values: emit a JSON array.
         Some(second) => {
             sink.put(b"[");
-            write_json_string(sink, first.to_str().unwrap_or(""));
+            write_json_string(sink, header_value_as_str(first));
             sink.put(b",");
-            write_json_string(sink, second.to_str().unwrap_or(""));
+            write_json_string(sink, header_value_as_str(second));
             for value in values {
                 sink.put(b",");
-                write_json_string(sink, value.to_str().unwrap_or(""));
+                write_json_string(sink, header_value_as_str(value));
             }
             sink.put(b"]");
         }

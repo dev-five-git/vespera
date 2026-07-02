@@ -201,7 +201,7 @@ fn de_opt_cow<'de, D: serde::Deserializer<'de>>(
 // byte layout (`v`, `status`, `headers`, `metadata`,
 // `validation_errors?`).  See tests/wire_contract.rs.
 #[cfg(any(test, feature = "bench-support"))]
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 struct WireResponseHeader<'a, H: Serialize> {
     v: u8,
     status: u16,

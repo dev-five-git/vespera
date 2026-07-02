@@ -191,12 +191,25 @@ fn request_builder(method: Method, path: &str, query: &str) -> http::request::Bu
     if query.is_empty() {
         builder.uri(path)
     } else {
-        let mut uri = String::with_capacity(path.len() + 1 + query.len());
-        uri.push_str(path);
-        uri.push('?');
-        uri.push_str(query);
-        builder.uri(uri)
+        builder.uri(compose_path_query(path, query))
     }
+}
+
+/// Join `path` + `?` + `query` into a single exact-capacity `String`.
+/// Shared between the production [`build_uri`] parser and the bench-only
+/// [`request_builder`] twin so any future edit to the URI-composition
+/// invariant (e.g. percent-encoding a stray fragment) touches ONE spot —
+/// the same drift-hazard discipline `invalid_request_err` /
+/// `parse_method_or_405` / `BODY_STREAM_ERROR_MSG` already document
+/// elsewhere in this file.  `#[inline]` keeps the release codegen
+/// byte-identical to the previous inline `String::with_capacity` sites.
+#[inline]
+fn compose_path_query(path: &str, query: &str) -> String {
+    let mut uri = String::with_capacity(path.len() + 1 + query.len());
+    uri.push_str(path);
+    uri.push('?');
+    uri.push_str(query);
+    uri
 }
 
 /// Parse the request [`Uri`] from `path` (+ optional `query`), mirroring
@@ -209,11 +222,7 @@ fn build_uri(path: &str, query: &str) -> Result<Uri, (u16, String)> {
     let parsed = if query.is_empty() {
         Uri::try_from(path)
     } else {
-        let mut uri = String::with_capacity(path.len() + 1 + query.len());
-        uri.push_str(path);
-        uri.push('?');
-        uri.push_str(query);
-        Uri::try_from(uri)
+        Uri::try_from(compose_path_query(path, query))
     };
     parsed.map_err(invalid_request_err)
 }
