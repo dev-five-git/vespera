@@ -149,26 +149,26 @@ fn zero_read_backoff(consecutive_empty_reads: u32) -> Option<Duration> {
 }
 
 fn method_cache(env: &mut jni::Env<'_>) -> Option<&'static MethodCache> {
-    if let Some(state) = METHOD_CACHE.get() {
-        return match state {
-            MethodCacheState::Ready(cache) => Some(cache),
-            MethodCacheState::Failed => None,
-        };
-    }
-
-    let Ok(cache) = MethodCache::resolve(env) else {
-        // Cache init is best-effort.  If class lookup, method lookup,
-        // or global-ref promotion fails, clear only that init-time
-        // exception and run the exact old string-based call path below.
-        clear_pending_exception(env);
-        let _ = METHOD_CACHE.set(MethodCacheState::Failed);
-        return None;
-    };
-
-    let _ = METHOD_CACHE.set(MethodCacheState::Ready(cache));
-    match METHOD_CACHE.get() {
-        Some(MethodCacheState::Ready(cache)) => Some(cache),
-        Some(MethodCacheState::Failed) | None => None,
+    // `OnceLock::get_or_init` serialises concurrent first callers so exactly one
+    // initializer runs (matching `RUNTIME_WORKER_THREADS`, `MAX_REQUEST_BYTES`,
+    // `STREAMING_CHUNK_BYTES`, and `DEFAULT_ROUTER` elsewhere in the workspace).
+    // The fast path after initialisation is a single relaxed load, identical to
+    // the previous `get()` early-return.
+    let state = METHOD_CACHE.get_or_init(|| {
+        MethodCache::resolve(env).map_or_else(
+            |_| {
+                // Cache init is best-effort.  If class lookup, method lookup,
+                // or global-ref promotion fails, clear only that init-time
+                // exception and run the exact old string-based call path below.
+                clear_pending_exception(env);
+                MethodCacheState::Failed
+            },
+            MethodCacheState::Ready,
+        )
+    });
+    match state {
+        MethodCacheState::Ready(cache) => Some(cache),
+        MethodCacheState::Failed => None,
     }
 }
 
