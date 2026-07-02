@@ -288,13 +288,25 @@ fn write_headers<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap) {
     names.sort_unstable();
 
     sink.put(b"{");
-    for (idx, &name) in names.iter().enumerate() {
-        if idx > 0 {
-            sink.put(b",");
-        }
-        write_header_name_json_string(sink, name);
+    // Peel the first iteration so the per-iteration `if idx > 0` branch is
+    // paid ZERO times instead of once per key — this arm is reached only for
+    // `key_count >= 2` (the 0/1-key fast paths above already returned early),
+    // so the peel is a net win for every many-header response.  Byte-identical
+    // to the prior `enumerate()`-with-branch shape (locked by
+    // `hand_serialize_matches_serde_serialize` and
+    // `hand_serialize_matches_serde_for_tiny_header_maps` in `wire/tests.rs`,
+    // and end-to-end by `tests/wire_contract.rs`).
+    let mut it = names.iter();
+    if let Some(&first) = it.next() {
+        write_header_name_json_string(sink, first);
         sink.put(b":");
-        write_header_value(sink, headers, name);
+        write_header_value(sink, headers, first);
+        for &name in it {
+            sink.put(b",");
+            write_header_name_json_string(sink, name);
+            sink.put(b":");
+            write_header_value(sink, headers, name);
+        }
     }
     sink.put(b"}");
 }
@@ -435,11 +447,19 @@ pub(super) fn write_response_header<S: JsonSink>(
     }
     if let Some(items) = validation_errors {
         sink.put(b",\"validation_errors\":[");
-        for (idx, item) in items.iter().enumerate() {
-            if idx > 0 {
+        // Same first-iteration peel as `write_headers` above — the per-item
+        // `if idx > 0` branch is elided on the (cold 422) items array, keeping
+        // the shape identical across both list emitters in this module.
+        // Byte-identical output — locked by `hand_serialize_matches_serde_serialize`
+        // in `wire/tests.rs` (which exercises the `validation_errors` hoist)
+        // and end-to-end by `tests/wire_contract.rs`.
+        let mut it = items.iter();
+        if let Some(first) = it.next() {
+            write_validation_item(sink, first);
+            for item in it {
                 sink.put(b",");
+                write_validation_item(sink, item);
             }
-            write_validation_item(sink, item);
         }
         sink.put(b"]");
     }

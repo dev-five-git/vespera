@@ -227,6 +227,73 @@ pub fn byte_array_or_empty<'local>(
         })
 }
 
+/// Common outer panic guard for JNI symbols that return `jbyteArray`.
+///
+/// Runs `body` inside a `catch_unwind`-guarded `with_env` +
+/// `resolve::<ThrowRuntimeExAndDefault>` + `into_raw` shape shared by every
+/// byte-array-returning JNI dispatch symbol.  On a panic during the JNI env
+/// promotion, resolve, or into_raw stage (the boilerplate every such symbol
+/// repeats verbatim), the outer guard degrades to the standard
+/// `byte_array_or_empty(env, &panic_wire())` fallback via a second `with_env`,
+/// so a panic can never unwind across the `extern "system"` boundary into the
+/// JVM.
+///
+/// The `body` closure receives the promoted `Env` and returns the
+/// `jni::errors::Result<JObject<'local>>` to hand back to Java; centralising
+/// the resolve + into_raw + panic-fallback shape here keeps the outer-panic
+/// policy in exactly one place (same drift-prevention discipline this file
+/// already applies to `panic_wire`, `BODY_STREAM_ERROR_MSG`, and
+/// `invalid_input_array_err`).
+fn guard_byte_array_symbol<'local, F>(unowned_env: &mut EnvUnowned<'local>, body: F) -> jbyteArray
+where
+    F: FnOnce(&mut jni::Env<'local>) -> jni::errors::Result<JObject<'local>>,
+{
+    let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        unowned_env
+            .with_env(body)
+            .resolve::<ThrowRuntimeExAndDefault>()
+            .into_raw()
+    }));
+    guarded.unwrap_or_else(|_| {
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<JObject<'local>> {
+                byte_array_or_empty(env, &panic_wire())
+            })
+            .resolve::<ThrowRuntimeExAndDefault>()
+            .into_raw()
+    })
+}
+
+/// Common **inner** panic guard for the streaming JNI symbols
+/// (`dispatchStreaming`, `dispatchFullStreaming`).
+///
+/// Wraps `body` in `catch_unwind(AssertUnwindSafe(..))` so a panic inside the
+/// setup / read / dispatch stage cannot escape the enclosing `with_env`, and
+/// on panic degrades to the standard `byte_array_or_empty(env, &panic_wire())`
+/// fallback — same drift-prevention discipline as [`guard_byte_array_symbol`],
+/// just for the inner-guard shape both streaming symbols share.
+///
+/// `body` receives the `Env` as an argument (not a capture) so the borrow
+/// checker sees the inner-guard reborrow of `env` end when `catch_unwind`
+/// consumes the closure; the outer `env` is then reused for the fallback
+/// without a double mutable borrow at the call site.
+///
+/// `dispatchBytes` is intentionally NOT a caller: its inner body produces
+/// `Vec<u8>` (not `JObject`), so folding it into this helper would force it
+/// to pay an unrelated `env.byte_array_from_slice(...)` inside the body just
+/// to satisfy the shared return type.  The two shapes are kept separate on
+/// purpose.
+fn catch_or_panic_byte_array<'local, F>(
+    env: &mut jni::Env<'local>,
+    body: F,
+) -> jni::errors::Result<JObject<'local>>
+where
+    F: FnOnce(&mut jni::Env<'local>) -> jni::errors::Result<JObject<'local>>,
+{
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(env)));
+    panic_result.unwrap_or_else(|_| byte_array_or_empty(env, &panic_wire()))
+}
+
 #[path = "jni_impl_support.rs"]
 pub mod support;
 use support::{setup_full_stream, setup_stream};
@@ -248,35 +315,23 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchByt
     _class: JClass<'local>,
     request_bytes: JByteArray<'local>,
 ) -> jbyteArray {
-    let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        unowned_env
-            .with_env(|env| -> jni::errors::Result<JObject<'local>> {
-                // Read + dispatch under ONE guard: a panic in the ingress read
-                // (e.g. allocation failure for an unbounded request) now also
-                // degrades to a wire `500` instead of a thrown Java exception.
-                let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    match read_request_byte_array(env, &request_bytes) {
-                        Ok(input) => block_on_sync_runtime(
-                            vespera_inprocess::dispatch_from_bytes_async(input),
-                        )
-                        .unwrap_or_else(runtime_unavailable_wire),
-                        Err(err_wire) => err_wire,
+    guard_byte_array_symbol(&mut unowned_env, |env| {
+        // Read + dispatch under ONE guard: a panic in the ingress read
+        // (e.g. allocation failure for an unbounded request) now also
+        // degrades to a wire `500` instead of a thrown Java exception.
+        let response =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                || match read_request_byte_array(env, &request_bytes) {
+                    Ok(input) => {
+                        block_on_sync_runtime(vespera_inprocess::dispatch_from_bytes_async(input))
+                            .unwrap_or_else(runtime_unavailable_wire)
                     }
-                }))
-                .unwrap_or_else(|_| panic_wire());
+                    Err(err_wire) => err_wire,
+                },
+            ))
+            .unwrap_or_else(|_| panic_wire());
 
-                Ok(env.byte_array_from_slice(&response)?.into())
-            })
-            .resolve::<ThrowRuntimeExAndDefault>()
-            .into_raw()
-    }));
-    guarded.unwrap_or_else(|_| {
-        unowned_env
-            .with_env(|env| -> jni::errors::Result<JObject<'local>> {
-                byte_array_or_empty(env, &panic_wire())
-            })
-            .resolve::<ThrowRuntimeExAndDefault>()
-            .into_raw()
+        Ok(env.byte_array_from_slice(&response)?.into())
     })
 }
 
@@ -503,70 +558,55 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
     request_bytes: JByteArray<'local>,
     output_stream: JObject<'local>,
 ) -> jbyteArray {
-    let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        unowned_env
-            .with_env(|env| -> jni::errors::Result<JObject<'local>> {
-                let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                    || -> jni::errors::Result<JObject<'local>> {
-                        if output_stream.is_null() {
-                            return Ok(env
-                                .byte_array_from_slice(&vespera_inprocess::error_wire(
-                                    400,
-                                    "outputStream must not be null",
-                                ))?
-                                .into());
-                        }
-                        let input = match read_request_byte_array(env, &request_bytes) {
-                            Ok(buf) => buf,
-                            Err(err) => return Ok(env.byte_array_from_slice(&err)?.into()),
-                        };
+    guard_byte_array_symbol(&mut unowned_env, |env| {
+        let response =
+            catch_or_panic_byte_array(env, |env| -> jni::errors::Result<JObject<'local>> {
+                if output_stream.is_null() {
+                    return Ok(env
+                        .byte_array_from_slice(&vespera_inprocess::error_wire(
+                            400,
+                            "outputStream must not be null",
+                        ))?
+                        .into());
+                }
+                let input = match read_request_byte_array(env, &request_bytes) {
+                    Ok(buf) => buf,
+                    Err(err) => return Ok(env.byte_array_from_slice(&err)?.into()),
+                };
 
-                        // Promote the OutputStream to a Global (so the streaming
-                        // callback can call .write() from a daemon-attached worker
-                        // thread), grab the VM, and check out the per-thread push
-                        // chunk buffer.  On ANY setup failure (rare, OOM-driven) the
-                        // previous bare `?` returned an ignored `Err` from `with_env`
-                        // → `resolve::<ThrowRuntimeExAndDefault>` threw a Java
-                        // exception + returned `null`, breaking the "every failure is
-                        // a valid wire response" contract.  Return a `500` wire
-                        // response instead so the Java decoder is never handed `null`.
-                        let Ok((stream_global, jvm, push_buf, push_buf_lease)) =
-                            setup_stream(env, &output_stream)
-                        else {
-                            clear_pending_exception(env);
-                            return Ok(env
-                                .byte_array_from_slice(&vespera_inprocess::error_wire(
-                                    500,
-                                    "JNI streaming setup failed",
-                                ))?
-                                .into());
-                        };
+                // Promote the OutputStream to a Global (so the streaming
+                // callback can call .write() from a daemon-attached worker
+                // thread), grab the VM, and check out the per-thread push
+                // chunk buffer.  On ANY setup failure (rare, OOM-driven) the
+                // previous bare `?` returned an ignored `Err` from `with_env`
+                // → `resolve::<ThrowRuntimeExAndDefault>` threw a Java
+                // exception + returned `null`, breaking the "every failure is
+                // a valid wire response" contract.  Return a `500` wire
+                // response instead so the Java decoder is never handed `null`.
+                let Ok((stream_global, jvm, push_buf, push_buf_lease)) =
+                    setup_stream(env, &output_stream)
+                else {
+                    clear_pending_exception(env);
+                    return Ok(env
+                        .byte_array_from_slice(&vespera_inprocess::error_wire(
+                            500,
+                            "JNI streaming setup failed",
+                        ))?
+                        .into());
+                };
 
-                        let header_bytes =
-                            block_on_shared_runtime(vespera_inprocess::dispatch_streaming_async(
-                                input,
-                                make_push_closure(jvm, stream_global, push_buf),
-                            ))
-                            .unwrap_or_else(runtime_unavailable_wire);
-                        mark_streaming_buffer_reusable(push_buf_lease);
+                let header_bytes =
+                    block_on_shared_runtime(vespera_inprocess::dispatch_streaming_async(
+                        input,
+                        make_push_closure(jvm, stream_global, push_buf),
+                    ))
+                    .unwrap_or_else(runtime_unavailable_wire);
+                mark_streaming_buffer_reusable(push_buf_lease);
 
-                        Ok(env.byte_array_from_slice(&header_bytes)?.into())
-                    },
-                ))
-                .unwrap_or_else(|_| byte_array_or_empty(env, &panic_wire()))?;
+                Ok(env.byte_array_from_slice(&header_bytes)?.into())
+            })?;
 
-                Ok(response)
-            })
-            .resolve::<ThrowRuntimeExAndDefault>()
-            .into_raw()
-    }));
-    guarded.unwrap_or_else(|_| {
-        unowned_env
-            .with_env(|env| -> jni::errors::Result<JObject<'local>> {
-                byte_array_or_empty(env, &panic_wire())
-            })
-            .resolve::<ThrowRuntimeExAndDefault>()
-            .into_raw()
+        Ok(response)
     })
 }
 
@@ -604,106 +644,91 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
     input_stream: JObject<'local>,
     output_stream: JObject<'local>,
 ) -> jbyteArray {
-    let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        unowned_env
-            .with_env(|env| -> jni::errors::Result<JObject<'local>> {
-                let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                    || -> jni::errors::Result<JObject<'local>> {
-                        if input_stream.is_null() || output_stream.is_null() {
-                            return Ok(env
-                                .byte_array_from_slice(&vespera_inprocess::error_wire(
-                                    400,
-                                    "inputStream and outputStream must not be null",
-                                ))?
-                                .into());
-                        }
-                        // Read the header byte[] through the shared ingress contract
-                        // (length cap honoured + pending-exception scrub on failure)
-                        // rather than a raw `convert_byte_array`, so an oversized header
-                        // byte[] is rejected before a full Rust-side copy — parity with
-                        // the buffered dispatch symbols.
-                        let header_input = match read_request_byte_array(env, &header_bytes) {
-                            Ok(buf) => buf,
-                            Err(err) => return Ok(env.byte_array_from_slice(&err)?.into()),
-                        };
+    guard_byte_array_symbol(&mut unowned_env, |env| {
+        let response =
+            catch_or_panic_byte_array(env, |env| -> jni::errors::Result<JObject<'local>> {
+                if input_stream.is_null() || output_stream.is_null() {
+                    return Ok(env
+                        .byte_array_from_slice(&vespera_inprocess::error_wire(
+                            400,
+                            "inputStream and outputStream must not be null",
+                        ))?
+                        .into());
+                }
+                // Read the header byte[] through the shared ingress contract
+                // (length cap honoured + pending-exception scrub on failure)
+                // rather than a raw `convert_byte_array`, so an oversized header
+                // byte[] is rejected before a full Rust-side copy — parity with
+                // the buffered dispatch symbols.
+                let header_input = match read_request_byte_array(env, &header_bytes) {
+                    Ok(buf) => buf,
+                    Err(err) => return Ok(env.byte_array_from_slice(&err)?.into()),
+                };
 
-                        // Promote the input/output refs (+ a second input ref for the
-                        // post-response close, since `Global` is not `Clone`), grab the
-                        // VM, and check out both per-thread chunk buffers.  On ANY setup
-                        // failure (rare, OOM-driven) the previous bare `?` surfaced to
-                        // Java as a thrown exception + `null` return; return a `500` wire
-                        // response instead so the decoder is never handed `null`.  A
-                        // half-acquired buffer pair cannot leak a lease (see
-                        // `setup_full_stream` / `checkout_pull_push_buffers`).
-                        let Ok((input_global, output_global, jvm, buffers)) =
-                            setup_full_stream(env, &input_stream, &output_stream)
-                        else {
-                            clear_pending_exception(env);
-                            return Ok(env
-                                .byte_array_from_slice(&vespera_inprocess::error_wire(
-                                    500,
-                                    "JNI streaming setup failed",
-                                ))?
-                                .into());
-                        };
-                        let PullPushBuffers {
-                            pull_buf,
-                            pull_buf_lease,
-                            push_buf,
-                            push_buf_lease,
-                        } = buffers;
+                // Promote the input/output refs (+ a second input ref for the
+                // post-response close, since `Global` is not `Clone`), grab the
+                // VM, and check out both per-thread chunk buffers.  On ANY setup
+                // failure (rare, OOM-driven) the previous bare `?` surfaced to
+                // Java as a thrown exception + `null` return; return a `500` wire
+                // response instead so the decoder is never handed `null`.  A
+                // half-acquired buffer pair cannot leak a lease (see
+                // `setup_full_stream` / `checkout_pull_push_buffers`).
+                let Ok((input_global, output_global, jvm, buffers)) =
+                    setup_full_stream(env, &input_stream, &output_stream)
+                else {
+                    clear_pending_exception(env);
+                    return Ok(env
+                        .byte_array_from_slice(&vespera_inprocess::error_wire(
+                            500,
+                            "JNI streaming setup failed",
+                        ))?
+                        .into());
+                };
+                let PullPushBuffers {
+                    pull_buf,
+                    pull_buf_lease,
+                    push_buf,
+                    push_buf_lease,
+                } = buffers;
 
-                        // Closures capture clones of the JavaVM and Globals;
-                        // both types are Send+Sync.
-                        let pull_jvm = jvm.clone();
-                        let pull_global = Arc::clone(&input_global);
-                        let close_jvm = jvm.clone();
-                        let input_for_close = input_global;
-                        let push_jvm = jvm;
-                        let push_global = output_global;
+                // Closures capture clones of the JavaVM and Globals;
+                // both types are Send+Sync.
+                let pull_jvm = jvm.clone();
+                let pull_global = Arc::clone(&input_global);
+                let close_jvm = jvm.clone();
+                let input_for_close = input_global;
+                let push_jvm = jvm;
+                let push_global = output_global;
 
-                        let header_response = block_on_shared_runtime(
-                            vespera_inprocess::dispatch_bidirectional_streaming_closing(
-                                header_input,
-                                // Pull request body chunks from Java InputStream.
-                                // Runs on a tokio blocking thread (spawn_blocking
-                                // inside dispatch_bidirectional_streaming).
-                                make_pull_closure(pull_jvm, pull_global, pull_buf),
-                                // Push response body chunks to Java OutputStream.
-                                // Runs on the tokio worker driving the dispatch.
-                                make_push_closure(push_jvm, push_global, push_buf),
-                                // Close the InputStream once the response is fully
-                                // streamed, so a producer parked in a blocking read is
-                                // unblocked and the dispatch cannot hang on a stuck
-                                // upload that never reaches EOF.
-                                move || {
-                                    let _ = with_cached_daemon_env(&close_jvm, |env| {
-                                        close_input_stream(env, &input_for_close)
-                                    });
-                                },
-                            ),
-                        )
-                        .unwrap_or_else(runtime_unavailable_wire);
-                        mark_streaming_buffer_reusable(pull_buf_lease);
-                        mark_streaming_buffer_reusable(push_buf_lease);
+                let header_response = block_on_shared_runtime(
+                    vespera_inprocess::dispatch_bidirectional_streaming_closing(
+                        header_input,
+                        // Pull request body chunks from Java InputStream.
+                        // Runs on a tokio blocking thread (spawn_blocking
+                        // inside dispatch_bidirectional_streaming).
+                        make_pull_closure(pull_jvm, pull_global, pull_buf),
+                        // Push response body chunks to Java OutputStream.
+                        // Runs on the tokio worker driving the dispatch.
+                        make_push_closure(push_jvm, push_global, push_buf),
+                        // Close the InputStream once the response is fully
+                        // streamed, so a producer parked in a blocking read is
+                        // unblocked and the dispatch cannot hang on a stuck
+                        // upload that never reaches EOF.
+                        move || {
+                            let _ = with_cached_daemon_env(&close_jvm, |env| {
+                                close_input_stream(env, &input_for_close)
+                            });
+                        },
+                    ),
+                )
+                .unwrap_or_else(runtime_unavailable_wire);
+                mark_streaming_buffer_reusable(pull_buf_lease);
+                mark_streaming_buffer_reusable(push_buf_lease);
 
-                        Ok(env.byte_array_from_slice(&header_response)?.into())
-                    },
-                ))
-                .unwrap_or_else(|_| byte_array_or_empty(env, &panic_wire()))?;
+                Ok(env.byte_array_from_slice(&header_response)?.into())
+            })?;
 
-                Ok(response)
-            })
-            .resolve::<ThrowRuntimeExAndDefault>()
-            .into_raw()
-    }));
-    guarded.unwrap_or_else(|_| {
-        unowned_env
-            .with_env(|env| -> jni::errors::Result<JObject<'local>> {
-                byte_array_or_empty(env, &panic_wire())
-            })
-            .resolve::<ThrowRuntimeExAndDefault>()
-            .into_raw()
+        Ok(response)
     })
 }
 

@@ -209,26 +209,26 @@ where
         let env_ptr = {
             let mut slot = cell.borrow_mut();
             let requested_vm = jvm.get_raw();
-            if slot
-                .as_ref()
-                .is_some_and(|cached| cached.vm_ptr != requested_vm)
-            {
-                *slot = None;
-            }
-            // Populate-and-return in a single expression so no second read
-            // of the slot is needed — eliminates the `.expect(...)` panic
-            // site that previously guarded the just-populated invariant.
-            if let Some(cached) = slot.as_ref() {
-                cached.env_ptr
-            } else {
-                let (env_ptr, owned) = resolve_current_env(jvm)?;
-                *slot = Some(CachedEnv {
-                    env_ptr,
-                    vm_ptr: requested_vm,
-                    jvm: jvm.clone(),
-                    owned,
-                });
-                env_ptr
+            // Single-match check covering the three cache states in one pass —
+            // reused cached env only when the slot is populated AND its VM
+            // matches; every other case (empty slot OR VM mismatch) falls
+            // through to resolve+store, where `*slot = Some(..)` overwrites any
+            // stale entry.  Byte-identical to the prior `is_some_and` clear +
+            // `if let / else` shape (an overwrite is equivalent to a clear
+            // followed by a fresh store), with one fewer intermediate borrow of
+            // the cell and no `expect()` panic site.
+            match slot.as_ref() {
+                Some(cached) if cached.vm_ptr == requested_vm => cached.env_ptr,
+                _ => {
+                    let (env_ptr, owned) = resolve_current_env(jvm)?;
+                    *slot = Some(CachedEnv {
+                        env_ptr,
+                        vm_ptr: requested_vm,
+                        jvm: jvm.clone(),
+                        owned,
+                    });
+                    env_ptr
+                }
             }
         };
 
