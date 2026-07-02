@@ -63,6 +63,7 @@ jobs:
         uses: actions/upload-pages-artifact@v5
         with:
           path: ./apps/landing/out
+          retention-days: 1
 
   deploy:
     needs: build
