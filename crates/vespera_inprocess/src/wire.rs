@@ -316,11 +316,22 @@ pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
 /// Adapter: response parts → wire-format bytes.  Layout:
 /// `[u32 BE header_len | JSON header | raw body]`.
 ///
-/// For `status == 422` JSON responses we **best-effort** hoist any
-/// `{"errors": [...]}` payload into the wire header's
-/// `validation_errors` field — Java decoders can read validation
-/// failures with a single header parse, while the original body is
+/// **Reached only from [`crate::dispatch::build_422_wire`]** — a `422`
+/// response must materialise the whole wire tail into an intermediate
+/// `Vec` so its JSON body can be inspected and, on a best-effort basis,
+/// any `{"errors": [...]}` payload hoisted into the wire header's
+/// `validation_errors` field.  Java decoders can then read validation
+/// failures with a single header parse while the original body is
 /// preserved verbatim for clients that still rely on it.
+///
+/// Every non-422 status **bypasses this adapter entirely**: the buffered
+/// and direct-write dispatchers stream response frames straight into the
+/// destination buffer via [`crate::dispatch::finish_buffered_wire`] and
+/// [`crate::dispatch::finish_direct_write`], avoiding the intermediate
+/// `Vec` copy this helper is only worth on the cold 422 path.  Kept `pub`
+/// (not `pub(crate)`) because `alloc_budget.rs` case F asserts the 422
+/// materialise path allocates a known-bounded number of buffers and its
+/// docstring anchors to this symbol.
 pub fn to_wire_bytes(parts: ResponseParts) -> Vec<u8> {
     let (status, headers, body_bytes, metadata) = parts;
     let validation_errors = if status == 422 {

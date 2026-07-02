@@ -111,13 +111,16 @@ pub fn slice_from_owner(owner: &Bytes, s: &str) -> Option<Bytes> {
 /// Any non-empty query or any escaped/owned path returns `None` and the
 /// caller falls back to the copying `build_uri` path.
 ///
-/// Shared by [`dispatch_from_bytes_async`] and [`dispatch_into_async`] —
-/// the two owned-wire entry points whose tail-delivery shape differs
-/// (buffered `Vec` vs direct-write `&mut [u8]`) but whose URI-prelude is
-/// identical.  The borrowed entry point ([`dispatch_into_async_borrowed`])
-/// is deliberately *not* a third call site: it has no owning `Bytes` to
-/// share and so unconditionally passes `None`.  `#[inline]` keeps codegen
-/// identical to the prior copy-pasted shape.
+/// Sole call site: [`dispatch_owned_to_parts`], the shared prelude that
+/// both public owned-wire entry points — [`dispatch_from_bytes_async`]
+/// and [`dispatch_into_async`] — reach on every dispatch (they diverge
+/// only in tail-delivery shape: buffered `Vec` vs direct-write
+/// `&mut [u8]`).  Centralising the URI fast-path here means the two
+/// public dispatchers keep an identical owned-wire URI policy without a
+/// second copy of the logic to drift.  The borrowed entry point
+/// ([`dispatch_into_async_borrowed`]) is deliberately *not* a caller: it
+/// has no owning `Bytes` to share and so unconditionally passes `None`.
+/// `#[inline]` keeps codegen identical to the prior copy-pasted shape.
 #[inline]
 fn path_bytes_for_owned(header_bytes: &Bytes, header: &WireRequestHeader<'_>) -> Option<Bytes> {
     if header.query.is_empty() {

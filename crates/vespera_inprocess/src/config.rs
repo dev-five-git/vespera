@@ -61,6 +61,25 @@ fn parse_config_value(
     })
 }
 
+/// Look up `var_name` in the process environment and delegate to
+/// [`parse_config_value`] — the shared **production** entry point that
+/// keeps `var_name` written **once per call site**.
+///
+/// Prior shape passed the env-var name **twice** to the same call
+/// (`parse_config_value(name, std::env::var(name).ok().as_deref(), ...)`),
+/// so a rename that touched only one occurrence would silently swap the
+/// stderr warn message off the variable actually being read — a real
+/// observability drift.  Delegating through this helper collapses both
+/// literal occurrences into one.
+///
+/// [`parse_config_value`] stays as the pure, `Option<&str>`-taking
+/// predicate the existing unit tests exercise; this thin wrapper adds
+/// only the `std::env::var` lookup and is a straight-line delegate.
+fn read_env_clamped(var_name: &'static str, default: usize, min: usize, max: usize) -> usize {
+    let raw = std::env::var(var_name).ok();
+    parse_config_value(var_name, raw.as_deref(), default, min, max)
+}
+
 /// Effective per-chunk buffer size for streaming dispatches.
 ///
 /// Resolution order (first hit wins, then cached for the process
@@ -75,11 +94,8 @@ fn parse_config_value(
 #[inline]
 pub fn streaming_chunk_bytes() -> usize {
     *STREAMING_CHUNK_BYTES.get_or_init(|| {
-        parse_config_value(
+        read_env_clamped(
             "VESPERA_STREAMING_CHUNK_BYTES",
-            std::env::var("VESPERA_STREAMING_CHUNK_BYTES")
-                .ok()
-                .as_deref(),
             DEFAULT_STREAMING_CHUNK_BYTES,
             MIN_STREAMING_CHUNK_BYTES,
             MAX_STREAMING_CHUNK_BYTES,
@@ -110,11 +126,8 @@ pub fn set_streaming_chunk_bytes(bytes: usize) -> bool {
 #[inline]
 pub fn streaming_channel_capacity() -> usize {
     *STREAMING_CHANNEL_CAPACITY.get_or_init(|| {
-        parse_config_value(
+        read_env_clamped(
             "VESPERA_STREAMING_CHANNEL_CAPACITY",
-            std::env::var("VESPERA_STREAMING_CHANNEL_CAPACITY")
-                .ok()
-                .as_deref(),
             DEFAULT_STREAMING_CHANNEL_CAPACITY,
             MIN_STREAMING_CHANNEL_CAPACITY,
             MAX_STREAMING_CHANNEL_CAPACITY,

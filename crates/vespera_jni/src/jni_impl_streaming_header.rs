@@ -99,6 +99,33 @@ fn notify_local_header(
     flags.notified.store(true, Ordering::Release);
 }
 
+/// Outer-panic header fallback shared by both `dispatch*WithHeader`
+/// JNI symbols.  When `guard_void_symbol` intercepts a panic that escaped
+/// the inner `with_env` scope AND the header consumer has not yet been
+/// notified AND the caller passed a non-null consumer, deliver the
+/// canonical `panic_wire()` bytes through it so the Java caller never
+/// hangs waiting for a header that will never arrive.
+///
+/// Extracted verbatim from the two symbols' post-`guard_void_symbol`
+/// tails so a future edit to the panic-recovery predicate (extra
+/// atomic fence, logging, changed `panic_wire` shape) can never drift
+/// between them.  `#[inline]` folds it back into each caller so codegen
+/// matches the prior inline block byte-for-byte.
+#[inline]
+fn deliver_panic_header_if_needed<'local>(
+    unowned_env: &mut EnvUnowned<'local>,
+    header_consumer: &JObject<'local>,
+    flags: &StreamingFlags,
+    panicked: bool,
+) {
+    if panicked && !flags.notified.load(Ordering::Acquire) && !header_consumer.is_null() {
+        let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
+            notify_local_header(env, header_consumer, &panic_wire(), flags);
+            Ok(())
+        });
+    }
+}
+
 fn read_header_or_notify(
     env: &mut jni::Env<'_>,
     header_bytes: &JByteArray<'_>,
@@ -338,12 +365,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
             Ok(())
         });
     });
-    if panicked && !flags.notified.load(Ordering::Acquire) && !header_consumer.is_null() {
-        let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
-            notify_local_header(env, &header_consumer, &panic_wire(), &flags);
-            Ok(())
-        });
-    }
+    deliver_panic_header_if_needed(&mut unowned_env, &header_consumer, &flags, panicked);
 }
 
 #[unsafe(no_mangle)]
@@ -374,10 +396,5 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
             Ok(())
         });
     });
-    if panicked && !flags.notified.load(Ordering::Acquire) && !header_consumer.is_null() {
-        let _ = unowned_env.with_env(|env| -> jni::errors::Result<()> {
-            notify_local_header(env, &header_consumer, &panic_wire(), &flags);
-            Ok(())
-        });
-    }
+    deliver_panic_header_if_needed(&mut unowned_env, &header_consumer, &flags, panicked);
 }

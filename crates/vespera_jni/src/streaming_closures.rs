@@ -172,6 +172,16 @@ fn method_cache(env: &mut jni::Env<'_>) -> Option<&'static MethodCache> {
     }
 }
 
+/// One-line receiver-null predicate on the streaming hot path, called
+/// once per cached-`JMethodID` wrapper (four sites: `InputStream.read`,
+/// `OutputStream.write`, `Consumer.accept`, `CompletableFuture.complete`).
+/// `#[inline]` matches the file's discipline for one-line predicates
+/// (`take_pending_exception` below, `header_value_from_owner` /
+/// `parse_method_or_405` / `invalid_request_err` / `header_value_to_owned`
+/// across the crate) and locks the guarantee that codegen stays
+/// byte-identical to the prior inline `!raw.is_null()` expression the
+/// compiler was already folding at every call site.
+#[inline]
 fn can_call_unchecked(obj: &Global<JObject<'static>>) -> bool {
     !obj.as_ref().as_raw().is_null()
 }
