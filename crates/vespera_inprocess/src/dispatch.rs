@@ -207,7 +207,25 @@ async fn dispatch_owned_to_parts(
 /// clone.
 pub async fn dispatch(router: Router, envelope: &RequestEnvelope) -> String {
     let result = dispatch_owned(router, envelope.clone()).await;
-    serde_json::to_string(&result).expect("ResponseEnvelope serialization is infallible")
+    serde_json::to_string(&result).unwrap_or_else(|_| {
+        // Unreachable in practice: `ResponseEnvelope` derives `Serialize`
+        // over only primitives, `String`, `BTreeMap`, and `Cow<'static, str>`
+        // — none of which can `Err` in `serde_json`.  A hand-rendered
+        // byte-identical `500` envelope keeps this public direct-API entry
+        // free of unwind sites (matching the no-panic/unwind discipline the
+        // FFI-adjacent hot path documents in
+        // [`crate::internal::router_oneshot`],
+        // [`crate::wire::header_write`], and
+        // [`crate::wire::header_read::expect_literal`]), while preserving
+        // the same JSON shape (`status`/`headers`/`body`/`metadata.version`)
+        // the derived path emits so external decoders are unaffected.
+        String::from(concat!(
+            r#"{"status":500,"headers":{},"body":"envelope serialization failed","#,
+            r#""metadata":{"version":""#,
+            env!("CARGO_PKG_VERSION"),
+            r#""}}"#,
+        ))
+    })
 }
 
 /// Typed dispatch — returns a [`ResponseEnvelope`] directly.

@@ -161,6 +161,14 @@ fn dispatch_text_envelope_returns_serialised_json() {
         parsed["metadata"]["version"].is_string(),
         "metadata.version should always be present"
     );
+    // Locks the invariant that the derive-serialised happy path is taken —
+    // the panic-free fallback inside `dispatch()` is only reachable on a
+    // (currently impossible) `serde_json` failure and would carry a fixed
+    // `body` marker.  Its absence here proves the fallback was not taken.
+    assert!(
+        !json.contains("envelope serialization failed"),
+        "happy path must not trigger the unreachable serialization fallback"
+    );
 }
 
 // ── error_envelope() ─────────────────────────────────────────────────

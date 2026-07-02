@@ -2,10 +2,12 @@ use std::borrow::Cow;
 
 use crate::envelope::ResponseMetadata;
 
+use super::bench_serde::{
+    WireHeaders, WireResponseHeader, parse_wire_header_serde, write_wire_header_into_slice_serde,
+};
 use super::{
-    ValidationErrorItem, WIRE_VERSION, WireHeaders, WireRequestHeader, WireResponseHeader,
-    parse_wire_header, parse_wire_header_serde, split_wire_request, write_wire_header_into,
-    write_wire_header_into_slice, write_wire_header_into_slice_serde,
+    ValidationErrorItem, WIRE_VERSION, WireRequestHeader, parse_wire_header, split_wire_request,
+    write_wire_header_into, write_wire_header_into_slice,
 };
 
 /// Pins the zero-copy contract: the returned body must point into
