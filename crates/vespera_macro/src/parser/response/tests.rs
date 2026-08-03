@@ -322,6 +322,7 @@ fn test_extract_result_types_empty_path_segments() {
     use syn::punctuated::Punctuated;
 
     let type_path = syn::TypePath {
+        attrs: Vec::new(),
         qself: None,
         path: syn::Path {
             leading_colon: None,
@@ -345,6 +346,7 @@ fn test_extract_result_types_empty_path_via_reference() {
 
     // Create inner Type::Path with empty segments
     let inner_type_path = syn::TypePath {
+        attrs: Vec::new(),
         qself: None,
         path: syn::Path {
             leading_colon: None,
@@ -355,6 +357,7 @@ fn test_extract_result_types_empty_path_via_reference() {
 
     // Wrap in a reference
     let ty = syn::Type::Reference(syn::TypeReference {
+        attrs: Vec::new(),
         and_token: syn::token::And::default(),
         lifetime: None,
         mutability: None,

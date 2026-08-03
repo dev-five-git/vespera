@@ -114,6 +114,7 @@ mod tests {
     #[test]
     fn test_convert_seaorm_type_to_chrono_empty_path() {
         let ty = syn::Type::Path(syn::TypePath {
+            attrs: Vec::new(),
             qself: None,
             path: syn::Path {
                 leading_colon: None,

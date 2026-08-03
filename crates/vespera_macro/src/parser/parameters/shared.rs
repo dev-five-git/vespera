@@ -133,6 +133,7 @@ mod tests {
         use syn::punctuated::Punctuated;
 
         let ty = Type::Path(syn::TypePath {
+            attrs: Vec::new(),
             qself: None,
             path: syn::Path {
                 leading_colon: None,

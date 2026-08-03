@@ -73,6 +73,7 @@ mod tests {
     fn test_parse_type_to_schema_ref_empty_path_and_reference() {
         // Empty path segments returns object
         let ty = Type::Path(syn::TypePath {
+            attrs: Vec::new(),
             qself: None,
             path: syn::Path {
                 leading_colon: None,

@@ -29,7 +29,7 @@ proc-macro = true
 
 [dependencies]
 quote = "1"
-syn = { version = "2", features = ["full"] }
+syn = { version = "3", features = ["full"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 vespera_core = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
@@ -46,11 +46,16 @@ regex-syntax = { version = "0.8", optional = true }
 croner = { version = "3", optional = true }
 
 [dev-dependencies]
+# `extra-traits` (Debug/PartialEq on syn syntax-tree nodes) is required only by
+# the unit tests that `assert_eq!` on `syn::Type`. Declaring it here keeps the
+# feature out of the proc-macro's release build while cargo's feature
+# unification turns it on for every test build.
+syn = { version = "3", features = ["full", "extra-traits"] }
 rstest = "0.26"
 insta = "1.48"
-prettyplease = "0.2"
+prettyplease = "0.3"
 tempfile = "3"
-serial_test = "3"
+serial_test = "4"
 trybuild = "1"
 
 [lints]

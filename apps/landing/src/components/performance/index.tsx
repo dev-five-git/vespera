@@ -44,20 +44,15 @@ export function Performance() {
       px="20px"
       py="$spacingSpacing80"
     >
-      <VStack
-        alignSelf="center"
-        gap="40px"
-        maxW="1280px"
-        w="100%"
-      >
+      <VStack alignSelf="center" gap="40px" maxW="1280px" w="100%">
         <VStack gap="16px">
           <Text color="$title" typography="h3">
             Microsecond dispatch, gigabyte/s streaming
           </Text>
           <Text color="$text" typography="body">
-            Vespera embeds your Axum router inside the JVM via JNI — zero TCP, zero
-            JSON envelope, raw bytes end-to-end. Numbers below are measured through the
-            real JNI boundary on AMD Ryzen 9 9950X, JDK 21.
+            Vespera embeds your Axum router inside the JVM via JNI — zero TCP,
+            zero JSON envelope, raw bytes end-to-end. Numbers below are measured
+            through the real JNI boundary on AMD Ryzen 9 9950X, JDK 21.
           </Text>
         </VStack>
 
@@ -78,10 +73,7 @@ export function Performance() {
               py={['$spacingSpacing16', null, null, '$spacingSpacing24']}
             >
               <Flex alignItems="baseline" gap="$spacingSpacing04">
-                <Text
-                  color="$vesperaPrimary"
-                  typography="displaySm"
-                >
+                <Text color="$vesperaPrimary" typography="displaySm">
                   {stat.value}
                 </Text>
                 <Text color="$vesperaPrimary" typography="h4">

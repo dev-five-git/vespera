@@ -5,8 +5,8 @@
   "description": "**FastAPI-like developer experience for Rust.** Zero-config OpenAPI 3.1 generation for Axum.",
   "author": "devfive",
   "devDependencies": {
-    "eslint-plugin-devup": "^2.0.19",
-    "oxlint": "^1.69.0",
+    "eslint-plugin-devup": "^2.0.20",
+    "oxlint": "^1.77.0",
     "husky": "^9.1",
     "bun-test-env-dom": "^1.0",
     "@devup-ui/bun-plugin": "^1.0",

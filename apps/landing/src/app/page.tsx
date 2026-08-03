@@ -94,10 +94,10 @@ export default function HomePage() {
                 FastAPI-grade DX, Rust-grade performance
               </Text>
               <Text color="$text" typography="body">
-                Vespera turns your Axum routes into a typed, validated, embeddable API
-                with one macro. File-based routing, compile-time OpenAPI 3.1, and a
-                JNI bridge that lets Spring host your Rust router with microsecond
-                round-trips — no TCP, no JSON envelope.
+                Vespera turns your Axum routes into a typed, validated,
+                embeddable API with one macro. File-based routing, compile-time
+                OpenAPI 3.1, and a JNI bridge that lets Spring host your Rust
+                router with microsecond round-trips — no TCP, no JSON envelope.
               </Text>
             </VStack>
             <VStack flexDir={[null, null, null, 'row']} gap={5}>

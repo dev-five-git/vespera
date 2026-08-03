@@ -327,7 +327,9 @@ bun run build                         # apps/front + apps/admin
 cd apps/front && bun dev              # Single-app dev (preferred per devfive-frontend)
 
 # --- Tests (Bun side) ---
-bun test                              # Root runs bun test + tarpaulin (posttest hook)
+bun test                              # Front tests from the repo root
+bun run test                          # Same, plus tarpaulin/doctests (posttest hook)
+cd apps/landing && bun test           # Same tests from the app directory
 
 # --- Release tooling ---
 bun run changepacks                   # @changepacks/cli version bumps
@@ -355,7 +357,18 @@ props only.
 | Validated/422 contract | `crates/vespera/tests/validated_extractor.rs`, `crates/vespera/tests/jni_validation.rs` | Envelope built via `#[derive(Serialize)]` structs (not `serde_json::json!`); exact bytes locked by `insta::assert_snapshot!` in `validated_extractor.rs` |
 | Core unit tests | `crates/vespera_core/src/**` inline `#[cfg(test)]` |
 | JNI end-to-end | `examples/rust-jni-demo` (Rust + Java + Gradle) |
-| Front tests | `apps/front/src/__tests__/` (`bun test` + `bun-test-env-dom`) |
+| Front tests | `apps/landing/src/__tests__/` (`bun test` + `bun-test-env-dom`) |
+
+> **Front tests need the bun preloads.** `bunfig.toml` preloads
+> `@devup-ui/bun-plugin` (without it every `@devup-ui/react` component throws
+> `Cannot run on the runtime`) and `bun-test-env-dom` (happy-dom + readable HTML
+> snapshots). Bun reads `bunfig.toml` only from the CWD, so the file is mirrored
+> at the repo root and in `apps/landing/` — `bun test` works from either. The
+> devup plugin also resolves `devup.json` / writes `df/` relative to the CWD;
+> the root `devup.json` is a one-line `extends` of `apps/landing/devup.json` so
+> both runs extract identical classes (the generated `df/` self-ignores).
+> Components pulling context from `app/layout.tsx` (e.g. `useHeader`) must be
+> wrapped in the same providers inside the test.
 
 `insta` snapshots — run `cargo insta review` to accept drifts.
 

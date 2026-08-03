@@ -1,0 +1,14 @@
+[test]
+# `@devup-ui/react` is compile-time only — every component and `keyframes()`
+# call throws `Cannot run on the runtime` unless a build plugin rewrites it
+# first. Importing `@devup-ui/bun-plugin` registers that transform as a Bun
+# loader plugin (top-level `await` in its entry, so it is live before any test
+# file loads), and `bun-test-env-dom` installs happy-dom + readable HTML
+# snapshots.
+#
+# Bun reads `bunfig.toml` only from the current working directory, so this file
+# is mirrored in `apps/landing/bunfig.toml` to keep BOTH entry points working:
+# `bun test` here and `cd apps/landing && bun test`. The devup plugin resolves
+# `devup.json` relative to the CWD too — the root `devup.json` re-exports the
+# landing theme via `extends`, so both runs extract identical classes.
+preload = ["@devup-ui/bun-plugin", "bun-test-env-dom"]

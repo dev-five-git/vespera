@@ -3,6 +3,7 @@ use rstest::rstest;
 use super::*;
 fn empty_type_path() -> syn::Type {
     syn::Type::Path(syn::TypePath {
+        attrs: Vec::new(),
         qself: None,
         path: syn::Path {
             leading_colon: None,

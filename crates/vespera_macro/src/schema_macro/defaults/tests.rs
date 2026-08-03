@@ -566,6 +566,7 @@ fn test_sea_orm_default_attrs_sql_function_time_type() {
 fn test_is_parseable_type_empty_segments() {
     // Synthetically construct a Type::Path with empty segments (impossible through parsing)
     let ty = syn::Type::Path(syn::TypePath {
+        attrs: Vec::new(),
         qself: None,
         path: syn::Path {
             leading_colon: None,

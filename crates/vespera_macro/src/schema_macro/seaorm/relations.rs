@@ -211,6 +211,7 @@ mod tests {
     #[test]
     fn test_convert_relation_type_to_schema_with_info_empty_segments() {
         let ty = syn::Type::Path(syn::TypePath {
+            attrs: Vec::new(),
             qself: None,
             path: syn::Path {
                 leading_colon: None,

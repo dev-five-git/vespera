@@ -19,6 +19,10 @@ const nextConfig: NextConfig = {
   output: 'export',
   experimental: {
     optimizePackageImports: ['@devup-ui/reset-css', '@devup-ui/components'],
+    // TypeScript 7 (the native port) no longer ships the JS compiler API that
+    // Next.js drives in-process for type checking. Running `tsc` through its
+    // CLI instead is the supported path and keeps us on TS 7.
+    useTypeScriptCli: true,
   },
   reactCompiler: true,
 }
