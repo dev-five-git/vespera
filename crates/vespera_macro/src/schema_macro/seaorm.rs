@@ -4,17 +4,14 @@ mod attrs;
 mod conversion;
 mod relations;
 
-#[allow(unused_imports)]
 pub use attrs::{
     extract_belongs_to_from_field, extract_relation_enum, extract_sea_orm_default_value,
-    extract_via_rel, has_sea_orm_primary_key, is_sql_function_default,
+    has_sea_orm_primary_key, is_sql_function_default,
 };
-#[allow(unused_imports)]
-pub use conversion::{convert_seaorm_type_to_chrono, convert_type_with_chrono};
-#[allow(unused_imports)]
-pub use relations::{
-    RelationFieldInfo, convert_relation_type_to_schema_with_info, is_field_optional_in_struct,
-};
+pub use conversion::convert_type_with_chrono;
+#[cfg(test)]
+pub use relations::is_field_optional_in_struct;
+pub use relations::{RelationFieldInfo, convert_relation_type_to_schema_with_info};
 
 // Circular-relation integration tests live here because relation
 // conversion (`convert_relation_type_to_schema_with_info`) is the

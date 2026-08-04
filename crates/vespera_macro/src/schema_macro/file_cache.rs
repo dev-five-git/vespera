@@ -115,7 +115,7 @@ pub struct FileFingerprint {
 /// invocation (matched via `last_epoch_validated == cache.epoch`) the
 /// entry is trusted without rewalking; across invocations the directory
 /// is rewalked once and the fingerprint comparison decides whether the
-/// cached `files` (and the dependent `struct_index`) stay live.
+/// cached `files` (and the dependent test-only `struct_index`) stay live.
 ///
 /// Replaces the prior bare `Arc<[PathBuf]>` cache, which silently
 /// missed `.rs` files added in long-lived rust-analyzer proc-macro
@@ -158,18 +158,21 @@ struct FileCache {
     /// current macro invocation, avoid re-running `read_to_string` for it.
     missing_file_content_epoch: HashMap<PathBuf, u64>,
 
-    /// Per-`src_dir` struct identifier index: struct name → files that
-    /// define it (as a top-level `struct <Name>` declaration found via
-    /// cheap source-text tokenisation in [`extract_struct_names`]).
+    /// **Test-only.** Per-`src_dir` struct identifier index: struct name →
+    /// files that define it (as a top-level `struct <Name>` declaration found
+    /// via cheap source-text tokenisation in `extract_struct_names`).
+    ///
+    /// Its only writer is `get_struct_candidates`, which — along with its
+    /// whole support layer (`extract_struct_names`, `get_file_struct_names`,
+    /// `file_struct_names`) — is `#[cfg(test)]`. Production expansion never
+    /// consults it, so the field is gated too rather than allocated,
+    /// invalidated, and profile-printed while permanently empty in the
+    /// shipped proc-macro.
     ///
     /// Built lazily on the first `get_struct_candidates` call for a
     /// directory; dropped alongside its `file_lists` entry whenever the
     /// directory fingerprint changes.
-    ///
-    /// Replaces the prior per-`(src_dir, name)` full-source
-    /// `String::contains` scan (`struct_candidates`), which was
-    /// O(N×M) for N struct lookups across M files. The index is O(M)
-    /// tokenisation passes to build, then O(1) per lookup.
+    #[cfg(test)]
     struct_index: HashMap<PathBuf, HashMap<String, Arc<[PathBuf]>>>,
 
     /// Per-file mtime-validated cache of the struct names defined in each
@@ -260,6 +263,7 @@ thread_local! {
         file_lists: HashMap::with_capacity(4),
         file_contents: HashMap::with_capacity(32),
         missing_file_content_epoch: HashMap::with_capacity(32),
+        #[cfg(test)]
         struct_index: HashMap::with_capacity(4),
         #[cfg(test)]
         file_struct_names: HashMap::with_capacity(32),
@@ -438,10 +442,10 @@ fn walk_and_fingerprint(cache: &mut FileCache, dir: &Path) -> (Vec<PathBuf>, u64
 /// * Same epoch (`last_epoch_validated == cache.epoch`) → trust cache,
 ///   no rewalk, no `fs::metadata` calls — pure `Arc::clone`.
 /// * New epoch, identical fingerprint → refresh `last_epoch_validated`
-///   to suppress further work in the rest of the epoch; cached
-///   [`FileCache::struct_index`] entry stays live.
-/// * New epoch, different fingerprint → drop the dependent
-///   [`FileCache::struct_index`] entry; install a fresh `DirEntry`.
+///   to suppress further work in the rest of the epoch; the cached
+///   test-only `FileCache::struct_index` entry stays live.
+/// * New epoch, different fingerprint → drop the dependent test-only
+///   `FileCache::struct_index` entry; install a fresh `DirEntry`.
 fn ensure_file_list(cache: &mut FileCache, src_dir: &Path) -> Arc<[PathBuf]> {
     let current_epoch = cache.epoch;
 
@@ -462,7 +466,8 @@ fn ensure_file_list(cache: &mut FileCache, src_dir: &Path) -> Arc<[PathBuf]> {
             entry.last_epoch_validated = current_epoch;
             return Arc::clone(&entry.files);
         }
-        // Directory changed: the dependent index is now stale.
+        // Directory changed: the dependent (test-only) index is now stale.
+        #[cfg(test)]
         cache.struct_index.remove(src_dir);
     }
 
@@ -735,11 +740,12 @@ pub fn print_profile_summary() {
         eprintln!("  struct parses: {}", cache.struct_parses);
         eprintln!("  AST parses: {}", cache.ast_parses);
         eprintln!(
-            "  cache entries: {} file lists, {} file contents, {} struct index dirs",
+            "  cache entries: {} file lists, {} file contents",
             cache.file_lists.len(),
-            cache.file_contents.len(),
-            cache.struct_index.len()
+            cache.file_contents.len()
         );
+        #[cfg(test)]
+        eprintln!("  struct index dirs: {} entries", cache.struct_index.len());
         eprintln!(
             "  circular analysis: {} cache hits, {} entries",
             cache.circular_cache_hits,

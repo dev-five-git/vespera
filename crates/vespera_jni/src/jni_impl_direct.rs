@@ -25,20 +25,6 @@ const DIRECT_UNREPRESENTABLE: jint = jint::MIN;
 // legitimate `-(required_size)` value.
 const _: () = assert!(DIRECT_UNREPRESENTABLE < -i32::MAX);
 
-/// Copy `response` into the caller's direct out buffer.
-///
-/// Returns:
-/// * `>= 0` — bytes written (`response` fit entirely)
-/// * `< 0`  — `-(required_size)`: nothing written, caller must retry
-///   with a buffer of at least `required_size` bytes
-/// * [`DIRECT_UNREPRESENTABLE`] — response exceeds `i32::MAX` bytes
-///   and cannot be expressed in the return-code protocol
-///
-/// # Safety contract (upheld by the caller)
-///
-/// `out_addr` must point to a writable region of at least `out_cap`
-/// bytes that stays valid for the duration of this call (a JNI
-/// direct buffer pinned by the live `JByteBuffer` local ref).
 /// Whether `[a0, a0+a_len)` and `[b0, b0+b_len)` overlap (addresses as
 /// `usize`).  Used to reject aliasing `in_buf` / `out_buf` direct-buffer
 /// ranges in [`Java_..._dispatchDirect0`] before creating a shared `&[u8]`

@@ -15,11 +15,12 @@ use super::{
 };
 
 /// OpenAPI write result consumed by router/doc codegen and incremental cache sidecars.
+///
+/// The docs/redoc URLs are intentionally **not** carried here: the sole
+/// consumer (`vespera_impl::orchestrator`) reads them straight off
+/// `ProcessedVesperaInput`, so mirroring them would be dead weight.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct OpenApiWriteResult {
-    pub docs_url: Option<String>,
-    pub redoc_url: Option<String>,
     pub spec_json: Option<String>,
     pub spec_pretty: Option<String>,
 }
@@ -60,8 +61,6 @@ pub fn generate_and_write_openapi(
     if input.openapi_file_names.is_empty() && input.docs_url.is_none() && input.redoc_url.is_none()
     {
         return Ok(OpenApiWriteResult {
-            docs_url: None,
-            redoc_url: None,
             spec_json: None,
             spec_pretty: None,
         });
@@ -145,8 +144,6 @@ pub fn generate_and_write_openapi(
     };
 
     Ok(OpenApiWriteResult {
-        docs_url: input.docs_url.clone(),
-        redoc_url: input.redoc_url.clone(),
         spec_json,
         spec_pretty,
     })
@@ -352,9 +349,8 @@ mod tests {
         );
         assert!(result.is_ok());
         let result = result.unwrap();
-        assert!(result.docs_url.is_none());
-        assert!(result.redoc_url.is_none());
         assert!(result.spec_json.is_none());
+        assert!(result.spec_pretty.is_none());
     }
 
     #[test]
@@ -382,13 +378,11 @@ mod tests {
         );
         assert!(result.is_ok());
         let result = result.unwrap();
-        assert!(result.docs_url.is_some());
-        assert_eq!(result.docs_url.unwrap(), "/docs");
+        assert!(result.spec_pretty.is_none());
         assert!(result.spec_json.is_some());
         let json = result.spec_json.unwrap();
         assert!(json.contains("\"openapi\""));
         assert!(json.contains("Test API"));
-        assert!(result.redoc_url.is_none());
     }
 
     #[test]
@@ -416,10 +410,8 @@ mod tests {
         );
         assert!(result.is_ok());
         let result = result.unwrap();
-        assert!(result.docs_url.is_none());
-        assert!(result.redoc_url.is_some());
-        assert_eq!(result.redoc_url.unwrap(), "/redoc");
         assert!(result.spec_json.is_some());
+        assert!(result.spec_pretty.is_none());
     }
 
     #[test]
@@ -447,9 +439,8 @@ mod tests {
         );
         assert!(result.is_ok());
         let result = result.unwrap();
-        assert!(result.docs_url.is_some());
-        assert!(result.redoc_url.is_some());
         assert!(result.spec_json.is_some());
+        assert!(result.spec_pretty.is_none());
     }
 
     #[test]
