@@ -32,14 +32,16 @@ use crate::wire::{
 /// (it is `O(chunk)` RAM) and so does not call this.
 #[inline]
 pub fn check_ingress_cap(len: usize) -> Option<Vec<u8>> {
-    // Inline `request_exceeds_limit`'s `max != 0 && len > max` predicate so
-    // the shared `max` is used for both the comparison and the error message
-    // — the two-call shape used to pay a second `OnceLock::get` atomic load
-    // on the (rare) 413 path just to render the same value into the message.
-    // The wire body is byte-identical to the prior positional format;
-    // exercised by `crates/vespera_inprocess/tests/request_size_cap.rs`.
+    // Load the cap once and reuse it for both the predicate and the error
+    // message — the two-call shape used to pay a second `OnceLock::get`
+    // atomic load on the (rare) 413 path just to render the same value into
+    // the message.  The comparison itself is `config::exceeds`, the single
+    // spelling shared with `config::request_exceeds_limit`, so the two can
+    // never drift.  The wire body is byte-identical to the prior positional
+    // format; exercised by
+    // `crates/vespera_inprocess/tests/request_size_cap.rs`.
     let max = crate::config::max_request_bytes();
-    if max != 0 && len > max {
+    if crate::config::exceeds(len, max) {
         Some(error_wire(
             413,
             &format!("request size {len} bytes exceeds configured maximum of {max} bytes"),

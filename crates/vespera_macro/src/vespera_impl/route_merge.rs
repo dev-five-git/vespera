@@ -59,43 +59,54 @@ pub(super) fn merge_route_storage_data(
     }
 }
 
+/// Copy each listed `Option` field from `$stored` onto `$route`, but only when the
+/// stored side actually carries a value.
+///
+/// Every field named here is an `Option<T>` with the *same* `T` on both
+/// [`StoredRouteInfo`] and [`crate::metadata::RouteMetadata`], and each one used to
+/// be its own copy-pasted `if let Some(..) = stored.x { route.x = Some(x.clone()) }`
+/// block. Keeping the set declarative means a new `#[route]` attribute is one
+/// identifier in the invocation below instead of another block that is silently
+/// easy to forget (which would drop the attribute from the generated OpenAPI with
+/// no compile error).
+///
+/// The `is_some` guard is load-bearing: an unconditional assignment would clobber
+/// collector-derived values (doc comments, inferred tags) with `None`.
+macro_rules! copy_if_some {
+    ($route:ident, $stored:ident, [$($field:ident),+ $(,)?]) => {
+        $(
+            if $stored.$field.is_some() {
+                $route.$field.clone_from(&$stored.$field);
+            }
+        )+
+    };
+}
+
 fn apply_stored_route(route: &mut crate::metadata::RouteMetadata, stored: &StoredRouteInfo) {
     // Supplement with ROUTE_STORAGE data — only override when an explicit value is present.
-    if let Some(ref tags) = stored.tags {
-        route.tags = Some(tags.clone());
-    }
-    if let Some(ref security) = stored.security {
-        route.security = Some(security.clone());
-    }
-    if let Some(ref operation_id) = stored.operation_id {
-        route.operation_id = Some(operation_id.clone());
-    }
-    if let Some(ref summary) = stored.summary {
-        route.summary = Some(summary.clone());
-    }
+    copy_if_some!(
+        route,
+        stored,
+        [
+            tags,
+            security,
+            operation_id,
+            summary,
+            description,
+            success_status,
+            error_status,
+            typed_responses,
+            request_example,
+            response_example,
+        ]
+    );
+
+    // Structurally different: a bare `bool` flag and a `Vec` with no `Option` wrapper.
     if stored.deprecated {
         route.deprecated = true;
     }
-    if let Some(ref desc) = stored.description {
-        route.description = Some(desc.clone());
-    }
-    if let Some(status) = stored.success_status {
-        route.success_status = Some(status);
-    }
-    if let Some(ref status) = stored.error_status {
-        route.error_status = Some(status.clone());
-    }
-    if let Some(ref typed_responses) = stored.typed_responses {
-        route.typed_responses = Some(typed_responses.clone());
-    }
     if !stored.headers.is_empty() {
         route.headers.clone_from(&stored.headers);
-    }
-    if let Some(ref example) = stored.request_example {
-        route.request_example = Some(example.clone());
-    }
-    if let Some(ref example) = stored.response_example {
-        route.response_example = Some(example.clone());
     }
 }
 

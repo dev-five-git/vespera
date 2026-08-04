@@ -115,12 +115,11 @@ impl WireRequestHeader<'_> {
 /// parser and the bench-only serde twin.
 type CowPairs<'a> = Vec<(Cow<'a, str>, Cow<'a, str>)>;
 
-/// Append `[u32 BE header_len | header JSON]` to `out`, serializing
-/// the header **directly into the output buffer** with the hand-rolled
-/// [`header_write`] serializer — no intermediate `Vec` and no second
-/// memcpy of the header JSON.  Byte-identical to the previous
-/// `serde_json::to_writer(WireResponseHeader { .. })` path (locked by
-/// tests/wire_contract.rs).
+/// Minimum byte capacity reserved for a serialized response wire header
+/// (the `[u32 BE header_len | header JSON]` prefix).  This is the *floor*
+/// every buffered wire-header sizing site applies, via
+/// [`header_capacity_with_floor`], on top of the adaptive
+/// [`header_capacity_estimate`].
 ///
 /// Typical wire headers are well under this reservation, so the
 /// serializer usually writes without reallocating.

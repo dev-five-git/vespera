@@ -102,31 +102,33 @@ pub const fn is_builtin_openapi_type(ident: &str) -> bool {
     )
 }
 
-/// Check if a type is a primitive Rust type that maps directly to a JSON Schema type.
-/// Inline integer schema with an OpenAPI format string.
-fn integer_with_format(format: &str) -> SchemaRef {
+/// Inline schema built from `base` with an OpenAPI `format` string attached.
+///
+/// Shared body of [`integer_with_format`], [`number_with_format`] and
+/// [`string_with_format`], which differ only in the `base` schema they pass.
+fn schema_with_format(base: Schema, format: &str) -> SchemaRef {
     SchemaRef::Inline(Box::new(Schema {
         format: Some(format.to_string()),
-        ..Schema::integer()
+        ..base
     }))
+}
+
+/// Inline integer schema with an OpenAPI format string.
+fn integer_with_format(format: &str) -> SchemaRef {
+    schema_with_format(Schema::integer(), format)
 }
 
 /// Inline number schema with an OpenAPI format string.
 fn number_with_format(format: &str) -> SchemaRef {
-    SchemaRef::Inline(Box::new(Schema {
-        format: Some(format.to_string()),
-        ..Schema::number()
-    }))
+    schema_with_format(Schema::number(), format)
 }
 
 /// Inline string schema with an OpenAPI format string.
 fn string_with_format(format: &str) -> SchemaRef {
-    SchemaRef::Inline(Box::new(Schema {
-        format: Some(format.to_string()),
-        ..Schema::string()
-    }))
+    schema_with_format(Schema::string(), format)
 }
 
+/// Check if a type is a primitive Rust type that maps directly to a JSON Schema type.
 pub fn is_primitive_type(ty: &Type) -> bool {
     match ty {
         Type::Path(type_path) => {

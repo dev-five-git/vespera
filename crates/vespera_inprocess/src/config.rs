@@ -246,13 +246,33 @@ pub fn set_max_request_bytes(bytes: usize) -> bool {
     MAX_REQUEST_BYTES.set(bytes).is_ok()
 }
 
+/// The single spelling of the ingress-cap predicate: `len` exceeds `max`,
+/// where `max == 0` means **unlimited**.
+///
+/// Pure and `const` so callers that already hold the resolved cap (e.g.
+/// [`crate::dispatch::check_ingress_cap`], which loads `max_request_bytes()`
+/// once and reuses it for both the test and the `413` message) can share the
+/// predicate without paying a second `OnceLock` load. Keeping the
+/// security-relevant comparison in one place means a future change to the
+/// unlimited sentinel or the strictness of `>` cannot drift between the
+/// public helper and the dispatch guard.
+///
+/// `pub` only because `config` is a **private** module (clippy's
+/// `redundant_pub_crate` rejects `pub(crate)` here); it is deliberately
+/// absent from the `pub use config::{...}` list in `lib.rs`, so it stays
+/// crate-internal and adds nothing to the public API surface.
+#[must_use]
+#[inline]
+pub const fn exceeds(len: usize, max: usize) -> bool {
+    max != 0 && len > max
+}
+
 /// Whether a request of `len` bytes exceeds the configured cap.
 /// Always `false` when the cap is unlimited (`0`).
 #[must_use]
 #[inline]
 pub fn request_exceeds_limit(len: usize) -> bool {
-    let max = max_request_bytes();
-    max != 0 && len > max
+    exceeds(len, max_request_bytes())
 }
 
 #[cfg(test)]

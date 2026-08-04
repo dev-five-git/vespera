@@ -395,6 +395,42 @@ final class VesperaWireCodec {
     }
 
     /**
+     * Internal: the shared prologue of both {@link #fillHeaderJson}
+     * overloads — the opening brace, the {@code "v"} version digit, and the
+     * {@code "method"} / {@code "path"} fields, in that exact order.  The
+     * caller supplies the {@code "headers"} block and then calls
+     * {@link #finishHeaderJson}.
+     */
+    private static void beginHeaderJson(ExposedByteArrayOutputStream buf, String method,
+            String path, String query) {
+        Objects.requireNonNull(method, "method");
+        Objects.requireNonNull(path, "path");
+        buf.putAscii("{\"v\":");
+        // WIRE_VERSION is a single-digit constant; write its ASCII digit
+        // directly to avoid the per-request `Integer.toString(1)` allocation
+        // the old `writeAsciiInt` made on every encode. Byte-identical output.
+        buf.put((byte) ('0' + WIRE_VERSION));
+        buf.putAscii(",\"method\":");
+        writeJsonString(buf, method);
+        buf.putAscii(",\"path\":");
+        writeCombinedPath(buf, path, query);
+    }
+
+    /**
+     * Internal: the shared epilogue of both {@link #fillHeaderJson} overloads
+     * — the optional {@code ,"app":} field followed by the object's closing
+     * brace.  {@code normalizedAppName} must already have been through
+     * {@link #normalizedAppName(String)}.
+     */
+    private static void finishHeaderJson(ExposedByteArrayOutputStream buf, String normalizedAppName) {
+        if (normalizedAppName != null) {
+            buf.putAscii(",\"app\":");
+            writeJsonString(buf, normalizedAppName);
+        }
+        buf.put('}');
+    }
+
+    /**
      * Internal: serialise the wire request header JSON
      * <strong>byte-direct</strong> into the per-thread {@link #HEADER_BUF}
      * — no Jackson generator (and its per-call object + scratch buffer)
@@ -413,17 +449,7 @@ final class VesperaWireCodec {
         String normalizedAppName = normalizedAppName(appName);
         ExposedByteArrayOutputStream buf = reusableHeaderBuffer();
         try {
-            Objects.requireNonNull(method, "method");
-            Objects.requireNonNull(path, "path");
-            buf.putAscii("{\"v\":");
-            // WIRE_VERSION is a single-digit constant; write its ASCII digit
-            // directly to avoid the per-request `Integer.toString(1)` allocation
-            // the old `writeAsciiInt` made on every encode. Byte-identical output.
-            buf.put((byte) ('0' + WIRE_VERSION));
-            buf.putAscii(",\"method\":");
-            writeJsonString(buf, method);
-            buf.putAscii(",\"path\":");
-            writeCombinedPath(buf, path, query);
+            beginHeaderJson(buf, method, path, query);
             if (headers != null && !headers.isEmpty()) {
                 buf.putAscii(",\"headers\":{");
                 boolean first = true;
@@ -438,11 +464,7 @@ final class VesperaWireCodec {
                 }
                 buf.put('}');
             }
-            if (normalizedAppName != null) {
-                buf.putAscii(",\"app\":");
-                writeJsonString(buf, normalizedAppName);
-            }
-            buf.put('}');
+            finishHeaderJson(buf, normalizedAppName);
             return buf;
         } catch (RuntimeException | Error failure) {
             shrinkHeaderBufferIfOversized(buf);
@@ -450,22 +472,17 @@ final class VesperaWireCodec {
         }
     }
 
+    /**
+     * Internal: the {@link HeaderSource} overload of {@link #fillHeaderJson}
+     * — identical wire bytes, with the {@code "headers"} object streamed
+     * through {@link HeaderJsonSink} instead of iterating a {@link Map}.
+     */
     static ExposedByteArrayOutputStream fillHeaderJson(String appName, String method,
             String path, String query, HeaderSource headers) {
         String normalizedAppName = normalizedAppName(appName);
         ExposedByteArrayOutputStream buf = reusableHeaderBuffer();
         try {
-            Objects.requireNonNull(method, "method");
-            Objects.requireNonNull(path, "path");
-            buf.putAscii("{\"v\":");
-            // WIRE_VERSION is a single-digit constant; write its ASCII digit
-            // directly to avoid the per-request `Integer.toString(1)` allocation
-            // the old `writeAsciiInt` made on every encode. Byte-identical output.
-            buf.put((byte) ('0' + WIRE_VERSION));
-            buf.putAscii(",\"method\":");
-            writeJsonString(buf, method);
-            buf.putAscii(",\"path\":");
-            writeCombinedPath(buf, path, query);
+            beginHeaderJson(buf, method, path, query);
             if (headers != null) {
                 HeaderJsonSink sink = new HeaderJsonSink(buf);
                 headers.writeTo(sink);
@@ -473,11 +490,7 @@ final class VesperaWireCodec {
                     buf.put('}');
                 }
             }
-            if (normalizedAppName != null) {
-                buf.putAscii(",\"app\":");
-                writeJsonString(buf, normalizedAppName);
-            }
-            buf.put('}');
+            finishHeaderJson(buf, normalizedAppName);
             return buf;
         } catch (RuntimeException | Error failure) {
             shrinkHeaderBufferIfOversized(buf);
