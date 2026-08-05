@@ -409,11 +409,14 @@ fn hoist_422_skips_non_object_array_elements() {
 }
 
 /// Byte-identity for the TINY-header response fast paths in `write_headers`
-/// (0 headers → `{}`; exactly 1 distinct name → no stack-array init / sort;
-/// header NAME written without the escape-table scan).  The multi-header
-/// `hand_serialize_matches_serde_serialize` test never reaches these
-/// branches, so this locks 0 / 1-single-value / 1-repeated-value maps against
-/// `serde_json` on BOTH the `Vec` and slice paths.
+/// (0 headers → `{}`; exactly 1 distinct name; the all-single-valued
+/// multi-header path that captures each value from `headers.iter()` instead of
+/// hashing it back out of the map; header NAME written without the
+/// escape-table scan).  The multi-header
+/// `hand_serialize_matches_serde_serialize` test only exercises a MIXED map
+/// (it always contains a repeated `set-cookie`), so this locks 0 /
+/// 1-single-value / 1-repeated-value / 3-all-single maps against `serde_json`
+/// on BOTH the `Vec` and slice paths.
 #[test]
 fn hand_serialize_matches_serde_for_tiny_header_maps() {
     use http::{HeaderMap, HeaderName, HeaderValue};
@@ -428,12 +431,23 @@ fn hand_serialize_matches_serde_for_tiny_header_maps() {
     one_repeated.append(cookie.clone(), HeaderValue::from_static("a=1"));
     one_repeated.append(cookie, HeaderValue::from_static("b=2; Path=/"));
 
+    // Three distinct names, every one single-valued: `len() == keys_len()`, so
+    // `write_headers` takes the zero-lookup `headers.iter()` path.  Inserted
+    // out of byte order (`x-…` before `content-…`) so the sort is observable,
+    // and one value carries an escape + one is non-UTF-8 (rendered `""`) to
+    // prove the borrowed-value arm escapes exactly like the `get_all` arm.
+    let mut three_single = HeaderMap::new();
+    three_single.insert("x-quote", HeaderValue::from_bytes(b"a\"b").unwrap());
+    three_single.insert("content-type", HeaderValue::from_static("application/json"));
+    three_single.insert("x-binary", HeaderValue::from_bytes(&[0xFF, 0xFE]).unwrap());
+
     let metadata = ResponseMetadata::current();
 
     for (label, headers) in [
         ("0-header", &empty),
         ("1-header-single", &one),
         ("1-header-repeated", &one_repeated),
+        ("3-header-all-single", &three_single),
     ] {
         for status in [200u16, 204, 404] {
             let mut hand = Vec::new();

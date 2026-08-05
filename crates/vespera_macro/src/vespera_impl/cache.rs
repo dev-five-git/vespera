@@ -8,6 +8,7 @@ use quote::quote;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    file_utils::{combine_fingerprint, mtime_fingerprint},
     metadata::{CollectedMetadata, StructMetadata},
     router_codegen::ProcessedVesperaInput,
 };
@@ -66,20 +67,18 @@ pub(super) struct VesperaCache {
 }
 
 /// Cheap metadata fingerprint for sidecar files.
+///
+/// Shares the canonical mtime/size mixing with route-file fingerprinting —
+/// see [`crate::file_utils::mtime_fingerprint`] and
+/// [`crate::file_utils::combine_fingerprint`] for the rationale behind the
+/// nanosecond resolution and the size term.
 pub(super) fn path_fingerprint(path: &Path) -> Option<u64> {
     let meta = std::fs::metadata(path).ok()?;
     let modified = meta.modified().ok()?;
-    let mtime = u64::try_from(
-        modified
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos(),
-    )
-    .unwrap_or(u64::MAX);
-    Some(
-        mtime.rotate_left(1).wrapping_mul(0x9E37_79B9_7F4A_7C15)
-            ^ meta.len().wrapping_mul(0xD1B5_4A32_D192_ED03),
-    )
+    Some(combine_fingerprint(
+        mtime_fingerprint(Some(modified)),
+        meta.len(),
+    ))
 }
 
 /// Validate a sidecar by cheap metadata first, falling back to content hash when
@@ -361,21 +360,8 @@ fn collect_rs_mtimes(dir: &Path, out: &mut Vec<(String, u64)>) {
         if file_type.is_dir() {
             collect_rs_mtimes(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs") {
-            // Nanosecond resolution (matching `file_utils::mtime_fingerprint`):
-            // whole-second granularity let two edits to the same file within one
-            // wall-clock second collide on the same fingerprint, so the route
-            // cache could serve a stale router / OpenAPI spec under fast
-            // incremental rebuilds. Truncating the u128 nanos-since-epoch to u64
-            // keeps every sub-second bit (only overflows past ~year 2554) and the
-            // fingerprint is only ever compared for equality.
-            let mtime = entry.metadata().and_then(|m| m.modified()).map_or(0, |t| {
-                u64::try_from(
-                    t.duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos(),
-                )
-                .unwrap_or(u64::MAX)
-            });
+            // Nanosecond resolution — see [`crate::file_utils::mtime_fingerprint`].
+            let mtime = mtime_fingerprint(entry.metadata().and_then(|m| m.modified()).ok());
             out.push((path.display().to_string(), mtime));
         }
     }

@@ -211,8 +211,8 @@ fn write_json_string<S: JsonSink>(sink: &mut S, s: &str) {
 /// enforces the 100..=999 range (`axum::response::Response::status()`
 /// returns it), so the loop, the 20-byte stack buffer, and the
 /// `u16 → u64` widening the generic writer carried are all redundant
-/// for the sole caller.  Mirrors the Rust-side fast paths in
-/// `write_headers` (0/1-key) and the Java-side inlined-digit pattern
+/// for the sole caller.  Mirrors the Rust-side fast path in
+/// `write_headers` (0-key) and the Java-side inlined-digit pattern
 /// in `VesperaWireCodec.java::fillHeaderJson` (`'0' + WIRE_VERSION`).
 /// Byte-identical output — locked by `hand_serialize_matches_serde_serialize`
 /// in `wire/tests.rs` and the end-to-end `tests/wire_contract.rs`.
@@ -243,75 +243,96 @@ fn write_headers<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap) {
     // `STACK_CAP` is `use`d from the parent `wire` module so the bench
     // A/B twin and this production path stay locked to the same cap.
     let key_count = headers.keys_len();
-    // Fast paths for the overwhelmingly common tiny-header responses: skip
-    // initialising the 32-slot stack name array AND the (no-op) sort that the
+    // Fast path for the overwhelmingly common bodyless response: skip
+    // initialising the 32-slot stack entry array AND the (no-op) sort that the
     // general path below always pays — a bodyless `GET` returning a bare string
-    // has ZERO response headers, and a single `content-type` is the next most
-    // common shape.  Output is byte-identical (an N<=1 set is trivially sorted).
+    // has ZERO response headers.  Output is byte-identical.
     if key_count == 0 {
         sink.put(b"{}");
         return;
     }
-    if key_count == 1 {
-        // `keys_len() == 1` guarantees exactly one key.  `let-else` flattens
-        // the happy path — the always-taken branch is no longer nested under
-        // an `if let` whose only alternative is a paranoid fallback.  On the
-        // impossible `None` we still emit an empty object instead of
-        // panicking, keeping this FFI-adjacent response serializer free of
-        // unwind sites (mirrors the no-panic/unwind discipline the dispatch
-        // internals document).  Byte-identical output either way.
-        let Some(name) = headers.keys().next() else {
-            debug_assert!(false, "keys_len()==1 yields exactly one name");
-            sink.put(b"{}");
-            return;
-        };
-        sink.put(b"{");
-        write_header_name_json_string(sink, name.as_str());
-        sink.put(b":");
-        write_header_value(sink, headers, name.as_str());
-        sink.put(b"}");
-        return;
-    }
 
-    // >=2 distinct names: sort in a stack buffer for the common small-header
-    // response; larger sets fall back to a heap `Vec`.  Output is byte-identical
-    // either way (same sorted order over the same names).
-    let mut stack_names: [&str; STACK_CAP] = [""; STACK_CAP];
-    let mut heap_names: Vec<&str>;
-    let names: &mut [&str] = if key_count <= STACK_CAP {
-        for (slot, name) in stack_names.iter_mut().zip(headers.keys()) {
-            *slot = name.as_str();
+    // `HeaderMap::len()` counts VALUES while `keys_len()` counts distinct
+    // NAMES, so `len() == keys_len()` is an exact, documented-API test for
+    // "no name is repeated".  In that case `headers.iter()` already yields
+    // every `(&HeaderName, &HeaderValue)` pair exactly once, so each value is
+    // captured during the same pass that collects the names — and the
+    // per-name `get_all(name)` string hash + table probe that used to be paid
+    // for EVERY distinct response header (on every wire response: buffered,
+    // direct-write, and streaming) disappears entirely.  Repeated names (the
+    // `set-cookie` case) keep the unchanged `get_all` array rendering.
+    let all_single = headers.len() == key_count;
+
+    // Sort names in a stack buffer for the common small-header response;
+    // larger sets fall back to a heap `Vec`.  Output is byte-identical either
+    // way (same sorted order over the same names), and a 1-entry slice is
+    // trivially sorted — which is why the former `key_count == 1` special case
+    // is fully subsumed here.
+    let mut stack_entries: [HeaderEntry<'_>; STACK_CAP] = [("", None); STACK_CAP];
+    let mut heap_entries: Vec<HeaderEntry<'_>>;
+    let entries: &mut [HeaderEntry<'_>] = if key_count <= STACK_CAP {
+        if all_single {
+            for (slot, (name, value)) in stack_entries.iter_mut().zip(headers.iter()) {
+                *slot = (name.as_str(), Some(value));
+            }
+        } else {
+            for (slot, name) in stack_entries.iter_mut().zip(headers.keys()) {
+                *slot = (name.as_str(), None);
+            }
         }
-        &mut stack_names[..key_count]
+        &mut stack_entries[..key_count]
     } else {
-        heap_names = Vec::with_capacity(key_count);
-        heap_names.extend(headers.keys().map(http::HeaderName::as_str));
-        &mut heap_names[..]
+        heap_entries = Vec::with_capacity(key_count);
+        if all_single {
+            heap_entries.extend(headers.iter().map(|(n, v)| (n.as_str(), Some(v))));
+        } else {
+            heap_entries.extend(headers.keys().map(|n| (n.as_str(), None)));
+        }
+        &mut heap_entries[..]
     };
-    names.sort_unstable();
+    // Sort by NAME only — the borrowed `HeaderValue` payload rides along.
+    entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
 
     sink.put(b"{");
     // Peel the first iteration so the per-iteration `if idx > 0` branch is
-    // paid ZERO times instead of once per key — this arm is reached only for
-    // `key_count >= 2` (the 0/1-key fast paths above already returned early),
-    // so the peel is a net win for every many-header response.  Byte-identical
-    // to the prior `enumerate()`-with-branch shape (locked by
+    // paid ZERO times instead of once per key.  Byte-identical to the prior
+    // `enumerate()`-with-branch shape (locked by
     // `hand_serialize_matches_serde_serialize` and
     // `hand_serialize_matches_serde_for_tiny_header_maps` in `wire/tests.rs`,
     // and end-to-end by `tests/wire_contract.rs`).
-    let mut it = names.iter();
-    if let Some(&first) = it.next() {
-        write_header_name_json_string(sink, first);
-        sink.put(b":");
-        write_header_value(sink, headers, first);
-        for &name in it {
+    let mut it = entries.iter();
+    if let Some(&(first, first_value)) = it.next() {
+        write_header_entry(sink, headers, first, first_value);
+        for &(name, value) in it {
             sink.put(b",");
-            write_header_name_json_string(sink, name);
-            sink.put(b":");
-            write_header_value(sink, headers, name);
+            write_header_entry(sink, headers, name, value);
         }
     }
     sink.put(b"}");
+}
+
+/// One entry of the sorted response-header array: the header name plus, when
+/// the map has no repeated names, the single borrowed value that
+/// [`write_headers`] captured in the same pass (`None` means "repeated-name
+/// map — go look the values up").
+type HeaderEntry<'a> = (&'a str, Option<&'a http::HeaderValue>);
+
+/// Emit one `"name":<value>` pair.  `Some(v)` writes the scalar string
+/// straight from the borrowed value (zero hash lookups); `None` falls through
+/// to the unchanged [`write_header_value`] `get_all` array rendering used for
+/// repeated names.  Byte-identical in both arms.
+fn write_header_entry<S: JsonSink>(
+    sink: &mut S,
+    headers: &http::HeaderMap,
+    name: &str,
+    value: Option<&http::HeaderValue>,
+) {
+    write_header_name_json_string(sink, name);
+    sink.put(b":");
+    match value {
+        Some(v) => write_json_string(sink, header_value_as_str(v)),
+        None => write_header_value(sink, headers, name),
+    }
 }
 
 /// Append an HTTP header **name** as a quoted JSON string WITHOUT the

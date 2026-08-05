@@ -86,7 +86,7 @@ fn path_lookup_fingerprint(cache: &mut FileCache, path_str: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     path_str.hash(&mut hasher);
 
-    let Some(manifest_dir) = get_manifest_dir_inner(cache) else {
+    let Some(manifest_dir) = super::get_manifest_dir_inner(cache) else {
         return hasher.finish();
     };
     let src_dir = Path::new(&manifest_dir).join("src");
@@ -118,19 +118,6 @@ fn path_lookup_fingerprint(cache: &mut FileCache, path_str: &str) -> u64 {
     }
 
     hasher.finish()
-}
-
-fn get_manifest_dir_inner(cache: &mut FileCache) -> Option<String> {
-    let epoch = cache.epoch;
-    if cache.manifest_dir_epoch == epoch
-        && let Some(ref dir) = cache.manifest_dir
-    {
-        return Some(dir.clone());
-    }
-    let dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-    cache.manifest_dir.clone_from(&dir);
-    cache.manifest_dir_epoch = epoch;
-    dir
 }
 
 fn fingerprint_path(cache: &mut FileCache, path: &Path, hasher: &mut DefaultHasher) {

@@ -97,7 +97,7 @@ pub fn collect_files_with_mtimes(folder_path: &Path) -> io::Result<Vec<(PathBuf,
 /// every sub-second bit (the value only exceeds `u64` past the year ~2554,
 /// saturated to `u64::MAX`); the fingerprint is only ever compared for
 /// equality, so the absolute units never matter.
-fn mtime_fingerprint(modified: Option<std::time::SystemTime>) -> u64 {
+pub fn mtime_fingerprint(modified: Option<std::time::SystemTime>) -> u64 {
     modified.map_or(0, |t| {
         let nanos = t
             .duration_since(std::time::UNIX_EPOCH)
@@ -119,7 +119,7 @@ fn mtime_fingerprint(modified: Option<std::time::SystemTime>) -> u64 {
 /// metadata is already stat'd for the mtime and no file contents are ever
 /// hashed. The fingerprint is only ever compared for equality, so any stable
 /// mix works; this one is strictly more sensitive than mtime alone.
-fn combine_fingerprint(mtime: u64, len: u64) -> u64 {
+pub fn combine_fingerprint(mtime: u64, len: u64) -> u64 {
     mtime.rotate_left(1).wrapping_mul(0x9E37_79B9_7F4A_7C15)
         ^ len.wrapping_mul(0xD1B5_4A32_D192_ED03)
 }

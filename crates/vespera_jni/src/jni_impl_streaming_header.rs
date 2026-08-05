@@ -73,6 +73,44 @@ fn handle_header_dispatch_panic(
     }
 }
 
+/// Success-branch mirror of [`panic_post_header_action`]: decide whether a
+/// completed dispatch must still abort the Java transport.
+///
+/// The two `dispatch*WithHeader` symbols share one truncation-reporting
+/// contract (documented on [`PanicHeaderAction`]): a response whose header was
+/// already committed but whose body did not drain cleanly — because the header
+/// callback threw (`failed_header`), the body errored
+/// ([`vespera_inprocess::StreamOutcome::BodyError`]), or the chunk sink stopped
+/// early ([`vespera_inprocess::StreamOutcome::SinkStopped`]) — must throw
+/// `IOException` rather than return normally over a short body.  Both symbols
+/// previously carried a byte-for-byte identical copy of that predicate, so an
+/// edit to one (an added outcome variant, a changed `failed_header` ordering)
+/// could silently drift from the other and from the panic branch it mirrors;
+/// the same drift hazard already motivated extracting
+/// [`deliver_panic_header_if_needed`].
+///
+/// `failed_header()` is loaded exactly once and reused for both the predicate
+/// and the thrown message selection, matching the single-snapshot discipline of
+/// [`handle_header_dispatch_panic`].  `#[inline]` keeps codegen identical to
+/// the prior inline blocks.
+#[inline]
+fn throw_if_stream_aborted(
+    env: &mut jni::Env<'_>,
+    flags: &StreamingFlags,
+    outcome: vespera_inprocess::StreamOutcome,
+) {
+    let failed_header = flags.failed_header();
+    if failed_header
+        || matches!(
+            outcome,
+            vespera_inprocess::StreamOutcome::BodyError
+                | vespera_inprocess::StreamOutcome::SinkStopped
+        )
+    {
+        throw_streaming_abort(env, failed_header);
+    }
+}
+
 fn reject_null_header_consumer(
     env: &mut jni::Env<'_>,
     header_consumer: &JObject<'_>,
@@ -256,16 +294,7 @@ fn dispatch_full_streaming_with_header_body(env: &mut jni::Env<'_>, args: &FullH
         Ok(outcome) => {
             mark_streaming_buffer_reusable(pull_buf_lease);
             mark_streaming_buffer_reusable(push_buf_lease);
-            let failed_header = args.flags.failed_header();
-            if failed_header
-                || matches!(
-                    outcome,
-                    vespera_inprocess::StreamOutcome::BodyError
-                        | vespera_inprocess::StreamOutcome::SinkStopped
-                )
-            {
-                throw_streaming_abort(env, failed_header);
-            }
+            throw_if_stream_aborted(env, args.flags, outcome);
         }
         Err(_) => handle_header_dispatch_panic(env, args.header_consumer, args.flags),
     }
@@ -348,16 +377,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
             match panic_result {
                 Ok(outcome) => {
                     mark_streaming_buffer_reusable(push_buf_lease);
-                    let failed_header = flags_body.failed_header();
-                    if failed_header
-                        || matches!(
-                            outcome,
-                            vespera_inprocess::StreamOutcome::BodyError
-                                | vespera_inprocess::StreamOutcome::SinkStopped
-                        )
-                    {
-                        throw_streaming_abort(env, failed_header);
-                    }
+                    throw_if_stream_aborted(env, &flags_body, outcome);
                 }
                 Err(_) => handle_header_dispatch_panic(env, &header_consumer, &flags_body),
             }

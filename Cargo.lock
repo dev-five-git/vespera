@@ -4000,6 +4000,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "mimalloc",
+ "rstest",
  "serde",
  "serde_json",
  "tokio",

@@ -49,6 +49,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # A/Bs the vespera_jni `dispatchAsync` spawn-mechanism change (inner
 # `tokio::spawn` vs in-place `catch_unwind`).
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Case-table unit tests (the repo-wide convention, already used by
+# vespera_core / vespera_macro).  Test-only: never linked into the cdylib.
+rstest = "0.26"
 
 [[bench]]
 name = "dispatch"

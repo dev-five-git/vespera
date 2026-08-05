@@ -361,20 +361,31 @@ pub fn get_file_fingerprint(path: &Path) -> Option<FileFingerprint> {
 /// differs, and a stale value would resolve every cross-file lookup against
 /// the previous crate's `src/`.
 pub fn get_manifest_dir() -> Option<String> {
-    FILE_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let epoch = cache.epoch;
-        // Trust the cached value only within the epoch it was read in.
-        if cache.manifest_dir_epoch == epoch
-            && let Some(ref dir) = cache.manifest_dir
-        {
-            return Some(dir.clone());
-        }
-        let dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-        cache.manifest_dir.clone_from(&dir);
-        cache.manifest_dir_epoch = epoch;
-        dir
-    })
+    FILE_CACHE.with(|cache| get_manifest_dir_inner(&mut cache.borrow_mut()))
+}
+
+/// [`get_manifest_dir`] against an already-borrowed [`FileCache`].
+///
+/// **The single reader of `CARGO_MANIFEST_DIR` in this module tree.** It lives
+/// in the parent module (not in `lookups`) because a parent cannot see a child
+/// module's private items, whereas a child reaches its ancestors' private items
+/// through `super::` — so this is the only placement both call sites can share.
+/// The `lookups::path_lookup_fingerprint` path previously carried a byte-for-byte
+/// copy of this body, which meant the per-epoch revalidation documented above
+/// had to be fixed twice or one call path would keep resolving against the
+/// previous crate's `src/`.
+fn get_manifest_dir_inner(cache: &mut FileCache) -> Option<String> {
+    let epoch = cache.epoch;
+    // Trust the cached value only within the epoch it was read in.
+    if cache.manifest_dir_epoch == epoch
+        && let Some(ref dir) = cache.manifest_dir
+    {
+        return Some(dir.clone());
+    }
+    let dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+    cache.manifest_dir.clone_from(&dir);
+    cache.manifest_dir_epoch = epoch;
+    dir
 }
 
 /// Get a parsed `syn::File` for the given path.

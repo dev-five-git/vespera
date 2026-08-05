@@ -207,6 +207,26 @@ async fn dispatch_owned_to_parts(
 
 // ── Dispatch (direct API — backward compatible) ──────────────────────
 
+/// Hand-rendered `500` [`ResponseEnvelope`] JSON used by [`dispatch`] when
+/// `serde_json::to_string` fails (unreachable in practice — see the call
+/// site).
+///
+/// COUPLING: these bytes mirror `ResponseEnvelope`'s serde shape
+/// field-for-field (`status`, `headers`, `body`, `metadata.version`), and
+/// the nested object mirrors [`ResponseMetadata`].  Adding or renaming a
+/// serialized field on either type (`envelope.rs`) without updating this
+/// literal breaks the byte-identity guard
+/// [`tests::fallback_matches_serde_serialization`] below — that test is the
+/// drift tripwire, so keep the two in lockstep.  Mirrors the same discipline
+/// `crate::wire::header_write::write_response_header` documents against
+/// `hand_serialize_matches_serde_serialize`.
+const ENVELOPE_SERIALIZATION_FALLBACK: &str = concat!(
+    r#"{"status":500,"headers":{},"body":"envelope serialization failed","#,
+    r#""metadata":{"version":""#,
+    env!("CARGO_PKG_VERSION"),
+    r#""}}"#,
+);
+
 /// Dispatch a [`RequestEnvelope`] through an axum [`Router`] and
 /// return the serialised [`ResponseEnvelope`] JSON.
 ///
@@ -228,12 +248,7 @@ pub async fn dispatch(router: Router, envelope: &RequestEnvelope) -> String {
         // [`crate::wire::header_read::expect_literal`]), while preserving
         // the same JSON shape (`status`/`headers`/`body`/`metadata.version`)
         // the derived path emits so external decoders are unaffected.
-        String::from(concat!(
-            r#"{"status":500,"headers":{},"body":"envelope serialization failed","#,
-            r#""metadata":{"version":""#,
-            env!("CARGO_PKG_VERSION"),
-            r#""}}"#,
-        ))
+        String::from(ENVELOPE_SERIALIZATION_FALLBACK)
     })
 }
 
@@ -687,5 +702,30 @@ fn write_wire_into(out: &mut [u8], wire: &[u8]) -> DirectWriteResult {
         DirectWriteResult::Complete(wire.len())
     } else {
         DirectWriteResult::Overflow(wire.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Drift tripwire for [`ENVELOPE_SERIALIZATION_FALLBACK`]: the
+    /// hand-rendered `500` JSON must stay byte-identical to what the derived
+    /// `Serialize` impl emits for the equivalent [`ResponseEnvelope`].
+    ///
+    /// Fails when a serialized field is added, removed, renamed, or reordered
+    /// on [`ResponseEnvelope`] or [`ResponseMetadata`] (`envelope.rs`) without
+    /// updating the literal in lockstep.
+    #[test]
+    fn fallback_matches_serde_serialization() {
+        let derived = serde_json::to_string(&ResponseEnvelope {
+            status: 500,
+            headers: BTreeMap::new(),
+            body: "envelope serialization failed".to_owned(),
+            metadata: ResponseMetadata::current(),
+        })
+        .expect("ResponseEnvelope serialization cannot fail");
+
+        assert_eq!(derived, ENVELOPE_SERIALIZATION_FALLBACK);
     }
 }

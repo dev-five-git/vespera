@@ -232,6 +232,46 @@ fn write_wire_header_into(
     true
 }
 
+/// Allocate a response `Vec` sized for `[u32 BE header_len | header JSON]`
+/// (plus `body_reserve` bytes of body the caller appends afterwards) and
+/// serialize the wire header into it.  `None` signals the unreachable `u32`
+/// header-length overflow, which every caller maps to
+/// `error_wire(500, HEADER_TOO_LARGE_MSG)`.
+///
+/// Single home for the sizing rule [`to_wire_bytes`],
+/// [`build_wire_header_bytes`] and [`build_wire_header_bytes_hoisting`]
+/// each used to spell out verbatim: [`header_capacity_with_floor`] plus,
+/// on the 422 path only, [`validation_errors_capacity_estimate`].
+/// `#[inline]` keeps each call site's codegen identical to the block it
+/// replaced (`body_reserve` is a constant `0` at two of the three), so
+/// reserved capacity and emitted bytes are unchanged.
+#[inline]
+fn build_header_vec(
+    status: u16,
+    headers: &http::HeaderMap,
+    metadata: &ResponseMetadata,
+    validation_errors: Option<&[ValidationErrorItem]>,
+    body_reserve: usize,
+) -> Option<Vec<u8>> {
+    let header_cap = header_capacity_with_floor(headers, metadata)
+        + validation_errors.map_or(0, validation_errors_capacity_estimate);
+    // `4 + header_cap + body_reserve` cannot overflow `usize` on a 64-bit
+    // target (it would require a multi-exabyte body); plain `+` is used so
+    // the hot response path keeps its exact arithmetic — a `saturating_add`
+    // variant was benchmarked and cost ~2-3% on the small
+    // `wire_path`/`request_headers_path` cases for zero real-world benefit.
+    // The `validation_errors` term is `0` for every non-422 response (the hot
+    // success path is byte-for-byte unchanged); on the 422 path it sizes the
+    // `Vec` to serialise the hoisted errors without the mid-write realloc a
+    // hoist-blind estimate paid (locked by tests/alloc_budget.rs case F).
+    let mut out = Vec::with_capacity(4 + header_cap + body_reserve);
+    if write_wire_header_into(&mut out, status, headers, metadata, validation_errors) {
+        Some(out)
+    } else {
+        None
+    }
+}
+
 /// Append `[u32 BE header_len | header JSON]` (no `validation_errors`)
 /// straight into `out` — the `Vec`-appending sibling of
 /// [`write_wire_header_into_slice`], used by the buffered direct-streaming
@@ -338,31 +378,17 @@ pub fn to_wire_bytes(parts: ResponseParts) -> Vec<u8> {
     } else {
         None
     };
-    let header_cap = header_capacity_with_floor(&headers, &metadata)
-        + validation_errors
-            .as_deref()
-            .map_or(0, validation_errors_capacity_estimate);
-    // `4 + header_cap + body_bytes.len()` cannot overflow `usize` on a
-    // 64-bit target (it would require a multi-exabyte body); plain `+` is
-    // used so the hot response path keeps its exact arithmetic — a
-    // `saturating_add` variant was benchmarked and cost ~2-3% on the small
-    // `wire_path`/`request_headers_path` cases for zero real-world benefit.
-    // The `validation_errors` term is `0` for every non-422 response (the hot
-    // success path is byte-for-byte unchanged); on the 422 path it sizes the
-    // `Vec` to serialise the hoisted errors without the mid-write realloc a
-    // hoist-blind estimate paid (locked by tests/alloc_budget.rs case F).
-    let mut out = Vec::with_capacity(4 + header_cap + body_bytes.len());
-    if !write_wire_header_into(
-        &mut out,
+    let Some(mut out) = build_header_vec(
         status,
         &headers,
         &metadata,
         validation_errors.as_deref(),
-    ) {
+        body_bytes.len(),
+    ) else {
         // Unreachable for a real `HeaderMap` (would need 4 GiB+ of header
         // JSON); never panic on the response path — emit a 500 instead.
         return error_wire(500, HEADER_TOO_LARGE_MSG);
-    }
+    };
     out.extend_from_slice(&body_bytes);
     out
 }
@@ -380,12 +406,10 @@ pub fn build_wire_header_bytes(
     headers: &http::HeaderMap,
     metadata: &ResponseMetadata,
 ) -> Vec<u8> {
-    let header_cap = header_capacity_with_floor(headers, metadata);
-    let mut out = Vec::with_capacity(4 + header_cap);
-    if !write_wire_header_into(&mut out, status, headers, metadata, None) {
+    let Some(out) = build_header_vec(status, headers, metadata, None, 0) else {
         // Unreachable for a real `HeaderMap`; never panic on the response path.
         return error_wire(500, HEADER_TOO_LARGE_MSG);
-    }
+    };
     out
 }
 
@@ -408,21 +432,11 @@ pub fn build_wire_header_bytes_hoisting(
         return build_wire_header_bytes(status, headers, metadata);
     }
     let validation_errors = hoist::try_hoist_validation_errors(headers, body);
-    let header_cap = header_capacity_with_floor(headers, metadata)
-        + validation_errors
-            .as_deref()
-            .map_or(0, validation_errors_capacity_estimate);
-    let mut out = Vec::with_capacity(4 + header_cap);
-    if !write_wire_header_into(
-        &mut out,
-        status,
-        headers,
-        metadata,
-        validation_errors.as_deref(),
-    ) {
+    let Some(out) = build_header_vec(status, headers, metadata, validation_errors.as_deref(), 0)
+    else {
         // Unreachable for a real `HeaderMap`; never panic on the response path.
         return error_wire(500, HEADER_TOO_LARGE_MSG);
-    }
+    };
     out
 }
 

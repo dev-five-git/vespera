@@ -410,4 +410,44 @@ mod tests {
             1024
         );
     }
+
+    use super::exceeds;
+    use rstest::rstest;
+
+    /// [`exceeds`] is the single spelling of the DoS ingress-cap predicate,
+    /// shared by [`super::request_exceeds_limit`] and
+    /// [`crate::dispatch::check_ingress_cap`] precisely so the two cannot
+    /// drift.  Nothing pinned its two security-relevant properties, so these
+    /// cases lock them:
+    ///
+    /// 1. `max == 0` is the **unlimited** sentinel — no `len`, not even
+    ///    `usize::MAX`, exceeds it.  Flipping this would turn the documented
+    ///    "unlimited by default" into "reject everything".
+    /// 2. The comparison is strictly `>`, so a request of exactly `max` bytes
+    ///    is **accepted**.  Loosening it to `>=` would silently `413` the
+    ///    exact size an operator configured as allowed (an off-by-one the
+    ///    end-to-end `tests/request_size_cap.rs` at-cap case also asserts).
+    #[rstest]
+    // max == 0 (unlimited): every length is accepted.
+    #[case::unlimited_empty(0, 0, false)]
+    #[case::unlimited_one_byte(1, 0, false)]
+    #[case::unlimited_max_len(usize::MAX, 0, false)]
+    // Strict `>`: below the cap, exactly at the cap, and an empty body under
+    // a finite cap are all accepted.
+    #[case::below_cap(9, 10, false)]
+    #[case::exactly_at_cap(10, 10, false)]
+    #[case::empty_body_finite_cap(0, 10, false)]
+    // One byte past the cap is the first rejected size.
+    #[case::one_over_cap(11, 10, true)]
+    #[case::far_over_cap(usize::MAX, 10, true)]
+    // Tightest possible finite cap: 1 byte allowed, 2 rejected.
+    #[case::cap_one_at_cap(1, 1, false)]
+    #[case::cap_one_over_cap(2, 1, true)]
+    fn exceeds_locks_unlimited_sentinel_and_strict_boundary(
+        #[case] len: usize,
+        #[case] max: usize,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(exceeds(len, max), expected, "exceeds({len}, {max})");
+    }
 }
