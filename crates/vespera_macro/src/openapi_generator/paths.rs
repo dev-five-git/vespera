@@ -189,7 +189,10 @@ fn assemble_path_items(
     paths: &mut BTreeMap<String, PathItem>,
     all_tags: &mut BTreeSet<String>,
 ) -> syn::Result<()> {
-    let mut claimed: HashMap<(String, HttpMethod), String> = HashMap::new();
+    // Borrows from `metadata`, which outlives this loop — the map is only ever
+    // read inside the duplicate-route error branch below, so cloning the path
+    // and handler name for every route was two wasted allocations per route.
+    let mut claimed: HashMap<(&str, HttpMethod), &str> = HashMap::new();
     for (idx, method, operation) in results {
         let route_meta = &metadata.routes[idx];
         if let Some(tags) = &route_meta.tags {
@@ -200,8 +203,9 @@ fn assemble_path_items(
         let path_item = paths.entry(route_meta.path.clone()).or_default();
         if path_item.try_set_operation(method, operation).is_some() {
             let previous = claimed
-                .get(&(route_meta.path.clone(), method))
-                .map_or("<unknown>", String::as_str);
+                .get(&(route_meta.path.as_str(), method))
+                .copied()
+                .unwrap_or("<unknown>");
             return Err(syn::Error::new(
                 proc_macro2::Span::call_site(),
                 format!(
@@ -213,8 +217,8 @@ fn assemble_path_items(
             ));
         }
         claimed.insert(
-            (route_meta.path.clone(), method),
-            route_meta.function_name.clone(),
+            (route_meta.path.as_str(), method),
+            route_meta.function_name.as_str(),
         );
     }
     Ok(())

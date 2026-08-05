@@ -82,9 +82,12 @@ pub fn process_vespera_macro(
     let macro_version = env!("CARGO_PKG_VERSION").to_string();
     let macro_dev_fingerprint = compute_macro_dev_fingerprint();
     stage("macro_dev_fingerprint");
-    let cached = read_cache(&cache_path);
-    stage("read_cache");
-    let cache_hit = cached.as_ref().is_some_and(|c| {
+    // Fold the freshness predicate into the `Option` itself: a stale cache
+    // becomes `None`, so the reusable-cache branch below is reachable only
+    // through a `Some` pattern. Keeping the validity as a separate `bool`
+    // would leave the `Some`-ness unproven to the type system and force an
+    // `unwrap()`.
+    let cached = read_cache(&cache_path).filter(|c| {
         c.cache_format == CACHE_FORMAT
             && c.macro_version == macro_version
             && c.macro_dev_fingerprint == macro_dev_fingerprint
@@ -92,25 +95,22 @@ pub fn process_vespera_macro(
             && c.schema_hash == schema_hash
             && c.config_hash == config_hash
     });
+    stage("read_cache");
     // Hash-validate the sidecar spec files (the cache only stores
     // hashes — content lives in `target/vespera/`).  Validation
     // failure downgrades to a full regeneration, which rewrites the
     // sidecars: corruption self-heals on the next build.
-    let sidecars = if cache_hit {
-        let c = cached.as_ref().unwrap();
+    let sidecars = cached.as_ref().and_then(|c| {
         load_validated_sidecar_specs(
             c.spec_json_hash,
             c.spec_pretty_hash,
             c.spec_json_fingerprint,
             c.spec_pretty_fingerprint,
         )
-    } else {
-        None
-    };
+    });
     stage("validate_sidecar_specs");
 
-    let (metadata, spec_tokens) = if let Some(sidecars) = sidecars {
-        let cache = cached.unwrap();
+    let (metadata, spec_tokens) = if let (Some(sidecars), Some(cache)) = (sidecars, cached) {
         let mut metadata = cache.metadata;
         metadata.structs.extend(schema_storage.values().cloned());
         merge_route_storage_data(&mut metadata, route_storage);

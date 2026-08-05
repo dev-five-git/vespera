@@ -65,23 +65,24 @@ pub fn get_circular_analysis(source_module_path: &[String], definition: &str) ->
     result
 }
 
-/// Re-stamp the path-keyed lookup caches (`struct_lookup`, `fk_column_lookup`)
-/// to the current epoch.
+/// Dependency fingerprint for a schema PATH string, used to validate the
+/// path-keyed lookup caches (`struct_lookup`, `fk_column_lookup`) across
+/// epochs.
 ///
-/// These caches **deliberately survive epoch bumps** (see the
-/// `path_lookup_epoch` field): keeping resolved path lookups warm across
-/// invocations lets repeated `schema_type!` / `#[derive(Schema)]` expansions in
-/// one crate build share path-resolution work. They key on a schema PATH string
-/// (not a file), so a cache MISS re-resolves through the lower file-content /
-/// struct-definition mtime caches; within a single `cargo build` no source file
-/// changes mid-build, so a surviving entry only ever returns the result a
-/// re-resolution would produce. The epoch stamp is retained only for
-/// cache-format / test compatibility.
+/// The digest folds in the path string, the crate's `src` dir, and the
+/// mtime+len [`super::FileFingerprint`] of every file the resolution could
+/// read: the two `{module}.rs` / `{module}/mod.rs` candidates for a qualified
+/// path, or every `.rs` file under `src` for a single-segment one. Comparing
+/// it against the stored `PathLookupEntry::fingerprint` is what makes a
+/// surviving entry safe — an entry whose inputs changed on disk fails the
+/// comparison and is re-resolved.
 ///
-/// (A long-lived rust-analyzer proc-macro server therefore keeps a resolved
-/// entry until the server restarts — the accepted cost of the shared-work
-/// optimisation. A future mtime-aware path cache could be both warm AND fresh,
-/// but that is a design change, not a one-line tweak.)
+/// Together with `PathLookupEntry::last_epoch_validated` (which only skips
+/// recomputing this fingerprint for an entry already validated in the
+/// current epoch) this is the sole freshness mechanism for those caches: they
+/// stay warm across epoch bumps so repeated `schema_type!` /
+/// `#[derive(Schema)]` expansions in one crate build share path-resolution
+/// work, and stay correct because a disk change perturbs the fingerprint.
 fn path_lookup_fingerprint(cache: &mut FileCache, path_str: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     path_str.hash(&mut hasher);
@@ -137,10 +138,6 @@ fn fingerprint_path(cache: &mut FileCache, path: &Path, hasher: &mut DefaultHash
     }
 }
 
-fn ensure_path_lookup_caches_fresh(cache: &mut FileCache) {
-    cache.path_lookup_epoch = cache.epoch;
-}
-
 /// Get or compute struct lookup by schema path, with caching.
 ///
 /// Wraps `find_struct_from_schema_path` with a
@@ -149,22 +146,18 @@ fn ensure_path_lookup_caches_fresh(cache: &mut FileCache) {
 /// The `Arc` makes cache hits O(1) instead of cloning the full struct
 /// definition text per lookup.
 ///
-/// The cache **survives epoch bumps** (see
-/// [`ensure_path_lookup_caches_fresh`]): entries key on a schema PATH string,
-/// and a cache MISS re-resolves through the lower file-content /
-/// struct-definition mtime caches — so within one `cargo build` (no source
-/// file changes mid-build) a surviving entry only ever returns the result a
-/// re-resolution would produce, while keeping repeated lookups O(1). A
-/// long-lived rust-analyzer proc-macro server therefore keeps a resolved
-/// entry until the server restarts — the documented cost of the shared-work
-/// optimisation (a future mtime-aware path cache could be warm AND fresh).
+/// The cache **survives epoch bumps**; freshness comes from
+/// `PathLookupEntry::last_epoch_validated` plus the recomputed
+/// [`path_lookup_fingerprint`]. An entry already validated in the current
+/// epoch is trusted as-is; otherwise the fingerprint is recomputed and the
+/// entry is only reused when it still matches, so a source edit that changes
+/// any file the resolution reads forces a re-resolution — including in a
+/// long-lived rust-analyzer proc-macro server.
 pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>> {
-    // Re-stamp the path-lookup epoch (entries deliberately SURVIVE bumps — see
-    // `ensure_path_lookup_caches_fresh`), then read the cache. The borrow ends
-    // before the lookup below, which re-enters FILE_CACHE.
+    // Probe the cache; the borrow ends before the lookup below, which
+    // re-enters FILE_CACHE.
     let probe = FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        ensure_path_lookup_caches_fresh(&mut cache);
         let epoch = cache.epoch;
         // Epoch-hit fast path: an entry already validated THIS epoch is fresh
         // WITHOUT recomputing the fingerprint — which, for a single-segment
@@ -221,12 +214,11 @@ pub fn get_struct_from_schema_path(path_str: &str) -> Option<Arc<StructMetadata>
 pub fn get_fk_column(schema_path: &str, via_rel: &str) -> Option<String> {
     let key = (schema_path.to_string(), via_rel.to_string());
 
-    // Re-stamp the path-lookup epoch (entries deliberately SURVIVE bumps — see
-    // `ensure_path_lookup_caches_fresh`), then read this epoch's cache. The
+    // Probe the cache (entries deliberately SURVIVE epoch bumps — freshness
+    // comes from `last_epoch_validated` + `path_lookup_fingerprint`). The
     // borrow ends before the lookup below, which re-enters FILE_CACHE.
     let probe = FILE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        ensure_path_lookup_caches_fresh(&mut cache);
         let epoch = cache.epoch;
         // Epoch-hit fast path: skip the (possibly `src`-tree-walking)
         // fingerprint when the entry was already validated this epoch.

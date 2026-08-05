@@ -95,7 +95,7 @@ pub fn generate_and_write_openapi(
                     }
                 };
                 let child_spec = serde_json::from_str::<vespera_core::openapi::OpenApi>(
-                    &spec_content,
+                    spec_content,
                 )
                 .map_err(|e| {
                     err_call_site(format!(

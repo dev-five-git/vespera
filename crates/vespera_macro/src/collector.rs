@@ -59,7 +59,6 @@ fn kebab_case_path(path: &str) -> String {
 // tests that exercise the collector end-to-end. `#[cfg(test)]` keeps it (and its
 // `collect_files` dependency) out of the shipped proc-macro entirely.
 #[cfg(test)]
-#[allow(clippy::option_if_let_else, clippy::too_many_lines)]
 pub fn collect_metadata(
     folder_path: &Path,
     folder_name: &str,

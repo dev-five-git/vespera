@@ -23,6 +23,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
+use crate::macro_storage::{CrateStorage, SourceIdentified};
+
 /// Metadata stored by `#[cron]` for later consumption by `vespera!()`.
 ///
 /// Each invocation of `#[cron]` pushes one entry into [`CRON_STORAGE`].
@@ -44,46 +46,27 @@ pub struct StoredCronInfo {
 /// rust-analyzer proc-macro server (one process, many crates) never schedules
 /// crate A's cron jobs into crate B. See
 /// [`SCHEMA_STORAGE`](crate::schema_impl::SCHEMA_STORAGE) for the rationale.
-pub static CRON_STORAGE: LazyLock<Mutex<HashMap<String, Arc<Vec<StoredCronInfo>>>>> =
+pub static CRON_STORAGE: CrateStorage<StoredCronInfo> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn same_cron_source(left: &StoredCronInfo, right: &StoredCronInfo) -> bool {
-    left.fn_name == right.fn_name
-        && crate::file_utils::paths_equal_normalized(
-            left.file_path.as_deref(),
-            right.file_path.as_deref(),
-        )
+impl SourceIdentified for StoredCronInfo {
+    fn fn_name(&self) -> &str {
+        &self.fn_name
+    }
+    fn file_path(&self) -> Option<&str> {
+        self.file_path.as_deref()
+    }
 }
 
 /// Replace-insert a `#[cron]` metadata entry in the current crate's bucket.
 pub fn register_cron(info: StoredCronInfo) {
-    let mut guard = CRON_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let bucket = Arc::make_mut(
-        guard
-            .entry(crate::schema_impl::current_crate_key())
-            .or_insert_with(|| Arc::new(Vec::new())),
-    );
-    if let Some(existing) = bucket
-        .iter_mut()
-        .find(|existing| same_cron_source(existing, &info))
-    {
-        *existing = info;
-    } else {
-        bucket.push(info);
-    }
+    crate::macro_storage::register(&CRON_STORAGE, info);
 }
 
 /// Snapshot of the current crate's registered cron jobs — a cheap `Arc` clone.
 #[must_use]
 pub fn current_crate_crons() -> Arc<Vec<StoredCronInfo>> {
-    CRON_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&crate::schema_impl::current_crate_key())
-        .cloned()
-        .unwrap_or_else(|| Arc::new(Vec::new()))
+    crate::macro_storage::current_crate_items(&CRON_STORAGE)
 }
 
 /// Validate cron function - must be pub, async, and take no parameters.

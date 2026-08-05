@@ -104,7 +104,6 @@ pub(super) fn hash_str(s: &str) -> u64 {
     hasher.finish()
 }
 
-#[derive(Clone)]
 pub enum MergeSpecRead {
     Present(String),
     Error(String),
@@ -132,16 +131,21 @@ impl MergeSpecCache {
         ))
     }
 
-    pub(super) fn read(&mut self, path: &Path) -> MergeSpecRead {
-        if let Some(cached) = self.reads.get(path) {
-            return cached.clone();
-        }
-        let read = match std::fs::read_to_string(path) {
-            Ok(content) => MergeSpecRead::Present(content),
-            Err(err) => MergeSpecRead::Error(err.to_string()),
-        };
-        self.reads.insert(path.to_path_buf(), read.clone());
-        read
+    /// Read a child app's exported spec sidecar, memoized per path.
+    ///
+    /// Returns a **borrow** rather than an owned value: both consumers
+    /// (`compute_config_hash_with_merge_cache` and
+    /// `generate_and_write_openapi`) only ever hash or parse the content,
+    /// so handing out ownership meant cloning the child's full serialized
+    /// OpenAPI JSON on the miss path *and* on every subsequent hit —
+    /// which is exactly the cost this cache exists to avoid.
+    pub(super) fn read(&mut self, path: &Path) -> &MergeSpecRead {
+        self.reads.entry(path.to_path_buf()).or_insert_with(|| {
+            match std::fs::read_to_string(path) {
+                Ok(content) => MergeSpecRead::Present(content),
+                Err(err) => MergeSpecRead::Error(err.to_string()),
+            }
+        })
     }
 }
 

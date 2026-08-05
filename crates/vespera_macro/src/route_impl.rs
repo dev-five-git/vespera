@@ -35,6 +35,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
+use crate::macro_storage::{CrateStorage, SourceIdentified};
 use crate::{args, metadata::HeaderParam};
 /// Metadata stored by `#[route]` for later consumption by `vespera!()`.
 ///
@@ -95,47 +96,28 @@ pub struct StoredRouteInfo {
 /// rust-analyzer proc-macro server (one process, many crates) never feeds
 /// crate A's routes into crate B's generated router/spec. See
 /// [`SCHEMA_STORAGE`](crate::schema_impl::SCHEMA_STORAGE) for the rationale.
-pub static ROUTE_STORAGE: LazyLock<Mutex<HashMap<String, Arc<Vec<StoredRouteInfo>>>>> =
+pub static ROUTE_STORAGE: CrateStorage<StoredRouteInfo> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn same_route_source(left: &StoredRouteInfo, right: &StoredRouteInfo) -> bool {
-    left.fn_name == right.fn_name
-        && crate::file_utils::paths_equal_normalized(
-            left.file_path.as_deref(),
-            right.file_path.as_deref(),
-        )
+impl SourceIdentified for StoredRouteInfo {
+    fn fn_name(&self) -> &str {
+        &self.fn_name
+    }
+    fn file_path(&self) -> Option<&str> {
+        self.file_path.as_deref()
+    }
 }
 
 /// Replace-insert a `#[route]` metadata entry in the current crate's bucket.
 pub fn register_route(info: StoredRouteInfo) {
-    let mut guard = ROUTE_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let bucket = Arc::make_mut(
-        guard
-            .entry(crate::schema_impl::current_crate_key())
-            .or_insert_with(|| Arc::new(Vec::new())),
-    );
-    if let Some(existing) = bucket
-        .iter_mut()
-        .find(|existing| same_route_source(existing, &info))
-    {
-        *existing = info;
-    } else {
-        bucket.push(info);
-    }
+    crate::macro_storage::register(&ROUTE_STORAGE, info);
 }
 
 /// Snapshot of the current crate's registered routes — a cheap `Arc` clone, so
 /// consumers never deep-clone every stored function signature string.
 #[must_use]
 pub fn current_crate_routes() -> Arc<Vec<StoredRouteInfo>> {
-    ROUTE_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&crate::schema_impl::current_crate_key())
-        .cloned()
-        .unwrap_or_else(|| Arc::new(Vec::new()))
+    crate::macro_storage::current_crate_items(&ROUTE_STORAGE)
 }
 
 /// Extract `u16` error status codes from a `syn::ExprArray`.

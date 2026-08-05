@@ -247,9 +247,6 @@ struct FileCache {
     /// file-cache-reaching top-level macro invocation (`#[derive(Schema)]`,
     /// `schema!`, `schema_type!`, `vespera!`, `export_app!`).
     epoch: u64,
-    /// Retained for cache-format/test compatibility; path lookup caches now
-    /// survive epoch bumps and rely on the lower mtime-validated file caches.
-    path_lookup_epoch: u64,
     /// Per-epoch fingerprint cache: path → (epoch_when_checked, fingerprint_result).
     ///
     /// When the stored epoch equals `self.epoch`, the fingerprint was already
@@ -284,7 +281,6 @@ thread_local! {
         struct_definitions: HashMap::with_capacity(32),
         struct_def_cache_hits: 0,
         epoch: 0,
-        path_lookup_epoch: 0,
         mtime_epoch_cache: HashMap::with_capacity(32),
     });
 }

@@ -29,6 +29,7 @@
 //! - `collector` - Filesystem scanning and route discovery
 //! - `error` - Unified error handling
 //! - `http` - HTTP method constants and validation
+//! - `macro_storage` - Shared per-crate storage for `#[route]` / `#[cron]` metadata
 //! - `metadata` - Type definitions for collected metadata
 //! - `method` - HTTP method token stream generation
 //! - `openapi_generator` - OpenAPI spec assembly
@@ -47,6 +48,7 @@ mod error;
 mod file_utils;
 mod garde_emit;
 mod http;
+mod macro_storage;
 mod metadata;
 mod method;
 mod openapi_generator;
