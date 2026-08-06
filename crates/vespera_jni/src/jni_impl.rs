@@ -143,6 +143,30 @@ fn invalid_input_array_err(detail: &str) -> Vec<u8> {
     vespera_inprocess::error_wire(400, &format!("invalid input byte array ({detail})"))
 }
 
+/// Canonical `500` wire response for a failed streaming setup, ready to
+/// return from a streaming symbol's `let ... else` arm.
+///
+/// `dispatchStreaming` / `dispatchFullStreaming` share the identical
+/// recovery shape (scrub the pending exception, hand back a `500` wire
+/// response so the Java decoder is never given `null`) INCLUDING the
+/// message literal — exactly the literal-drift hazard this file already
+/// engineered away for the ingress `400` via [`invalid_input_array_err`].
+/// Centralising it here makes a one-sided wording change impossible.
+///
+/// The message is byte-identical to the prior inlined literals, so the
+/// wire `500` body of both streaming symbols is unchanged.
+fn streaming_setup_failed_array<'local>(
+    env: &mut jni::Env<'local>,
+) -> jni::errors::Result<JObject<'local>> {
+    clear_pending_exception(env);
+    Ok(env
+        .byte_array_from_slice(&vespera_inprocess::error_wire(
+            500,
+            "JNI streaming setup failed",
+        ))?
+        .into())
+}
+
 /// Read a request `byte[]` into an owned buffer, centralizing the
 /// ingress contract for every buffered JNI dispatch symbol:
 ///
@@ -586,13 +610,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                 let Ok((stream_global, jvm, push_buf, push_buf_lease)) =
                     setup_stream(env, &output_stream)
                 else {
-                    clear_pending_exception(env);
-                    return Ok(env
-                        .byte_array_from_slice(&vespera_inprocess::error_wire(
-                            500,
-                            "JNI streaming setup failed",
-                        ))?
-                        .into());
+                    return streaming_setup_failed_array(env);
                 };
 
                 let header_bytes =
@@ -676,13 +694,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                 let Ok((input_global, output_global, jvm, buffers)) =
                     setup_full_stream(env, &input_stream, &output_stream)
                 else {
-                    clear_pending_exception(env);
-                    return Ok(env
-                        .byte_array_from_slice(&vespera_inprocess::error_wire(
-                            500,
-                            "JNI streaming setup failed",
-                        ))?
-                        .into());
+                    return streaming_setup_failed_array(env);
                 };
                 let PullPushBuffers {
                     pull_buf,

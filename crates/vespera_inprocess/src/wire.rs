@@ -234,9 +234,11 @@ fn write_wire_header_into(
 
 /// Allocate a response `Vec` sized for `[u32 BE header_len | header JSON]`
 /// (plus `body_reserve` bytes of body the caller appends afterwards) and
-/// serialize the wire header into it.  `None` signals the unreachable `u32`
-/// header-length overflow, which every caller maps to
-/// `error_wire(500, HEADER_TOO_LARGE_MSG)`.
+/// serialize the wire header into it.  The `Err` arm carries the already
+/// built `error_wire(500, HEADER_TOO_LARGE_MSG)` wire response for the
+/// unreachable `u32` header-length overflow, so callers recover with
+/// `unwrap_or_else(|wire| wire)` (or an early `return wire`) instead of each
+/// repeating the same `500` recovery.
 ///
 /// Single home for the sizing rule [`to_wire_bytes`],
 /// [`build_wire_header_bytes`] and [`build_wire_header_bytes_hoisting`]
@@ -252,7 +254,7 @@ fn build_header_vec(
     metadata: &ResponseMetadata,
     validation_errors: Option<&[ValidationErrorItem]>,
     body_reserve: usize,
-) -> Option<Vec<u8>> {
+) -> Result<Vec<u8>, Vec<u8>> {
     let header_cap = header_capacity_with_floor(headers, metadata)
         + validation_errors.map_or(0, validation_errors_capacity_estimate);
     // `4 + header_cap + body_reserve` cannot overflow `usize` on a 64-bit
@@ -266,9 +268,12 @@ fn build_header_vec(
     // hoist-blind estimate paid (locked by tests/alloc_budget.rs case F).
     let mut out = Vec::with_capacity(4 + header_cap + body_reserve);
     if write_wire_header_into(&mut out, status, headers, metadata, validation_errors) {
-        Some(out)
+        Ok(out)
     } else {
-        None
+        // Unreachable for a real `HeaderMap` (would need 4 GiB+ of header
+        // JSON); never panic on the response path — hand the caller a ready
+        // `500` wire response instead.
+        Err(error_wire(500, HEADER_TOO_LARGE_MSG))
     }
 }
 
@@ -378,16 +383,15 @@ pub fn to_wire_bytes(parts: ResponseParts) -> Vec<u8> {
     } else {
         None
     };
-    let Some(mut out) = build_header_vec(
+    let mut out = match build_header_vec(
         status,
         &headers,
         &metadata,
         validation_errors.as_deref(),
         body_bytes.len(),
-    ) else {
-        // Unreachable for a real `HeaderMap` (would need 4 GiB+ of header
-        // JSON); never panic on the response path — emit a 500 instead.
-        return error_wire(500, HEADER_TOO_LARGE_MSG);
+    ) {
+        Ok(out) => out,
+        Err(wire) => return wire,
     };
     out.extend_from_slice(&body_bytes);
     out
@@ -406,11 +410,7 @@ pub fn build_wire_header_bytes(
     headers: &http::HeaderMap,
     metadata: &ResponseMetadata,
 ) -> Vec<u8> {
-    let Some(out) = build_header_vec(status, headers, metadata, None, 0) else {
-        // Unreachable for a real `HeaderMap`; never panic on the response path.
-        return error_wire(500, HEADER_TOO_LARGE_MSG);
-    };
-    out
+    build_header_vec(status, headers, metadata, None, 0).unwrap_or_else(|wire| wire)
 }
 
 /// Build wire-format header bytes (`[u32 BE header_len | JSON header]`) for the
@@ -432,12 +432,8 @@ pub fn build_wire_header_bytes_hoisting(
         return build_wire_header_bytes(status, headers, metadata);
     }
     let validation_errors = hoist::try_hoist_validation_errors(headers, body);
-    let Some(out) = build_header_vec(status, headers, metadata, validation_errors.as_deref(), 0)
-    else {
-        // Unreachable for a real `HeaderMap`; never panic on the response path.
-        return error_wire(500, HEADER_TOO_LARGE_MSG);
-    };
-    out
+    build_header_vec(status, headers, metadata, validation_errors.as_deref(), 0)
+        .unwrap_or_else(|wire| wire)
 }
 
 /// Write `[u32 BE header_len | JSON header]` **straight into `out`**

@@ -265,6 +265,14 @@ fn validation_items() -> Vec<ValidationErrorItem> {
 /// `validation_errors` array, sorted single/multi headers, non-UTF-8
 /// values (rendered `""`), and the full string escape set — proven by
 /// both the `Vec` path and the `&mut [u8]` slice path.
+///
+/// Both `metadata` arms of `write_response_header` (`header_write.rs`)
+/// are covered: the pointer-eq fast path that emits the pre-baked
+/// `METADATA_SEGMENT_CURRENT` const for `ResponseMetadata::current()`,
+/// and the general `_ =>` arm that must run `write_json_string` over an
+/// owned version.  The owned twin deliberately carries quote /
+/// backslash / newline bytes, because a plain SemVer version never
+/// trips the escape table and so would leave the escaper unexercised.
 #[test]
 fn hand_serialize_matches_serde_serialize() {
     use http::{HeaderMap, HeaderName, HeaderValue};
@@ -286,56 +294,72 @@ fn hand_serialize_matches_serde_serialize() {
     headers.append(cookie.clone(), HeaderValue::from_static("b=2; Path=/"));
     headers.append(cookie, HeaderValue::from_bytes(b"c=\"q\"").unwrap());
 
-    let metadata = ResponseMetadata::current();
+    let metadata_cases = [
+        // Pointer-eq fast path -> pre-baked `METADATA_SEGMENT_CURRENT`.
+        ("current", ResponseMetadata::current()),
+        // General `_ =>` arm -> `write_json_string` over an owned version
+        // whose bytes force the escaper (quote, backslash, newline).
+        (
+            "owned_escaped",
+            ResponseMetadata {
+                version: Cow::Owned("9.9.9-rc\"1\"\\n\n+build".to_owned()),
+            },
+        ),
+    ];
 
-    for status in [200u16, 404, 422] {
-        for with_ve in [false, true] {
-            let hand_items = with_ve.then(validation_items);
-            let mut hand = Vec::new();
-            assert!(
-                write_wire_header_into(
-                    &mut hand,
+    for (meta, metadata) in &metadata_cases {
+        for status in [200u16, 404, 422] {
+            for with_ve in [false, true] {
+                let hand_items = with_ve.then(validation_items);
+                let mut hand = Vec::new();
+                assert!(
+                    write_wire_header_into(
+                        &mut hand,
+                        status,
+                        &headers,
+                        metadata,
+                        hand_items.as_deref(),
+                    ),
+                    "header fits u32 (meta={meta}, status={status}, with_ve={with_ve})"
+                );
+
+                let serde_view = WireResponseHeader {
+                    v: WIRE_VERSION,
                     status,
-                    &headers,
-                    &metadata,
-                    hand_items.as_deref(),
-                ),
-                "header fits u32 (status={status}, with_ve={with_ve})"
-            );
+                    headers: &WireHeaders(&headers),
+                    metadata,
+                    validation_errors: with_ve.then(validation_items),
+                };
+                let serde_bytes = serde_json::to_vec(&serde_view).expect("serde serialize");
 
-            let serde_view = WireResponseHeader {
-                v: WIRE_VERSION,
-                status,
-                headers: &WireHeaders(&headers),
-                metadata: &metadata,
-                validation_errors: with_ve.then(validation_items),
-            };
-            let serde_bytes = serde_json::to_vec(&serde_view).expect("serde serialize");
+                assert_eq!(
+                    &hand[4..],
+                    serde_bytes.as_slice(),
+                    "Vec-path byte drift (meta={meta}, status={status}, with_ve={with_ve})"
+                );
+                // Length prefix must equal the JSON byte length.
+                assert_eq!(
+                    u32::from_be_bytes(hand[..4].try_into().unwrap()) as usize,
+                    serde_bytes.len()
+                );
+            }
 
+            // Slice path (always None validation_errors): hand vs serde.
+            let mut hand_slice = vec![0u8; 4096];
+            let n_hand = write_wire_header_into_slice(&mut hand_slice, status, &headers, metadata);
+            let mut serde_slice = vec![0u8; 4096];
+            let n_serde =
+                write_wire_header_into_slice_serde(&mut serde_slice, status, &headers, metadata);
             assert_eq!(
-                &hand[4..],
-                serde_bytes.as_slice(),
-                "Vec-path byte drift (status={status}, with_ve={with_ve})"
+                n_hand, n_serde,
+                "slice length drift (meta={meta}, status={status})"
             );
-            // Length prefix must equal the JSON byte length.
             assert_eq!(
-                u32::from_be_bytes(hand[..4].try_into().unwrap()) as usize,
-                serde_bytes.len()
+                &hand_slice[..n_hand],
+                &serde_slice[..n_serde],
+                "slice-path byte drift (meta={meta}, status={status})"
             );
         }
-
-        // Slice path (always None validation_errors): hand vs serde.
-        let mut hand_slice = vec![0u8; 4096];
-        let n_hand = write_wire_header_into_slice(&mut hand_slice, status, &headers, &metadata);
-        let mut serde_slice = vec![0u8; 4096];
-        let n_serde =
-            write_wire_header_into_slice_serde(&mut serde_slice, status, &headers, &metadata);
-        assert_eq!(n_hand, n_serde, "slice length drift (status={status})");
-        assert_eq!(
-            &hand_slice[..n_hand],
-            &serde_slice[..n_serde],
-            "slice-path byte drift (status={status})"
-        );
     }
 }
 
@@ -472,6 +496,90 @@ fn hand_serialize_matches_serde_for_tiny_header_maps() {
             let mut hand_slice = vec![0u8; 1024];
             let n_hand = write_wire_header_into_slice(&mut hand_slice, status, headers, &metadata);
             let mut serde_slice = vec![0u8; 1024];
+            let n_serde =
+                write_wire_header_into_slice_serde(&mut serde_slice, status, headers, &metadata);
+            assert_eq!(
+                n_hand, n_serde,
+                "slice length drift ({label}, status={status})"
+            );
+            assert_eq!(
+                &hand_slice[..n_hand],
+                &serde_slice[..n_serde],
+                "slice-path byte drift ({label}, status={status})"
+            );
+        }
+    }
+}
+
+/// Byte-identity for the **heap-fallback** arms of `write_headers`
+/// (`header_write.rs`: `key_count > STACK_CAP`, both the all-single
+/// `headers.iter()` arm and the mixed `headers.keys()` arm).  Every other
+/// fixture in this crate stays well under `STACK_CAP` (32), so without these
+/// two cases the `Vec`-backed entry collection and its sort were never
+/// executed by any test.  Names are zero-padded and inserted in DESCENDING
+/// order, so insertion order is the exact reverse of the sorted output the
+/// wire requires — a dropped or reversed sort cannot pass.
+#[test]
+fn hand_serialize_matches_serde_for_heap_fallback_header_maps() {
+    use http::{HeaderMap, HeaderName, HeaderValue};
+
+    // 40 distinct names > STACK_CAP (32), each single-valued, so
+    // `len() == keys_len()` and the heap + all-single arm is taken.  Two
+    // values are deliberately non-trivial (an escape and a non-UTF-8 payload
+    // rendered `""`) to prove the borrowed-value arm escapes identically once
+    // it reads through the heap `Vec`.
+    let mut heap_all_single = HeaderMap::new();
+    for i in (0..40u32).rev() {
+        let name = HeaderName::from_bytes(format!("x-h{i:02}").as_bytes()).expect("valid name");
+        let value = match i {
+            7 => HeaderValue::from_bytes(b"a\"b\\c").expect("valid value"),
+            13 => HeaderValue::from_bytes(&[0xFF, 0xFE]).expect("valid value"),
+            _ => HeaderValue::from_bytes(format!("v{i:02}").as_bytes()).expect("valid value"),
+        };
+        heap_all_single.insert(name, value);
+    }
+
+    // Same map plus a twice-appended `set-cookie`: 41 names / 42 values, so
+    // `len() != keys_len()` and the heap + mixed arm (names only, values
+    // re-read via `get_all`) is taken.
+    let mut heap_mixed = heap_all_single.clone();
+    let cookie = HeaderName::from_static("set-cookie");
+    heap_mixed.append(cookie.clone(), HeaderValue::from_static("a=1"));
+    heap_mixed.append(cookie, HeaderValue::from_static("b=2; Path=/"));
+
+    let metadata = ResponseMetadata::current();
+
+    for (label, headers) in [
+        ("40-header-all-single", &heap_all_single),
+        ("41-header-mixed", &heap_mixed),
+    ] {
+        assert!(
+            headers.keys_len() > super::STACK_CAP,
+            "{label} must exceed STACK_CAP to reach the heap fallback"
+        );
+        for status in [200u16, 404] {
+            let mut hand = Vec::new();
+            assert!(
+                write_wire_header_into(&mut hand, status, headers, &metadata, None),
+                "header fits ({label}, status={status})"
+            );
+            let serde_view = WireResponseHeader {
+                v: WIRE_VERSION,
+                status,
+                headers: &WireHeaders(headers),
+                metadata: &metadata,
+                validation_errors: None::<Vec<ValidationErrorItem>>,
+            };
+            let serde_bytes = serde_json::to_vec(&serde_view).expect("serde serialize");
+            assert_eq!(
+                &hand[4..],
+                serde_bytes.as_slice(),
+                "Vec-path byte drift ({label}, status={status})"
+            );
+
+            let mut hand_slice = vec![0u8; 8192];
+            let n_hand = write_wire_header_into_slice(&mut hand_slice, status, headers, &metadata);
+            let mut serde_slice = vec![0u8; 8192];
             let n_serde =
                 write_wire_header_into_slice_serde(&mut serde_slice, status, headers, &metadata);
             assert_eq!(

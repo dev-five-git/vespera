@@ -44,6 +44,25 @@ fn kebab_case_path(path: &str) -> String {
     out
 }
 
+/// Join a file-derived `base_path` with an optional `#[route(path = "...")]`
+/// suffix and kebab-case the result.
+///
+/// Both collection paths (the `ROUTE_STORAGE` fast path and the `syn` slow
+/// path) MUST produce byte-identical route paths for the same route — a
+/// one-sided change would make the OpenAPI document depend on whether the
+/// fast path happened to be active.  Keeping the join in exactly one place
+/// makes that divergence unrepresentable.
+fn build_route_path(base_path: &str, custom_path: Option<&str>) -> String {
+    let joined = custom_path.map_or_else(
+        || base_path.to_owned(),
+        |custom| {
+            let trimmed_base = base_path.trim_end_matches('/');
+            format!("{trimmed_base}/{}", custom.trim_start_matches('/'))
+        },
+    );
+    kebab_case_path(&joined)
+}
+
 /// Collect routes and structs from a folder.
 ///
 /// When `route_storage` contains entries with `file_path`, files covered by
@@ -76,7 +95,7 @@ pub fn collect_metadata(
 /// [`collect_metadata`] over a **pre-scanned** file list — lets
 /// `vespera!` reuse the single directory walk it already performed
 /// for cache fingerprinting instead of walking the folder twice.
-#[allow(clippy::option_if_let_else, clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)]
 pub fn collect_metadata_from_files<'a>(
     files: impl IntoIterator<Item = &'a Path>,
     folder_path: &Path,
@@ -153,13 +172,7 @@ pub fn collect_metadata_from_files<'a>(
         if let Some(stored_routes) = storage_by_file.get(&file_key) {
             let n = stored_routes.len();
             for (i, stored) in stored_routes.iter().enumerate() {
-                let route_path = if let Some(ref custom_path) = stored.custom_path {
-                    let trimmed_base = base_path.trim_end_matches('/');
-                    format!("{trimmed_base}/{}", custom_path.trim_start_matches('/'))
-                } else {
-                    base_path.clone()
-                };
-                let route_path = kebab_case_path(&route_path);
+                let route_path = build_route_path(&base_path, stored.custom_path.as_deref());
 
                 // `#[route]` already resolved the description at expansion
                 // time (explicit attribute OR doc comment — see
@@ -227,13 +240,7 @@ pub fn collect_metadata_from_files<'a>(
 
             let n = route_entries.len();
             for (i, (fn_item, route_info)) in route_entries.into_iter().enumerate() {
-                let route_path = if let Some(custom_path) = &route_info.path {
-                    let trimmed_base = base_path.trim_end_matches('/');
-                    format!("{trimmed_base}/{}", custom_path.trim_start_matches('/'))
-                } else {
-                    base_path.clone()
-                };
-                let route_path = kebab_case_path(&route_path);
+                let route_path = build_route_path(&base_path, route_info.path.as_deref());
 
                 // Description priority: route attribute > doc comment
                 // (move the owned Option instead of cloning + dropping it)
