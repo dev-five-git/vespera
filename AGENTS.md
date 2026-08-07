@@ -62,9 +62,9 @@ vespera/
 | Add new macro feature | `crates/vespera_macro/src/` | Main macro in `lib.rs` |
 | Modify OpenAPI output | `crates/vespera_macro/src/openapi_generator.rs` | JSON generation |
 | Add route parser feature | `crates/vespera_macro/src/parser/` | Type extraction logic |
-| Change schema generation | `crates/vespera_macro/src/parser/schema.rs` | Rust→JSON Schema |
+| Change schema generation | `crates/vespera_macro/src/parser/schema/` | Rust→JSON Schema |
 | Modify route attribute | `crates/vespera_macro/src/args.rs` | `#[route]` parsing |
-| Modify schema_type! macro | `crates/vespera_macro/src/schema_macro.rs` | Type derivation & SeaORM support |
+| Modify schema_type! macro | `crates/vespera_macro/src/schema_macro/` | Type derivation & SeaORM support |
 | Add core types | `crates/vespera_core/src/` | OpenAPI spec types |
 | Test new features | `examples/axum-example/` | Add route, run example |
 | In-process dispatch | `crates/vespera_inprocess/src/dispatch.rs` | RequestEnvelope → Router → ResponseEnvelope; wire + direct-write entry points |
@@ -321,7 +321,7 @@ Vespera is a **hybrid monorepo** with two workspaces co-located at the repo root
 | Workspace | Manager | Members | Purpose |
 |---|---|---|---|
 | Cargo (`Cargo.toml`) | cargo | `crates/*`, `examples/*` (excluding `examples/java-jni-demo`) | OpenAPI engine, proc-macros, JNI bridge |
-| Bun (`package.json`) | bun | `apps/*` | Marketing/docs site + admin panel (Next.js) |
+| Bun (`package.json`) | bun | `apps/*` (currently only `apps/landing`) | Marketing/docs site (Next.js) |
 
 `bun run ...` operates on the Node side; `cargo ...` on the Rust side. Many root
 scripts deliberately cross the boundary — e.g., `prelint` runs `cargo
@@ -343,8 +343,8 @@ bun run lint:fix                      # oxlint --fix (after `cargo clippy --fix 
 
 # --- Front-end workspace ---
 bun run dev                           # `dev` in every apps/*
-bun run build                         # apps/front + apps/admin
-cd apps/front && bun dev              # Single-app dev (preferred per devfive-frontend)
+bun run build                         # `bun run -F ./apps/landing build`
+cd apps/landing && bun dev            # Single-app dev (preferred per devfive-frontend)
 
 # --- Tests (Bun side) ---
 bun test                              # Front tests from the repo root
@@ -358,14 +358,15 @@ bun run changepacks                   # @changepacks/cli version bumps
 > **`prelint` gotcha:** any Rust warning fails the JS lint. Run `bun run
 > lint:fix` to auto-resolve both sides.
 
-### Frontend (`apps/front`)
+### Frontend (`apps/landing`)
 
 Next.js 16 App Router + React 19 + `@devup-ui/react` (build-time CSS-in-JS).
-Theme tokens live in `apps/front/devup.json` and use `$token` syntax in JSX
+Theme tokens live in `apps/landing/devup.json` and use `$token` syntax in JSX
 props only.
 
-- `apps/front/src/app/` contains **only** `layout.tsx` + `page.tsx` — all other
-  components live in `src/components/` (per devfive-frontend conventions).
+- `apps/landing/src/app/` holds **only** route files (`layout.tsx`, `page.tsx`,
+  and route-local `_components/`) — shared components live in `src/components/`
+  (per devfive-frontend conventions).
 - Styling uses devup-ui shorthand props (`bg`, `p`, `w`, `_hover`,
   `[mobile,null,pc]` responsive arrays). Never `style={{...}}` or Tailwind.
 
