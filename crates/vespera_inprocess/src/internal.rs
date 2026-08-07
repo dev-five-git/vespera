@@ -503,18 +503,42 @@ fn header_value_to_owned(v: &http::HeaderValue) -> String {
 /// Headers with repeated names (e.g. `set-cookie`) are preserved as
 /// [`HeaderValue::Multi`] so their semantics survive the conversion.
 ///
-/// Iterates over `headers.keys()` (each distinct name exactly once) and
-/// fans the values out with `headers.get_all(name)` — the same shape the
-/// wire-side response serializer
-/// ([`super::wire::header_write::write_headers`]) uses, so the two
-/// header-collapse sites stay in lockstep.  The previous `for (name, value)
-/// in headers` shape yielded ONE iteration per (name, value) pair, paid an
-/// `O(log M)` `BTreeMap::get_mut` traversal on each, and on the
-/// Single→Multi upgrade did a `mem::take` plus slot overwrite — replaced
-/// here by a single `insert` per distinct name with an exact-sized `Vec`
-/// for the rare-but-not-zero multi-valued case.
+/// Two paths, mirroring the wire-side response serializer
+/// ([`super::wire::header_write::write_headers`]) so the two
+/// header-collapse sites stay in lockstep:
+///
+/// - **Fast path** — `headers.len()` counts VALUES while `keys_len()` counts
+///   distinct NAMES, so `len() == keys_len()` is an exact, documented-API test
+///   for "no name is repeated" (the same `all_single` test
+///   `header_write::write_headers` already applies).  `headers.iter()` then
+///   yields every `(&HeaderName, &HeaderValue)` pair exactly once, so the
+///   per-name `get_all(name)` `HeaderName` hash + table probe disappears for
+///   every response header.
+/// - **General path** — repeated names (the `set-cookie` case) keep the
+///   unchanged `keys()` / `get_all()` fan-out.
+///
+/// Output is byte-identical either way: the result is a [`BTreeMap`] ordered
+/// by key, and with no repeated name every entry the general path would build
+/// is a [`HeaderValue::Single`] over the same
+/// [`header_value_to_owned`] conversion.
+///
+/// The `keys()` / `get_all()` general path itself replaced an older
+/// `for (name, value) in headers` shape that yielded ONE iteration per
+/// (name, value) pair, paid an `O(log M)` `BTreeMap::get_mut` traversal on
+/// each, and on the Single→Multi upgrade did a `mem::take` plus slot
+/// overwrite — it is now a single `insert` per distinct name with an
+/// exact-sized `Vec` for the rare-but-not-zero multi-valued case.
 fn collect_header_map(headers: &http::HeaderMap) -> BTreeMap<String, HeaderValue> {
     let mut resp_headers: BTreeMap<String, HeaderValue> = BTreeMap::new();
+    if headers.len() == headers.keys_len() {
+        for (name, value) in headers {
+            resp_headers.insert(
+                name.as_str().to_owned(),
+                HeaderValue::Single(header_value_to_owned(value)),
+            );
+        }
+        return resp_headers;
+    }
     for name in headers.keys() {
         let mut values = headers.get_all(name).iter();
         // `keys()` only yields present names, but stay panic-free anyway:

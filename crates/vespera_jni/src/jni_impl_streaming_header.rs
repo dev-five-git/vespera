@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use jni::EnvUnowned;
-use jni::objects::{JByteArray, JClass, JObject};
+use jni::objects::{Global, JByteArray, JClass, JObject};
 
 use crate::daemon_env::with_cached_daemon_env;
 use crate::jni_impl::{
@@ -135,6 +135,41 @@ fn notify_local_header(
 ) {
     let _ = call_header_consumer_local(env, header_consumer, header_bytes);
     flags.notified.store(true, Ordering::Release);
+}
+
+/// Build the hot-path `on_header` callback shared by both `dispatch*WithHeader`
+/// JNI symbols: deliver the wire header through the promoted `Consumer` on a
+/// TLS-cached daemon-attached `JNIEnv`, then latch the outcome into the
+/// `sent` / `failed` / `notified` flags via
+/// [`StreamingFlags::record_header_callback_result`].
+///
+/// Both symbols previously inlined a byte-for-byte identical closure body,
+/// differing only in the captured local names (`header_jvm` / `jvm_for_cb`,
+/// `header_for_cb`). That duplication is the same drift hazard that already
+/// motivated extracting [`throw_if_stream_aborted`] and
+/// [`deliver_panic_header_if_needed`]: the `.is_ok()` → `record_header_callback_result`
+/// pairing IS the "header consumer invoked exactly once on every code path"
+/// contract, and an edit landing on only one copy would silently desynchronize
+/// the two symbols' flag bookkeeping from each other and from the panic branch.
+///
+/// Callers construct it INSIDE their `catch_unwind` closure, at the point where
+/// the `Global` consumer ref was moved before, so ownership and move semantics
+/// are unchanged. `#[inline]` keeps codegen identical to the prior inline
+/// closures.
+#[inline]
+fn make_header_callback(
+    jvm: jni::JavaVM,
+    consumer: Global<JObject<'static>>,
+    flags: Arc<StreamingFlags>,
+) -> impl FnMut(&[u8]) {
+    move |header_bytes: &[u8]| {
+        let delivered =
+            with_cached_daemon_env(&jvm, |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
+                call_header_consumer(env, &consumer, header_bytes)
+            })
+            .is_ok();
+        flags.record_header_callback_result(delivered);
+    }
 }
 
 /// Outer-panic header fallback shared by both `dispatch*WithHeader`
@@ -272,16 +307,7 @@ fn dispatch_full_streaming_with_header_body(env: &mut jni::Env<'_>, args: &FullH
                 move |chunk: &[u8]| {
                     push_unless_header_failed(&flags_for_push.failed, &mut push, chunk)
                 },
-                |header_bytes: &[u8]| {
-                    let delivered = with_cached_daemon_env(
-                        &header_jvm,
-                        |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
-                            call_header_consumer(env, &header_for_cb, header_bytes)
-                        },
-                    )
-                    .is_ok();
-                    flags_for_cb.record_header_callback_result(delivered);
-                },
+                make_header_callback(header_jvm, header_for_cb, flags_for_cb),
                 move || {
                     let _ = with_cached_daemon_env(&close_jvm, |env| {
                         close_input_stream(env, &input_for_close)
@@ -348,21 +374,11 @@ fn dispatch_streaming_with_header_body(env: &mut jni::Env<'_>, args: &StreamHead
     let flags_for_cb = Arc::clone(args.flags);
     let flags_for_push = Arc::clone(args.flags);
     let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let header_for_cb = header_global;
         let jvm_for_cb = jvm.clone();
         let mut push = make_push_closure(jvm, stream_global, push_buf);
         runtime.block_on(vespera_inprocess::dispatch_streaming_with_header_async(
             input,
-            |header_bytes: &[u8]| {
-                let delivered = with_cached_daemon_env(
-                    &jvm_for_cb,
-                    |env: &mut jni::Env<'_>| -> jni::errors::Result<()> {
-                        call_header_consumer(env, &header_for_cb, header_bytes)
-                    },
-                )
-                .is_ok();
-                flags_for_cb.record_header_callback_result(delivered);
-            },
+            make_header_callback(jvm_for_cb, header_global, flags_for_cb),
             move |chunk: &[u8]| push_unless_header_failed(&flags_for_push.failed, &mut push, chunk),
         ))
     }));

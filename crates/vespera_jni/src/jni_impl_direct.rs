@@ -25,6 +25,27 @@ const DIRECT_UNREPRESENTABLE: jint = jint::MIN;
 // legitimate `-(required_size)` value.
 const _: () = assert!(DIRECT_UNREPRESENTABLE < -i32::MAX);
 
+/// Encode a successful `dispatchDirect0` outcome: the non-negative number
+/// of bytes written, or [`DIRECT_UNREPRESENTABLE`] when it exceeds
+/// `i32::MAX`.
+///
+/// In practice `written <= out_cap` and Java buffer capacities are
+/// `jint`-bounded, so the fallback is unreachable; it exists so the ABI
+/// stays total instead of panicking.
+fn direct_complete_code(written: usize) -> jint {
+    jint::try_from(written).unwrap_or(DIRECT_UNREPRESENTABLE)
+}
+
+/// Encode an overflowing `dispatchDirect0` outcome: `-(required)`, or
+/// [`DIRECT_UNREPRESENTABLE`] when `required` exceeds `i32::MAX`.
+///
+/// `-required` cannot overflow: `required <= i32::MAX` on this branch, so
+/// the most negative result is `-i32::MAX == jint::MIN + 1`, which the
+/// sentinel assertion above proves is distinct from `jint::MIN`.
+fn direct_overflow_code(required: usize) -> jint {
+    jint::try_from(required).map_or(DIRECT_UNREPRESENTABLE, |r: jint| -r)
+}
+
 /// Whether `[a0, a0+a_len)` and `[b0, b0+b_len)` overlap (addresses as
 /// `usize`).  Used to reject aliasing `in_buf` / `out_buf` direct-buffer
 /// ranges in [`Java_..._dispatchDirect0`] before creating a shared `&[u8]`
@@ -59,9 +80,9 @@ unsafe fn write_response_to_out(out_addr: *mut u8, out_cap: usize, response: &[u
         }
         // Java buffer capacities are jint-bounded, so len <= cap
         // always fits i32.
-        jint::try_from(response.len()).unwrap_or(DIRECT_UNREPRESENTABLE)
+        direct_complete_code(response.len())
     } else {
-        jint::try_from(response.len()).map_or(DIRECT_UNREPRESENTABLE, |required| -required)
+        direct_overflow_code(response.len())
     }
 }
 
@@ -255,10 +276,10 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                         vespera_inprocess::DirectWriteResult::Complete(n) => {
                             // n <= out_cap, and Java buffer capacities are
                             // jint-bounded, so this always fits i32.
-                            jint::try_from(n).unwrap_or(DIRECT_UNREPRESENTABLE)
+                            direct_complete_code(n)
                         }
                         vespera_inprocess::DirectWriteResult::Overflow(required) => {
-                            jint::try_from(required).map_or(DIRECT_UNREPRESENTABLE, |r| -r)
+                            direct_overflow_code(required)
                         }
                     };
                     Ok(code)

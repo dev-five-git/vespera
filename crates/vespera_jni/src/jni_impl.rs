@@ -143,6 +143,26 @@ fn invalid_input_array_err(detail: &str) -> Vec<u8> {
     vespera_inprocess::error_wire(400, &format!("invalid input byte array ({detail})"))
 }
 
+/// Hand a wire-format response back to Java as a `byte[]`.
+///
+/// Every byte-array-returning JNI symbol in this file ends (or bails out)
+/// by converting a wire `Vec<u8>` / `&[u8]` into a Java `byte[]` local ref
+/// with the identical `Ok(env.byte_array_from_slice(..)?.into())` shape.
+/// Naming it once keeps the conversion — and the `?`-propagating failure
+/// policy that goes with it — in a single place.
+///
+/// Deliberately NOT merged with [`byte_array_or_empty`]: that helper carries
+/// an extra OOM-of-OOM fallback (scrub the pending exception, hand back an
+/// empty `byte[]`) which only the outer panic landing pads want.  Here a
+/// failed allocation must keep propagating as `Err` so the enclosing guard
+/// applies its own policy.
+fn wire_byte_array<'local>(
+    env: &mut jni::Env<'local>,
+    bytes: &[u8],
+) -> jni::errors::Result<JObject<'local>> {
+    Ok(env.byte_array_from_slice(bytes)?.into())
+}
+
 /// Canonical `500` wire response for a failed streaming setup, ready to
 /// return from a streaming symbol's `let ... else` arm.
 ///
@@ -159,12 +179,10 @@ fn streaming_setup_failed_array<'local>(
     env: &mut jni::Env<'local>,
 ) -> jni::errors::Result<JObject<'local>> {
     clear_pending_exception(env);
-    Ok(env
-        .byte_array_from_slice(&vespera_inprocess::error_wire(
-            500,
-            "JNI streaming setup failed",
-        ))?
-        .into())
+    wire_byte_array(
+        env,
+        &vespera_inprocess::error_wire(500, "JNI streaming setup failed"),
+    )
 }
 
 /// Read a request `byte[]` into an owned buffer, centralizing the
@@ -355,7 +373,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchByt
             ))
             .unwrap_or_else(|_| panic_wire());
 
-        Ok(env.byte_array_from_slice(&response)?.into())
+        wire_byte_array(env, &response)
     })
 }
 
@@ -586,16 +604,14 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
         let response =
             catch_or_panic_byte_array(env, |env| -> jni::errors::Result<JObject<'local>> {
                 if output_stream.is_null() {
-                    return Ok(env
-                        .byte_array_from_slice(&vespera_inprocess::error_wire(
-                            400,
-                            "outputStream must not be null",
-                        ))?
-                        .into());
+                    return wire_byte_array(
+                        env,
+                        &vespera_inprocess::error_wire(400, "outputStream must not be null"),
+                    );
                 }
                 let input = match read_request_byte_array(env, &request_bytes) {
                     Ok(buf) => buf,
-                    Err(err) => return Ok(env.byte_array_from_slice(&err)?.into()),
+                    Err(err) => return wire_byte_array(env, &err),
                 };
 
                 // Promote the OutputStream to a Global (so the streaming
@@ -621,7 +637,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchStr
                     .unwrap_or_else(runtime_unavailable_wire);
                 mark_streaming_buffer_reusable(push_buf_lease);
 
-                Ok(env.byte_array_from_slice(&header_bytes)?.into())
+                wire_byte_array(env, &header_bytes)
             })?;
 
         Ok(response)
@@ -666,12 +682,13 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
         let response =
             catch_or_panic_byte_array(env, |env| -> jni::errors::Result<JObject<'local>> {
                 if input_stream.is_null() || output_stream.is_null() {
-                    return Ok(env
-                        .byte_array_from_slice(&vespera_inprocess::error_wire(
+                    return wire_byte_array(
+                        env,
+                        &vespera_inprocess::error_wire(
                             400,
                             "inputStream and outputStream must not be null",
-                        ))?
-                        .into());
+                        ),
+                    );
                 }
                 // Read the header byte[] through the shared ingress contract
                 // (length cap honoured + pending-exception scrub on failure)
@@ -680,7 +697,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                 // the buffered dispatch symbols.
                 let header_input = match read_request_byte_array(env, &header_bytes) {
                     Ok(buf) => buf,
-                    Err(err) => return Ok(env.byte_array_from_slice(&err)?.into()),
+                    Err(err) => return wire_byte_array(env, &err),
                 };
 
                 // Promote the input/output refs (+ a second input ref for the
@@ -737,7 +754,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchFul
                 mark_streaming_buffer_reusable(pull_buf_lease);
                 mark_streaming_buffer_reusable(push_buf_lease);
 
-                Ok(env.byte_array_from_slice(&header_response)?.into())
+                wire_byte_array(env, &header_response)
             })?;
 
         Ok(response)
