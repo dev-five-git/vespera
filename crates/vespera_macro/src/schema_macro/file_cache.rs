@@ -56,27 +56,6 @@ pub fn metadata_call_count() -> usize {
     METADATA_CALL_COUNT.with(std::cell::Cell::get)
 }
 
-// Test-only thread-local counter: number of `extract_struct_names`
-// tokenisation passes (the per-file source scan). Lets the H1 regression
-// benchmark prove that a single-file edit re-tokenises only the changed
-// file instead of every file in the directory.
-#[cfg(test)]
-thread_local! {
-    static EXTRACT_STRUCT_NAMES_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// Reset the test-only `extract_struct_names` call counter for this thread.
-#[cfg(test)]
-pub fn reset_extract_struct_names_count() {
-    EXTRACT_STRUCT_NAMES_COUNT.with(|c| c.set(0));
-}
-
-/// Current value of the test-only `extract_struct_names` call counter.
-#[cfg(test)]
-pub fn extract_struct_names_count() -> usize {
-    EXTRACT_STRUCT_NAMES_COUNT.with(std::cell::Cell::get)
-}
-
 use super::circular::CircularAnalysis;
 use super::file_lookup::collect_rs_files_recursive;
 use crate::metadata::StructMetadata;
@@ -115,7 +94,7 @@ pub struct FileFingerprint {
 /// invocation (matched via `last_epoch_validated == cache.epoch`) the
 /// entry is trusted without rewalking; across invocations the directory
 /// is rewalked once and the fingerprint comparison decides whether the
-/// cached `files` (and the dependent test-only `struct_index`) stay live.
+/// cached `files` stay live.
 ///
 /// Replaces the prior bare `Arc<[PathBuf]>` cache, which silently
 /// missed `.rs` files added in long-lived rust-analyzer proc-macro
@@ -157,37 +136,6 @@ struct FileCache {
     /// repeatedly during path resolution; once a path is known absent in the
     /// current macro invocation, avoid re-running `read_to_string` for it.
     missing_file_content_epoch: HashMap<PathBuf, u64>,
-
-    /// **Test-only.** Per-`src_dir` struct identifier index: struct name →
-    /// files that define it (as a top-level `struct <Name>` declaration found
-    /// via cheap source-text tokenisation in `extract_struct_names`).
-    ///
-    /// Its only writer is `get_struct_candidates`, which — along with its
-    /// whole support layer (`extract_struct_names`, `get_file_struct_names`,
-    /// `file_struct_names`) — is `#[cfg(test)]`. Production expansion never
-    /// consults it, so the field is gated too rather than allocated,
-    /// invalidated, and profile-printed while permanently empty in the
-    /// shipped proc-macro.
-    ///
-    /// Built lazily on the first `get_struct_candidates` call for a
-    /// directory; dropped alongside its `file_lists` entry whenever the
-    /// directory fingerprint changes.
-    #[cfg(test)]
-    struct_index: HashMap<PathBuf, HashMap<String, Arc<[PathBuf]>>>,
-
-    /// Per-file mtime-validated cache of the struct names defined in each
-    /// `.rs` file (the [`extract_struct_names`] tokenisation result).
-    ///
-    /// The `struct_index` above is dropped wholesale whenever a directory's
-    /// fingerprint changes (any file added / removed / modified — the common
-    /// rust-analyzer edit). Without this per-file layer the rebuild
-    /// re-tokenised **every** file in the directory; with it, a file whose
-    /// mtime is unchanged returns its cached names in O(1), so only the
-    /// genuinely changed file pays the O(file_size) tokenisation. The index
-    /// rebuild then costs one tokenisation per *edited* file instead of one
-    /// per file in the directory.
-    #[cfg(test)]
-    file_struct_names: HashMap<PathBuf, (FileFingerprint, Arc<[String]>)>,
 
     // NOTE: We CANNOT cache `syn::File` or `syn::ItemStruct` across proc-macro
     // invocations. Both `syn` and `proc_macro2` types contain `proc_macro::Span`
@@ -260,10 +208,6 @@ thread_local! {
         file_lists: HashMap::with_capacity(4),
         file_contents: HashMap::with_capacity(32),
         missing_file_content_epoch: HashMap::with_capacity(32),
-        #[cfg(test)]
-        struct_index: HashMap::with_capacity(4),
-        #[cfg(test)]
-        file_struct_names: HashMap::with_capacity(32),
         file_disk_reads: 0,
         content_cache_hits: 0,
         struct_parses: 0,
@@ -449,10 +393,8 @@ fn walk_and_fingerprint(cache: &mut FileCache, dir: &Path) -> (Vec<PathBuf>, u64
 /// * Same epoch (`last_epoch_validated == cache.epoch`) → trust cache,
 ///   no rewalk, no `fs::metadata` calls — pure `Arc::clone`.
 /// * New epoch, identical fingerprint → refresh `last_epoch_validated`
-///   to suppress further work in the rest of the epoch; the cached
-///   test-only `FileCache::struct_index` entry stays live.
-/// * New epoch, different fingerprint → drop the dependent test-only
-///   `FileCache::struct_index` entry; install a fresh `DirEntry`.
+///   to suppress further work in the rest of the epoch.
+/// * New epoch, different fingerprint → install a fresh `DirEntry`.
 fn ensure_file_list(cache: &mut FileCache, src_dir: &Path) -> Arc<[PathBuf]> {
     let current_epoch = cache.epoch;
 
@@ -464,18 +406,15 @@ fn ensure_file_list(cache: &mut FileCache, src_dir: &Path) -> Arc<[PathBuf]> {
 
     let (files_vec, fp) = walk_and_fingerprint(cache, src_dir);
 
-    if let Some(entry) = cache.file_lists.get_mut(src_dir) {
-        if entry.fingerprint == fp {
-            // Unchanged directory: refresh the validation epoch IN PLACE and
-            // hand back a single `Arc::clone`.  The previous code rebuilt the
-            // whole `DirEntry` (a `to_path_buf` key allocation) and cloned the
-            // `Arc` twice — once for the cache, once to return.
-            entry.last_epoch_validated = current_epoch;
-            return Arc::clone(&entry.files);
-        }
-        // Directory changed: the dependent (test-only) index is now stale.
-        #[cfg(test)]
-        cache.struct_index.remove(src_dir);
+    if let Some(entry) = cache.file_lists.get_mut(src_dir)
+        && entry.fingerprint == fp
+    {
+        // Unchanged directory: refresh the validation epoch IN PLACE and
+        // hand back a single `Arc::clone`.  The previous code rebuilt the
+        // whole `DirEntry` (a `to_path_buf` key allocation) and cloned the
+        // `Arc` twice — once for the cache, once to return.
+        entry.last_epoch_validated = current_epoch;
+        return Arc::clone(&entry.files);
     }
 
     let files: Arc<[PathBuf]> = files_vec.into();
@@ -490,124 +429,6 @@ fn ensure_file_list(cache: &mut FileCache, src_dir: &Path) -> Arc<[PathBuf]> {
     files
 }
 
-/// Cheap source-text tokeniser: extract every `struct <Name>` identifier
-/// from `content`.
-///
-/// Splits on the standard Rust identifier-character class and walks the
-/// resulting token stream looking for the literal `struct` followed by
-/// a valid identifier.  This is intentionally lighter than `syn::parse_file`
-/// — false positives in comments or strings are acceptable (the eventual
-/// [`get_struct_definition`] still does the exact match), but `struct`
-/// keywords inside string literals are exceedingly rare in real source
-/// and false negatives are not possible for any actually-defined struct.
-#[cfg(test)]
-fn extract_struct_names(content: &str) -> Vec<String> {
-    #[cfg(test)]
-    EXTRACT_STRUCT_NAMES_COUNT.with(|c| c.set(c.get() + 1));
-    let mut names = Vec::new();
-    let mut tokens = content
-        .split(|c: char| !(c == '_' || c.is_ascii_alphanumeric()))
-        .filter(|token| !token.is_empty());
-
-    while let Some(token) = tokens.next() {
-        if token == "struct"
-            && let Some(name) = tokens.next()
-            && name
-                .chars()
-                .next()
-                .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
-        {
-            names.push(name.to_string());
-        }
-    }
-
-    names
-}
-
-/// Struct names defined in `path`, served from a per-file mtime-validated
-/// cache so the directory struct-index rebuild re-tokenises only files whose
-/// mtime actually changed.
-///
-/// On an mtime match the cached `Arc<[String]>` is cloned (O(1), no source
-/// scan); otherwise the file content is read (via the mtime-validated content
-/// cache) and re-tokenised once, then cached. A file that cannot be read
-/// yields an empty name list — the caller simply contributes no candidates
-/// for it, matching the prior inline `continue`-on-read-miss behaviour.
-#[cfg(test)]
-fn get_file_struct_names(cache: &mut FileCache, path: &Path) -> Arc<[String]> {
-    let current_fp = get_fingerprint_cached(cache, path);
-
-    if let Some(fp) = current_fp
-        && let Some((cached_fp, names)) = cache.file_struct_names.get(path)
-        && *cached_fp == fp
-    {
-        return Arc::clone(names);
-    }
-
-    let names: Arc<[String]> = get_file_content_inner(cache, path).map_or_else(
-        || Vec::new().into(),
-        |content| extract_struct_names(&content).into(),
-    );
-
-    if let Some(fp) = current_fp {
-        cache
-            .file_struct_names
-            .insert(path.to_path_buf(), (fp, Arc::clone(&names)));
-    }
-
-    names
-}
-
-/// Get candidate files that likely contain `struct_name`.
-///
-/// Uses the per-`src_dir` struct identifier index built lazily on first
-/// access.  Once built, subsequent lookups for *any* struct name under
-/// the same `src_dir` are O(1) — replacing the prior per-name
-/// full-source `String::contains` scan (O(N×M) for N lookups across
-/// M files).
-///
-/// The index lives alongside the directory fingerprint in
-/// [`FileCache::file_lists`]; both are dropped together whenever the
-/// fingerprint changes (file added/removed/modified), so newly added
-/// `.rs` files become visible after the next `bump_epoch` in long-lived
-/// rust-analyzer servers.
-#[cfg(test)]
-pub fn get_struct_candidates(src_dir: &Path, struct_name: &str) -> Arc<[PathBuf]> {
-    FILE_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-
-        // Validate / build the `.rs` file list under fingerprint control
-        // (handles ADD/REMOVE/MODIFY invalidation across epochs).
-        let files = ensure_file_list(&mut cache, src_dir);
-
-        // Build the per-src_dir struct identifier index on first miss.
-        // Subsequent calls for any name under the same src_dir short
-        // circuit to an O(1) lookup.
-        if !cache.struct_index.contains_key(src_dir) {
-            let mut grouped: HashMap<String, Vec<PathBuf>> = HashMap::new();
-            for path in files.iter() {
-                // Per-file mtime-validated names: unchanged files return their
-                // cached tokenisation (O(1)); only an added/modified file pays
-                // the source scan, so this rebuild costs one tokenisation per
-                // *edited* file instead of one per file in the directory.
-                for name in get_file_struct_names(&mut cache, path).iter() {
-                    grouped.entry(name.clone()).or_default().push(path.clone());
-                }
-            }
-            let index: HashMap<String, Arc<[PathBuf]>> = grouped
-                .into_iter()
-                .map(|(name, paths)| (name, paths.into()))
-                .collect();
-            cache.struct_index.insert(src_dir.to_path_buf(), index);
-        }
-
-        cache
-            .struct_index
-            .get(src_dir)
-            .and_then(|idx| idx.get(struct_name).cloned())
-            .unwrap_or_else(|| Vec::<PathBuf>::new().into())
-    })
-}
 /// Ensure struct definitions are extracted and cached for the given file.
 /// On first call, parses the file and caches all struct definitions as strings.
 /// On subsequent calls, checks the mtime+len fingerprint to validate cache.
@@ -751,8 +572,6 @@ pub fn print_profile_summary() {
             cache.file_lists.len(),
             cache.file_contents.len()
         );
-        #[cfg(test)]
-        eprintln!("  struct index dirs: {} entries", cache.struct_index.len());
         eprintln!(
             "  circular analysis: {} cache hits, {} entries",
             cache.circular_cache_hits,

@@ -63,6 +63,29 @@ fn build_route_path(base_path: &str, custom_path: Option<&str>) -> String {
     kebab_case_path(&joined)
 }
 
+/// Yield the per-file invariants (`module_path`, `file_path`) for one route.
+///
+/// The last route of a file MOVES them out (leaving empty `String`s behind);
+/// every earlier route CLONES — refcount-free amortization of two `String`
+/// allocations per file.
+///
+/// Both collection paths (the `ROUTE_STORAGE` fast path and the `syn` slow
+/// path) need exactly this behaviour, and it must stay identical between them
+/// for the same reason [`build_route_path`] documents: a one-sided change
+/// would make the emitted metadata depend on which path happened to run.
+#[inline]
+fn take_or_clone(
+    module_path: &mut String,
+    file_path: &mut String,
+    is_last: bool,
+) -> (String, String) {
+    if is_last {
+        (std::mem::take(module_path), std::mem::take(file_path))
+    } else {
+        (module_path.clone(), file_path.clone())
+    }
+}
+
 /// Collect routes and structs from a folder.
 ///
 /// When `route_storage` contains entries with `file_path`, files covered by
@@ -181,14 +204,7 @@ pub fn collect_metadata_from_files<'a>(
                 // find a doc comment the attribute macro didn't.
                 let description = stored.description.clone();
 
-                let (mp, fp) = if i + 1 == n {
-                    (
-                        std::mem::take(&mut module_path),
-                        std::mem::take(&mut file_path),
-                    )
-                } else {
-                    (module_path.clone(), file_path.clone())
-                };
+                let (mp, fp) = take_or_clone(&mut module_path, &mut file_path, i + 1 == n);
 
                 metadata.routes.push(RouteMetadata {
                     // `#[route]` bare form defaults to GET — mirror the
@@ -248,14 +264,7 @@ pub fn collect_metadata_from_files<'a>(
                     .description
                     .or_else(|| extract_doc_comment(&fn_item.attrs));
 
-                let (mp, fp) = if i + 1 == n {
-                    (
-                        std::mem::take(&mut module_path),
-                        std::mem::take(&mut file_path),
-                    )
-                } else {
-                    (module_path.clone(), file_path.clone())
-                };
+                let (mp, fp) = take_or_clone(&mut module_path, &mut file_path, i + 1 == n);
 
                 metadata.routes.push(RouteMetadata {
                     method: route_info.method,

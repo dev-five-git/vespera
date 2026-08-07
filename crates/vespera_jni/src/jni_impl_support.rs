@@ -111,6 +111,14 @@ pub type StreamHeaderSetup = (
 /// dispatcher handles a (rare, OOM-driven) setup failure with a `let ... else`
 /// that fires the header consumer exactly once, instead of a silently-ignored
 /// `?` that would leave the Java caller hanging.
+///
+/// This is exactly [`setup_stream`] plus one promoted global ref, so it only
+/// spells out what differs: BOTH null checks stay here and in this order, so
+/// the `NullPtr("header_consumer")` / `NullPtr("output_stream")` error identity
+/// and precedence are unchanged; the header ref is promoted next; everything
+/// after that — including the buffer checkout that must remain the last
+/// fallible step — is delegated so the lease-safety ordering invariant lives in
+/// one place.
 pub fn setup_stream_with_header(
     env: &mut jni::Env<'_>,
     header_consumer: &JObject<'_>,
@@ -123,11 +131,7 @@ pub fn setup_stream_with_header(
         return Err(jni::errors::Error::NullPtr("output_stream"));
     }
     let header_global: Global<JObject<'static>> = env.new_global_ref(header_consumer)?;
-    let stream_global: Global<JObject<'static>> = env.new_global_ref(output_stream)?;
-    let jvm = env.get_java_vm()?;
-    // One per-thread reusable Java chunk buffer for the whole stream.
-    let (push_buf, push_buf_lease) =
-        checkout_streaming_chunk_buffer(env, StreamingBufferRole::Push)?;
+    let (stream_global, jvm, push_buf, push_buf_lease) = setup_stream(env, output_stream)?;
     Ok((header_global, stream_global, jvm, push_buf, push_buf_lease))
 }
 
@@ -145,6 +149,14 @@ pub type FullStreamHeaderSetup = (
 /// [`Java_..._dispatchFullStreamingWithHeader`].  Split out both to keep that
 /// dispatcher under the line cap and so a setup failure is handled with a
 /// `let ... else` that fires the header consumer exactly once.
+///
+/// This is exactly [`setup_full_stream`] plus one promoted global ref, so it
+/// only spells out what differs: all three null checks stay here and in this
+/// order, so the `NullPtr("header_consumer")` / `NullPtr("input_stream")` /
+/// `NullPtr("output_stream")` error identity and precedence are unchanged; the
+/// header ref is promoted next; everything after that — including the buffer
+/// checkout that must remain the last fallible step — is delegated so the
+/// lease-safety ordering invariant lives in one place.
 pub fn setup_full_stream_with_header(
     env: &mut jni::Env<'_>,
     header_consumer: &JObject<'_>,
@@ -161,12 +173,8 @@ pub fn setup_full_stream_with_header(
         return Err(jni::errors::Error::NullPtr("output_stream"));
     }
     let header_global: Global<JObject<'static>> = env.new_global_ref(header_consumer)?;
-    let input_global: Arc<Global<JObject<'static>>> = Arc::new(env.new_global_ref(input_stream)?);
-    let output_global: Global<JObject<'static>> = env.new_global_ref(output_stream)?;
-    let jvm = env.get_java_vm()?;
-    // Pull and push run concurrently on different threads (the pull lease is
-    // released for us if the push checkout fails).
-    let buffers = checkout_pull_push_buffers(env)?;
+    let (input_global, output_global, jvm, buffers) =
+        setup_full_stream(env, input_stream, output_stream)?;
     Ok((header_global, input_global, output_global, jvm, buffers))
 }
 

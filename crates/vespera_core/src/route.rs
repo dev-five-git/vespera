@@ -19,18 +19,43 @@ pub enum HttpMethod {
     Trace,
 }
 
+impl HttpMethod {
+    /// Every supported HTTP method, in `PathItem` field order.
+    ///
+    /// This array plus [`HttpMethod::as_str`] are the **single source of
+    /// truth** for the supported-method set: `Display`, `TryFrom<&str>` and
+    /// `vespera_macro`'s `is_http_method` all read the spellings from here, so
+    /// adding a variant cannot leave one stage of the pipeline behind.
+    pub const ALL: [Self; 8] = [
+        Self::Get,
+        Self::Post,
+        Self::Put,
+        Self::Patch,
+        Self::Delete,
+        Self::Head,
+        Self::Options,
+        Self::Trace,
+    ];
+
+    /// The canonical uppercase wire name of this method (RFC 9110).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Post => "POST",
+            Self::Put => "PUT",
+            Self::Patch => "PATCH",
+            Self::Delete => "DELETE",
+            Self::Head => "HEAD",
+            Self::Options => "OPTIONS",
+            Self::Trace => "TRACE",
+        }
+    }
+}
+
 impl std::fmt::Display for HttpMethod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Get => write!(f, "GET"),
-            Self::Post => write!(f, "POST"),
-            Self::Put => write!(f, "PUT"),
-            Self::Patch => write!(f, "PATCH"),
-            Self::Delete => write!(f, "DELETE"),
-            Self::Head => write!(f, "HEAD"),
-            Self::Options => write!(f, "OPTIONS"),
-            Self::Trace => write!(f, "TRACE"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -42,28 +67,11 @@ impl TryFrom<&str> for HttpMethod {
         // on the success path (HTTP method names are ASCII per RFC 9110);
         // the cold error path still reports the ASCII-uppercased value so the
         // message is byte-identical to the previous implementation.
-        if value.eq_ignore_ascii_case("GET") {
-            Ok(Self::Get)
-        } else if value.eq_ignore_ascii_case("POST") {
-            Ok(Self::Post)
-        } else if value.eq_ignore_ascii_case("PUT") {
-            Ok(Self::Put)
-        } else if value.eq_ignore_ascii_case("PATCH") {
-            Ok(Self::Patch)
-        } else if value.eq_ignore_ascii_case("DELETE") {
-            Ok(Self::Delete)
-        } else if value.eq_ignore_ascii_case("HEAD") {
-            Ok(Self::Head)
-        } else if value.eq_ignore_ascii_case("OPTIONS") {
-            Ok(Self::Options)
-        } else if value.eq_ignore_ascii_case("TRACE") {
-            Ok(Self::Trace)
-        } else {
-            Err(format!(
-                "unknown HTTP method: {}",
-                value.to_ascii_uppercase()
-            ))
-        }
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|method| value.eq_ignore_ascii_case(method.as_str()))
+            .ok_or_else(|| format!("unknown HTTP method: {}", value.to_ascii_uppercase()))
     }
 }
 

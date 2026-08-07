@@ -3,62 +3,6 @@ use tempfile::TempDir;
 use super::*;
 
 #[test]
-fn test_get_struct_candidates_filters_correctly() {
-    let temp_dir = TempDir::new().unwrap();
-    let src_dir = temp_dir.path();
-
-    std::fs::write(
-        src_dir.join("has_model.rs"),
-        "pub struct Model { pub id: i32 }",
-    )
-    .unwrap();
-    std::fs::write(
-        src_dir.join("no_model.rs"),
-        "pub struct Other { pub x: i32 }",
-    )
-    .unwrap();
-
-    let candidates = get_struct_candidates(src_dir, "Model");
-    assert_eq!(candidates.len(), 1);
-    assert!(candidates[0].ends_with("has_model.rs"));
-}
-
-#[test]
-fn test_get_struct_candidates_caches_result() {
-    let temp_dir = TempDir::new().unwrap();
-    let src_dir = temp_dir.path();
-
-    std::fs::write(src_dir.join("file.rs"), "pub struct Target { pub id: i32 }").unwrap();
-
-    let c1 = get_struct_candidates(src_dir, "Target");
-    let c2 = get_struct_candidates(src_dir, "Target");
-    assert_eq!(c1, c2, "Cached candidates should be identical");
-}
-
-#[test]
-fn test_get_struct_candidates_file_list_cache_hit() {
-    let temp_dir = TempDir::new().unwrap();
-    let src_dir = temp_dir.path();
-
-    std::fs::write(
-        src_dir.join("file_a.rs"),
-        "pub struct Alpha { pub id: i32 }",
-    )
-    .unwrap();
-    std::fs::write(
-        src_dir.join("file_b.rs"),
-        "pub struct Beta { pub name: String }",
-    )
-    .unwrap();
-
-    let result1 = get_struct_candidates(src_dir, "Alpha");
-    assert_eq!(result1.len(), 1);
-
-    let result2 = get_struct_candidates(src_dir, "Beta");
-    assert_eq!(result2.len(), 1);
-}
-
-#[test]
 fn test_get_fk_column_cache_hit() {
     let result1 = get_fk_column("nonexistent::path::Schema", "SomeRelation");
     let result2 = get_fk_column("nonexistent::path::Schema", "SomeRelation");
@@ -299,110 +243,53 @@ fn test_epoch_cross_entry_invalidation() {
     );
 }
 
-/// Regression test for the original [`FileCache::file_lists`] bug: a
-/// `.rs` file added to a `src_dir` between two epochs must become
-/// visible to `get_struct_candidates` after the next [`bump_epoch`],
-/// because the directory fingerprint changes.
-///
-/// In the pre-fix world the file list was cached forever per `src_dir`
-/// with no invalidation mechanism — long-lived rust-analyzer servers
-/// silently missed newly added files. This test would have hit the
-/// 0-length assertion on the post-bump query.
-#[serial_test::serial]
-#[test]
-fn test_struct_index_invalidates_when_new_file_added() {
-    let temp_dir = TempDir::new().unwrap();
-    let src_dir = temp_dir.path();
-
-    std::fs::write(src_dir.join("first.rs"), "pub struct First { pub id: i32 }").unwrap();
-
-    bump_epoch();
-    let first = get_struct_candidates(src_dir, "First");
-    assert_eq!(first.len(), 1, "first.rs must be picked up");
-    let missing = get_struct_candidates(src_dir, "Second");
-    assert_eq!(missing.len(), 0, "Second is not yet defined");
-
-    // Simulate a long-lived rust-analyzer session adding a new file
-    // between two top-level macro invocations.
-    std::fs::write(
-        src_dir.join("second.rs"),
-        "pub struct Second { pub name: String }",
-    )
-    .unwrap();
-    bump_epoch();
-
-    let second = get_struct_candidates(src_dir, "Second");
-    assert_eq!(
-        second.len(),
-        1,
-        "newly added second.rs must appear after the directory fingerprint changes",
-    );
-    // First.rs must still be reachable — the rebuild does not lose
-    // previously indexed structs.
-    let first_again = get_struct_candidates(src_dir, "First");
-    assert_eq!(first_again.len(), 1, "First must remain after rebuild");
-}
-
-/// Within a single epoch, repeated `get_struct_candidates` calls must
-/// not rewalk the directory. The first call walks + builds; subsequent
-/// calls in the same epoch reuse the cached `DirEntry` with no
+/// Within a single epoch, repeated single-segment path lookups must not
+/// rewalk the `src` tree. `path_lookup_fingerprint` folds every `.rs` file
+/// under `src` into the digest via `ensure_file_list`, so the first lookup
+/// walks + stats; subsequent lookups in the same epoch reuse the validated
+/// `DirEntry` (and the per-epoch fingerprint cache) with zero new
 /// `fs::metadata` syscalls.
 #[serial_test::serial]
 #[test]
 fn test_file_list_skips_walk_within_same_epoch() {
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(v) => unsafe { std::env::set_var("CARGO_MANIFEST_DIR", v) },
+                None => unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") },
+            }
+        }
+    }
+
     let temp_dir = TempDir::new().unwrap();
-    let src_dir = temp_dir.path();
+    let src_dir = temp_dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
     std::fs::write(src_dir.join("a.rs"), "pub struct Alpha { pub id: i32 }").unwrap();
     std::fs::write(src_dir.join("b.rs"), "pub struct Beta { pub name: String }").unwrap();
+
+    let _restore = Restore(std::env::var("CARGO_MANIFEST_DIR").ok());
+    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
 
     reset_metadata_call_count();
     bump_epoch();
     let before = metadata_call_count();
 
-    let _ = get_struct_candidates(src_dir, "Alpha");
+    let _ = get_struct_from_schema_path("Alpha");
     let after_first = metadata_call_count();
     assert!(
         after_first > before,
-        "first call must walk the directory (mtime syscalls expected)",
+        "first lookup must walk the directory (mtime syscalls expected)",
     );
 
-    // Subsequent calls in the same epoch reuse the validated
+    // Subsequent lookups in the same epoch reuse the validated
     // `DirEntry` — zero new mtime syscalls for the file-list walk.
-    let _ = get_struct_candidates(src_dir, "Beta");
-    let _ = get_struct_candidates(src_dir, "Alpha");
+    let _ = get_struct_from_schema_path("Beta");
+    let _ = get_struct_from_schema_path("Alpha");
     assert_eq!(
         metadata_call_count(),
         after_first,
         "same-epoch lookups must not rewalk the directory",
-    );
-}
-
-/// Sanity check: the struct identifier index returns *every* file
-/// that defines a struct of the given name. This layer must not pre-filter;
-/// callers that still need a candidate set own their own resolution policy.
-#[serial_test::serial]
-#[test]
-fn test_struct_index_preserves_disambiguation_candidates() {
-    let temp_dir = TempDir::new().unwrap();
-    let src_dir = temp_dir.path();
-    std::fs::create_dir(src_dir.join("models")).unwrap();
-    std::fs::write(
-        src_dir.join("models").join("user.rs"),
-        "pub struct Model { pub id: i32, pub name: String }",
-    )
-    .unwrap();
-    std::fs::write(
-        src_dir.join("models").join("memo.rs"),
-        "pub struct Model { pub id: i32, pub title: String }",
-    )
-    .unwrap();
-
-    bump_epoch();
-    let candidates = get_struct_candidates(src_dir, "Model");
-    assert_eq!(
-        candidates.len(),
-        2,
-        "both files defining Model must be returned for the disambiguation layer",
     );
 }
 
@@ -443,73 +330,5 @@ fn manifest_dir_revalidates_across_epochs() {
         get_manifest_dir().as_deref(),
         Some("/vespera_test/crate_b"),
         "manifest dir must revalidate when the epoch advances"
-    );
-}
-
-/// H1 benchmark + regression: when a single file is added to a directory
-/// (the common rust-analyzer edit between two macro invocations), the
-/// struct-index rebuild must re-tokenise ONLY the changed file — not every
-/// file in the directory.
-///
-/// `extract_struct_names` (the per-file source tokeniser) is the dominant
-/// cost of the rebuild that fires whenever the directory fingerprint changes.
-/// Before the per-file name cache the rebuild re-tokenised all N files on
-/// every edit; after it, only the new/changed file is re-scanned. The
-/// tokenisation count is deterministic, so it is the noise-free signal for
-/// this compile-time win (printed as `VESPERA_H1 ...`).
-#[serial_test::serial]
-#[test]
-fn h1_single_file_add_reextracts_only_changed_file() {
-    const N: usize = 20;
-    let temp_dir = TempDir::new().unwrap();
-    let src_dir = temp_dir.path();
-
-    for i in 0..N {
-        std::fs::write(
-            src_dir.join(format!("model_{i}.rs")),
-            format!("pub struct Model{i} {{ pub id: i32 }}"),
-        )
-        .unwrap();
-    }
-
-    // Cold index build — tokenises every file once (both before and after
-    // the fix; the win is on the incremental rebuild below).
-    reset_extract_struct_names_count();
-    bump_epoch();
-    let first = get_struct_candidates(src_dir, "Model0");
-    assert_eq!(first.len(), 1, "Model0 must be indexed");
-    let initial_build = extract_struct_names_count();
-
-    // Add ONE new file and advance the epoch: the directory fingerprint
-    // changes, so the struct index is dropped and rebuilt on the next query.
-    std::fs::write(
-        src_dir.join("model_new.rs"),
-        "pub struct ModelNew { pub id: i32 }",
-    )
-    .unwrap();
-    reset_extract_struct_names_count();
-    bump_epoch();
-    let added = get_struct_candidates(src_dir, "ModelNew");
-    let rebuild = extract_struct_names_count();
-
-    eprintln!(
-        "VESPERA_H1 N={N} initial_build_tokenisations={initial_build} \
-         single_add_rebuild_tokenisations={rebuild}"
-    );
-
-    assert_eq!(added.len(), 1, "newly added ModelNew must be indexed");
-    // Correctness: pre-existing structs survive the rebuild.
-    assert_eq!(
-        get_struct_candidates(src_dir, "Model0").len(),
-        1,
-        "Model0 must remain reachable after the rebuild"
-    );
-    // The win: only the newly added file is re-tokenised, not all N+1.
-    assert_eq!(
-        rebuild,
-        1,
-        "rebuild after a single-file add must re-tokenise only the new file \
-         (got {rebuild}; pre-fix this re-tokenised all N+1 = {} files)",
-        N + 1
     );
 }
