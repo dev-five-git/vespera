@@ -77,29 +77,48 @@ vespera/
 
 ## KEY COMPONENTS
 
+> Paths are repository-relative so each row is directly `Test-Path`-able; line
+> counts are approximate and drift between refreshes.
+
 | File | Lines | Role |
 |------|-------|------|
-| `vespera_macro/src/lib.rs` | ~429 | Proc-macro entry points: `vespera!`, `export_app!`, `#[route]`, `#[derive(Schema)]` |
-| `vespera_macro/src/schema_macro/` | split modules | `schema_type!` macro, SeaORM relation handling |
-| `vespera_macro/src/parser/schema/` | split modules | Rust struct/enum/type → JSON Schema conversion |
-| `vespera_macro/src/parser/parameters.rs` | ~199 | Extract path/query/header params from handlers |
-| `vespera_macro/src/openapi_generator.rs` | ~646 | OpenAPI doc assembly |
-| `vespera_macro/src/collector.rs` | ~270 | Filesystem route scanning |
-| `vespera_inprocess/src/lib.rs` | ~115 | Crate root: module wiring + public re-exports + `#[doc(hidden)]` `bench_support` (modularized — logic lives in the files below) |
-| `vespera_inprocess/src/wire.rs` | ~570 | Binary wire frame split/parse + 422 validation-error hoisting; `parse_wire_header` / `write_wire_header_into{,_slice}` delegate to the hand-rolled `wire/` submodules (serde_json twins retained private as `*_serde` for the criterion A/B) |
-| `vespera_inprocess/src/wire/header_read.rs` | ~795 | Hand-rolled request-header JSON reader → `WireRequestHeader<'a>`: borrow-when-plain / own-when-escaped `Cow`, UTF-16 surrogate decode, any key order + unknown-skip + dup-reject, never panics (byte-behaviour-identical to the serde derive) |
-| `vespera_inprocess/src/wire/header_write.rs` | ~470 | Hand-rolled response-header JSON serializer: `serde_json`-exact escape table + `\u00XX`, sorted `HeaderMap`, metadata, `validation_errors`; one `JsonSink` serves the `Vec` and overflow-counting `&mut [u8]` paths (byte-identical to `serde_json`) |
-| `vespera_inprocess/src/dispatch.rs` | ~691 | Public dispatch entry points: text envelope API, binary wire API, direct-write (`dispatch_into`) API |
-| `vespera_inprocess/src/internal.rs` | ~755 | Request building + router oneshot + response collection (malformed path/header → 400) |
-| `vespera_inprocess/src/streaming.rs` | ~919 | Response / header-callback / bidirectional streaming; `RequestChunk`/`StreamAbort` error-aware request body; bounded `ChannelBody` |
-| `vespera_inprocess/src/registry.rs` | ~298 | App registration + lock-free default-app `OnceLock` + lock-free named-app `ArcSwap<HashMap<String, Router>>` (copy-on-write `rcu` on register) |
-| `vespera_inprocess/benches/dispatch/serde_ab.rs` | ~210 | Criterion A/B helpers comparing serde_json vs hand-rolled wire-header paths |
-| `vespera_jni/src/jni_impl.rs` | ~741 | JNI RUNTIME + jni_app! macro + 7 JNI symbols (incl. direct-buffer path) |
-| `vespera_jni/src/streaming_closures.rs` | ~718 | Streaming closure factories (`make_pull_closure`, `make_push_closure`, `call_header_consumer`, `complete_future`) + `OnceLock<MethodCache>` caching `JMethodID`+`GlobalRef<JClass>` for `InputStream.read`, `OutputStream.write`, `Consumer.accept`, `CompletableFuture.complete` — `call_method_unchecked` on the hot path. Pull/push/header closures attach via [`daemon_env::with_cached_daemon_env`] (TLS-cached daemon attach), not `attach_current_thread` per chunk |
-| `vespera_jni/src/daemon_env.rs` | ~261 | `with_cached_daemon_env(jvm, cb)` — resolves the current OS thread's `JNIEnv` once via `GetEnv` and caches it in a `thread_local!` `RefCell<Option<CachedEnv>>`, reused for every JNI callback on that thread (streaming chunk pull/push, header callbacks, async `CompletableFuture.complete`). Already-attached JVM threads are **borrowed** (never detached); unattached Tokio/`spawn_blocking` threads are **owned** (attached via `AttachCurrentThreadAsDaemon`, detached in the TLS `Drop` on thread exit). Replaces the prior per-chunk attach/detach churn; per-call local frame + exception scrub preserved |
-| `libs/vespera-bridge/.../RequestShape.java` | ~83 | Java request body/idempotency classifier used by smart dispatch-mode selection |
-| `libs/vespera-bridge/.../VesperaNativeLoader.java` | ~105 | Native library lookup/extraction/loading for the bridge facade |
-| `libs/vespera-bridge/.../WireHeaderStringSupport.java` | ~134 | Shared Java helpers for wire-header UTF-8 strings and JSON escaping |
+| `crates/vespera_macro/src/lib.rs` | ~387 | Proc-macro entry points: `vespera!`, `export_app!`, `#[route]`, `#[derive(Schema)]` |
+| `crates/vespera_macro/src/schema_macro/` | split modules | `schema_type!` macro, SeaORM relation handling |
+| `crates/vespera_macro/src/parser/schema/` | split modules | Rust struct/enum/type → JSON Schema conversion |
+| `crates/vespera_macro/src/parser/parameters.rs` | ~175 | Extract path/query/header params from handlers |
+| `crates/vespera_macro/src/openapi_generator.rs` | ~603 | OpenAPI doc assembly |
+| `crates/vespera_macro/src/collector.rs` | ~258 | Filesystem route scanning |
+| `crates/vespera_inprocess/src/lib.rs` | ~117 | Crate root: module wiring + public re-exports + `#[doc(hidden)]` `bench_support` (modularized — logic lives in the files below) |
+| `crates/vespera_inprocess/src/wire.rs` | ~547 | Binary wire frame split/parse + 422 validation-error hoisting; `parse_wire_header` / `write_wire_header_into{,_slice}` delegate to the hand-rolled `wire/` submodules (serde_json twins retained private as `*_serde` for the criterion A/B) |
+| `crates/vespera_inprocess/src/wire/header_read.rs` | ~762 | Hand-rolled request-header JSON reader → `WireRequestHeader<'a>`: borrow-when-plain / own-when-escaped `Cow`, UTF-16 surrogate decode, any key order + unknown-skip + dup-reject, never panics (byte-behaviour-identical to the serde derive) |
+| `crates/vespera_inprocess/src/wire/header_write.rs` | ~461 | Hand-rolled response-header JSON serializer: `serde_json`-exact escape table + `\u00XX`, sorted `HeaderMap`, metadata, `validation_errors`; one `JsonSink` serves the `Vec` and overflow-counting `&mut [u8]` paths (byte-identical to `serde_json`) |
+| `crates/vespera_inprocess/src/dispatch.rs` | ~690 | Public dispatch entry points: text envelope API, binary wire API, direct-write (`dispatch_into`) API |
+| `crates/vespera_inprocess/src/internal.rs` | ~709 | Request building + router oneshot + response collection (malformed path/header → 400) |
+| `crates/vespera_inprocess/src/streaming.rs` | ~875 | Response / header-callback / bidirectional streaming; `RequestChunk`/`StreamAbort` error-aware request body; bounded `ChannelBody` |
+| `crates/vespera_inprocess/src/registry.rs` | ~281 | App registration + lock-free default-app `OnceLock` + lock-free named-app `ArcSwap<HashMap<String, Router>>` (copy-on-write `rcu` on register) |
+| `crates/vespera_inprocess/benches/dispatch/serde_ab.rs` | ~249 | Criterion A/B helpers comparing serde_json vs hand-rolled wire-header paths |
+| `crates/vespera_jni/src/lib.rs` | ~146 | Crate root: module wiring, `jni` / `vespera_inprocess` re-exports, optional mimalloc `#[global_allocator]` |
+| `crates/vespera_jni/src/jni_impl.rs` | ~710 | JNI RUNTIME + `jni_app!` macro + the sync/async/streaming `Java_...` symbols; shared helpers the sibling `jni_impl_*` modules import |
+| `crates/vespera_jni/src/jni_impl_direct.rs` | ~282 | `dispatchDirect0` symbol + its `jint` overflow/unrepresentable sentinel protocol |
+| `crates/vespera_jni/src/jni_impl_streaming_header.rs` | ~412 | The two `*WithHeader` streaming symbols (response-only and bidirectional) |
+| `crates/vespera_jni/src/jni_impl_support.rs` | ~219 | Per-symbol setup routines + abort/panic-policy helpers shared by the streaming symbols |
+| `crates/vespera_jni/src/jni_impl_streaming_buffer.rs` | ~182 | Per-thread reusable Java chunk `byte[]` pool + lease (a panicking dispatch keeps the lease checked out) |
+| `crates/vespera_jni/src/jni_impl_config.rs` | ~131 | `configure*0` JNI hooks seeding runtime worker count / streaming chunk + channel config before the first dispatch |
+| `crates/vespera_jni/src/jni_buf.rs` | ~90 | Zero-fill-free `GetByteArrayRegion` read into a `Vec<u8>`'s uninitialised spare capacity |
+| `crates/vespera_jni/src/streaming_closures.rs` | ~683 | Streaming closure factories (`make_pull_closure`, `make_push_closure`, `call_header_consumer`, `complete_future`) + `OnceLock<MethodCache>` caching `JMethodID`+`GlobalRef<JClass>` for `InputStream.read`, `OutputStream.write`, `Consumer.accept`, `CompletableFuture.complete` — `call_method_unchecked` on the hot path. Pull/push/header closures attach via [`daemon_env::with_cached_daemon_env`] (TLS-cached daemon attach), not `attach_current_thread` per chunk |
+| `crates/vespera_jni/src/daemon_env.rs` | ~244 | `with_cached_daemon_env(jvm, cb)` — resolves the current OS thread's `JNIEnv` once via `GetEnv` and caches it in a `thread_local!` `RefCell<Option<CachedEnv>>`, reused for every JNI callback on that thread (streaming chunk pull/push, header callbacks, async `CompletableFuture.complete`). Already-attached JVM threads are **borrowed** (never detached); unattached Tokio/`spawn_blocking` threads are **owned** (attached via `AttachCurrentThreadAsDaemon`, detached in the TLS `Drop` on thread exit). Replaces the prior per-chunk attach/detach churn; per-call local frame + exception scrub preserved |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/WireHeaderReader.java` | ~929 | Zero-copy absolute-index reader applying wire-header status/headers straight from a pooled direct `ByteBuffer` |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaProxyController.java` | ~908 | Catch-all Spring proxy: servlet request → wire bytes → chosen `DispatchMode` → `ResponseEntity` |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaBridge.java` | ~847 | Public bridge facade: `native` methods bound to the fixed JNI symbol names, library load, dispatch API |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaWireCodec.java` | ~721 | Pure-Java wire request encoding + response decoding (`DecodedResponse`) |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaDirectBufferPool.java` | ~388 | Per-thread direct `ByteBuffer` pool, adaptive retention, overflow-retry policy behind `dispatchDirectPooled` |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/HeaderPolicy.java` | ~326 | Hop-by-hop / proxy-owned header filtering for request and response forwarding |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaBridgeAutoConfiguration.java` | ~217 | Spring Boot autoconfigure: controller + `AppNameResolver` + `DispatchModeResolver` beans, all `@ConditionalOnMissingBean` |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaBridgeProperties.java` | ~159 | `vespera.bridge.*` configuration properties backing the autoconfigured defaults |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/SmartDispatchModeResolver.java` | ~147 | Autoconfigured default `DispatchModeResolver` choosing DIRECT / SYNC / streaming per request |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/WireHeaderStringSupport.java` | ~118 | Shared Java helpers for wire-header UTF-8 strings and JSON escaping |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaNativeLoader.java` | ~114 | Native library lookup/extraction/loading for the bridge facade |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/RequestShape.java` | ~70 | Java request body/idempotency classifier used by smart dispatch-mode selection |
 
 ## CRATE DEPENDENCY GRAPH
 

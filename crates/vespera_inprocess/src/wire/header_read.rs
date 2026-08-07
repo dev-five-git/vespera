@@ -358,11 +358,18 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// Decode a `\uXXXX` escape (the `\u` already consumed), resolving
-    /// UTF-16 surrogate pairs and rejecting lone/invalid surrogates.
-    fn decode_unicode_escape(&mut self, buf: &mut Vec<u8>) -> Result<(), String> {
+    /// Read the code point of a `\uXXXX` escape (the `\u` already consumed),
+    /// resolving UTF-16 surrogate pairs and rejecting lone/invalid surrogates.
+    ///
+    /// **Single source of the surrogate grammar.** Both
+    /// [`Self::decode_unicode_escape`] (decoding, allocating path) and
+    /// [`Self::validate_unicode_escape`] (non-allocating skip path) must stay
+    /// accept/reject-identical; previously each spelled this grammar out in
+    /// full, duplicating the four surrogate range constants and three error
+    /// strings and making silent drift between the twins possible.
+    fn read_unicode_code_point(&mut self) -> Result<u32, String> {
         let hi = self.read_hex4()?;
-        let code_point = if (0xD800..=0xDBFF).contains(&hi) {
+        if (0xD800..=0xDBFF).contains(&hi) {
             // High surrogate: must be followed by `\uYYYY` low surrogate.
             if self.input.get(self.pos) != Some(&b'\\')
                 || self.input.get(self.pos + 1) != Some(&b'u')
@@ -374,12 +381,20 @@ impl<'a> Parser<'a> {
             if !(0xDC00..=0xDFFF).contains(&lo) {
                 return Err("invalid low surrogate in unicode escape".to_owned());
             }
-            0x1_0000 + ((u32::from(hi) - 0xD800) << 10) + (u32::from(lo) - 0xDC00)
+            Ok(0x1_0000 + ((u32::from(hi) - 0xD800) << 10) + (u32::from(lo) - 0xDC00))
         } else if (0xDC00..=0xDFFF).contains(&hi) {
-            return Err("lone low surrogate in unicode escape".to_owned());
+            Err("lone low surrogate in unicode escape".to_owned())
         } else {
-            u32::from(hi)
-        };
+            Ok(u32::from(hi))
+        }
+    }
+
+    /// Decode a `\uXXXX` escape (the `\u` already consumed) into `buf`.
+    ///
+    /// The escape grammar itself lives in [`Self::read_unicode_code_point`];
+    /// only the scalar-conversion + UTF-8 encode tail is decoder-specific.
+    fn decode_unicode_escape(&mut self, buf: &mut Vec<u8>) -> Result<(), String> {
+        let code_point = self.read_unicode_code_point()?;
         let ch = char::from_u32(code_point)
             .ok_or_else(|| "invalid code point in unicode escape".to_owned())?;
         let mut tmp = [0u8; 4];
@@ -606,31 +621,18 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Validate a `\uXXXX` escape (the `\u` already consumed), enforcing the
-    /// same surrogate-pair rules as [`Self::decode_unicode_escape`] without
-    /// computing the code point.  A validated high+low pair always forms a
-    /// scalar (`<= 0x10FFFF`) and a non-surrogate BMP unit is always a
-    /// scalar, so the decoder's `char::from_u32` check can never reject here
-    /// — accept/reject parity with `decode_unicode_escape` is preserved.
+    /// Validate a `\uXXXX` escape (the `\u` already consumed) by running the
+    /// shared [`Self::read_unicode_code_point`] grammar and discarding the
+    /// code point — the surrogate-pair rules are therefore literally the same
+    /// code [`Self::decode_unicode_escape`] runs, not a hand-kept copy.
+    ///
+    /// The decoder's `char::from_u32` check is deliberately NOT hoisted into
+    /// the shared helper: it would add work to this skip path for nothing, as
+    /// a validated high+low pair always forms a scalar (`<= 0x10FFFF`) and a
+    /// non-surrogate BMP unit is always a scalar — so it can never reject
+    /// here and accept/reject parity with the decoder is preserved.
     fn validate_unicode_escape(&mut self) -> Result<(), String> {
-        let hi = self.read_hex4()?;
-        if (0xD800..=0xDBFF).contains(&hi) {
-            if self.input.get(self.pos) != Some(&b'\\')
-                || self.input.get(self.pos + 1) != Some(&b'u')
-            {
-                return Err("unpaired surrogate in unicode escape".to_owned());
-            }
-            self.pos += 2;
-            let lo = self.read_hex4()?;
-            if !(0xDC00..=0xDFFF).contains(&lo) {
-                return Err("invalid low surrogate in unicode escape".to_owned());
-            }
-            Ok(())
-        } else if (0xDC00..=0xDFFF).contains(&hi) {
-            Err("lone low surrogate in unicode escape".to_owned())
-        } else {
-            Ok(())
-        }
+        self.read_unicode_code_point().map(|_| ())
     }
 
     /// Validate-and-skip a JSON number, enforcing the JSON number grammar

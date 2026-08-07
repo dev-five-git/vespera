@@ -37,9 +37,10 @@ static STREAMING_CHANNEL_CAPACITY: OnceLock<usize> = OnceLock::new();
 /// A value that is **present but unparseable** (e.g. a typo like `"256KiB"` or
 /// `"abc"`) emits a one-time stderr warning — every caller resolves through a
 /// process-`OnceLock`, so its initializer runs at most once — and then uses
-/// `default`. This mirrors [`max_request_bytes`]'s warn-and-default policy so a
-/// mistuned streaming knob is never silently ignored (the operator would
-/// otherwise believe they tuned a value that is actually unchanged).
+/// `default`. This is the single warn-and-default policy shared by **every**
+/// env-backed knob (both streaming knobs and [`max_request_bytes`]), so a
+/// mistuned knob is never silently ignored (the operator would otherwise
+/// believe they tuned a value that is actually unchanged).
 fn parse_config_value(
     var_name: &str,
     raw: Option<&str>,
@@ -215,28 +216,16 @@ static MAX_REQUEST_BYTES: OnceLock<usize> = OnceLock::new();
 #[must_use]
 #[inline]
 pub fn max_request_bytes() -> usize {
-    *MAX_REQUEST_BYTES.get_or_init(|| {
-        // Absent (or non-Unicode) env → unlimited, the documented default.
-        std::env::var("VESPERA_MAX_REQUEST_BYTES")
-            .ok()
-            .map_or(0, |raw| {
-                raw.trim().parse::<usize>().unwrap_or_else(|_| {
-                    // Present but unparseable: a typo here (e.g. "10MB", "abc")
-                    // would otherwise silently fall through to `0` (unlimited),
-                    // disabling the DoS ingress cap with NO signal. Emit a one-time
-                    // stderr warning — this `OnceLock` initializer runs at most once
-                    // per process — so the misconfiguration is observable, then
-                    // preserve the documented unlimited default rather than guessing
-                    // an arbitrary numeric cap that could reject legitimate traffic.
-                    eprintln!(
-                        "vespera: ignoring invalid VESPERA_MAX_REQUEST_BYTES={raw:?} \
-                         (expected a non-negative integer in bytes); the request-size \
-                         ingress cap stays unlimited"
-                    );
-                    0
-                })
-            })
-    })
+    // Same read/trim/parse/warn-once/default sequence as the two streaming
+    // knobs, so the security-relevant ingress cap cannot drift from their
+    // parse policy: absent (or non-Unicode) env → `0` (unlimited, the
+    // documented default); present but unparseable (e.g. a typo like "10MB")
+    // → one-time stderr warning + `0`, because silently disabling the DoS
+    // ingress cap with no signal is worse than guessing no cap loudly.  The
+    // `[0, usize::MAX]` clamp is the identity, so every input resolves to
+    // exactly the value the hand-rolled initializer produced.
+    *MAX_REQUEST_BYTES
+        .get_or_init(|| read_env_clamped("VESPERA_MAX_REQUEST_BYTES", 0, 0, usize::MAX))
 }
 
 /// Override the request-size cap **before the first dispatch**.
@@ -365,6 +354,33 @@ mod tests {
                 8 << 20
             ),
             8 << 20
+        );
+    }
+
+    /// [`super::max_request_bytes`] resolves through the same
+    /// [`parse_config_value`] policy as the streaming knobs, with `default = 0`
+    /// (unlimited) and the identity clamp `[0, usize::MAX]`.  The cap itself is
+    /// a process-`OnceLock` that cannot be re-entered per test, so these cases
+    /// pin the *parse policy* it delegates to: absent → unlimited, unparseable
+    /// → warn + unlimited (never an arbitrary numeric cap that would reject
+    /// legitimate traffic), valid → parsed verbatim, whitespace tolerated, and
+    /// `usize::MAX` surviving the identity clamp.
+    #[test]
+    fn max_request_bytes_policy_is_absent_or_invalid_to_unlimited() {
+        let parse = |raw: Option<&str>| {
+            parse_config_value("VESPERA_MAX_REQUEST_BYTES", raw, 0, 0, usize::MAX)
+        };
+        assert_eq!(parse(None), 0, "absent → unlimited");
+        for raw in ["", "abc", "-1", "10MB", "1.5"] {
+            assert_eq!(parse(Some(raw)), 0, "invalid {raw:?} → unlimited");
+        }
+        assert_eq!(parse(Some("0")), 0, "explicit 0 → unlimited");
+        assert_eq!(parse(Some("1048576")), 1_048_576);
+        assert_eq!(parse(Some("  4096  ")), 4096, "whitespace tolerated");
+        assert_eq!(
+            parse(Some(&usize::MAX.to_string())),
+            usize::MAX,
+            "identity clamp keeps the largest representable cap"
         );
     }
 
