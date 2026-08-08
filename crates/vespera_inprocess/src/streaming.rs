@@ -12,7 +12,7 @@ use http_body::{Body as HttpBody, Frame};
 use http_body_util::BodyExt;
 
 use crate::config::effective_streaming_channel_capacity;
-use crate::dispatch::{check_ingress_cap, parse_validate_resolve};
+use crate::dispatch::{cap_and_split, parse_validate_resolve};
 use crate::internal::{
     BODY_SINK_STOPPED_MSG, BODY_STREAM_ERROR_MSG, dispatch_and_split, dispatch_response_streaming,
 };
@@ -104,12 +104,9 @@ where
     // (`input` is a complete `Vec`), so it gets the same ingress cap as
     // the buffered entry points.  Only *bidirectional* streaming, which
     // pulls the request body chunk-by-chunk, is exempt.
-    if let Some(err) = check_ingress_cap(input.len()) {
-        return err;
-    }
-    let (header_bytes, body_bytes) = match split_wire_request(input) {
+    let (header_bytes, body_bytes) = match cap_and_split(input) {
         Ok(parts) => parts,
-        Err(msg) => return error_wire(400, &msg),
+        Err(wire) => return wire,
     };
     let (header, router) = match parse_validate_resolve(&header_bytes) {
         Ok(parts) => parts,
@@ -278,14 +275,10 @@ where
     // exactly once) holds.  Pre-header error paths return `Complete`: the
     // (error) response was delivered in full via `on_header`, nothing is
     // truncated.
-    if let Some(err) = check_ingress_cap(input.len()) {
-        on_header(&err);
-        return StreamOutcome::Complete;
-    }
-    let (header_bytes, body_bytes) = match split_wire_request(input) {
+    let (header_bytes, body_bytes) = match cap_and_split(input) {
         Ok(parts) => parts,
-        Err(msg) => {
-            on_header(&error_wire(400, &msg));
+        Err(wire) => {
+            on_header(&wire);
             return StreamOutcome::Complete;
         }
     };

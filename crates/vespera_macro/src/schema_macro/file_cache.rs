@@ -542,11 +542,12 @@ fn get_file_content_inner(cache: &mut FileCache, path: &Path) -> Option<Arc<Stri
 /// File I/O caching (via `get_struct_definition`) is the primary performance win;
 /// definition string parsing is fast (microseconds per struct).
 pub fn parse_struct_cached(definition: &str) -> Result<syn::ItemStruct, syn::Error> {
-    FILE_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        cache.struct_parses += 1;
-        syn::parse_str(definition)
-    })
+    // Scope the `RefCell` borrow to the counter bump alone: holding it across
+    // `syn::parse_str` would make any re-entrant cache access (directly, or from
+    // a `Drop` running during the parse) panic with `BorrowMutError` inside a
+    // proc macro.
+    FILE_CACHE.with(|cache| cache.borrow_mut().struct_parses += 1);
+    syn::parse_str(definition)
 }
 
 /// Print profiling summary to stderr if `VESPERA_PROFILE` env var is set.

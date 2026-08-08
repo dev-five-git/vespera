@@ -268,32 +268,78 @@ fn call_output_stream_write(
     Ok(())
 }
 
+/// Shared body of the two single-`JObject`-argument callback helpers
+/// ([`call_consumer_accept`] and [`call_future_complete`]).
+///
+/// Both had a byte-for-byte identical shape and differed only in the
+/// `CachedMethod` they select, their [`ReturnType`], and the name /
+/// signature literals their checked fallback passes — so the logic lives
+/// here once and each wrapper supplies just those three things.
+///
+/// Path selection order is preserved exactly: the cached fast path is
+/// taken only when the receiver is non-null (`can_call_unchecked`) **and**
+/// [`method_cache`] resolved; anything else falls through to `fallback`.
+///
+/// **Pending-exception contract (unchanged, and the reason the callers
+/// must not treat `Ok` as success on its own):** the fast path goes
+/// through `call_method_unchecked`, which returns `Ok` while leaving a
+/// thrown Java exception PENDING on the thread — only the checked
+/// `fallback` surfaces a throw as `Err`. Callers convert that pending
+/// exception themselves via [`take_pending_exception`] (see
+/// [`call_header_consumer`]) or scrub it (see [`complete_future`]).
+///
+/// The invoked method's return value is discarded on both paths — the
+/// `void` of `Consumer.accept` and the `boolean` of
+/// `CompletableFuture.complete` (whose "was already completed" answer no
+/// caller inspects) alike.
+fn call_object_arg_method<S, F>(
+    env: &mut jni::Env<'_>,
+    obj: &Global<JObject<'static>>,
+    arg: &JObject<'_>,
+    select: S,
+    ret_ty: ReturnType,
+    fallback: F,
+) -> jni::errors::Result<()>
+where
+    S: FnOnce(&MethodCache) -> &CachedMethod,
+    F: FnOnce(
+        &mut jni::Env<'_>,
+        &Global<JObject<'static>>,
+        &JObject<'_>,
+    ) -> jni::errors::Result<()>,
+{
+    if can_call_unchecked(obj)
+        && let Some(cache) = method_cache(env)
+    {
+        let args: [jvalue; 1] = [JValue::Object(arg).as_jni()];
+        call_cached_method(env, obj, select(cache), ret_ty, &args)?;
+        return Ok(());
+    }
+
+    fallback(env, obj, arg)
+}
+
 fn call_consumer_accept(
     env: &mut jni::Env<'_>,
     consumer: &Global<JObject<'static>>,
     arg: &JObject<'_>,
 ) -> jni::errors::Result<()> {
-    if can_call_unchecked(consumer)
-        && let Some(cache) = method_cache(env)
-    {
-        let args: [jvalue; 1] = [JValue::Object(arg).as_jni()];
-        call_cached_method(
-            env,
-            consumer,
-            &cache.consumer_accept,
-            ReturnType::Primitive(Primitive::Void),
-            &args,
-        )?;
-        return Ok(());
-    }
-
-    env.call_method(
+    call_object_arg_method(
+        env,
         consumer,
-        jni_str!("accept"),
-        jni_sig!("(Ljava/lang/Object;)V"),
-        &[JValue::Object(arg)],
-    )?;
-    Ok(())
+        arg,
+        |cache| &cache.consumer_accept,
+        ReturnType::Primitive(Primitive::Void),
+        |env, consumer, arg| {
+            env.call_method(
+                consumer,
+                jni_str!("accept"),
+                jni_sig!("(Ljava/lang/Object;)V"),
+                &[JValue::Object(arg)],
+            )?;
+            Ok(())
+        },
+    )
 }
 
 fn call_future_complete(
@@ -301,27 +347,22 @@ fn call_future_complete(
     future: &Global<JObject<'static>>,
     arg: &JObject<'_>,
 ) -> jni::errors::Result<()> {
-    if can_call_unchecked(future)
-        && let Some(cache) = method_cache(env)
-    {
-        let args: [jvalue; 1] = [JValue::Object(arg).as_jni()];
-        call_cached_method(
-            env,
-            future,
-            &cache.future_complete,
-            ReturnType::Primitive(Primitive::Boolean),
-            &args,
-        )?;
-        return Ok(());
-    }
-
-    env.call_method(
+    call_object_arg_method(
+        env,
         future,
-        jni_str!("complete"),
-        jni_sig!("(Ljava/lang/Object;)Z"),
-        &[JValue::Object(arg)],
-    )?;
-    Ok(())
+        arg,
+        |cache| &cache.future_complete,
+        ReturnType::Primitive(Primitive::Boolean),
+        |env, future, arg| {
+            env.call_method(
+                future,
+                jni_str!("complete"),
+                jni_sig!("(Ljava/lang/Object;)Z"),
+                &[JValue::Object(arg)],
+            )?;
+            Ok(())
+        },
+    )
 }
 
 /// Check-and-clear variant of [`clear_pending_exception`]: returns

@@ -424,7 +424,11 @@ pub fn bench_build_request_old(
 // inputs.  Bundling them into a struct would add indirection on this hot path
 // without removing any genuinely-needed data — same reasoning as
 // [`dispatch_and_split`].
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the 8 params are distinct per-request inputs; bundling them into a \
+              struct would add indirection on this hot path"
+)]
 pub async fn dispatch_response_streaming<'h, F>(
     router: Router,
     method_str: &str,
@@ -638,7 +642,11 @@ pub fn to_response_envelope_text(parts: ResponseParts) -> ResponseEnvelope {
 // content-type-default flag are each distinct per-request inputs.  Bundling
 // them into a struct would add indirection on this hot path without removing
 // any genuinely-needed data.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the 9 params are distinct per-request inputs; bundling them into a \
+              struct would add indirection on this hot path"
+)]
 pub async fn dispatch_and_split<'h>(
     router: Router,
     method_str: &str,

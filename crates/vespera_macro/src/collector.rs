@@ -86,6 +86,117 @@ fn take_or_clone(
     }
 }
 
+/// Fast path: push one file's routes straight from its `ROUTE_STORAGE`
+/// entries, skipping `syn::parse_file()` entirely.
+///
+/// `module_path` / `file_path` are the per-file invariants; the last route
+/// MOVES them out via [`take_or_clone`], every earlier route clones.
+fn push_stored_routes(
+    metadata: &mut CollectedMetadata,
+    base_path: &str,
+    module_path: &mut String,
+    file_path: &mut String,
+    stored_routes: &[&StoredRouteInfo],
+) {
+    let n = stored_routes.len();
+    for (i, stored) in stored_routes.iter().enumerate() {
+        let route_path = build_route_path(base_path, stored.custom_path.as_deref());
+
+        // `#[route]` already resolved the description at expansion
+        // time (explicit attribute OR doc comment — see
+        // `process_route_attribute`), so `stored.description` is
+        // authoritative.  Re-parsing `fn_sig_str` here could never
+        // find a doc comment the attribute macro didn't.
+        let description = stored.description.clone();
+
+        let (mp, fp) = take_or_clone(module_path, file_path, i + 1 == n);
+
+        metadata.routes.push(RouteMetadata {
+            // `#[route]` bare form defaults to GET — mirror the
+            // slow path (`route::utils`), which resolves a
+            // missing method to "get".  `unwrap_or_default()`
+            // produced "" here, silently dropping such routes
+            // from the OpenAPI doc when the fast path is active.
+            method: stored.method.clone().unwrap_or_else(|| "get".to_string()),
+            path: route_path,
+            function_name: stored.fn_name.clone(),
+            module_path: mp,
+            file_path: fp,
+            success_status: stored.success_status,
+            error_status: stored.error_status.clone(),
+            typed_responses: stored.typed_responses.clone(),
+            tags: stored.tags.clone(),
+            security: stored.security.clone(),
+            headers: stored.headers.clone(),
+            operation_id: stored.operation_id.clone(),
+            summary: stored.summary.clone(),
+            request_example: stored.request_example.clone(),
+            response_example: stored.response_example.clone(),
+            deprecated: stored.deprecated,
+            description,
+        });
+    }
+}
+
+/// Slow path: push one file's routes by walking its already-parsed `syn` AST.
+///
+/// Field-for-field and order-for-order this MUST stay identical to
+/// [`push_stored_routes`] — see the invariant documented on
+/// [`build_route_path`] and [`take_or_clone`].
+fn push_parsed_routes(
+    metadata: &mut CollectedMetadata,
+    base_path: &str,
+    module_path: &mut String,
+    file_path: &mut String,
+    file_ast: &syn::File,
+) {
+    // Pre-collect (fn_item, owned RouteInfo) pairs so we can
+    //   1. detect the last route up-front (symmetric with fast path),
+    //   2. MOVE owned RouteInfo fields (method / error_status / tags /
+    //      description) into RouteMetadata instead of re-cloning them.
+    let mut route_entries: Vec<(&syn::ItemFn, crate::route::RouteInfo)> = Vec::new();
+    for item in &file_ast.items {
+        if let Item::Fn(fn_item) = item
+            && let Some(route_info) = extract_route_info(&fn_item.attrs)
+        {
+            route_entries.push((fn_item, route_info));
+        }
+    }
+
+    let n = route_entries.len();
+    for (i, (fn_item, route_info)) in route_entries.into_iter().enumerate() {
+        let route_path = build_route_path(base_path, route_info.path.as_deref());
+
+        // Description priority: route attribute > doc comment
+        // (move the owned Option instead of cloning + dropping it)
+        let description = route_info
+            .description
+            .or_else(|| extract_doc_comment(&fn_item.attrs));
+
+        let (mp, fp) = take_or_clone(module_path, file_path, i + 1 == n);
+
+        metadata.routes.push(RouteMetadata {
+            method: route_info.method,
+            path: route_path,
+            function_name: fn_item.sig.ident.to_string(),
+            module_path: mp,
+            file_path: fp,
+            success_status: route_info.success_status,
+            error_status: route_info.error_status,
+            typed_responses: route_info.typed_responses,
+            tags: route_info.tags,
+            security: route_info.security,
+            headers: route_info.headers,
+            operation_id: route_info.operation_id,
+            summary: route_info.summary,
+            request_example: route_info.request_example,
+            response_example: route_info.response_example,
+            deprecated: route_info.deprecated,
+            description,
+        });
+    }
+}
+
 /// Collect routes and structs from a folder.
 ///
 /// When `route_storage` contains entries with `file_path`, files covered by
@@ -118,7 +229,6 @@ pub fn collect_metadata(
 /// [`collect_metadata`] over a **pre-scanned** file list — lets
 /// `vespera!` reuse the single directory walk it already performed
 /// for cache fingerprinting instead of walking the folder twice.
-#[allow(clippy::too_many_lines)]
 pub fn collect_metadata_from_files<'a>(
     files: impl IntoIterator<Item = &'a Path>,
     folder_path: &Path,
@@ -193,44 +303,13 @@ pub fn collect_metadata_from_files<'a>(
         // every non-last route but MOVED into the last route's push —
         // refcount-free amortization of two String allocations per file.
         if let Some(stored_routes) = storage_by_file.get(&file_key) {
-            let n = stored_routes.len();
-            for (i, stored) in stored_routes.iter().enumerate() {
-                let route_path = build_route_path(&base_path, stored.custom_path.as_deref());
-
-                // `#[route]` already resolved the description at expansion
-                // time (explicit attribute OR doc comment — see
-                // `process_route_attribute`), so `stored.description` is
-                // authoritative.  Re-parsing `fn_sig_str` here could never
-                // find a doc comment the attribute macro didn't.
-                let description = stored.description.clone();
-
-                let (mp, fp) = take_or_clone(&mut module_path, &mut file_path, i + 1 == n);
-
-                metadata.routes.push(RouteMetadata {
-                    // `#[route]` bare form defaults to GET — mirror the
-                    // slow path (`route::utils`), which resolves a
-                    // missing method to "get".  `unwrap_or_default()`
-                    // produced "" here, silently dropping such routes
-                    // from the OpenAPI doc when the fast path is active.
-                    method: stored.method.clone().unwrap_or_else(|| "get".to_string()),
-                    path: route_path,
-                    function_name: stored.fn_name.clone(),
-                    module_path: mp,
-                    file_path: fp,
-                    success_status: stored.success_status,
-                    error_status: stored.error_status.clone(),
-                    typed_responses: stored.typed_responses.clone(),
-                    tags: stored.tags.clone(),
-                    security: stored.security.clone(),
-                    headers: stored.headers.clone(),
-                    operation_id: stored.operation_id.clone(),
-                    summary: stored.summary.clone(),
-                    request_example: stored.request_example.clone(),
-                    response_example: stored.response_example.clone(),
-                    deprecated: stored.deprecated,
-                    description,
-                });
-            }
+            push_stored_routes(
+                &mut metadata,
+                &base_path,
+                &mut module_path,
+                &mut file_path,
+                stored_routes,
+            );
 
             // No file_asts insertion needed in fast path:
             // #[derive(Schema)] already extracts serde(default = "fn") values
@@ -241,51 +320,13 @@ pub fn collect_metadata_from_files<'a>(
             file_asts.insert(file_path.clone(), file_ast);
             let file_ast = &file_asts[&file_path];
 
-            // Pre-collect (fn_item, owned RouteInfo) pairs so we can
-            //   1. detect the last route up-front (symmetric with fast path),
-            //   2. MOVE owned RouteInfo fields (method / error_status / tags /
-            //      description) into RouteMetadata instead of re-cloning them.
-            let mut route_entries: Vec<(&syn::ItemFn, crate::route::RouteInfo)> = Vec::new();
-            for item in &file_ast.items {
-                if let Item::Fn(fn_item) = item
-                    && let Some(route_info) = extract_route_info(&fn_item.attrs)
-                {
-                    route_entries.push((fn_item, route_info));
-                }
-            }
-
-            let n = route_entries.len();
-            for (i, (fn_item, route_info)) in route_entries.into_iter().enumerate() {
-                let route_path = build_route_path(&base_path, route_info.path.as_deref());
-
-                // Description priority: route attribute > doc comment
-                // (move the owned Option instead of cloning + dropping it)
-                let description = route_info
-                    .description
-                    .or_else(|| extract_doc_comment(&fn_item.attrs));
-
-                let (mp, fp) = take_or_clone(&mut module_path, &mut file_path, i + 1 == n);
-
-                metadata.routes.push(RouteMetadata {
-                    method: route_info.method,
-                    path: route_path,
-                    function_name: fn_item.sig.ident.to_string(),
-                    module_path: mp,
-                    file_path: fp,
-                    success_status: route_info.success_status,
-                    error_status: route_info.error_status,
-                    typed_responses: route_info.typed_responses,
-                    tags: route_info.tags,
-                    security: route_info.security,
-                    headers: route_info.headers,
-                    operation_id: route_info.operation_id,
-                    summary: route_info.summary,
-                    request_example: route_info.request_example,
-                    response_example: route_info.response_example,
-                    deprecated: route_info.deprecated,
-                    description,
-                });
-            }
+            push_parsed_routes(
+                &mut metadata,
+                &base_path,
+                &mut module_path,
+                &mut file_path,
+                file_ast,
+            );
         }
     }
 

@@ -26,25 +26,31 @@ pub struct RouteInfo {
     pub description: Option<String>,
 }
 
+/// Read an optional string-literal route argument into an owned `String`.
+///
+/// Deliberately written with `if let` instead of `Option::map(...)`: the
+/// unwrap branch then belongs to a real source line rather than an internal
+/// closure call site, which LLVM coverage reports as zero hits even when the
+/// field is `Some`.  The lint suppression is scoped to exactly this helper —
+/// every other line of [`build_route_info_from_args`] stays lint-checked.
+#[allow(clippy::manual_map, clippy::option_if_let_else)]
+fn lit_value(lit: Option<&syn::LitStr>) -> Option<String> {
+    if let Some(lit) = lit {
+        Some(lit.value())
+    } else {
+        None
+    }
+}
+
 /// Convert a parsed [`RouteArgs`] into the simpler [`RouteInfo`] used by
 /// the collector / OpenAPI emitter.  Factored out so the inline conversion
 /// gets its own basic block and shows up cleanly in coverage reports.
-///
-/// The `path` / `description` extraction uses `if let` instead of
-/// `Option::map(...)` so the unwrap branch is attributed to a source
-/// line rather than an internal closure call site that LLVM coverage
-/// reports as zero hits even when the field is `Some`.
-#[allow(clippy::manual_map, clippy::option_if_let_else)]
 fn build_route_info_from_args(route_args: &RouteArgs) -> RouteInfo {
     let method = route_args
         .method
         .as_ref()
         .map_or_else(|| "get".to_string(), syn::Ident::to_string);
-    let path = if let Some(lit) = route_args.path.as_ref() {
-        Some(lit.value())
-    } else {
-        None
-    };
+    let path = lit_value(route_args.path.as_ref());
 
     let error_status = route_args
         .error_status
@@ -58,23 +64,9 @@ fn build_route_info_from_args(route_args: &RouteArgs) -> RouteInfo {
     let security = route_args.security.as_ref().map(extract_strings);
     let headers = route_args.headers.clone().unwrap_or_default();
 
-    let description = if let Some(lit) = route_args.description.as_ref() {
-        Some(lit.value())
-    } else {
-        None
-    };
-
-    let operation_id = if let Some(lit) = route_args.operation_id.as_ref() {
-        Some(lit.value())
-    } else {
-        None
-    };
-
-    let summary = if let Some(lit) = route_args.summary.as_ref() {
-        Some(lit.value())
-    } else {
-        None
-    };
+    let description = lit_value(route_args.description.as_ref());
+    let operation_id = lit_value(route_args.operation_id.as_ref());
+    let summary = lit_value(route_args.summary.as_ref());
 
     let request_example = route_args
         .request_example

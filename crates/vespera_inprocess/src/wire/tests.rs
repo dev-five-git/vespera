@@ -223,6 +223,89 @@ fn hand_parse_handles_deep_unknown_nesting_without_overflow() {
     assert!(parse_wire_header_serde(&bad).is_err());
 }
 
+/// Nesting depth used by the mixed-container overflow test.  It must exceed
+/// `header_read::INLINE_SKIP_DEPTH` (128, private to that module) so the
+/// innermost levels spill out of `ContainerStack`'s inline bitset into its
+/// heap `overflow` vec.
+const MIXED_NESTING_DEPTH: usize = 200;
+
+/// Build a wire request header whose UNKNOWN forward-compat key `z` carries
+/// `depth` levels of nesting that alternate object (even levels) / array
+/// (odd levels), so both container kinds are present on every tier of
+/// `ContainerStack`.
+///
+/// `wrong_close_at` (when `Some`) emits the WRONG closing bracket for that
+/// one nesting level — a `]` where the open container is an object, or a `}`
+/// where it is an array — leaving every other level well-formed.
+fn mixed_nesting_header(depth: usize, wrong_close_at: Option<usize>) -> Vec<u8> {
+    let is_object = |level: usize| level.is_multiple_of(2);
+    let mut json = br#"{"v":1,"method":"GET","path":"/p","z":"#.to_vec();
+    for level in 0..depth {
+        json.extend_from_slice(if is_object(level) {
+            br#"{"k":"#.as_slice()
+        } else {
+            b"[".as_slice()
+        });
+    }
+    json.push(b'0'); // innermost scalar
+    for level in (0..depth).rev() {
+        let close_object = if wrong_close_at == Some(level) {
+            !is_object(level)
+        } else {
+            is_object(level)
+        };
+        json.push(if close_object { b'}' } else { b']' });
+    }
+    json.push(b'}'); // close the header object itself
+    json
+}
+
+/// `ContainerStack`'s heap `overflow` tier must carry the object/array bit
+/// as faithfully as the inline bitset.  The existing deep-nesting test only
+/// ever pushes arrays, so past `INLINE_SKIP_DEPTH` the object bit and the
+/// bracket-matching arms of `skip_value` (`}` only when the top is an
+/// object, `]` only when it is an array) went unexercised — an off-by-one
+/// between the inline bitset and the overflow vec in `push`/`pop`/`top`
+/// could have let a mismatched closer through undetected.
+///
+/// (a) Well-formed alternating object/array nesting past the inline cap is
+/// ACCEPTED and value-identical to `serde_json`.
+/// (b) The same document with exactly ONE container closed by the wrong
+/// bracket — at levels deep inside the overflow tier, for both container
+/// kinds and at both ends of it — is REJECTED by both parsers.
+#[test]
+fn hand_parse_matches_serde_on_mixed_deep_nesting_across_overflow_tier() {
+    let depth = MIXED_NESTING_DEPTH;
+
+    // (a) Accept + value identity.
+    let ok = mixed_nesting_header(depth, None);
+    let hand = parse_wire_header(&ok).expect("hand accepts deep mixed object/array nesting");
+    let serde = parse_wire_header_serde(&ok).expect("serde accepts the same input");
+    assert_eq!(
+        owned(&hand),
+        owned(&serde),
+        "value drift on deep mixed object/array nesting"
+    );
+    assert_eq!(hand.method.as_ref(), "GET");
+    assert_eq!(hand.path.as_ref(), "/p");
+
+    // (b) Mismatched closer on the overflow tier: `depth - 1` / `depth - 2`
+    // are the innermost two levels (one array, one object) and 150 / 151
+    // sit mid-overflow — every index is > 128, so none is served by the
+    // inline bitset.
+    for wrong_at in [depth - 1, depth - 2, 150, 151] {
+        let bad = mixed_nesting_header(depth, Some(wrong_at));
+        assert!(
+            parse_wire_header(&bad).is_err(),
+            "hand parser must reject a mismatched closer at overflow level {wrong_at}"
+        );
+        assert!(
+            parse_wire_header_serde(&bad).is_err(),
+            "serde parser must reject a mismatched closer at overflow level {wrong_at}"
+        );
+    }
+}
+
 /// A shallow unknown-field value (well within the depth cap) carrying
 /// escaped strings, a `\uXXXX` BMP escape, a UTF-16 surrogate pair, and a
 /// nested array must still PARSE via the non-allocating skip path, with

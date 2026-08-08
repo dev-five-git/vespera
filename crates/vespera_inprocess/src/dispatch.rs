@@ -51,6 +51,35 @@ pub fn check_ingress_cap(len: usize) -> Option<Vec<u8>> {
     }
 }
 
+/// Two-step prelude shared by the **owned** wire entry points: enforce
+/// [`check_ingress_cap`], then [`split_wire_request`] the input into its
+/// header-JSON and body regions, mapping a split failure to the `400`
+/// wire bytes.
+///
+/// The three owned-wire callers — [`dispatch_owned_to_parts`],
+/// [`super::streaming::dispatch_streaming_async`] and
+/// [`super::streaming::dispatch_streaming_with_header_async`] — each
+/// repeated this identical pair, a drift hazard for the two things it
+/// carries (the cap applies before any parsing work, and a split error
+/// is a `400`, not a `413`).  Callers keep their own `Err` delivery
+/// shape: return the bytes, or hand them to a header callback.
+///
+/// NOT used by bidirectional streaming
+/// ([`super::streaming::dispatch_bidirectional_streaming`] and friends):
+/// it deliberately skips the ingress cap because it runs in `O(chunk)`
+/// RAM — see the exemption documented on [`check_ingress_cap`].  The
+/// borrowed direct-write entry point is likewise not a caller: it splits
+/// with `split_wire_borrowed`, not `split_wire_request`.
+///
+/// `#[inline]` keeps codegen identical to the prior inlined shape.
+#[inline]
+pub fn cap_and_split(input: Vec<u8>) -> Result<(Bytes, Bytes), Vec<u8>> {
+    if let Some(err) = check_ingress_cap(input.len()) {
+        return Err(err);
+    }
+    split_wire_request(input).map_err(|msg| error_wire(400, &msg))
+}
+
 /// Wire-prelude shared by **every** wire entry point (buffered,
 /// direct-write, and streaming): parse the header, enforce the protocol
 /// [`WIRE_VERSION`], and resolve the target app [`Router`].  Centralizing
@@ -159,16 +188,11 @@ fn path_bytes_for_owned(header_bytes: &Bytes, header: &WireRequestHeader<'_>) ->
 async fn dispatch_owned_to_parts(
     input: Vec<u8>,
 ) -> Result<(u16, http::HeaderMap, ResponseMetadata, Body), Vec<u8>> {
-    // Ingress cap (defense-in-depth): reject an oversized buffered request
-    // with 413 before any further work.  Unlimited by default; bidirectional
-    // streaming is exempt.  See [`check_ingress_cap`].
-    if let Some(err) = check_ingress_cap(input.len()) {
-        return Err(err);
-    }
-    // Malformed input must report parse errors regardless of whether an app
-    // is registered, so split first, then the shared parse/version/resolve.
-    let (header_bytes, body_bytes) =
-        split_wire_request(input).map_err(|msg| error_wire(400, &msg))?;
+    // Ingress cap (defense-in-depth, 413) then wire split (400).  Malformed
+    // input must report parse errors regardless of whether an app is
+    // registered, so the split happens first and the shared
+    // parse/version/resolve follows.  See [`cap_and_split`].
+    let (header_bytes, body_bytes) = cap_and_split(input)?;
     let (header, router) = parse_validate_resolve(&header_bytes)?;
 
     // Content-Type defaulting (non-empty body with no explicit

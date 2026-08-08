@@ -91,6 +91,37 @@ fn hoist_items(
         .collect()
 }
 
+/// Lenient `serde_json::Value` walk over a 422 body: parse the DOM, read the
+/// `errors` key, coerce it to an array, and extract `path`/`code`/`message`
+/// with `as_str` (wrong types → `None`), SKIPPING any element lacking a usable
+/// `path` (non-objects: `Value::get` returns `None`).  This keeps every
+/// still-valid error instead of discarding the whole array when one entry is
+/// malformed — the bug a typed `Vec<Struct>` fallback had, since one bad
+/// element failed the entire `Vec` deserialize.
+///
+/// `None` means the body isn't a JSON document with an `errors` array at all;
+/// `Some(vec![])` means it is, but nothing in it was hoistable.  Callers apply
+/// the empty→`None` collapse themselves.
+///
+/// Shared verbatim by the production fallback in
+/// [`try_hoist_validation_errors`] and the bench-only
+/// `try_hoist_validation_errors_value_old` twin, so both arms stay
+/// accept-identical and the hoisted envelope stays byte-identical.  Only the
+/// walk is shared — never the strict fast-path dispatch above it, which the
+/// `value_old` twin must keep paying the `Value` DOM without.
+fn hoist_from_value(body_bytes: &Bytes) -> Option<Vec<ValidationErrorItem>> {
+    let parsed: serde_json::Value = serde_json::from_slice(body_bytes).ok()?;
+    let errors = parsed.get("errors")?.as_array()?;
+    Some(hoist_items(errors.iter().map(|e| {
+        let field = |key| {
+            e.get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        (field("path"), field("code"), field("message"))
+    })))
+}
+
 /// Best-effort extract validation errors from a 422 JSON body.
 ///
 /// Returns `None` (silently) for:
@@ -128,25 +159,12 @@ pub(super) fn try_hoist_validation_errors(
     } else {
         // The strict typed parse aborted — either a wrong-typed field
         // (`"code": 123`) OR a non-object array element (`null`, a bare
-        // string). Retry through a `serde_json::Value` walk that extracts
-        // each field with `as_str` (wrong types → `None`) and SKIPS any
-        // element lacking a usable `path` (non-objects: `Value::get` returns
-        // `None`). This keeps every still-valid error instead of discarding
-        // the whole array when one entry is malformed — the bug a typed
-        // `Vec<Struct>` fallback had, since one bad element failed the entire
-        // `Vec` deserialize. Cold (only a hand-crafted 422 body reaches here)
-        // and size-capped at `MAX_HOIST_BODY_BYTES`, so the `Value` DOM here
-        // is negligible and never touches the common all-string fast path.
-        let parsed: serde_json::Value = serde_json::from_slice(body_bytes).ok()?;
-        let errors = parsed.get("errors")?.as_array()?;
-        hoist_items(errors.iter().map(|e| {
-            let field = |key| {
-                e.get(key)
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-            };
-            (field("path"), field("code"), field("message"))
-        }))
+        // string). Retry through the lenient [`hoist_from_value`] walk, which
+        // keeps every still-valid error. Cold (only a hand-crafted 422 body
+        // reaches here) and size-capped at `MAX_HOIST_BODY_BYTES`, so the
+        // `Value` DOM here is negligible and never touches the common
+        // all-string fast path.
+        hoist_from_value(body_bytes)?
     };
     if items.is_empty() { None } else { Some(items) }
 }
@@ -169,27 +187,10 @@ fn try_hoist_validation_errors_value_old(
     if body_bytes.len() > MAX_HOIST_BODY_BYTES {
         return None;
     }
-    let parsed: serde_json::Value = serde_json::from_slice(body_bytes).ok()?;
-    let errors = parsed.get("errors")?.as_array()?;
-    let items: Vec<ValidationErrorItem> = errors
-        .iter()
-        .filter_map(|e| {
-            let path = e.get("path")?.as_str()?.to_owned();
-            let code = e
-                .get("code")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
-            let message = e
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
-            Some(ValidationErrorItem {
-                path,
-                code,
-                message,
-            })
-        })
-        .collect();
+    // No strict fast path here, by design: this arm must ALWAYS pay the
+    // `serde_json::Value` DOM so the A/B measures exactly what the typed
+    // deserialize replaced.
+    let items = hoist_from_value(body_bytes)?;
     if items.is_empty() { None } else { Some(items) }
 }
 
