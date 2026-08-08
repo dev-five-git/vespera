@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use vespera_core::route::{HttpMethod, PathItem};
 
 use crate::{
-    collector::normalize_path_key,
+    file_utils::normalize_path_key,
     metadata::CollectedMetadata,
     parser::{OperationRouteConfig, build_operation_from_function},
     route_impl::StoredRouteInfo,

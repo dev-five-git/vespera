@@ -10,7 +10,7 @@ use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{JByteBuffer, JClass};
 use jni::sys::jint;
 
-use super::{block_on_sync_runtime, panic_wire, runtime_unavailable_wire};
+use super::{block_on_sync_runtime, clear_pending_exception, panic_wire, runtime_unavailable_wire};
 
 /// Sentinel for [`Java_..._dispatchDirect`]: the response (or its
 /// required size) cannot be represented in the `jint` return value
@@ -200,9 +200,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                         // GetDirectBufferAddress returns NULL without raising a
                         // Java exception, but clear defensively so the wire
                         // response is delivered with no exception in flight.
-                        if env.exception_check() {
-                            env.exception_clear();
-                        }
+                        clear_pending_exception(env);
                         let err = vespera_inprocess::error_wire(
                             400,
                             "invalid in_buf (null, heap, or non-direct ByteBuffer)",

@@ -8,7 +8,7 @@ use quote::quote;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    file_utils::{combine_fingerprint, mtime_fingerprint},
+    file_utils::file_fingerprint,
     metadata::{CollectedMetadata, StructMetadata},
     router_codegen::ProcessedVesperaInput,
 };
@@ -66,19 +66,54 @@ pub(super) struct VesperaCache {
     pub(super) spec_pretty_fingerprint: Option<u64>,
 }
 
+/// Borrowed invalidation inputs recomputed on every macro expansion, compared
+/// against a persisted [`VesperaCache`] by [`VesperaCache::is_fresh`].
+///
+/// Exists so the freshness predicate has exactly ONE definition: `vespera!`
+/// and `export_app!` previously spelled out the same clause chain inline, so
+/// adding an invalidation input and updating only one site silently served a
+/// stale OpenAPI spec / router from the other macro.  Adding a field here
+/// fails to compile until every construction site supplies it.
+pub(super) struct CacheKey<'a> {
+    pub(super) macro_version: &'a str,
+    pub(super) macro_dev_fingerprint: u64,
+    pub(super) file_fingerprints: &'a HashMap<String, u64>,
+    pub(super) schema_hash: u64,
+    pub(super) config_hash: u64,
+}
+
+impl VesperaCache {
+    /// Whether this persisted cache may be reused for `key`.
+    ///
+    /// Covers the invalidation inputs stored in the cache header;
+    /// sidecar-file validation is deliberately left to the caller because the
+    /// two macros validate different sidecars (`export_app!` adds
+    /// `sidecar_matches(...)` at its call site, `vespera!` goes through
+    /// `load_validated_sidecar_specs`).
+    pub(super) fn is_fresh(&self, key: &CacheKey<'_>) -> bool {
+        self.cache_format == CACHE_FORMAT
+            && self.macro_version == key.macro_version
+            && self.macro_dev_fingerprint == key.macro_dev_fingerprint
+            && &self.file_fingerprints == key.file_fingerprints
+            && self.schema_hash == key.schema_hash
+            && self.config_hash == key.config_hash
+    }
+}
+
 /// Cheap metadata fingerprint for sidecar files.
 ///
-/// Shares the canonical mtime/size mixing with route-file fingerprinting —
-/// see [`crate::file_utils::mtime_fingerprint`] and
-/// [`crate::file_utils::combine_fingerprint`] for the rationale behind the
-/// nanosecond resolution and the size term.
+/// Delegates to the canonical [`file_fingerprint`] mixing shared with
+/// route-file and macro-source fingerprinting — see that function for the
+/// rationale behind the nanosecond resolution and the size term.
+///
+/// `None` when the file is missing OR its mtime is unavailable: a
+/// mtime-less fingerprint would compare file sizes alone, and
+/// [`sidecar_matches`] treats `None` as "unknown" and falls back to the
+/// content hash, which stays correct.
 pub(super) fn path_fingerprint(path: &Path) -> Option<u64> {
     let meta = std::fs::metadata(path).ok()?;
-    let modified = meta.modified().ok()?;
-    Some(combine_fingerprint(
-        mtime_fingerprint(Some(modified)),
-        meta.len(),
-    ))
+    meta.modified().ok()?;
+    Some(file_fingerprint(&meta))
 }
 
 /// Validate a sidecar by cheap metadata first, falling back to content hash when
@@ -345,13 +380,19 @@ fn compute_macro_dev_fingerprint_uncached() -> u64 {
     hasher.finish()
 }
 
-/// Recursively collect `(path, mtime)` pairs for `.rs` files.
+/// Recursively collect `(path, fingerprint)` pairs for `.rs` files.
 ///
 /// Uses `DirEntry::file_type()` / `DirEntry::metadata()` rather than
 /// `Path::is_dir()` / `fs::metadata(&path)`: both `DirEntry` accessors
 /// are carried by the directory scan (free on Windows + most Unix), so
 /// the dir/file split costs no extra `stat` syscall per entry — only
 /// the `.rs` files we actually fingerprint pay for their mtime.
+///
+/// The fingerprint is the canonical mtime+size [`file_fingerprint`],
+/// computed from the SAME `metadata()` call the mtime already needed —
+/// zero extra syscalls — so a timestamp-preserving edit to macro source
+/// (git checkout, `cp -p`, build-cache restore) invalidates downstream
+/// route caches instead of silently serving a stale spec.
 fn collect_rs_mtimes(dir: &Path, out: &mut Vec<(String, u64)>) {
     let Ok(read_dir) = std::fs::read_dir(dir) else {
         return;
@@ -364,9 +405,9 @@ fn collect_rs_mtimes(dir: &Path, out: &mut Vec<(String, u64)>) {
         if file_type.is_dir() {
             collect_rs_mtimes(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs") {
-            // Nanosecond resolution — see [`crate::file_utils::mtime_fingerprint`].
-            let mtime = mtime_fingerprint(entry.metadata().and_then(|m| m.modified()).ok());
-            out.push((path.display().to_string(), mtime));
+            // Unavailable metadata keeps the `0` sentinel.
+            let fingerprint = entry.metadata().as_ref().map_or(0, file_fingerprint);
+            out.push((path.display().to_string(), fingerprint));
         }
     }
 }
@@ -527,6 +568,65 @@ mod tests {
         assert!(!sidecar_matches(&path, Some(hash_str("corrupt")), Some(1)));
     }
 
+    /// A macro-source edit that PRESERVES the mtime (timestamp-preserving
+    /// checkout / `cp -p` / build-cache restore) but changes the file size
+    /// must still move the macro-dev fingerprint — the mtime-only version of
+    /// `collect_rs_mtimes` reported an unchanged fingerprint here and served
+    /// a stale route cache.
+    #[test]
+    fn collect_rs_mtimes_reacts_to_size_only_change() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("lib.rs");
+        std::fs::write(&file, "fn a() {}").unwrap();
+        let original_mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+
+        let mut before = Vec::new();
+        collect_rs_mtimes(dir.path(), &mut before);
+
+        // Rewrite with a DIFFERENT length, then restore the original mtime.
+        std::fs::write(&file, "fn a() {} // grew").unwrap();
+        let handle = std::fs::File::options().write(true).open(&file).unwrap();
+        handle.set_modified(original_mtime).unwrap();
+        drop(handle);
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().modified().unwrap(),
+            original_mtime,
+            "test precondition: mtime must be unchanged"
+        );
+
+        let mut after = Vec::new();
+        collect_rs_mtimes(dir.path(), &mut after);
+
+        assert_eq!(before.len(), 1);
+        assert_ne!(
+            before, after,
+            "mtime-preserving size change must change the fingerprint"
+        );
+    }
+
+    /// A byte-identical rewrite that also restores the mtime is a genuine
+    /// cache HIT — the size term must not make the fingerprint unstable.
+    #[test]
+    fn collect_rs_mtimes_is_stable_for_identical_content_and_mtime() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("lib.rs");
+        std::fs::write(&file, "fn a() {}").unwrap();
+        let original_mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+
+        let mut before = Vec::new();
+        collect_rs_mtimes(dir.path(), &mut before);
+
+        std::fs::write(&file, "fn a() {}").unwrap();
+        let handle = std::fs::File::options().write(true).open(&file).unwrap();
+        handle.set_modified(original_mtime).unwrap();
+        drop(handle);
+
+        let mut after = Vec::new();
+        collect_rs_mtimes(dir.path(), &mut after);
+
+        assert_eq!(before, after, "unchanged file must keep its fingerprint");
+    }
+
     #[test]
     fn export_config_hash_is_namespaced_by_app_and_folder() {
         let base = compute_export_config_hash("ThirdApp", "routes");
@@ -580,6 +680,75 @@ mod tests {
             compute_config_hash(&omitted),
             compute_config_hash(&explicit_empty)
         );
+    }
+
+    fn fresh_cache() -> VesperaCache {
+        VesperaCache {
+            cache_format: CACHE_FORMAT,
+            macro_version: "9.9.9".to_string(),
+            macro_dev_fingerprint: 11,
+            file_fingerprints: HashMap::from([("routes/users.rs".to_string(), 22u64)]),
+            schema_hash: 33,
+            config_hash: 44,
+            metadata: CollectedMetadata::new(),
+            spec_json_hash: None,
+            spec_pretty_hash: None,
+            spec_json_fingerprint: None,
+            spec_pretty_fingerprint: None,
+        }
+    }
+
+    fn fresh_key(fingerprints: &HashMap<String, u64>) -> CacheKey<'_> {
+        CacheKey {
+            macro_version: "9.9.9",
+            macro_dev_fingerprint: 11,
+            file_fingerprints: fingerprints,
+            schema_hash: 33,
+            config_hash: 44,
+        }
+    }
+
+    /// Every invalidation input in the cache header must independently flip
+    /// freshness — this is the whole reason the predicate lives in one place.
+    #[rstest::rstest]
+    #[case::cache_format(|c: &mut VesperaCache| c.cache_format = CACHE_FORMAT + 1)]
+    #[case::macro_version(|c: &mut VesperaCache| c.macro_version = "9.9.10".to_string())]
+    #[case::macro_dev_fingerprint(|c: &mut VesperaCache| c.macro_dev_fingerprint = 12)]
+    #[case::file_fingerprints(|c: &mut VesperaCache| {
+        c.file_fingerprints
+            .insert("routes/users.rs".to_string(), 23);
+    })]
+    #[case::schema_hash(|c: &mut VesperaCache| c.schema_hash = 34)]
+    #[case::config_hash(|c: &mut VesperaCache| c.config_hash = 45)]
+    fn is_fresh_flips_on_each_invalidation_input(#[case] mutate: fn(&mut VesperaCache)) {
+        let fingerprints = fresh_cache().file_fingerprints;
+        let key = fresh_key(&fingerprints);
+
+        let cache = fresh_cache();
+        assert!(cache.is_fresh(&key), "unmutated cache must be fresh");
+
+        let mut stale = fresh_cache();
+        mutate(&mut stale);
+        assert!(
+            !stale.is_fresh(&key),
+            "mutating one invalidation input must miss the cache"
+        );
+    }
+
+    #[test]
+    fn is_fresh_detects_added_and_removed_route_files() {
+        let fingerprints = fresh_cache().file_fingerprints;
+        let key = fresh_key(&fingerprints);
+
+        let mut extra_file = fresh_cache();
+        extra_file
+            .file_fingerprints
+            .insert("routes/posts.rs".to_string(), 55);
+        assert!(!extra_file.is_fresh(&key));
+
+        let mut no_files = fresh_cache();
+        no_files.file_fingerprints.clear();
+        assert!(!no_files.is_fresh(&key));
     }
 
     #[test]

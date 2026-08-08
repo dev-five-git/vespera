@@ -110,6 +110,39 @@ where
     })
 }
 
+/// Check-and-clear the pending Java exception, reporting whether one
+/// was pending (and therefore cleared).
+///
+/// This is the JNI symbol modules' SINGLE check-and-clear
+/// implementation: [`clear_pending_exception`] below, the streaming
+/// closures in `crate::streaming_closures` and the direct-buffer symbol
+/// in `jni_impl_direct.rs` all route through it, so a future policy
+/// change (e.g. logging the exception before clearing, or
+/// `exception_describe()` in debug builds) needs to touch ONE site
+/// instead of drifting across the copies.
+///
+/// The `bool` exists because every cached-`JMethodID` call site
+/// (`call_input_stream_read`, `call_output_stream_write`,
+/// `call_consumer_accept`) uses `call_method_unchecked` on the fast
+/// path, which returns `Ok` while leaving a thrown Java exception
+/// PENDING on the thread instead of surfacing it as `Err` (only the
+/// checked fallback surfaces it).  The three streaming closures
+/// (`make_pull_closure`, `make_push_closure`, `call_header_consumer`)
+/// convert that pending exception into an abort with per-caller-specific
+/// return values (`RequestChunk::Error` for pull; `JavaException` `Err`
+/// for push / header-consumer), so they share the check-clear preamble
+/// while keeping their return type distinct.  `#[inline]` folds it back
+/// into each caller so codegen matches the previous inline expression.
+#[inline]
+pub fn take_pending_exception(env: &mut jni::Env<'_>) -> bool {
+    if env.exception_check() {
+        env.exception_clear();
+        true
+    } else {
+        false
+    }
+}
+
 /// Clear a pending Java exception (if any) so subsequent JNI calls in
 /// the same `with_env` scope are not issued with an exception in flight.
 ///
@@ -118,10 +151,12 @@ where
 /// follow-up calls (`byte_array_from_slice`, `complete_future_local`,
 /// `call_header_consumer`) the dispatch family uses to deliver the wire
 /// error response.  Clearing it keeps those calls well-defined.
+///
+/// Discard-the-answer wrapper over [`take_pending_exception`] for the
+/// majority of call sites that only need the scrub.
+#[inline]
 pub fn clear_pending_exception(env: &mut jni::Env<'_>) {
-    if env.exception_check() {
-        env.exception_clear();
-    }
+    let _ = take_pending_exception(env);
 }
 
 /// Canonical `400` wire response for an invalid JNI input byte array.

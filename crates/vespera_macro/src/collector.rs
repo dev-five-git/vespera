@@ -7,12 +7,11 @@ use syn::Item;
 
 mod path_scan;
 
-pub use path_scan::normalize_path_key;
 pub use path_scan::{fingerprints_from_scan, scan_route_folder};
 
 use crate::{
     error::{MacroResult, err_call_site},
-    file_utils::{file_to_segments, normalize_display_path},
+    file_utils::{file_to_segments, normalize_display_path, normalize_path_key},
     metadata::{CollectedMetadata, RouteMetadata},
     route::{extract_doc_comment, extract_route_info},
     route_impl::StoredRouteInfo,

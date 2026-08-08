@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    collector::normalize_path_key, metadata::CollectedMetadata, route_impl::StoredRouteInfo,
+    file_utils::normalize_path_key, metadata::CollectedMetadata, route_impl::StoredRouteInfo,
 };
 
 /// Supplement collector's `RouteMetadata` with data from `ROUTE_STORAGE`.

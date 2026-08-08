@@ -70,6 +70,25 @@ pub fn current_crate_key() -> String {
     crate::schema_macro::file_cache::get_manifest_dir().unwrap_or_default()
 }
 
+/// Run `f` against the current crate's schema bucket, creating it when absent.
+///
+/// Centralises the three invariants every mutating access to [`SCHEMA_STORAGE`]
+/// must uphold — poison-tolerant locking, per-crate scoping via
+/// [`current_crate_key`], and copy-on-write mutation of the [`Arc`] bucket —
+/// exactly as [`crate::macro_storage::register`] does for the `Vec`-bucket
+/// registries. Read-only snapshotting deliberately does NOT go through here:
+/// [`current_crate_schemas`] must not create a bucket.
+fn with_current_crate_bucket<R>(f: impl FnOnce(&mut HashMap<String, StructMetadata>) -> R) -> R {
+    let mut guard = SCHEMA_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(Arc::make_mut(
+        guard
+            .entry(current_crate_key())
+            .or_insert_with(|| Arc::new(HashMap::new())),
+    ))
+}
+
 /// Register a `#[derive(Schema)]` metadata entry for the current crate.
 ///
 /// Returns `Err(())` when a DIFFERENT source item is already registered under
@@ -78,26 +97,20 @@ pub fn current_crate_key() -> String {
 /// source identity replaces the previous metadata, which keeps long-lived
 /// proc-macro servers correct across IDE edits.
 pub fn register_schema(name: String, metadata: StructMetadata) -> Result<(), ()> {
-    let mut guard = SCHEMA_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let bucket = Arc::make_mut(
-        guard
-            .entry(current_crate_key())
-            .or_insert_with(|| Arc::new(HashMap::new())),
-    );
-    if let Some(existing) = bucket.get(&name) {
-        if existing.definition == metadata.definition
-            || (existing.source_identity.is_some()
-                && existing.source_identity == metadata.source_identity)
-        {
-            bucket.insert(name, metadata);
-            return Ok(());
+    with_current_crate_bucket(|bucket| {
+        if let Some(existing) = bucket.get(&name) {
+            if existing.definition == metadata.definition
+                || (existing.source_identity.is_some()
+                    && existing.source_identity == metadata.source_identity)
+            {
+                bucket.insert(name, metadata);
+                return Ok(());
+            }
+            return Err(());
         }
-        return Err(());
-    }
-    bucket.insert(name, metadata);
-    Ok(())
+        bucket.insert(name, metadata);
+        Ok(())
+    })
 }
 
 fn derive_source_identity(
@@ -111,15 +124,9 @@ fn derive_source_identity(
 /// `schema_type!(.., ignore)` pre-registration path, which has no
 /// duplicate-name semantics.
 pub fn insert_schema(name: String, metadata: StructMetadata) {
-    let mut guard = SCHEMA_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    Arc::make_mut(
-        guard
-            .entry(current_crate_key())
-            .or_insert_with(|| Arc::new(HashMap::new())),
-    )
-    .insert(name, metadata);
+    with_current_crate_bucket(|bucket| {
+        bucket.insert(name, metadata);
+    });
 }
 
 /// Snapshot of the current crate's registered schemas — a cheap `Arc` clone of

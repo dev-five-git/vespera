@@ -126,12 +126,20 @@ pub fn combine_fingerprint(mtime: u64, len: u64) -> u64 {
 
 /// Compile-time cache fingerprint for a source file from its already-fetched
 /// [`std::fs::Metadata`] — combines mtime ([`mtime_fingerprint`]) and size
-/// ([`combine_fingerprint`]). Returns `0` when the metadata is unavailable
-/// (same sentinel the previous mtime-only path used).
-fn file_fingerprint(meta: Option<&std::fs::Metadata>) -> u64 {
-    meta.map_or(0, |m| {
-        combine_fingerprint(mtime_fingerprint(m.modified().ok()), m.len())
-    })
+/// ([`combine_fingerprint`]).
+///
+/// This is the ONE place the mtime/size mixing is spelled out: every
+/// compile-time cache that already holds a `Metadata` (route-file scanning
+/// here, sidecar and macro-source fingerprinting in
+/// `vespera_impl::cache`) goes through it, so a fingerprint can never
+/// silently degrade back to mtime-only in one consumer while the others
+/// guard against timestamp-preserving edits. Costs no syscall: `len()` is
+/// materialised by the same `stat` as the mtime.
+// `pub` (not `pub(crate)`) to match the rest of this private module — see
+// `clippy::redundant_pub_crate`; visibility is still crate-internal because
+// `mod file_utils` itself is private.
+pub fn file_fingerprint(meta: &std::fs::Metadata) -> u64 {
+    combine_fingerprint(mtime_fingerprint(meta.modified().ok()), meta.len())
 }
 
 fn collect_with_mtimes_into(folder_path: &Path, out: &mut Vec<(PathBuf, u64)>) -> io::Result<()> {
@@ -147,8 +155,9 @@ fn collect_with_mtimes_into(folder_path: &Path, out: &mut Vec<(PathBuf, u64)>) -
             // uploads, …).  On Unix that is one `stat` saved per non-Rust
             // file at compile time; the entry still keeps its place in the
             // list with mtime `0` (never read for non-`.rs` paths).
+            // An unavailable `Metadata` keeps the `0` sentinel.
             let mtime = if path.extension().is_some_and(|e| e == "rs") {
-                file_fingerprint(entry.metadata().ok().as_ref())
+                entry.metadata().as_ref().map_or(0, file_fingerprint)
             } else {
                 0
             };

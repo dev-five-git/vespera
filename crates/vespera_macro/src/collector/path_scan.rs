@@ -7,8 +7,6 @@ use std::path::Path;
 
 use crate::error::{MacroResult, err_call_site};
 
-pub use crate::file_utils::normalize_path_key;
-
 /// Single directory walk returning `(path, mtime)` pairs — the shared
 /// scan that both cache fingerprinting and route collection consume.
 pub fn scan_route_folder(folder_path: &Path) -> MacroResult<Vec<(std::path::PathBuf, u64)>> {
@@ -39,6 +37,7 @@ mod tests {
 
     use super::*;
     use crate::collector::collect_metadata;
+    use crate::file_utils::normalize_path_key;
     use crate::route_impl::StoredRouteInfo;
 
     fn create_temp_file(dir: &TempDir, filename: &str, content: &str) -> std::path::PathBuf {

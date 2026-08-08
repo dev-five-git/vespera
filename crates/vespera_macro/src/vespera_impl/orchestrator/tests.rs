@@ -13,6 +13,50 @@ fn create_temp_file(dir: &TempDir, filename: &str, content: &str) -> std::path::
     file_path
 }
 
+// ========== Tests for finalize_metadata ==========
+
+#[test]
+fn test_finalize_metadata_extends_structs_from_storage() {
+    let mut metadata = crate::metadata::CollectedMetadata::new();
+    let mut storage = HashMap::new();
+    storage.insert(
+        "User".to_string(),
+        StructMetadata::new("User".into(), "struct User { id: i32 }".into()),
+    );
+
+    finalize_metadata(&mut metadata, &storage, &[], "vespera!").expect("no duplicates");
+
+    assert_eq!(metadata.structs.len(), 1);
+    assert_eq!(metadata.structs[0].name, "User");
+}
+
+/// The duplicate-schema-name error must keep its per-macro prefix verbatim now
+/// that a single helper builds it for both `vespera!` and `export_app!`.
+#[rstest::rstest]
+#[case("vespera!", "vespera! macro: Duplicate OpenAPI schema name 'User'")]
+#[case(
+    "export_app!",
+    "export_app! macro: Duplicate OpenAPI schema name 'User'"
+)]
+fn test_finalize_metadata_duplicate_error_prefix(#[case] label: &str, #[case] expected: &str) {
+    let mut metadata = crate::metadata::CollectedMetadata::new();
+    metadata.structs.push(StructMetadata::new(
+        "User".into(),
+        "struct User { id: i32 }".into(),
+    ));
+    let mut storage = HashMap::new();
+    storage.insert(
+        "User".to_string(),
+        StructMetadata::new("User".into(), "struct User { name: String }".into()),
+    );
+
+    let err = finalize_metadata(&mut metadata, &storage, &[], label)
+        .expect_err("differing definitions must be rejected")
+        .to_string();
+
+    assert!(err.starts_with(expected), "got: {err}");
+}
+
 // ========== Tests for process_vespera_macro ==========
 
 #[test]

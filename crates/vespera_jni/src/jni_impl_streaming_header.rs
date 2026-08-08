@@ -111,6 +111,51 @@ fn throw_if_stream_aborted(
     }
 }
 
+/// Post-dispatch tail shared by both `dispatch*WithHeader` JNI symbols.
+///
+/// Both symbols end their `catch_unwind` with a byte-for-byte identical
+/// `match`, differing only in how many chunk-buffer leases they return
+/// (one for response-only streaming, two for bidirectional).  The
+/// asymmetry between the two arms is load-bearing and NOT an oversight:
+///
+/// * `Ok` — the streaming future returned, so no Java array can still be
+///   in flight; the leases are marked reusable and the per-thread pool
+///   keeps its cached buffers (see `jni_impl_streaming_buffer.rs`).
+/// * `Err` — a panic unwound while the request producer may STILL be
+///   parked in `InputStream.read` on a `spawn_blocking` thread, so
+///   `release_buffers` must NOT run: dropping the lease un-released is
+///   what makes `StreamingChunkBufferLease::Drop` discard the cached slot
+///   instead of handing the possibly-in-flight array to the next
+///   dispatch.
+///
+/// That subtlety previously lived in two places, which is the same drift
+/// hazard that already motivated extracting [`throw_if_stream_aborted`],
+/// [`make_header_callback`], [`deliver_panic_header_if_needed`] and
+/// [`handle_header_dispatch_panic`] from these symbols.  `#[inline]`
+/// keeps codegen identical to the prior inline `match` blocks.
+#[inline]
+fn finish_header_dispatch(
+    env: &mut jni::Env<'_>,
+    header_consumer: &JObject<'_>,
+    flags: &StreamingFlags,
+    panic_result: &std::thread::Result<vespera_inprocess::StreamOutcome>,
+    release_buffers: impl FnOnce(),
+) {
+    // Borrowed, not consumed: `StreamOutcome` is `Copy` and the panic
+    // payload is never inspected, so taking it by value would only move a
+    // `Box<dyn Any>` in to drop it (which clippy's `needless_pass_by_value`
+    // correctly flags).  The caller still drops the payload at the end of
+    // its own scope, exactly as the prior inline `match` arms did.
+    match panic_result {
+        Ok(outcome) => {
+            release_buffers();
+            throw_if_stream_aborted(env, flags, *outcome);
+        }
+        // Deliberately does NOT call `release_buffers` — see the doc above.
+        Err(_) => handle_header_dispatch_panic(env, header_consumer, flags),
+    }
+}
+
 fn reject_null_header_consumer(
     env: &mut jni::Env<'_>,
     header_consumer: &JObject<'_>,
@@ -316,14 +361,10 @@ fn dispatch_full_streaming_with_header_body(env: &mut jni::Env<'_>, args: &FullH
             ),
         )
     }));
-    match panic_result {
-        Ok(outcome) => {
-            mark_streaming_buffer_reusable(pull_buf_lease);
-            mark_streaming_buffer_reusable(push_buf_lease);
-            throw_if_stream_aborted(env, args.flags, outcome);
-        }
-        Err(_) => handle_header_dispatch_panic(env, args.header_consumer, args.flags),
-    }
+    finish_header_dispatch(env, args.header_consumer, args.flags, &panic_result, || {
+        mark_streaming_buffer_reusable(pull_buf_lease);
+        mark_streaming_buffer_reusable(push_buf_lease);
+    });
 }
 
 struct StreamHeaderArgs<'a, 'local> {
@@ -382,13 +423,9 @@ fn dispatch_streaming_with_header_body(env: &mut jni::Env<'_>, args: &StreamHead
             move |chunk: &[u8]| push_unless_header_failed(&flags_for_push.failed, &mut push, chunk),
         ))
     }));
-    match panic_result {
-        Ok(outcome) => {
-            mark_streaming_buffer_reusable(push_buf_lease);
-            throw_if_stream_aborted(env, args.flags, outcome);
-        }
-        Err(_) => handle_header_dispatch_panic(env, args.header_consumer, args.flags),
-    }
+    finish_header_dispatch(env, args.header_consumer, args.flags, &panic_result, || {
+        mark_streaming_buffer_reusable(push_buf_lease);
+    });
 }
 
 #[unsafe(no_mangle)]

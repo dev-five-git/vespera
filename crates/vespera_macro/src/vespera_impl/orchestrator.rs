@@ -7,14 +7,14 @@ use proc_macro2::Span;
 use quote::quote;
 
 use crate::{
-    metadata::StructMetadata,
+    metadata::{CollectedMetadata, StructMetadata},
     route_impl::StoredRouteInfo,
     router_codegen::{ProcessedVesperaInput, generate_router_code},
 };
 
 use super::{
     cache::{
-        CACHE_FORMAT, MergeSpecCache, VesperaCache, compute_config_hash_with_merge_cache,
+        CACHE_FORMAT, CacheKey, MergeSpecCache, VesperaCache, compute_config_hash_with_merge_cache,
         compute_export_config_hash, compute_macro_dev_fingerprint, compute_schema_hash,
         get_cache_path, get_export_cache_path, hash_str, read_cache, sidecar_matches, write_cache,
     },
@@ -25,6 +25,26 @@ use super::{
     path_utils::{find_folder_path, find_target_dir},
     route_merge::merge_route_storage_data,
 };
+
+/// Fold the macro-invocation-local schema/route storage into a freshly
+/// obtained (cached or scanned) `metadata`, then reject duplicate schema
+/// names.
+///
+/// The same three steps run on both the cache-hit and cache-miss branch of
+/// both `vespera!` and `export_app!`; `macro_label` is the only difference
+/// (`"vespera!"` vs `"export_app!"`), and it only reaches the error string.
+fn finalize_metadata(
+    metadata: &mut CollectedMetadata,
+    schema_storage: &HashMap<String, StructMetadata>,
+    route_storage: &[StoredRouteInfo],
+    macro_label: &str,
+) -> syn::Result<()> {
+    metadata.structs.extend(schema_storage.values().cloned());
+    merge_route_storage_data(metadata, route_storage);
+    metadata
+        .check_duplicate_schema_names()
+        .map_err(|msg| syn::Error::new(Span::call_site(), format!("{macro_label} macro: {msg}")))
+}
 
 /// Process vespera macro - extracted for testability
 #[allow(clippy::too_many_lines)]
@@ -86,15 +106,16 @@ pub fn process_vespera_macro(
     // becomes `None`, so the reusable-cache branch below is reachable only
     // through a `Some` pattern. Keeping the validity as a separate `bool`
     // would leave the `Some`-ness unproven to the type system and force an
-    // `unwrap()`.
-    let cached = read_cache(&cache_path).filter(|c| {
-        c.cache_format == CACHE_FORMAT
-            && c.macro_version == macro_version
-            && c.macro_dev_fingerprint == macro_dev_fingerprint
-            && c.file_fingerprints == fingerprints
-            && c.schema_hash == schema_hash
-            && c.config_hash == config_hash
-    });
+    // `unwrap()`.  The clause chain itself lives in `VesperaCache::is_fresh`
+    // so `export_app!` below cannot drift out of sync with it.
+    let cache_key = CacheKey {
+        macro_version: &macro_version,
+        macro_dev_fingerprint,
+        file_fingerprints: &fingerprints,
+        schema_hash,
+        config_hash,
+    };
+    let cached = read_cache(&cache_path).filter(|c| c.is_fresh(&cache_key));
     stage("read_cache");
     // Hash-validate the sidecar spec files (the cache only stores
     // hashes — content lives in `target/vespera/`).  Validation
@@ -112,11 +133,7 @@ pub fn process_vespera_macro(
 
     let (metadata, spec_tokens) = if let (Some(sidecars), Some(cache)) = (sidecars, cached) {
         let mut metadata = cache.metadata;
-        metadata.structs.extend(schema_storage.values().cloned());
-        merge_route_storage_data(&mut metadata, route_storage);
-        metadata
-            .check_duplicate_schema_names()
-            .map_err(|msg| syn::Error::new(Span::call_site(), format!("vespera! macro: {msg}")))?;
+        finalize_metadata(&mut metadata, schema_storage, route_storage, "vespera!")?;
         stage("cache_branch_metadata_merge");
 
         // Ensure openapi.json files exist and are up-to-date from cache
@@ -132,11 +149,7 @@ pub fn process_vespera_macro(
 
         // Clone metadata before extending (cache stores file-only structs)
         let cache_metadata = metadata.clone();
-        metadata.structs.extend(schema_storage.values().cloned());
-        merge_route_storage_data(&mut metadata, route_storage);
-        metadata
-            .check_duplicate_schema_names()
-            .map_err(|msg| syn::Error::new(Span::call_site(), format!("vespera! macro: {msg}")))?;
+        finalize_metadata(&mut metadata, schema_storage, route_storage, "vespera!")?;
         stage("metadata merge");
 
         // B2: reject same-file extractor structs that lack `#[derive(Schema)]`
@@ -290,7 +303,6 @@ fn cron_module_path(relative: &str) -> String {
 }
 
 /// Process `export_app` macro - extracted for testability
-#[allow(clippy::too_many_lines)]
 pub fn process_export_app(
     name: &syn::Ident,
     folder_name: &str,
@@ -328,14 +340,18 @@ pub fn process_export_app(
     let config_hash = compute_export_config_hash(&app_name, folder_name);
     let macro_version = env!("CARGO_PKG_VERSION").to_string();
     let macro_dev_fingerprint = compute_macro_dev_fingerprint();
+    let cache_key = CacheKey {
+        macro_version: &macro_version,
+        macro_dev_fingerprint,
+        file_fingerprints: &fingerprints,
+        schema_hash,
+        config_hash,
+    };
     let cached = read_cache(&cache_path);
+    // Shared header clauses come from `is_fresh`; only the `export_app!`-specific
+    // spec sidecar check stays here.
     let cache_hit = cached.as_ref().is_some_and(|c| {
-        c.cache_format == CACHE_FORMAT
-            && c.macro_version == macro_version
-            && c.macro_dev_fingerprint == macro_dev_fingerprint
-            && c.file_fingerprints == fingerprints
-            && c.schema_hash == schema_hash
-            && c.config_hash == config_hash
+        c.is_fresh(&cache_key)
             && sidecar_matches(&spec_file, c.spec_json_hash, c.spec_json_fingerprint)
     });
 
@@ -347,20 +363,12 @@ pub fn process_export_app(
     // duplicated outer pass is removed.
     let metadata = if let (true, Some(cache)) = (cache_hit, cached) {
         let mut metadata = cache.metadata;
-        metadata.structs.extend(schema_storage.values().cloned());
-        merge_route_storage_data(&mut metadata, route_storage);
-        metadata.check_duplicate_schema_names().map_err(|msg| {
-            syn::Error::new(Span::call_site(), format!("export_app! macro: {msg}"))
-        })?;
+        finalize_metadata(&mut metadata, schema_storage, route_storage, "export_app!")?;
         metadata
     } else {
         let (mut metadata, file_asts) = crate::collector::collect_metadata_from_files(scanned.iter().map(|(path, _)| path.as_path()), &folder_path, folder_name, route_storage).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to scan route folder '{folder_name}'. Error: {e}. Check that all .rs files have valid Rust syntax.")))?;
         let cache_metadata = metadata.clone();
-        metadata.structs.extend(schema_storage.values().cloned());
-        merge_route_storage_data(&mut metadata, route_storage);
-        metadata.check_duplicate_schema_names().map_err(|msg| {
-            syn::Error::new(Span::call_site(), format!("export_app! macro: {msg}"))
-        })?;
+        finalize_metadata(&mut metadata, schema_storage, route_storage, "export_app!")?;
 
         // B2: same-file extractor structs without `#[derive(Schema)]` would be
         // silently dropped from the spec — reject them at compile time.

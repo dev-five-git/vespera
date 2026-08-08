@@ -28,7 +28,7 @@ use jni::sys::{jint, jvalue};
 use jni::{JValue, JValueOwned, jni_sig, jni_str};
 
 use crate::daemon_env::with_cached_daemon_env_no_frame;
-use crate::jni_impl::{clear_pending_exception, streaming_chunk_size};
+use crate::jni_impl::{clear_pending_exception, streaming_chunk_size, take_pending_exception};
 
 struct CachedMethod {
     _class: Global<JClass<'static>>,
@@ -176,7 +176,7 @@ fn method_cache(env: &mut jni::Env<'_>) -> Option<&'static MethodCache> {
 /// once per cached-`JMethodID` wrapper (four sites: `InputStream.read`,
 /// `OutputStream.write`, `Consumer.accept`, `CompletableFuture.complete`).
 /// `#[inline]` matches the file's discipline for one-line predicates
-/// (`take_pending_exception` below, `header_value_from_owner` /
+/// ([`take_pending_exception`], `header_value_from_owner` /
 /// `parse_method_or_405` / `invalid_request_err` / `header_value_to_owned`
 /// across the crate) and locks the guarantee that codegen stays
 /// byte-identical to the prior inline `!raw.is_null()` expression the
@@ -363,35 +363,6 @@ fn call_future_complete(
             Ok(())
         },
     )
-}
-
-/// Check-and-clear variant of [`clear_pending_exception`]: returns
-/// whether an exception was pending (and cleared).
-///
-/// Every cached-`JMethodID` call site above (`call_input_stream_read`,
-/// `call_output_stream_write`, `call_consumer_accept`) uses
-/// `call_method_unchecked` on the fast path, which returns `Ok` while
-/// leaving a thrown Java exception PENDING on the thread instead of
-/// surfacing it as `Err` (only the checked fallback surfaces it).  The
-/// three streaming closures below (`make_pull_closure`,
-/// `make_push_closure`, `call_header_consumer`) have to convert that
-/// pending exception into an abort with per-caller-specific return
-/// values (`RequestChunk::Error` for pull; `JavaException` `Err` for
-/// push / header-consumer), so they share the check-clear preamble
-/// while keeping their return type distinct.  Centralising the
-/// check-clear here means a future policy change (e.g. logging the
-/// exception before clearing, or `exception_describe()` in debug
-/// builds) needs to touch ONE site instead of drifting across three.
-/// `#[inline]` folds it back into each caller so codegen matches the
-/// previous inline expression.
-#[inline]
-fn take_pending_exception(env: &mut jni::Env<'_>) -> bool {
-    if env.exception_check() {
-        env.exception_clear();
-        true
-    } else {
-        false
-    }
 }
 
 /// Build the request-body pull closure shared by the two
