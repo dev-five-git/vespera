@@ -11,6 +11,28 @@ final class WireHeaderStringSupport {
     private static final ThreadLocal<byte[]> DIRECT_STRING_SCRATCH =
             ThreadLocal.withInitial(() -> new byte[DIRECT_STRING_SCRATCH_INITIAL]);
 
+    /**
+     * Canonical wire-header names indexed by their byte length; row {@code n} holds only
+     * {@code n}-byte names, so the row index reproduces the old {@code switch (len)} gate.
+     * Candidates within a row are distinct literals and therefore mutually exclusive, so
+     * iteration order cannot change the result. Rows store the interned literals themselves,
+     * so a match hands back the identical {@code String} instance on every call.
+     */
+    private static final String[][] CANONICAL_BY_LEN = new String[28][];
+
+    static {
+        CANONICAL_BY_LEN[4] = new String[] {"etag", "date", "vary", "path", "code"};
+        CANONICAL_BY_LEN[7] = new String[] {"version", "message"};
+        CANONICAL_BY_LEN[8] = new String[] {"location"};
+        CANONICAL_BY_LEN[10] = new String[] {"set-cookie"};
+        CANONICAL_BY_LEN[12] = new String[] {"content-type"};
+        CANONICAL_BY_LEN[13] = new String[] {"cache-control"};
+        CANONICAL_BY_LEN[14] = new String[] {"content-length"};
+        CANONICAL_BY_LEN[16] = new String[] {"content-encoding"};
+        CANONICAL_BY_LEN[19] = new String[] {"content-disposition"};
+        CANONICAL_BY_LEN[27] = new String[] {"access-control-allow-origin"};
+    }
+
     private WireHeaderStringSupport() {}
 
     static void clearCurrentThreadBuffers() {
@@ -40,67 +62,25 @@ final class WireHeaderStringSupport {
     }
 
     static String canonicalKey(ByteBuffer buf, int start, int len) {
-        return switch (len) {
-            case 4 -> canonicalKeyLen4(buf, start);
-            case 7 -> canonicalKeyLen7(buf, start);
-            case 8 -> regionEquals(buf, start, "location") ? "location" : null;
-            case 10 -> regionEquals(buf, start, "set-cookie") ? "set-cookie" : null;
-            case 12 -> regionEquals(buf, start, "content-type") ? "content-type" : null;
-            case 13 -> regionEquals(buf, start, "cache-control") ? "cache-control" : null;
-            case 14 -> regionEquals(buf, start, "content-length") ? "content-length" : null;
-            case 16 -> regionEquals(buf, start, "content-encoding") ? "content-encoding" : null;
-            case 19 -> regionEquals(buf, start, "content-disposition") ? "content-disposition" : null;
-            case 27 -> regionEquals(buf, start, "access-control-allow-origin")
-                    ? "access-control-allow-origin" : null;
-            default -> null;
-        };
+        String[] candidates = canonicalCandidates(len);
+        if (candidates == null) return null;
+        for (String candidate : candidates) {
+            if (regionEquals(buf, start, candidate)) return candidate;
+        }
+        return null;
     }
 
     static String canonicalKey(byte[] buf, int start, int len) {
-        return switch (len) {
-            case 4 -> canonicalKeyLen4(buf, start);
-            case 7 -> canonicalKeyLen7(buf, start);
-            case 8 -> regionEquals(buf, start, "location") ? "location" : null;
-            case 10 -> regionEquals(buf, start, "set-cookie") ? "set-cookie" : null;
-            case 12 -> regionEquals(buf, start, "content-type") ? "content-type" : null;
-            case 13 -> regionEquals(buf, start, "cache-control") ? "cache-control" : null;
-            case 14 -> regionEquals(buf, start, "content-length") ? "content-length" : null;
-            case 16 -> regionEquals(buf, start, "content-encoding") ? "content-encoding" : null;
-            case 19 -> regionEquals(buf, start, "content-disposition") ? "content-disposition" : null;
-            case 27 -> regionEquals(buf, start, "access-control-allow-origin")
-                    ? "access-control-allow-origin" : null;
-            default -> null;
-        };
-    }
-
-    private static String canonicalKeyLen4(ByteBuffer buf, int start) {
-        if (regionEquals(buf, start, "etag")) return "etag";
-        if (regionEquals(buf, start, "date")) return "date";
-        if (regionEquals(buf, start, "vary")) return "vary";
-        if (regionEquals(buf, start, "path")) return "path";
-        if (regionEquals(buf, start, "code")) return "code";
+        String[] candidates = canonicalCandidates(len);
+        if (candidates == null) return null;
+        for (String candidate : candidates) {
+            if (regionEquals(buf, start, candidate)) return candidate;
+        }
         return null;
     }
 
-    private static String canonicalKeyLen4(byte[] buf, int start) {
-        if (regionEquals(buf, start, "etag")) return "etag";
-        if (regionEquals(buf, start, "date")) return "date";
-        if (regionEquals(buf, start, "vary")) return "vary";
-        if (regionEquals(buf, start, "path")) return "path";
-        if (regionEquals(buf, start, "code")) return "code";
-        return null;
-    }
-
-    private static String canonicalKeyLen7(ByteBuffer buf, int start) {
-        if (regionEquals(buf, start, "version")) return "version";
-        if (regionEquals(buf, start, "message")) return "message";
-        return null;
-    }
-
-    private static String canonicalKeyLen7(byte[] buf, int start) {
-        if (regionEquals(buf, start, "version")) return "version";
-        if (regionEquals(buf, start, "message")) return "message";
-        return null;
+    private static String[] canonicalCandidates(int len) {
+        return (len >= 0 && len < CANONICAL_BY_LEN.length) ? CANONICAL_BY_LEN[len] : null;
     }
 
     static boolean regionEquals(ByteBuffer buf, int start, String literal) {

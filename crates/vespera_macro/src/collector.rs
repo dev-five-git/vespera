@@ -316,8 +316,17 @@ pub fn collect_metadata_from_files<'a>(
         } else {
             let file_ast = crate::schema_macro::file_cache::get_parsed_file(file).ok_or_else(|| err_call_site(format!("vespera! macro: cannot read or parse '{}'. Fix the Rust syntax errors in this file.", file.display())))?;
 
-            file_asts.insert(file_path.clone(), file_ast);
-            let file_ast = &file_asts[&file_path];
+            // `entry` hashes and probes `file_path` ONCE and hands back a
+            // borrow of the slot it just filled; the previous
+            // `insert(..) + &file_asts[&file_path]` pair re-hashed and
+            // re-probed the same key purely to re-borrow the value it had
+            // just moved in.  It also removes an `Index` panic site, which
+            // vespera_macro/AGENTS.md forbids in the collector.
+            //
+            // The `clone()` stays: the map needs to own its key, because
+            // `push_parsed_routes` takes `&mut file_path` and may `mem::take`
+            // it for the file's last route.
+            let file_ast: &syn::File = file_asts.entry(file_path.clone()).or_insert(file_ast);
 
             push_parsed_routes(
                 &mut metadata,

@@ -130,23 +130,18 @@ macro_rules! jni_apps {
 }
 
 // Everything below requires a JVM — excluded from coverage.
-#[cfg(not(tarpaulin_include))]
 // SAFETY SCOPE: daemon attach/detach uses raw JNI invocation table calls.
 #[allow(unsafe_code)]
 mod daemon_env;
-#[cfg(not(tarpaulin_include))]
 // SAFETY SCOPE: byte-array transfers write directly into uninitialized Vec capacity.
 #[allow(unsafe_code)]
 mod jni_buf;
-#[cfg(not(tarpaulin_include))]
 // SAFETY SCOPE: JNI exports and direct-buffer submodule contain FFI entry points.
 #[allow(unsafe_code)]
 pub(crate) mod jni_impl;
-#[cfg(not(tarpaulin_include))]
 // SAFETY SCOPE: streaming-with-header JNI exports contain FFI entry points.
 #[allow(unsafe_code)]
 pub(crate) mod jni_impl_streaming_header;
-#[cfg(not(tarpaulin_include))]
 // SAFETY SCOPE: streaming callbacks use cached JMethodID calls and signed-byte views.
 #[allow(unsafe_code)]
 mod streaming_closures;

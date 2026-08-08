@@ -158,10 +158,9 @@ impl<'a> Parser<'a> {
                 }
                 self.skip_ws();
                 match self.cur() {
-                    Some(b',') => {
-                        self.pos += 1;
-                        self.skip_ws();
-                    }
+                    // No skip_ws() here: the next key's `read_string()` owns
+                    // the whitespace skip, so a second call is redundant.
+                    Some(b',') => self.pos += 1,
                     Some(b'}') => {
                         self.pos += 1;
                         break;
@@ -208,10 +207,9 @@ impl<'a> Parser<'a> {
             out.push((name, value));
             self.skip_ws();
             match self.cur() {
-                Some(b',') => {
-                    self.pos += 1;
-                    self.skip_ws();
-                }
+                // No skip_ws() here: the next name's `read_string()` owns the
+                // whitespace skip, so a second call is redundant.
+                Some(b',') => self.pos += 1,
                 Some(b'}') => {
                     self.pos += 1;
                     break;

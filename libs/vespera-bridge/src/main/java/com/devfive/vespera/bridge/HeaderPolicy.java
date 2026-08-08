@@ -99,7 +99,7 @@ final class HeaderPolicy {
                 if (result == null) {
                     result = new HashSet<>(4);
                 }
-                result.add(lowerAsciiToken(value, tokenStart, tokenEnd));
+                result.add(toLowerCaseAscii(value, tokenStart, tokenEnd));
                 tokenCount++;
                 if (tokenCount >= 32) {
                     break;
@@ -111,15 +111,6 @@ final class HeaderPolicy {
             start = comma + 1;
         }
         return result;
-    }
-
-    private static String lowerAsciiToken(String value, int start, int end) {
-        char[] chars = new char[end - start];
-        for (int i = start; i < end; i++) {
-            char c = value.charAt(i);
-            chars[i - start] = (c >= 'A' && c <= 'Z') ? (char) (c + ('a' - 'A')) : c;
-        }
-        return new String(chars);
     }
 
     private static int trimHttpWhitespaceStart(String value, int start, int end) {
@@ -179,7 +170,11 @@ final class HeaderPolicy {
         while (names.hasMoreElements()) {
             String name = names.nextElement();
             String lowerName = canonicalLowerHeaderName(name);
-            if (!isHopByHopRequestHeader(lowerName)
+            // Hop-by-hop classification is direction-agnostic (RFC 9110 7.6.1),
+            // so the request filter reuses the response predicate directly. The
+            // response-only content-length rule is a separate check applied at
+            // addServletResponseHeader, not part of this predicate.
+            if (!isHopByHopResponseHeader(lowerName)
                     && !isConnectionNominatedHeader(lowerName, connectionTokens)) {
                 sink.put(lowerName, joinHeaderValues(name, request));
             }
@@ -196,7 +191,7 @@ final class HeaderPolicy {
         while (names.hasMoreElements()) {
             String name = names.nextElement();
             String lowerName = canonicalLowerHeaderName(name);
-            if (!isHopByHopRequestHeader(lowerName)
+            if (!isHopByHopResponseHeader(lowerName)
                     && !isConnectionNominatedHeader(lowerName, connectionTokens)) {
                 String value = joinHeaderValues(name, request);
                 merged.merge(lowerName, value, (left, right) ->
@@ -214,7 +209,7 @@ final class HeaderPolicy {
         int count = 0;
         while (names.hasMoreElements()) {
             String lowerName = canonicalLowerHeaderName(names.nextElement());
-            if (isHopByHopRequestHeader(lowerName)
+            if (isHopByHopResponseHeader(lowerName)
                     || isConnectionNominatedHeader(lowerName, connectionTokens)) {
                 continue;
             }
@@ -255,10 +250,6 @@ final class HeaderPolicy {
             tokens = addConnectionTokens(tokens, values.nextElement());
         }
         return tokens;
-    }
-
-    private static boolean isHopByHopRequestHeader(String name) {
-        return isHopByHopResponseHeader(name);
     }
 
     /**
@@ -332,19 +323,23 @@ final class HeaderPolicy {
         for (int i = 0; i < name.length(); i++) {
             char c = name.charAt(i);
             if (c >= 'A' && c <= 'Z') {
-                return toLowerCaseAscii(name);
+                return toLowerCaseAscii(name, 0, name.length());
             }
         }
         return name;
     }
 
-    private static String toLowerCaseAscii(String name) {
-        char[] chars = name.toCharArray();
-        for (int i = 0; i < chars.length; i++) {
-            char c = chars[i];
-            if (c >= 'A' && c <= 'Z') {
-                chars[i] = (char) (c + ('a' - 'A'));
-            }
+    /**
+     * ASCII-lowercase {@code value[start, end)} into a fresh string. The single
+     * ASCII fold used by both the {@code Connection}-token parser and the
+     * header-name fallback: exactly one {@code char[]} and one {@code String}
+     * are allocated on either path.
+     */
+    private static String toLowerCaseAscii(String value, int start, int end) {
+        char[] chars = new char[end - start];
+        for (int i = start; i < end; i++) {
+            char c = value.charAt(i);
+            chars[i - start] = (c >= 'A' && c <= 'Z') ? (char) (c + ('a' - 'A')) : c;
         }
         return new String(chars);
     }
