@@ -54,16 +54,14 @@ pub fn build_operation_from_function(
             && let Type::Path(type_path) = unwrap_validated_type(ty.as_ref())
         {
             has_validated_extractor |= is_validated_type(ty.as_ref());
-            let path_segments = &type_path.path;
-            if !path_segments.segments.is_empty() {
-                let segment = path_segments.segments.last().unwrap();
-                if segment.ident == "Path"
-                    && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-                    && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
-                {
-                    path_extractor_type = Some(inner_ty.clone());
-                    break;
-                }
+            // A segment-less path names no extractor: skip it instead of panicking.
+            if let Some(segment) = type_path.path.segments.last()
+                && segment.ident == "Path"
+                && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+                && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+            {
+                path_extractor_type = Some(inner_ty.clone());
+                break;
             }
         }
     }
@@ -97,8 +95,7 @@ pub fn build_operation_from_function(
                             description: None,
                             required: Some(true),
                             schema: Some(parse_type_to_schema_ref(
-                                string_type
-                                    .get_or_init(|| syn::parse_str::<Type>("String").unwrap()),
+                                string_type.get_or_init(string_type_ast),
                                 known_schemas,
                                 struct_definitions,
                             )),
@@ -148,7 +145,7 @@ pub fn build_operation_from_function(
                     description: None,
                     required: Some(true),
                     schema: Some(parse_type_to_schema_ref(
-                        string_type.get_or_init(|| syn::parse_str::<Type>("String").unwrap()),
+                        string_type.get_or_init(string_type_ast),
                         known_schemas,
                         struct_definitions,
                     )),
@@ -170,9 +167,8 @@ pub fn build_operation_from_function(
             // Skip Path extractor - we already handled path parameters above
             let is_path_extractor = if let FnArg::Typed(PatType { ty, .. }) = input
                 && let Type::Path(type_path) = unwrap_validated_type(ty.as_ref())
-                && !&type_path.path.segments.is_empty()
+                && let Some(segment) = type_path.path.segments.last()
             {
-                let segment = &type_path.path.segments.last().unwrap();
                 segment.ident == "Path"
             } else {
                 false
@@ -326,6 +322,19 @@ pub fn build_operation_from_function(
         callbacks: None,
         servers: None,
     }
+}
+
+/// `String` as a `syn::Type`, built straight from the identifier.
+///
+/// Replaces `syn::parse_str::<Type>("String").unwrap()`: constructing the AST
+/// node is infallible, so the default path-parameter schema can never panic the
+/// proc macro (and it skips a tokenize+parse round-trip).
+fn string_type_ast() -> Type {
+    Type::Path(syn::TypePath {
+        attrs: Vec::new(),
+        qself: None,
+        path: syn::Path::from(syn::Ident::new("String", proc_macro2::Span::call_site())),
+    })
 }
 
 fn header_parameter(header: &HeaderParam) -> Parameter {

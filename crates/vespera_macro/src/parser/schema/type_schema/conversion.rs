@@ -189,12 +189,12 @@ fn parse_type_impl(
     match ty {
         Type::Path(type_path) => {
             let path = &type_path.path;
-            if path.segments.is_empty() {
+            // Get the last segment as the type name (handles paths like crate::TestStruct).
+            // A segment-less path falls back to the default inline object schema instead
+            // of panicking the proc macro.
+            let Some(segment) = path.segments.last() else {
                 return SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)));
-            }
-
-            // Get the last segment as the type name (handles paths like crate::TestStruct)
-            let segment = path.segments.last().unwrap();
+            };
             let ident_str = segment.ident.to_string();
 
             // Handle generic types

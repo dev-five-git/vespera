@@ -5,6 +5,7 @@
 //! The serialized byte layout is **locked** by tests/wire_contract.rs.
 
 use std::borrow::Cow;
+use std::sync::LazyLock;
 
 use bytes::Bytes;
 
@@ -313,6 +314,20 @@ struct ValidationErrorItem {
     message: Option<String>,
 }
 
+/// The fixed, single-entry header map every [`error_wire`] response
+/// carries.  It is a compile-time constant in everything but name, so it
+/// is built **once** instead of re-allocating a `HeaderMap` table and
+/// re-hashing `content-type` on every error response (400/404/405/413/500
+/// plus every JNI panic and setup fallback).
+static ERROR_WIRE_HEADERS: LazyLock<http::HeaderMap> = LazyLock::new(|| {
+    let mut headers = http::HeaderMap::with_capacity(1);
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    headers
+});
+
 /// Build a wire-format error response with a plain-text body.
 ///
 /// Used by [`dispatch_from_bytes`] for malformed input and by the
@@ -320,11 +335,7 @@ struct ValidationErrorItem {
 /// `content-type: text/plain; charset=utf-8`.
 #[must_use]
 pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
-    let mut headers = http::HeaderMap::with_capacity(1);
-    headers.insert(
-        http::header::CONTENT_TYPE,
-        http::HeaderValue::from_static("text/plain; charset=utf-8"),
-    );
+    let headers = &*ERROR_WIRE_HEADERS;
     let metadata = ResponseMetadata::current();
     // Write the header + plain-text body straight into one buffer.  An error
     // body is never JSON, so it never participates in 422 `validation_errors`
@@ -347,12 +358,12 @@ pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
     // second baked-in header) ever pushes the estimate over the floor, debug
     // builds fail loudly so the floor can be revisited.
     debug_assert!(
-        header_capacity_estimate(&headers, &metadata) <= WIRE_HEADER_RESERVE,
+        header_capacity_estimate(headers, &metadata) <= WIRE_HEADER_RESERVE,
         "error_wire header estimate must fit WIRE_HEADER_RESERVE"
     );
     let header_cap = WIRE_HEADER_RESERVE;
     let mut out = Vec::with_capacity(4 + header_cap + body.len());
-    let _ = write_wire_header_into(&mut out, status, &headers, &metadata, None);
+    let _ = write_wire_header_into(&mut out, status, headers, &metadata, None);
     out.extend_from_slice(body);
     out
 }

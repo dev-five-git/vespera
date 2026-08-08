@@ -70,12 +70,8 @@ pub(super) fn parse_query_struct_to_parameters(
     let Type::Path(type_path) = ty else {
         return None;
     };
-    let path = &type_path.path;
-    if path.segments.is_empty() {
-        return None;
-    }
-
-    let ident_str = path.segments.last().unwrap().ident.to_string();
+    // A segment-less path names no struct: fall through to `None` rather than panic.
+    let ident_str = type_path.path.segments.last()?.ident.to_string();
     if let Some(struct_def) = struct_definitions.get(ident_str.as_str())
         && let Ok(struct_item) = syn::parse_str::<syn::ItemStruct>(struct_def)
     {

@@ -1,138 +1,138 @@
-#[allow(clippy::too_many_lines)]
+/// Convert snake_case or PascalCase to camelCase
+fn to_camel_case(field_name: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = false;
+    let mut in_first_word = true;
+    let chars: Vec<char> = field_name.chars().collect();
+
+    for (i, &ch) in chars.iter().enumerate() {
+        if ch == '_' {
+            capitalize_next = true;
+            in_first_word = false;
+            continue;
+        }
+        if in_first_word {
+            // In first word: lowercase until we hit a word boundary
+            // Word boundary: uppercase char followed by lowercase (e.g., "XMLParser" -> "P" starts new word)
+            let next_is_lower = chars.get(i + 1).is_some_and(|c| c.is_lowercase());
+            if ch.is_uppercase() && next_is_lower && i > 0 {
+                // This uppercase starts a new word (e.g., 'P' in "XMLParser")
+                in_first_word = false;
+                result.push(ch);
+            } else {
+                // Still in first word, lowercase it
+                result.push(ch.to_ascii_lowercase());
+            }
+            continue;
+        }
+        if capitalize_next {
+            result.push(ch.to_ascii_uppercase());
+            capitalize_next = false;
+            continue;
+        }
+        result.push(ch);
+    }
+    result
+}
+
+/// Convert camelCase to snake_case
+fn to_snake_case(field_name: &str) -> String {
+    let mut result = String::new();
+    for (i, ch) in field_name.chars().enumerate() {
+        if ch.is_uppercase() && i > 0 {
+            result.push('_');
+        }
+        result.push(ch.to_ascii_lowercase());
+    }
+    result
+}
+
+/// Convert snake_case or Camel/PascalCase to kebab-case (lowercase with hyphens)
+fn to_kebab_case(field_name: &str) -> String {
+    let mut result = String::new();
+    for (i, ch) in field_name.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 && !result.ends_with('-') {
+                result.push('-');
+            }
+            result.push(ch.to_ascii_lowercase());
+        } else if ch == '_' {
+            result.push('-');
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+/// Convert snake_case to PascalCase
+fn to_pascal_case(field_name: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = true;
+    for ch in field_name.chars() {
+        if ch == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.push(ch.to_ascii_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+/// Convert to `SCREAMING_SNAKE_CASE`
+fn to_screaming_snake_case(field_name: &str) -> String {
+    // If already in SCREAMING_SNAKE_CASE format, return as is
+    if field_name.chars().all(|c| c.is_uppercase() || c == '_') && field_name.contains('_') {
+        return field_name.to_string();
+    }
+    // First convert to snake_case if needed, then uppercase
+    let mut snake_case = String::new();
+    for (i, ch) in field_name.chars().enumerate() {
+        if ch.is_uppercase() && i > 0 && !snake_case.ends_with('_') {
+            snake_case.push('_');
+        }
+        if ch != '_' && ch != '-' {
+            snake_case.push(ch.to_ascii_lowercase());
+        } else if ch == '_' {
+            snake_case.push('_');
+        }
+    }
+    snake_case.to_uppercase()
+}
+
+/// Convert to SCREAMING-KEBAB-CASE
+fn to_screaming_kebab_case(field_name: &str) -> String {
+    // First convert to kebab-case if needed, then uppercase
+    let mut kebab_case = String::new();
+    for (i, ch) in field_name.chars().enumerate() {
+        if ch.is_uppercase() && i > 0 && !kebab_case.ends_with('-') && !kebab_case.ends_with('_') {
+            kebab_case.push('-');
+        }
+        if ch == '_' {
+            kebab_case.push('-');
+        } else if ch != '-' {
+            kebab_case.push(ch.to_ascii_lowercase());
+        } else {
+            kebab_case.push('-');
+        }
+    }
+    kebab_case.to_uppercase()
+}
+
 pub fn rename_field(field_name: &str, rename_all: Option<&str>) -> String {
     // "lowercase", "UPPERCASE", "PascalCase", "camelCase", "snake_case", "SCREAMING_SNAKE_CASE", "kebab-case", "SCREAMING-KEBAB-CASE"
     match rename_all {
-        Some("camelCase") => {
-            // Convert snake_case or PascalCase to camelCase
-            let mut result = String::new();
-            let mut capitalize_next = false;
-            let mut in_first_word = true;
-            let chars: Vec<char> = field_name.chars().collect();
-
-            for (i, &ch) in chars.iter().enumerate() {
-                if ch == '_' {
-                    capitalize_next = true;
-                    in_first_word = false;
-                    continue;
-                }
-                if in_first_word {
-                    // In first word: lowercase until we hit a word boundary
-                    // Word boundary: uppercase char followed by lowercase (e.g., "XMLParser" -> "P" starts new word)
-                    let next_is_lower = chars.get(i + 1).is_some_and(|c| c.is_lowercase());
-                    if ch.is_uppercase() && next_is_lower && i > 0 {
-                        // This uppercase starts a new word (e.g., 'P' in "XMLParser")
-                        in_first_word = false;
-                        result.push(ch);
-                    } else {
-                        // Still in first word, lowercase it
-                        result.push(ch.to_ascii_lowercase());
-                    }
-                    continue;
-                }
-                if capitalize_next {
-                    result.push(ch.to_ascii_uppercase());
-                    capitalize_next = false;
-                    continue;
-                }
-                result.push(ch);
-            }
-            result
-        }
-        Some("snake_case") => {
-            // Convert camelCase to snake_case
-            let mut result = String::new();
-            for (i, ch) in field_name.chars().enumerate() {
-                if ch.is_uppercase() && i > 0 {
-                    result.push('_');
-                }
-                result.push(ch.to_ascii_lowercase());
-            }
-            result
-        }
-        Some("kebab-case") => {
-            // Convert snake_case or Camel/PascalCase to kebab-case (lowercase with hyphens)
-            let mut result = String::new();
-            for (i, ch) in field_name.chars().enumerate() {
-                if ch.is_uppercase() {
-                    if i > 0 && !result.ends_with('-') {
-                        result.push('-');
-                    }
-                    result.push(ch.to_ascii_lowercase());
-                } else if ch == '_' {
-                    result.push('-');
-                } else {
-                    result.push(ch);
-                }
-            }
-            result
-        }
-        Some("PascalCase") => {
-            // Convert snake_case to PascalCase
-            let mut result = String::new();
-            let mut capitalize_next = true;
-            for ch in field_name.chars() {
-                if ch == '_' {
-                    capitalize_next = true;
-                } else if capitalize_next {
-                    result.push(ch.to_ascii_uppercase());
-                    capitalize_next = false;
-                } else {
-                    result.push(ch);
-                }
-            }
-            result
-        }
-        Some("lowercase") => {
-            // Convert to lowercase
-            field_name.to_lowercase()
-        }
-        Some("UPPERCASE") => {
-            // Convert to UPPERCASE
-            field_name.to_uppercase()
-        }
-        Some("SCREAMING_SNAKE_CASE") => {
-            // Convert to SCREAMING_SNAKE_CASE
-            // If already in SCREAMING_SNAKE_CASE format, return as is
-            if field_name.chars().all(|c| c.is_uppercase() || c == '_') && field_name.contains('_')
-            {
-                return field_name.to_string();
-            }
-            // First convert to snake_case if needed, then uppercase
-            let mut snake_case = String::new();
-            for (i, ch) in field_name.chars().enumerate() {
-                if ch.is_uppercase() && i > 0 && !snake_case.ends_with('_') {
-                    snake_case.push('_');
-                }
-                if ch != '_' && ch != '-' {
-                    snake_case.push(ch.to_ascii_lowercase());
-                } else if ch == '_' {
-                    snake_case.push('_');
-                }
-            }
-            snake_case.to_uppercase()
-        }
-        Some("SCREAMING-KEBAB-CASE") => {
-            // Convert to SCREAMING-KEBAB-CASE
-            // First convert to kebab-case if needed, then uppercase
-            let mut kebab_case = String::new();
-            for (i, ch) in field_name.chars().enumerate() {
-                if ch.is_uppercase()
-                    && i > 0
-                    && !kebab_case.ends_with('-')
-                    && !kebab_case.ends_with('_')
-                {
-                    kebab_case.push('-');
-                }
-                if ch == '_' {
-                    kebab_case.push('-');
-                } else if ch != '-' {
-                    kebab_case.push(ch.to_ascii_lowercase());
-                } else {
-                    kebab_case.push('-');
-                }
-            }
-            kebab_case.to_uppercase()
-        }
+        Some("camelCase") => to_camel_case(field_name),
+        Some("snake_case") => to_snake_case(field_name),
+        Some("kebab-case") => to_kebab_case(field_name),
+        Some("PascalCase") => to_pascal_case(field_name),
+        Some("lowercase") => field_name.to_lowercase(),
+        Some("UPPERCASE") => field_name.to_uppercase(),
+        Some("SCREAMING_SNAKE_CASE") => to_screaming_snake_case(field_name),
+        Some("SCREAMING-KEBAB-CASE") => to_screaming_kebab_case(field_name),
         _ => field_name.to_string(),
     }
 }

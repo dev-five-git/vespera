@@ -4,8 +4,23 @@ use std::{
 };
 
 /// Render a path for compile-time strings and diagnostics with `/` separators.
+///
+/// `Path::display()` renders exactly the same lossy UTF-8 text as
+/// [`Path::to_string_lossy`], so going through the `Cow` lets the common
+/// separator-free case (every Unix path, and any Windows path already spelled
+/// with `/`) finish in ONE allocation instead of the two that
+/// `display().to_string().replace(..)` always paid — and a path that is already
+/// valid UTF-8 borrows, so `into_owned()` is the only copy. Callers run this
+/// once per route file per `vespera!` expansion (`collector.rs`,
+/// [`normalize_path_key`], [`file_to_segments`], `orchestrator.rs`,
+/// `openapi_io.rs`), so the saved allocation is per-file, per-build.
 pub fn normalize_display_path(path: impl AsRef<Path>) -> String {
-    path.as_ref().display().to_string().replace('\\', "/")
+    let rendered = path.as_ref().to_string_lossy();
+    if rendered.contains('\\') {
+        rendered.replace('\\', "/")
+    } else {
+        rendered.into_owned()
+    }
 }
 
 /// Compare two optional source paths treating `\` and `/` as equivalent,

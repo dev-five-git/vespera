@@ -305,8 +305,160 @@ impl Serialize for NullableScalarType {
     }
 }
 
+/// Ordered field-group emitters for [`Schema`]'s hand-written [`Serialize`].
+///
+/// Each helper writes one contiguous group of the OpenAPI field sequence in the
+/// exact order the single straight-line body used to. **Field order is part of
+/// the emitted wire shape** (the generated `openapi.json` and every `insta`
+/// snapshot are byte-compared), so the call sites in [`Schema::serialize`] must
+/// stay in this order and no statement may migrate between groups.
+impl Schema {
+    /// `minimum` … `multipleOf`.
+    fn serialize_numeric_constraints<S>(&self, out: &mut S) -> Result<(), S::Error>
+    where
+        S: SerializeStruct,
+    {
+        if let Some(value) = self.minimum {
+            out.serialize_field("minimum", &NumberConstraint(value))?;
+        }
+        if let Some(value) = self.maximum {
+            out.serialize_field("maximum", &NumberConstraint(value))?;
+        }
+        if let Some(value) = self.exclusive_minimum {
+            out.serialize_field("exclusiveMinimum", &NumberConstraint(value))?;
+        }
+        if let Some(value) = self.exclusive_maximum {
+            out.serialize_field("exclusiveMaximum", &NumberConstraint(value))?;
+        }
+        if let Some(value) = self.multiple_of {
+            out.serialize_field("multipleOf", &NumberConstraint(value))?;
+        }
+        Ok(())
+    }
+
+    /// `minLength` … `pattern`.
+    fn serialize_string_constraints<S>(&self, out: &mut S) -> Result<(), S::Error>
+    where
+        S: SerializeStruct,
+    {
+        if let Some(value) = self.min_length {
+            out.serialize_field("minLength", &value)?;
+        }
+        if let Some(value) = self.max_length {
+            out.serialize_field("maxLength", &value)?;
+        }
+        if let Some(value) = &self.pattern {
+            out.serialize_field("pattern", value)?;
+        }
+        Ok(())
+    }
+
+    /// `items` … `uniqueItems`.
+    fn serialize_array_constraints<S>(&self, out: &mut S) -> Result<(), S::Error>
+    where
+        S: SerializeStruct,
+    {
+        if let Some(value) = &self.items {
+            out.serialize_field("items", value)?;
+        }
+        if let Some(value) = &self.prefix_items {
+            out.serialize_field("prefixItems", value)?;
+        }
+        if let Some(value) = self.min_items {
+            out.serialize_field("minItems", &value)?;
+        }
+        if let Some(value) = self.max_items {
+            out.serialize_field("maxItems", &value)?;
+        }
+        if let Some(value) = self.unique_items {
+            out.serialize_field("uniqueItems", &value)?;
+        }
+        Ok(())
+    }
+
+    /// `properties` … `maxProperties`.
+    fn serialize_object_constraints<S>(&self, out: &mut S) -> Result<(), S::Error>
+    where
+        S: SerializeStruct,
+    {
+        if !is_empty_properties(&self.properties) {
+            out.serialize_field("properties", &self.properties)?;
+        }
+        if !is_empty_required(&self.required) {
+            out.serialize_field("required", &self.required)?;
+        }
+        if let Some(value) = &self.additional_properties {
+            out.serialize_field("additionalProperties", value)?;
+        }
+        if let Some(value) = self.min_properties {
+            out.serialize_field("minProperties", &value)?;
+        }
+        if let Some(value) = self.max_properties {
+            out.serialize_field("maxProperties", &value)?;
+        }
+        Ok(())
+    }
+
+    /// `enum` … `discriminator`.
+    ///
+    /// `nullable_ref` suppresses the explicit `anyOf` field: a nullable `$ref`
+    /// already emitted its own `anyOf` in the head, and the validation at the
+    /// top of [`Schema::serialize`] guarantees the two never both carry data.
+    fn serialize_composition<S>(&self, out: &mut S, nullable_ref: bool) -> Result<(), S::Error>
+    where
+        S: SerializeStruct,
+    {
+        if let Some(value) = &self.r#enum {
+            out.serialize_field("enum", value)?;
+        }
+        if let Some(value) = &self.all_of {
+            out.serialize_field("allOf", value)?;
+        }
+        if let Some(value) = &self.any_of
+            && !nullable_ref
+        {
+            out.serialize_field("anyOf", value)?;
+        }
+        if let Some(value) = &self.one_of {
+            out.serialize_field("oneOf", value)?;
+        }
+        if let Some(value) = &self.not {
+            out.serialize_field("not", value)?;
+        }
+        if let Some(value) = &self.discriminator {
+            out.serialize_field("discriminator", value)?;
+        }
+        Ok(())
+    }
+
+    /// `readOnly` … `$dynamicRef`.
+    fn serialize_trailing_flags<S>(&self, out: &mut S) -> Result<(), S::Error>
+    where
+        S: SerializeStruct,
+    {
+        if let Some(value) = self.read_only {
+            out.serialize_field("readOnly", &value)?;
+        }
+        if let Some(value) = self.write_only {
+            out.serialize_field("writeOnly", &value)?;
+        }
+        if let Some(value) = &self.external_docs {
+            out.serialize_field("externalDocs", value)?;
+        }
+        if let Some(value) = &self.defs {
+            out.serialize_field("$defs", value)?;
+        }
+        if let Some(value) = &self.dynamic_anchor {
+            out.serialize_field("$dynamicAnchor", value)?;
+        }
+        if let Some(value) = &self.dynamic_ref {
+            out.serialize_field("$dynamicRef", value)?;
+        }
+        Ok(())
+    }
+}
+
 impl Serialize for Schema {
-    #[allow(clippy::too_many_lines)]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -384,98 +536,14 @@ impl Serialize for Schema {
             }
             (None, None) => {}
         }
-        if let Some(value) = self.minimum {
-            out.serialize_field("minimum", &NumberConstraint(value))?;
-        }
-        if let Some(value) = self.maximum {
-            out.serialize_field("maximum", &NumberConstraint(value))?;
-        }
-        if let Some(value) = self.exclusive_minimum {
-            out.serialize_field("exclusiveMinimum", &NumberConstraint(value))?;
-        }
-        if let Some(value) = self.exclusive_maximum {
-            out.serialize_field("exclusiveMaximum", &NumberConstraint(value))?;
-        }
-        if let Some(value) = self.multiple_of {
-            out.serialize_field("multipleOf", &NumberConstraint(value))?;
-        }
-        if let Some(value) = self.min_length {
-            out.serialize_field("minLength", &value)?;
-        }
-        if let Some(value) = self.max_length {
-            out.serialize_field("maxLength", &value)?;
-        }
-        if let Some(value) = &self.pattern {
-            out.serialize_field("pattern", value)?;
-        }
-        if let Some(value) = &self.items {
-            out.serialize_field("items", value)?;
-        }
-        if let Some(value) = &self.prefix_items {
-            out.serialize_field("prefixItems", value)?;
-        }
-        if let Some(value) = self.min_items {
-            out.serialize_field("minItems", &value)?;
-        }
-        if let Some(value) = self.max_items {
-            out.serialize_field("maxItems", &value)?;
-        }
-        if let Some(value) = self.unique_items {
-            out.serialize_field("uniqueItems", &value)?;
-        }
-        if !is_empty_properties(&self.properties) {
-            out.serialize_field("properties", &self.properties)?;
-        }
-        if !is_empty_required(&self.required) {
-            out.serialize_field("required", &self.required)?;
-        }
-        if let Some(value) = &self.additional_properties {
-            out.serialize_field("additionalProperties", value)?;
-        }
-        if let Some(value) = self.min_properties {
-            out.serialize_field("minProperties", &value)?;
-        }
-        if let Some(value) = self.max_properties {
-            out.serialize_field("maxProperties", &value)?;
-        }
-        if let Some(value) = &self.r#enum {
-            out.serialize_field("enum", value)?;
-        }
-        if let Some(value) = &self.all_of {
-            out.serialize_field("allOf", value)?;
-        }
-        if let Some(value) = &self.any_of
-            && !nullable_ref
-        {
-            out.serialize_field("anyOf", value)?;
-        }
-        if let Some(value) = &self.one_of {
-            out.serialize_field("oneOf", value)?;
-        }
-        if let Some(value) = &self.not {
-            out.serialize_field("not", value)?;
-        }
-        if let Some(value) = &self.discriminator {
-            out.serialize_field("discriminator", value)?;
-        }
-        if let Some(value) = self.read_only {
-            out.serialize_field("readOnly", &value)?;
-        }
-        if let Some(value) = self.write_only {
-            out.serialize_field("writeOnly", &value)?;
-        }
-        if let Some(value) = &self.external_docs {
-            out.serialize_field("externalDocs", value)?;
-        }
-        if let Some(value) = &self.defs {
-            out.serialize_field("$defs", value)?;
-        }
-        if let Some(value) = &self.dynamic_anchor {
-            out.serialize_field("$dynamicAnchor", value)?;
-        }
-        if let Some(value) = &self.dynamic_ref {
-            out.serialize_field("$dynamicRef", value)?;
-        }
+        // Order is load-bearing: these six calls reproduce the exact field
+        // sequence of the previous straight-line body.
+        self.serialize_numeric_constraints(&mut out)?;
+        self.serialize_string_constraints(&mut out)?;
+        self.serialize_array_constraints(&mut out)?;
+        self.serialize_object_constraints(&mut out)?;
+        self.serialize_composition(&mut out, nullable_ref)?;
+        self.serialize_trailing_flags(&mut out)?;
         out.end()
     }
 }

@@ -27,7 +27,13 @@ pub fn is_keyword_type(ty: &Type, keyword: &KeywordType) -> bool {
 }
 
 pub fn is_keyword_type_by_type_path(ty: &TypePath, keyword: &KeywordType) -> bool {
-    ty.path.segments.last().unwrap().ident == keyword.as_str()
+    // A path with no segments cannot name a keyword type; treat it as "not a match"
+    // rather than panicking (a proc-macro panic has no span, so it surfaces as an
+    // opaque "proc macro panicked" instead of a diagnostic).
+    let Some(segment) = ty.path.segments.last() else {
+        return false;
+    };
+    segment.ident == keyword.as_str()
 }
 
 #[cfg(test)]

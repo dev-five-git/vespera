@@ -40,12 +40,10 @@ pub(super) fn is_known_type(
     }
 
     if let Type::Path(type_path) = ty {
-        let path = &type_path.path;
-        if path.segments.is_empty() {
+        // A segment-less path names no known type: report `false` rather than panic.
+        let Some(segment) = type_path.path.segments.last() else {
             return false;
-        }
-
-        let segment = path.segments.last().unwrap();
+        };
         let ident_str = segment.ident.to_string();
         if struct_definitions.contains_key(ident_str.as_str())
             || known_schemas.contains(ident_str.as_str())
