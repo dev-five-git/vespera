@@ -317,50 +317,58 @@ public class VesperaProxyController {
         if (contentLength > MAX_BUFFERED_BODY) {
             throw payloadTooLarge(contentLength, MAX_BUFFERED_BODY);
         }
+        // Single exit: javac duplicates the resource-close sequence once per
+        // normal return, so keeping exactly one return here keeps the
+        // try-with-resources bytecode in its canonical shape.
         try (InputStream in = request.getInputStream()) {
-            if (cap > 0 && contentLength < 0) {
-                long cappedPlusOne = cap == Long.MAX_VALUE ? Long.MAX_VALUE : cap + 1;
-                long effectiveLimit = Math.min(cappedPlusOne, MAX_BUFFERED_BODY);
-                int readLimit = (int) effectiveLimit;
-                byte[] body = in.readNBytes(readLimit);
-                if ((long) body.length > cap) {
-                    throw payloadTooLarge(body.length, cap);
-                }
-                rejectAtBufferedBodyLimit(body.length, cap);
-                return body;
+            return readBufferedBody(in, contentLength, cap);
+        }
+    }
+
+    static byte[] readBufferedBody(InputStream in, long contentLength, long cap)
+            throws IOException {
+        if (cap > 0 && contentLength < 0) {
+            long cappedPlusOne = cap == Long.MAX_VALUE ? Long.MAX_VALUE : cap + 1;
+            long effectiveLimit = Math.min(cappedPlusOne, MAX_BUFFERED_BODY);
+            int readLimit = (int) effectiveLimit;
+            byte[] body = in.readNBytes(readLimit);
+            if ((long) body.length > cap) {
+                throw payloadTooLarge(body.length, cap);
             }
-            if (contentLength > 0 && (cap > 0 || contentLength <= MAX_FIXED_BODY)) {
-                // Known, bounded length: one exact allocation filled in
-                // place, skipping readAllBytes()'s grow-by-doubling and
-                // its final trim copy.  readNBytes blocks until the
-                // buffer is full or EOF; the servlet container caps the
-                // stream at Content-Length, so a well-formed request
-                // returns exactly contentLength bytes (a short read
-                // yields a correctly-sized smaller array).
-                return in.readNBytes((int) contentLength);
-            }
-            // Unknown length (-1) with NO soft cap: a buffered mode is the
-            // WRONG path for an open-ended stream (it should have been routed
-            // to BIDIRECTIONAL_STREAMING). Bound the read at MAX_FIXED_BODY
-            // (64 MiB) instead of the ~2 GiB single-array ceiling, so a
-            // (mis)configured resolver feeding a runaway chunked upload into a
-            // buffered mode cannot grow the JVM heap toward OOM. Reading one
-            // byte past the bound distinguishes "exactly at the bound" from
-            // "over". Known-length bodies keep the documented `cap=0`
-            // "unlimited" behaviour below.
-            if (contentLength < 0) {
-                byte[] body = in.readNBytes(MAX_FIXED_BODY + 1);
-                rejectAboveDefaultBufferedLimit(body.length);
-                return body;
-            }
-            // Oversized KNOWN length with no explicit cap (cap=0,
-            // contentLength > MAX_FIXED_BODY): the caller opted into unlimited
-            // buffering for a SIZED body, so honour it up to the single-array
-            // ceiling (the actual read stops at the known Content-Length).
-            byte[] body = in.readNBytes((int) MAX_BUFFERED_BODY);
-            rejectAtBufferedBodyLimit(body.length, MAX_BUFFERED_BODY);
+            rejectAtBufferedBodyLimit(body.length, cap);
             return body;
         }
+        if (contentLength > 0 && (cap > 0 || contentLength <= MAX_FIXED_BODY)) {
+            // Known, bounded length: one exact allocation filled in
+            // place, skipping readAllBytes()'s grow-by-doubling and
+            // its final trim copy.  readNBytes blocks until the
+            // buffer is full or EOF; the servlet container caps the
+            // stream at Content-Length, so a well-formed request
+            // returns exactly contentLength bytes (a short read
+            // yields a correctly-sized smaller array).
+            return in.readNBytes((int) contentLength);
+        }
+        // Unknown length (-1) with NO soft cap: a buffered mode is the
+        // WRONG path for an open-ended stream (it should have been routed
+        // to BIDIRECTIONAL_STREAMING). Bound the read at MAX_FIXED_BODY
+        // (64 MiB) instead of the ~2 GiB single-array ceiling, so a
+        // (mis)configured resolver feeding a runaway chunked upload into a
+        // buffered mode cannot grow the JVM heap toward OOM. Reading one
+        // byte past the bound distinguishes "exactly at the bound" from
+        // "over". Known-length bodies keep the documented `cap=0`
+        // "unlimited" behaviour below.
+        if (contentLength < 0) {
+            byte[] body = in.readNBytes(MAX_FIXED_BODY + 1);
+            rejectAboveDefaultBufferedLimit(body.length);
+            return body;
+        }
+        // Oversized KNOWN length with no explicit cap (cap=0,
+        // contentLength > MAX_FIXED_BODY): the caller opted into unlimited
+        // buffering for a SIZED body, so honour it up to the single-array
+        // ceiling (the actual read stops at the known Content-Length).
+        byte[] body = in.readNBytes((int) MAX_BUFFERED_BODY);
+        rejectAtBufferedBodyLimit(body.length, MAX_BUFFERED_BODY);
+        return body;
     }
 
     static void rejectAtBufferedBodyLimit(long bodyLength, long cap) {
@@ -674,11 +682,11 @@ public class VesperaProxyController {
                     maxBufferedResponseBytes);
             return;
         }
+        boolean retry = shouldRetryDirect(directRetryOnOverflow, method);
         ByteBuffer wireResp;
         try {
             // Encodes straight into the pooled direct buffer — no
             // intermediate wire-sized byte[].
-            boolean retry = shouldRetryDirect(directRetryOnOverflow, method);
             wireResp = currentThreadIsVirtual == null
                     ? VesperaBridge.dispatchDirectPooled(
                             appName, method, path, query, headers, body, retry)
@@ -687,7 +695,7 @@ public class VesperaProxyController {
                             retry, currentThreadIsVirtual.booleanValue());
         } catch (VesperaBridge.BufferTooSmallException overflow) {
             // The first dispatch already ran; its oversized result was discarded.
-            if (isSafe(method) && directRetryOnOverflow) {
+            if (retry) {
                 // Safe method + retry enabled: the response is larger than the
                 // pooled direct buffer's hard cap. Re-route through response
                 // streaming so a large download streams chunk-by-chunk instead

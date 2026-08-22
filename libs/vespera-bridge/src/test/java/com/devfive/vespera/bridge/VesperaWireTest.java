@@ -300,6 +300,19 @@ class VesperaWireTest {
     }
 
     @Test
+    void decodedResponseNormalizesPositionedReadOnlyBodyToZeroBasedSlice() {
+        ByteBuffer source = ByteBuffer.wrap(new byte[] {10, 20, 30}).asReadOnlyBuffer();
+        source.position(1);
+
+        DecodedResponse decoded = new DecodedResponse(
+                200, Map.of(), Map.of(), source, null);
+
+        assertTrue(decoded.body().isReadOnly());
+        assertEquals(0, decoded.body().position());
+        assertArrayEquals(new byte[] {20, 30}, decoded.bodyBytes());
+    }
+
+    @Test
     void decodeResponse_throws_on_short_input() {
         IllegalArgumentException ex = assertThrows(
                 IllegalArgumentException.class,
@@ -638,6 +651,10 @@ class VesperaWireTest {
                 new byte[] {4, 2},
                 bodyTarget);
         assertEquals(2, bodyWritten - 4 - bodyTarget.getInt(0));
+
+        byte[] nullablePublicMap = VesperaBridge.encodeRequest(
+                "GET", "/nullable-map", null, (Map<String, String>) null, null);
+        assertTrue(headerJson(nullablePublicMap).path("headers").isMissingNode());
     }
 
     @Test
@@ -695,6 +712,48 @@ class VesperaWireTest {
                 IllegalArgumentException.class,
                 () -> VesperaWireCodec.readHeaderLength((byte[]) null));
         assertEquals("wire response too short: null", nullError.getMessage());
+
+        byte[] negativeHeap = {(byte) 0x80, 0, 0, 0};
+        IllegalArgumentException negativeHeapError = assertThrows(
+                IllegalArgumentException.class,
+                () -> VesperaWireCodec.readHeaderLength(negativeHeap));
+        assertEquals(
+                "wire header_len -2147483648 overflows response (4 bytes)",
+                negativeHeapError.getMessage());
+
+        ByteBuffer negativeDirect = ByteBuffer.allocateDirect(4);
+        negativeDirect.put(0, (byte) 0x80);
+        IllegalArgumentException negativeDirectError = assertThrows(
+                IllegalArgumentException.class,
+                () -> VesperaWireCodec.readHeaderLength(negativeDirect));
+        assertEquals(
+                "wire header_len -2147483648 overflows response (4 bytes)",
+                negativeDirectError.getMessage());
+    }
+
+    @Test
+    void trailingOnlyAppWhitespaceAndHighSurrogateBeforeAsciiAreEncodedExactly() throws Exception {
+        byte[] appWire = VesperaBridge.encodeRequest(
+                "admin ", "GET", "/app", null, Map.of(), null);
+        assertEquals("admin", headerJson(appWire).path("app").asText());
+
+        VesperaWireCodec.ExposedByteArrayOutputStream header = VesperaWireCodec.fillHeaderJson(
+                null, "GET", "/\uD800x", null, Map.of());
+        String json = new String(
+                header.backingArray(), 0, header.size(), StandardCharsets.UTF_8);
+        assertTrue(json.contains("/\\ud800x"), json);
+    }
+
+    @Test
+    void decodedHeaderCopyAcceptsANonNullEmptyMap() throws Exception {
+        Method copy = VesperaWireCodec.class.getDeclaredMethod("copyDecodedHeaders", Map.class);
+        copy.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) copy.invoke(null, Map.of());
+
+        assertEquals(Map.of(), result);
+        assertThrows(UnsupportedOperationException.class, () -> result.put("x", "y"));
     }
 
     @Test

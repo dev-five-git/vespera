@@ -177,8 +177,11 @@ final class VesperaWireCodec {
             }
             int cap = current < 1 ? 1 : current;
             while (cap < needed) {
+                // No int-overflow guard is needed: the loop only runs while
+                // cap < needed <= MAX_HEADER_BUFFER_BYTES (64 MiB), so the
+                // doubled value stays under 128 MiB and never goes negative.
                 cap <<= 1;
-                if (cap < 0 || cap > MAX_HEADER_BUFFER_BYTES) {
+                if (cap > MAX_HEADER_BUFFER_BYTES) {
                     return MAX_HEADER_BUFFER_BYTES;
                 }
             }

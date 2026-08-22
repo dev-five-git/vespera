@@ -126,8 +126,11 @@ final class VesperaNativeLoader {
 
     private static String detectOs() {
         String os = System.getProperty("os.name", "").toLowerCase();
-        if (os.contains("win")) return "windows";
+        // "darwin" MUST be tested before "win": the string "darwin" contains
+        // the substring "win", so the opposite order sends a Darwin-reporting
+        // JVM down the Windows path and makes it look for a .dll.
         if (os.contains("mac") || os.contains("darwin")) return "macos";
+        if (os.contains("win")) return "windows";
         return "linux";
     }
 

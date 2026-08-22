@@ -445,7 +445,7 @@ final class VesperaDirectBufferPool {
             if (n == Integer.MIN_VALUE) {
                 throw responseExceedsTwoGiBException();
             }
-            if (n < 0 && n != Integer.MIN_VALUE) {
+            if (n < 0) {
                 int required = -n;
                 if (!retryOnOverflow) {
                     throw new BufferTooSmallException(required);
@@ -465,7 +465,7 @@ final class VesperaDirectBufferPool {
             if (n == Integer.MIN_VALUE) {
                 throw responseExceedsTwoGiBException();
             }
-            if (n < 0 && n != Integer.MIN_VALUE) {
+            if (n < 0) {
                 // A second overflow is legitimate: the retry re-ran the
                 // handler, and a non-deterministic handler may produce a
                 // larger response this time.  Surface the new exact size

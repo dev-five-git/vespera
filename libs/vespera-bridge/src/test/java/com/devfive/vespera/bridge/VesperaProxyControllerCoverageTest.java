@@ -7,9 +7,14 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import jakarta.servlet.ReadListener;
+import jakarta.servlet.ServletInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import org.junit.jupiter.api.AfterEach;
@@ -122,6 +127,28 @@ class VesperaProxyControllerCoverageTest {
     }
 
     @Test
+    void tryWithResourcePreservesCloseAndSuppressedReadFailures() {
+        IOException closeOnly = assertThrows(
+                IOException.class,
+                () -> VesperaProxyController.readBody(
+                        requestWithStream(new FailingServletInputStream(false)), 0));
+        assertEquals("close failure", closeOnly.getMessage());
+
+        IOException readAndClose = assertThrows(
+                IOException.class,
+                () -> VesperaProxyController.readBody(
+                        requestWithStream(new FailingServletInputStream(true)), 0));
+        assertEquals("read failure", readAndClose.getMessage());
+        assertEquals(1, readAndClose.getSuppressed().length);
+        assertEquals("close failure", readAndClose.getSuppressed()[0].getMessage());
+
+        NullPointerException nullStream = assertThrows(
+                NullPointerException.class,
+                () -> VesperaProxyController.readBody(requestWithStream(null), 0));
+        assertTrue(nullStream.getMessage().contains("readNBytes"), nullStream.getMessage());
+    }
+
+    @Test
     void legacySyncOverloadReachesTheNativeBoundary() {
         MockHttpServletResponse response = new MockHttpServletResponse();
 
@@ -155,6 +182,76 @@ class VesperaProxyControllerCoverageTest {
         VesperaProxyController.writeWireResponse(heapWire(204, "ignored"), noContent, "GET");
         assertEquals(0, noContent.getContentLength());
         assertEquals(0, noContent.getContentAsByteArray().length);
+
+        var statusPermitsBody = VesperaProxyController.class
+                .getDeclaredMethod("responseStatusPermitsBody", int.class);
+        statusPermitsBody.setAccessible(true);
+        assertEquals(true, statusPermitsBody.invoke(null, 99));
+
+        MockHttpServletResponse informational = new MockHttpServletResponse();
+        VesperaProxyController.writeWireResponse(
+                heapWire(199, "ignored"), informational, "GET");
+        assertEquals(0, informational.getContentLength());
+        assertEquals(0, informational.getContentAsByteArray().length);
+    }
+
+    @Test
+    void contextPathGuardCoversNullAndNonPrefixContexts() {
+        MockHttpServletRequest nullContext = new MockHttpServletRequest("GET", "/health") {
+            @Override
+            public String getContextPath() {
+                return null;
+            }
+        };
+        nullContext.setRequestURI("/health");
+        assertEquals("/health", VesperaProxyController.pathWithinApplication(nullContext));
+
+        MockHttpServletRequest nonPrefix = new MockHttpServletRequest("GET", "/health");
+        nonPrefix.setContextPath("/api");
+        nonPrefix.setRequestURI("/health");
+        assertEquals("/health", VesperaProxyController.pathWithinApplication(nonPrefix));
+    }
+
+    @Test
+    void streamingHeaderSuppressesHeadBodyAfterBodyPermittingStatus() {
+        byte[] header = heapWire(200, "represented");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertFalse(VesperaProxyController.applyDecodedHeader(header, response, "HEAD"));
+        assertEquals(200, response.getStatus());
+    }
+
+    @Test
+    void repeatedUnsafeDirectDowngradeTakesDebugLoggingBranch() throws Exception {
+        Field warnedField = VesperaProxyController.class
+                .getDeclaredField("UNSAFE_DIRECT_DOWNGRADE_WARNED");
+        warnedField.setAccessible(true);
+        AtomicBoolean warned = (AtomicBoolean) warnedField.get(null);
+        boolean previousWarned = warned.getAndSet(false);
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory
+                        .getLogger(VesperaProxyController.class);
+        ch.qos.logback.classic.Level previousLevel = logger.getLevel();
+        logger.setLevel(ch.qos.logback.classic.Level.DEBUG);
+        try {
+            VesperaProxyController controller = new VesperaProxyController(
+                    request -> null, request -> DispatchMode.DIRECT, Runnable::run, false);
+            assertThrows(UnsatisfiedLinkError.class, () -> controller.dispatchDirectMode(
+                    new MockHttpServletResponse(), null, "POST", "/echo", "",
+                    sink -> {}, new byte[] {1}, Boolean.FALSE));
+            assertThrows(UnsatisfiedLinkError.class, () -> controller.dispatchDirectMode(
+                    new MockHttpServletResponse(), null, "POST", "/echo", "",
+                    sink -> {}, new byte[] {1}, Boolean.FALSE));
+            assertTrue(warned.get());
+
+            logger.setLevel(ch.qos.logback.classic.Level.INFO);
+            assertThrows(UnsatisfiedLinkError.class, () -> controller.dispatchDirectMode(
+                    new MockHttpServletResponse(), null, "POST", "/echo", "",
+                    sink -> {}, new byte[] {1}, Boolean.FALSE));
+        } finally {
+            logger.setLevel(previousLevel);
+            warned.set(previousWarned);
+        }
     }
 
     @Test
@@ -270,6 +367,59 @@ class VesperaProxyControllerCoverageTest {
         };
         request.setContent(body);
         return request;
+    }
+
+    private static MockHttpServletRequest requestWithStream(ServletInputStream stream) {
+        return new MockHttpServletRequest("POST", "/echo") {
+            @Override
+            public long getContentLengthLong() {
+                return 1;
+            }
+
+            @Override
+            public ServletInputStream getInputStream() {
+                return stream;
+            }
+        };
+    }
+
+    private static final class FailingServletInputStream extends ServletInputStream {
+        private final boolean failRead;
+        private boolean read;
+
+        private FailingServletInputStream(boolean failRead) {
+            this.failRead = failRead;
+        }
+
+        @Override
+        public int read() throws IOException {
+            if (failRead) {
+                throw new IOException("read failure");
+            }
+            if (read) {
+                return -1;
+            }
+            read = true;
+            return 7;
+        }
+
+        @Override
+        public void close() throws IOException {
+            throw new IOException("close failure");
+        }
+
+        @Override
+        public boolean isFinished() {
+            return read;
+        }
+
+        @Override
+        public boolean isReady() {
+            return true;
+        }
+
+        @Override
+        public void setReadListener(ReadListener listener) {}
     }
 
     private static byte[] heapWire(int status, String body) {

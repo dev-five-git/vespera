@@ -184,6 +184,21 @@ class VesperaDirectWrapperTest {
     }
 
     @Test
+    void largeResponseAloneResetsShrinkStreakBeforeAdaptiveShrink() {
+        VesperaDirectBufferPool.clearCurrentThreadBuffers();
+        ByteBuffer[] pool = VesperaDirectBufferPool.directPoolForTest();
+        pool[1] = ByteBuffer.allocateDirect(3 * 1024 * 1024);
+
+        for (int i = 0; i < 7; i++) {
+            VesperaDirectBufferPool.recordDirectPoolUseForTest(pool, 1, 1);
+        }
+        VesperaDirectBufferPool.recordDirectPoolUseForTest(pool, 1, 3 * 1024 * 1024);
+        VesperaDirectBufferPool.recordDirectPoolUseForTest(pool, 1, 1);
+
+        assertEquals(3 * 1024 * 1024, pool[1].capacity());
+    }
+
+    @Test
     void requestBufferGrowsBeforeMissingNativeDispatchIsObserved() {
         VesperaDirectBufferPool.clearCurrentThreadBuffers();
         byte[] request = new byte[64 * 1024 + 1];
@@ -444,6 +459,24 @@ class VesperaDirectWrapperTest {
                     (VesperaBridge.HeaderSource) sink -> sink.put("x", "y"),
                     null, false, true, request -> response);
             assertReadOnlyBytes(response, sourced);
+
+            byte[] oversizedRaw = new byte[4 * 1024 * 1024 + 1];
+            ByteBuffer rawOversized = VesperaDirectBufferPool.dispatchDirectPooled(
+                    oversizedRaw, false, false, request -> {
+                        assertSame(oversizedRaw, request);
+                        return response;
+                    });
+            assertReadOnlyBytes(response, rawOversized);
+
+            byte[] oversizedBody = new byte[4 * 1024 * 1024 + 1];
+            ByteBuffer sourcedOversized = VesperaDirectBufferPool.dispatchDirectPooled(
+                    null, "POST", "/source-large", null,
+                    (VesperaBridge.HeaderSource) sink -> sink.put("x", "y"),
+                    oversizedBody, false, false, request -> {
+                        assertTrue(request.length > oversizedBody.length);
+                        return response;
+                    });
+            assertReadOnlyBytes(response, sourcedOversized);
         } finally {
             restoreProperty("vespera.direct.oversize-policy", previous);
         }

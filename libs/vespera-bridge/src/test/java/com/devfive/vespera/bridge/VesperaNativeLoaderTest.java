@@ -48,7 +48,7 @@ class VesperaNativeLoaderTest {
         try {
             assertDetection("Windows 11", "amd64", "windows", "x86_64", "demo.dll");
             assertDetection("Mac OS X", "arm64", "macos", "aarch64", "libdemo.dylib");
-            assertDetection("Darwin", "aarch64", "windows", "aarch64", "demo.dll");
+            assertDetection("Darwin", "aarch64", "macos", "aarch64", "libdemo.dylib");
             assertDetection("FreeBSD", "riscv64", "linux", "riscv64", "libdemo.so");
             assertDetection("Linux", "x86_64", "linux", "x86_64", "libdemo.so");
         } finally {
