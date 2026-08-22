@@ -447,8 +447,15 @@ java -jar demo-app/build/libs/demo-app-0.1.0.jar
 # Check generated OpenAPI
 cat examples/axum-example/openapi.json
 
-# CI: jni-e2e job (3-OS matrix: ubuntu/windows/macos) runs demo-app E2E tests
-# including StreamingClosureStressTest — see .github/workflows/CI.yml
+# Java side (both suites the jni-e2e CI job runs)
+cd libs/vespera-bridge && ./gradlew test          # bridge unit suite (175 tests)
+cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
+
+# CI: jni-e2e job (3-OS matrix: ubuntu/windows/macos) runs the vespera-bridge
+# unit suite AND the demo-app E2E tests (incl. StreamingClosureStressTest).
+# It is also the coverage for `crates/vespera_jni`, which tarpaulin excludes
+# (`#![cfg(not(tarpaulin_include))]`) because its symbols need a live JVM.
+# See .github/workflows/CI.yml
 ```
 
 ## NOTES
