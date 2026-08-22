@@ -147,13 +147,10 @@ fn emit_field_assertions(
             continue;
         }
 
-        for leaf in collect_leaf_custom_types(&field.ty) {
+        for (leaf, last_ident) in collect_leaf_custom_types(&field.ty) {
             if type_contains_generic(&leaf, &generic_idents) {
                 continue;
             }
-            let Some(last_ident) = last_path_ident(&leaf) else {
-                continue;
-            };
             if is_builtin_openapi_type(&last_ident) {
                 continue;
             }
@@ -188,7 +185,11 @@ fn emit_field_assertions(
 /// (references, slices, tuples, function pointers, …): those already
 /// fall through to `Object` in the generator and there's no scalar
 /// "leaf" identifier to bind a bound to.
-fn collect_leaf_custom_types(ty: &Type) -> Vec<Type> {
+/// Each leaf is paired with its final path ident.  Both early returns below
+/// reject the only shapes that lack one, so the caller never has to handle a
+/// missing ident - the invariant lives here instead of as an unreachable
+/// `else` branch at the call site.
+fn collect_leaf_custom_types(ty: &Type) -> Vec<(Type, String)> {
     let Type::Path(type_path) = ty else {
         return Vec::new();
     };
@@ -215,7 +216,7 @@ fn collect_leaf_custom_types(ty: &Type) -> Vec<Type> {
             .map(collect_leaf_custom_types)
             .unwrap_or_default();
     }
-    vec![ty.clone()]
+    vec![(ty.clone(), segment.ident.to_string())]
 }
 
 fn first_generic_type_arg(segment: &syn::PathSegment) -> Option<&Type> {
@@ -245,17 +246,6 @@ fn second_generic_type_arg(segment: &syn::PathSegment) -> Option<&Type> {
             }
         })
         .nth(1)
-}
-
-fn last_path_ident(ty: &Type) -> Option<String> {
-    let Type::Path(type_path) = ty else {
-        return None;
-    };
-    type_path
-        .path
-        .segments
-        .last()
-        .map(|segment| segment.ident.to_string())
 }
 
 /// `true` when any path segment of `ty` (including inside nested
@@ -333,7 +323,7 @@ mod tests {
     fn leaves_of(src: &str) -> Vec<String> {
         collect_leaf_custom_types(&parse_ty(src))
             .iter()
-            .map(|ty| quote!(#ty).to_string().replace(' ', ""))
+            .map(|(ty, _)| quote!(#ty).to_string().replace(' ', ""))
             .collect()
     }
 
@@ -466,8 +456,10 @@ mod tests {
     }
 
     #[test]
-    fn last_path_ident_rejects_non_path_types() {
-        assert_eq!(last_path_ident(&parse_ty("&str")), None);
+    fn leaf_pairs_carry_the_final_path_ident() {
+        let leaves = collect_leaf_custom_types(&parse_ty("Vec<Option<crate::models::User>>"));
+        assert_eq!(leaves.len(), 1);
+        assert_eq!(leaves[0].1, "User");
     }
 
     // ── is_serde_json_value_leaf ────────────────────────────────────

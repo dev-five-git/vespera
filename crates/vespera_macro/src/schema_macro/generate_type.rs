@@ -260,15 +260,15 @@ pub fn generate_schema_type_code(
                                 let inline_field_ty = quote! { Vec<#inline_type_name> };
                                 (Box::new(inline_field_ty), Some(rel_info))
                             } else {
-                                if pick_set.contains(&rust_field_name) {
-                                    return Err(syn::Error::new_spanned(
-                                        field,
-                                        format!(
-                                            "schema_type!: relation field `{rust_field_name}` was explicitly picked but its inline relation type could not be generated"
-                                        ),
-                                    ));
-                                }
-                                continue;
+                                // Only reachable for a field the `pick` guard
+                                // above already required, so the failure is
+                                // always an error - never a silent skip.
+                                return Err(syn::Error::new_spanned(
+                                    field,
+                                    format!(
+                                        "schema_type!: relation field `{rust_field_name}` was explicitly picked but its inline relation type could not be generated"
+                                    ),
+                                ));
                             }
                         } else {
                             // BelongsTo/HasOne: Include by default
