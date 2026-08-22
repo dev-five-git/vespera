@@ -193,7 +193,15 @@ jobs:
         shell: bash
         working-directory: examples/rust-jni-demo/java
         run: ./gradlew :demo-app:test --console=plain --no-daemon
-      - name: Upload Java test results
+      - name: Merge Java coverage
+        # Regenerates the bridge's JaCoCo report now that demo-app has run, so
+        # it also credits the classes only reachable with a loaded cdylib — the
+        # JNI wrappers and the Spring proxy, which the unit suite cannot drive.
+        # The report task reads demo-app/build/jacoco/test.exec when present.
+        shell: bash
+        working-directory: libs/vespera-bridge
+        run: ./gradlew jacocoTestReport --console=plain --no-daemon
+      - name: Upload Java test results and coverage
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -201,3 +209,4 @@ jobs:
           path: |
             examples/rust-jni-demo/java/demo-app/build/test-results/test/*.xml
             libs/vespera-bridge/build/test-results/test/*.xml
+            libs/vespera-bridge/build/reports/jacoco/test/jacocoTestReport.xml

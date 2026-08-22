@@ -2,6 +2,7 @@ package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -24,6 +25,10 @@ class HeaderAppNameResolverTest {
         MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
         req.addHeader("X-Vespera-App", "  admin  ");
         assertEquals("admin", resolver.resolveAppName(req));
+
+        MockHttpServletRequest trailingOnly = new MockHttpServletRequest("GET", "/x");
+        trailingOnly.addHeader("X-Vespera-App", "admin ");
+        assertEquals("admin", resolver.resolveAppName(trailingOnly));
     }
 
     @Test
@@ -31,5 +36,23 @@ class HeaderAppNameResolverTest {
         MockHttpServletRequest req = new MockHttpServletRequest("GET", "/x");
         req.addHeader("X-Vespera-App", "\u2003admin\u2003");
         assertEquals("admin", resolver.resolveAppName(req));
+    }
+
+    @Test
+    void constructorRejectsNullEmptyAndBlankHeaderNames() {
+        assertThrows(IllegalArgumentException.class, () -> new HeaderAppNameResolver(null));
+        assertThrows(IllegalArgumentException.class, () -> new HeaderAppNameResolver(""));
+        assertThrows(IllegalArgumentException.class, () -> new HeaderAppNameResolver(" \t "));
+    }
+
+    @Test
+    void alreadyTrimmedValueIsReturnedAndEmptyValueMeansDefaultApp() {
+        MockHttpServletRequest named = new MockHttpServletRequest("GET", "/x");
+        named.addHeader("X-Vespera-App", "admin");
+        assertEquals("admin", resolver.resolveAppName(named));
+
+        MockHttpServletRequest empty = new MockHttpServletRequest("GET", "/x");
+        empty.addHeader("X-Vespera-App", "");
+        assertNull(resolver.resolveAppName(empty));
     }
 }

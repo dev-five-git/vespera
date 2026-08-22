@@ -38,7 +38,6 @@ The plugin auto-wires `bundleNativeLib` (cdylib → `resources/native/<os>-<arch
 
 ```java
 @SpringBootApplication
-@ComponentScan(basePackages = {"com.example.app", "com.devfive.vespera.bridge"})
 public class MyApp {
     public static void main(String[] args) {
         VesperaBridge.init("my_rust_lib");      // ← loads cdylib (bundled or system)
@@ -46,6 +45,14 @@ public class MyApp {
     }
 }
 ```
+
+> Do **not** add `com.devfive.vespera.bridge` to `@ComponentScan`. Everything
+> here is registered by autoconfiguration (see below). Component-scanning the
+> package instead picks `VesperaProxyController` up as a plain
+> `@RestController` — it declares several constructors and no default one, so
+> the context fails to start, and the scanned bean would also ignore
+> `vespera.bridge.controller-enabled` and every `@ConditionalOnMissingBean`
+> override documented under [Customization](#customization).
 
 `VesperaProxyController` is **autoconfigured** (via Spring Boot `AutoConfiguration.imports`) and forwards every HTTP request to Rust.  You write zero controller code on the Java side, **zero `application.yml` config**, and **zero `import` lines** beyond the Spring Boot starter — the routes published in vespera's generated `openapi.json` are reachable at the same URLs through Spring.
 

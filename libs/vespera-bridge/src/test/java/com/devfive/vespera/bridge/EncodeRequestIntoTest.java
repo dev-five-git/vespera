@@ -9,6 +9,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -153,5 +154,31 @@ class EncodeRequestIntoTest {
     void headerSourceNoAppNameWithQueryByteIdentical() {
         assertHeaderSourceEquivalent(null, "GET", "/search", "q=vespera",
                 Map.of("accept", "application/json"), null);
+    }
+
+    @Test
+    void headerSourceEncodeIntoWritesExactBytesAndAcceptsNullSourceAndBody() {
+        byte[] expected = VesperaBridge.encodeRequest(
+                null, "GET", "/source", "", (VesperaBridge.HeaderSource) null, null);
+        ByteBuffer target = ByteBuffer.allocateDirect(expected.length);
+
+        int written = VesperaBridge.encodeRequestInto(
+                null, "GET", "/source", "", (VesperaBridge.HeaderSource) null, null, target);
+
+        assertEquals(expected.length, written);
+        assertArrayEquals(expected, drain(target, written));
+    }
+
+    @Test
+    void readOnlyTargetIsRejectedAfterCapacityCheck() {
+        byte[] expected = VesperaBridge.encodeRequest("GET", "/readonly", null, Map.of(), null);
+        ByteBuffer target = ByteBuffer.allocate(expected.length).asReadOnlyBuffer();
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> VesperaBridge.encodeRequestInto(
+                        null, "GET", "/readonly", null, Map.of(), null, target));
+
+        assertEquals("encode target buffer is read-only", error.getMessage());
     }
 }

@@ -4,12 +4,14 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.io.IOException;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -143,6 +145,40 @@ class VesperaBridgeAutoConfigurationTest {
     }
 
     @Test
+    void configuredAppHeaderFeedsDefaultResolver() {
+        runner.withPropertyValues("vespera.bridge.app-header=X-Target-App")
+                .run(ctx -> {
+                    MockHttpServletRequest request = new MockHttpServletRequest("GET", "/x");
+                    request.addHeader("X-Target-App", "admin");
+                    assertEquals("admin", ctx.getBean(AppNameResolver.class).resolveAppName(request));
+                });
+    }
+
+    @Test
+    void userAppResolverWinsOverDefault() {
+        runner.withUserConfiguration(CustomAppResolverConfig.class)
+                .run(ctx -> assertSame(
+                        CustomAppResolverConfig.RESOLVER,
+                        ctx.getBean(AppNameResolver.class)));
+    }
+
+    @Test
+    void userControllerWinsOverAutoconfiguredController() {
+        runner.withUserConfiguration(CustomControllerConfig.class)
+                .run(ctx -> assertSame(
+                        CustomControllerConfig.CONTROLLER,
+                        ctx.getBean(VesperaProxyController.class)));
+    }
+
+    @Test
+    void userCleanupListenerWinsOverDefault() {
+        runner.withUserConfiguration(CustomCleanupConfig.class)
+                .run(ctx -> assertSame(
+                        CustomCleanupConfig.CLEANUP,
+                        ctx.getBean(VesperaBridgeThreadLocalCleanup.class)));
+    }
+
+    @Test
     void asyncResponseExecutorBeanIsReplaceableByName() {
         runner.withUserConfiguration(CustomExecutorConfig.class)
                 .run(ctx -> assertSame(
@@ -194,6 +230,55 @@ class VesperaBridgeAutoConfigurationTest {
     }
 
     @Test
+    void configuredAsyncPoolSizeControlsBothExecutorBounds() {
+        runner.withPropertyValues("vespera.bridge.async-pool-size=3")
+                .run(ctx -> {
+                    ThreadPoolExecutor executor = ctx.getBean(
+                            "vesperaBridgeAsyncResponseExecutor", ThreadPoolExecutor.class);
+                    assertEquals(3, executor.getCorePoolSize());
+                    assertEquals(3, executor.getMaximumPoolSize());
+                    assertEquals(768, executor.getQueue().remainingCapacity());
+                });
+    }
+
+    @Test
+    void nullDispatchModeStillUsesSmartDefault() {
+        VesperaBridgeProperties properties = new VesperaBridgeProperties();
+        properties.setDispatchMode(null);
+
+        assertInstanceOf(SmartDispatchModeResolver.class,
+                new VesperaBridgeAutoConfiguration()
+                        .vesperaBridgeDispatchModeResolver(properties));
+    }
+
+    @Test
+    void defaultResolverFactoryAcceptsBidirectionalValueWhenInvokedDirectly() {
+        VesperaBridgeProperties properties = new VesperaBridgeProperties();
+        properties.setDispatchMode("bidirectional-streaming");
+
+        assertInstanceOf(SmartDispatchModeResolver.class,
+                new VesperaBridgeAutoConfiguration()
+                        .vesperaBridgeDispatchModeResolver(properties));
+    }
+
+    @Test
+    void cleanupFilterClearsBuffersWhenDownstreamThrows() {
+        runner.withPropertyValues("vespera.bridge.clear-threadlocals-after-request=true")
+                .run(ctx -> {
+                    FilterRegistrationBean<?> bean = ctx.getBean(FilterRegistrationBean.class);
+                    VesperaDirectBufferPool.directPoolForTest();
+
+                    assertThrows(IOException.class, () -> bean.getFilter().doFilter(
+                            new MockHttpServletRequest("GET", "/x"),
+                            new MockHttpServletResponse(),
+                            (request, response) -> { throw new IOException("downstream"); }));
+
+                    assertFalse(VesperaDirectBufferPool.directPoolPresentForTest());
+                    assertEquals(Integer.MAX_VALUE, bean.getOrder());
+                });
+    }
+
+    @Test
     void unknownDispatchModeFailsFast() {
         // A production typo must fail at bean creation instead of silently
         // enabling the smart DIRECT/SYNC policy.
@@ -228,6 +313,38 @@ class VesperaBridgeAutoConfigurationTest {
         @Bean("vesperaBridgeAsyncResponseExecutor")
         Executor vesperaBridgeAsyncResponseExecutor() {
             return EXECUTOR;
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomAppResolverConfig {
+        static final AppNameResolver RESOLVER = request -> "custom";
+
+        @Bean
+        AppNameResolver customAppNameResolver() {
+            return RESOLVER;
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomControllerConfig {
+        static final VesperaProxyController CONTROLLER = new VesperaProxyController(
+                request -> null, request -> DispatchMode.SYNC);
+
+        @Bean
+        VesperaProxyController customController() {
+            return CONTROLLER;
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomCleanupConfig {
+        static final VesperaBridgeThreadLocalCleanup CLEANUP =
+                new VesperaBridgeThreadLocalCleanup();
+
+        @Bean
+        VesperaBridgeThreadLocalCleanup customCleanup() {
+            return CLEANUP;
         }
     }
 }

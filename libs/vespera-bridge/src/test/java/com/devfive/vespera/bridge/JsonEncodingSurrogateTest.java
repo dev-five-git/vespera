@@ -1,6 +1,7 @@
 package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.ByteBuffer;
@@ -63,5 +64,19 @@ class JsonEncodingSurrogateTest {
         assertTrue(
                 json.contains("\uD83D\uDE00"),
                 "valid surrogate pair must round-trip as the actual character");
+    }
+
+    @Test
+    void everyShortControlEscapeAndTwoByteUtf8EncodingIsExact() {
+        byte[] wire = VesperaBridge.encodeRequest(
+                null, "GET", "/x", null,
+                Map.of("x-control", "\b\f\r", "x-two-byte", "é"), null);
+        String json = headerJson(wire);
+
+        assertTrue(json.contains("\\b\\f\\r"), json);
+        assertTrue(json.contains("é"), json);
+        assertEquals(-1, json.indexOf('\b'));
+        assertEquals(-1, json.indexOf('\f'));
+        assertEquals(-1, json.indexOf('\r'));
     }
 }

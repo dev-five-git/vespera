@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.reflect.Method;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -60,5 +61,41 @@ class DirectOverflowMemoryTest {
         // The cleared entries are forgotten (re-learn on their next overflow).
         assertFalse(mem.shouldAvoidDirect("GET", "/a"));
         assertFalse(mem.shouldAvoidDirect("GET", "/b"));
+    }
+
+    @Test
+    void constructorClampsCapAndDuplicateRouteUsesNormalizedDefaultAppKey() {
+        DirectOverflowMemory mem = new DirectOverflowMemory(0);
+        mem.recordOverflow("", "GET", "/same", "ignored=1");
+        mem.recordOverflow("   ", "GET", "/same", "ignored=2");
+
+        assertEquals(1, mem.size());
+        assertTrue(mem.shouldAvoidDirect(null, "GET", "/same", null));
+
+        mem.recordOverflow("admin", "GET", "/other", null);
+        assertEquals(1, mem.size());
+        assertTrue(mem.shouldAvoidDirect("admin", "GET", "/other", null));
+        assertFalse(mem.shouldAvoidDirect(null, "GET", "/same", null));
+    }
+
+    @Test
+    void routeKeyEqualityHandlesIdentityForeignTypeAndFieldMismatch() throws Exception {
+        Class<?> routeKey = Class.forName(
+                "com.devfive.vespera.bridge.DirectOverflowMemory$RouteKey");
+        Method of = routeKey.getDeclaredMethod("of", String.class, String.class, String.class);
+        of.setAccessible(true);
+        Object key = of.invoke(null, null, "GET", "/items");
+        Object equal = of.invoke(null, " ", "GET", "/items");
+        Object differentApp = of.invoke(null, "admin", "GET", "/items");
+        Object differentMethod = of.invoke(null, null, "POST", "/items");
+        Object differentPath = of.invoke(null, null, "GET", "/other");
+
+        assertTrue(key.equals(key));
+        assertTrue(key.equals(equal));
+        assertFalse(key.equals("not a route key"));
+        assertFalse(key.equals(differentApp));
+        assertFalse(key.equals(differentMethod));
+        assertFalse(key.equals(differentPath));
+        assertEquals(key.hashCode(), equal.hashCode());
     }
 }

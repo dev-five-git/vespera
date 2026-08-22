@@ -145,7 +145,6 @@ vespera::jni_app!(create_app);
 
 ```java
 @SpringBootApplication
-@ComponentScan(basePackages = {"kr.go.demo", "com.devfive.vespera.bridge"})
 public class DemoApplication {
     public static void main(String[] args) {
         VesperaBridge.init("rust_jni_demo");
@@ -153,6 +152,10 @@ public class DemoApplication {
     }
 }
 ```
+
+> No `@ComponentScan` of `com.devfive.vespera.bridge` — the bridge is
+> autoconfigured. Scanning it would pick the controller up as a plain
+> `@RestController`, which fails to construct.
 
 ### What happens at runtime
 

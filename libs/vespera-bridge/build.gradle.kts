@@ -1,5 +1,6 @@
 plugins {
     `java-library`
+    jacoco
     id("com.vanniktech.maven.publish") version "0.36.0"
 }
 
@@ -47,6 +48,30 @@ tasks.named<Test>("test") {
     // read this property; propagate it from the Gradle CLI into the forked test
     // JVM — same pattern as the rust-jni-demo demo-app.
     System.getProperty("vespera.bench")?.let { systemProperty("vespera.bench", it) }
+    finalizedBy(tasks.named("jacocoTestReport"))
+}
+
+// The JNI wrappers and the Spring proxy only execute with a real cdylib loaded,
+// which this module's unit tests cannot do. That code IS exercised — by the
+// demo-app E2E suite in examples/rust-jni-demo/java, a SEPARATE Gradle build.
+// Merging its execution data (when present) makes the report describe what
+// actually ran rather than only what the unit suite can reach; the class IDs
+// match because demo-app resolves this exact build's JAR from mavenLocal.
+val demoAppExecutionData = rootProject.layout.projectDirectory
+    .file("../../examples/rust-jni-demo/java/demo-app/build/jacoco/test.exec")
+
+tasks.named<JacocoReport>("jacocoTestReport") {
+    dependsOn(tasks.named("test"))
+    executionData.setFrom(
+        files(
+            layout.buildDirectory.file("jacoco/test.exec"),
+            demoAppExecutionData,
+        ).filter { it.exists() },
+    )
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+    }
 }
 
 // Gate Maven Central signing on the presence of in-memory signing

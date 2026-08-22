@@ -1,13 +1,19 @@
 package com.devfive.vespera.bridge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /** Correctness gate for the zero-copy DIRECT-path header reader. */
@@ -60,6 +66,51 @@ class WireHeaderReaderTest {
                 IllegalArgumentException.class,
                 () -> WireHeaderReader.decode(buf, 4, hb.length));
         assertEquals("wire header JSON: expected object at offset 4", e.getMessage());
+    }
+
+    private static WireHeaderReader.Decoded decode(String headerJson) {
+        byte[] bytes = headerJson.getBytes(StandardCharsets.UTF_8);
+        WireHeaderReader.Decoded heap = WireHeaderReader.decode(bytes, 0, bytes.length);
+        ByteBuffer direct = ByteBuffer.allocateDirect(bytes.length);
+        direct.put(bytes);
+        WireHeaderReader.Decoded directDecoded = WireHeaderReader.decode(direct, 0, bytes.length);
+        assertEquals(heap.status, directDecoded.status);
+        assertEquals(heap.headers, directDecoded.headers);
+        assertEquals(heap.metadata, directDecoded.metadata);
+        assertEquals(heap.validationErrors, directDecoded.validationErrors);
+        return heap;
+    }
+
+    private static WireHeaderReader reflectedReader(String json) throws Exception {
+        byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
+        Constructor<WireHeaderReader> constructor =
+                WireHeaderReader.class.getDeclaredConstructor(byte[].class, int.class, int.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(bytes, 0, bytes.length);
+    }
+
+    private static IllegalArgumentException invokeRejected(
+            WireHeaderReader reader, String methodName) throws Exception {
+        Method method = WireHeaderReader.class.getDeclaredMethod(methodName);
+        method.setAccessible(true);
+        InvocationTargetException wrapped = assertThrows(
+                InvocationTargetException.class, () -> method.invoke(reader));
+        return assertInstanceOf(IllegalArgumentException.class, wrapped.getCause());
+    }
+
+    private static void assertDecodeFailure(String json, String expectedMessage) {
+        byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> WireHeaderReader.decode(bytes, 0, bytes.length));
+        assertEquals(expectedMessage, error.getMessage());
+    }
+
+    private static void assertDecodeFailure(byte[] json, String expectedMessage) {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> WireHeaderReader.decode(json, 0, json.length));
+        assertEquals(expectedMessage, error.getMessage());
     }
 
     @Test
@@ -255,5 +306,199 @@ class WireHeaderReaderTest {
                 decodeKey,
                 applyKey[0],
                 "apply() must hand back the same canonical key instance decode() uses");
+    }
+
+    @Test
+    void decodesEveryJsonEscapeAndWhitespaceForm() {
+        WireHeaderReader.Decoded decoded = decode(
+                " \t\n\r{\"status\" : 200, \"headers\":{\"x\":"
+                        + "\"\\\"\\\\\\/\\b\\f\\n\\r\\t\\u00e9\"},\"metadata\":{}} \r\n");
+
+        assertEquals("\"\\/\b\f\n\r\té", decoded.headers.get("x"));
+        assertEquals(Map.of(), decoded.metadata);
+    }
+
+    @Test
+    void decodesForwardCompatibleValidationPrimitiveTypes() {
+        WireHeaderReader.Decoded decoded = decode(
+                "{\"status\":422,\"headers\":null,\"metadata\":null,"
+                        + "\"validation_errors\":[7,{\"truth\":true,\"lie\":false,"
+                        + "\"nil\":null,\"integer\":-12,\"decimal\":1.5e+2,"
+                        + "\"huge\":9223372036854775808,\"nested\":{\"ignored\":1}}]}");
+
+        assertNull(decoded.headers);
+        assertEquals(Map.of(), decoded.metadata);
+        assertEquals(1, decoded.validationErrors.size());
+        Map<String, Object> error = decoded.validationErrors.get(0);
+        assertEquals(Boolean.TRUE, error.get("truth"));
+        assertEquals(Boolean.FALSE, error.get("lie"));
+        assertNull(error.get("nil"));
+        assertEquals(-12L, error.get("integer"));
+        assertEquals(150.0, error.get("decimal"));
+        assertInstanceOf(Double.class, error.get("huge"));
+        assertNull(error.get("nested"));
+    }
+
+    @Test
+    void skipsWronglyShapedValidationFieldAndReadsThreeMetadataEntries() {
+        WireHeaderReader.Decoded decoded = decode(
+                "{\"status\":200,\"validation_errors\":null,\"metadata\":{"
+                        + "\"version\":\"1\",\"build\":\"2\",\"date\":\"3\"}}");
+
+        assertNull(decoded.validationErrors);
+        assertEquals(Map.of("version", "1", "build", "2", "date", "3"), decoded.metadata);
+    }
+
+    @Test
+    void skipsUnknownStringsLiteralsAndEscapedNestedContainers() {
+        Captured captured = run(
+                "{\"unknownString\":\"a\\\"b\",\"yes\":true,\"no\":false,"
+                        + "\"nested\":{\"text\":\"}\\\"]\"},\"status\":204}");
+
+        assertEquals(204, captured.status());
+        assertEquals(List.of(), captured.headers());
+    }
+
+    @Test
+    void malformedTokensReportPreciseParserFailure() {
+        Map<String, String> malformed = Map.ofEntries(
+                Map.entry("{status:200}", "expected string"),
+                Map.entry("{\"status\" 200}", "expected ':'"),
+                Map.entry("{\"status\":}", "expected number"),
+                Map.entry("{\"headers\":{\"x\":1}}", "expected string"),
+                Map.entry("{\"headers\":{\"x\":\"\\", "dangling escape"),
+                Map.entry("{\"headers\":{\"x\":\"\\q\"}}", "bad escape"),
+                Map.entry("{\"headers\":{\"x\":\"\\u12\"}}", "bad hex digit"),
+                Map.entry("{\"headers\":{\"x\":\"\\u12xz\"}}", "bad hex digit"),
+                Map.entry("{\"unknown\":?}", "unexpected value"),
+                Map.entry("{\"unknown\":-}", "expected number"),
+                Map.entry("{\"unknown\":\"unterminated}", "unterminated string"),
+                Map.entry("{\"unknown\":[1", "unterminated container"));
+
+        malformed.forEach((json, expected) -> {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> WireHeaderReader.decode(json.getBytes(StandardCharsets.UTF_8), 0,
+                            json.getBytes(StandardCharsets.UTF_8).length));
+            org.junit.jupiter.api.Assertions.assertTrue(error.getMessage().contains(expected), error.getMessage());
+        });
+    }
+
+    @Test
+    void malformedUtf8CoversTruncationOverlongSurrogateAndOutOfRangeForms() {
+        byte[][] invalidValues = {
+            {(byte) 0xE0, (byte) 0x80, (byte) 0x80},
+            {(byte) 0xED, (byte) 0xA0, (byte) 0x80},
+            {(byte) 0xF0, (byte) 0x80, (byte) 0x80, (byte) 0x80},
+            {(byte) 0xF4, (byte) 0x90, (byte) 0x80, (byte) 0x80},
+            {(byte) 0xF5, (byte) 0x80, (byte) 0x80, (byte) 0x80},
+            {(byte) 0xE2}
+        };
+        byte[] prefix = "{\"headers\":{\"x\":\"".getBytes(StandardCharsets.UTF_8);
+        byte[] suffix = "\"}}".getBytes(StandardCharsets.UTF_8);
+
+        for (byte[] invalid : invalidValues) {
+            byte[] json = new byte[prefix.length + invalid.length + suffix.length];
+            System.arraycopy(prefix, 0, json, 0, prefix.length);
+            System.arraycopy(invalid, 0, json, prefix.length, invalid.length);
+            System.arraycopy(suffix, 0, json, prefix.length + invalid.length, suffix.length);
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> WireHeaderReader.decode(json, 0, json.length));
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    error.getMessage().contains("UTF-8"), error.getMessage());
+        }
+    }
+
+    @Test
+    void legacyNextKeyAndOtherwiseUnreachableLiteralGuardRemainSpecified() throws Exception {
+        WireHeaderReader reader = reflectedReader("{\"a\":1,\"b\":2}");
+        reader.beginObject();
+
+        assertEquals("a", reader.nextKey());
+        reader.skipValue();
+        assertEquals("b", reader.nextKey());
+        reader.skipValue();
+        assertNull(reader.nextKey());
+
+        IllegalArgumentException error = invokeRejected(reflectedReader("x"), "skipLiteral");
+        assertEquals("wire header JSON: expected literal at offset 0", error.getMessage());
+    }
+
+    @Test
+    void canonicalKeyFallbackParsesEscapedAndUtf8Keys() {
+        WireHeaderReader.Decoded decoded = decode(
+                "{\"status\":200,\"headers\":{\"content\\u002dtype\":\"text/plain\","
+                        + "\"café\":\"yes\"},\"metadata\":{\"ver\\u0073ion\":\"1\"}}");
+
+        assertEquals("text/plain", decoded.headers.get("content-type"));
+        assertEquals("yes", decoded.headers.get("café"));
+        assertEquals("1", decoded.metadata.get("version"));
+    }
+
+    @Test
+    void canonicalKeyProbeRejectsNonStringAndUnterminatedKeysPrecisely() throws Exception {
+        IllegalArgumentException nonString = invokeRejected(
+                reflectedReader("7"), "nextKeyCanonical");
+        assertEquals("wire header JSON: expected string at offset 0", nonString.getMessage());
+
+        String unterminated = "\"unterminated";
+        IllegalArgumentException missingQuote = invokeRejected(
+                reflectedReader(unterminated), "nextKeyCanonical");
+        assertEquals(
+                "wire header JSON: unterminated string at offset " + unterminated.length(),
+                missingQuote.getMessage());
+    }
+
+    @Test
+    void rootKeyMatcherSkipsEscapedKeysAndRejectsUnterminatedKeysPrecisely() {
+        WireHeaderReader.Decoded decoded = decode("{\"sta\\\"tus\":200}");
+        assertEquals(500, decoded.status);
+
+        String unterminated = "{\"status";
+        assertDecodeFailure(
+                unterminated,
+                "wire header JSON: unterminated string at offset " + unterminated.length());
+    }
+
+    @Test
+    void validationPrimitiveNumberErrorsReportExactOffsets() {
+        String unexpected = "{\"validation_errors\":[{\"x\":?}]}";
+        assertDecodeFailure(
+                unexpected,
+                "wire header JSON: unexpected primitive value at offset " + unexpected.indexOf('?'));
+
+        String decimal = "{\"validation_errors\":[{\"x\":1.}]}";
+        assertDecodeFailure(
+                decimal,
+                "wire header JSON: expected digit after decimal point at offset "
+                        + (decimal.indexOf("1.") + 2));
+
+        String exponent = "{\"validation_errors\":[{\"x\":1e}]}";
+        assertDecodeFailure(
+                exponent,
+                "wire header JSON: expected digit in exponent at offset "
+                        + (exponent.indexOf("1e") + 2));
+
+        String signOnly = "{\"validation_errors\":[{\"x\":-}]}";
+        assertDecodeFailure(
+                signOnly,
+                "wire header JSON: expected number at offset " + signOnly.indexOf('-'));
+    }
+
+    @Test
+    void truncatedUtf8AndUnicodeEscapeReportExactOffsets() {
+        byte[] utf8Prefix = "{\"headers\":{\"x\":\"".getBytes(StandardCharsets.UTF_8);
+        byte[] truncatedUtf8 = java.util.Arrays.copyOf(utf8Prefix, utf8Prefix.length + 1);
+        truncatedUtf8[utf8Prefix.length] = (byte) 0xE2;
+        assertDecodeFailure(
+                truncatedUtf8,
+                "wire header JSON: truncated UTF-8 at offset " + truncatedUtf8.length);
+
+        String truncatedUnicode = "{\"headers\":{\"x\":\"\\u12";
+        assertDecodeFailure(
+                truncatedUnicode,
+                "wire header JSON: truncated unicode escape at offset "
+                        + (truncatedUnicode.length() - 2));
     }
 }

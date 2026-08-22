@@ -1,5 +1,10 @@
 plugins {
     java
+    // Records execution data for the vespera-bridge classes this suite drives
+    // through a REAL loaded cdylib — the JNI wrappers and the Spring proxy that
+    // the bridge's own unit tests cannot reach. libs/vespera-bridge merges this
+    // `build/jacoco/test.exec` into its report.
+    jacoco
     id("org.springframework.boot") version "3.2.5"
     id("io.spring.dependency-management") version "1.1.4"
     // ───────────────────────────────────────────────────────────────────

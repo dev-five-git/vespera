@@ -8,6 +8,8 @@ import org.junit.jupiter.api.Test;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -16,6 +18,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -281,6 +284,19 @@ class VesperaWireTest {
         assertEquals(0, decoded.body().position(), "body view position must start at 0");
         assertEquals("I'm a teapot".length(), decoded.body().limit(),
                 "body view limit must equal body length");
+    }
+
+    @Test
+    void decodedResponseNormalizesWritablePositionedBodyToReadOnlySlice() {
+        ByteBuffer source = ByteBuffer.wrap(new byte[] {10, 20, 30});
+        source.position(1);
+
+        DecodedResponse decoded = new DecodedResponse(
+                200, Map.of(), Map.of(), source, null);
+
+        assertTrue(decoded.body().isReadOnly());
+        assertEquals(0, decoded.body().position());
+        assertArrayEquals(new byte[] {20, 30}, decoded.bodyBytes());
     }
 
     @Test
@@ -552,5 +568,136 @@ class VesperaWireTest {
 
         assertEquals(200, decoded.status());
         assertTrue(decoded.headers().isEmpty(), "empty headers object yields an empty map");
+    }
+
+    @Test
+    void nullHeadersNullBodyBlankAppAndMapFailurePathsAreSpecified() throws Exception {
+        byte[] wire = VesperaWireCodec.encodeRequest("   ", "GET", "/x", null,
+                (Map<String, String>) null, null);
+        int headerLen = ByteBuffer.wrap(wire).getInt();
+        JsonNode header = MAPPER.readTree(wire, 4, headerLen);
+        assertTrue(header.path("headers").isMissingNode());
+        assertTrue(header.path("app").isMissingNode());
+        assertEquals(4 + headerLen, wire.length);
+
+        Map<String, String> invalid = new HashMap<>();
+        invalid.put(null, "value");
+        NullPointerException error = assertThrows(
+                NullPointerException.class,
+                () -> VesperaWireCodec.encodeRequest(null, "GET", "/x", null, invalid, null));
+        assertEquals("header key", error.getMessage());
+    }
+
+    @Test
+    void headerSourceConvenienceOverloadsEncodeDefaultAndNamedApps() throws Exception {
+        VesperaBridge.HeaderSource headers = sink -> sink.put("x-test", "yes");
+
+        byte[] defaultHeader = VesperaBridge.encodeRequestHeader(
+                "GET", "/default", null, headers);
+        byte[] namedHeader = VesperaBridge.encodeRequestHeader(
+                "admin", "POST", "/named", "a=1", headers);
+        byte[] request = VesperaBridge.encodeRequest(
+                "PUT", "/request", null, headers, new byte[] {7, 8});
+
+        JsonNode defaultJson = headerJson(defaultHeader);
+        JsonNode namedJson = headerJson(namedHeader);
+        JsonNode requestJson = headerJson(request);
+        assertTrue(defaultJson.path("app").isMissingNode());
+        assertEquals("yes", defaultJson.path("headers").path("x-test").asText());
+        assertEquals("admin", namedJson.path("app").asText());
+        assertEquals("/named?a=1", namedJson.path("path").asText());
+        assertEquals("PUT", requestJson.path("method").asText());
+        assertArrayEquals(new byte[] {7, 8}, java.util.Arrays.copyOfRange(
+                request, 4 + ByteBuffer.wrap(request).getInt(), request.length));
+    }
+
+    @Test
+    void headerSourceOverloadRejectsQuestionMarkInPathWithExactMessage() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> VesperaBridge.encodeRequest(
+                        "GET", "/items?page=1", null,
+                        (VesperaBridge.HeaderSource) sink -> {}, new byte[0]));
+
+        assertEquals(
+                "path must not contain '?' — pass the raw query string via the query parameter",
+                error.getMessage());
+    }
+
+    private static JsonNode headerJson(byte[] wire) throws Exception {
+        int headerLen = ByteBuffer.wrap(wire).getInt();
+        return MAPPER.readTree(wire, 4, headerLen);
+    }
+
+    @Test
+    void byteBufferHeaderLengthFailuresArePrecise() {
+        IllegalArgumentException shortError = assertThrows(
+                IllegalArgumentException.class,
+                () -> VesperaWireCodec.readHeaderLength(ByteBuffer.allocateDirect(3)));
+        assertEquals("wire response too short: 3 bytes", shortError.getMessage());
+
+        ByteBuffer overflow = ByteBuffer.allocateDirect(4);
+        overflow.putInt(32);
+        IllegalArgumentException overflowError = assertThrows(
+                IllegalArgumentException.class,
+                () -> VesperaWireCodec.readHeaderLength(overflow));
+        assertEquals("wire header_len 32 overflows response (4 bytes)", overflowError.getMessage());
+
+        IllegalArgumentException nullError = assertThrows(
+                IllegalArgumentException.class,
+                () -> VesperaWireCodec.readHeaderLength((byte[]) null));
+        assertEquals("wire response too short: null", nullError.getMessage());
+    }
+
+    @Test
+    void exposedHeaderBufferGrowthAndBoundsAreSpecified() throws Exception {
+        VesperaWireCodec.ExposedByteArrayOutputStream bytes =
+                new VesperaWireCodec.ExposedByteArrayOutputStream(0);
+        bytes.put('a');
+        bytes.putAscii("bc");
+        bytes.putAsciiSlice("ignored", 3, 3);
+
+        assertEquals(4, bytes.capacity());
+        assertEquals("abc", new String(bytes.backingArray(), 0, bytes.size(), StandardCharsets.US_ASCII));
+
+        Method growCap = VesperaWireCodec.ExposedByteArrayOutputStream.class
+                .getDeclaredMethod("growCap", int.class, int.class);
+        growCap.setAccessible(true);
+        assertEquals(64 * 1024 * 1024, growCap.invoke(null, 40 * 1024 * 1024, 60 * 1024 * 1024));
+        InvocationTargetException wrapped = assertThrows(
+                InvocationTargetException.class,
+                () -> growCap.invoke(null, 1, 64 * 1024 * 1024 + 1));
+        IllegalArgumentException tooLarge = assertInstanceOf(
+                IllegalArgumentException.class, wrapped.getCause());
+        assertEquals("wire header exceeds 67108864 bytes", tooLarge.getMessage());
+    }
+
+    @Test
+    void directAsciiScratchGrowsThenUsesLargeTemporaryArray() {
+        WireHeaderReader.clearCurrentThreadBuffers();
+        String medium = "m".repeat(300);
+        ByteBuffer mediumBuffer = ByteBuffer.allocateDirect(medium.length());
+        mediumBuffer.put(medium.getBytes(StandardCharsets.US_ASCII));
+        String large = "l".repeat(9 * 1024);
+        ByteBuffer largeBuffer = ByteBuffer.allocateDirect(large.length());
+        largeBuffer.put(large.getBytes(StandardCharsets.US_ASCII));
+
+        assertEquals(medium, WireHeaderStringSupport.readAsciiString(mediumBuffer, 0, medium.length()));
+        assertEquals(large, WireHeaderStringSupport.readAsciiString(largeBuffer, 0, large.length()));
+    }
+
+    @Test
+    void oversizedReusableBufferIsLazilyReplaced() {
+        VesperaWireCodec.clearCurrentThreadBuffers();
+        VesperaWireCodec.ExposedByteArrayOutputStream oversized = VesperaWireCodec.fillHeaderJson(
+                null, "GET", "/x", null, Map.of("x-big", "x".repeat(40 * 1024)));
+        assertTrue(oversized.capacity() > 32 * 1024);
+
+        VesperaWireCodec.ExposedByteArrayOutputStream replacement =
+                VesperaWireCodec.fillHeaderJson(null, "GET", "/next", null, Map.of());
+
+        assertEquals(256, replacement.capacity());
+        assertTrue(new String(replacement.backingArray(), 0, replacement.size(), StandardCharsets.UTF_8)
+                .contains("/next"));
     }
 }

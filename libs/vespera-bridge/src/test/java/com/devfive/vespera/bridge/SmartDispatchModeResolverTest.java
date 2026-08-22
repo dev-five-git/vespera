@@ -164,4 +164,26 @@ class SmartDispatchModeResolverTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new SmartDispatchModeResolver(256 * 1024, -1));
     }
+
+    @Test
+    void safeRequestOnVirtualThreadUsesSyncOnlyWithinSyncGate() {
+        SmartDispatchModeResolver split = new SmartDispatchModeResolver(1024, 128);
+
+        assertEquals(DispatchMode.SYNC,
+                split.resolveMode(request("GET", 128), true));
+        assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING,
+                split.resolveMode(request("GET", 129), true));
+        assertEquals(DispatchMode.SYNC,
+                split.resolveMode(new MockHttpServletRequest("GET", "/x"), true));
+    }
+
+    @Test
+    void zeroGatesStillAcceptExplicitlyEmptyRequests() {
+        SmartDispatchModeResolver zero = new SmartDispatchModeResolver(0, 0);
+
+        assertEquals(DispatchMode.DIRECT, zero.resolveMode(request("GET", 0), false));
+        assertEquals(DispatchMode.SYNC, zero.resolveMode(request("POST", 0), false));
+        assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING,
+                zero.resolveMode(request("POST", 1), false));
+    }
 }

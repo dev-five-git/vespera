@@ -922,7 +922,6 @@ vespera::jni_app!(create_app);
 
 ```java
 @SpringBootApplication
-@ComponentScan(basePackages = {"com.example.app", "com.devfive.vespera.bridge"})
 public class MyApp {
     public static void main(String[] args) {
         VesperaBridge.init("my_rust_lib");
@@ -930,6 +929,11 @@ public class MyApp {
     }
 }
 ```
+
+> Do **not** add `com.devfive.vespera.bridge` to `@ComponentScan` — the bridge is
+> registered by Spring Boot autoconfiguration. Scanning it picks the controller
+> up as a plain `@RestController`, which fails to construct and bypasses
+> `vespera.bridge.controller-enabled`.
 
 The `VesperaProxyController` auto-registers as a catch-all and forwards every HTTP request through a length-prefixed **binary wire format** (`[u32 BE | UTF-8 JSON header | raw body]`) — multipart uploads, PDFs, and images travel raw, with zero base64 overhead.
 
