@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use vespera_core::schema::SecurityScheme;
 
 use crate::{
-    file_utils::{entry_fingerprint, file_fingerprint},
+    file_utils::{collect_files_with_mtimes, file_fingerprint},
     metadata::{CollectedMetadata, StructMetadata},
     router_codegen::ProcessedVesperaInput,
 };
@@ -384,11 +384,21 @@ fn macro_src_dir(target_dir: &Path) -> Option<PathBuf> {
 /// Fingerprints only Rust files below the supplied directory, taking the root
 /// explicitly so callers and tests share identical ordering and hashing.
 fn fingerprint_rs_directory(macro_src: &Path) -> u64 {
-    if !macro_src.is_dir() {
-        return 0;
-    }
-    let mut entries: Vec<(String, u64)> = Vec::new();
-    collect_rs_mtimes(macro_src, &mut entries);
+    collect_files_with_mtimes(macro_src).map_or(0, hash_rs_fingerprints)
+}
+
+/// Order-independent fingerprint over the `.rs` entries of a completed scan.
+///
+/// The fingerprint is the canonical mtime+size [`file_fingerprint`] the scan
+/// already computed, so a timestamp-preserving edit to macro source (git
+/// checkout, `cp -p`, build-cache restore) invalidates downstream route caches
+/// instead of silently serving a stale spec.
+fn hash_rs_fingerprints(files: Vec<(PathBuf, u64)>) -> u64 {
+    let mut entries: Vec<(String, u64)> = files
+        .into_iter()
+        .filter(|(path, _)| path.extension().is_some_and(|e| e == "rs"))
+        .map(|(path, fingerprint)| (path.display().to_string(), fingerprint))
+        .collect();
     entries.sort();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for (path, mtime) in &entries {
@@ -396,61 +406,6 @@ fn fingerprint_rs_directory(macro_src: &Path) -> u64 {
         mtime.hash(&mut hasher);
     }
     hasher.finish()
-}
-
-/// Processes one already-typed directory entry, preserving recursive `.rs`-only
-/// collection while accepting the scan result explicitly after fallible typing.
-///
-/// An unavailable `Metadata` keeps the `0` fingerprint sentinel.
-fn collect_rs_mtime_entry(
-    entry: &std::fs::DirEntry,
-    file_type: std::fs::FileType,
-    out: &mut Vec<(String, u64)>,
-) {
-    let path = entry.path();
-    if file_type.is_dir() {
-        collect_rs_mtimes(&path, out);
-    } else {
-        push_rs_fingerprint(entry, &path, out);
-    }
-}
-
-/// Records `path`'s fingerprint when it is a `.rs` file.
-///
-/// Every other extension is skipped WITHOUT the `metadata()` stat, matching
-/// `file_utils::collect_with_mtimes_into`: only the files the cache actually
-/// fingerprints pay for their mtime.
-fn push_rs_fingerprint(entry: &std::fs::DirEntry, path: &Path, out: &mut Vec<(String, u64)>) {
-    if path.extension().is_some_and(|e| e == "rs") {
-        out.push((
-            path.display().to_string(),
-            entry_fingerprint(&entry.metadata()),
-        ));
-    }
-}
-
-/// Recursively collect `(path, fingerprint)` pairs for `.rs` files.
-///
-/// Uses `DirEntry::file_type()` / `DirEntry::metadata()` rather than
-/// `Path::is_dir()` / `fs::metadata(&path)`: both `DirEntry` accessors
-/// are carried by the directory scan (free on Windows + most Unix), so
-/// the dir/file split costs no extra `stat` syscall per entry — only
-/// the `.rs` files we actually fingerprint pay for their mtime.
-///
-/// The fingerprint is the canonical mtime+size [`file_fingerprint`],
-/// computed from the SAME `metadata()` call the mtime already needed —
-/// zero extra syscalls — so a timestamp-preserving edit to macro source
-/// (git checkout, `cp -p`, build-cache restore) invalidates downstream
-/// route caches instead of silently serving a stale spec.
-fn collect_rs_mtimes(dir: &Path, out: &mut Vec<(String, u64)>) {
-    let Ok(read_dir) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in read_dir.flatten() {
-        if let Ok(file_type) = entry.file_type() {
-            collect_rs_mtime_entry(&entry, file_type, out);
-        }
-    }
 }
 
 /// Try to read and deserialize a cache file. Returns None on any failure.
@@ -611,18 +566,16 @@ mod tests {
 
     /// A macro-source edit that PRESERVES the mtime (timestamp-preserving
     /// checkout / `cp -p` / build-cache restore) but changes the file size
-    /// must still move the macro-dev fingerprint — the mtime-only version of
-    /// `collect_rs_mtimes` reported an unchanged fingerprint here and served
-    /// a stale route cache.
+    /// must still move the macro-dev fingerprint — the mtime-only version
+    /// reported an unchanged fingerprint here and served a stale route cache.
     #[test]
-    fn collect_rs_mtimes_reacts_to_size_only_change() {
+    fn macro_source_fingerprint_reacts_to_size_only_change() {
         let dir = tempfile::TempDir::new().unwrap();
         let file = dir.path().join("lib.rs");
         std::fs::write(&file, "fn a() {}").unwrap();
         let original_mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
 
-        let mut before = Vec::new();
-        collect_rs_mtimes(dir.path(), &mut before);
+        let before = fingerprint_rs_directory(dir.path());
 
         // Rewrite with a DIFFERENT length, then restore the original mtime.
         std::fs::write(&file, "fn a() {} // grew").unwrap();
@@ -635,12 +588,9 @@ mod tests {
             "test precondition: mtime must be unchanged"
         );
 
-        let mut after = Vec::new();
-        collect_rs_mtimes(dir.path(), &mut after);
-
-        assert_eq!(before.len(), 1);
         assert_ne!(
-            before, after,
+            before,
+            fingerprint_rs_directory(dir.path()),
             "mtime-preserving size change must change the fingerprint"
         );
     }
@@ -648,24 +598,24 @@ mod tests {
     /// A byte-identical rewrite that also restores the mtime is a genuine
     /// cache HIT — the size term must not make the fingerprint unstable.
     #[test]
-    fn collect_rs_mtimes_is_stable_for_identical_content_and_mtime() {
+    fn macro_source_fingerprint_is_stable_for_identical_content_and_mtime() {
         let dir = tempfile::TempDir::new().unwrap();
         let file = dir.path().join("lib.rs");
         std::fs::write(&file, "fn a() {}").unwrap();
         let original_mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
 
-        let mut before = Vec::new();
-        collect_rs_mtimes(dir.path(), &mut before);
+        let before = fingerprint_rs_directory(dir.path());
 
         std::fs::write(&file, "fn a() {}").unwrap();
         let handle = std::fs::File::options().write(true).open(&file).unwrap();
         handle.set_modified(original_mtime).unwrap();
         drop(handle);
 
-        let mut after = Vec::new();
-        collect_rs_mtimes(dir.path(), &mut after);
-
-        assert_eq!(before, after, "unchanged file must keep its fingerprint");
+        assert_eq!(
+            before,
+            fingerprint_rs_directory(dir.path()),
+            "unchanged file must keep its fingerprint"
+        );
     }
 
     #[test]
@@ -895,11 +845,9 @@ mod tests {
     }
 
     #[test]
-    fn macro_source_collection_returns_empty_for_absent_directory() {
+    fn macro_source_fingerprint_is_zero_for_an_absent_directory() {
         let temp = tempfile::TempDir::new().unwrap();
-        let mut entries = Vec::new();
-        collect_rs_mtimes(&temp.path().join("absent"), &mut entries);
-        assert!(entries.is_empty());
+        assert_eq!(fingerprint_rs_directory(&temp.path().join("absent")), 0);
     }
 
     #[test]
@@ -928,25 +876,35 @@ mod tests {
     }
 
     #[test]
-    fn collect_rs_mtime_entry_uses_resolved_file_type() {
+    fn rs_fingerprints_skip_other_extensions_and_survive_nesting() {
         let temp = tempfile::TempDir::new().unwrap();
-        let rust_file = temp.path().join("lib.rs");
-        let text_file = temp.path().join("README.md");
-        std::fs::write(&rust_file, "pub struct App;").unwrap();
-        std::fs::write(&text_file, "fixture").unwrap();
-        let mut entries: Vec<_> = std::fs::read_dir(temp.path())
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        entries.sort_by_key(std::fs::DirEntry::path);
-        let mut fingerprints = Vec::new();
+        let nested = temp.path().join("routes");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(temp.path().join("lib.rs"), "pub struct App;").unwrap();
+        std::fs::write(temp.path().join("README.md"), "fixture").unwrap();
+        std::fs::write(nested.join("users.rs"), "pub fn list() {}").unwrap();
 
-        for entry in entries {
-            collect_rs_mtime_entry(&entry, entry.file_type().unwrap(), &mut fingerprints);
-        }
+        let scanned = collect_files_with_mtimes(temp.path()).unwrap();
+        let rust_only: Vec<_> = scanned
+            .iter()
+            .filter(|(path, _)| path.extension().is_some_and(|e| e == "rs"))
+            .collect();
 
-        assert_eq!(fingerprints.len(), 1);
-        assert_eq!(fingerprints[0].0, rust_file.display().to_string());
-        assert_ne!(fingerprints[0].1, 0);
+        assert_eq!(scanned.len(), 3, "the walk must recurse and see every file");
+        assert_eq!(rust_only.len(), 2, "both `.rs` files must be fingerprinted");
+        assert!(
+            rust_only.iter().all(|(_, fingerprint)| *fingerprint != 0),
+            "every `.rs` file must carry a real fingerprint: {rust_only:?}"
+        );
+        assert_ne!(
+            hash_rs_fingerprints(scanned.clone()),
+            hash_rs_fingerprints(
+                scanned
+                    .into_iter()
+                    .filter(|(path, _)| !path.ends_with("users.rs"))
+                    .collect()
+            ),
+            "dropping a nested `.rs` file must move the digest"
+        );
     }
 }
