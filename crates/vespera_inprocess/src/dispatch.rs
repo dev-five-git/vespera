@@ -265,20 +265,14 @@ fn envelope_serialization_fallback() -> String {
 /// clone.
 pub async fn dispatch(router: Router, envelope: &RequestEnvelope) -> String {
     let result = dispatch_owned(router, envelope.clone()).await;
-    serde_json::to_string(&result).unwrap_or_else(|_| {
-        // Unreachable in practice: `ResponseEnvelope` derives `Serialize`
-        // over only primitives, `String`, `BTreeMap`, and `Cow<'static, str>`
-        // — none of which can `Err` in `serde_json`.  A hand-rendered
-        // byte-identical `500` envelope keeps this public direct-API entry
-        // free of unwind sites (matching the no-panic/unwind discipline the
-        // FFI-adjacent hot path documents in
-        // [`crate::internal::router_oneshot`],
-        // [`crate::wire::header_write`], and
-        // [`crate::wire::header_read::expect_literal`]), while preserving
-        // the same JSON shape (`status`/`headers`/`body`/`metadata.version`)
-        // the derived path emits so external decoders are unaffected.
-        envelope_serialization_fallback()
-    })
+    // The fallback is unreachable in practice: `ResponseEnvelope` derives
+    // `Serialize` over only primitives, `String`, `BTreeMap`, and
+    // `Cow<'static, str>` — none of which can `Err` in `serde_json`.  Keeping
+    // it (instead of unwrapping) leaves this public direct-API entry free of
+    // unwind sites, matching the no-panic discipline documented in
+    // [`crate::internal::router_oneshot`], [`crate::wire::header_write`], and
+    // [`crate::wire::header_read::expect_literal`].
+    serde_json::to_string(&result).unwrap_or_else(|_| envelope_serialization_fallback())
 }
 
 /// Typed dispatch — returns a [`ResponseEnvelope`] directly.
@@ -457,13 +451,14 @@ async fn finish_buffered_wire(
     // common case computes the identical value, and `finish_direct_write`
     // already uses the same saturating accounting for its overflow reporting.
     let mut out = Vec::with_capacity(4usize.saturating_add(header_cap).saturating_add(body_cap));
-    if !write_wire_header_into_vec(&mut out, status, &headers, &metadata) {
-        // Unreachable for a real `HeaderMap` (4 GiB+ of header JSON); never
-        // panic on the response path — emit a 500 wire response instead.
-        return error_wire(500, HEADER_TOO_LARGE_MSG);
+    // The `false` arm is unreachable for a real `HeaderMap` (4 GiB+ of header
+    // JSON); it emits a 500 wire response rather than panicking on the
+    // response path.
+    if write_wire_header_into_vec(&mut out, status, &headers, &metadata) {
+        drain_buffered_body(out, body).await
+    } else {
+        error_wire(500, HEADER_TOO_LARGE_MSG)
     }
-
-    drain_buffered_body(out, body).await
 }
 
 /// Appends complete body frames while replacing any failed stream with a 500 wire.

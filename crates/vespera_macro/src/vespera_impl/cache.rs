@@ -300,10 +300,10 @@ pub(super) fn compute_config_hash_with_merge_cache(
 /// Hashes one complete security scheme, preserving the stable serialization
 /// fallback while taking the destination hasher explicitly for loop reuse.
 fn hash_security_scheme(scheme: &SecurityScheme, hasher: &mut impl Hasher) {
-    match serde_json::to_string(scheme) {
-        Ok(json) => json.hash(hasher),
-        Err(_) => "scheme:unserializable".hash(hasher),
-    }
+    serde_json::to_string(scheme)
+        .as_deref()
+        .unwrap_or("scheme:unserializable")
+        .hash(hasher);
 }
 
 /// Compute a deterministic hash for `export_app!` inputs.
@@ -366,10 +366,7 @@ pub(super) fn compute_macro_dev_fingerprint() -> u64 {
 fn compute_macro_dev_fingerprint_uncached() -> u64 {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let target_dir = find_target_dir(Path::new(&manifest_dir));
-    let Some(macro_src) = macro_src_dir(&target_dir) else {
-        return 0;
-    };
-    fingerprint_rs_directory(&macro_src)
+    macro_src_dir(&target_dir).map_or(0, |macro_src| fingerprint_rs_directory(&macro_src))
 }
 
 /// Derives the in-workspace macro source path only from the supplied target
@@ -403,6 +400,8 @@ fn fingerprint_rs_directory(macro_src: &Path) -> u64 {
 
 /// Processes one already-typed directory entry, preserving recursive `.rs`-only
 /// collection while accepting the scan result explicitly after fallible typing.
+///
+/// An unavailable `Metadata` keeps the `0` fingerprint sentinel.
 fn collect_rs_mtime_entry(
     entry: &std::fs::DirEntry,
     file_type: std::fs::FileType,
@@ -412,7 +411,6 @@ fn collect_rs_mtime_entry(
     if file_type.is_dir() {
         collect_rs_mtimes(&path, out);
     } else if path.extension().is_some_and(|e| e == "rs") {
-        // Unavailable metadata keeps the `0` sentinel.
         let fingerprint = entry.metadata().as_ref().map_or(0, file_fingerprint);
         out.push((path.display().to_string(), fingerprint));
     }
@@ -436,10 +434,9 @@ fn collect_rs_mtimes(dir: &Path, out: &mut Vec<(String, u64)>) {
         return;
     };
     for entry in read_dir.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        collect_rs_mtime_entry(&entry, file_type, out);
+        if let Ok(file_type) = entry.file_type() {
+            collect_rs_mtime_entry(&entry, file_type, out);
+        }
     }
 }
 

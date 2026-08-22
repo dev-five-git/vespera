@@ -189,12 +189,14 @@ fn find_bare_struct_in_call_site(
     src_dir: &Path,
     struct_name: &str,
 ) -> Result<(StructMetadata, Vec<String>), LookupError> {
-    let Some(file_path) = proc_macro2::Span::call_site().local_file() else {
-        return Err(LookupError::BareNotFound {
-            struct_name: struct_name.to_string(),
-        });
-    };
-    find_bare_struct_in_file(&file_path, struct_name, src_dir)
+    proc_macro2::Span::call_site().local_file().map_or_else(
+        || {
+            Err(LookupError::BareNotFound {
+                struct_name: struct_name.to_string(),
+            })
+        },
+        |file_path| find_bare_struct_in_file(&file_path, struct_name, src_dir),
+    )
 }
 
 /// Resolves a bare struct in the supplied file, preserving call-site-only lookup
@@ -245,10 +247,9 @@ pub fn collect_rs_files_recursive(dir: &Path, files: &mut Vec<std::path::PathBuf
         // `file_utils::collect_with_mtimes_into` pattern (symlinks, which are
         // neither file nor dir here, are skipped — never present in a `src/`
         // tree this indexes).
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        collect_rs_entry(&entry, file_type, files);
+        if let Ok(file_type) = entry.file_type() {
+            collect_rs_entry(&entry, file_type, files);
+        }
     }
 }
 

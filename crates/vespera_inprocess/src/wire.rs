@@ -226,10 +226,8 @@ fn write_wire_header_into(
     // header JSON is unreachable for any real `HeaderMap`); on the impossible
     // overflow report `false` so the caller emits a `500` rather than
     // panicking on the response path.
-    let Ok(header_len) = u32::try_from(out.len() - start) else {
-        return false;
-    };
-    finish_wire_header(out, start, header_len)
+    u32::try_from(out.len() - start)
+        .is_ok_and(|header_len| finish_wire_header(out, start, header_len))
 }
 
 /// Backfills a representable header length without changing the emitted bytes.
@@ -405,16 +403,14 @@ pub fn to_wire_bytes(parts: ResponseParts) -> Vec<u8> {
     } else {
         None
     };
-    match build_header_vec(
+    build_header_vec(
         status,
         &headers,
         &metadata,
         validation_errors.as_deref(),
         body_bytes.len(),
-    ) {
-        Ok(out) => append_wire_body(out, &body_bytes),
-        Err(wire) => wire,
-    }
+    )
+    .map_or_else(|wire| wire, |out| append_wire_body(out, &body_bytes))
 }
 
 /// Appends the preserved 422 body after a successfully length-prefixed header.
