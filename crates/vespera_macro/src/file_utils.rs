@@ -490,6 +490,14 @@ mod tests {
             absolute.ends_with("/work/project/b.rs"),
             "an absolute path must not be re-rooted at cwd: {absolute}"
         );
+
+        // `Path::components()` normalizes inner `.` away by itself and only ever
+        // yields `Component::CurDir` for a LEADING `.`, so the folding loop's
+        // `CurDir` arm is reachable only when the joined path stays relative.
+        assert_eq!(
+            normalize_path_key("./routes/./users.rs", Path::new(".")),
+            "routes/users.rs"
+        );
     }
 
     #[test]
