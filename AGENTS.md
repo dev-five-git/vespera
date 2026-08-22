@@ -456,6 +456,17 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 # It is also the coverage for `crates/vespera_jni`, which tarpaulin excludes
 # (`#![cfg(not(tarpaulin_include))]`) because its symbols need a live JVM.
 # See .github/workflows/CI.yml
+
+# Rust BRANCH coverage (observational — the rust-branch-coverage CI job, which
+# never gates). tarpaulin cannot measure it at all: `--branch` is literally
+# "NOT IMPLEMENTED". cargo-llvm-cov can, on nightly. Read it as a trend only —
+# rust-lang/rust#124118 does not instrument `?`, `.await`, match arms /
+# or-patterns, or ANY macro-expanded branch, so vespera_macro's generated code
+# is dropped from the denominator rather than reported as uncovered.
+# `--branch` goes on the instrumented run; `report` rejects it.
+cargo +nightly llvm-cov --branch --workspace --no-fail-fast --no-report
+cargo llvm-cov report --summary-only \
+  --ignore-filename-regex '(benches|examples|vespera_jni)'
 ```
 
 ## NOTES

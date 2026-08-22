@@ -65,6 +65,72 @@ jobs:
           files: lcov.info
         if: github.ref == 'refs/heads/main'
 
+  # OBSERVATIONAL ONLY — this job must never gate, and its percentage must
+  # never become a threshold. Rust's branch instrumentation is still unstable
+  # (rust-lang/rust#79649), and rust-lang/rust#124118 lists as NOT yet
+  # supported: match arms and or-patterns, the `?` operator, `.await`, and
+  # any branch introduced by macro expansion — "the current implementation
+  # discards any branch span that isn't directly visible in the function
+  # body". vespera_macro owns roughly four fifths of the measured branches
+  # and exists to generate code inside `quote!`, so those generated branches
+  # are not reported as uncovered — they are dropped from the denominator.
+  # The number therefore under-counts precisely where this codebase is most
+  # complex, which is why it is a trend signal and not a pass/fail metric.
+  #
+  # vespera_jni is excluded for the same reason tarpaulin excludes it: it
+  # cannot run without a JVM, and jni-e2e is its real coverage. Including it
+  # reports ~4% branch and drowns out every other crate.
+  rust-branch-coverage:
+    name: Rust branch coverage (observational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Run instrumented tests
+        # Allowed to fail. This pins a MOVING nightly, and toolchain drift
+        # breaks tests that assert compiler output — the trybuild UI suite
+        # blesses its .stderr files against stable, so a nightly diagnostic
+        # reword fails it with nothing actually broken. The profraw data is
+        # still written, so the report step below runs regardless.
+        continue-on-error: true
+        run: cargo llvm-cov --branch --workspace --no-fail-fast --no-report
+      - name: Summarise branch coverage
+        run: |
+          # `--branch` belongs on the instrumented RUN above, not here: the
+          # profdata already carries branch counters, and `report` rejects
+          # the flag.
+          cargo llvm-cov report --summary-only \
+            --ignore-filename-regex '(benches|examples|vespera_jni)' \
+            | tee branch-coverage.txt
+          {
+            echo '### Rust branch coverage (observational)'
+            echo
+            echo 'Excludes benches, examples and `vespera_jni` (JVM-only — covered by jni-e2e).'
+            echo 'Not a gate: see the job comment in CI.yml for why this number under-counts.'
+            echo
+            echo '```'
+            cat branch-coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Generate lcov
+        if: always()
+        run: |
+          cargo llvm-cov report --lcov --output-path branch-lcov.info \
+            --ignore-filename-regex '(benches|examples|vespera_jni)'
+      - name: Upload branch coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-branch-coverage
+          path: |
+            branch-coverage.txt
+            branch-lcov.info
+
   # publish
   changepacks:
     name: changepacks
