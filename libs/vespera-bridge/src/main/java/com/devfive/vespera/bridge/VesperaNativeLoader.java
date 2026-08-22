@@ -25,20 +25,18 @@ final class VesperaNativeLoader {
         }
     }
 
+    @FunctionalInterface
+    interface TempFileDeleter {
+        void delete(Path path) throws IOException;
+    }
+
     static void loadBundled(String libraryName) {
         String os = detectOs();
         String arch = detectArch();
         String filename = mapLibraryName(os, libraryName);
         String resourcePath = "native/" + os + "-" + arch + "/" + filename;
 
-        MessageDigest digest;
-        try {
-            digest = MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException sha256Missing) {
-            throw new UnsatisfiedLinkError(
-                    "SHA-256 unavailable for native library verification: "
-                            + sha256Missing.getMessage());
-        }
+        MessageDigest digest = messageDigest("SHA-256");
 
         try (InputStream in =
                 VesperaBridge.class.getClassLoader().getResourceAsStream(resourcePath)) {
@@ -56,19 +54,10 @@ final class VesperaNativeLoader {
                 }
                 byte[] resourceDigest = digest.digest();
                 long extractedBytes = Files.size(temp);
-                if (copiedBytes != extractedBytes) {
-                    throw new UnsatisfiedLinkError("Native library extraction failed for " + resourcePath
-                            + ": copied " + copiedBytes + " bytes but extracted file has "
-                            + extractedBytes + " bytes.");
-                }
+                requireMatchingSize(resourcePath, copiedBytes, extractedBytes);
                 if (Boolean.getBoolean("vespera.native.verifyExtractedDigest")) {
                     byte[] extractedDigest = digestOfFile(temp, digest);
-                    if (!MessageDigest.isEqual(resourceDigest, extractedDigest)) {
-                        throw new UnsatisfiedLinkError(
-                                "Native library integrity check failed for " + resourcePath
-                                        + ": extracted file does not match the bundled resource "
-                                        + "(corrupted or modified extraction).");
-                    }
+                    requireMatchingDigest(resourcePath, resourceDigest, extractedDigest);
                 }
 
                 System.load(temp.toAbsolutePath().toString());
@@ -76,18 +65,50 @@ final class VesperaNativeLoader {
                 temp.toFile().deleteOnExit();
             } finally {
                 if (!loaded) {
-                    try {
-                        Files.deleteIfExists(temp);
-                    } catch (IOException deleteFailure) {
-                        // The load failure is more important; the temp path is
-                        // still deleteOnExit-free, so do not mask the root cause.
-                    }
+                    deleteAfterFailedLoad(temp, Files::deleteIfExists);
                 }
             }
         } catch (IOException e) {
             UnsatisfiedLinkError ule = new UnsatisfiedLinkError("Extract failed: " + e.getMessage());
             ule.initCause(e);
             throw ule;
+        }
+    }
+
+    static MessageDigest messageDigest(String algorithm) {
+        try {
+            return MessageDigest.getInstance(algorithm);
+        } catch (NoSuchAlgorithmException digestMissing) {
+            throw new UnsatisfiedLinkError(
+                    algorithm + " unavailable for native library verification: "
+                            + digestMissing.getMessage());
+        }
+    }
+
+    static void requireMatchingSize(String resourcePath, long copiedBytes, long extractedBytes) {
+        if (copiedBytes != extractedBytes) {
+            throw new UnsatisfiedLinkError("Native library extraction failed for " + resourcePath
+                    + ": copied " + copiedBytes + " bytes but extracted file has "
+                    + extractedBytes + " bytes.");
+        }
+    }
+
+    static void requireMatchingDigest(
+            String resourcePath, byte[] resourceDigest, byte[] extractedDigest) {
+        if (!MessageDigest.isEqual(resourceDigest, extractedDigest)) {
+            throw new UnsatisfiedLinkError(
+                    "Native library integrity check failed for " + resourcePath
+                            + ": extracted file does not match the bundled resource "
+                            + "(corrupted or modified extraction).");
+        }
+    }
+
+    static void deleteAfterFailedLoad(Path temp, TempFileDeleter deleter) {
+        try {
+            deleter.delete(temp);
+        } catch (IOException deleteFailure) {
+            // The load failure is more important; leaving the temp file behind
+            // must not mask the root cause the caller is about to report.
         }
     }
 

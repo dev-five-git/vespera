@@ -90,6 +90,16 @@ final class VesperaDirectBufferPool {
 
     private enum OversizePolicy { HEAP_FALLBACK, THROW }
 
+    @FunctionalInterface
+    interface DirectDispatcher {
+        int dispatch(ByteBuffer in, int inLen, ByteBuffer out);
+    }
+
+    @FunctionalInterface
+    interface HeapDispatcher {
+        byte[] dispatch(byte[] wireRequest);
+    }
+
     private static OversizePolicy oversizePolicy() {
         String configured = System.getProperty("vespera.direct.oversize-policy", "heap-fallback");
         if ("throw".equalsIgnoreCase(configured)) {
@@ -117,9 +127,13 @@ final class VesperaDirectBufferPool {
     private static final java.lang.invoke.MethodHandle IS_VIRTUAL = resolveIsVirtual();
 
     private static java.lang.invoke.MethodHandle resolveIsVirtual() {
+        return resolveThreadBooleanMethod("isVirtual");
+    }
+
+    static java.lang.invoke.MethodHandle resolveThreadBooleanMethod(String methodName) {
         try {
             return java.lang.invoke.MethodHandles.lookup()
-                    .findVirtual(Thread.class, "isVirtual",
+                    .findVirtual(Thread.class, methodName,
                             java.lang.invoke.MethodType.methodType(boolean.class));
         } catch (ReflectiveOperationException pre21Runtime) {
             return null;
@@ -139,11 +153,16 @@ final class VesperaDirectBufferPool {
      * {@link VesperaBridge#dispatchBytes(byte[])} path instead.
      */
     static boolean currentThreadIsVirtual() {
-        if (IS_VIRTUAL == null) {
+        return invokeThreadBooleanMethod(IS_VIRTUAL, Thread.currentThread());
+    }
+
+    static boolean invokeThreadBooleanMethod(
+            java.lang.invoke.MethodHandle method, Thread thread) {
+        if (method == null) {
             return false;
         }
         try {
-            return (boolean) IS_VIRTUAL.invokeExact(Thread.currentThread());
+            return (boolean) method.invokeExact(thread);
         } catch (RuntimeException | Error fatalMustPropagate) {
             // JVM Errors (OutOfMemoryError, StackOverflowError, …) and runtime
             // exceptions are never the reflective-fallback case — let them
@@ -156,6 +175,21 @@ final class VesperaDirectBufferPool {
             // (pooled) path, preserving the prior behavior.
             return false;
         }
+    }
+
+    static String pooledFallbackReason(boolean currentThreadIsVirtual) {
+        return currentThreadIsVirtual ? "virtual thread" : "oversized request";
+    }
+
+    static void requireExpectedWrite(int written, int expected) {
+        if (written != expected) {
+            throw new IllegalStateException(
+                    "assembleInto wrote " + written + ", expected " + expected);
+        }
+    }
+
+    static ByteBuffer dispatchHeap(byte[] wireRequest, HeapDispatcher dispatcher) {
+        return ByteBuffer.wrap(dispatcher.dispatch(wireRequest)).asReadOnlyBuffer();
     }
 
     /**
@@ -236,18 +270,27 @@ final class VesperaDirectBufferPool {
 
     static ByteBuffer dispatchDirectPooled(
             byte[] wireRequest, boolean retryOnOverflow, boolean currentThreadIsVirtual) {
+        return dispatchDirectPooled(
+                wireRequest, retryOnOverflow, currentThreadIsVirtual, VesperaBridge::dispatchBytes);
+    }
+
+    static ByteBuffer dispatchDirectPooled(
+            byte[] wireRequest,
+            boolean retryOnOverflow,
+            boolean currentThreadIsVirtual,
+            HeapDispatcher heapDispatcher) {
         Objects.requireNonNull(wireRequest, "wireRequest");
         if (currentThreadIsVirtual || wireRequest.length > DIRECT_MAX_CAPACITY) {
             if (oversizePolicy() == OversizePolicy.THROW) {
                 rejectPooledFallback(
-                        currentThreadIsVirtual ? "virtual thread" : "oversized request",
+                        pooledFallbackReason(currentThreadIsVirtual),
                         wireRequest.length);
             }
             // Explicit heap-fallback: virtual threads avoid per-vthread
             // off-heap ThreadLocal retention, and oversized requests cannot fit
             // the direct pool. This fully buffers via dispatchBytes; it is not a
             // streaming fallback.
-            return ByteBuffer.wrap(VesperaBridge.dispatchBytes(wireRequest)).asReadOnlyBuffer();
+            return dispatchHeap(wireRequest, heapDispatcher);
         }
         ByteBuffer[] pool = directPool();
         if (pool[0].capacity() < wireRequest.length) {
@@ -268,23 +311,39 @@ final class VesperaDirectBufferPool {
             Map<String, String> headers,
             byte[] body,
             boolean retryOnOverflow) {
+        return dispatchDirectPooled(
+                appName, method, path, query, headers, body, retryOnOverflow,
+                VesperaDirectBufferPool::currentThreadIsVirtual,
+                VesperaBridge::dispatchBytes);
+    }
+
+    static ByteBuffer dispatchDirectPooled(
+            String appName,
+            String method,
+            String path,
+            String query,
+            Map<String, String> headers,
+            byte[] body,
+            boolean retryOnOverflow,
+            java.util.function.BooleanSupplier virtualThreadSupplier,
+            HeapDispatcher heapDispatcher) {
         byte[] bodyBytes = body != null ? body : VesperaWireCodec.EMPTY_BODY;
         ExposedByteArrayOutputStream hdr =
                 VesperaWireCodec.fillHeaderJson(appName, method, path, query, headers);
         try {
             int headerLen = hdr.size();
             int total = VesperaWireCodec.wireTotalLength(headerLen, bodyBytes.length);
-            if (currentThreadIsVirtual() || total > DIRECT_MAX_CAPACITY) {
+            if (virtualThreadSupplier.getAsBoolean() || total > DIRECT_MAX_CAPACITY) {
                 if (oversizePolicy() == OversizePolicy.THROW) {
                     rejectPooledFallback(
-                            currentThreadIsVirtual() ? "virtual thread" : "oversized request",
+                            pooledFallbackReason(virtualThreadSupplier.getAsBoolean()),
                             total);
                 }
                 // Explicit heap-fallback: fully buffers via dispatchBytes, not
                 // streaming. The reusable header buffer is consumed here, before
                 // any other fillHeaderJson call.
                 byte[] wire = VesperaWireCodec.assembleWire(hdr.backingArray(), headerLen, bodyBytes);
-                return ByteBuffer.wrap(VesperaBridge.dispatchBytes(wire)).asReadOnlyBuffer();
+                return dispatchHeap(wire, heapDispatcher);
             }
             ByteBuffer[] pool = directPool();
             if (pool[0].capacity() < total) {
@@ -292,10 +351,7 @@ final class VesperaDirectBufferPool {
             }
             // Consume the reusable header buffer into the pooled direct buffer.
             int written = VesperaWireCodec.assembleInto(hdr.backingArray(), headerLen, bodyBytes, pool[0]);
-            if (written != total) {
-                throw new IllegalStateException(
-                        "assembleInto wrote " + written + ", expected " + total);
-            }
+            requireExpectedWrite(written, total);
             return dispatchViaPool(pool, total, retryOnOverflow);
         } finally {
             VesperaWireCodec.shrinkHeaderBufferIfOversized(hdr);
@@ -324,6 +380,21 @@ final class VesperaDirectBufferPool {
             byte[] body,
             boolean retryOnOverflow,
             boolean currentThreadIsVirtual) {
+        return dispatchDirectPooled(
+                appName, method, path, query, headers, body,
+                retryOnOverflow, currentThreadIsVirtual, VesperaBridge::dispatchBytes);
+    }
+
+    static ByteBuffer dispatchDirectPooled(
+            String appName,
+            String method,
+            String path,
+            String query,
+            HeaderSource headers,
+            byte[] body,
+            boolean retryOnOverflow,
+            boolean currentThreadIsVirtual,
+            HeapDispatcher heapDispatcher) {
         byte[] bodyBytes = body != null ? body : VesperaWireCodec.EMPTY_BODY;
         ExposedByteArrayOutputStream hdr =
                 VesperaWireCodec.fillHeaderJson(appName, method, path, query, headers);
@@ -333,21 +404,18 @@ final class VesperaDirectBufferPool {
             if (currentThreadIsVirtual || total > DIRECT_MAX_CAPACITY) {
                 if (oversizePolicy() == OversizePolicy.THROW) {
                     rejectPooledFallback(
-                            currentThreadIsVirtual ? "virtual thread" : "oversized request",
+                            pooledFallbackReason(currentThreadIsVirtual),
                             total);
                 }
                 byte[] wire = VesperaWireCodec.assembleWire(hdr.backingArray(), headerLen, bodyBytes);
-                return ByteBuffer.wrap(VesperaBridge.dispatchBytes(wire)).asReadOnlyBuffer();
+                return dispatchHeap(wire, heapDispatcher);
             }
             ByteBuffer[] pool = directPool();
             if (pool[0].capacity() < total) {
                 pool[0] = ByteBuffer.allocateDirect(grownCapacity(total));
             }
             int written = VesperaWireCodec.assembleInto(hdr.backingArray(), headerLen, bodyBytes, pool[0]);
-            if (written != total) {
-                throw new IllegalStateException(
-                        "assembleInto wrote " + written + ", expected " + total);
-            }
+            requireExpectedWrite(written, total);
             return dispatchViaPool(pool, total, retryOnOverflow);
         } finally {
             VesperaWireCodec.shrinkHeaderBufferIfOversized(hdr);
@@ -363,9 +431,17 @@ final class VesperaDirectBufferPool {
      */
     private static ByteBuffer dispatchViaPool(
             ByteBuffer[] pool, int reqLen, boolean retryOnOverflow) {
+        return dispatchViaPool(pool, reqLen, retryOnOverflow, VesperaBridge::dispatchDirect);
+    }
+
+    static ByteBuffer dispatchViaPool(
+            ByteBuffer[] pool,
+            int reqLen,
+            boolean retryOnOverflow,
+            DirectDispatcher dispatcher) {
         boolean recorded = false;
         try {
-            int n = VesperaBridge.dispatchDirect(pool[0], reqLen, pool[1]);
+            int n = dispatcher.dispatch(pool[0], reqLen, pool[1]);
             if (n == Integer.MIN_VALUE) {
                 throw responseExceedsTwoGiBException();
             }
@@ -384,7 +460,7 @@ final class VesperaDirectBufferPool {
                     throw new BufferTooSmallException(required);
                 }
                 pool[1] = ByteBuffer.allocateDirect(grownCapacity(required));
-                n = VesperaBridge.dispatchDirect(pool[0], reqLen, pool[1]);
+                n = dispatcher.dispatch(pool[0], reqLen, pool[1]);
             }
             if (n == Integer.MIN_VALUE) {
                 throw responseExceedsTwoGiBException();
@@ -395,10 +471,6 @@ final class VesperaDirectBufferPool {
                 // larger response this time.  Surface the new exact size
                 // instead of retrying unboundedly.
                 throw new BufferTooSmallException(-n);
-            }
-            if (n < 0) {
-                throw new IllegalStateException(
-                        "dispatchDirect protocol violation: return code " + n + " after retry");
             }
             ByteBuffer view = pool[1].asReadOnlyBuffer();
             view.position(0).limit(n);

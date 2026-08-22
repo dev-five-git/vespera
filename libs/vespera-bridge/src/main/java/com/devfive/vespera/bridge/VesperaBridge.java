@@ -64,6 +64,21 @@ public class VesperaBridge {
     private static volatile Integer pendingChunkBytes = null;
     private static volatile Integer pendingChannelCapacity = null;
 
+    @FunctionalInterface
+    interface NativeLibraryLoader {
+        void load(String libraryName);
+    }
+
+    @FunctionalInterface
+    interface StreamingConfigurator {
+        void configure(int chunkBytes, int channelCapacity);
+    }
+
+    @FunctionalInterface
+    interface RuntimeConfigurator {
+        void configure(int workerThreads);
+    }
+
     /**
      * Decoded wire-format response.
      *
@@ -169,16 +184,7 @@ public class VesperaBridge {
             }
             return;
         }
-        try {
-            VesperaNativeLoader.loadBundled(libraryName);
-        } catch (VesperaNativeLoader.BundledNativeAbsent absent) {
-            // Fall back to the system library path ONLY when the bundled
-            // resource is genuinely ABSENT.  A PRESENT-but-invalid bundled
-            // library (integrity / extraction / load failure) propagates from
-            // loadBundled and fails fast here instead of silently loading a
-            // different library — which would defeat the integrity check.
-            System.loadLibrary(libraryName);
-        }
+        loadNativeLibrary(libraryName, VesperaNativeLoader::loadBundled, System::loadLibrary);
         // Mark the native library as loaded immediately after System.load /
         // System.loadLibrary succeeds. Optional post-load configuration hooks
         // below may still throw (for example, a native-side panic surfaced as an
@@ -187,25 +193,52 @@ public class VesperaBridge {
         loadedLibraryName = libraryName;
         // Apply pending streaming config (set via configureStreaming before init).
         // Pending values beat system properties (Rust-side setter > env > default).
+        int chunkBytes = pendingOrProperty(
+                pendingChunkBytes, "vespera.streaming.chunkBytes");
+        int channelCapacity = pendingOrProperty(
+                pendingChannelCapacity, "vespera.streaming.channelCapacity");
+        configureStreamingIfSupported(chunkBytes, channelCapacity, VesperaBridge::configureStreaming0);
+        configureRuntimeIfSupported(
+                Integer.getInteger("vespera.runtime.workerThreads", 0),
+                VesperaBridge::configureRuntime0);
+    }
+
+    static void loadNativeLibrary(
+            String libraryName,
+            NativeLibraryLoader bundledLoader,
+            NativeLibraryLoader systemLoader) {
         try {
-            int chunkBytes = pendingChunkBytes != null
-                    ? pendingChunkBytes
-                    : Integer.getInteger("vespera.streaming.chunkBytes", 0);
-            int channelCapacity = pendingChannelCapacity != null
-                    ? pendingChannelCapacity
-                    : Integer.getInteger("vespera.streaming.channelCapacity", 0);
-            configureStreaming0(chunkBytes, channelCapacity);
+            bundledLoader.load(libraryName);
+        } catch (VesperaNativeLoader.BundledNativeAbsent absent) {
+            systemLoader.load(libraryName);
+        }
+    }
+
+    static void configureStreamingIfSupported(
+            int chunkBytes,
+            int channelCapacity,
+            StreamingConfigurator configurator) {
+        try {
+            configurator.configure(chunkBytes, channelCapacity);
         } catch (UnsatisfiedLinkError olderNativeLibrary) {
             // Pre-0.2 native libraries don't export configureStreaming0.
             // Streaming config then falls back to env vars / defaults —
             // never block init over an optional tuning hook.
         }
+    }
+
+    static void configureRuntimeIfSupported(
+            int workerThreads, RuntimeConfigurator configurator) {
         try {
-            configureRuntime0(Integer.getInteger("vespera.runtime.workerThreads", 0));
+            configurator.configure(workerThreads);
         } catch (UnsatisfiedLinkError olderNativeLibrary) {
             // Same guard as above — older native libraries fall back to
             // the VESPERA_RUNTIME_WORKERS env var / Tokio's default.
         }
+    }
+
+    static int pendingOrProperty(Integer pendingValue, String propertyName) {
+        return pendingValue != null ? pendingValue : Integer.getInteger(propertyName, 0);
     }
 
     /**
@@ -241,14 +274,8 @@ public class VesperaBridge {
         }
         if (loaded) {
             // Native library already loaded — apply immediately.
-            try {
-                configureStreaming0(chunkBytes, channelCapacity);
-            } catch (UnsatisfiedLinkError olderNativeLibrary) {
-                // Pre-0.2 native libraries do not export configureStreaming0.
-                // Match init(): keep the validated Java-side values for any
-                // future reload/test reset, but degrade gracefully instead of
-                // surfacing a raw optional-feature LinkageError.
-            }
+            configureStreamingIfSupported(
+                    chunkBytes, channelCapacity, VesperaBridge::configureStreaming0);
         } else {
             // Native library not yet loaded — store pending values.
             // These will be applied in init() before any dispatch.

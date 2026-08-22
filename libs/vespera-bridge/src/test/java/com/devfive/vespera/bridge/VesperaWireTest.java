@@ -612,6 +612,54 @@ class VesperaWireTest {
     }
 
     @Test
+    void nullableHeaderAndHeaderSourceDirectEncoderBranchesKeepExactWireShape() throws Exception {
+        byte[] nullableMapHeader = VesperaBridge.encodeRequestHeader(
+                "admin", "GET", "/map", null, (Map<String, String>) null);
+        JsonNode nullableMapJson = headerJson(nullableMapHeader);
+        assertEquals("admin", nullableMapJson.path("app").asText());
+        assertTrue(nullableMapJson.path("headers").isMissingNode());
+
+        ByteBuffer target = ByteBuffer.allocateDirect(256);
+        int written = VesperaWireCodec.encodeRequestInto(
+                null, "POST", "/source", null,
+                (VesperaBridge.HeaderSource) sink -> sink.put("x-test", "yes"),
+                null,
+                target);
+        byte[] encoded = new byte[written];
+        for (int i = 0; i < written; i++) encoded[i] = target.get(i);
+        JsonNode sourceJson = headerJson(encoded);
+        assertEquals("yes", sourceJson.path("headers").path("x-test").asText());
+        assertEquals(4 + ByteBuffer.wrap(encoded).getInt(), written);
+
+        ByteBuffer bodyTarget = ByteBuffer.allocateDirect(256);
+        int bodyWritten = VesperaWireCodec.encodeRequestInto(
+                null, "POST", "/source", null,
+                (VesperaBridge.HeaderSource) sink -> {},
+                new byte[] {4, 2},
+                bodyTarget);
+        assertEquals(2, bodyWritten - 4 - bodyTarget.getInt(0));
+    }
+
+    @Test
+    void decodeResponseWithoutMetadataUsesImmutableEmptyMap() throws Exception {
+        byte[] header = "{\"v\":1,\"status\":204,\"headers\":{}}"
+                .getBytes(StandardCharsets.UTF_8);
+        ByteBuffer wire = ByteBuffer.allocate(4 + header.length).order(ByteOrder.BIG_ENDIAN);
+        wire.putInt(header.length).put(header);
+
+        DecodedResponse decoded = VesperaBridge.decodeResponse(wire.array());
+        assertEquals(204, decoded.status());
+        assertEquals(Map.of(), decoded.metadata());
+        assertThrows(UnsupportedOperationException.class,
+                () -> decoded.metadata().put("version", "x"));
+
+        assertEquals(Map.of(), VesperaWireCodec.copyDecodedMetadata(null));
+        assertEquals(
+                Map.of("version", "1"),
+                VesperaWireCodec.copyDecodedMetadata(Map.of("version", "1")));
+    }
+
+    @Test
     void headerSourceOverloadRejectsQuestionMarkInPathWithExactMessage() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
@@ -684,6 +732,17 @@ class VesperaWireTest {
 
         assertEquals(medium, WireHeaderStringSupport.readAsciiString(mediumBuffer, 0, medium.length()));
         assertEquals(large, WireHeaderStringSupport.readAsciiString(largeBuffer, 0, large.length()));
+    }
+
+    @Test
+    void canonicalCandidateLengthBoundsReturnExactRows() throws Exception {
+        Method candidates = WireHeaderStringSupport.class
+                .getDeclaredMethod("canonicalCandidates", int.class);
+        candidates.setAccessible(true);
+        assertEquals(null, candidates.invoke(null, -1));
+        assertEquals(null, candidates.invoke(null, 28));
+        String[] fourByte = (String[]) candidates.invoke(null, 4);
+        assertTrue(java.util.Arrays.asList(fourByte).contains("etag"));
     }
 
     @Test

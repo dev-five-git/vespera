@@ -162,11 +162,10 @@ public class VesperaProxyController {
         // ONCE instead of paying the DIRECT-overflow-then-stream double
         // dispatch again. `shouldAvoidDirect` is a single volatile read until
         // the first overflow is recorded, so non-overflowing apps pay nothing.
-        final DispatchMode effectiveMode =
-                (mode == DispatchMode.DIRECT
-                        && directOverflowMemory.shouldAvoidDirect(appName, method, path, query))
-                        ? DispatchMode.STREAMING
-                        : mode;
+        final DispatchMode effectiveMode = effectiveMode(
+                mode,
+                mode == DispatchMode.DIRECT
+                        && directOverflowMemory.shouldAvoidDirect(appName, method, path, query));
 
         if (log.isDebugEnabled()) {
             log.debug("-> Rust  {} {} app={} mode={}", method, path, appName, effectiveMode);
@@ -235,6 +234,10 @@ public class VesperaProxyController {
         return stripped.isEmpty() ? "/" : stripped;
     }
 
+    static DispatchMode effectiveMode(DispatchMode mode, boolean avoidDirect) {
+        return mode == DispatchMode.DIRECT && avoidDirect ? DispatchMode.STREAMING : mode;
+    }
+
     /**
      * Largest body for which {@link #readBody} trusts {@code
      * Content-Length} enough to pre-allocate the exact array.  Beyond
@@ -262,7 +265,11 @@ public class VesperaProxyController {
     private static final ThreadLocal<byte[]> DIRECT_BODY_SCRATCH =
             ThreadLocal.withInitial(() -> new byte[DIRECT_BODY_SCRATCH_INITIAL]);
     private static final ThreadLocal<Integer> DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK =
-            ThreadLocal.withInitial(() -> 0);
+            ThreadLocal.withInitial(VesperaProxyController::initialSmallWriteStreak);
+
+    static Integer initialSmallWriteStreak() {
+        return 0;
+    }
 
     /**
      * Drop this thread's reusable heap scratch buffer used for DIRECT response
@@ -319,9 +326,7 @@ public class VesperaProxyController {
                 if ((long) body.length > cap) {
                     throw payloadTooLarge(body.length, cap);
                 }
-                if ((long) body.length == MAX_BUFFERED_BODY && cap >= MAX_BUFFERED_BODY) {
-                    throw payloadTooLarge(body.length, MAX_BUFFERED_BODY);
-                }
+                rejectAtBufferedBodyLimit(body.length, cap);
                 return body;
             }
             if (contentLength > 0 && (cap > 0 || contentLength <= MAX_FIXED_BODY)) {
@@ -345,9 +350,7 @@ public class VesperaProxyController {
             // "unlimited" behaviour below.
             if (contentLength < 0) {
                 byte[] body = in.readNBytes(MAX_FIXED_BODY + 1);
-                if ((long) body.length > MAX_FIXED_BODY) {
-                    throw payloadTooLarge(body.length, MAX_FIXED_BODY);
-                }
+                rejectAboveDefaultBufferedLimit(body.length);
                 return body;
             }
             // Oversized KNOWN length with no explicit cap (cap=0,
@@ -355,10 +358,20 @@ public class VesperaProxyController {
             // buffering for a SIZED body, so honour it up to the single-array
             // ceiling (the actual read stops at the known Content-Length).
             byte[] body = in.readNBytes((int) MAX_BUFFERED_BODY);
-            if ((long) body.length == MAX_BUFFERED_BODY) {
-                throw payloadTooLarge(body.length, MAX_BUFFERED_BODY);
-            }
+            rejectAtBufferedBodyLimit(body.length, MAX_BUFFERED_BODY);
             return body;
+        }
+    }
+
+    static void rejectAtBufferedBodyLimit(long bodyLength, long cap) {
+        if (bodyLength == MAX_BUFFERED_BODY && cap >= MAX_BUFFERED_BODY) {
+            throw payloadTooLarge(bodyLength, MAX_BUFFERED_BODY);
+        }
+    }
+
+    static void rejectAboveDefaultBufferedLimit(long bodyLength) {
+        if (bodyLength > MAX_FIXED_BODY) {
+            throw payloadTooLarge(bodyLength, MAX_FIXED_BODY);
         }
     }
 
@@ -380,7 +393,7 @@ public class VesperaProxyController {
      * {@code buildResponseEntityFromWire} (Spring async completion), but
      * returns a zero-copy {@code Resource} view over the wire body.
      */
-    private static void dispatchSync(
+    static void dispatchSync(
             HttpServletResponse response,
             String appName, String method, String path, String query,
             VesperaBridge.HeaderSource headers, byte[] body) throws IOException {
@@ -492,12 +505,12 @@ public class VesperaProxyController {
      * length is known, so {@code Content-Length} is always proxy-owned and
      * set to the exact bytes written to the servlet response.
      */
-    private static void writeWireResponse(byte[] wire, HttpServletResponse response)
+    static void writeWireResponse(byte[] wire, HttpServletResponse response)
             throws IOException {
         writeWireResponse(wire, response, null);
     }
 
-    private static void writeWireResponse(byte[] wire, HttpServletResponse response, String method)
+    static void writeWireResponse(byte[] wire, HttpServletResponse response, String method)
             throws IOException {
         int headerLen = VesperaWireCodec.readHeaderLength(wire);
         int status = applyWireHeaderToResponse(wire, 4, headerLen, response);
@@ -631,7 +644,7 @@ public class VesperaProxyController {
      * {@code 500} with the required size, so the controller never
      * double-executes a handler whose response could change.
      */
-    private void dispatchDirectMode(
+    void dispatchDirectMode(
             HttpServletResponse response,
             String appName, String method, String path, String query,
             VesperaBridge.HeaderSource headers, byte[] body,
@@ -665,7 +678,7 @@ public class VesperaProxyController {
         try {
             // Encodes straight into the pooled direct buffer — no
             // intermediate wire-sized byte[].
-            boolean retry = directRetryOnOverflow && isSafe(method);
+            boolean retry = shouldRetryDirect(directRetryOnOverflow, method);
             wireResp = currentThreadIsVirtual == null
                     ? VesperaBridge.dispatchDirectPooled(
                             appName, method, path, query, headers, body, retry)
@@ -780,7 +793,7 @@ public class VesperaProxyController {
         return method == null || !"HEAD".equalsIgnoreCase(method);
     }
 
-    private static void writeDirectBody(ByteBuffer body, OutputStream out) throws IOException {
+    static void writeDirectBody(ByteBuffer body, OutputStream out) throws IOException {
         int initialRemaining = body.remaining();
         try {
             byte[] scratch = directBodyScratch(Math.min(initialRemaining, DIRECT_BODY_COPY_CHUNK));
@@ -833,6 +846,10 @@ public class VesperaProxyController {
      */
     private static boolean isSafe(String method) {
         return HttpMethods.isSafe(method);
+    }
+
+    static boolean shouldRetryDirect(boolean directRetryOnOverflow, String method) {
+        return directRetryOnOverflow && isSafe(method);
     }
 
     /**

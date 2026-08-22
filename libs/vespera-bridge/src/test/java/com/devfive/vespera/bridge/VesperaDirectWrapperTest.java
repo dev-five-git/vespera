@@ -8,7 +8,9 @@ import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
@@ -217,6 +219,13 @@ class VesperaDirectWrapperTest {
         assertThrows(UnsatisfiedLinkError.class, () -> VesperaDirectBufferPool.dispatchDirectPooled(
                 null, "GET", "/items", null, headers, null, false, false));
         assertTrue(VesperaDirectBufferPool.directPoolPresentForTest());
+
+        VesperaDirectBufferPool.clearCurrentThreadBuffers();
+        byte[] sourceBody = new byte[70 * 1024];
+        assertThrows(UnsatisfiedLinkError.class, () -> VesperaDirectBufferPool.dispatchDirectPooled(
+                null, "POST", "/source-upload", null,
+                headers, sourceBody, false, false));
+        assertTrue(VesperaDirectBufferPool.directPoolForTest()[0].capacity() >= sourceBody.length);
     }
 
     @Test
@@ -354,6 +363,10 @@ class VesperaDirectWrapperTest {
     void headerSourcePooledWrappersValidateInputsBeforeNativeDispatch() {
         VesperaBridge.HeaderSource headers = sink -> sink.put("x-test", "yes");
 
+        assertThrows(UnsatisfiedLinkError.class,
+                () -> VesperaBridge.dispatchDirectPooled(
+                        null, "GET", "/items", null, headers, null, false));
+
         NullPointerException missingMethod = assertThrows(
                 NullPointerException.class,
                 () -> VesperaBridge.dispatchDirectPooled(
@@ -367,6 +380,160 @@ class VesperaDirectWrapperTest {
         assertEquals(
                 "path must not contain '?' — pass the raw query string via the query parameter",
                 queryInPath.getMessage());
+    }
+
+    @Test
+    void virtualThreadReflectionSeamCoversResolutionAndFailurePolicies() throws Exception {
+        assertFalse(VesperaDirectBufferPool.invokeThreadBooleanMethod(null, Thread.currentThread()));
+        assertTrue(VesperaDirectBufferPool.invokeThreadBooleanMethod(
+                VesperaDirectBufferPool.resolveThreadBooleanMethod("isAlive"),
+                Thread.currentThread()));
+        assertEquals(null, VesperaDirectBufferPool.resolveThreadBooleanMethod("missingMethod"));
+
+        var lookup = java.lang.invoke.MethodHandles.lookup();
+        var signature = java.lang.invoke.MethodType.methodType(boolean.class, Thread.class);
+        var runtimeFailure = lookup.findStatic(
+                VesperaDirectWrapperTest.class, "throwRuntime", signature);
+        IllegalStateException runtime = assertThrows(
+                IllegalStateException.class,
+                () -> VesperaDirectBufferPool.invokeThreadBooleanMethod(
+                        runtimeFailure, Thread.currentThread()));
+        assertEquals("runtime", runtime.getMessage());
+
+        var checkedFailure = lookup.findStatic(
+                VesperaDirectWrapperTest.class, "throwChecked", signature);
+        assertFalse(VesperaDirectBufferPool.invokeThreadBooleanMethod(
+                checkedFailure, Thread.currentThread()));
+    }
+
+    @Test
+    void pooledFallbackAndAssemblyDecisionSeamsPreserveExactResults() {
+        assertEquals("virtual thread", VesperaDirectBufferPool.pooledFallbackReason(true));
+        assertEquals("oversized request", VesperaDirectBufferPool.pooledFallbackReason(false));
+        VesperaDirectBufferPool.requireExpectedWrite(7, 7);
+        IllegalStateException mismatch = assertThrows(
+                IllegalStateException.class,
+                () -> VesperaDirectBufferPool.requireExpectedWrite(6, 7));
+        assertEquals("assembleInto wrote 6, expected 7", mismatch.getMessage());
+
+        ByteBuffer heapResult = VesperaDirectBufferPool.dispatchHeap(
+                new byte[] {1}, ignored -> new byte[] {2, 3});
+        byte[] bytes = new byte[heapResult.remaining()];
+        heapResult.get(bytes);
+        assertArrayEquals(new byte[] {2, 3}, bytes);
+        assertTrue(heapResult.isReadOnly());
+    }
+
+    @Test
+    void pooledHeapFallbacksReturnInjectedDispatchBytesForEveryRequestShape() {
+        byte[] response = new byte[] {8, 6, 7};
+        ByteBuffer raw = VesperaDirectBufferPool.dispatchDirectPooled(
+                new byte[] {1}, false, true, request -> response);
+        assertReadOnlyBytes(response, raw);
+
+        String previous = System.getProperty("vespera.direct.oversize-policy");
+        try {
+            System.setProperty("vespera.direct.oversize-policy", "heap-fallback");
+            ByteBuffer mapped = VesperaDirectBufferPool.dispatchDirectPooled(
+                    null, "GET", "/map", null, Map.of(), null, false,
+                    () -> true, request -> response);
+            assertReadOnlyBytes(response, mapped);
+
+            ByteBuffer sourced = VesperaDirectBufferPool.dispatchDirectPooled(
+                    null, "GET", "/source", null,
+                    (VesperaBridge.HeaderSource) sink -> sink.put("x", "y"),
+                    null, false, true, request -> response);
+            assertReadOnlyBytes(response, sourced);
+        } finally {
+            restoreProperty("vespera.direct.oversize-policy", previous);
+        }
+    }
+
+    @Test
+    void directReturnCodeSeamCoversSuccessAndEveryOverflowOutcome() {
+        ByteBuffer[] successPool = freshPool();
+        ByteBuffer success = VesperaDirectBufferPool.dispatchViaPool(
+                successPool, 12, false, (in, inLen, out) -> {
+                    out.put(0, (byte) 4);
+                    out.put(1, (byte) 5);
+                    return 2;
+                });
+        byte[] successBytes = new byte[success.remaining()];
+        success.get(successBytes);
+        assertArrayEquals(new byte[] {4, 5}, successBytes);
+        assertTrue(success.isReadOnly());
+
+        IllegalStateException unrepresentable = assertThrows(
+                IllegalStateException.class,
+                () -> VesperaDirectBufferPool.dispatchViaPool(
+                        freshPool(), 1, false,
+                        (in, inLen, out) -> Integer.MIN_VALUE));
+        assertEquals(
+                "dispatchDirect response exceeds 2 GiB and cannot be represented; use streaming dispatch",
+                unrepresentable.getMessage());
+
+        VesperaBridge.BufferTooSmallException noRetry = assertThrows(
+                VesperaBridge.BufferTooSmallException.class,
+                () -> VesperaDirectBufferPool.dispatchViaPool(
+                        freshPool(), 1, false, (in, inLen, out) -> -70_000));
+        assertEquals(70_000, noRetry.requiredSize());
+
+        VesperaBridge.BufferTooSmallException abovePoolCap = assertThrows(
+                VesperaBridge.BufferTooSmallException.class,
+                () -> VesperaDirectBufferPool.dispatchViaPool(
+                        freshPool(), 1, true, (in, inLen, out) -> -(257 * 1024 * 1024)));
+        assertEquals(257 * 1024 * 1024, abovePoolCap.requiredSize());
+
+        AtomicInteger calls = new AtomicInteger();
+        ByteBuffer[] retryPool = freshPool();
+        ByteBuffer retry = VesperaDirectBufferPool.dispatchViaPool(
+                retryPool, 1, true, (in, inLen, out) -> {
+                    if (calls.getAndIncrement() == 0) return -70_000;
+                    out.put(0, (byte) 9);
+                    return 1;
+                });
+        assertEquals(2, calls.get());
+        assertEquals(9, retry.get(0));
+        assertEquals(128 * 1024, retryPool[1].capacity());
+
+        AtomicInteger secondMinCalls = new AtomicInteger();
+        assertThrows(IllegalStateException.class,
+                () -> VesperaDirectBufferPool.dispatchViaPool(
+                        freshPool(), 1, true,
+                        (in, inLen, out) -> secondMinCalls.getAndIncrement() == 0
+                                ? -70_000 : Integer.MIN_VALUE));
+        assertEquals(2, secondMinCalls.get());
+
+        AtomicInteger secondOverflowCalls = new AtomicInteger();
+        VesperaBridge.BufferTooSmallException secondOverflow = assertThrows(
+                VesperaBridge.BufferTooSmallException.class,
+                () -> VesperaDirectBufferPool.dispatchViaPool(
+                        freshPool(), 1, true,
+                        (in, inLen, out) -> secondOverflowCalls.getAndIncrement() == 0
+                                ? -70_000 : -90_000));
+        assertEquals(90_000, secondOverflow.requiredSize());
+        assertEquals(2, secondOverflowCalls.get());
+    }
+
+    private static ByteBuffer[] freshPool() {
+        return new ByteBuffer[] {
+                ByteBuffer.allocateDirect(64 * 1024),
+                ByteBuffer.allocateDirect(64 * 1024)};
+    }
+
+    private static void assertReadOnlyBytes(byte[] expected, ByteBuffer actual) {
+        byte[] bytes = new byte[actual.remaining()];
+        actual.get(bytes);
+        assertArrayEquals(expected, bytes);
+        assertTrue(actual.isReadOnly());
+    }
+
+    private static boolean throwRuntime(Thread ignored) {
+        throw new IllegalStateException("runtime");
+    }
+
+    private static boolean throwChecked(Thread ignored) throws java.io.IOException {
+        throw new java.io.IOException("checked");
     }
 
     private static void restoreProperty(String name, String value) {

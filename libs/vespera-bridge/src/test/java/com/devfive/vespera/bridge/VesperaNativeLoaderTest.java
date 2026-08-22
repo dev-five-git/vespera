@@ -133,6 +133,48 @@ class VesperaNativeLoaderTest {
         }
     }
 
+    @Test
+    void digestAvailabilitySizeDigestAndCleanupDecisionsAreExact() throws Exception {
+        assertEquals("SHA-256", VesperaNativeLoader.messageDigest("SHA-256").getAlgorithm());
+        UnsatisfiedLinkError unavailable = assertThrows(
+                UnsatisfiedLinkError.class,
+                () -> VesperaNativeLoader.messageDigest("fabricated-missing-digest"));
+        assertTrue(unavailable.getMessage().startsWith(
+                "fabricated-missing-digest unavailable for native library verification:"),
+                unavailable.getMessage());
+
+        VesperaNativeLoader.requireMatchingSize("native/demo", 4, 4);
+        UnsatisfiedLinkError size = assertThrows(
+                UnsatisfiedLinkError.class,
+                () -> VesperaNativeLoader.requireMatchingSize("native/demo", 4, 5));
+        assertEquals(
+                "Native library extraction failed for native/demo: copied 4 bytes but extracted file has 5 bytes.",
+                size.getMessage());
+
+        byte[] digest = new byte[] {1, 2, 3};
+        VesperaNativeLoader.requireMatchingDigest("native/demo", digest, digest.clone());
+        UnsatisfiedLinkError mismatch = assertThrows(
+                UnsatisfiedLinkError.class,
+                () -> VesperaNativeLoader.requireMatchingDigest(
+                        "native/demo", digest, new byte[] {1, 2, 4}));
+        assertEquals(
+                "Native library integrity check failed for native/demo: extracted file does not match the bundled resource (corrupted or modified extraction).",
+                mismatch.getMessage());
+
+        Path temp = Files.createTempDirectory("vespera-native-loader-cleanup-");
+        try {
+            Path file = Files.writeString(temp.resolve("native.bin"), "x");
+            VesperaNativeLoader.deleteAfterFailedLoad(file, Files::deleteIfExists);
+            assertTrue(Files.notExists(file));
+            Files.writeString(file, "still present");
+            VesperaNativeLoader.deleteAfterFailedLoad(
+                    file, path -> { throw new IOException("locked"); });
+            assertEquals("still present", Files.readString(file));
+        } finally {
+            deleteTree(temp);
+        }
+    }
+
     private static void assertDetection(
             String osProperty,
             String archProperty,

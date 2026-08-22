@@ -426,6 +426,16 @@ class WireHeaderReaderTest {
     }
 
     @Test
+    void currentByteReturnsDataThenEndSentinel() throws Exception {
+        WireHeaderReader reader = reflectedReader("7");
+        Method cur = WireHeaderReader.class.getDeclaredMethod("cur");
+        cur.setAccessible(true);
+        assertEquals((int) '7', cur.invoke(reader));
+        reader.skipValue();
+        assertEquals(-1, cur.invoke(reader));
+    }
+
+    @Test
     void canonicalKeyFallbackParsesEscapedAndUtf8Keys() {
         WireHeaderReader.Decoded decoded = decode(
                 "{\"status\":200,\"headers\":{\"content\\u002dtype\":\"text/plain\","

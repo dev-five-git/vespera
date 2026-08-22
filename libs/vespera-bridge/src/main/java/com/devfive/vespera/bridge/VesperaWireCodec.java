@@ -714,9 +714,13 @@ final class VesperaWireCodec {
         return new DecodedResponse(
                 d.status,
                 copyDecodedHeaders(d.headers),
-                d.metadata == null ? Map.of() : Map.copyOf(d.metadata),
+                copyDecodedMetadata(d.metadata),
                 body,
                 copyValidationErrors(d.validationErrors));
+    }
+
+    static Map<String, String> copyDecodedMetadata(Map<String, String> metadata) {
+        return metadata == null ? Map.of() : Map.copyOf(metadata);
     }
 
     private static Map<String, Object> copyDecodedHeaders(Map<String, Object> headers) {
