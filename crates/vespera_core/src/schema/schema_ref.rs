@@ -52,20 +52,17 @@ impl<'de> serde::de::Visitor<'de> for SchemaRefVisitor {
         let mut pure_ref = true;
         let mut has_inline_fields = false;
         let mut ref_path = None;
-        let mut type_nullable = None;
+        let mut type_nullable = false;
         let mut nullable = None;
 
         while let Some(key) = access.next_key::<SchemaField>()? {
             match key {
-                SchemaField::RefPath => {
-                    let path = access.next_value::<String>()?;
-                    if pure_ref && ref_path.is_none() && !has_inline_fields {
-                        ref_path = Some(path);
-                    } else {
-                        pure_ref = false;
-                        has_inline_fields = true;
-                        schema.ref_path = Some(path);
-                    }
+                // Only the FIRST `$ref`, seen before any inline field, can still
+                // make this a pure reference.  A repeated `$ref` (or one that
+                // follows an inline field) falls through to the generic arm,
+                // which stores it on the inline schema like any other field.
+                SchemaField::RefPath if pure_ref && ref_path.is_none() && !has_inline_fields => {
+                    ref_path = Some(access.next_value::<String>()?);
                 }
                 other => {
                     if let Some(path) = ref_path.take() {
@@ -87,11 +84,7 @@ impl<'de> serde::de::Visitor<'de> for SchemaRefVisitor {
         if pure_ref && let Some(path) = ref_path {
             return Ok(SchemaRef::Ref(Reference::new(path)));
         }
-        schema.nullable = match type_nullable {
-            Some(true) => Some(true),
-            None => nullable,
-            Some(false) => nullable.or(Some(false)),
-        };
+        schema.nullable = if type_nullable { Some(true) } else { nullable };
         Ok(SchemaRef::Inline(Box::new(schema)))
     }
 }
@@ -210,7 +203,7 @@ impl<'de> Deserialize<'de> for SchemaField {
 fn apply_schema_field<'de, M>(
     field: SchemaField,
     schema: &mut Schema,
-    type_nullable: &mut Option<bool>,
+    type_nullable: &mut bool,
     nullable: &mut Option<bool>,
     access: &mut M,
 ) -> Result<(), M::Error>
@@ -329,6 +322,22 @@ mod tests {
             error
                 .to_string()
                 .contains("an OpenAPI schema reference or inline schema object"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn schema_field_rejects_a_non_string_visitor_input() {
+        // `serde_json` rejects a numeric key before the visitor sees it, so
+        // drive the visitor directly through a u64 deserializer to reach the
+        // `Visitor` impl's inherited (non-`visit_str`) entry points.
+        let deserializer = serde::de::value::U64Deserializer::<serde::de::value::Error>::new(42);
+        let Err(error) = SchemaField::deserialize(deserializer) else {
+            panic!("a u64 schema field must be rejected");
+        };
+
+        assert!(
+            error.to_string().contains("a JSON Schema field name"),
             "unexpected error: {error}"
         );
     }

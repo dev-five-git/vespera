@@ -177,3 +177,21 @@ mod tests {
         assert_eq!(convert_type_with_chrono(&ty, &[]).to_string(), expected);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn wrapper_conversion_converts_the_inner_seaorm_datetime() {
+        for (source, expected_wrapper) in [
+            ("Option<DateTimeWithTimeZone>", "Option"),
+            ("Vec<DateTimeWithTimeZone>", "Vec"),
+        ] {
+            let ty: syn::Type = syn::parse_str(std::hint::black_box(source)).unwrap();
+            let converted = convert_type_with_chrono(std::hint::black_box(&ty), &[]).to_string();
+            assert!(converted.starts_with(expected_wrapper));
+            assert!(converted.contains("vespera :: chrono :: FixedOffset"));
+        }
+    }
+}

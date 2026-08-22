@@ -966,4 +966,24 @@ mod tests {
             (false, Ok(_)) => panic!("Expected parse error but got success for input: {input}"),
         }
     }
+
+    #[test]
+    fn empty_route_arguments_use_all_defaults() {
+        let route_args = syn::parse_str::<RouteArgs>("").expect("empty route arguments parse");
+
+        assert!(route_args.method.is_none());
+        assert!(route_args.path.is_none());
+        assert!(route_args.error_status.is_none());
+        assert!(route_args.responses.is_none());
+        assert!(route_args.success_status.is_none());
+        assert!(route_args.tags.is_none());
+        assert!(route_args.security.is_none());
+        assert!(route_args.headers.is_none());
+        assert!(route_args.operation_id.is_none());
+        assert!(route_args.summary.is_none());
+        assert!(route_args.request_example.is_none());
+        assert!(route_args.response_example.is_none());
+        assert!(!route_args.deprecated);
+        assert!(route_args.description.is_none());
+    }
 }

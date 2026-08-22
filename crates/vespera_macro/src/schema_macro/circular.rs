@@ -334,3 +334,32 @@ pub fn generate_inline_type_construction(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn plain_and_empty_path_types_do_not_require_relation_wrappers() {
+        let plain: syn::Type = syn::parse_str(std::hint::black_box("MemoSchema")).unwrap();
+        assert!(is_circular_relation_type(
+            &plain,
+            std::hint::black_box("memo"),
+            std::hint::black_box("MemoSchema")
+        ));
+
+        let empty = syn::Type::Path(syn::TypePath {
+            attrs: Vec::new(),
+            qself: None,
+            path: syn::Path {
+                leading_colon: None,
+                segments: syn::punctuated::Punctuated::new(),
+            },
+        });
+        assert!(!is_circular_relation_type(
+            std::hint::black_box(&empty),
+            "memo",
+            "MemoSchema"
+        ));
+    }
+}

@@ -646,3 +646,33 @@ pub fn fk_lookup_contains(schema_path: &str, via_rel: &str) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn readable_file_populates_content_and_all_struct_definition_caches() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("models.rs");
+        std::fs::write(
+            &path,
+            "pub struct Alpha { pub id: i32 } pub struct Beta { pub name: String }",
+        )
+        .unwrap();
+        bump_epoch();
+
+        let alpha = get_struct_definition(std::hint::black_box(&path), "Alpha")
+            .expect("Alpha must be extracted from the readable file");
+        let beta = get_struct_definition(&path, "Beta")
+            .expect("Beta must be extracted by the same full-file parse");
+
+        assert!(alpha.contains("id : i32"));
+        assert!(beta.contains("name : String"));
+        FILE_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            assert_eq!(cache.struct_definitions[&path].1.len(), 2);
+            assert!(cache.file_contents[&path].1.contains("struct Alpha"));
+        });
+    }
+}

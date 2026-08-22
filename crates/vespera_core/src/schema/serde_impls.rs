@@ -23,26 +23,31 @@ where
     S: serde::Serializer,
 {
     match value {
-        Some(v) if v.fract() == 0.0 => {
-            // Float→int casts saturate in Rust, so an out-of-range
-            // constraint (e.g. `1e20`) would silently become `i64::MAX`
-            // and corrupt the generated spec.  Emit the integer form
-            // only when it round-trips exactly back to the original
-            // value; otherwise keep the `f64` rendering.
-            #[allow(clippy::cast_possible_truncation)]
-            let int_val = *v as i64;
-            // Exact round-trip check is intentional: we emit the integer
-            // form only when `i64 → f64` reproduces the original bits.
-            #[allow(clippy::cast_precision_loss, clippy::float_cmp)]
-            if int_val as f64 == *v {
-                serializer.serialize_some(&int_val)
-            } else {
-                serializer.serialize_some(v)
-            }
-        }
-        Some(v) => serializer.serialize_some(v),
+        Some(v) => match lossless_integer_form(*v) {
+            Some(int_val) => serializer.serialize_some(&int_val),
+            None => serializer.serialize_some(v),
+        },
         None => serializer.serialize_none(),
     }
+}
+
+/// The `i64` rendering of `value`, or `None` when `value` is not a whole number
+/// that survives the `f64 → i64 → f64` round trip.
+///
+/// Float→int casts SATURATE in Rust, so an out-of-range constraint (`1e20`)
+/// would silently become `i64::MAX` and corrupt the generated spec. The exact
+/// round-trip comparison is what rejects it, hence the `float_cmp` allow.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::float_cmp
+)]
+pub(super) fn lossless_integer_form(value: f64) -> Option<i64> {
+    if value.fract() != 0.0 {
+        return None;
+    }
+    let int_val = value as i64;
+    (int_val as f64 == value).then_some(int_val)
 }
 
 struct NumberConstraint(f64);
@@ -52,15 +57,10 @@ impl Serialize for NumberConstraint {
     where
         S: serde::Serializer,
     {
-        if self.0.fract() == 0.0 {
-            #[allow(clippy::cast_possible_truncation)]
-            let int_val = self.0 as i64;
-            #[allow(clippy::cast_precision_loss, clippy::float_cmp)]
-            if int_val as f64 == self.0 {
-                return int_val.serialize(serializer);
-            }
+        match lossless_integer_form(self.0) {
+            Some(int_val) => int_val.serialize(serializer),
+            None => self.0.serialize(serializer),
         }
-        self.0.serialize(serializer)
     }
 }
 
@@ -140,16 +140,19 @@ pub(super) enum SchemaTypeWire {
 }
 
 impl SchemaTypeWire {
-    pub(super) fn into_schema_type_and_nullable<E>(
-        self,
-    ) -> Result<(Option<SchemaType>, Option<bool>), E>
+    /// Returns the singular schema type plus whether the wire `type` DECLARED
+    /// null (`type: [T, "null"]`).  The flag is a plain `bool` rather than an
+    /// `Option<bool>` precisely because "the type array said not-null" is not a
+    /// state this can produce - only "said null" or "said nothing" - so callers
+    /// cannot be written against a third case that never occurs.
+    pub(super) fn into_schema_type_and_nullable<E>(self) -> Result<(Option<SchemaType>, bool), E>
     where
         E: DeError,
     {
         match self {
-            Self::Single(schema_type) => Ok((Some(schema_type), None)),
+            Self::Single(schema_type) => Ok((Some(schema_type), false)),
             Self::Multiple(schema_types) => {
-                let nullable = schema_types.contains(&SchemaType::Null).then_some(true);
+                let nullable = schema_types.contains(&SchemaType::Null);
                 let mut schema_type = None;
                 for next_type in schema_types
                     .into_iter()
@@ -169,8 +172,8 @@ impl SchemaTypeWire {
                 // re-serialize to `{}` — silently dropping the null constraint.
                 // Collapse to the equivalent singular `type:"null"` so the
                 // schema round-trips losslessly.
-                if schema_type.is_none() && nullable == Some(true) {
-                    return Ok((Some(SchemaType::Null), None));
+                if schema_type.is_none() && nullable {
+                    return Ok((Some(SchemaType::Null), false));
                 }
                 Ok((schema_type, nullable))
             }
@@ -233,13 +236,13 @@ impl<'de> Deserialize<'de> for Schema {
         D: serde::Deserializer<'de>,
     {
         let wire = SchemaDeserialize::deserialize(deserializer)?;
-        let (schema_type, type_nullable) = wire.schema_type.map_or(Ok((None, None)), |wire| {
+        let (schema_type, type_nullable) = wire.schema_type.map_or(Ok((None, false)), |wire| {
             wire.into_schema_type_and_nullable::<D::Error>()
         })?;
-        let nullable = match type_nullable {
-            Some(true) => Some(true),
-            None => wire.nullable,
-            Some(false) => wire.nullable.or(Some(false)),
+        let nullable = if type_nullable {
+            Some(true)
+        } else {
+            wire.nullable
         };
         Ok(Self {
             ref_path: wire.ref_path,

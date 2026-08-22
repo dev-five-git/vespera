@@ -252,33 +252,17 @@ impl Schema {
     /// flatten/transparent, field constraints, `$ref` references).
     ///
     /// The input is always valid JSON (the macro just serialized it via
-    /// `serde_json`), so a parse failure is unreachable in practice; it
-    /// degrades to [`Schema::default`] rather than panicking inside
-    /// generated user code.  A failure would silently drop a component
-    /// schema, so it is surfaced via `debug_assert!` (caught in
-    /// development / CI) while release builds still degrade gracefully — a
-    /// macro/serde drift never goes unnoticed but never panics in
-    /// downstream user code either.
+    /// `serde_json`), so a parse failure means a vespera bug — the macro
+    /// emitted a `Schema` that cannot round-trip.  It degrades to a VISIBLE
+    /// sentinel schema (title `VESPERA_SCHEMA_PARSE_ERROR`, description
+    /// carrying the serde error) rather than a silent [`Schema::default`],
+    /// so the drift is loud in the generated spec.  It deliberately does NOT
+    /// assert: this constructor runs inside macro-generated code in the
+    /// USER's crate, where a `debug_assert!` would panic every downstream
+    /// debug build instead of surfacing the sentinel.
     #[must_use]
     pub fn from_compiled_json(json: &str) -> Self {
-        match serde_json::from_str(json) {
-            Ok(schema) => schema,
-            Err(e) => {
-                // Surface the (in-practice-unreachable) macro/serde drift in
-                // debug / CI builds via `debug_assert!`.  In release, degrade
-                // to a VISIBLE sentinel schema (a description-only object)
-                // rather than a silent `Schema::default()`, so a drift never
-                // disappears unnoticed from the generated spec yet never
-                // panics in downstream user code.
-                debug_assert!(
-                    false,
-                    "vespera: Schema::from_compiled_json failed to parse macro-emitted \
-                     JSON ({e}); emitting a sentinel schema. This indicates a \
-                     vespera bug — the macro serialized a Schema that cannot round-trip."
-                );
-                schema_parse_failure_sentinel(&e)
-            }
-        }
+        serde_json::from_str(json).unwrap_or_else(|e| schema_parse_failure_sentinel(&e))
     }
 }
 

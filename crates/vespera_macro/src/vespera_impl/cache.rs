@@ -863,6 +863,48 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    fn macro_dev_fingerprint_hashes_rust_files_in_resolved_workspace() {
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                // SAFETY: this serialized test restores the process environment through RAII.
+                unsafe {
+                    match self.0.take() {
+                        Some(value) => std::env::set_var("CARGO_MANIFEST_DIR", value),
+                        None => std::env::remove_var("CARGO_MANIFEST_DIR"),
+                    }
+                }
+            }
+        }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/consumer\"]",
+        )
+        .unwrap();
+        let consumer = temp.path().join("crates/consumer");
+        let macro_src = temp.path().join("crates/vespera_macro/src");
+        std::fs::create_dir_all(&consumer).unwrap();
+        std::fs::create_dir_all(macro_src.join("nested")).unwrap();
+        let macro_file = macro_src.join("lib.rs");
+        std::fs::write(&macro_file, "pub fn first() {}").unwrap();
+        std::fs::write(macro_src.join("nested/mod.rs"), "pub struct Nested;").unwrap();
+        std::fs::write(macro_src.join("README.md"), "not Rust source").unwrap();
+
+        let _restore = Restore(std::env::var("CARGO_MANIFEST_DIR").ok());
+        // SAFETY: this serialized test restores the process environment through RAII.
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", &consumer) };
+
+        let before = compute_macro_dev_fingerprint_uncached();
+        std::fs::write(&macro_file, "pub fn first() { let changed = true; }").unwrap();
+        let after = compute_macro_dev_fingerprint_uncached();
+
+        assert_ne!(before, after, "a Rust source change must move the digest");
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn macro_dev_fingerprint_is_zero_outside_vespera_workspace() {
         struct Restore(Option<String>);
         impl Drop for Restore {

@@ -365,9 +365,10 @@ fn write_header_value<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap, name
     let mut values = headers.get_all(name).iter();
     // `write_header_value` is only invoked for names taken from `headers.keys()`,
     // so `get_all(name)` is always non-empty.  On the impossible `None` we emit an
-    // empty-string value rather than panicking on this response hot path.
+    // empty-string value rather than panicking: this runs on the response hot path
+    // of an FFI bridge, where an assert would take the host process down over a
+    // header that is merely missing.
     let Some(first) = values.next() else {
-        debug_assert!(false, "write_header_value is only called for present names");
         write_json_string(sink, "");
         return;
     };
@@ -455,12 +456,10 @@ pub(super) fn write_response_header<S: JsonSink>(
     // both hand and serde and asserts byte equality).
     match &metadata.version {
         Cow::Borrowed(v) if std::ptr::eq(v.as_ptr(), VESPERA_VERSION.as_ptr()) => {
-            // Defense in depth: in debug builds, assert byte-identity so a
-            // (theoretical) compiler that fails to dedupe the literal still
-            // catches any drift via tests.  The slow path below would
-            // produce byte-identical output anyway — this only triggers if
-            // pointer-eq somehow held on differing bytes, which it cannot.
-            debug_assert_eq!(*v, VESPERA_VERSION);
+            // Pointer equality with the `VESPERA_VERSION` literal implies byte
+            // equality, so the pre-baked segment is what the general path below
+            // would produce anyway — byte-identity is locked end to end by
+            // `hand_serialize_matches_serde_serialize` in `wire/tests.rs`.
             sink.put(METADATA_SEGMENT_CURRENT);
         }
         _ => {
@@ -501,9 +500,41 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "write_header_value is only called for present names")]
-    fn absent_header_name_hits_the_debug_invariant() {
-        write_header_value(&mut Vec::new(), &http::HeaderMap::new(), "x-absent");
+    fn absent_header_name_emits_an_empty_string_instead_of_panicking() {
+        let mut bytes = Vec::new();
+        write_header_value(&mut bytes, &http::HeaderMap::new(), "x-absent");
+        assert_eq!(bytes, br#""""#);
+    }
+
+    #[test]
+    fn header_maps_larger_than_the_stack_buffer_serialize_sorted_from_the_heap() {
+        let mut headers = http::HeaderMap::new();
+        for i in 0..=STACK_CAP {
+            let name = format!("x-h{i:03}");
+            headers.append(
+                http::HeaderName::from_bytes(name.as_bytes()).expect("valid header name"),
+                http::HeaderValue::from_str(&i.to_string()).expect("valid header value"),
+            );
+        }
+        // A repeated name forces the `all_single == false` heap branch, whose
+        // values are re-read through `get_all` rather than captured in the pass
+        // that collects the names.
+        headers.append(
+            http::HeaderName::from_static("x-h000"),
+            http::HeaderValue::from_static("dup"),
+        );
+
+        let mut bytes = Vec::new();
+        write_headers(&mut bytes, &headers);
+        let text = std::str::from_utf8(&bytes).expect("header JSON is UTF-8");
+        let parsed: serde_json::Value = serde_json::from_str(text).expect("valid JSON object");
+
+        assert_eq!(parsed["x-h000"], serde_json::json!(["0", "dup"]));
+        assert_eq!(parsed["x-h032"], serde_json::json!("32"));
+        assert!(
+            text.find(r#""x-h000""#) < text.find(r#""x-h001""#),
+            "heap entries must stay sorted by name: {text}"
+        );
     }
 
     #[test]

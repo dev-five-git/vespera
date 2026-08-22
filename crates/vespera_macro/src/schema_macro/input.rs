@@ -687,20 +687,44 @@ mod tests {
     #[test]
     fn test_parse_schema_type_all_parameters() {
         let tokens = quote::quote!(
-            NewType from User,
+            NewType from crate::models::User,
             pick = ["id", "name"],
             rename = [("id", "user_id")],
+            relation_adapters = [("owner", OwnerSummary)],
+            add = [("request_id": String)],
             clone = false,
             partial,
+            ignore,
             name = "CustomName",
-            rename_all = "snake_case"
+            rename_all = "snake_case",
+            multipart,
+            omit_default
         );
         let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-        assert_eq!(input.pick.unwrap(), vec!["id", "name"]);
+        let source_type = &input.source_type;
+        assert_eq!(input.new_type, "NewType");
+        assert_eq!(
+            quote::quote!(#source_type).to_string(),
+            "crate :: models :: User"
+        );
+        assert_eq!(
+            input.pick.as_deref(),
+            Some(["id".to_string(), "name".to_string()].as_slice())
+        );
+        assert_eq!(
+            input.rename.as_deref(),
+            Some([("id".to_string(), "user_id".to_string())].as_slice())
+        );
+        assert_eq!(input.relation_adapters[0].0, "owner");
+        assert_eq!(input.relation_adapters[0].1, "OwnerSummary");
+        assert_eq!(input.add.as_ref().unwrap()[0].0, "request_id");
         assert!(!input.derive_clone);
-        assert!(input.partial.is_some());
+        assert!(matches!(input.partial, Some(PartialMode::All)));
+        assert!(input.ignore_schema);
         assert_eq!(input.schema_name.as_deref(), Some("CustomName"));
         assert_eq!(input.rename_all.as_deref(), Some("snake_case"));
+        assert!(input.multipart);
+        assert!(input.omit_default);
     }
 
     // Line 164: Error when "from" keyword is wrong

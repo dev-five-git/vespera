@@ -469,4 +469,59 @@ mod tests {
             assert_eq!(result, expected_owned, "Failed for: {field_src}");
         }
     }
+
+    #[test]
+    fn rename_all_fallback_recovers_after_unconsumed_value() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[serde(@broken, rename_all = "camelCase")]
+        };
+
+        assert_eq!(extract_rename_all(&attrs).as_deref(), Some("camelCase"));
+    }
+
+    #[test]
+    fn multipart_rename_all_is_returned() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[try_from_multipart(rename_all = "snake_case", @broken)]
+        };
+
+        assert_eq!(extract_rename_all(&attrs).as_deref(), Some("snake_case"));
+    }
+
+    #[test]
+    fn field_rename_fallback_recovers_after_unconsumed_value() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[serde(@broken, rename = "userId")]
+        };
+
+        assert_eq!(extract_field_rename(&attrs).as_deref(), Some("userId"));
+    }
+
+    #[test]
+    fn form_data_field_name_is_returned() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[form_data(field_name = "upload", @broken)]
+        };
+
+        assert_eq!(extract_field_rename(&attrs).as_deref(), Some("upload"));
+    }
+
+    #[test]
+    fn skip_fallback_ignores_non_list_then_recovers_from_parse_error() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[serde]
+            #[serde(@broken, skip)]
+        };
+
+        assert!(extract_skip(&attrs));
+    }
+
+    #[test]
+    fn flatten_fallback_recovers_after_unconsumed_value() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[serde(@broken, flatten)]
+        };
+
+        assert!(extract_flatten(&attrs));
+    }
 }

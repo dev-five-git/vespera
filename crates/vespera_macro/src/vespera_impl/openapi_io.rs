@@ -849,6 +849,15 @@ mod tests {
     }
 
     #[test]
+    fn sidecar_validation_accepts_cache_without_generated_specs() {
+        let loaded = load_validated_sidecar_specs(None, None, None, None)
+            .expect("a cache without configured specs needs no sidecar validation");
+
+        assert!(loaded.pretty.is_none());
+        assert!(loaded.spec_tokens.is_none());
+    }
+
+    #[test]
     #[serial_test::serial]
     fn embedding_reports_directory_creation_and_spec_write_errors() {
         let create_temp = TempDir::new().unwrap();

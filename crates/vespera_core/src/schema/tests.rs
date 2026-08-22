@@ -260,11 +260,32 @@ fn security_scheme_type_uses_openapi_canonical_wire_names(
 }
 
 #[test]
-#[should_panic(expected = "from_compiled_json failed to parse")]
-fn from_compiled_json_invalid_input_trips_debug_assert() {
-    // In debug / test builds the (in-practice-unreachable) macro/serde
-    // drift guard fires loudly so a bug never goes unnoticed in CI.
-    let _ = Schema::from_compiled_json("{not valid json");
+fn from_compiled_json_invalid_input_yields_the_sentinel_instead_of_panicking() {
+    let schema = Schema::from_compiled_json("{not valid json");
+
+    assert_eq!(schema.title.as_deref(), Some("VESPERA_SCHEMA_PARSE_ERROR"));
+    assert!(
+        schema
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("macro/serde drift")),
+        "sentinel description should identify macro/serde drift: {schema:#?}",
+    );
+}
+
+#[test]
+fn from_compiled_json_round_trips_a_macro_emitted_schema() {
+    let source = Schema {
+        title: Some("User".to_owned()),
+        schema_type: Some(SchemaType::Object),
+        ..Schema::default()
+    };
+    let json = serde_json::to_string(&source).unwrap();
+
+    let restored = Schema::from_compiled_json(&json);
+
+    assert_eq!(restored.title.as_deref(), Some("User"));
+    assert_eq!(restored.schema_type, Some(SchemaType::Object));
 }
 
 #[test]
