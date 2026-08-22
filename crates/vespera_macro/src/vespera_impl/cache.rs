@@ -410,7 +410,18 @@ fn collect_rs_mtime_entry(
     let path = entry.path();
     if file_type.is_dir() {
         collect_rs_mtimes(&path, out);
-    } else if path.extension().is_some_and(|e| e == "rs") {
+    } else {
+        push_rs_fingerprint(entry, &path, out);
+    }
+}
+
+/// Records `path`'s fingerprint when it is a `.rs` file.
+///
+/// Every other extension is skipped WITHOUT the `metadata()` stat, matching
+/// `file_utils::collect_with_mtimes_into`: only the files the cache actually
+/// fingerprints pay for their mtime.
+fn push_rs_fingerprint(entry: &std::fs::DirEntry, path: &Path, out: &mut Vec<(String, u64)>) {
+    if path.extension().is_some_and(|e| e == "rs") {
         out.push((
             path.display().to_string(),
             entry_fingerprint(&entry.metadata()),
