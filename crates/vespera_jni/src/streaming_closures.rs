@@ -280,13 +280,15 @@ fn call_output_stream_write(
 /// taken only when the receiver is non-null (`can_call_unchecked`) **and**
 /// [`method_cache`] resolved; anything else falls through to `fallback`.
 ///
-/// **Pending-exception contract (unchanged, and the reason the callers
-/// must not treat `Ok` as success on its own):** the fast path goes
-/// through `call_method_unchecked`, which returns `Ok` while leaving a
-/// thrown Java exception PENDING on the thread — only the checked
-/// `fallback` surfaces a throw as `Err`. Callers convert that pending
-/// exception themselves via [`take_pending_exception`] (see
-/// [`call_header_consumer`]) or scrub it (see [`complete_future`]).
+/// **Pending-exception contract:** BOTH paths report a throw as
+/// `Err(jni::errors::Error::JavaException)` and NEITHER clears it —
+/// jni's `call_method_unchecked` post-checks the exception, so the `Err`
+/// arrives only AFTER the Java method has already run. Callers must
+/// therefore (a) scrub the still-pending exception before the thread
+/// issues its next JNI call, via [`take_pending_exception`] (see
+/// [`call_header_consumer`]) or `clear_pending_exception` (see
+/// [`complete_future`]), and (b) never read an `Err` as "the Java method
+/// was skipped".
 ///
 /// The invoked method's return value is discarded on both paths — the
 /// `void` of `Consumer.accept` and the `boolean` of
@@ -509,13 +511,14 @@ pub fn make_push_closure(
                 // the buffer length) if the clamp invariant ever changes.
                 let len = i32::try_from(seg.len()).unwrap_or(chunk_size_i32);
                 call_output_stream_write(env, &stream, &buf, len)?;
-                // The cached fast path calls `write()` via `call_method_unchecked`,
-                // which leaves a thrown `write()` (e.g. the client disconnected
-                // mid-download) PENDING instead of surfacing it as `Err`. Clear it
-                // AND propagate so the `failed` latch engages and we STOP writing
-                // the remaining segments/frames into a broken sink — instead of
-                // clearing it and futilely streaming the rest of the body to a
-                // dead stream. (The checked fallback already latches via `?`.)
+                // A thrown `write()` (e.g. the client disconnected mid-download)
+                // already latched through the `?` above, which leaves the
+                // exception PENDING (see `call_object_arg_method`) for the
+                // wrapper to scrub. This is the belt-and-braces guard for an
+                // exception left pending WITHOUT an `Err`: it keeps the `failed`
+                // latch authoritative — we STOP writing the remaining
+                // segments/frames instead of futilely streaming the rest of the
+                // body into a dead stream.
                 if take_pending_exception(env) {
                     return Err(jni::errors::Error::JavaException);
                 }
@@ -540,16 +543,12 @@ pub fn call_header_consumer(
         let arr = env.byte_array_from_slice(header_bytes)?;
         let arr_obj: JObject = arr.into();
         let result = call_consumer_accept(env, consumer, &arr_obj);
-        // `call_consumer_accept`'s cached `call_method_unchecked` fast path
-        // returns `Ok` with a thrown `Consumer.accept` left PENDING (only the
-        // checked fallback surfaces it as `Err`). A throwing header consumer
-        // is a FAILURE and MUST be reported as `Err`, exactly like the cached
-        // `read`/`write` paths convert their pending exception to an
-        // abort/`Err`. Otherwise the caller's `.is_ok()` records
-        // `header_sent = true` for a header the Java side never accepted, and
-        // the body keeps streaming over a failed header instead of aborting.
-        // Scrub on BOTH paths so the thread is left clean, then fail if a
-        // throw was detected.
+        // A throwing `Consumer.accept` surfaces as `Err` and leaves the
+        // exception PENDING (see `call_object_arg_method`). Scrub it FIRST so
+        // the thread is left clean on both paths, then fail: a throwing header
+        // consumer is a FAILURE, and reporting `Ok` would record
+        // `header_sent = true` for a header the Java side never accepted,
+        // streaming the body over a failed header instead of aborting.
         if take_pending_exception(env) {
             return Err(jni::errors::Error::JavaException);
         }
@@ -683,32 +682,65 @@ pub fn close_input_stream(
     Ok(())
 }
 
+/// Whether a [`complete_future`] attempt actually reached
+/// `CompletableFuture.complete(byte[])` on the Java side.
+///
+/// `dispatchAsync`'s always-complete fallback needs this distinction:
+/// its retry with a tiny error payload only makes sense when the first
+/// attempt never reached Java (allocating the response `byte[]` failed,
+/// e.g. OOM on a large response). Once `complete()` HAS been invoked,
+/// retrying re-enters the very same Java method — it cannot resolve a
+/// future whose own `complete()` throws, and it breaks the
+/// "`complete()` is invoked at most once per dispatch" contract that
+/// `AsyncDispatchExceptionHygieneTest` locks from the Java side.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompleteAttempt {
+    /// `complete()` was invoked on the Java future: it resolved the
+    /// future, found it already resolved, or threw. The caller must NOT
+    /// invoke it again.
+    Invoked,
+    /// The response `byte[]` could not be allocated, so `complete()` was
+    /// never reached and the future is still unresolved — a retry with a
+    /// smaller payload is worthwhile.
+    ArrayAllocFailed,
+}
+
 /// Call `CompletableFuture.complete(byte[])` and clear any pending
 /// JNI exception so the worker thread is left clean for subsequent
 /// dispatches.
+///
+/// A throwing `complete()` is reported as [`CompleteAttempt::Invoked`],
+/// not as a failure: `call_method_unchecked` post-checks the pending
+/// exception, so the throw surfaces only AFTER the Java method has run
+/// (see [`call_object_arg_method`]). Treating it as a failure is what
+/// made the caller complete the same future twice.
 pub fn complete_future(
     env: &mut jni::Env<'_>,
     future: &Global<JObject<'static>>,
     bytes: &[u8],
-) -> jni::errors::Result<()> {
-    // Capture the result instead of `?`-propagating so the exception clear
+) -> CompleteAttempt {
+    // Capture the outcome instead of `?`-propagating so the exception clear
     // below runs on EVERY path. The prior early `?` on byte_array_from_slice
     // / complete() returned before the clear, leaking a pending exception
     // onto the (pooled, daemon-attached) worker thread for the next dispatch
     // — contradicting this function's own "left clean" contract.
-    let result = match env.byte_array_from_slice(bytes) {
-        Ok(arr) => {
-            let arr_obj: JObject = arr.into();
-            call_future_complete(env, future, &arr_obj)
-        }
-        Err(e) => Err(e),
-    };
+    let attempt =
+        env.byte_array_from_slice(bytes)
+            .map_or(CompleteAttempt::ArrayAllocFailed, |arr| {
+                let arr_obj: JObject = arr.into();
+                // Both the cached and the checked path reach the Java method
+                // before they can report a throw, so any error here means
+                // `complete()` ran — discard it and report `Invoked`.
+                let _ = call_future_complete(env, future, &arr_obj);
+                CompleteAttempt::Invoked
+            });
     // Always clear any leftover exception (e.g. if Java's complete() threw
     // via a buggy whenComplete handler): we MUST NOT leave the attached
     // thread in a faulted state because subsequent JNI calls will misbehave
     // silently.
     clear_pending_exception(env);
-    result
+    attempt
 }
 
 #[cfg(test)]

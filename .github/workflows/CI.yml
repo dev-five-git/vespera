@@ -161,9 +161,11 @@ jobs:
         working-directory: libs/vespera-bridge-gradle-plugin
         run: ./gradlew publishToMavenLocal --console=plain --no-daemon
       - name: Publish vespera-bridge to mavenLocal
-        # demo-app resolves kr.devfive:vespera-bridge:0.1.1 from mavenLocal
-        # (see examples/rust-jni-demo/java/demo-app/build.gradle.kts —
-        # bridgeVersion.set("0.1.1")).
+        # demo-app resolves kr.devfive:vespera-bridge from mavenLocal at the
+        # version declared in libs/vespera-bridge/build.gradle.kts (see
+        # examples/rust-jni-demo/java/demo-app/build.gradle.kts — the version
+        # is read from that file, never pinned, so bumping the bridge cannot
+        # silently fall back to the last release on Maven Central).
         shell: bash
         working-directory: libs/vespera-bridge
         run: ./gradlew publishToMavenLocal --console=plain --no-daemon

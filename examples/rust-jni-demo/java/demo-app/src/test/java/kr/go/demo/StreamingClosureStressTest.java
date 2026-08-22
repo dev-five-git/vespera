@@ -423,6 +423,12 @@ class StreamingClosureStressTest {
      * closure latches a {@code failed} flag on the first write failure and
      * turns subsequent frames into a no-op instead of repeatedly crossing
      * JNI into the broken sink; the dispatch still returns the wire header.
+     *
+     * <p>That header carries {@code 500}, not the handler's {@code 200}:
+     * the bytes that reached the sink are truncated, and vespera never
+     * reports a truncated body as a clean success.  The Rust side locks the
+     * same contract in
+     * {@code response_streaming_chunk_break_returns_500_not_silent_success}.
      */
     @Test
     @Order(5)
@@ -447,7 +453,8 @@ class StreamingClosureStressTest {
         assertNotNull(respHeader,
                 "dispatch must return a header even when the OutputStream throws");
         VesperaBridge.DecodedResponse resp = VesperaBridge.decodeResponse(respHeader);
-        assertEquals(200, resp.status(),
-                "the handler succeeded (200); only the JVM sink failed");
+        assertEquals(500, resp.status(),
+                "a sink that stops mid-body truncates the response, "
+                        + "so the header must not report the handler's 200");
     }
 }

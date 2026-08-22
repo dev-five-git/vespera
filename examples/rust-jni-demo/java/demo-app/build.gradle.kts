@@ -12,18 +12,31 @@ plugins {
     // detection helpers, library-name mapping, processResources wiring).
     // After: the 5-line `vespera { ... }` block below.
     // ───────────────────────────────────────────────────────────────────
-    id("kr.devfive.vespera-bridge") version "0.1.1"
+    // Version resolved in settings.gradle.kts from the in-repo plugin build.
+    id("kr.devfive.vespera-bridge")
 }
 
 group = "kr.go.demo"
 version = "0.1.0"
 
+// This example dogfoods the bridge built from *this* repository
+// (`./gradlew publishToMavenLocal` in libs/vespera-bridge), so the version is
+// read from that module's build script instead of being pinned here — a hard
+// coded pin silently falls back to the last release on Maven Central whenever
+// the in-repo bridge is bumped, and the E2E tests then compile against a stale
+// API. Real consumers pin a released version (see libs/vespera-bridge/README).
+val bridgeBuildScript = rootProject.layout.projectDirectory
+    .file("../../../libs/vespera-bridge/build.gradle.kts")
+val localBridgeVersion: String =
+    Regex("(?m)^version\\s*=\\s*\"([^\"]+)\"")
+        .find(providers.fileContents(bridgeBuildScript).asText.get())
+        ?.groupValues?.get(1)
+        ?: error("No `version = \"...\"` found in ${bridgeBuildScript.asFile}")
+
 vespera {
     crateName.set("rust_jni_demo")
     cargoRoot.set(rootProject.layout.projectDirectory.dir("../../.."))
-    // Dogfoods the locally published bridge (./gradlew publishToMavenLocal
-    // in libs/vespera-bridge) — required for the dispatchDirect E2E tests.
-    bridgeVersion.set("0.1.1")
+    bridgeVersion.set(localBridgeVersion)
 }
 
 dependencies {

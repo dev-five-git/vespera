@@ -15,7 +15,7 @@ use jni::sys::jbyteArray;
 
 use crate::daemon_env::with_cached_daemon_env;
 use crate::streaming_closures::{
-    close_input_stream, complete_future, complete_future_local, make_pull_closure,
+    CompleteAttempt, close_input_stream, complete_future, complete_future_local, make_pull_closure,
     make_push_closure,
 };
 
@@ -559,25 +559,31 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
 
                     // ALWAYS-COMPLETE CONTRACT: the Java CompletableFuture must
                     // resolve on every path or `dispatchAsync` callers hang
-                    // forever.  The cached-daemon completion can fail (daemon
-                    // attach during VM shutdown, or an OOM allocating the
-                    // response byte[]); on failure make a best-effort second
-                    // attempt with a tiny error payload (far less likely to OOM
-                    // than the full response) so the future still resolves with
-                    // an error rather than never.  If even that fails the JVM is
-                    // unrecoverable and nothing could complete it.
-                    let completed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        with_cached_daemon_env(&jvm, |env| -> jni::errors::Result<()> {
-                            complete_future(env, &future_for_task, &response)
-                        })
+                    // forever.  The cached-daemon completion can fail BEFORE it
+                    // reaches Java (daemon attach during VM shutdown, or an OOM
+                    // allocating the response byte[]); only then is a second,
+                    // tiny-payload attempt worth making — it is far less likely
+                    // to OOM, so the future still resolves with an error rather
+                    // than never.  A `complete()` that WAS invoked (whether it
+                    // resolved the future or threw) must never be retried: the
+                    // retry re-enters the same broken Java method and would
+                    // complete the same future twice.
+                    let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        with_cached_daemon_env(
+                            &jvm,
+                            |env| -> jni::errors::Result<CompleteAttempt> {
+                                Ok(complete_future(env, &future_for_task, &response))
+                            },
+                        )
                     }));
-                    if !matches!(completed, Ok(Ok(()))) {
+                    if !matches!(attempt, Ok(Ok(CompleteAttempt::Invoked))) {
                         let _ = with_cached_daemon_env(&jvm, |env| -> jni::errors::Result<()> {
-                            complete_future(
+                            let _ = complete_future(
                                 env,
                                 &future_for_task,
                                 &vespera_inprocess::error_wire(500, "async completion failed"),
-                            )
+                            );
+                            Ok(())
                         });
                     }
                 });
