@@ -50,11 +50,12 @@ fn convert_field_data(segment: &syn::PathSegment, source_module_path: &[String])
 pub fn convert_type_with_chrono(ty: &Type, source_module_path: &[String]) -> TokenStream {
     if let Some((wrapper, inner_ty)) = option_or_vec_inner(ty) {
         let converted_inner = convert_seaorm_type_to_chrono(inner_ty, source_module_path);
-        return match wrapper {
-            "Option" => quote! { Option<#converted_inner> },
-            "Vec" => quote! { Vec<#converted_inner> },
-            _ => unreachable!(),
-        };
+        // `option_or_vec_inner` only ever reports `Option` or `Vec`, both valid
+        // idents, so the wrapper is re-emitted directly instead of through a
+        // match with an `unreachable!()` panic arm - a proc-macro panic has no
+        // span and surfaces as an opaque "proc macro panicked".
+        let wrapper = syn::Ident::new(wrapper, proc_macro2::Span::call_site());
+        return quote! { #wrapper<#converted_inner> };
     }
 
     convert_seaorm_type_to_chrono(ty, source_module_path)

@@ -29,6 +29,11 @@ use super::{
     "duplicate field `headers`"
 )]
 #[case(
+    br#"{"v":1,"method":"GET","path":"/p","app":"a","app":"b"}"#,
+    "duplicate field `app`"
+)]
+#[case(br#"{"v":1,"v":1,"method":"GET","path":"/p"}"#, "duplicate field `v`")]
+#[case(
     br#"{"v":1,"method":"GET","path":"/p","headers":{"x":"prefix\"tail"#,
     "unterminated string"
 )]

@@ -274,4 +274,30 @@ mod tests {
             assert_eq!(bench_hoist_old(&json_headers(), &body), 0);
         }
     }
+
+    #[test]
+    fn hoisting_skips_non_json_and_oversized_bodies() {
+        let valid = Bytes::from_static(br#"{"errors":[{"path":"name","message":"bad"}]}"#);
+
+        let mut text_headers = http::HeaderMap::new();
+        text_headers.insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("text/plain"),
+        );
+        assert!(
+            try_hoist_validation_errors(&text_headers, &valid).is_none(),
+            "a non-JSON content-type must not be parsed as a validation envelope"
+        );
+
+        let oversized = Bytes::from(vec![b'x'; MAX_HOIST_BODY_BYTES + 1]);
+        assert!(
+            try_hoist_validation_errors(&json_headers(), &oversized).is_none(),
+            "a body past the hoist cap must be surfaced verbatim, never parsed"
+        );
+
+        let hoisted = try_hoist_validation_errors(&json_headers(), &valid)
+            .expect("a JSON 422 envelope within the cap must hoist");
+        assert_eq!(hoisted.len(), 1);
+        assert_eq!(hoisted[0].path, "name");
+    }
 }

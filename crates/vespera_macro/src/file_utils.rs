@@ -62,13 +62,15 @@ pub fn normalize_path_key(path: &str, cwd: &Path) -> String {
             other => folded.push(other),
         }
     }
-    let mut key = normalize_display_path(&folded);
-    if let Some(stripped) = key.strip_prefix("//?/") {
-        key = stripped.to_owned();
-    }
-    if cfg!(windows) {
-        key.make_ascii_lowercase();
-    }
+    let key = normalize_display_path(&folded);
+    // The `\\?\` verbatim prefix and case-insensitive path comparison are both
+    // Windows-only concepts, so they compile out entirely elsewhere instead of
+    // costing every Unix build a runtime branch and a prefix scan.
+    #[cfg(windows)]
+    let key = key
+        .strip_prefix("//?/")
+        .unwrap_or(&key)
+        .to_ascii_lowercase();
     key
 }
 
@@ -464,6 +466,30 @@ mod tests {
         assert_ne!(combine_fingerprint(42, 100), combine_fingerprint(43, 100));
         // Identical (mtime, size) — equal (a genuine cache hit).
         assert_eq!(combine_fingerprint(42, 100), combine_fingerprint(42, 100));
+    }
+
+    #[test]
+    fn normalize_path_key_absolutizes_and_folds_dot_segments() {
+        let cwd = Path::new(if cfg!(windows) {
+            r"C:\work\project"
+        } else {
+            "/work/project"
+        });
+
+        let relative = normalize_path_key("./src/./routes/../models/user.rs", cwd);
+        assert!(
+            relative.ends_with("/work/project/src/models/user.rs"),
+            "`.` must vanish and `..` must pop the previous segment: {relative}"
+        );
+
+        let absolute = normalize_path_key(
+            &normalize_display_path(cwd.join("a/../b.rs")),
+            Path::new("/elsewhere"),
+        );
+        assert!(
+            absolute.ends_with("/work/project/b.rs"),
+            "an absolute path must not be re-rooted at cwd: {absolute}"
+        );
     }
 
     #[test]
