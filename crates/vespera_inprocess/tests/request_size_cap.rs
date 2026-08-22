@@ -11,8 +11,8 @@ use std::ops::ControlFlow;
 use serde_json::Value;
 use tokio::runtime::Builder;
 use vespera_inprocess::{
-    dispatch_from_bytes, dispatch_streaming_async, dispatch_streaming_with_header_async,
-    set_max_request_bytes,
+    DirectWriteResult, dispatch_from_bytes, dispatch_into_async_borrowed, dispatch_streaming_async,
+    dispatch_streaming_with_header_async, set_max_request_bytes,
 };
 
 /// Small enough that a tiny valid header passes but a padded request
@@ -84,6 +84,22 @@ fn within_limit_request_is_not_capped() {
         Some(413),
         "a request within the cap must not be rejected as oversized"
     );
+}
+
+#[test]
+fn oversized_borrowed_direct_request_returns_413() {
+    ensure_cap();
+    let wire = wire_with_body(200);
+    assert!(wire.len() > CAP);
+    let mut out = vec![0u8; 1024];
+
+    let DirectWriteResult::Complete(n) = block_on(dispatch_into_async_borrowed(&wire, &mut out))
+    else {
+        panic!("413 error wire must fit");
+    };
+
+    let header = parse_header_json(&out[..n]);
+    assert_eq!(header["status"].as_u64(), Some(413));
 }
 
 // ── Streaming-path ingress cap (INP-01) ──────────────────────────────

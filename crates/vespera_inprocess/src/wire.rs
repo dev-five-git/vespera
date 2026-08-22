@@ -229,6 +229,12 @@ fn write_wire_header_into(
     let Ok(header_len) = u32::try_from(out.len() - start) else {
         return false;
     };
+    finish_wire_header(out, start, header_len)
+}
+
+/// Backfills a representable header length without changing the emitted bytes.
+#[inline]
+fn finish_wire_header(out: &mut [u8], start: usize, header_len: u32) -> bool {
     out[start - 4..start].copy_from_slice(&header_len.to_be_bytes());
     true
 }
@@ -268,12 +274,17 @@ fn build_header_vec(
     // `Vec` to serialise the hoisted errors without the mid-write realloc a
     // hoist-blind estimate paid (locked by tests/alloc_budget.rs case F).
     let mut out = Vec::with_capacity(4 + header_cap + body_reserve);
-    if write_wire_header_into(&mut out, status, headers, metadata, validation_errors) {
+    let header_written =
+        write_wire_header_into(&mut out, status, headers, metadata, validation_errors);
+    finish_header_vec(out, header_written)
+}
+
+/// Converts the impossible 4 GiB header overflow into the canonical 500 wire.
+#[inline]
+fn finish_header_vec(out: Vec<u8>, header_written: bool) -> Result<Vec<u8>, Vec<u8>> {
+    if header_written {
         Ok(out)
     } else {
-        // Unreachable for a real `HeaderMap` (would need 4 GiB+ of header
-        // JSON); never panic on the response path — hand the caller a ready
-        // `500` wire response instead.
         Err(error_wire(500, HEADER_TOO_LARGE_MSG))
     }
 }
@@ -394,17 +405,22 @@ pub fn to_wire_bytes(parts: ResponseParts) -> Vec<u8> {
     } else {
         None
     };
-    let mut out = match build_header_vec(
+    match build_header_vec(
         status,
         &headers,
         &metadata,
         validation_errors.as_deref(),
         body_bytes.len(),
     ) {
-        Ok(out) => out,
-        Err(wire) => return wire,
-    };
-    out.extend_from_slice(&body_bytes);
+        Ok(out) => append_wire_body(out, &body_bytes),
+        Err(wire) => wire,
+    }
+}
+
+/// Appends the preserved 422 body after a successfully length-prefixed header.
+#[inline]
+fn append_wire_body(mut out: Vec<u8>, body: &[u8]) -> Vec<u8> {
+    out.extend_from_slice(body);
     out
 }
 

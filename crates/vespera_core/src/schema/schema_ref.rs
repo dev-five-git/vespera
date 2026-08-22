@@ -138,65 +138,65 @@ impl<'de> Deserialize<'de> for SchemaField {
     where
         D: serde::Deserializer<'de>,
     {
-        struct SchemaFieldVisitor;
-
-        impl serde::de::Visitor<'_> for SchemaFieldVisitor {
-            type Value = SchemaField;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a JSON Schema field name")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: DeError,
-            {
-                Ok(match value {
-                    "$ref" => SchemaField::RefPath,
-                    "type" => SchemaField::Type,
-                    "format" => SchemaField::Format,
-                    "title" => SchemaField::Title,
-                    "description" => SchemaField::Description,
-                    "default" => SchemaField::Default,
-                    "example" => SchemaField::Example,
-                    "examples" => SchemaField::Examples,
-                    "minimum" => SchemaField::Minimum,
-                    "maximum" => SchemaField::Maximum,
-                    "exclusiveMinimum" => SchemaField::ExclusiveMinimum,
-                    "exclusiveMaximum" => SchemaField::ExclusiveMaximum,
-                    "multipleOf" => SchemaField::MultipleOf,
-                    "minLength" => SchemaField::MinLength,
-                    "maxLength" => SchemaField::MaxLength,
-                    "pattern" => SchemaField::Pattern,
-                    "items" => SchemaField::Items,
-                    "prefixItems" => SchemaField::PrefixItems,
-                    "minItems" => SchemaField::MinItems,
-                    "maxItems" => SchemaField::MaxItems,
-                    "uniqueItems" => SchemaField::UniqueItems,
-                    "properties" => SchemaField::Properties,
-                    "required" => SchemaField::Required,
-                    "additionalProperties" => SchemaField::AdditionalProperties,
-                    "minProperties" => SchemaField::MinProperties,
-                    "maxProperties" => SchemaField::MaxProperties,
-                    "enum" => SchemaField::Enum,
-                    "allOf" => SchemaField::AllOf,
-                    "anyOf" => SchemaField::AnyOf,
-                    "oneOf" => SchemaField::OneOf,
-                    "not" => SchemaField::Not,
-                    "discriminator" => SchemaField::Discriminator,
-                    "nullable" => SchemaField::Nullable,
-                    "readOnly" => SchemaField::ReadOnly,
-                    "writeOnly" => SchemaField::WriteOnly,
-                    "externalDocs" => SchemaField::ExternalDocs,
-                    "$defs" => SchemaField::Defs,
-                    "$dynamicAnchor" => SchemaField::DynamicAnchor,
-                    "$dynamicRef" => SchemaField::DynamicRef,
-                    _ => SchemaField::Unknown,
-                })
-            }
-        }
-
         deserializer.deserialize_identifier(SchemaFieldVisitor)
+    }
+}
+
+struct SchemaFieldVisitor;
+
+impl serde::de::Visitor<'_> for SchemaFieldVisitor {
+    type Value = SchemaField;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a JSON Schema field name")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: DeError,
+    {
+        Ok(match value {
+            "$ref" => SchemaField::RefPath,
+            "type" => SchemaField::Type,
+            "format" => SchemaField::Format,
+            "title" => SchemaField::Title,
+            "description" => SchemaField::Description,
+            "default" => SchemaField::Default,
+            "example" => SchemaField::Example,
+            "examples" => SchemaField::Examples,
+            "minimum" => SchemaField::Minimum,
+            "maximum" => SchemaField::Maximum,
+            "exclusiveMinimum" => SchemaField::ExclusiveMinimum,
+            "exclusiveMaximum" => SchemaField::ExclusiveMaximum,
+            "multipleOf" => SchemaField::MultipleOf,
+            "minLength" => SchemaField::MinLength,
+            "maxLength" => SchemaField::MaxLength,
+            "pattern" => SchemaField::Pattern,
+            "items" => SchemaField::Items,
+            "prefixItems" => SchemaField::PrefixItems,
+            "minItems" => SchemaField::MinItems,
+            "maxItems" => SchemaField::MaxItems,
+            "uniqueItems" => SchemaField::UniqueItems,
+            "properties" => SchemaField::Properties,
+            "required" => SchemaField::Required,
+            "additionalProperties" => SchemaField::AdditionalProperties,
+            "minProperties" => SchemaField::MinProperties,
+            "maxProperties" => SchemaField::MaxProperties,
+            "enum" => SchemaField::Enum,
+            "allOf" => SchemaField::AllOf,
+            "anyOf" => SchemaField::AnyOf,
+            "oneOf" => SchemaField::OneOf,
+            "not" => SchemaField::Not,
+            "discriminator" => SchemaField::Discriminator,
+            "nullable" => SchemaField::Nullable,
+            "readOnly" => SchemaField::ReadOnly,
+            "writeOnly" => SchemaField::WriteOnly,
+            "externalDocs" => SchemaField::ExternalDocs,
+            "$defs" => SchemaField::Defs,
+            "$dynamicAnchor" => SchemaField::DynamicAnchor,
+            "$dynamicRef" => SchemaField::DynamicRef,
+            _ => SchemaField::Unknown,
+        })
     }
 }
 

@@ -251,6 +251,11 @@ const ENVELOPE_SERIALIZATION_FALLBACK: &str = concat!(
     r#""}}"#,
 );
 
+/// Preserves the derived `ResponseEnvelope` JSON shape if serialization fails.
+fn envelope_serialization_fallback() -> String {
+    String::from(ENVELOPE_SERIALIZATION_FALLBACK)
+}
+
 /// Dispatch a [`RequestEnvelope`] through an axum [`Router`] and
 /// return the serialised [`ResponseEnvelope`] JSON.
 ///
@@ -272,7 +277,7 @@ pub async fn dispatch(router: Router, envelope: &RequestEnvelope) -> String {
         // [`crate::wire::header_read::expect_literal`]), while preserving
         // the same JSON shape (`status`/`headers`/`body`/`metadata.version`)
         // the derived path emits so external decoders are unaffected.
-        String::from(ENVELOPE_SERIALIZATION_FALLBACK)
+        envelope_serialization_fallback()
     })
 }
 
@@ -434,7 +439,7 @@ async fn finish_buffered_wire(
     status: u16,
     headers: http::HeaderMap,
     metadata: ResponseMetadata,
-    mut body: Body,
+    body: Body,
 ) -> Vec<u8> {
     if status == 422 {
         return build_422_wire(status, headers, metadata, body).await;
@@ -458,6 +463,11 @@ async fn finish_buffered_wire(
         return error_wire(500, HEADER_TOO_LARGE_MSG);
     }
 
+    drain_buffered_body(out, body).await
+}
+
+/// Appends complete body frames while replacing any failed stream with a 500 wire.
+async fn drain_buffered_body(mut out: Vec<u8>, mut body: Body) -> Vec<u8> {
     loop {
         match body.frame().await {
             Some(Ok(frame)) => {
@@ -750,7 +760,21 @@ mod tests {
         })
         .expect("ResponseEnvelope serialization cannot fail");
 
-        assert_eq!(derived, ENVELOPE_SERIALIZATION_FALLBACK);
+        let fallback = envelope_serialization_fallback();
+        assert_eq!(derived, fallback);
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fallback).expect("fallback must remain valid JSON");
+        assert_eq!(parsed["status"].as_u64(), Some(500));
+        assert_eq!(parsed["headers"], serde_json::json!({}));
+        assert_eq!(
+            parsed["body"].as_str(),
+            Some("envelope serialization failed")
+        );
+        assert_eq!(
+            parsed["metadata"]["version"].as_str(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
     }
 
     fn request_wire(header: &[u8]) -> Vec<u8> {

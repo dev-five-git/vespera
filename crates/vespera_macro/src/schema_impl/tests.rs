@@ -1,6 +1,35 @@
 use super::*;
 
 #[test]
+fn build_struct_metadata_omits_identity_without_call_site_file() {
+    let input: syn::DeriveInput = syn::parse_quote! {
+        struct User { id: i32 }
+    };
+
+    let metadata = build_struct_metadata(&input, "UserSchema".to_string(), None);
+
+    assert_eq!(metadata.name, "UserSchema");
+    assert!(metadata.definition.contains("struct User"));
+    assert_eq!(metadata.source_identity, None);
+}
+
+#[test]
+fn build_struct_metadata_attaches_identity_from_call_site_file() {
+    let input: syn::DeriveInput = syn::parse_quote! {
+        struct User { id: i32 }
+    };
+    let call_site_file = Path::new("some/path.rs");
+
+    let metadata = build_struct_metadata(&input, "UserSchema".to_string(), Some(call_site_file));
+
+    assert_eq!(metadata.name, "UserSchema");
+    assert_eq!(
+        metadata.source_identity.as_deref(),
+        Some("some/path.rs::User")
+    );
+}
+
+#[test]
 fn test_process_derive_schema_struct() {
     let input: syn::DeriveInput = syn::parse_quote! {
         struct User {

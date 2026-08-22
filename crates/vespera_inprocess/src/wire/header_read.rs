@@ -793,3 +793,19 @@ impl ContainerStack {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ContainerStack;
+
+    #[test]
+    fn popping_empty_container_stack_is_a_no_op() {
+        let mut stack = ContainerStack::new();
+
+        stack.pop();
+
+        assert_eq!(stack.depth, 0);
+        assert!(stack.top().is_none());
+        assert!(stack.overflow.is_empty());
+    }
+}

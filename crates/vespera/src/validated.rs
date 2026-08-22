@@ -289,6 +289,16 @@ where
 /// `serde_json::json!` implementation (which used a `BTreeMap` backend).
 /// The envelope shape is a public contract locked by snapshot tests and
 /// the JNI wire header hoisting logic in `vespera_inprocess`.
+/// Minimal 422 envelope emitted when serializing the real report fails.
+///
+/// Serializing the envelope is infallible in practice (no I/O, string keys),
+/// but rendering a rejection is a request-time boundary, so the failure path
+/// emits a valid envelope instead of panicking. The field order MUST stay
+/// `message` then `path` to match the real serializer, so even this fallback
+/// honours the snapshot-locked envelope shape.
+const FALLBACK_VALIDATION_ENVELOPE: &[u8] =
+    br#"{"errors":[{"message":"request validation failed","path":""}]}"#;
+
 fn build_validation_response(report: &::garde::Report) -> Response {
     struct DisplayValue<T>(T);
 
@@ -364,16 +374,8 @@ fn build_validation_response(report: &::garde::Report) -> Response {
     // to axum as raw bytes (content-type is overridden to
     // application/json below regardless).  Byte-identical to the previous
     // `to_string` body.
-    // Serializing the envelope is practically infallible (no I/O, string
-    // keys), but this is a request-time boundary: on the unreachable failure
-    // path emit a minimal valid 422 envelope rather than panicking.
-    let body = ::serde_json::to_vec(&ValidationEnvelope { report }).unwrap_or_else(|_| {
-        // Field order MUST match the normal serialization above (`message`
-        // then `path`) so this unreachable fallback still honours the
-        // snapshot-locked envelope byte shape rather than emitting a
-        // path-first object that drifts from the documented contract.
-        br#"{"errors":[{"message":"request validation failed","path":""}]}"#.to_vec()
-    });
+    let body = ::serde_json::to_vec(&ValidationEnvelope { report })
+        .unwrap_or_else(|_| FALLBACK_VALIDATION_ENVELOPE.to_vec());
 
     (
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -381,4 +383,30 @@ fn build_validation_response(report: &::garde::Report) -> Response {
         body,
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FALLBACK_VALIDATION_ENVELOPE;
+
+    #[test]
+    fn fallback_envelope_matches_the_snapshot_locked_shape() {
+        let parsed: serde_json::Value = serde_json::from_slice(FALLBACK_VALIDATION_ENVELOPE)
+            .expect("the fallback envelope must be valid JSON");
+        let errors = parsed["errors"]
+            .as_array()
+            .expect("the fallback envelope must carry an `errors` array");
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["message"], "request validation failed");
+        assert_eq!(errors[0]["path"], "");
+
+        // The real serializer emits `message` before `path`; the fallback has to
+        // agree or it drifts from the byte shape locked by the 422 snapshots.
+        let text = std::str::from_utf8(FALLBACK_VALIDATION_ENVELOPE).expect("UTF-8");
+        assert!(
+            text.find(r#""message""#) < text.find(r#""path""#),
+            "fallback field order drifted: {text}"
+        );
+    }
 }

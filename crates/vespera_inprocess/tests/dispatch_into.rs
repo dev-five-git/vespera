@@ -264,3 +264,21 @@ fn borrowed_matches_byte_path_bodyless_with_body_and_422() {
         );
     }
 }
+
+#[test]
+fn borrowed_direct_malformed_frame_returns_400_wire() {
+    install();
+    let rt = runtime();
+    let malformed = [0u8; 3];
+    let mut out = vec![0u8; 1024];
+
+    let DirectWriteResult::Complete(n) =
+        rt.block_on(dispatch_into_async_borrowed(&malformed, &mut out))
+    else {
+        panic!("400 error wire must fit");
+    };
+
+    let (header, body) = decode(&out[..n]);
+    assert_eq!(header["status"].as_u64(), Some(400));
+    assert!(String::from_utf8_lossy(&body).contains("too short"));
+}

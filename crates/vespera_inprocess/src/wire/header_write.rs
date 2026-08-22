@@ -261,37 +261,14 @@ fn write_headers<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap) {
     // for EVERY distinct response header (on every wire response: buffered,
     // direct-write, and streaming) disappears entirely.  Repeated names (the
     // `set-cookie` case) keep the unchanged `get_all` array rendering.
-    let all_single = headers.len() == key_count;
-
     // Sort names in a stack buffer for the common small-header response;
     // larger sets fall back to a heap `Vec`.  Output is byte-identical either
     // way (same sorted order over the same names), and a 1-entry slice is
     // trivially sorted — which is why the former `key_count == 1` special case
     // is fully subsumed here.
     let mut stack_entries: [HeaderEntry<'_>; STACK_CAP] = [("", None); STACK_CAP];
-    let mut heap_entries: Vec<HeaderEntry<'_>>;
-    let entries: &mut [HeaderEntry<'_>] = if key_count <= STACK_CAP {
-        if all_single {
-            for (slot, (name, value)) in stack_entries.iter_mut().zip(headers.iter()) {
-                *slot = (name.as_str(), Some(value));
-            }
-        } else {
-            for (slot, name) in stack_entries.iter_mut().zip(headers.keys()) {
-                *slot = (name.as_str(), None);
-            }
-        }
-        &mut stack_entries[..key_count]
-    } else {
-        heap_entries = Vec::with_capacity(key_count);
-        if all_single {
-            heap_entries.extend(headers.iter().map(|(n, v)| (n.as_str(), Some(v))));
-        } else {
-            heap_entries.extend(headers.keys().map(|n| (n.as_str(), None)));
-        }
-        &mut heap_entries[..]
-    };
-    // Sort by NAME only — the borrowed `HeaderValue` payload rides along.
-    entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    let mut heap_entries: Vec<HeaderEntry<'_>> = Vec::new();
+    let entries = collect_sorted_header_entries(headers, &mut stack_entries, &mut heap_entries);
 
     sink.put(b"{");
     // Peel the first iteration so the per-iteration `if idx > 0` branch is
@@ -316,6 +293,49 @@ fn write_headers<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap) {
 /// [`write_headers`] captured in the same pass (`None` means "repeated-name
 /// map — go look the values up").
 type HeaderEntry<'a> = (&'a str, Option<&'a http::HeaderValue>);
+
+/// Collects and sorts header names into `stack` when they fit and into `heap`
+/// otherwise, returning the sorted slice.
+///
+/// Both buffers are parameters so the caller receives ONE slice instead of two
+/// shapes it has to join: `heap` stays an unallocated empty `Vec` on the stack
+/// path, keeping the common response allocation-free (locked by
+/// `tests/alloc_budget.rs`).
+#[inline]
+fn collect_sorted_header_entries<'a, 'h>(
+    headers: &'h http::HeaderMap,
+    stack: &'a mut [HeaderEntry<'h>; STACK_CAP],
+    heap: &'a mut Vec<HeaderEntry<'h>>,
+) -> &'a mut [HeaderEntry<'h>] {
+    let key_count = headers.keys_len();
+    let all_single = headers.len() == key_count;
+    let entries: &'a mut [HeaderEntry<'h>] = if key_count <= STACK_CAP {
+        if all_single {
+            for (slot, (name, value)) in stack.iter_mut().zip(headers.iter()) {
+                *slot = (name.as_str(), Some(value));
+            }
+        } else {
+            for (slot, name) in stack.iter_mut().zip(headers.keys()) {
+                *slot = (name.as_str(), None);
+            }
+        }
+        &mut stack[..key_count]
+    } else {
+        heap.reserve_exact(key_count);
+        if all_single {
+            heap.extend(
+                headers
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), Some(value))),
+            );
+        } else {
+            heap.extend(headers.keys().map(|name| (name.as_str(), None)));
+        }
+        heap.as_mut_slice()
+    };
+    entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    entries
+}
 
 /// Emit one `"name":<value>` pair.  `Some(v)` writes the scalar string
 /// straight from the borrowed value (zero hash lookups); `None` falls through
@@ -456,11 +476,7 @@ pub(super) fn write_response_header<S: JsonSink>(
     // both hand and serde and asserts byte equality).
     match &metadata.version {
         Cow::Borrowed(v) if std::ptr::eq(v.as_ptr(), VESPERA_VERSION.as_ptr()) => {
-            // Pointer equality with the `VESPERA_VERSION` literal implies byte
-            // equality, so the pre-baked segment is what the general path below
-            // would produce anyway — byte-identity is locked end to end by
-            // `hand_serialize_matches_serde_serialize` in `wire/tests.rs`.
-            sink.put(METADATA_SEGMENT_CURRENT);
+            write_current_metadata(sink);
         }
         _ => {
             sink.put(b",\"metadata\":{\"version\":");
@@ -487,6 +503,12 @@ pub(super) fn write_response_header<S: JsonSink>(
         sink.put(b"]");
     }
     sink.put(b"}");
+}
+
+/// Emits the pre-baked current-version metadata segment byte-for-byte.
+#[inline]
+fn write_current_metadata<S: JsonSink>(sink: &mut S) {
+    sink.put(METADATA_SEGMENT_CURRENT);
 }
 
 #[cfg(test)]

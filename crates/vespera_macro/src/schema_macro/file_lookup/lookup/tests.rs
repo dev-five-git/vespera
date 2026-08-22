@@ -22,6 +22,59 @@ impl Drop for RestoreManifest {
 }
 
 #[test]
+fn bare_struct_file_lookup_returns_metadata_and_module_path() {
+    let temp = TempDir::new().unwrap();
+    let src_dir = temp.path().join("src");
+    let model_dir = src_dir.join("models");
+    std::fs::create_dir_all(&model_dir).unwrap();
+    let file_path = model_dir.join("user.rs");
+    std::fs::write(&file_path, "pub struct User { pub id: i32 }").unwrap();
+
+    let (metadata, module_path) = find_bare_struct_in_file(&file_path, "User", &src_dir).unwrap();
+
+    assert_eq!(metadata.name, "User");
+    assert!(metadata.definition.contains("pub struct User"));
+    assert_eq!(module_path, ["crate", "models", "user"]);
+}
+
+#[test]
+fn bare_struct_file_lookup_reports_missing_struct() {
+    let temp = TempDir::new().unwrap();
+    let src_dir = temp.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    let file_path = src_dir.join("models.rs");
+    std::fs::write(&file_path, "pub struct Other;").unwrap();
+
+    let result = find_bare_struct_in_file(&file_path, "Missing", &src_dir);
+
+    assert!(matches!(
+        result,
+        Err(LookupError::BareNotFound { struct_name }) if struct_name == "Missing"
+    ));
+}
+
+#[test]
+fn collect_rs_entry_classifies_rust_files_directly() {
+    let temp = TempDir::new().unwrap();
+    let rust_file = temp.path().join("model.rs");
+    let text_file = temp.path().join("README.md");
+    std::fs::write(&rust_file, "pub struct Model;").unwrap();
+    std::fs::write(&text_file, "fixture").unwrap();
+    let mut entries: Vec<_> = std::fs::read_dir(temp.path())
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    entries.sort_by_key(std::fs::DirEntry::path);
+    let mut files = Vec::new();
+
+    for entry in entries {
+        collect_rs_entry(&entry, entry.file_type().unwrap(), &mut files);
+    }
+
+    assert_eq!(files, vec![rust_file]);
+}
+
+#[test]
 fn test_file_path_to_module_path_simple() {
     let temp_dir = TempDir::new().unwrap();
     let src_dir = temp_dir.path();

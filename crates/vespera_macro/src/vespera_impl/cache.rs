@@ -6,6 +6,7 @@ use std::{
 
 use quote::quote;
 use serde::{Deserialize, Serialize};
+use vespera_core::schema::SecurityScheme;
 
 use crate::{
     file_utils::file_fingerprint,
@@ -251,10 +252,7 @@ pub(super) fn compute_config_hash_with_merge_cache(
             // closing this class of stale-cache bug for good.  Serialization
             // is infallible for this plain struct; a hypothetical failure
             // falls back to a stable marker so the hash still differs.
-            match serde_json::to_string(scheme) {
-                Ok(json) => json.hash(&mut hasher),
-                Err(_) => "scheme:unserializable".hash(&mut hasher),
-            }
+            hash_security_scheme(scheme, &mut hasher);
         }
     }
     match &processed.security {
@@ -297,6 +295,15 @@ pub(super) fn compute_config_hash_with_merge_cache(
         }
     }
     hasher.finish()
+}
+
+/// Hashes one complete security scheme, preserving the stable serialization
+/// fallback while taking the destination hasher explicitly for loop reuse.
+fn hash_security_scheme(scheme: &SecurityScheme, hasher: &mut impl Hasher) {
+    match serde_json::to_string(scheme) {
+        Ok(json) => json.hash(hasher),
+        Err(_) => "scheme:unserializable".hash(hasher),
+    }
 }
 
 /// Compute a deterministic hash for `export_app!` inputs.
@@ -359,18 +366,32 @@ pub(super) fn compute_macro_dev_fingerprint() -> u64 {
 fn compute_macro_dev_fingerprint_uncached() -> u64 {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let target_dir = find_target_dir(Path::new(&manifest_dir));
-    let Some(workspace_root) = target_dir.parent() else {
+    let Some(macro_src) = macro_src_dir(&target_dir) else {
         return 0;
     };
-    let macro_src = workspace_root
-        .join("crates")
-        .join("vespera_macro")
-        .join("src");
+    fingerprint_rs_directory(&macro_src)
+}
+
+/// Derives the in-workspace macro source path only from the supplied target
+/// directory, keeping parent resolution independent of process environment.
+fn macro_src_dir(target_dir: &Path) -> Option<PathBuf> {
+    Some(
+        target_dir
+            .parent()?
+            .join("crates")
+            .join("vespera_macro")
+            .join("src"),
+    )
+}
+
+/// Fingerprints only Rust files below the supplied directory, taking the root
+/// explicitly so callers and tests share identical ordering and hashing.
+fn fingerprint_rs_directory(macro_src: &Path) -> u64 {
     if !macro_src.is_dir() {
         return 0;
     }
     let mut entries: Vec<(String, u64)> = Vec::new();
-    collect_rs_mtimes(&macro_src, &mut entries);
+    collect_rs_mtimes(macro_src, &mut entries);
     entries.sort();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for (path, mtime) in &entries {
@@ -378,6 +399,23 @@ fn compute_macro_dev_fingerprint_uncached() -> u64 {
         mtime.hash(&mut hasher);
     }
     hasher.finish()
+}
+
+/// Processes one already-typed directory entry, preserving recursive `.rs`-only
+/// collection while accepting the scan result explicitly after fallible typing.
+fn collect_rs_mtime_entry(
+    entry: &std::fs::DirEntry,
+    file_type: std::fs::FileType,
+    out: &mut Vec<(String, u64)>,
+) {
+    let path = entry.path();
+    if file_type.is_dir() {
+        collect_rs_mtimes(&path, out);
+    } else if path.extension().is_some_and(|e| e == "rs") {
+        // Unavailable metadata keeps the `0` sentinel.
+        let fingerprint = entry.metadata().as_ref().map_or(0, file_fingerprint);
+        out.push((path.display().to_string(), fingerprint));
+    }
 }
 
 /// Recursively collect `(path, fingerprint)` pairs for `.rs` files.
@@ -401,14 +439,7 @@ fn collect_rs_mtimes(dir: &Path, out: &mut Vec<(String, u64)>) {
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        let path = entry.path();
-        if file_type.is_dir() {
-            collect_rs_mtimes(&path, out);
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            // Unavailable metadata keeps the `0` sentinel.
-            let fingerprint = entry.metadata().as_ref().map_or(0, file_fingerprint);
-            out.push((path.display().to_string(), fingerprint));
-        }
+        collect_rs_mtime_entry(&entry, file_type, out);
     }
 }
 
@@ -432,7 +463,7 @@ pub(super) fn write_cache(cache_path: &Path, cache: &VesperaCache) {
 mod tests {
     use std::collections::BTreeMap;
 
-    use vespera_core::schema::{SecurityScheme, SecuritySchemeType};
+    use vespera_core::schema::SecuritySchemeType;
 
     use super::*;
 
@@ -862,67 +893,50 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
-    fn macro_dev_fingerprint_hashes_rust_files_in_resolved_workspace() {
-        struct Restore(Option<String>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                // SAFETY: this serialized test restores the process environment through RAII.
-                unsafe {
-                    match self.0.take() {
-                        Some(value) => std::env::set_var("CARGO_MANIFEST_DIR", value),
-                        None => std::env::remove_var("CARGO_MANIFEST_DIR"),
-                    }
-                }
-            }
-        }
-
+    fn macro_source_path_and_directory_fingerprint_are_directly_testable() {
         let temp = tempfile::TempDir::new().unwrap();
-        std::fs::write(
-            temp.path().join("Cargo.toml"),
-            "[workspace]\nmembers = [\"crates/consumer\"]",
-        )
-        .unwrap();
-        let consumer = temp.path().join("crates/consumer");
-        let macro_src = temp.path().join("crates/vespera_macro/src");
-        std::fs::create_dir_all(&consumer).unwrap();
-        std::fs::create_dir_all(macro_src.join("nested")).unwrap();
-        let macro_file = macro_src.join("lib.rs");
+        let target_dir = temp.path().join("target");
+        let expected_src = temp.path().join("crates/vespera_macro/src");
+        std::fs::create_dir_all(&expected_src).unwrap();
+        let macro_file = expected_src.join("lib.rs");
         std::fs::write(&macro_file, "pub fn first() {}").unwrap();
-        std::fs::write(macro_src.join("nested/mod.rs"), "pub struct Nested;").unwrap();
-        std::fs::write(macro_src.join("README.md"), "not Rust source").unwrap();
 
-        let _restore = Restore(std::env::var("CARGO_MANIFEST_DIR").ok());
-        // SAFETY: this serialized test restores the process environment through RAII.
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", &consumer) };
-
-        let before = compute_macro_dev_fingerprint_uncached();
+        let derived_src = macro_src_dir(&target_dir).unwrap();
+        let before = fingerprint_rs_directory(&derived_src);
         std::fs::write(&macro_file, "pub fn first() { let changed = true; }").unwrap();
-        let after = compute_macro_dev_fingerprint_uncached();
+        let after = fingerprint_rs_directory(&derived_src);
 
+        assert_eq!(derived_src, expected_src);
         assert_ne!(before, after, "a Rust source change must move the digest");
     }
 
     #[test]
-    #[serial_test::serial]
-    fn macro_dev_fingerprint_is_zero_outside_vespera_workspace() {
-        struct Restore(Option<String>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                // SAFETY: this serialized test restores the process environment through RAII.
-                unsafe {
-                    match self.0.take() {
-                        Some(value) => std::env::set_var("CARGO_MANIFEST_DIR", value),
-                        None => std::env::remove_var("CARGO_MANIFEST_DIR"),
-                    }
-                }
-            }
+    fn macro_source_path_has_no_parent_at_filesystem_root() {
+        let root = Path::new(std::path::MAIN_SEPARATOR_STR);
+        assert!(root.parent().is_none(), "test fixture must be a root path");
+        assert_eq!(macro_src_dir(root), None);
+    }
+
+    #[test]
+    fn collect_rs_mtime_entry_uses_resolved_file_type() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let rust_file = temp.path().join("lib.rs");
+        let text_file = temp.path().join("README.md");
+        std::fs::write(&rust_file, "pub struct App;").unwrap();
+        std::fs::write(&text_file, "fixture").unwrap();
+        let mut entries: Vec<_> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        entries.sort_by_key(std::fs::DirEntry::path);
+        let mut fingerprints = Vec::new();
+
+        for entry in entries {
+            collect_rs_mtime_entry(&entry, entry.file_type().unwrap(), &mut fingerprints);
         }
 
-        let temp = tempfile::TempDir::new().unwrap();
-        let _restore = Restore(std::env::var("CARGO_MANIFEST_DIR").ok());
-        // SAFETY: this serialized test restores the process environment through RAII.
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp.path()) };
-        assert_eq!(compute_macro_dev_fingerprint_uncached(), 0);
+        assert_eq!(fingerprints.len(), 1);
+        assert_eq!(fingerprints[0].0, rust_file.display().to_string());
+        assert_ne!(fingerprints[0].1, 0);
     }
 }

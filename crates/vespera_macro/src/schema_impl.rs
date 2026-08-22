@@ -120,6 +120,20 @@ fn derive_source_identity(
     call_site_file.map(|path| format!("{}::{}", path.display(), input.ident))
 }
 
+/// Builds derive metadata while preserving the invariant that source identity is
+/// attached only when the caller supplies the macro call-site file explicitly.
+fn build_struct_metadata(
+    input: &syn::DeriveInput,
+    schema_name: String,
+    call_site_file: Option<&Path>,
+) -> StructMetadata {
+    let metadata = StructMetadata::new(schema_name, quote::quote!(#input).to_string());
+    match derive_source_identity(input, call_site_file) {
+        Some(identity) => metadata.with_source_identity(identity),
+        None => metadata,
+    }
+}
+
 /// Overwrite-insert a schema for the current crate — the
 /// `schema_type!(.., ignore)` pre-registration path, which has no
 /// duplicate-name semantics.
@@ -234,10 +248,7 @@ pub fn process_derive_schema(
     }
 
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
-    let mut metadata = StructMetadata::new(schema_name, quote::quote!(#input).to_string());
-    if let Some(source_identity) = derive_source_identity(input, call_site_file.as_deref()) {
-        metadata = metadata.with_source_identity(source_identity);
-    }
+    let mut metadata = build_struct_metadata(input, schema_name, call_site_file.as_deref());
     if schema_attr.has_ref_override {
         metadata.include_in_openapi = false;
     }

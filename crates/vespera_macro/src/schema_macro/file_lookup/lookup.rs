@@ -194,8 +194,18 @@ fn find_bare_struct_in_call_site(
             struct_name: struct_name.to_string(),
         });
     };
+    find_bare_struct_in_file(&file_path, struct_name, src_dir)
+}
+
+/// Resolves a bare struct in the supplied file, preserving call-site-only lookup
+/// while taking the resolved path explicitly so filesystem behavior is testable.
+fn find_bare_struct_in_file(
+    file_path: &Path,
+    struct_name: &str,
+    src_dir: &Path,
+) -> Result<(StructMetadata, Vec<String>), LookupError> {
     let Some(definition) =
-        crate::schema_macro::file_cache::get_struct_definition(&file_path, struct_name)
+        crate::schema_macro::file_cache::get_struct_definition(file_path, struct_name)
     else {
         return Err(LookupError::BareNotFound {
             struct_name: struct_name.to_string(),
@@ -203,8 +213,23 @@ fn find_bare_struct_in_call_site(
     };
     Ok((
         StructMetadata::new_model(struct_name.to_string(), definition),
-        file_path_to_module_path(&file_path, src_dir),
+        file_path_to_module_path(file_path, src_dir),
     ))
+}
+
+/// Classifies one already-typed directory entry, keeping the recursive collector's
+/// file/dir invariant while accepting scan results as explicit inputs.
+fn collect_rs_entry(
+    entry: &std::fs::DirEntry,
+    file_type: std::fs::FileType,
+    files: &mut Vec<PathBuf>,
+) {
+    let path = entry.path();
+    if file_type.is_dir() {
+        collect_rs_files_recursive(&path, files);
+    } else if file_type.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
+        files.push(path);
+    }
 }
 
 /// Recursively collect all `.rs` files in a directory.
@@ -223,12 +248,7 @@ pub fn collect_rs_files_recursive(dir: &Path, files: &mut Vec<std::path::PathBuf
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        let path = entry.path();
-        if file_type.is_dir() {
-            collect_rs_files_recursive(&path, files);
-        } else if file_type.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
-            files.push(path);
-        }
+        collect_rs_entry(&entry, file_type, files);
     }
 }
 

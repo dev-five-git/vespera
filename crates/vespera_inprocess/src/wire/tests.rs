@@ -34,6 +34,14 @@ use super::{
 )]
 #[case(br#"{"v":1,"v":1,"method":"GET","path":"/p"}"#, "duplicate field `v`")]
 #[case(
+    br#"{"v":-1,"method":"GET","path":"/p"}"#,
+    "invalid negative value for `v`"
+)]
+#[case(
+    br#"{"v":1,"method":"GET","path":"/p","unknown":-}"#,
+    "invalid number: expected a digit"
+)]
+#[case(
     br#"{"v":1,"method":"GET","path":"/p","headers":{"x":"prefix\"tail"#,
     "unterminated string"
 )]
