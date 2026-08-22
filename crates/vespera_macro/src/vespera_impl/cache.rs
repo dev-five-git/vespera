@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use vespera_core::schema::SecurityScheme;
 
 use crate::{
-    file_utils::file_fingerprint,
+    file_utils::{entry_fingerprint, file_fingerprint},
     metadata::{CollectedMetadata, StructMetadata},
     router_codegen::ProcessedVesperaInput,
 };
@@ -411,8 +411,10 @@ fn collect_rs_mtime_entry(
     if file_type.is_dir() {
         collect_rs_mtimes(&path, out);
     } else if path.extension().is_some_and(|e| e == "rs") {
-        let fingerprint = entry.metadata().as_ref().map_or(0, file_fingerprint);
-        out.push((path.display().to_string(), fingerprint));
+        out.push((
+            path.display().to_string(),
+            entry_fingerprint(&entry.metadata()),
+        ));
     }
 }
 

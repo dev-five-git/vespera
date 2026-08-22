@@ -159,6 +159,18 @@ pub fn file_fingerprint(meta: &std::fs::Metadata) -> u64 {
     combine_fingerprint(mtime_fingerprint(meta.modified().ok()), meta.len())
 }
 
+/// [`file_fingerprint`] for a directory entry whose metadata lookup may have
+/// failed, keeping the `0` sentinel on failure rather than aborting the walk.
+///
+/// The `Result` is a parameter rather than being fetched here so the failure
+/// arm is reachable from a test: a scan-time `metadata()` error (the entry
+/// vanished, or permissions changed mid-walk) cannot be provoked through a
+/// real `DirEntry`. Shared by both compile-time scanners so the sentinel
+/// cannot drift between them.
+pub fn entry_fingerprint(meta: &std::io::Result<std::fs::Metadata>) -> u64 {
+    meta.as_ref().map_or(0, file_fingerprint)
+}
+
 fn collect_with_mtimes_into(folder_path: &Path, out: &mut Vec<(PathBuf, u64)>) -> io::Result<()> {
     for entry in std::fs::read_dir(folder_path)? {
         let entry = entry?;
@@ -172,9 +184,8 @@ fn collect_with_mtimes_into(folder_path: &Path, out: &mut Vec<(PathBuf, u64)>) -
             // uploads, …).  On Unix that is one `stat` saved per non-Rust
             // file at compile time; the entry still keeps its place in the
             // list with mtime `0` (never read for non-`.rs` paths).
-            // An unavailable `Metadata` keeps the `0` sentinel.
             let mtime = if path.extension().is_some_and(|e| e == "rs") {
-                entry.metadata().as_ref().map_or(0, file_fingerprint)
+                entry_fingerprint(&entry.metadata())
             } else {
                 0
             };
@@ -451,6 +462,19 @@ mod tests {
 
         // Unavailable mtime collapses to 0 (unchanged contract).
         assert_eq!(mtime_fingerprint(None), 0);
+    }
+
+    #[test]
+    fn entry_fingerprint_falls_back_to_the_zero_sentinel_on_a_metadata_error() {
+        let temp = TempDir::new().expect("temp dir");
+        let file = temp.path().join("lib.rs");
+        fs::write(&file, "pub struct App;").expect("write fixture");
+
+        assert_ne!(entry_fingerprint(&fs::metadata(&file)), 0);
+        assert_eq!(
+            entry_fingerprint(&Err(std::io::Error::other("metadata vanished mid-scan"))),
+            0
+        );
     }
 
     #[test]
