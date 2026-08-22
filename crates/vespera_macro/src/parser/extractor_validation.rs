@@ -640,4 +640,86 @@ mod tests {
         ";
         assert!(run(src, "handler", &[]).is_ok());
     }
+
+    #[test]
+    fn missing_ast_receiver_and_non_extractor_are_skipped() {
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(route("handler", "missing.rs"));
+        assert!(check_extractors(&metadata, &HashMap::new()).is_ok());
+
+        let src = "struct Local; fn handler(&self, value: Local) {}";
+        assert!(run(src, "handler", &[]).is_ok());
+    }
+
+    #[test]
+    fn request_extractor_inner_rejects_non_path_bare_and_lifetime_arguments() {
+        let reference: Type = syn::parse_quote!(&Json<Local>);
+        assert!(request_extractor_inner(&reference).is_none());
+        let bare: Type = syn::parse_quote!(Json);
+        assert!(request_extractor_inner(&bare).is_none());
+        let lifetime: Type = syn::parse_quote!(Json<'static>);
+        assert!(request_extractor_inner(&lifetime).is_none());
+    }
+
+    #[test]
+    fn custom_type_collection_recurse_reference_and_ignores_tuple() {
+        let mut idents = Vec::new();
+        collect_custom_type_idents(&syn::parse_quote!(&Vec<Local>), &mut idents);
+        assert_eq!(idents, ["Vec", "Local"]);
+        collect_custom_type_idents(&syn::parse_quote!((Local,)), &mut idents);
+        assert_eq!(idents, ["Vec", "Local"]);
+    }
+
+    #[test]
+    fn resolve_use_prefix_handles_self_and_rejects_invalid_prefixes() {
+        let self_use: syn::ItemUse = syn::parse_quote!(
+            use self::types::Local;
+        );
+        let (resolved_base, _) = resolve_use_prefix(&self_use.tree, &["routes", "handler"])
+            .expect("self prefix resolves");
+        assert_eq!(resolved_base, ["routes", "handler"]);
+
+        let bare_import: syn::ItemUse = syn::parse_quote!(
+            use Local;
+        );
+        assert!(resolve_use_prefix(&bare_import.tree, &["routes"]).is_none());
+        let external: syn::ItemUse = syn::parse_quote!(
+            use external::Local;
+        );
+        assert!(resolve_use_prefix(&external.tree, &["routes"]).is_none());
+        let too_many_supers: syn::ItemUse = syn::parse_quote!(
+            use super::super::Local;
+        );
+        assert!(resolve_use_prefix(&too_many_supers.tree, &["routes"]).is_none());
+    }
+
+    #[test]
+    fn grouped_renamed_and_glob_route_imports_are_walked() {
+        let ast: syn::File = syn::parse_quote! {
+            use crate::routes::other::{Bar, Baz as B, *};
+        };
+        let sibling: syn::File = syn::parse_quote! {
+            pub struct Bar;
+            pub enum Baz { Value }
+        };
+        let route_module_files = HashMap::from([("routes::other", "other.rs")]);
+        let file_cache = HashMap::from([("other.rs".to_string(), sibling)]);
+        let mut out = HashSet::new();
+        collect_imported_route_types(
+            &ast,
+            "routes::handler",
+            &route_module_files,
+            &file_cache,
+            &HashSet::new(),
+            &mut out,
+        );
+        assert_eq!(out, HashSet::from(["Bar".to_string(), "B".to_string()]));
+    }
+
+    #[test]
+    fn file_declares_type_accepts_enums_and_ignores_other_items() {
+        let ast: syn::File = syn::parse_quote! { enum Kind { A } fn helper() {} };
+        assert!(file_declares_type(&ast, &syn::parse_quote!(Kind)));
+        assert!(!file_declares_type(&ast, &syn::parse_quote!(helper)));
+    }
 }

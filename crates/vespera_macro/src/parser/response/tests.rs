@@ -567,3 +567,27 @@ fn test_is_non_body_type() {
     let json: syn::Type = syn::parse_str("Json<String>").unwrap();
     assert!(!is_non_body_type(&json));
 }
+
+#[test]
+fn response_helpers_cover_non_string_tuple_and_reference_fallbacks() {
+    let tuple: Type = syn::parse_quote!((String,));
+    assert!(!is_string_like(&tuple));
+
+    let metadata_only: Type = syn::parse_quote!((StatusCode, HeaderMap));
+    assert!(std::ptr::eq(
+        tuple_body(&metadata_only),
+        &raw const metadata_only
+    ));
+
+    let reference_to_tuple: Type = syn::parse_quote!(&(String, i32));
+    assert!(result_args(&reference_to_tuple).is_none());
+
+    let content = content_for_type(
+        &syn::parse_quote!(String),
+        "text/plain",
+        &HashSet::new(),
+        &HashMap::new(),
+    )
+    .expect("string content");
+    assert!(content.contains_key("text/plain"));
+}

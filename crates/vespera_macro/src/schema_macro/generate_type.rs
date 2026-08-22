@@ -784,4 +784,72 @@ mod tests {
         // Should NOT have From impl
         assert!(!output.contains("impl From"));
     }
+
+    #[test]
+    fn malformed_stored_definition_returns_spanned_parse_error() {
+        let storage = to_storage(vec![create_test_struct_metadata("Broken", "not a struct")]);
+        let input: SchemaTypeInput = syn::parse2(quote!(Output from Broken)).unwrap();
+
+        let error = generate_schema_type_code(&input, &storage)
+            .expect_err("malformed stored definitions must be diagnosed");
+        assert!(
+            error
+                .to_string()
+                .starts_with("failed to parse struct definition for `Broken`:")
+        );
+    }
+
+    #[test]
+    fn explicit_relation_adapter_generates_override_field_and_helper() {
+        let storage = to_storage(vec![
+            create_test_struct_metadata(
+                "Model",
+                r#"#[sea_orm(table_name = "article")]
+                   pub struct Model { pub user: HasOne<super::user::Entity> }"#,
+            ),
+            create_test_struct_metadata("UserAdapter", "pub struct UserAdapter { pub id: i64 }"),
+        ]);
+        let input: SchemaTypeInput = syn::parse2(quote!(
+            Article from Model, relation_adapters = [("user", UserAdapter)]
+        ))
+        .unwrap();
+
+        let (tokens, _) = generate_schema_type_code(&input, &storage).unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("pub user : __VesperaArticleUserRelation"));
+        assert!(output.contains("impl From < Option <"));
+    }
+
+    #[test]
+    fn explicitly_picked_unconvertible_relation_returns_error() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "Model",
+            r#"#[sea_orm(table_name = "article")]
+               pub struct Model { pub user: HasOne }"#,
+        )]);
+        let input: SchemaTypeInput =
+            syn::parse2(quote!(Article from Model, pick = ["user"])).unwrap();
+
+        let error = generate_schema_type_code(&input, &storage)
+            .expect_err("a picked relation without a target type cannot be converted");
+        assert_eq!(
+            error.to_string(),
+            "schema_type!: relation field `user` was explicitly picked but its SeaORM relation type could not be converted"
+        );
+    }
+
+    #[test]
+    fn normal_rename_maps_generated_field_back_to_source_field() {
+        let storage = to_storage(vec![create_test_struct_metadata(
+            "User",
+            "pub struct User { pub original: String }",
+        )]);
+        let input: SchemaTypeInput =
+            syn::parse2(quote!(Renamed from User, rename = [("original", "renamed")])).unwrap();
+
+        let (tokens, _) = generate_schema_type_code(&input, &storage).unwrap();
+        let output = tokens.to_string();
+        assert!(output.contains("pub renamed : String"));
+        assert!(output.contains("renamed : source . original"));
+    }
 }

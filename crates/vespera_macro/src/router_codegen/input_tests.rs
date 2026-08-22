@@ -1,4 +1,5 @@
 use super::*;
+use rstest::rstest;
 
 #[test]
 fn test_parse_openapi_values_single() {
@@ -673,4 +674,66 @@ fn test_server_duplicate_field_rejected() {
             .to_string()
             .contains("duplicate server field")
     );
+}
+
+#[rstest]
+#[case::unknown_tag_field(
+    quote::quote!(tags = [{ name = "users", color = "blue" }]),
+    "unknown tag field: `color`. Expected `name` or `description`"
+)]
+#[case::unknown_security_field(
+    quote::quote!(security_schemes = [{ name = "auth", type = "mutualTLS", audience = "api" }]),
+    "unknown security scheme field: `audience`. Expected `name`, `type`, `description`, `header_name`, `in`, `scheme`, `bearer_format`, or `open_id_connect_url`"
+)]
+#[case::security_missing_name(
+    quote::quote!(security_schemes = [{ type = "mutualTLS" }]),
+    "vespera! macro: security scheme missing required `name` field."
+)]
+#[case::security_missing_type(
+    quote::quote!(security_schemes = [{ name = "auth" }]),
+    "vespera! macro: security scheme missing required `type` field."
+)]
+#[case::api_key_missing_header_name(
+    quote::quote!(security_schemes = [{ name = "apiKey", type = "apiKey", in = "header" }]),
+    "vespera! macro: security scheme `apiKey` of type `apiKey` is missing required field `header_name` (the api-key parameter name)"
+)]
+#[case::invalid_security_type(
+    quote::quote!(security_schemes = [{ name = "auth", type = "custom" }]),
+    "invalid security scheme type: `custom`. Expected `apiKey`, `http`, `mutualTLS`, `oauth2`, or `openIdConnect`"
+)]
+fn malformed_nested_configuration_reports_the_specific_field_error(
+    #[case] tokens: proc_macro2::TokenStream,
+    #[case] expected: &str,
+) {
+    let error = syn::parse2::<AutoRouterInput>(tokens)
+        .err()
+        .expect("fixture must be rejected");
+
+    assert_eq!(error.to_string(), expected);
+}
+
+#[test]
+fn mutual_tls_security_scheme_requires_no_additional_fields() {
+    let input = syn::parse2::<AutoRouterInput>(quote::quote!(
+        security_schemes = [{ name = "clientCert", type = "mutualTLS" }]
+    ))
+    .expect("mutualTLS scheme should parse without type-specific fields");
+    let schemes = input.security_schemes.expect("scheme list is present");
+
+    assert_eq!(schemes.len(), 1);
+    assert_eq!(schemes[0].name, "clientCert");
+    assert_eq!(schemes[0].scheme.r#type, SecuritySchemeType::MutualTls);
+}
+
+#[rstest]
+#[case::api_key(SecuritySchemeType::ApiKey, "apiKey")]
+#[case::http(SecuritySchemeType::Http, "http")]
+#[case::mutual_tls(SecuritySchemeType::MutualTls, "mutualTLS")]
+#[case::oauth2(SecuritySchemeType::OAuth2, "oauth2")]
+#[case::open_id_connect(SecuritySchemeType::OpenIdConnect, "openIdConnect")]
+fn security_scheme_type_labels_match_openapi_wire_names(
+    #[case] scheme_type: SecuritySchemeType,
+    #[case] expected: &str,
+) {
+    assert_eq!(scheme_type_label(scheme_type), expected);
 }

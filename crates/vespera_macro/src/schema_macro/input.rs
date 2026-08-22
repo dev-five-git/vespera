@@ -814,4 +814,23 @@ mod tests {
         let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
         assert!(!input.omit_default);
     }
+
+    #[rstest::rstest]
+    #[case::omit(
+        quote::quote!(User, omit = ["a"], omit = ["b"]),
+        "duplicate parameter `omit` in schema! invocation"
+    )]
+    #[case::pick(
+        quote::quote!(User, pick = ["a"], pick = ["b"]),
+        "duplicate parameter `pick` in schema! invocation"
+    )]
+    fn schema_input_rejects_duplicate_filter(
+        #[case] tokens: proc_macro2::TokenStream,
+        #[case] expected: &str,
+    ) {
+        let Err(error) = syn::parse2::<SchemaInput>(tokens) else {
+            panic!("duplicate must fail");
+        };
+        assert_eq!(error.to_string(), expected);
+    }
 }

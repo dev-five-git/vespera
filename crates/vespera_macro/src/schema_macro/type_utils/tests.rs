@@ -511,3 +511,41 @@ fn test_resolve_type_to_absolute_path_leading_colon_and_empty_path() {
     let tokens = resolve_type_to_absolute_path(&empty_ty, &["crate".to_string()]);
     assert!(tokens.to_string().trim().is_empty());
 }
+
+#[test]
+fn first_generic_type_arg_handles_no_arguments_and_lifetime_only() {
+    let plain: syn::Type = syn::parse_str("Option").unwrap();
+    let syn::Type::Path(plain) = plain else {
+        panic!("fixture is a path");
+    };
+    assert!(first_generic_type_arg(plain.path.segments.last().unwrap()).is_none());
+
+    let lifetime: syn::Type = syn::parse_str("Borrowed<'a>").unwrap();
+    let syn::Type::Path(lifetime) = lifetime else {
+        panic!("fixture is a path");
+    };
+    assert!(first_generic_type_arg(lifetime.path.segments.last().unwrap()).is_none());
+}
+
+#[test]
+fn normalize_token_str_reuses_whitespace_free_string() {
+    assert_eq!(normalize_token_str(&"AlreadyCompact"), "AlreadyCompact");
+}
+
+#[test]
+fn option_inner_rejects_wrapper_without_generic_arguments() {
+    let ty: syn::Type = syn::parse_str("Option").unwrap();
+    assert!(option_inner(&ty).is_none());
+}
+
+#[rstest]
+#[case::uuid("Uuid", serde_json::json!("00000000-0000-0000-0000-000000000000"))]
+#[case::datetime("DateTimeUtc", serde_json::json!("1970-01-01T00:00:00+00:00"))]
+#[case::naive_datetime("NaiveDateTime", serde_json::json!("1970-01-01T00:00:00"))]
+fn type_default_returns_temporal_and_uuid_sentinels(
+    #[case] input: &str,
+    #[case] expected: serde_json::Value,
+) {
+    let ty: syn::Type = syn::parse_str(input).unwrap();
+    assert_eq!(get_type_default(&ty), Some(expected));
+}

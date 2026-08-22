@@ -226,3 +226,52 @@ pub fn bench_hoist_new(headers: &http::HeaderMap, body: &Bytes) -> usize {
 pub fn bench_hoist_old(headers: &http::HeaderMap, body: &Bytes) -> usize {
     hoist_field_len_sum(try_hoist_validation_errors_value_old(headers, body))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json_headers() -> http::HeaderMap {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("application/problem+json; charset=utf-8"),
+        );
+        headers
+    }
+
+    #[test]
+    fn strict_and_value_hoisters_sum_the_same_optional_fields() {
+        let headers = json_headers();
+        let body = Bytes::from_static(
+            br#"{"errors":[{"path":"name","code":"short","message":"bad"},{"path":"email"}]}"#,
+        );
+
+        assert_eq!(bench_hoist_new(&headers, &body), 17);
+        assert_eq!(bench_hoist_old(&headers, &body), 17);
+    }
+
+    #[test]
+    fn value_hoister_rejects_non_json_oversized_and_empty_envelopes() {
+        let mut text_headers = http::HeaderMap::new();
+        text_headers.insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("text/plain"),
+        );
+        let valid = Bytes::from_static(br#"{"errors":[{"path":"x"}]}"#);
+        assert_eq!(bench_hoist_old(&text_headers, &valid), 0);
+
+        let oversized = Bytes::from(vec![b' '; MAX_HOIST_BODY_BYTES + 1]);
+        assert_eq!(bench_hoist_old(&json_headers(), &oversized), 0);
+
+        for body in [
+            Bytes::from_static(b"not json"),
+            Bytes::from_static(br"{}"),
+            Bytes::from_static(br#"{"errors":null}"#),
+            Bytes::from_static(br#"{"errors":[]}"#),
+            Bytes::from_static(br#"{"errors":[{"message":"missing path"}]}"#),
+        ] {
+            assert_eq!(bench_hoist_old(&json_headers(), &body), 0);
+        }
+    }
+}

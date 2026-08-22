@@ -695,3 +695,19 @@ fn test_generate_schema_type_code_override_rename_all() {
     // Should use camelCase (our override)
     assert!(output.contains("camelCase"));
 }
+
+#[test]
+fn validate_literal_default_accepts_non_path_and_empty_path_types() {
+    let reference: syn::Type = syn::parse_str("&str").unwrap();
+    assert!(validate_literal_default("anything", &reference).is_ok());
+
+    let empty = syn::Type::Path(syn::TypePath {
+        attrs: Vec::new(),
+        qself: None,
+        path: syn::Path {
+            leading_colon: None,
+            segments: syn::punctuated::Punctuated::new(),
+        },
+    });
+    assert!(validate_literal_default("anything", &empty).is_ok());
+}

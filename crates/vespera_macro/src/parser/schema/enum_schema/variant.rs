@@ -142,3 +142,45 @@ pub(super) fn build_variant_data_schema(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_named_field_uses_unknown_name() {
+        let mut variant: syn::Variant = syn::parse_quote!(Broken { value: String });
+        let syn::Fields::Named(fields) = &mut variant.fields else {
+            panic!("named fields");
+        };
+        fields.named.first_mut().expect("field").ident = None;
+
+        let (properties, required) = build_struct_variant_properties(
+            fields,
+            None,
+            &[],
+            &HashSet::<String>::new(),
+            &HashMap::<String, String>::new(),
+        );
+
+        assert!(properties.contains_key("unknown"));
+        assert_eq!(required, ["unknown"]);
+    }
+
+    #[test]
+    fn empty_struct_variant_omits_properties_and_required() {
+        let variant: syn::Variant = syn::parse_quote!(Empty {});
+        let schema = build_variant_data_schema(
+            &variant,
+            None,
+            &HashSet::<String>::new(),
+            &HashMap::<String, String>::new(),
+        )
+        .expect("struct variant schema");
+        let SchemaRef::Inline(schema) = schema else {
+            panic!("inline schema");
+        };
+        assert!(schema.properties.is_none());
+        assert!(schema.required.is_none());
+    }
+}

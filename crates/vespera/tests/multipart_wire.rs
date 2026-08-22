@@ -10,7 +10,13 @@
 //! `axum::extract::DefaultBodyLimit::disable()` layer; without it
 //! axum's default 2 MiB cap would silently truncate larger uploads.
 
-use ::axum::{Router, extract::DefaultBodyLimit, routing::post};
+use ::axum::{
+    Router,
+    body::Body,
+    extract::{DefaultBodyLimit, FromRequest},
+    http::{HeaderMap, HeaderValue, Request},
+    routing::post,
+};
 use ::serde::Serialize;
 use ::serde_json::Value;
 use ::std::collections::HashMap;
@@ -18,8 +24,10 @@ use ::std::io::{Read, Seek, SeekFrom};
 use ::std::sync::Once;
 use ::tokio::runtime::Builder;
 use ::vespera::axum::Json;
-use ::vespera::multipart::{DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES, TypedMultipartWithLimits};
-use ::vespera::multipart::{FieldData, TypedMultipart};
+use ::vespera::multipart::{
+    DEFAULT_TEMP_FILE_FIELD_LIMIT_BYTES, FieldData, FieldMetadata, MeteredField,
+    TryFromFieldWithState, TypedMultipart, TypedMultipartError, TypedMultipartWithLimits,
+};
 use ::vespera::tempfile::NamedTempFile;
 use ::vespera::{Multipart, Schema, Validated};
 use ::vespera_inprocess::{dispatch_from_bytes, register_app};
@@ -47,6 +55,66 @@ struct CappedUploadReq {
 struct ValidatedMultipartReq {
     #[garde(length(min = 3))]
     name: String,
+}
+
+#[derive(Multipart)]
+struct BooleanReq {
+    enabled: bool,
+}
+
+struct ObservedField {
+    file_name: Option<String>,
+    content_type: Option<String>,
+    bytes: Vec<u8>,
+    captured_header: Option<String>,
+}
+
+impl<S: Send + Sync> TryFromFieldWithState<S> for ObservedField {
+    async fn try_from_field_with_state(
+        field: MeteredField<'_>,
+        _limit_bytes: Option<usize>,
+        _state: &S,
+    ) -> Result<Self, TypedMultipartError> {
+        let file_name = field.file_name().map(str::to_owned);
+        let content_type = field.content_type().map(str::to_owned);
+        let mut headers = HeaderMap::new();
+        headers.insert("x-observed", HeaderValue::from_static("yes"));
+        let metadata = FieldMetadata::from(&field).with_headers(headers);
+        let captured_header = metadata
+            .headers()
+            .and_then(|headers| headers.get("x-observed"))
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let bytes = field.bytes().await?.to_vec();
+        Ok(Self {
+            file_name,
+            content_type,
+            bytes,
+            captured_header,
+        })
+    }
+}
+
+#[derive(Multipart)]
+struct ObservedReq {
+    file: ObservedField,
+}
+
+struct FourByteField(Vec<u8>);
+
+impl<S: Send + Sync> TryFromFieldWithState<S> for FourByteField {
+    async fn try_from_field_with_state(
+        field: MeteredField<'_>,
+        _limit_bytes: Option<usize>,
+        _state: &S,
+    ) -> Result<Self, TypedMultipartError> {
+        Ok(Self(field.bytes_with_limit(4, 64).await?.to_vec()))
+    }
+}
+
+#[derive(Multipart)]
+struct LimitedReq {
+    value: FourByteField,
 }
 
 #[derive(Serialize, Schema)]
@@ -117,6 +185,19 @@ struct TextResult {
     text_len: u64,
 }
 
+#[derive(Serialize)]
+struct BooleanResult {
+    enabled: bool,
+}
+
+#[derive(Serialize)]
+struct ObservedResult {
+    file_name: Option<String>,
+    content_type: Option<String>,
+    byte_count: usize,
+    captured_header: Option<String>,
+}
+
 async fn text_handler(TypedMultipart(req): TypedMultipart<TextReq>) -> Json<TextResult> {
     Json(TextResult {
         text_len: u64::try_from(req.text.len()).unwrap_or(u64::MAX),
@@ -147,6 +228,29 @@ async fn text_unlimited_handler(
     })
 }
 
+async fn boolean_handler(TypedMultipart(req): TypedMultipart<BooleanReq>) -> Json<BooleanResult> {
+    Json(BooleanResult {
+        enabled: req.enabled,
+    })
+}
+
+async fn observed_handler(
+    TypedMultipart(req): TypedMultipart<ObservedReq>,
+) -> Json<ObservedResult> {
+    Json(ObservedResult {
+        file_name: req.file.file_name,
+        content_type: req.file.content_type,
+        byte_count: req.file.bytes.len(),
+        captured_header: req.file.captured_header,
+    })
+}
+
+async fn limited_handler(TypedMultipart(req): TypedMultipart<LimitedReq>) -> Json<TextResult> {
+    Json(TextResult {
+        text_len: u64::try_from(req.value.0.len()).unwrap_or(u64::MAX),
+    })
+}
+
 fn multipart_router() -> Router {
     Router::new()
         .route("/upload", post(upload_handler))
@@ -159,6 +263,9 @@ fn multipart_router() -> Router {
             post(text_aggregate_field_count_handler),
         )
         .route("/text-unlimited", post(text_unlimited_handler))
+        .route("/boolean", post(boolean_handler))
+        .route("/observed", post(observed_handler))
+        .route("/limited", post(limited_handler))
         // Disable the 2 MiB default so the 256 KiB test below isn't
         // truncated — and so end-users can document a sensible policy
         // explicitly rather than inheriting an axum default that's
@@ -551,4 +658,112 @@ fn validated_typed_multipart_rejects_garde_failure_422() {
     );
     let json: Value = ::serde_json::from_slice(&body).expect("response is JSON");
     assert_eq!(json["errors"][0]["path"], "name");
+}
+
+#[test]
+fn invalid_boolean_returns_422_with_bounded_conversion_message() {
+    install_router_once();
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let wire = encode_multipart_text(
+        "----InvalidBooleanBoundary",
+        "/boolean",
+        "enabled",
+        b"definitely-not-a-boolean",
+    );
+
+    let response = dispatch_from_bytes(wire, &runtime);
+    let (header, body) = decode_wire(&response);
+
+    assert_eq!(header["status"].as_u64(), Some(422));
+    let json: Value = ::serde_json::from_slice(&body).expect("response is JSON");
+    assert_eq!(json["errors"][0]["path"], "enabled");
+    assert!(
+        json["errors"][0]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("invalid boolean value"))
+    );
+}
+
+#[test]
+fn custom_field_parser_observes_metadata_headers_and_whole_bytes() {
+    install_router_once();
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let wire = encode_multipart_upload_wire(
+        "/observed",
+        "----ObservedBoundary",
+        "ignored",
+        "evidence.bin",
+        b"proof",
+    );
+
+    let response = dispatch_from_bytes(wire, &runtime);
+    let (header, body) = decode_wire(&response);
+
+    assert_eq!(header["status"].as_u64(), Some(200));
+    let json: Value = ::serde_json::from_slice(&body).expect("response is JSON");
+    assert_eq!(json["file_name"], "evidence.bin");
+    assert_eq!(json["content_type"], "application/octet-stream");
+    assert_eq!(json["byte_count"], 5);
+    assert_eq!(json["captured_header"], "yes");
+}
+
+#[test]
+fn custom_field_parser_reads_exactly_at_public_limit() {
+    install_router_once();
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let wire = encode_multipart_text("----LimitedBoundary", "/limited", "value", b"four");
+
+    let response = dispatch_from_bytes(wire, &runtime);
+    let (header, body) = decode_wire(&response);
+
+    assert_eq!(header["status"].as_u64(), Some(200));
+    let json: Value = ::serde_json::from_slice(&body).expect("response is JSON");
+    assert_eq!(json["text_len"], 4);
+}
+
+#[tokio::test]
+async fn multipart_rejection_exposes_axum_source_error() {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/text")
+        .body(Body::empty())
+        .unwrap();
+
+    let Err(error) = TypedMultipart::<TextReq>::from_request(request, &()).await else {
+        panic!("missing content type must reject multipart extraction");
+    };
+
+    assert!(matches!(error, TypedMultipartError::InvalidRequest { .. }));
+    assert!(std::error::Error::source(&error).is_some());
+}
+
+#[tokio::test]
+async fn malformed_multipart_body_exposes_stream_source_error() {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/text")
+        .header("content-type", "multipart/form-data; boundary=broken")
+        .body(Body::from(
+            "--broken\r\nContent-Disposition: form-data; name=\"text\"\r\n\r\nunterminated",
+        ))
+        .unwrap();
+
+    let Err(error) = TypedMultipart::<TextReq>::from_request(request, &()).await else {
+        panic!("unterminated multipart body must reject extraction");
+    };
+
+    assert!(matches!(
+        error,
+        TypedMultipartError::InvalidRequestBody { .. }
+    ));
+    assert!(std::error::Error::source(&error).is_some());
 }

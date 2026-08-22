@@ -93,6 +93,7 @@ mod tests {
 
     use vespera_core::route::ParameterLocation;
 
+    use super::parse_path_extractor;
     use crate::parser::parameters::parse_function_parameter;
 
     #[test]
@@ -115,5 +116,13 @@ mod tests {
             assert_eq!(params[0].r#in, ParameterLocation::Path);
             assert_eq!(params[0].name, "user_id");
         }
+    }
+
+    #[test]
+    fn path_extractor_rejects_missing_or_non_type_generic() {
+        let bare: syn::Type = syn::parse_quote!(Path);
+        assert!(parse_path_extractor(&bare, &[], &HashSet::new(), &HashMap::new()).is_none());
+        let lifetime: syn::Type = syn::parse_quote!(Path<'static>);
+        assert!(parse_path_extractor(&lifetime, &[], &HashSet::new(), &HashMap::new()).is_none());
     }
 }

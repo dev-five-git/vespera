@@ -127,6 +127,36 @@ fn test_merge_same_path_different_methods_are_combined() {
 }
 
 #[test]
+fn merge_same_path_adopts_incoming_get_when_self_get_is_empty() {
+    let mut base = create_base_openapi();
+    base.paths
+        .insert("/users".to_string(), create_post_path_item("Create user"));
+
+    let mut other = create_base_openapi();
+    other
+        .paths
+        .insert("/users".to_string(), create_path_item("List users"));
+
+    base.merge(other);
+
+    let users = base.paths.get("/users").expect("/users should be present");
+    assert_eq!(
+        users
+            .get
+            .as_ref()
+            .and_then(|operation| operation.summary.as_deref()),
+        Some("List users")
+    );
+    assert_eq!(
+        users
+            .post
+            .as_ref()
+            .and_then(|operation| operation.summary.as_deref()),
+        Some("Create user")
+    );
+}
+
+#[test]
 fn test_merge_same_path_same_method_self_wins() {
     // Same path AND same method on both sides: self's operation is kept,
     // the incoming one is discarded.

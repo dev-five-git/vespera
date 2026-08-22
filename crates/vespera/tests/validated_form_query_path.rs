@@ -18,7 +18,7 @@ use ::axum::{
 };
 use ::serde::Deserialize;
 use ::tower::ServiceExt;
-use ::vespera::{Schema, ValidatePayload, Validated};
+use ::vespera::{Schema, ValidatePayload, Validated, ValidatedWith};
 
 async fn body_to_string(body: Body) -> String {
     let bytes = ::axum::body::to_bytes(body, usize::MAX).await.unwrap();
@@ -265,4 +265,65 @@ async fn validated_form_inner_extractor_rejection_is_forwarded() {
     let res = form_router().oneshot(req).await.unwrap();
     assert_ne!(res.status(), 422, "must not synthesize a 422 envelope");
     assert_ne!(res.status(), 200, "must not pass through to handler");
+}
+
+#[derive(Clone)]
+struct PrefixContext {
+    required_prefix: String,
+}
+
+#[derive(Deserialize, garde::Validate)]
+#[garde(context(PrefixContext as ctx))]
+struct ContextSearch {
+    #[garde(custom(|value: &str, ctx: &PrefixContext| {
+        if value.starts_with(&ctx.required_prefix) {
+            Ok(())
+        } else {
+            Err(garde::Error::new("missing required prefix"))
+        }
+    }))]
+    q: String,
+}
+
+async fn context_search(validated: ValidatedWith<PrefixContext, Query<ContextSearch>>) -> String {
+    validated.get().0.q.clone()
+}
+
+fn context_query_router() -> Router<PrefixContext> {
+    Router::new().route("/context-search", get(context_search))
+}
+
+#[tokio::test]
+async fn context_validated_query_accepts_state_approved_value() {
+    let app = context_query_router().with_state(PrefixContext {
+        required_prefix: "vespera-".to_owned(),
+    });
+    let req = Request::builder()
+        .uri("/context-search?q=vespera-release")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+
+    assert_eq!(res.status(), 200);
+    assert_eq!(body_to_string(res.into_body()).await, "vespera-release");
+}
+
+#[tokio::test]
+async fn context_validated_query_rejects_state_disapproved_value() {
+    let app = context_query_router().with_state(PrefixContext {
+        required_prefix: "vespera-".to_owned(),
+    });
+    let req = Request::builder()
+        .uri("/context-search?q=other-release")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+
+    assert_eq!(res.status(), 422);
+    let body: ::serde_json::Value =
+        ::serde_json::from_str(&body_to_string(res.into_body()).await).unwrap();
+    let errors = body["errors"].as_array().expect("errors");
+    assert!(errors.iter().any(|error| error["path"] == "q"));
 }

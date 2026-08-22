@@ -294,3 +294,6 @@ pub fn get_module_path_from_schema_path(schema_path: &proc_macro2::TokenStream) 
 
     result
 }
+
+#[cfg(test)]
+mod tests;

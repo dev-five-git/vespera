@@ -83,3 +83,26 @@ fn typed_header_parameter(param_name: &str, required: bool) -> Parameter {
         example: None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_option_and_header_generics_are_rejected() {
+        let bare_option: Type = syn::parse_quote!(Option);
+        assert!(parse_option_typed_header("x", &bare_option).is_none());
+        let lifetime_option: Type = syn::parse_quote!(Option<'static>);
+        assert!(parse_option_typed_header("x", &lifetime_option).is_none());
+
+        let bare_header: Type = syn::parse_quote!(Header);
+        assert!(
+            parse_header_extractor("x", &bare_header, &HashSet::new(), &HashMap::new()).is_none()
+        );
+        let lifetime_header: Type = syn::parse_quote!(Header<'static>);
+        assert!(
+            parse_header_extractor("x", &lifetime_header, &HashSet::new(), &HashMap::new())
+                .is_none()
+        );
+    }
+}

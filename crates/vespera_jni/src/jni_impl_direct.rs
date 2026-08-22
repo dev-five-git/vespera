@@ -276,34 +276,26 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchDir
                             // jint-bounded, so this always fits i32.
                             direct_complete_code(n)
                         }
-                        vespera_inprocess::DirectWriteResult::Overflow(required) => {
-                            direct_overflow_code(required)
-                        }
+                        vespera_inprocess::DirectWriteResult::Overflow(required) => direct_overflow_code(required),
                     };
                     Ok(code)
-                },
-            ));
+                }));
 
-            guarded.unwrap_or_else(|_| {
-                out_region.map_or_else(
-                    || {
-                        let _ = env.throw_new(
-                            jni::jni_str!("java/lang/RuntimeException"),
-                            jni::jni_str!(
-                                "panic in Rust engine before direct output buffer resolution"
-                            ),
-                        );
-                        Ok(DIRECT_UNREPRESENTABLE)
-                    },
-                    |(out_addr, out_cap)| {
-                        let err = panic_wire();
-                        // SAFETY: `out_addr`/`out_cap` were resolved from the live
-                        // direct output buffer before the panic, and `err` is a
-                        // Rust-owned Vec that cannot alias that Java buffer.
-                        Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) })
-                    },
-                )
-            })
+                guarded.unwrap_or_else(|_| {
+                    out_region.map_or_else(
+                        || {
+                            let _ = env.throw_new(jni::jni_str!("java/lang/RuntimeException"), jni::jni_str!("panic in Rust engine before direct output buffer resolution"));
+                            Ok(DIRECT_UNREPRESENTABLE)
+                        },
+                        |(out_addr, out_cap)| {
+                            let err = panic_wire();
+                            // SAFETY: `out_addr`/`out_cap` were resolved from the live
+                            // direct output buffer before the panic, and `err` is a
+                            // Rust-owned Vec that cannot alias that Java buffer.
+                            Ok(unsafe { write_response_to_out(out_addr, out_cap, &err) })
+                        },
+                    )
+                })
             })
             .resolve::<ThrowRuntimeExAndDefault>()
     }));

@@ -703,4 +703,15 @@ mod tests {
         let result = extract_rename_all(&item.attrs);
         assert_eq!(result, None);
     }
+
+    #[rstest]
+    #[case::embedded_key("some_rename = \"x\"", "rename")]
+    #[case::missing_quote("rename = value", "rename")]
+    #[case::missing_end_quote("rename = \"value", "rename")]
+    fn quoted_value_after_key_rejects_malformed_candidates(
+        #[case] tokens: &str,
+        #[case] key: &str,
+    ) {
+        assert_eq!(super::quoted_value_after_key(tokens, key), None);
+    }
 }

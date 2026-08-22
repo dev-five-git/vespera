@@ -784,4 +784,36 @@ mod tests {
             "dispatch_and_split must reject malformed path"
         );
     }
+
+    #[test]
+    fn bench_request_builders_cover_query_headers_and_json_default() {
+        let headers = [("x-a", "abc"), ("content-type", "text/plain")];
+        let body = Bytes::from_static(b"{}");
+
+        assert_eq!(
+            bench_build_request_new("POST", "/items", "x=1", &headers, body.clone()),
+            41
+        );
+        assert_eq!(
+            bench_build_request_old("POST", "/items", "x=1", &headers, body.clone()),
+            41
+        );
+        assert_eq!(bench_build_request_old("POST", "/x", "", &[], body), 34);
+    }
+
+    #[test]
+    fn old_bench_builder_maps_invalid_method_header_and_uri_to_sentinel() {
+        assert_eq!(
+            bench_build_request_old("BAD METHOD", "/", "", &[], Bytes::new()),
+            usize::MAX
+        );
+        assert_eq!(
+            bench_build_request_old("GET", "/", "", &[("bad header", "value")], Bytes::new(),),
+            usize::MAX
+        );
+        assert_eq!(
+            bench_build_request_old("GET", "bad path", "", &[], Bytes::new()),
+            usize::MAX
+        );
+    }
 }

@@ -332,3 +332,34 @@ fn manifest_dir_revalidates_across_epochs() {
         "manifest dir must revalidate when the epoch advances"
     );
 }
+
+#[test]
+fn raw_cache_helpers_reuse_directory_struct_and_content_entries() {
+    let temp_dir = TempDir::new().unwrap();
+    let src_dir = temp_dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    let file = src_dir.join("model.rs");
+    std::fs::write(&file, "pub struct Model { pub id: i32 }").unwrap();
+
+    FILE_CACHE.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        cache.epoch = cache.epoch.wrapping_add(1);
+        let first_files = ensure_file_list(&mut cache, &src_dir);
+        assert_eq!(first_files.as_ref(), std::slice::from_ref(&file));
+
+        cache.epoch = cache.epoch.wrapping_add(1);
+        let second_files = ensure_file_list(&mut cache, &src_dir);
+        assert!(Arc::ptr_eq(&first_files, &second_files));
+
+        assert!(ensure_struct_definitions(&mut cache, &file));
+        let first_content = get_file_content_inner(&mut cache, &file).expect("content exists");
+        let second_content =
+            get_file_content_inner(&mut cache, &file).expect("cached content exists");
+        assert!(Arc::ptr_eq(&first_content, &second_content));
+        assert_eq!(cache.struct_definitions[&file].1.len(), 1);
+        assert_eq!(
+            cache.file_contents[&file].1.as_str(),
+            "pub struct Model { pub id: i32 }"
+        );
+    });
+}

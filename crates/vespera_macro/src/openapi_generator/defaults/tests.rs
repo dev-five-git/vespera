@@ -290,6 +290,18 @@ fn set_property_default_skips_missing_property() {
     assert!(properties.is_empty());
 }
 
+#[rstest]
+#[case::number(json!(42), json!("42"))]
+#[case::boolean(json!(true), json!("true"))]
+fn string_property_coerces_scalar_default(#[case] input: Value, #[case] expected: Value) {
+    let mut properties = BTreeMap::from([(
+        "value".to_string(),
+        SchemaRef::Inline(Box::new(Schema::string())),
+    )]);
+    set_property_default(&mut properties, "value", input);
+    assert_inline_default(&properties, "value", &expected);
+}
+
 // ---------- process_default_functions ----------
 
 #[test]
@@ -611,4 +623,58 @@ fn process_default_functions_falls_through_for_schema_default_attr() {
     process_default_functions(&struct_item, None, &mut schema, &BTreeMap::new());
 
     assert_inline_default(schema.properties.as_ref().unwrap(), "count", &json!(42));
+}
+
+#[test]
+fn process_defaults_returns_when_schema_has_no_field_container() {
+    let item: syn::ItemStruct = syn::parse_quote! {
+        struct Value { #[serde(default)] value: String }
+    };
+    let mut schema = Schema::default();
+    process_default_functions(&item, None, &mut schema, &BTreeMap::new());
+    assert!(schema.properties.is_none());
+    assert!(schema.all_of.is_none());
+}
+
+#[test]
+fn process_defaults_uses_unknown_for_malformed_named_field() {
+    let mut item: syn::ItemStruct = syn::parse_quote! {
+        struct Value { value: String }
+    };
+    let syn::Fields::Named(fields) = &mut item.fields else {
+        panic!("expected named fields");
+    };
+    fields.named.first_mut().expect("field").ident = None;
+    let mut schema = Schema::object();
+    schema.properties.as_mut().expect("properties").insert(
+        "unknown".to_string(),
+        SchemaRef::Inline(Box::new(Schema::string())),
+    );
+    let stored = BTreeMap::from([("unknown".to_string(), json!("fallback"))]);
+    process_default_functions(&item, None, &mut schema, &stored);
+    assert_inline_default(
+        schema.properties.as_ref().unwrap(),
+        "unknown",
+        &json!("fallback"),
+    );
+}
+
+#[test]
+fn field_bearing_schema_skips_ref_before_inline_member() {
+    let mut schema = Schema {
+        all_of: Some(vec![
+            SchemaRef::Ref(Reference::schema("Base")),
+            SchemaRef::Inline(Box::new(Schema::object())),
+        ]),
+        ..Schema::default()
+    };
+    assert!(field_bearing_schema_mut(&mut schema).is_some());
+}
+
+#[rstest]
+#[case::parenthesized_callee(r#"(String::from)("value")"#)]
+#[case::non_string_argument("String::from(42)")]
+#[case::other_function(r#"Other::from("value")"#)]
+fn unsupported_call_defaults_are_omitted(#[case] source: &str) {
+    assert_eq!(extract_value_from_expr(&parse_expr(source)), None);
 }

@@ -663,3 +663,27 @@ fn test_collect_metadata_struct_with_other_derive() {
 
     assert_eq!(metadata.structs.len(), 0);
 }
+
+#[test]
+fn kebab_case_preserves_parameter_underscores() {
+    assert_eq!(
+        kebab_case_path("/user_groups/{user_id}"),
+        "/user-groups/{user_id}"
+    );
+}
+
+#[test]
+fn collect_metadata_rejects_file_outside_folder() {
+    let base = TempDir::new().expect("base temp dir");
+    let outside = TempDir::new().expect("outside temp dir");
+    let file = create_temp_file(&outside, "route.rs", "pub fn route() {}");
+
+    let error = collect_metadata_from_files([file.as_path()], base.path(), "routes", &[])
+        .expect_err("outside file must fail prefix stripping");
+
+    assert!(
+        error
+            .to_string()
+            .contains("Failed to strip prefix from file")
+    );
+}

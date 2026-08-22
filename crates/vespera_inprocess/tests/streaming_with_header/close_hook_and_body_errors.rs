@@ -351,3 +351,74 @@ async fn direct_write_body_error_yields_500_not_truncated_success() {
         "direct-write must emit 500 on a body error, not truncated bytes"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bidirectional_body_error_replaces_captured_success_header_with_500() {
+    install_router();
+    let wire = encode_wire("GET", "/err-body", HashMap::new(), &[]);
+
+    let header = dispatch_bidirectional_streaming_closing(
+        wire,
+        || RequestChunk::End,
+        |_chunk| ControlFlow::Continue(()),
+        || {},
+    )
+    .await;
+
+    let (header_json, body) = decode_wire(&header);
+    assert_eq!(header_json["status"].as_u64(), Some(500));
+    assert!(
+        !body.is_empty(),
+        "replacement 500 wire carries an error body"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bidirectional_rejects_body_bytes_embedded_after_header() {
+    install_router();
+    let wire = encode_wire("POST", "/echo", HashMap::new(), b"embedded");
+    let header_buf = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&header_buf);
+
+    let outcome = dispatch_bidirectional_streaming_with_header(
+        wire,
+        || RequestChunk::End,
+        |_chunk| ControlFlow::Continue(()),
+        move |header| captured.lock().unwrap().extend_from_slice(header),
+    )
+    .await;
+
+    assert_eq!(outcome, StreamOutcome::Complete);
+    let (header_json, body) = decode_wire(&header_buf.lock().unwrap());
+    assert_eq!(header_json["status"].as_u64(), Some(400));
+    assert!(
+        String::from_utf8_lossy(&body).contains("header-only"),
+        "error explains that request bytes must come from pull_chunk"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn panicking_request_producer_aborts_the_upload() {
+    install_router();
+    let wire = encode_wire(
+        "POST",
+        "/echo",
+        HashMap::from([("content-type", "application/octet-stream")]),
+        &[],
+    );
+
+    let header = dispatch_bidirectional_streaming_closing(
+        wire,
+        || -> RequestChunk { panic!("producer failed") },
+        |_chunk| ControlFlow::Continue(()),
+        || {},
+    )
+    .await;
+
+    let (header_json, _) = decode_wire(&header);
+    assert_eq!(
+        header_json["status"].as_u64(),
+        Some(400),
+        "a producer panic must become a request-body error, not clean EOF"
+    );
+}

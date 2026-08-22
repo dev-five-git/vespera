@@ -489,3 +489,36 @@ pub(super) fn write_response_header<S: JsonSink>(
     }
     sink.put(b"}");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "HTTP status must be 100..=999")]
+    fn status_writer_debug_asserts_invalid_status() {
+        write_status_code(&mut Vec::new(), 99);
+    }
+
+    #[test]
+    #[should_panic(expected = "write_header_value is only called for present names")]
+    fn absent_header_name_hits_the_debug_invariant() {
+        write_header_value(&mut Vec::new(), &http::HeaderMap::new(), "x-absent");
+    }
+
+    #[test]
+    fn current_borrowed_version_uses_byte_identical_fast_path() {
+        let metadata = ResponseMetadata {
+            version: Cow::Borrowed(VESPERA_VERSION),
+        };
+        let mut bytes = Vec::new();
+        write_response_header(&mut bytes, 200, &http::HeaderMap::new(), &metadata, None);
+        let text = std::str::from_utf8(&bytes).expect("response header is UTF-8 JSON");
+        assert_eq!(
+            text,
+            format!(
+                r#"{{"v":1,"status":200,"headers":{{}},"metadata":{{"version":"{VESPERA_VERSION}"}}}}"#
+            )
+        );
+    }
+}

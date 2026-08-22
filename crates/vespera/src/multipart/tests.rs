@@ -60,6 +60,16 @@ fn field_metadata_full_headers_are_optional_by_default() {
 }
 
 #[test]
+fn multipart_default_limits_can_be_reapplied_without_drift() {
+    let original = default_multipart_limits();
+
+    let previous = set_default_multipart_limits(original);
+
+    assert_eq!(previous, original);
+    assert_eq!(default_multipart_limits(), original);
+}
+
+#[test]
 fn temp_file_default_limit_is_bounded_and_configurable() {
     assert_eq!(
         default_temp_file_field_limit_bytes(),
@@ -340,6 +350,7 @@ fn test_error_trait_is_implemented() {
         source: "test".to_string(),
     });
     assert_eq!(err.to_string(), "test");
+    assert!(std::error::Error::source(err.as_ref()).is_none());
 }
 
 // ─── TypedMultipart Deref / DerefMut ────────────────────────────────

@@ -570,4 +570,64 @@ mod tests {
             Some("Create a new user".to_string())
         );
     }
+
+    #[rstest]
+    #[case::json_object(r#"{"id":7}"#, serde_json::json!({"id": 7}))]
+    #[case::plain_text("not json", serde_json::Value::String("not json".to_string()))]
+    fn parse_example_string_preserves_json_or_falls_back_to_text(
+        #[case] source: &str,
+        #[case] expected: serde_json::Value,
+    ) {
+        let literal = syn::LitStr::new(source, proc_macro2::Span::call_site());
+
+        assert_eq!(parse_example_string(&literal), expected);
+    }
+
+    #[test]
+    fn status_and_string_extractors_ignore_wrong_expression_kinds() {
+        let statuses: syn::ExprArray = syn::parse_quote!([400, BAD_REQUEST, "404", 70_000]);
+        let strings: syn::ExprArray = syn::parse_quote!(["users", admin, 7]);
+        let no_strings: syn::ExprArray = syn::parse_quote!([admin, 7]);
+
+        assert_eq!(extract_status_codes(&statuses), Some(vec![400]));
+        assert_eq!(extract_strings(&strings), vec!["users".to_string()]);
+        assert_eq!(extract_non_empty_strings(&no_strings), None);
+    }
+
+    #[rstest]
+    #[case::not_a_tuple(quote::quote!(NotFound), None)]
+    #[case::missing_status(quote::quote!(()), None)]
+    #[case::non_integer_status(quote::quote!((NOT_FOUND, ErrorBody)), None)]
+    #[case::out_of_range_status(quote::quote!((70_000, ErrorBody)), None)]
+    #[case::missing_schema(quote::quote!((404,)), None)]
+    #[case::non_path_schema(quote::quote!((404, "ErrorBody")), None)]
+    #[case::qualified_schema(
+        quote::quote!((404, crate::errors::NotFound)),
+        Some((404, "NotFound".to_string()))
+    )]
+    fn typed_response_extracts_only_valid_status_and_schema_pairs(
+        #[case] source: proc_macro2::TokenStream,
+        #[case] expected: Option<(u16, String)>,
+    ) {
+        let expression = syn::parse2::<syn::Expr>(source).expect("valid expression fixture");
+
+        assert_eq!(extract_typed_response(&expression), expected);
+    }
+
+    #[test]
+    fn typed_responses_drop_invalid_entries_and_report_empty_results() {
+        let mixed: syn::ExprArray = syn::parse_quote!([
+            NotATuple,
+            (NOT_FOUND, ErrorBody),
+            (404, "ErrorBody"),
+            (422, crate::errors::ValidationError),
+        ]);
+        let invalid: syn::ExprArray = syn::parse_quote!([NotATuple, (404, "ErrorBody")]);
+
+        assert_eq!(
+            extract_typed_responses(&mixed),
+            Some(vec![(422, "ValidationError".to_string())])
+        );
+        assert_eq!(extract_typed_responses(&invalid), None);
+    }
 }

@@ -56,6 +56,21 @@ fn serialize_number_constraint_none_serializes_null() {
     assert_eq!(result, serde_json::Value::Null);
 }
 
+#[rstest]
+#[case(2.0, true)]
+#[case(1.5, false)]
+#[case(1e20, false)]
+fn serialize_number_constraint_preserves_value_and_uses_safe_integer_form(
+    #[case] number: f64,
+    #[case] should_be_integer: bool,
+) {
+    let result =
+        super::serialize_number_constraint(&Some(number), serde_json::value::Serializer).unwrap();
+
+    assert_eq!(result.as_f64(), Some(number));
+    assert_eq!(result.is_i64(), should_be_integer);
+}
+
 #[test]
 fn serialize_minimum_whole_number_as_integer() {
     let schema = Schema {
@@ -122,6 +137,34 @@ fn schema_level_example_and_examples_serialization_is_byte_identical() {
     let json = serde_json::to_string(&schema).unwrap();
 
     assert_eq!(json, r#"{"type":"string","examples":["abc","def"]}"#);
+}
+
+#[test]
+fn schema_level_legacy_example_alone_serializes_as_single_element_examples_array() {
+    let schema = Schema {
+        example: Some(serde_json::json!("legacy")),
+        ..Schema::string()
+    };
+
+    let value = serde_json::to_value(schema).unwrap();
+
+    assert_eq!(value["examples"], serde_json::json!(["legacy"]));
+    assert!(value.get("example").is_none());
+}
+
+#[test]
+fn schema_level_examples_without_legacy_example_are_preserved() {
+    let schema = Schema {
+        examples: Some(vec![
+            serde_json::json!("first"),
+            serde_json::json!("second"),
+        ]),
+        ..Schema::string()
+    };
+
+    let value = serde_json::to_value(schema).unwrap();
+
+    assert_eq!(value["examples"], serde_json::json!(["first", "second"]));
 }
 
 #[test]
@@ -507,4 +550,103 @@ fn schema_ref_nullable_reference_roundtrips() {
         }
         SchemaRef::Ref(_) => panic!("a nullable reference must round-trip as inline"),
     }
+}
+
+#[test]
+fn schema_ref_inline_schema_preserves_every_supported_keyword() {
+    let input = serde_json::json!({
+        "$ref": "#/components/schemas/Base",
+        "type": "object",
+        "format": "custom",
+        "title": "Complete schema",
+        "description": "Every supported keyword",
+        "default": {"enabled": true},
+        "example": {"id": 1},
+        "examples": [{"id": 2}],
+        "minimum": 0,
+        "maximum": 10.5,
+        "exclusiveMinimum": 1,
+        "exclusiveMaximum": 9.5,
+        "multipleOf": 2,
+        "minLength": 1,
+        "maxLength": 20,
+        "pattern": "^[a-z]+$",
+        "items": {"$ref": "#/components/schemas/Item"},
+        "prefixItems": [{"type": "string"}],
+        "minItems": 1,
+        "maxItems": 5,
+        "uniqueItems": true,
+        "properties": {"id": {"type": "integer"}},
+        "required": ["id"],
+        "additionalProperties": false,
+        "minProperties": 1,
+        "maxProperties": 3,
+        "enum": [{"id": 1}, {"id": 2}],
+        "allOf": [{"$ref": "#/components/schemas/All"}],
+        "anyOf": [{"type": "string"}],
+        "oneOf": [{"type": "integer"}],
+        "not": {"type": "boolean"},
+        "discriminator": {
+            "propertyName": "kind",
+            "mapping": {"entry": "#/components/schemas/Entry"}
+        },
+        "nullable": false,
+        "readOnly": true,
+        "writeOnly": false,
+        "externalDocs": {"description": "Reference", "url": "https://example.com"},
+        "$defs": {"Local": {"type": "number"}},
+        "$dynamicAnchor": "node",
+        "$dynamicRef": "#node"
+    });
+
+    let schema_ref: SchemaRef = serde_json::from_value(input).unwrap();
+    let SchemaRef::Inline(schema) = schema_ref else {
+        panic!("a $ref with sibling keywords must deserialize as an inline schema");
+    };
+    assert_eq!(
+        schema.ref_path.as_deref(),
+        Some("#/components/schemas/Base")
+    );
+    assert_eq!(schema.schema_type, Some(SchemaType::Object));
+    assert_eq!(schema.nullable, Some(false));
+
+    let output = serde_json::to_value(schema).unwrap();
+    assert_eq!(output["format"], "custom");
+    assert_eq!(output["title"], "Complete schema");
+    assert_eq!(output["description"], "Every supported keyword");
+    assert_eq!(output["default"], serde_json::json!({"enabled": true}));
+    assert_eq!(
+        output["examples"],
+        serde_json::json!([{"id": 1}, {"id": 2}])
+    );
+    assert_eq!(output["minimum"], 0);
+    assert_eq!(output["maximum"], 10.5);
+    assert_eq!(output["exclusiveMinimum"], 1);
+    assert_eq!(output["exclusiveMaximum"], 9.5);
+    assert_eq!(output["multipleOf"], 2);
+    assert_eq!(output["minLength"], 1);
+    assert_eq!(output["maxLength"], 20);
+    assert_eq!(output["pattern"], "^[a-z]+$");
+    assert_eq!(output["items"]["$ref"], "#/components/schemas/Item");
+    assert_eq!(output["prefixItems"][0]["type"], "string");
+    assert_eq!(output["minItems"], 1);
+    assert_eq!(output["maxItems"], 5);
+    assert_eq!(output["uniqueItems"], true);
+    assert_eq!(output["properties"]["id"]["type"], "integer");
+    assert_eq!(output["required"], serde_json::json!(["id"]));
+    assert_eq!(output["additionalProperties"], false);
+    assert_eq!(output["minProperties"], 1);
+    assert_eq!(output["maxProperties"], 3);
+    assert_eq!(output["enum"], serde_json::json!([{"id": 1}, {"id": 2}]));
+    assert_eq!(output["allOf"][0]["$ref"], "#/components/schemas/All");
+    assert_eq!(output["anyOf"][0]["type"], "string");
+    assert_eq!(output["oneOf"][0]["type"], "integer");
+    assert_eq!(output["not"]["type"], "boolean");
+    assert_eq!(output["discriminator"]["propertyName"], "kind");
+    assert_eq!(output["readOnly"], true);
+    assert_eq!(output["writeOnly"], false);
+    assert_eq!(output["externalDocs"]["url"], "https://example.com");
+    assert_eq!(output["$defs"]["Local"]["type"], "number");
+    assert_eq!(output["$dynamicAnchor"], "node");
+    assert_eq!(output["$dynamicRef"], "#node");
 }

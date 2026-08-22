@@ -465,4 +465,17 @@ mod tests {
         // Identical (mtime, size) — equal (a genuine cache hit).
         assert_eq!(combine_fingerprint(42, 100), combine_fingerprint(42, 100));
     }
+
+    #[test]
+    fn normalized_path_helpers_cover_borrowed_and_separator_paths() {
+        assert_eq!(normalize_display_path("routes/users.rs"), "routes/users.rs");
+        assert!(paths_equal_normalized(
+            Some("routes\\users.rs"),
+            Some("routes/users.rs")
+        ));
+        assert!(!paths_equal_normalized(
+            Some("routes/a.rs"),
+            Some("routes/b.rs")
+        ));
+    }
 }

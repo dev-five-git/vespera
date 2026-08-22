@@ -692,3 +692,40 @@ fn schema_exclusive_maximum_and_minimum_land_on_emitted_field_schema() {
     let tags = field_schema(&schema, "tags");
     assert_eq!(tags.unique_items, Some(true));
 }
+
+#[test]
+fn malformed_named_field_uses_unknown_property_name() {
+    let mut item: syn::ItemStruct = syn::parse_quote! { struct Broken { value: String } };
+    let syn::Fields::Named(fields) = &mut item.fields else {
+        panic!("named fields");
+    };
+    fields.named.first_mut().expect("field").ident = None;
+
+    let schema = parse_struct_to_schema(
+        &item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
+    let properties = schema.properties.expect("properties");
+    assert!(properties.contains_key("unknown"));
+    assert_eq!(
+        schema.required.as_deref(),
+        Some(["unknown".to_string()].as_slice())
+    );
+}
+
+#[test]
+fn schema_any_field_forces_object_without_type_conversion() {
+    let item: syn::ItemStruct = syn::parse_quote! {
+        struct Opaque { #[schema(any)] payload: CustomType }
+    };
+    let schema = parse_struct_to_schema(
+        &item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
+    assert_eq!(
+        field_schema(&schema, "payload").schema_type,
+        Some(SchemaType::Object)
+    );
+}

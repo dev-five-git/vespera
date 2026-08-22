@@ -267,8 +267,54 @@ pub fn request_exceeds_limit(len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_STREAMING_CHANNEL_CAPACITY, DEFAULT_STREAMING_CHUNK_BYTES, parse_config_value,
+        DEFAULT_STREAMING_CHANNEL_CAPACITY, DEFAULT_STREAMING_CHUNK_BYTES,
+        MAX_STREAMING_CHUNK_BYTES, effective_streaming_channel_capacity, max_request_bytes,
+        parse_config_value, request_exceeds_limit, set_max_request_bytes,
+        set_streaming_channel_capacity, set_streaming_chunk_bytes, streaming_channel_capacity,
+        streaming_chunk_bytes,
     };
+
+    #[test]
+    fn process_config_setters_clamp_cache_and_feed_public_predicates() {
+        const CHILD_ENV: &str = "VESPERA_CONFIG_SETTER_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("current unit-test executable"),
+            )
+            .args([
+                "--exact",
+                "config::tests::process_config_setters_clamp_cache_and_feed_public_predicates",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("run isolated config-setter child test");
+            assert!(
+                output.status.success(),
+                "isolated config test failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        assert!(set_streaming_chunk_bytes(usize::MAX));
+        assert!(set_streaming_channel_capacity(0));
+        assert!(set_max_request_bytes(10));
+
+        assert_eq!(streaming_chunk_bytes(), MAX_STREAMING_CHUNK_BYTES);
+        assert_eq!(streaming_channel_capacity(), 1);
+        assert_eq!(effective_streaming_channel_capacity(), 1);
+        assert_eq!(max_request_bytes(), 10);
+        assert!(!request_exceeds_limit(10));
+        assert!(request_exceeds_limit(11));
+
+        assert!(!set_streaming_chunk_bytes(DEFAULT_STREAMING_CHUNK_BYTES));
+        assert!(!set_streaming_channel_capacity(
+            DEFAULT_STREAMING_CHANNEL_CAPACITY
+        ));
+        assert!(!set_max_request_bytes(20));
+    }
 
     #[test]
     fn absent_value_yields_default() {

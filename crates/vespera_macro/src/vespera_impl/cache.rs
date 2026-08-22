@@ -775,4 +775,112 @@ mod tests {
             compute_config_hash(&staging)
         );
     }
+
+    #[test]
+    fn sidecar_without_expected_hash_never_matches() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("spec.json");
+        std::fs::write(&path, "{}").unwrap();
+        assert!(!sidecar_matches(&path, None, path_fingerprint(&path)));
+    }
+
+    #[test]
+    fn schema_field_defaults_contribute_to_schema_hash() {
+        let without_default = StructMetadata::new(
+            "User".to_string(),
+            "pub struct User { pub id: i32 }".to_string(),
+        );
+        let mut with_default = without_default.clone();
+        with_default
+            .field_defaults
+            .insert("id".to_string(), serde_json::json!(7));
+        let base = HashMap::from([("User".to_string(), without_default)]);
+        let changed = HashMap::from([("User".to_string(), with_default)]);
+
+        assert_ne!(compute_schema_hash(&base), compute_schema_hash(&changed));
+    }
+
+    #[test]
+    fn security_requirement_names_and_tag_descriptions_affect_config_hash() {
+        let secured = ProcessedVesperaInput {
+            security: Some(vec![BTreeMap::from([
+                ("zeta".to_string(), Vec::new()),
+                ("alpha".to_string(), Vec::new()),
+            ])]),
+            tag_descriptions: Some(HashMap::from([
+                ("users".to_string(), "User operations".to_string()),
+                ("admin".to_string(), "Admin operations".to_string()),
+            ])),
+            ..base_processed()
+        };
+
+        assert_ne!(
+            compute_config_hash(&base_processed()),
+            compute_config_hash(&secured)
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn present_merge_sidecar_content_contributes_to_config_hash() {
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                // SAFETY: this serialized test restores the process environment through RAII.
+                unsafe {
+                    match self.0.take() {
+                        Some(value) => std::env::set_var("CARGO_MANIFEST_DIR", value),
+                        None => std::env::remove_var("CARGO_MANIFEST_DIR"),
+                    }
+                }
+            }
+        }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let vespera_dir = temp.path().join("target/vespera");
+        std::fs::create_dir_all(&vespera_dir).unwrap();
+        std::fs::write(vespera_dir.join("Child.openapi.json"), "child-v1").unwrap();
+        let _restore = Restore(std::env::var("CARGO_MANIFEST_DIR").ok());
+        // SAFETY: this serialized test restores the process environment through RAII.
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp.path()) };
+        let processed = ProcessedVesperaInput {
+            merge: vec![syn::parse_quote!(child::Child)],
+            ..base_processed()
+        };
+        let mut cache = MergeSpecCache::new();
+
+        let with_child = compute_config_hash_with_merge_cache(&processed, &mut cache);
+        assert_ne!(with_child, compute_config_hash(&base_processed()));
+    }
+
+    #[test]
+    fn macro_source_collection_returns_empty_for_absent_directory() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut entries = Vec::new();
+        collect_rs_mtimes(&temp.path().join("absent"), &mut entries);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn macro_dev_fingerprint_is_zero_outside_vespera_workspace() {
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                // SAFETY: this serialized test restores the process environment through RAII.
+                unsafe {
+                    match self.0.take() {
+                        Some(value) => std::env::set_var("CARGO_MANIFEST_DIR", value),
+                        None => std::env::remove_var("CARGO_MANIFEST_DIR"),
+                    }
+                }
+            }
+        }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let _restore = Restore(std::env::var("CARGO_MANIFEST_DIR").ok());
+        // SAFETY: this serialized test restores the process environment through RAII.
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp.path()) };
+        assert_eq!(compute_macro_dev_fingerprint_uncached(), 0);
+    }
 }

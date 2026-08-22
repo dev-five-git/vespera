@@ -160,4 +160,19 @@ mod tests {
             assert_debug_snapshot!(body);
         });
     }
+
+    #[test]
+    fn first_generic_type_rejects_bare_and_lifetime_arguments() {
+        let bare: Type = syn::parse_quote!(Json);
+        let Type::Path(bare_path) = bare else {
+            panic!("path")
+        };
+        assert!(first_generic_type(bare_path.path.segments.last().unwrap()).is_none());
+
+        let lifetime: Type = syn::parse_quote!(Json<'static>);
+        let Type::Path(lifetime_path) = lifetime else {
+            panic!("path")
+        };
+        assert!(first_generic_type(lifetime_path.path.segments.last().unwrap()).is_none());
+    }
 }

@@ -238,4 +238,20 @@ mod tests {
             result.to_string_lossy().contains("src") && result.to_string_lossy().contains("routes")
         );
     }
+
+    #[test]
+    #[serial_test::serial]
+    fn find_folder_path_reports_missing_manifest_environment() {
+        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
+        // SAFETY: this serialized test restores the process environment before returning.
+        unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") };
+        let error = find_folder_path("routes").expect_err("manifest directory is required");
+        // SAFETY: this serialized test restores the process environment before returning.
+        unsafe {
+            if let Some(value) = original {
+                std::env::set_var("CARGO_MANIFEST_DIR", value);
+            }
+        }
+        assert!(error.to_string().contains("CARGO_MANIFEST_DIR is not set"));
+    }
 }

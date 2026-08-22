@@ -316,3 +316,61 @@ pub enum AdditionalProperties {
     /// `additionalProperties: <schema | $ref>`.
     Schema(SchemaRef),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_ref_rejects_non_object_with_descriptive_error() {
+        let error = serde_json::from_str::<SchemaRef>("[]").unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("an OpenAPI schema reference or inline schema object"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn schema_field_rejects_non_string_identifier_with_descriptive_error() {
+        let Err(error) = serde_json::from_str::<SchemaField>("42") else {
+            panic!("a numeric schema field must be rejected");
+        };
+
+        assert!(
+            error.to_string().contains("a JSON Schema field name"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn duplicate_ref_keys_produce_inline_schema_and_keep_latest_path() {
+        let schema_ref: SchemaRef = serde_json::from_str(
+            r##"{"$ref":"#/components/schemas/Old","$ref":"#/components/schemas/New"}"##,
+        )
+        .unwrap();
+
+        match schema_ref {
+            SchemaRef::Inline(schema) => {
+                assert_eq!(schema.ref_path.as_deref(), Some("#/components/schemas/New"));
+            }
+            SchemaRef::Ref(_) => panic!("duplicate $ref keys must not deserialize as a pure ref"),
+        }
+    }
+
+    #[test]
+    fn unknown_schema_field_is_ignored_without_losing_known_fields() {
+        let schema_ref: SchemaRef =
+            serde_json::from_str(r#"{"unknown":{"nested":[1,2,3]},"title":"Known title"}"#)
+                .unwrap();
+
+        match schema_ref {
+            SchemaRef::Inline(schema) => {
+                assert_eq!(schema.title.as_deref(), Some("Known title"));
+            }
+            SchemaRef::Ref(_) => panic!("an object with inline fields must deserialize inline"),
+        }
+    }
+}

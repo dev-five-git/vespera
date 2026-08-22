@@ -187,6 +187,18 @@ async fn context_validated_payload_returns_422_when_state_context_rejects_value(
     assert_envelope_has_field_error(&body, "slug");
 }
 
+#[test]
+fn context_validated_wrapper_accessors_and_deref_mutate_the_inner_value() {
+    let mut validated = ValidatedWith::<SlugContext, String>::new("vespera".to_owned());
+
+    assert_eq!(validated.get(), "vespera");
+    validated.get_mut().push('-');
+    assert_eq!(&*validated, "vespera-");
+    validated.push_str("release");
+
+    assert_eq!(validated.into_inner(), "vespera-release");
+}
+
 // ── per-rule 422 coverage ────────────────────────────────────────────
 //
 // `CreatePost` only exercises `min_length` / `max_length`.  The model

@@ -6,9 +6,83 @@ use super::bench_serde::{
     WireHeaders, WireResponseHeader, parse_wire_header_serde, write_wire_header_into_slice_serde,
 };
 use super::{
-    ValidationErrorItem, WIRE_VERSION, WireRequestHeader, parse_wire_header, split_wire_request,
+    ValidationErrorItem, WIRE_VERSION, WireRequestHeader, build_wire_header_bytes,
+    build_wire_header_bytes_hoisting, parse_wire_header, split_wire_request,
     write_wire_header_into, write_wire_header_into_slice,
 };
+
+#[rstest::rstest]
+#[case(
+    br#"{"v":1,"method":"GET","method":"POST","path":"/p"}"#,
+    "duplicate field `method`"
+)]
+#[case(
+    br#"{"v":1,"method":"GET","path":"/p","path":"/q"}"#,
+    "duplicate field `path`"
+)]
+#[case(
+    br#"{"v":1,"method":"GET","path":"/p","query":"a","query":"b"}"#,
+    "duplicate field `query`"
+)]
+#[case(
+    br#"{"v":1,"method":"GET","path":"/p","headers":{},"headers":{}}"#,
+    "duplicate field `headers`"
+)]
+#[case(
+    br#"{"v":1,"method":"GET","path":"/p","headers":{"x":"prefix\"tail"#,
+    "unterminated string"
+)]
+#[case(
+    b"{\"v\":1,\"method\":\"GET\",\"path\":\"/p\",\"headers\":{\"x\":\"escaped\\n\x01\"}}",
+    "control character in string"
+)]
+#[case(
+    br#"{"v":1,"method":"GET","path":"\uD800"}"#,
+    "unpaired surrogate in unicode escape"
+)]
+#[case(
+    br#"{"v":1,"method":"GET","path":"\uD800\u0041"}"#,
+    "invalid low surrogate in unicode escape"
+)]
+#[case(
+    br#"{"v":1,"method":"GET","path":"\uDC00"}"#,
+    "lone low surrogate in unicode escape"
+)]
+fn hand_parser_reports_specific_edge_error(#[case] input: &[u8], #[case] expected: &str) {
+    let error = parse_wire_header(input).expect_err("fixture must be rejected");
+    assert!(
+        error.ends_with(expected),
+        "expected {expected:?}, got {error:?}"
+    );
+}
+
+#[test]
+fn hand_parser_decodes_every_short_escape_and_whitespace_before_app() {
+    let input = br#"{"v":1,"method":"GET","path":"/p","query":"\/\b\f\r","app" : null}"#;
+    let header = parse_wire_header(input).expect("all JSON short escapes are valid");
+    assert_eq!(header.query.as_ref().as_bytes(), b"/\x08\x0c\r");
+    assert!(header.app.is_none());
+}
+
+#[test]
+fn hand_parser_skips_empty_object_and_false_unknown_values() {
+    let input = br#"{"unknown":{},"flag":false,"v":1,"method":"GET","path":"/p"}"#;
+    let header = parse_wire_header(input).expect("unknown values are validated then ignored");
+    assert_eq!(header.method, "GET");
+    assert_eq!(header.path, "/p");
+}
+
+#[test]
+fn non_422_hoisting_builder_is_exactly_the_regular_header_builder() {
+    let headers = http::HeaderMap::new();
+    let metadata = ResponseMetadata::current();
+    let body = bytes::Bytes::from_static(br#"{"errors":[{"path":"x"}]}"#);
+
+    assert_eq!(
+        build_wire_header_bytes_hoisting(400, &headers, &metadata, &body),
+        build_wire_header_bytes(400, &headers, &metadata)
+    );
+}
 
 /// Pins the zero-copy contract: the returned body must point into
 /// the original input allocation (no memcpy of the tail).

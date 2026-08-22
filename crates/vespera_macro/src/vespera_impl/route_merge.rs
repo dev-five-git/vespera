@@ -508,4 +508,38 @@ mod tests {
         );
         assert_eq!(metadata.routes[0].error_status, Some(vec![400]));
     }
+
+    #[test]
+    fn stored_deprecation_and_headers_override_collected_route() {
+        let mut route = RouteMetadata {
+            method: "get".to_string(),
+            path: "/users".to_string(),
+            function_name: "users".to_string(),
+            module_path: "routes".to_string(),
+            file_path: "routes.rs".to_string(),
+            error_status: None,
+            typed_responses: None,
+            tags: None,
+            security: None,
+            headers: Vec::new(),
+            success_status: None,
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
+            description: None,
+        };
+        let mut stored = stored_route("users", None, &[]);
+        stored.deprecated = true;
+        stored.headers = vec![crate::metadata::HeaderParam {
+            name: "X-Trace-Id".to_string(),
+            required: true,
+            description: Some("Trace identifier".to_string()),
+        }];
+
+        apply_stored_route(&mut route, &stored);
+        assert!(route.deprecated);
+        assert_eq!(route.headers, stored.headers);
+    }
 }

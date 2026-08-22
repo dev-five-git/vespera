@@ -154,7 +154,7 @@ mod tests {
 
     use crate::metadata::StructMetadata;
 
-    use super::{build_filtered_schema, generate_filtered_schema};
+    use super::{build_filtered_schema, compute_kept_json_names, generate_filtered_schema};
 
     fn empty_storage() -> HashMap<String, StructMetadata> {
         HashMap::new()
@@ -300,5 +300,34 @@ mod tests {
         // The serialized spec carries the property + required set.
         assert!(output.contains("properties"), "spec must carry properties");
         assert!(output.contains("required"), "spec must carry required");
+    }
+
+    #[test]
+    fn filtering_skips_serde_hidden_fields_and_handles_identifierless_field() {
+        let mut item = parse("pub struct S { #[serde(skip)] pub hidden: String, pub shown: i32 }");
+        let mut pick = HashSet::from(["shown".to_string()]);
+        let keep = compute_kept_json_names(&item, &HashSet::new(), &pick)
+            .expect("a pick filter always produces a keep set");
+        assert_eq!(keep, HashSet::from(["shown".to_string()]));
+
+        let syn::Fields::Named(fields) = &mut item.fields else {
+            panic!("fixture is a named struct");
+        };
+        let shown = fields.named.last_mut().expect("shown field exists");
+        shown.ident = None;
+        pick = HashSet::from(["unknown".to_string()]);
+        let keep = compute_kept_json_names(&item, &HashSet::new(), &pick)
+            .expect("a pick filter always produces a keep set");
+        assert_eq!(keep, HashSet::from(["unknown".to_string()]));
+    }
+
+    #[test]
+    fn filtering_every_field_normalizes_empty_properties_and_required() {
+        let item = parse("pub struct S { pub only: String }");
+        let omit = HashSet::from(["only".to_string()]);
+        let schema = build_filtered_schema(&item, &omit, &HashSet::new(), &empty_storage());
+
+        assert!(schema.properties.is_none());
+        assert!(schema.required.is_none());
     }
 }

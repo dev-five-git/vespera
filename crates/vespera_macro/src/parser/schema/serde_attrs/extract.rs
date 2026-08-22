@@ -391,6 +391,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn extract_skip_fallback_handles_qualified_key_after_parse_error() {
+        use proc_macro2::{Span, TokenStream};
+
+        let tokens: TokenStream = "@broken, module::skip".parse().expect("tokens");
+        let attr = syn::Attribute {
+            pound_token: syn::token::Pound::default(),
+            style: syn::AttrStyle::Outer,
+            bracket_token: syn::token::Bracket::default(),
+            meta: syn::Meta::List(syn::MetaList {
+                path: syn::Path::from(syn::Ident::new("serde", Span::call_site())),
+                delimiter: syn::MacroDelimiter::Paren(syn::token::Paren::default()),
+                tokens,
+            }),
+        };
+        assert!(extract_skip(&[attr]));
+    }
+
     // Tests for extract_flatten function
     #[rstest]
     #[case(r"#[serde(flatten)] field: i32", true)]

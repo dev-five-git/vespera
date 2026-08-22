@@ -38,4 +38,17 @@ mod tests {
         let inner = unwrap_validated_type(&ty);
         assert_eq!(quote::quote!(#inner).to_string(), "axum :: Json < User >");
     }
+
+    #[test]
+    fn extractor_inner_rejects_non_path_bare_and_non_type_arguments() {
+        let reference: Type = syn::parse_quote!(&str);
+        assert!(extractor_inner_type(&reference, "Validated").is_none());
+
+        let bare: Type = syn::parse_quote!(Validated);
+        assert!(extractor_inner_type(&bare, "Validated").is_none());
+
+        let lifetime: Type = syn::parse_quote!(Validated<'static>);
+        assert!(extractor_inner_type(&lifetime, "Validated").is_none());
+        assert!(!is_validated_type(&lifetime));
+    }
 }

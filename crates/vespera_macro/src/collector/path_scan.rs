@@ -10,13 +10,7 @@ use crate::error::{MacroResult, err_call_site};
 /// Single directory walk returning `(path, mtime)` pairs — the shared
 /// scan that both cache fingerprinting and route collection consume.
 pub fn scan_route_folder(folder_path: &Path) -> MacroResult<Vec<(std::path::PathBuf, u64)>> {
-    crate::file_utils::collect_files_with_mtimes(folder_path).map_err(|e| {
-        err_call_site(format!(
-            "vespera! macro: failed to scan route folder '{}': {}. Verify the folder exists and is readable.",
-            folder_path.display(),
-            e
-        ))
-    })
+    crate::file_utils::collect_files_with_mtimes(folder_path).map_err(|e| err_call_site(format!("vespera! macro: failed to scan route folder '{}': {}. Verify the folder exists and is readable.", folder_path.display(), e)))
 }
 
 /// Build the cache fingerprint map (`.rs` files only) from a scan.
@@ -456,5 +450,14 @@ mod tests {
         );
 
         drop(temp_dir);
+    }
+
+    #[test]
+    fn scan_route_folder_reports_missing_folder() {
+        let missing = Path::new("target/vespera-missing-route-folder");
+        let error = scan_route_folder(missing).expect_err("missing folder must fail scanning");
+        let message = error.to_string();
+        assert!(message.contains("failed to scan route folder"));
+        assert!(message.contains("vespera-missing-route-folder"));
     }
 }

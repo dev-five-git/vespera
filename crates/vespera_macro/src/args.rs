@@ -748,6 +748,9 @@ mod tests {
     #[case(r"headers = [{ required = true }]")]
     #[case(r#"headers = [{ name = "Authorization", unknown = "x" }]"#)]
     #[case(r#"headers = [{ name = "Authorization", required = "yes" }]"#)]
+    #[case(r#"headers = [{ name = "A", name = "B" }]"#)]
+    #[case(r#"headers = [{ name = "A", required = true, required = false }]"#)]
+    #[case(r#"headers = [{ name = "A", description = "x", description = "y" }]"#)]
     fn test_route_args_parse_headers_invalid(#[case] input: &str) {
         assert!(syn::parse_str::<RouteArgs>(input).is_err());
     }
@@ -831,6 +834,8 @@ mod tests {
     #[case("get, deprecated", true)]
     #[case("post, path = \"/users\", deprecated", true)]
     #[case("deprecated = true", false)]
+    #[case("deprecated, deprecated", false)]
+    #[case("path = \"/a\", path = \"/b\"", false)]
     fn test_route_args_parse_deprecated(#[case] input: &str, #[case] should_parse: bool) {
         let result = syn::parse_str::<RouteArgs>(input);
 

@@ -215,14 +215,7 @@ fn explicit_adapter_model_type(
     dto_name: &str,
     rel_info: &RelationFieldInfo,
 ) -> syn::Result<syn::Type> {
-    related_model_type_from_schema_path(&rel_info.schema_path).ok_or_else(|| {
-        syn::Error::new_spanned(
-            adapter_name,
-            format!(
-                "schema_type!: relation field `{field_name}` explicitly requested adapter `{dto_name}`, but the related model type could not be resolved from its schema path"
-            ),
-        )
-    })
+    related_model_type_from_schema_path(&rel_info.schema_path).ok_or_else(|| syn::Error::new_spanned(adapter_name, format!("schema_type!: relation field `{field_name}` explicitly requested adapter `{dto_name}`, but the related model type could not be resolved from its schema path")))
 }
 
 pub(super) fn maybe_generate_same_file_relation_override(

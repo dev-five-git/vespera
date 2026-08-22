@@ -534,3 +534,58 @@ fn test_process_vespera_macro_cache_hit() {
         }
     };
 }
+
+#[rstest::rstest]
+#[case::slashes_and_hyphens("admin-tools/daily-job.rs", "admin_tools::daily_job")]
+#[case::module_file("admin-tools/mod.rs", "admin_tools")]
+fn cron_module_path_normalizes_rust_module_syntax(#[case] input: &str, #[case] expected: &str) {
+    assert_eq!(cron_module_path(input), expected);
+}
+
+#[test]
+#[serial_test::serial]
+fn process_export_app_reuses_fresh_cache_and_sidecar() {
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // SAFETY: this serialized test restores the process environment through RAII.
+            unsafe {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("CARGO_MANIFEST_DIR", value),
+                    None => std::env::remove_var("CARGO_MANIFEST_DIR"),
+                }
+            }
+        }
+    }
+
+    let temp = TempDir::new().unwrap();
+    let routes = temp.path().join("src/routes");
+    fs::create_dir_all(&routes).unwrap();
+    fs::write(routes.join("mod.rs"), "// empty routes").unwrap();
+    let _restore = Restore(std::env::var("CARGO_MANIFEST_DIR").ok());
+    // SAFETY: this serialized test restores the process environment through RAII.
+    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp.path()) };
+    let name: syn::Ident = syn::parse_quote!(CachedApp);
+    let folder = routes.to_string_lossy().into_owned();
+
+    let first = process_export_app(
+        &name,
+        &folder,
+        &HashMap::new(),
+        &temp.path().to_string_lossy(),
+        &[],
+        Span::call_site(),
+    )
+    .expect("first expansion populates cache");
+    let second = process_export_app(
+        &name,
+        &folder,
+        &HashMap::new(),
+        &temp.path().to_string_lossy(),
+        &[],
+        Span::call_site(),
+    )
+    .expect("second expansion reuses cache");
+
+    assert_eq!(first.to_string(), second.to_string());
+}

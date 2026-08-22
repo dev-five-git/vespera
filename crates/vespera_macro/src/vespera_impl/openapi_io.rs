@@ -94,15 +94,7 @@ pub fn generate_and_write_openapi(
                         )));
                     }
                 };
-                let child_spec = serde_json::from_str::<vespera_core::openapi::OpenApi>(
-                    spec_content,
-                )
-                .map_err(|e| {
-                    err_call_site(format!(
-                        "OpenAPI merge: failed to parse child spec for `{struct_name}` at '{}'. Error: {e}.",
-                        spec_file.display()
-                    ))
-                })?;
+                let child_spec = serde_json::from_str::<vespera_core::openapi::OpenApi>(spec_content).map_err(|e| err_call_site(format!("OpenAPI merge: failed to parse child spec for `{struct_name}` at '{}'. Error: {e}.", spec_file.display())))?;
                 openapi_doc.merge(child_spec);
             }
         }
@@ -323,6 +315,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::vespera_impl::cache::hash_str;
 
     #[test]
     fn test_generate_and_write_openapi_no_output() {
@@ -728,5 +721,163 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(fs::read_to_string(&path1).unwrap(), spec);
         assert_eq!(fs::read_to_string(&path2).unwrap(), spec);
+    }
+
+    struct RestoreManifest(Option<String>);
+
+    impl Drop for RestoreManifest {
+        fn drop(&mut self) {
+            // SAFETY: environment-mutating tests are serialized and restore their prior value.
+            unsafe {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("CARGO_MANIFEST_DIR", value),
+                    None => std::env::remove_var("CARGO_MANIFEST_DIR"),
+                }
+            }
+        }
+    }
+
+    fn merge_input(path: syn::Path) -> ProcessedVesperaInput {
+        ProcessedVesperaInput {
+            folder_name: "routes".to_string(),
+            openapi_file_names: Vec::new(),
+            title: None,
+            version: None,
+            docs_url: Some("/docs".to_string()),
+            redoc_url: None,
+            servers: None,
+            security_schemes: None,
+            security: None,
+            tag_descriptions: None,
+            merge: vec![path],
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn merge_reports_missing_and_malformed_child_specs() {
+        let temp = TempDir::new().unwrap();
+        let vespera_dir = temp.path().join("target/vespera");
+        fs::create_dir_all(&vespera_dir).unwrap();
+        let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
+        // SAFETY: this serialized test restores the process environment through RAII.
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp.path()) };
+
+        let missing = generate_and_write_openapi(
+            &merge_input(syn::parse_quote!(child::MissingChild)),
+            &CollectedMetadata::new(),
+            HashMap::new(),
+            &[],
+            &mut MergeSpecCache::new(),
+        )
+        .expect_err("missing child sidecar must fail");
+        assert!(missing.to_string().contains("failed to read child spec"));
+
+        fs::write(vespera_dir.join("BrokenChild.openapi.json"), "not-json").unwrap();
+        let malformed = generate_and_write_openapi(
+            &merge_input(syn::parse_quote!(child::BrokenChild)),
+            &CollectedMetadata::new(),
+            HashMap::new(),
+            &[],
+            &mut MergeSpecCache::new(),
+        )
+        .expect_err("malformed child sidecar must fail");
+        assert!(malformed.to_string().contains("failed to parse child spec"));
+    }
+
+    #[test]
+    fn ensure_cached_openapi_reports_parent_creation_error() {
+        let temp = TempDir::new().unwrap();
+        let blocking_parent = temp.path().join("blocking");
+        fs::write(&blocking_parent, "file").unwrap();
+        let output = blocking_parent.join("openapi.json");
+
+        let error =
+            ensure_openapi_files_from_cache(&[output.to_string_lossy().into_owned()], Some("{}"))
+                .expect_err("a file cannot be created as a directory");
+        assert!(error.to_string().contains("failed to create directory"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn sidecar_validation_covers_missing_fingerprints_corruption_and_success() {
+        let temp = TempDir::new().unwrap();
+        let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
+        // SAFETY: this serialized test restores the process environment through RAII.
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp.path()) };
+        let vespera_dir = temp.path().join("target/vespera");
+        fs::create_dir_all(&vespera_dir).unwrap();
+        let compact = embed_spec_path();
+        let pretty = pretty_sidecar_path();
+        fs::write(&compact, "compact").unwrap();
+        fs::write(&pretty, "pretty").unwrap();
+        let compact_fp = path_fingerprint(&compact).unwrap();
+        let pretty_fp = path_fingerprint(&pretty).unwrap();
+
+        assert!(
+            load_validated_sidecar_specs(Some(hash_str("compact")), None, None, None).is_none()
+        );
+        assert!(load_validated_sidecar_specs(None, Some(hash_str("pretty")), None, None).is_none());
+        assert!(
+            load_validated_sidecar_specs(
+                Some(hash_str("wrong")),
+                None,
+                Some(compact_fp.wrapping_add(1)),
+                None,
+            )
+            .is_none()
+        );
+        assert!(
+            load_validated_sidecar_specs(
+                None,
+                Some(hash_str("wrong")),
+                None,
+                Some(pretty_fp.wrapping_add(1)),
+            )
+            .is_none()
+        );
+
+        let loaded = load_validated_sidecar_specs(
+            Some(hash_str("compact")),
+            Some(hash_str("pretty")),
+            Some(compact_fp),
+            Some(pretty_fp),
+        )
+        .expect("matching sidecars load");
+        assert_eq!(loaded.pretty.as_deref(), Some("pretty"));
+        assert!(loaded.spec_tokens.is_some());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn embedding_reports_directory_creation_and_spec_write_errors() {
+        let create_temp = TempDir::new().unwrap();
+        let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
+        // SAFETY: this serialized test restores the process environment through RAII.
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", create_temp.path()) };
+        fs::create_dir_all(create_temp.path().join("target")).unwrap();
+        fs::write(create_temp.path().join("target/vespera"), "blocking file").unwrap();
+        let Err(create_error) = write_spec_for_embedding(Some("{}".to_string())) else {
+            panic!("blocking parent must fail directory creation");
+        };
+        assert!(
+            create_error
+                .to_string()
+                .contains("failed to create directory")
+        );
+
+        let write_temp = TempDir::new().unwrap();
+        // SAFETY: this serialized test restores the process environment through RAII.
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", write_temp.path()) };
+        let spec_path = embed_spec_path();
+        fs::create_dir_all(&spec_path).unwrap();
+        let Err(write_error) = write_spec_for_embedding(Some("{}".to_string())) else {
+            panic!("a directory cannot be overwritten as a spec file");
+        };
+        assert!(
+            write_error
+                .to_string()
+                .contains("failed to write spec file")
+        );
     }
 }

@@ -337,6 +337,17 @@ mod tests {
             .collect()
     }
 
+    fn empty_path_type() -> Type {
+        Type::Path(syn::TypePath {
+            attrs: Vec::new(),
+            qself: None,
+            path: syn::Path {
+                leading_colon: None,
+                segments: syn::punctuated::Punctuated::new(),
+            },
+        })
+    }
+
     /// Recompute the per-field `SchemaConstraints` slice the way
     /// `process_derive_schema` does in production code, so tests can
     /// drive `emit_field_assertions` (which now takes the slice as a
@@ -420,6 +431,45 @@ mod tests {
         assert!(collect_leaf_custom_types(&parse_ty("Vec")).is_empty());
     }
 
+    #[test]
+    fn leaf_of_empty_path_is_empty() {
+        assert!(collect_leaf_custom_types(&empty_path_type()).is_empty());
+    }
+
+    #[test]
+    fn generic_argument_helpers_ignore_lifetimes_and_missing_arguments() {
+        let vec_lifetime = parse_ty("Vec<'a>");
+        let Type::Path(vec_path) = vec_lifetime else {
+            panic!("fixture must be a path type");
+        };
+        let vec_segment = vec_path.path.segments.last().expect("Vec segment");
+
+        let bare_map = parse_ty("HashMap");
+        let Type::Path(bare_map_path) = bare_map else {
+            panic!("fixture must be a path type");
+        };
+        let bare_map_segment = bare_map_path.path.segments.last().expect("HashMap segment");
+
+        let lifetime_map = parse_ty("HashMap<'a, 'b>");
+        let Type::Path(lifetime_map_path) = lifetime_map else {
+            panic!("fixture must be a path type");
+        };
+        let lifetime_map_segment = lifetime_map_path
+            .path
+            .segments
+            .last()
+            .expect("HashMap segment");
+
+        assert_eq!(first_generic_type_arg(vec_segment), None);
+        assert_eq!(second_generic_type_arg(bare_map_segment), None);
+        assert_eq!(second_generic_type_arg(lifetime_map_segment), None);
+    }
+
+    #[test]
+    fn last_path_ident_rejects_non_path_types() {
+        assert_eq!(last_path_ident(&parse_ty("&str")), None);
+    }
+
     // ── is_serde_json_value_leaf ────────────────────────────────────
 
     #[test]
@@ -454,6 +504,12 @@ mod tests {
     #[test]
     fn last_segment_not_value_is_not_allowlisted() {
         assert!(!is_serde_json_value_leaf(&parse_ty("serde_json::Map")));
+    }
+
+    #[test]
+    fn serde_json_allowlist_rejects_non_path_and_empty_path_types() {
+        assert!(!is_serde_json_value_leaf(&parse_ty("&Value")));
+        assert!(!is_serde_json_value_leaf(&empty_path_type()));
     }
 
     // ── type_contains_generic ───────────────────────────────────────
@@ -497,6 +553,14 @@ mod tests {
     fn empty_generics_set_never_matches() {
         let generics = HashSet::new();
         assert!(!type_contains_generic(&parse_ty("T"), &generics));
+    }
+
+    #[test]
+    fn generic_detection_descends_through_references_and_rejects_other_types() {
+        let generics = HashSet::from(["T".to_string()]);
+
+        assert!(type_contains_generic(&parse_ty("&T"), &generics));
+        assert!(!type_contains_generic(&parse_ty("(T, String)"), &generics));
     }
 
     // ── emit_marker_impl preserves generics ─────────────────────────

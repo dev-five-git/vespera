@@ -324,6 +324,7 @@ pub fn process_route_attribute(
 #[cfg(test)]
 mod tests {
     use quote::quote;
+    use rstest::rstest;
 
     use super::*;
 
@@ -658,5 +659,50 @@ mod tests {
         let arr: syn::ExprArray = syn::parse_quote!([bearerAuth]);
         let err = extract_security_strings(&arr).expect_err("non-string security must error");
         assert!(err.to_string().contains("string literals"), "{err}");
+    }
+
+    #[test]
+    fn low_level_collectors_ignore_non_literal_entries() {
+        let statuses: syn::ExprArray = syn::parse_quote!([400, BAD_REQUEST, "404", 70_000]);
+        let strings: syn::ExprArray = syn::parse_quote!(["users", admin, 7]);
+
+        assert_eq!(extract_error_status_codes(&statuses), Some(vec![400]));
+        assert_eq!(
+            collect_string_literal_values(&strings),
+            vec!["users".to_string()]
+        );
+    }
+
+    #[rstest]
+    #[case::json_array("[1,2]", serde_json::json!([1, 2]))]
+    #[case::plain_text("not json", serde_json::Value::String("not json".to_string()))]
+    fn example_parser_preserves_json_or_falls_back_to_text(
+        #[case] source: &str,
+        #[case] expected: serde_json::Value,
+    ) {
+        let literal = syn::LitStr::new(source, proc_macro2::Span::call_site());
+
+        assert_eq!(parse_example_string(&literal), expected);
+    }
+
+    #[rstest]
+    #[case::empty(quote!([]), None)]
+    #[case::not_a_tuple(quote!([NotFound]), None)]
+    #[case::missing_status(quote!([()]), None)]
+    #[case::non_integer_status(quote!([(NOT_FOUND, ErrorBody)]), None)]
+    #[case::out_of_range_status(quote!([(70_000, ErrorBody)]), None)]
+    #[case::missing_schema(quote!([(404,)]), None)]
+    #[case::non_path_schema(quote!([(404, "ErrorBody")]), None)]
+    #[case::qualified_schema(
+        quote!([(404, crate::errors::NotFound)]),
+        Some(vec![(404, "NotFound".to_string())])
+    )]
+    fn typed_response_extractor_accepts_only_status_path_tuples(
+        #[case] source: proc_macro2::TokenStream,
+        #[case] expected: Option<Vec<(u16, String)>>,
+    ) {
+        let array = syn::parse2::<syn::ExprArray>(source).expect("valid response array fixture");
+
+        assert_eq!(extract_typed_responses(&array), expected);
     }
 }

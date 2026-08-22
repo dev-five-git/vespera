@@ -752,4 +752,53 @@ mod tests {
 
         assert_eq!(derived, ENVELOPE_SERIALIZATION_FALLBACK);
     }
+
+    fn request_wire(header: &[u8]) -> Vec<u8> {
+        let mut wire = u32::try_from(header.len())
+            .expect("test header fits u32")
+            .to_be_bytes()
+            .to_vec();
+        wire.extend_from_slice(header);
+        wire
+    }
+
+    fn response_status(wire: &[u8]) -> u64 {
+        let header_len = u32::from_be_bytes(wire[..4].try_into().expect("wire prefix")) as usize;
+        let header: serde_json::Value =
+            serde_json::from_slice(&wire[4..4 + header_len]).expect("response header JSON");
+        header["status"].as_u64().expect("numeric response status")
+    }
+
+    #[tokio::test]
+    async fn borrowed_direct_write_surfaces_parse_and_dispatch_errors() {
+        crate::register_app_named("dispatch_unit_edges", crate::Router::new);
+        let mut out = vec![0u8; 1024];
+
+        let malformed = request_wire(br#"{"v":1,"method":}"#);
+        let DirectWriteResult::Complete(n) =
+            dispatch_into_async_borrowed(&malformed, &mut out).await
+        else {
+            panic!("malformed-input error wire must fit");
+        };
+        assert_eq!(response_status(&out[..n]), 400);
+
+        let invalid_method = request_wire(
+            br#"{"v":1,"method":"BAD METHOD","path":"/","app":"dispatch_unit_edges"}"#,
+        );
+        let DirectWriteResult::Complete(n) =
+            dispatch_into_async_borrowed(&invalid_method, &mut out).await
+        else {
+            panic!("invalid-method error wire must fit");
+        };
+        assert_eq!(response_status(&out[..n]), 405);
+    }
+
+    #[test]
+    fn assembled_wire_copy_reports_exact_overflow() {
+        let mut out = [0u8; 2];
+        assert_eq!(
+            write_wire_into(&mut out, b"three"),
+            DirectWriteResult::Overflow(5)
+        );
+    }
 }

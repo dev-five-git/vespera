@@ -546,3 +546,20 @@ fn file_lookup_no_relations_missing_model_file_returns_none() {
     });
     assert!(result.is_none());
 }
+
+#[test]
+fn no_relations_uses_source_module_when_schema_path_has_no_module() {
+    let result = generate_inline_relation_type_no_relations_from_def(
+        &syn::parse_quote!(Parent),
+        &rel("items", "HasMany", quote!(Schema)),
+        &module_path(&["crate", "models", "source"]),
+        None,
+        "pub struct Model { pub state: LocalState }",
+    )
+    .expect("no-relations mode always generates an inline type for valid named structs");
+
+    assert_eq!(
+        result.fields[0].ty.to_string(),
+        "crate :: models :: source :: LocalState"
+    );
+}

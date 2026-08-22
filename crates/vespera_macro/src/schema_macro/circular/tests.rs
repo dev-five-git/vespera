@@ -533,3 +533,31 @@ fn test_generate_default_for_relation_field_has_one_with_from_attr_optional() {
     .to_string();
     assert!(output.contains("profile : None"));
 }
+
+#[rstest]
+#[case::plain_source_schema("MemoSchema", true)]
+#[case::non_path_type("&str", false)]
+fn type_target_detection_handles_non_relation_types(
+    #[case] type_source: &str,
+    #[case] expected: bool,
+) {
+    let ty: syn::Type = syn::parse_str(type_source).unwrap();
+    assert_eq!(
+        is_circular_relation_type(&ty, "memo", "MemoSchema"),
+        expected
+    );
+}
+
+#[test]
+fn type_target_detection_rejects_empty_type_path() {
+    let ty = syn::Type::Path(syn::TypePath {
+        attrs: Vec::new(),
+        qself: None,
+        path: syn::Path {
+            leading_colon: None,
+            segments: syn::punctuated::Punctuated::new(),
+        },
+    });
+
+    assert!(!type_targets_source_schema(&ty, "memo", "MemoSchema"));
+}

@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::get;
-use vespera::Serve;
+use vespera::{Serve, VesperaRouter};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn serve_binds_and_handles_requests_on_ephemeral_port() {
@@ -75,4 +75,16 @@ async fn serve_returns_error_when_port_is_in_use() {
 
     assert!(result.is_err(), "serve should fail on occupied port");
     drop(hog);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn merged_stateless_serve_finalizes_before_binding() {
+    let hog = TcpListener::bind("127.0.0.1:0").expect("bind hog");
+    let addr: SocketAddr = hog.local_addr().expect("local_addr");
+    let app = VesperaRouter::new(Router::<()>::new(), Vec::new());
+
+    let result = app.serve(addr).await;
+
+    let error = result.expect_err("occupied port must reject merged router serve");
+    assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
 }

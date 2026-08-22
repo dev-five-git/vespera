@@ -103,6 +103,18 @@ fn valid_pattern_emits_regex_validator() {
 }
 
 #[test]
+fn pattern_field_with_underscore_uses_sanitized_static_ident() {
+    let s: DeriveInput = parse_quote! {
+        struct User {
+            #[schema(pattern = "^[a-z]+$")]
+            pub first_name: String,
+        }
+    };
+    let out = emit_to_string(s);
+    assert!(out.contains("static __VESPERA_PATTERN_FIRST_NAME"));
+}
+
+#[test]
 fn range_emit_uses_field_numeric_type() {
     let s: DeriveInput = parse_quote! {
         struct User {

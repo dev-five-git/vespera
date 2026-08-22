@@ -374,4 +374,16 @@ mod tests {
             _ => panic!("Expected inline schema with ref_path and nullable for Option<Enum>"),
         }
     }
+
+    #[test]
+    fn query_extractor_rejects_missing_or_non_type_generic_and_non_path_struct() {
+        let bare: Type = syn::parse_quote!(Query);
+        assert!(parse_query_extractor("q", &bare, &HashSet::new(), &HashMap::new()).is_none());
+        let lifetime: Type = syn::parse_quote!(Query<'static>);
+        assert!(parse_query_extractor("q", &lifetime, &HashSet::new(), &HashMap::new()).is_none());
+        let tuple: Type = syn::parse_quote!((String,));
+        assert!(
+            parse_query_struct_to_parameters(&tuple, &HashSet::new(), &HashMap::new()).is_none()
+        );
+    }
 }

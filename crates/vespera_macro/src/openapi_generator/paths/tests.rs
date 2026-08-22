@@ -630,3 +630,66 @@ pub fn create_users() -> String { "created".to_string() }
 
     assert!(err.to_string().contains("unsupported HTTP method"));
 }
+
+#[test]
+fn stored_signature_parse_error_names_route() {
+    let route = route_meta("GET", "/broken", "broken", "broken.rs");
+    let jobs = [(0, &route, "fn broken(")];
+    let error = super::run_route_jobs_parallel(&jobs, &|_, _| unreachable!())
+        .expect_err("invalid signature must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("failed to parse stored signature for route '/broken'")
+    );
+}
+
+#[test]
+fn parallel_filter_map_collects_values_and_propagates_errors() {
+    let jobs: Vec<usize> = (0..(super::PARALLEL_THRESHOLD * 2)).collect();
+    let values = super::parallel_filter_map(&jobs, &|value| Ok((value % 2 == 0).then_some(*value)))
+        .expect("parallel values");
+    assert_eq!(values, (0..32).step_by(2).collect::<Vec<_>>());
+
+    let error = super::parallel_filter_map(&jobs, &|value| {
+        if *value == 17 {
+            Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "worker error",
+            ))
+        } else {
+            Ok(Some(*value))
+        }
+    })
+    .expect_err("worker error must propagate");
+    assert_eq!(error.to_string(), "worker error");
+}
+
+#[test]
+fn parallel_filter_map_converts_worker_panic_to_syn_error() {
+    if std::thread::available_parallelism().map_or(1, std::num::NonZero::get) < 2 {
+        return;
+    }
+    let jobs: Vec<usize> = (0..(super::PARALLEL_THRESHOLD * 2)).collect();
+    let error = super::parallel_filter_map(&jobs, &|value| {
+        assert_ne!(*value, 17, "worker panic");
+        Ok(Some(*value))
+    })
+    .expect_err("worker panic must become syn error");
+    assert!(error.to_string().contains("worker panic"));
+}
+
+#[rstest]
+#[case::borrowed(&"borrowed panic", "borrowed panic")]
+#[case::owned(&String::from("owned panic"), "owned panic")]
+#[case::opaque(&17usize, "parallel macro worker panicked")]
+fn worker_panic_error_extracts_supported_payloads(
+    #[case] panic: &(dyn std::any::Any + Send),
+    #[case] expected: &str,
+) {
+    assert!(
+        super::worker_panic_error(panic)
+            .to_string()
+            .contains(expected)
+    );
+}

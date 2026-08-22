@@ -168,4 +168,12 @@ mod tests {
         );
         assert_eq!(tokens.to_string().trim(), "vespera :: serde_json :: Value");
     }
+
+    #[rstest]
+    #[case::non_path("&str", "& str")]
+    #[case::wrapper_without_arguments("Option", "Option")]
+    fn convert_type_with_chrono_handles_non_wrappers(#[case] input: &str, #[case] expected: &str) {
+        let ty: syn::Type = syn::parse_str(input).unwrap();
+        assert_eq!(convert_type_with_chrono(&ty, &[]).to_string(), expected);
+    }
 }

@@ -5,6 +5,21 @@ use syn::Type;
 use tempfile::TempDir;
 
 use super::*;
+use crate::schema_macro::file_cache::{bump_epoch, inject_struct_definition_for_test};
+
+struct RestoreManifest(Option<String>);
+
+impl Drop for RestoreManifest {
+    fn drop(&mut self) {
+        // SAFETY: environment-mutating tests are serialized and restore their prior value.
+        unsafe {
+            match self.0.take() {
+                Some(value) => std::env::set_var("CARGO_MANIFEST_DIR", value),
+                None => std::env::remove_var("CARGO_MANIFEST_DIR"),
+            }
+        }
+    }
+}
 
 #[test]
 fn test_file_path_to_module_path_simple() {
@@ -122,4 +137,113 @@ pub struct Target { pub id: i32 }
     assert!(result.is_some(), "Should find Target struct");
     let (metadata, _) = result.unwrap();
     assert!(metadata.definition.contains("Target"));
+}
+
+#[test]
+fn lookup_errors_render_each_diagnostic_and_empty_search_set() {
+    let ty: Type = syn::parse_str("Model").unwrap();
+    assert!(
+        LookupError::InvalidTypePath
+            .to_syn_error(&ty)
+            .to_string()
+            .contains("must be a type path")
+    );
+    assert!(
+        LookupError::MissingManifestDir
+            .to_syn_error(&ty)
+            .to_string()
+            .contains("CARGO_MANIFEST_DIR is not set")
+    );
+    assert_eq!(render_paths(&[]), "<none>");
+}
+
+#[test]
+#[serial]
+fn detailed_lookup_reports_missing_manifest_and_invalid_type_path() {
+    let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
+    // SAFETY: this serialized test restores the process environment through RAII.
+    unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") };
+    bump_epoch();
+    let path_ty: Type = syn::parse_str("Model").unwrap();
+    assert!(matches!(
+        find_struct_from_path_detailed(&path_ty, None),
+        Err(LookupError::MissingManifestDir)
+    ));
+
+    let temp = TempDir::new().unwrap();
+    // SAFETY: this serialized test restores the process environment through RAII.
+    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp.path()) };
+    bump_epoch();
+    let reference: Type = syn::parse_str("&str").unwrap();
+    assert!(matches!(
+        find_struct_from_path_detailed(&reference, None),
+        Err(LookupError::InvalidTypePath)
+    ));
+}
+
+#[test]
+#[serial]
+fn detailed_lookup_rejects_empty_type_path() {
+    let temp = TempDir::new().unwrap();
+    let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
+    // SAFETY: this serialized test restores the process environment through RAII.
+    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp.path()) };
+    bump_epoch();
+    let ty = Type::Path(syn::TypePath {
+        attrs: Vec::new(),
+        qself: None,
+        path: syn::Path {
+            leading_colon: None,
+            segments: syn::punctuated::Punctuated::new(),
+        },
+    });
+    assert!(matches!(
+        find_struct_from_path_detailed(&ty, None),
+        Err(LookupError::InvalidTypePath)
+    ));
+}
+
+#[test]
+fn bare_lookup_uses_injected_call_site_definition_when_local_file_is_available() {
+    let Some(call_site_file) = proc_macro2::Span::call_site().local_file() else {
+        return;
+    };
+    inject_struct_definition_for_test(
+        &call_site_file,
+        "InjectedCallSiteModel",
+        "pub struct InjectedCallSiteModel { pub id: i32 }",
+    );
+    let src_dir = call_site_file
+        .ancestors()
+        .find(|path| path.file_name().is_some_and(|name| name == "src"))
+        .expect("this test module lives below src");
+
+    let (metadata, module_path) = find_bare_struct_in_call_site(src_dir, "InjectedCallSiteModel")
+        .expect("injected call-site definition resolves");
+    assert_eq!(metadata.name, "InjectedCallSiteModel");
+    assert!(module_path.starts_with(&["crate".to_string()]));
+}
+
+#[test]
+fn module_path_falls_back_to_components_after_src() {
+    let file = Path::new("unrelated/root/src/models/user/mod.rs");
+    let unrelated_src = Path::new("different/src");
+    assert_eq!(
+        file_path_to_module_path(file, unrelated_src),
+        ["crate", "models", "user"]
+    );
+}
+
+#[test]
+#[serial]
+fn string_schema_and_model_lookups_reject_empty_paths() {
+    let temp = TempDir::new().unwrap();
+    let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
+    // SAFETY: this serialized test restores the process environment through RAII.
+    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp.path()) };
+    bump_epoch();
+
+    assert!(find_struct_from_schema_path(":: ::").is_none());
+    assert!(find_model_from_schema_path("Schema").is_none());
+    assert!(find_model_from_schema_path("crate::Schema").is_none());
 }

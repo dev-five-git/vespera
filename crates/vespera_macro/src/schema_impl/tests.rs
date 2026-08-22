@@ -637,3 +637,156 @@ fn test_process_derive_schema_ref_override_excludes_openapi() {
         "ref overrides should still emit the Schema marker impl: {tokens}"
     );
 }
+
+#[test]
+fn schema_attribute_summary_stops_after_name_and_ref_are_found() {
+    let input: syn::DeriveInput = syn::parse_quote! {
+        #[schema(name = "ExternalUser", ref = "components.schemas.User")]
+        #[schema(name = "Ignored")]
+        struct User { id: i32 }
+    };
+
+    let summary = collect_schema_attribute_summary(&input.attrs);
+
+    assert_eq!(summary.name.as_deref(), Some("ExternalUser"));
+    assert!(summary.has_ref_override);
+}
+
+#[test]
+fn process_derive_schema_returns_all_unresolved_serde_default_errors() {
+    let input: syn::DeriveInput = syn::parse_quote! {
+        struct InvalidDefaults {
+            #[serde(default = "default_first")]
+            first: String,
+            #[serde(default = "default_second")]
+            second: i32,
+        }
+    };
+
+    let (metadata, tokens) = process_derive_schema(&input);
+    let file = syn::parse2::<syn::File>(tokens).expect("compile errors parse as Rust items");
+    let messages: Vec<String> = file
+        .items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Macro(item_macro) = item else {
+                return None;
+            };
+            // `syn::Error::to_compile_error` emits `::core::compile_error!`, so
+            // match the last path segment rather than the whole path.
+            let invoked = item_macro.mac.path.segments.last()?;
+            if invoked.ident != "compile_error" {
+                return None;
+            }
+            syn::parse2::<syn::LitStr>(item_macro.mac.tokens.clone())
+                .ok()
+                .map(|literal| literal.value())
+        })
+        .collect();
+
+    assert!(metadata.is_none());
+    assert_eq!(
+        messages,
+        vec![
+            "cannot statically determine the OpenAPI default for field `first` which has `#[serde(default)]`; add an explicit `#[schema(default = \"...\")]`",
+            "cannot statically determine the OpenAPI default for field `second` which has `#[serde(default)]`; add an explicit `#[schema(default = \"...\")]`",
+        ]
+    );
+}
+
+#[test]
+fn extract_field_defaults_skips_qualified_default_functions() {
+    let input: syn::DeriveInput = syn::parse_quote! {
+        struct Config {
+            #[serde(default = "crate::defaults::name")]
+            name: String,
+        }
+    };
+
+    let defaults = extract_field_defaults_from_path(&input, Path::new("unused.rs"));
+
+    assert!(defaults.is_empty());
+}
+
+#[test]
+fn serde_default_validation_accepts_schema_function_and_type_defaults() {
+    let explicit_schema: syn::DeriveInput = syn::parse_quote! {
+        struct Explicit {
+            #[serde(default = "missing")]
+            #[schema(default = "fallback")]
+            value: CustomType,
+        }
+    };
+    let resolved_function: syn::DeriveInput = syn::parse_quote! {
+        struct FunctionDefault {
+            #[serde(default = "default_name")]
+            name: String,
+        }
+    };
+    let type_default: syn::DeriveInput = syn::parse_quote! {
+        struct TypeDefault {
+            #[serde(default)]
+            active: bool,
+        }
+    };
+    let function_values = BTreeMap::from([("name".to_string(), serde_json::json!("guest"))]);
+
+    assert!(validate_serde_default_values(&explicit_schema, &BTreeMap::new()).is_ok());
+    assert!(validate_serde_default_values(&resolved_function, &function_values).is_ok());
+    assert!(validate_serde_default_values(&type_default, &BTreeMap::new()).is_ok());
+}
+
+#[test]
+fn serde_default_resolution_distinguishes_present_missing_and_type_defaults() {
+    let function_field: syn::Field = syn::parse_quote! {
+        #[serde(default = "default_name")]
+        name: String
+    };
+    let type_field: syn::Field = syn::parse_quote! {
+        #[serde(default)]
+        count: i32
+    };
+    let values = BTreeMap::from([("name".to_string(), serde_json::json!("guest"))]);
+    let function_name = "default_name".to_string();
+
+    assert!(serde_default_is_resolvable(
+        &function_field,
+        Some(&function_name),
+        &values
+    ));
+    assert!(!serde_default_is_resolvable(
+        &function_field,
+        Some(&function_name),
+        &BTreeMap::new()
+    ));
+    assert!(serde_default_is_resolvable(
+        &type_field,
+        None,
+        &BTreeMap::new()
+    ));
+}
+
+#[test]
+fn schema_default_detection_handles_matching_and_nonmatching_attributes() {
+    let matching: Vec<syn::Attribute> = syn::parse_quote!(#[schema(default = "fallback")]);
+    let other_schema_key: Vec<syn::Attribute> = syn::parse_quote!(#[schema(example = "sample")]);
+    let unrelated: Vec<syn::Attribute> = syn::parse_quote!(#[serde(default)]);
+
+    assert!(has_schema_default(&matching));
+    assert!(!has_schema_default(&other_schema_key));
+    assert!(!has_schema_default(&unrelated));
+}
+
+#[test]
+fn cached_default_functions_reuses_the_cached_arc_for_unchanged_files() {
+    let temp_dir = tempfile::TempDir::new().expect("temporary directory");
+    let file_path = temp_dir.path().join("cached_defaults.rs");
+    std::fs::write(&file_path, "fn default_count() -> i32 { 42 }")
+        .expect("write default function fixture");
+
+    let first = cached_default_functions(&file_path).expect("first parse populates cache");
+    let second = cached_default_functions(&file_path).expect("second parse reads cache");
+
+    assert_eq!(first.get("default_count"), Some(&serde_json::json!(42)));
+    assert!(Arc::ptr_eq(&first, &second));
+}

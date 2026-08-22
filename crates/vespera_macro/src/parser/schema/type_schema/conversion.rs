@@ -845,4 +845,61 @@ mod tests {
             SchemaRef::Ref(_) => panic!("expected inline schema ref override"),
         }
     }
+
+    #[rstest::rstest]
+    #[case::u128("u128")]
+    #[case::usize("usize")]
+    fn unsigned_wide_integer_has_zero_minimum(#[case] source: &str) {
+        let ty: Type = syn::parse_str(source).expect("type");
+        let SchemaRef::Inline(schema) =
+            parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions())
+        else {
+            panic!("inline schema");
+        };
+        assert_eq!(schema.schema_type, Some(SchemaType::Integer));
+        assert_eq!(schema.minimum, Some(0.0));
+    }
+
+    #[test]
+    fn generic_definition_ignores_lifetime_parameters() {
+        let known = HashSet::from(["Borrowed".to_string()]);
+        let defs = HashMap::from([(
+            "Borrowed".to_string(),
+            "struct Borrowed<'a, T> { value: T, marker: &'a str }".to_string(),
+        )]);
+        let ty: Type = syn::parse_str("Borrowed<'static, String>").expect("type");
+
+        let schema = parse_type_to_schema_ref(&ty, &known, &defs);
+
+        let SchemaRef::Inline(schema) = schema else {
+            panic!("matching type arguments should inline");
+        };
+        assert_eq!(schema.schema_type, Some(SchemaType::Object));
+    }
+
+    #[test]
+    fn lifetime_only_concrete_argument_falls_back_to_reference() {
+        let known = HashSet::from(["Borrowed".to_string()]);
+        let defs = HashMap::from([(
+            "Borrowed".to_string(),
+            "struct Borrowed<T> { value: T }".to_string(),
+        )]);
+        let ty: Type = syn::parse_str("Borrowed<'static>").expect("type");
+
+        assert!(matches!(
+            parse_type_to_schema_ref(&ty, &known, &defs),
+            SchemaRef::Ref(_)
+        ));
+    }
+
+    #[test]
+    fn unit_type_maps_to_null_schema() {
+        let ty: Type = syn::parse_quote!(());
+        let SchemaRef::Inline(schema) =
+            parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions())
+        else {
+            panic!("inline schema");
+        };
+        assert_eq!(schema.schema_type, Some(SchemaType::Null));
+    }
 }
