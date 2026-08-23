@@ -2506,7 +2506,7 @@ dependencies = [
 
 [[package]]
 name = "rand_chacha"
-version = "0.3.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
 dependencies = [
@@ -3955,7 +3955,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vespera"
-version = "0.3.1"
+version = "0.3.0"
 dependencies = [
  "axum",
  "axum-extra",
@@ -3980,7 +3980,7 @@ dependencies = [
 
 [[package]]
 name = "vespera_core"
-version = "0.3.1"
+version = "0.3.0"
 dependencies = [
  "rstest",
  "serde",
@@ -3989,7 +3989,7 @@ dependencies = [
 
 [[package]]
 name = "vespera_inprocess"
-version = "0.3.1"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "axum",
@@ -4009,7 +4009,7 @@ dependencies = [
 
 [[package]]
 name = "vespera_jni"
-version = "0.3.1"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "jni",
