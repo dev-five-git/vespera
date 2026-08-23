@@ -29,6 +29,7 @@
 //! - `collector` - Filesystem scanning and route discovery
 //! - `error` - Unified error handling
 //! - `http` - HTTP method constants and validation
+//! - `macro_storage` - Shared per-crate storage for `#[route]` / `#[cron]` metadata
 //! - `metadata` - Type definitions for collected metadata
 //! - `method` - HTTP method token stream generation
 //! - `openapi_generator` - OpenAPI spec assembly
@@ -47,6 +48,7 @@ mod error;
 mod file_utils;
 mod garde_emit;
 mod http;
+mod macro_storage;
 mod metadata;
 mod method;
 mod openapi_generator;
@@ -56,14 +58,12 @@ mod parser;
 mod route;
 mod route_impl;
 mod router_codegen;
+mod schema_assertions;
 mod schema_impl;
 mod schema_macro;
 mod vespera_impl;
 
-pub(crate) use cron_impl::CRON_STORAGE;
 use proc_macro::TokenStream;
-pub(crate) use route_impl::ROUTE_STORAGE;
-pub(crate) use schema_impl::SCHEMA_STORAGE;
 
 use crate::{
     router_codegen::{AutoRouterInput, ExportAppInput, process_vespera_input},
@@ -120,22 +120,21 @@ pub fn cron(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[cfg(not(tarpaulin_include))]
 #[proc_macro_derive(Schema, attributes(schema, serde))]
 pub fn derive_schema(input: TokenStream) -> TokenStream {
+    schema_macro::file_cache::bump_epoch();
+
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     let (metadata, expanded) = schema_impl::process_derive_schema(&input);
+    let Some(metadata) = metadata else {
+        return TokenStream::from(expanded);
+    };
     let name = metadata.name.clone();
 
-    let mut storage = SCHEMA_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-    if let Some(existing) = storage.get(&name)
-        && existing.definition != metadata.definition
-    {
-        // Two distinct struct definitions both ask for the same
-        // OpenAPI schema name.  Surface this as a hard compile error
-        // — the alternative (silent last-write-wins overwrite) hides
-        // schemas from the generated `openapi.json` in a way that is
-        // only discovered by inspecting the spec.
+    // Register into the current crate's bucket (see `current_crate_key`).
+    // `Err` means a DIFFERENT definition is already registered under this name
+    // for this crate — surface it as a hard compile error rather than the
+    // silent last-write-wins overwrite that would hide a schema from the
+    // generated `openapi.json`.
+    if schema_impl::register_schema(name.clone(), metadata).is_err() {
         let span = input.ident.span();
         let msg = format!(
             "duplicate vespera Schema name `{name}` -- two different struct \
@@ -149,7 +148,6 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
         return TokenStream::from(err);
     }
 
-    storage.insert(name, metadata);
     TokenStream::from(expanded)
 }
 
@@ -226,12 +224,11 @@ pub fn derive_multipart(input: TokenStream) -> TokenStream {
 #[cfg(not(tarpaulin_include))]
 #[proc_macro]
 pub fn schema(input: TokenStream) -> TokenStream {
+    schema_macro::file_cache::bump_epoch();
+
     let input = syn::parse_macro_input!(input as schema_macro::SchemaInput);
 
-    // Get stored schemas
-    let storage = SCHEMA_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let storage = schema_impl::current_crate_schemas();
 
     match schema_macro::generate_schema_code(&input, &storage) {
         Ok(tokens) => TokenStream::from(tokens),
@@ -296,14 +293,13 @@ pub fn schema(input: TokenStream) -> TokenStream {
 #[cfg(not(tarpaulin_include))]
 #[proc_macro]
 pub fn schema_type(input: TokenStream) -> TokenStream {
+    schema_macro::file_cache::bump_epoch();
+
     let input = syn::parse_macro_input!(input as schema_macro::SchemaTypeInput);
     let ignore_schema = input.ignore_schema;
 
-    // Get stored schemas and generate code
     let (tokens, generated_metadata) = {
-        let storage = SCHEMA_STORAGE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let storage = schema_impl::current_crate_schemas();
         match schema_macro::generate_schema_type_code(&input, &storage) {
             Ok(result) => result,
             Err(e) => return e.to_compile_error().into(),
@@ -326,10 +322,7 @@ pub fn schema_type(input: TokenStream) -> TokenStream {
     // expanded struct token stream).
     if ignore_schema && let Some(metadata) = generated_metadata {
         let name = metadata.name.clone();
-        SCHEMA_STORAGE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(name, metadata);
+        schema_impl::insert_schema(name, metadata);
     }
     TokenStream::from(tokens)
 }
@@ -337,16 +330,25 @@ pub fn schema_type(input: TokenStream) -> TokenStream {
 #[cfg(not(tarpaulin_include))]
 #[proc_macro]
 pub fn vespera(input: TokenStream) -> TokenStream {
-    let input = syn::parse_macro_input!(input as AutoRouterInput);
-    let processed = process_vespera_input(input);
-    let schema_storage = SCHEMA_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let route_storage = ROUTE_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    schema_macro::file_cache::bump_epoch();
 
-    match process_vespera_macro(&processed, &schema_storage, &route_storage) {
+    let input = syn::parse_macro_input!(input as AutoRouterInput);
+    // Capture the `dir = "..."` literal span (or the macro call site when
+    // `dir` is omitted) before `process_vespera_input` consumes `input`, so a
+    // "route folder not found" diagnostic points at the offending argument
+    // rather than the whole `vespera!` invocation.
+    let folder_span = input
+        .dir
+        .as_ref()
+        .map_or_else(proc_macro2::Span::call_site, syn::LitStr::span);
+    let processed = process_vespera_input(input);
+    // Per-crate snapshots (see `schema_impl::current_crate_key`): a shared
+    // rust-analyzer proc-macro server never leaks another crate's schemas /
+    // routes into this `vespera!` expansion.
+    let schema_storage = schema_impl::current_crate_schemas();
+    let route_storage = route_impl::current_crate_routes();
+
+    match process_vespera_macro(&processed, &schema_storage, &route_storage, folder_span) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
     }
@@ -377,21 +379,25 @@ pub fn vespera(input: TokenStream) -> TokenStream {
 #[cfg(not(tarpaulin_include))]
 #[proc_macro]
 pub fn export_app(input: TokenStream) -> TokenStream {
+    schema_macro::file_cache::bump_epoch();
+
     let ExportAppInput { name, dir } = syn::parse_macro_input!(input as ExportAppInput);
+    // Capture the `dir = "..."` literal span (or the macro call site when
+    // `dir` is omitted) before `dir` is consumed below, so a "route folder
+    // not found" diagnostic points at the offending argument.
+    let folder_span = dir
+        .as_ref()
+        .map_or_else(proc_macro2::Span::call_site, syn::LitStr::span);
     let folder_name = dir
         .map(|d| d.value())
         .or_else(|| std::env::var("VESPERA_DIR").ok())
         .unwrap_or_else(|| "routes".to_string());
-    let schema_storage = SCHEMA_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let schema_storage = schema_impl::current_crate_schemas();
     let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") else {
         return syn::Error::new(proc_macro2::Span::call_site(), "export_app! macro: CARGO_MANIFEST_DIR is not set. This macro must be used within a cargo build.").to_compile_error().into();
     };
 
-    let route_storage = ROUTE_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let route_storage = route_impl::current_crate_routes();
 
     match process_export_app(
         &name,
@@ -399,6 +405,7 @@ pub fn export_app(input: TokenStream) -> TokenStream {
         &schema_storage,
         &manifest_dir,
         &route_storage,
+        folder_span,
     ) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),

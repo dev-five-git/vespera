@@ -1,0 +1,346 @@
+package com.devfive.vespera.bridge;
+
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+
+import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.BiConsumer;
+
+final class HeaderPolicy {
+    private HeaderPolicy() {}
+
+    /**
+     * Pure hop-by-hop response headers the proxy must NOT forward verbatim from
+     * the Rust wire response. Forwarding a handler-supplied (or malicious
+     * native) {@code transfer-encoding} / {@code connection} desynchronises
+     * framing at the servlet container or a downstream proxy (e.g. a wire
+     * {@code transfer-encoding: chunked} on a response the container frames with
+     * {@code Content-Length}). These are connection-scoped per RFC 9110 and are
+     * never legitimately emitted by an application handler.
+     *
+     * <p>{@code content-length} is not hop-by-hop by RFC semantics, but it is
+     * proxy-owned in this servlet bridge: buffered/direct responses set the
+     * exact bytes they write, and streaming responses let the servlet container
+     * frame the body.
+     *
+     * <p>Names are compared case-insensitively against the canonical lowercase
+     * form the wire header carries.
+     */
+    static boolean isHopByHopResponseHeader(String name) {
+        return switch (name.length()) {
+            case 2 -> name.regionMatches(true, 0, "te", 0, 2);
+            case 7 -> name.regionMatches(true, 0, "trailer", 0, 7)
+                    || name.regionMatches(true, 0, "upgrade", 0, 7);
+            case 10 -> name.regionMatches(true, 0, "connection", 0, 10)
+                    || name.regionMatches(true, 0, "keep-alive", 0, 10);
+            case 17 -> name.regionMatches(true, 0, "transfer-encoding", 0, 17);
+            case 18 -> name.regionMatches(true, 0, "proxy-authenticate", 0, 18);
+            case 19 -> name.regionMatches(true, 0, "proxy-authorization", 0, 19);
+            default -> false;
+        };
+    }
+
+    /**
+     * Apply a Rust wire response header to the servlet response, dropping the
+     * hop-by-hop / framing headers the proxy owns ({@link #HOP_BY_HOP_RESPONSE_HEADERS}).
+     */
+    static void addServletResponseHeaders(
+            HttpServletResponse response, ResponseHeaderAccumulator headers) {
+        for (HeaderPair header : headers.headers) {
+            addServletResponseHeader(response, header.name, header.value, headers.connectionTokens);
+        }
+    }
+
+    static void addServletResponseHeader(
+            HttpServletResponse response, String name, String value, Set<String> connectionTokens) {
+        if (!isHopByHopResponseHeader(name)
+                && !isContentLengthHeader(name)
+                && !isConnectionNominatedHeader(name, connectionTokens)) {
+            response.addHeader(name, value);
+        }
+    }
+
+    static boolean isConnectionNominatedHeader(String name, Set<String> connectionTokens) {
+        return connectionTokens != null && connectionTokens.contains(canonicalLowerHeaderName(name));
+    }
+
+    record HeaderPair(String name, String value) {}
+
+    static final class ResponseHeaderAccumulator implements BiConsumer<String, String> {
+        final List<HeaderPair> headers = new ArrayList<>(8);
+        Set<String> connectionTokens;
+
+        @Override
+        public void accept(String name, String value) {
+            headers.add(new HeaderPair(name, value));
+            if (name.length() == 10 && name.regionMatches(true, 0, "connection", 0, 10)) {
+                connectionTokens = addConnectionTokens(connectionTokens, value);
+            }
+        }
+    }
+
+    static Set<String> addConnectionTokens(Set<String> tokens, String value) {
+        int start = 0;
+        int len = value.length();
+        Set<String> result = tokens;
+        int tokenCount = 0;
+        while (start < len) {
+            int comma = value.indexOf(',', start);
+            int end = comma >= 0 ? comma : len;
+            int tokenStart = trimHttpWhitespaceStart(value, start, end);
+            int tokenEnd = trimHttpWhitespaceEnd(value, tokenStart, end);
+            if (tokenStart < tokenEnd && tokenEnd - tokenStart <= 128) {
+                if (result == null) {
+                    result = new HashSet<>(4);
+                }
+                result.add(toLowerCaseAscii(value, tokenStart, tokenEnd));
+                tokenCount++;
+                if (tokenCount >= 32) {
+                    break;
+                }
+            }
+            if (comma < 0) {
+                break;
+            }
+            start = comma + 1;
+        }
+        return result;
+    }
+
+    private static int trimHttpWhitespaceStart(String value, int start, int end) {
+        int p = start;
+        while (p < end && isHttpWhitespace(value.charAt(p))) {
+            p++;
+        }
+        return p;
+    }
+
+    private static int trimHttpWhitespaceEnd(String value, int start, int end) {
+        int p = end;
+        while (p > start && isHttpWhitespace(value.charAt(p - 1))) {
+            p--;
+        }
+        return p;
+    }
+
+    private static boolean isHttpWhitespace(char c) {
+        return c == ' ' || c == '\t';
+    }
+
+    static boolean isContentLengthHeader(String name) {
+        return name.length() == 14 && name.regionMatches(true, 0, "content-length", 0, 14);
+    }
+
+    // Package-private (not private) so unit tests can verify duplicate-header
+    // joining (B4) with MockHttpServletRequest.
+    static Map<String, String> collectHeaders(HttpServletRequest request) {
+        // Pre-size for a typical request header count so the common case
+        // never resizes; keep LinkedHashMap (NOT HashMap) so insertion
+        // order — and thus the request header JSON field order — stays
+        // deterministic.
+        Map<String, String> headers = new LinkedHashMap<>(32);
+        forEachRequestHeader(request, headers::put);
+        return headers;
+    }
+
+    static void forEachRequestHeader(HttpServletRequest request, VesperaBridge.HeaderSink sink) {
+        Enumeration<String> names = request.getHeaderNames();
+        // The Servlet spec permits getHeaderNames() to return null when the
+        // container disallows header access; treat that as "no headers"
+        // rather than letting a NullPointerException turn a recoverable case
+        // into an HTTP 500.
+        if (names == null) {
+            return;
+        }
+        Set<String> connectionTokens = requestConnectionTokens(request);
+        if (hasMergeRequiredHeaderName(request, names, connectionTokens)) {
+            forEachMergedRequestHeader(request, sink, connectionTokens);
+            return;
+        }
+        names = request.getHeaderNames();
+        if (names == null) {
+            return;
+        }
+        while (names.hasMoreElements()) {
+            String name = names.nextElement();
+            String lowerName = canonicalLowerHeaderName(name);
+            // Hop-by-hop classification is direction-agnostic (RFC 9110 7.6.1),
+            // so the request filter reuses the response predicate directly. The
+            // response-only content-length rule is a separate check applied at
+            // addServletResponseHeader, not part of this predicate.
+            if (!isHopByHopResponseHeader(lowerName)
+                    && !isConnectionNominatedHeader(lowerName, connectionTokens)) {
+                sink.put(lowerName, joinHeaderValues(name, request));
+            }
+        }
+    }
+
+    private static void forEachMergedRequestHeader(
+            HttpServletRequest request, VesperaBridge.HeaderSink sink, Set<String> connectionTokens) {
+        Map<String, String> merged = new LinkedHashMap<>(32);
+        Enumeration<String> names = request.getHeaderNames();
+        if (names == null) {
+            return;
+        }
+        while (names.hasMoreElements()) {
+            String name = names.nextElement();
+            String lowerName = canonicalLowerHeaderName(name);
+            if (!isHopByHopResponseHeader(lowerName)
+                    && !isConnectionNominatedHeader(lowerName, connectionTokens)) {
+                String value = joinHeaderValues(name, request);
+                merged.merge(lowerName, value, (left, right) ->
+                        left + (lowerName.equals("cookie") ? "; " : ", ") + right);
+            }
+        }
+        merged.forEach(sink::put);
+    }
+
+    private static boolean hasMergeRequiredHeaderName(
+            HttpServletRequest request, Enumeration<String> names, Set<String> connectionTokens) {
+        String seen0 = null, seen1 = null, seen2 = null, seen3 = null;
+        String seen4 = null, seen5 = null, seen6 = null, seen7 = null;
+        Set<String> overflowSeen = null;
+        int count = 0;
+        while (names.hasMoreElements()) {
+            String lowerName = canonicalLowerHeaderName(names.nextElement());
+            if (isHopByHopResponseHeader(lowerName)
+                    || isConnectionNominatedHeader(lowerName, connectionTokens)) {
+                continue;
+            }
+            if (lowerName.equals(seen0) || lowerName.equals(seen1)
+                    || lowerName.equals(seen2) || lowerName.equals(seen3)
+                    || lowerName.equals(seen4) || lowerName.equals(seen5)
+                    || lowerName.equals(seen6) || lowerName.equals(seen7)
+                    || (overflowSeen != null && !overflowSeen.add(lowerName))) {
+                return true;
+            }
+            switch (count++) {
+                case 0 -> seen0 = lowerName;
+                case 1 -> seen1 = lowerName;
+                case 2 -> seen2 = lowerName;
+                case 3 -> seen3 = lowerName;
+                case 4 -> seen4 = lowerName;
+                case 5 -> seen5 = lowerName;
+                case 6 -> seen6 = lowerName;
+                case 7 -> seen7 = lowerName;
+                default -> {
+                    if (overflowSeen == null) {
+                        overflowSeen = new HashSet<>(8);
+                    }
+                    overflowSeen.add(lowerName);
+                }
+            }
+        }
+        return false;
+    }
+
+    private static Set<String> requestConnectionTokens(HttpServletRequest request) {
+        Enumeration<String> values = request.getHeaders("Connection");
+        Set<String> tokens = null;
+        if (values == null) {
+            return null;
+        }
+        while (values.hasMoreElements()) {
+            tokens = addConnectionTokens(tokens, values.nextElement());
+        }
+        return tokens;
+    }
+
+    /**
+     * Combine every value of a repeated request header so duplicates are
+     * not silently dropped before Rust sees them (the prior
+     * {@code request.getHeader(name)} returned only the first value).
+     *
+     * <p>The single-value case — the overwhelming majority of headers —
+     * returns the lone value with no allocation.  Multiple same-name
+     * values are combined per RFC 7230 §3.2.2 with {@code ", "}, except
+     * {@code Cookie}, whose values themselves contain commas and must be
+     * joined with {@code "; "} per RFC 6265bis §5.4 so the Rust cookie
+     * parser still receives a valid cookie string.
+     */
+    private static String joinHeaderValues(String name, HttpServletRequest request) {
+        Enumeration<String> values = request.getHeaders(name);
+        if (values == null || !values.hasMoreElements()) {
+            // A non-conformant container can return an empty getHeaders(name)
+            // AND a null getHeader(name) for a name that getHeaderNames()
+            // listed; coalesce to "" so a null never reaches the wire-header
+            // JSON encoder (VesperaWireCodec.writeJsonString) and NPEs there.
+            String value = request.getHeader(name);
+            return value != null ? value : "";
+        }
+        String first = values.nextElement();
+        if (!values.hasMoreElements()) {
+            return first;
+        }
+        String separator = name.equalsIgnoreCase("cookie") ? "; " : ", ";
+        StringBuilder sb = new StringBuilder(first);
+        do {
+            sb.append(separator).append(values.nextElement());
+        } while (values.hasMoreElements());
+        return sb.toString();
+    }
+
+    /**
+     * Lowercase an HTTP header name while avoiding per-request lowercase
+     * allocations for common HTTP/1.1 canonical names. Header names are ASCII
+     * per RFC 9110 §5.1, so uncommon names fall back to a small ASCII copy only
+     * when they contain uppercase bytes.
+     */
+    private static String canonicalLowerHeaderName(String name) {
+        switch (name) {
+            case "Host": return "host";
+            case "Content-Type": return "content-type";
+            case "Content-Length": return "content-length";
+            case "Accept": return "accept";
+            case "Accept-Encoding": return "accept-encoding";
+            case "Accept-Language": return "accept-language";
+            case "Authorization": return "authorization";
+            case "Connection": return "connection";
+            case "Cookie": return "cookie";
+            case "User-Agent": return "user-agent";
+            case "Referer": return "referer";
+            case "Origin": return "origin";
+            case "Cache-Control": return "cache-control";
+            case "If-None-Match": return "if-none-match";
+            case "If-Modified-Since": return "if-modified-since";
+            case "X-Forwarded-For": return "x-forwarded-for";
+            case "X-Forwarded-Host": return "x-forwarded-host";
+            case "X-Forwarded-Proto": return "x-forwarded-proto";
+            case "X-Request-Id": return "x-request-id";
+            // X-Vespera-App is the multi-app routing header sent on EVERY
+            // request in multi-app deployments (the HeaderAppNameResolver
+            // default); keep it on the allocation-free switch path instead of
+            // falling through to a per-request char[]+String lowercase copy.
+            case "X-Vespera-App": return "x-vespera-app";
+            default: break;
+        }
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (c >= 'A' && c <= 'Z') {
+                return toLowerCaseAscii(name, 0, name.length());
+            }
+        }
+        return name;
+    }
+
+    /**
+     * ASCII-lowercase {@code value[start, end)} into a fresh string. The single
+     * ASCII fold used by both the {@code Connection}-token parser and the
+     * header-name fallback: exactly one {@code char[]} and one {@code String}
+     * are allocated on either path.
+     */
+    private static String toLowerCaseAscii(String value, int start, int end) {
+        char[] chars = new char[end - start];
+        for (int i = start; i < end; i++) {
+            char c = value.charAt(i);
+            chars[i - start] = (c >= 'A' && c <= 'Z') ? (char) (c + ('a' - 'A')) : c;
+        }
+        return new String(chars);
+    }
+}

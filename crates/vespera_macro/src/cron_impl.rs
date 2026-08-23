@@ -20,7 +20,10 @@
 //! }
 //! ```
 
-use std::sync::{LazyLock, Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
+
+use crate::macro_storage::{CrateStorage, SourceIdentified};
 
 /// Metadata stored by `#[cron]` for later consumption by `vespera!()`.
 ///
@@ -36,10 +39,35 @@ pub struct StoredCronInfo {
     pub file_path: Option<String>,
 }
 
-/// Global storage for cron metadata collected by `#[cron]` attribute macros.
-/// Read by `vespera!()` to build the cron scheduler.
-pub static CRON_STORAGE: LazyLock<Mutex<Vec<StoredCronInfo>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+/// Per-crate storage for cron metadata collected by `#[cron]` attribute
+/// macros, read by `vespera!()` to build the cron scheduler.
+///
+/// Keyed by [`crate::schema_impl::current_crate_key`] so a long-lived
+/// rust-analyzer proc-macro server (one process, many crates) never schedules
+/// crate A's cron jobs into crate B. See
+/// [`SCHEMA_STORAGE`](crate::schema_impl::SCHEMA_STORAGE) for the rationale.
+pub static CRON_STORAGE: CrateStorage<StoredCronInfo> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+impl SourceIdentified for StoredCronInfo {
+    fn fn_name(&self) -> &str {
+        &self.fn_name
+    }
+    fn file_path(&self) -> Option<&str> {
+        self.file_path.as_deref()
+    }
+}
+
+/// Replace-insert a `#[cron]` metadata entry in the current crate's bucket.
+pub fn register_cron(info: StoredCronInfo) {
+    crate::macro_storage::register(&CRON_STORAGE, info);
+}
+
+/// Snapshot of the current crate's registered cron jobs — a cheap `Arc` clone.
+#[must_use]
+pub fn current_crate_crons() -> Arc<Vec<StoredCronInfo>> {
+    crate::macro_storage::current_crate_items(&CRON_STORAGE)
+}
 
 /// Validate cron function - must be pub, async, and take no parameters.
 pub fn validate_cron_fn(item_fn: &syn::ItemFn) -> Result<(), syn::Error> {
@@ -70,6 +98,12 @@ pub fn process_cron_attribute(
     item: proc_macro2::TokenStream,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let expression: syn::LitStr = syn::parse2(attr).map_err(|_| syn::Error::new(proc_macro2::Span::call_site(), "#[cron] attribute: expected a cron expression string. Example: #[cron(\"0 */5 * * * *\")]"))?;
+    // Compile-time cron-syntax validation (gated by the `cron` feature, enabled
+    // transitively by `vespera`'s `cron` feature). A malformed expression is a
+    // span-attached compile error here instead of a `JobScheduler` panic at app
+    // startup (see `router_codegen::generator`'s `Job::new_async(...).expect`).
+    #[cfg(feature = "cron")]
+    validate_cron_expression(&expression)?;
     let item_fn: syn::ItemFn = syn::parse2(item.clone()).map_err(|e| syn::Error::new(e.span(), "#[cron] attribute: can only be applied to functions, not other items. Move or remove the attribute."))?;
     validate_cron_fn(&item_fn)?;
 
@@ -80,12 +114,41 @@ pub fn process_cron_attribute(
             .local_file()
             .map(|p| p.display().to_string()),
     };
-    CRON_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(stored);
+    register_cron(stored);
 
     Ok(item)
+}
+
+/// Validate a cron expression at **compile time** using the SAME parser the
+/// runtime uses, so a malformed expression is a clean span-attached compile
+/// error instead of a `JobScheduler` panic at application startup.
+///
+/// Parity basis: `tokio-cron-scheduler`'s `Job::new_async` parses the schedule
+/// with `croner`'s `CronParser::builder().seconds(Seconds::Required).build()`.
+/// `vespera` enables `tokio-cron-scheduler` **without** its `english` feature,
+/// so the runtime `schedule_to_cron` step is an identity passthrough and the
+/// only parse is the 6-field (seconds-required) croner parse replicated here.
+/// The `croner` major version is pinned (in `Cargo.toml`) to the one
+/// `tokio-cron-scheduler` resolves, so compile-time acceptance exactly matches
+/// runtime acceptance.
+#[cfg(feature = "cron")]
+fn validate_cron_expression(expression: &syn::LitStr) -> syn::Result<()> {
+    use croner::parser::{CronParser, Seconds};
+    let expr = expression.value();
+    CronParser::builder()
+        .seconds(Seconds::Required)
+        .build()
+        .parse(&expr)
+        .map_err(|e| {
+            syn::Error::new_spanned(
+                expression,
+                format!(
+                    "#[cron] invalid cron expression `{expr}`: {e}. Expected a 6-field \
+                     expression `sec min hour day month weekday`, e.g. \"0 */5 * * * *\"."
+                ),
+            )
+        })?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -239,5 +302,76 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("must take no parameters"));
+    }
+
+    #[test]
+    fn test_register_cron_replaces_same_file_and_function() {
+        let file_path = Some("/tmp/vespera/tasks/replaced.rs".to_string());
+        let fn_name = "__test_replace_cron".to_string();
+        register_cron(StoredCronInfo {
+            fn_name: fn_name.clone(),
+            expression: "0 */5 * * * *".to_string(),
+            file_path: file_path.clone(),
+        });
+        register_cron(StoredCronInfo {
+            fn_name: fn_name.clone(),
+            expression: "0 */10 * * * *".to_string(),
+            file_path,
+        });
+
+        let matches: Vec<_> = current_crate_crons()
+            .iter()
+            .filter(|entry| entry.fn_name == fn_name)
+            .cloned()
+            .collect();
+        assert_eq!(matches.len(), 1, "same source cron should replace");
+        assert_eq!(matches[0].expression, "0 */10 * * * *");
+    }
+
+    // ===== Compile-time cron-syntax validation (gated by the `cron` feature) =====
+
+    #[cfg(feature = "cron")]
+    #[test]
+    fn test_process_cron_attribute_valid_cron_syntax_passes() {
+        for expr in [
+            quote!("0 */5 * * * *"),
+            quote!("1/10 * * * * *"),
+            quote!("0 0 0 * * *"),
+            quote!("0 30 9 * * Mon-Fri"),
+        ] {
+            let item = quote!(
+                pub async fn my_job() {}
+            );
+            assert!(
+                process_cron_attribute(expr.clone(), item).is_ok(),
+                "expected valid cron `{expr}` to pass"
+            );
+        }
+    }
+
+    #[cfg(feature = "cron")]
+    #[test]
+    fn test_process_cron_attribute_invalid_cron_syntax_is_compile_error() {
+        // Each is rejected at compile time (was a runtime `JobScheduler` panic):
+        // 1-field, 5-field (missing seconds), out-of-range minute, garbage token.
+        for bad in [
+            quote!("invalid"),
+            quote!("* * * * *"),
+            quote!("0 99 * * * *"),
+            quote!("not a cron at all"),
+        ] {
+            let item = quote!(
+                pub async fn my_job() {}
+            );
+            let result = process_cron_attribute(bad.clone(), item);
+            assert!(result.is_err(), "expected invalid cron `{bad}` to error");
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("invalid cron expression"),
+                "expected `invalid cron expression` message for `{bad}`"
+            );
+        }
     }
 }

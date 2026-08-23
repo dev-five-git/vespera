@@ -3,26 +3,212 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub fn collect_files(folder_path: &Path) -> io::Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    for entry in std::fs::read_dir(folder_path)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() {
-            files.push(folder_path.join(path));
-        } else if path.is_dir() {
-            files.extend(collect_files(&folder_path.join(&path))?);
+/// Render a path for compile-time strings and diagnostics with `/` separators.
+///
+/// `Path::display()` renders exactly the same lossy UTF-8 text as
+/// [`Path::to_string_lossy`], so going through the `Cow` lets the common
+/// separator-free case (every Unix path, and any Windows path already spelled
+/// with `/`) finish in ONE allocation instead of the two that
+/// `display().to_string().replace(..)` always paid — and a path that is already
+/// valid UTF-8 borrows, so `into_owned()` is the only copy. Callers run this
+/// once per route file per `vespera!` expansion (`collector.rs`,
+/// [`normalize_path_key`], [`file_to_segments`], `orchestrator.rs`,
+/// `openapi_io.rs`), so the saved allocation is per-file, per-build.
+pub fn normalize_display_path(path: impl AsRef<Path>) -> String {
+    let rendered = path.as_ref().to_string_lossy();
+    if rendered.contains('\\') {
+        rendered.replace('\\', "/")
+    } else {
+        rendered.into_owned()
+    }
+}
+
+/// Compare two optional source paths treating `\` and `/` as equivalent,
+/// WITHOUT allocating a normalized copy of either side.
+///
+/// Route and cron registration call this once per already-registered item on
+/// every attribute expansion. Folding `\` to `/` byte-by-byte removes the two
+/// `String` allocations from `.replace('\\', "/")` per comparison while keeping
+/// the previous comparison semantics exactly.
+pub fn paths_equal_normalized(left: Option<&str>, right: Option<&str>) -> bool {
+    let (left, right) = (left.unwrap_or_default(), right.unwrap_or_default());
+    let norm = |b: u8| if b == b'\\' { b'/' } else { b };
+    left.len() == right.len()
+        && std::iter::zip(left.bytes(), right.bytes())
+            .all(|(left, right)| norm(left) == norm(right))
+}
+
+/// Normalize a path string into a comparison key **without touching the filesystem**.
+///
+/// Relative paths are absolutized against `cwd`, `.`/`..` components are folded,
+/// separators normalize to `/`, the Windows `\\?\` verbatim prefix is stripped,
+/// and (Windows only) the drive letter case is folded.
+pub fn normalize_path_key(path: &str, cwd: &Path) -> String {
+    use std::path::Component;
+
+    let p = Path::new(path);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        cwd.join(p)
+    };
+    let mut folded = PathBuf::new();
+    for comp in abs.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                folded.pop();
+            }
+            other => folded.push(other),
         }
     }
+    let key = normalize_display_path(&folded);
+    // The `\\?\` verbatim prefix and case-insensitive path comparison are both
+    // Windows-only concepts, so they compile out entirely elsewhere instead of
+    // costing every Unix build a runtime branch and a prefix scan.
+    #[cfg(windows)]
+    let key = key
+        .strip_prefix("//?/")
+        .unwrap_or(&key)
+        .to_ascii_lowercase();
+    key
+}
+
+/// Render a path for use in `include_str!` literals.
+pub fn path_to_include_str_literal(path: impl AsRef<Path>) -> String {
+    normalize_display_path(path)
+}
+
+// `#[cfg(test)]`: the only caller left is the test-only `collector::collect_metadata`
+// (plus this module's own tests); production scanning goes through
+// `collect_files_with_mtimes`, so the path-only wrapper never ships.
+#[cfg(test)]
+pub fn collect_files(folder_path: &Path) -> io::Result<Vec<PathBuf>> {
+    Ok(collect_files_with_mtimes(folder_path)?
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect())
+}
+
+/// Recursively collect files together with their mtime fingerprints
+/// (nanoseconds since `UNIX_EPOCH`; `0` when unavailable).
+///
+/// One walk serves both route discovery and cache fingerprinting —
+/// previously the folder was walked twice and every file paid an
+/// extra `fs::metadata` syscall on top of the directory-entry data
+/// the OS already returned.
+pub fn collect_files_with_mtimes(folder_path: &Path) -> io::Result<Vec<(PathBuf, u64)>> {
+    let mut files = Vec::new();
+    collect_with_mtimes_into(folder_path, &mut files)?;
     Ok(files)
 }
 
+/// Compile-time cache fingerprint for a source file's modification time.
+///
+/// Uses **nanosecond** resolution rather than whole seconds: two edits to
+/// the same file within one wall-clock second — routine under fast
+/// incremental rebuilds and long-lived rust-analyzer processes — still
+/// yield distinct fingerprints, so a stale router / OpenAPI spec is never
+/// served from the route cache.  Returns `0` when the mtime is
+/// unavailable.  Truncating the u128 nanos-since-epoch to `u64` preserves
+/// every sub-second bit (the value only exceeds `u64` past the year ~2554,
+/// saturated to `u64::MAX`); the fingerprint is only ever compared for
+/// equality, so the absolute units never matter.
+pub fn mtime_fingerprint(modified: Option<std::time::SystemTime>) -> u64 {
+    modified.map_or(0, |t| {
+        let nanos = t
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        u64::try_from(nanos).unwrap_or(u64::MAX)
+    })
+}
+
+/// Mix a file's mtime fingerprint with its byte length into a single
+/// equality-only cache fingerprint.
+///
+/// mtime alone misses a content edit that PRESERVES the modification time —
+/// a timestamp-preserving checkout, `cp -p`, or build-cache restore can
+/// rewrite a route file's contents while leaving its mtime untouched, which
+/// would otherwise serve a STALE generated router / OpenAPI spec from the
+/// cache. Folding in `len()` catches every such edit that changes the file
+/// size (the overwhelming majority), at ZERO extra compile-time cost: the
+/// metadata is already stat'd for the mtime and no file contents are ever
+/// hashed. The fingerprint is only ever compared for equality, so any stable
+/// mix works; this one is strictly more sensitive than mtime alone.
+pub fn combine_fingerprint(mtime: u64, len: u64) -> u64 {
+    mtime.rotate_left(1).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ len.wrapping_mul(0xD1B5_4A32_D192_ED03)
+}
+
+/// Compile-time cache fingerprint for a source file from its already-fetched
+/// [`std::fs::Metadata`] — combines mtime ([`mtime_fingerprint`]) and size
+/// ([`combine_fingerprint`]).
+///
+/// This is the ONE place the mtime/size mixing is spelled out: every
+/// compile-time cache that already holds a `Metadata` (route-file scanning
+/// here, sidecar and macro-source fingerprinting in
+/// `vespera_impl::cache`) goes through it, so a fingerprint can never
+/// silently degrade back to mtime-only in one consumer while the others
+/// guard against timestamp-preserving edits. Costs no syscall: `len()` is
+/// materialised by the same `stat` as the mtime.
+// `pub` (not `pub(crate)`) to match the rest of this private module — see
+// `clippy::redundant_pub_crate`; visibility is still crate-internal because
+// `mod file_utils` itself is private.
+pub fn file_fingerprint(meta: &std::fs::Metadata) -> u64 {
+    combine_fingerprint(mtime_fingerprint(meta.modified().ok()), meta.len())
+}
+
+/// [`file_fingerprint`] for a directory entry whose metadata lookup may have
+/// failed, keeping the `0` sentinel on failure rather than aborting the walk.
+///
+/// The `Result` is a parameter rather than being fetched here so the failure
+/// arm is reachable from a test: a scan-time `metadata()` error (the entry
+/// vanished, or permissions changed mid-walk) cannot be provoked through a
+/// real `DirEntry`. Shared by both compile-time scanners so the sentinel
+/// cannot drift between them.
+pub fn entry_fingerprint(meta: &std::io::Result<std::fs::Metadata>) -> u64 {
+    meta.as_ref().map_or(0, file_fingerprint)
+}
+
+fn collect_with_mtimes_into(folder_path: &Path, out: &mut Vec<(PathBuf, u64)>) -> io::Result<()> {
+    for entry in std::fs::read_dir(folder_path)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let path = entry.path();
+        if file_type.is_file() {
+            // Only `.rs` files feed route discovery and cache
+            // fingerprinting — both consumers (`collect_metadata_from_files`
+            // and `fingerprints_from_scan`) filter by extension — so skip
+            // the `metadata()` stat for every other file (fixtures, JSON,
+            // uploads, …).  On Unix that is one `stat` saved per non-Rust
+            // file at compile time; the entry still keeps its place in the
+            // list with mtime `0` (never read for non-`.rs` paths).
+            let mtime = if path.extension().is_some_and(|e| e == "rs") {
+                entry_fingerprint(&entry.metadata())
+            } else {
+                0
+            };
+            out.push((path, mtime));
+        } else if file_type.is_dir() {
+            collect_with_mtimes_into(&path, out)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn file_to_segments(file: &Path, base_path: &Path) -> Vec<String> {
-    let file_stem = file.strip_prefix(base_path).map_or_else(
-        |_| file.display().to_string(),
-        |file_stem| file_stem.display().to_string(),
-    );
-    let file_stem = file_stem.replace(".rs", "").replace('\\', "/");
+    let file_stem = file
+        .strip_prefix(base_path)
+        .map_or_else(|_| normalize_display_path(file), normalize_display_path);
+    // Strip ONLY a trailing `.rs` extension (not every `.rs` substring): a
+    // path component that legitimately contains `.rs` (e.g. a directory named
+    // `v1.rs`) must keep it, so `replace(".rs", "")` — which mangled every
+    // occurrence — is wrong.  Normalize `\` → `/` afterwards.
+    let file_stem = file_stem
+        .strip_suffix(".rs")
+        .unwrap_or(&file_stem)
+        .replace('\\', "/");
     let mut segments: Vec<String> = file_stem
         .split('/')
         .filter(|s| !s.is_empty())
@@ -247,5 +433,107 @@ mod tests {
         assert!(result[0].ends_with("deep_file.rs"));
 
         temp_dir.close().expect("Failed to close temp dir");
+    }
+
+    #[test]
+    fn mtime_fingerprint_distinguishes_subsecond_edits() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        // Two mtimes in the SAME wall-clock second, 1 ms apart (1 ms is
+        // safely above the 100 ns `SystemTime`/FILETIME resolution on
+        // Windows, so the delta is actually representable): the prior
+        // seconds-only fingerprint collapsed these to one value (the
+        // stale-cache bug); the nanosecond fingerprint MUST tell them apart
+        // so a same-second edit always invalidates the route cache.
+        let base = UNIX_EPOCH + Duration::new(1_700_000_000, 0);
+        let same_second_later = base + Duration::from_millis(1);
+        assert_ne!(
+            mtime_fingerprint(Some(base)),
+            mtime_fingerprint(Some(same_second_later)),
+            "same-second edits must produce distinct cache fingerprints"
+        );
+
+        // A whole-second difference is of course still distinguished.
+        let next_second = base + Duration::from_secs(1);
+        assert_ne!(
+            mtime_fingerprint(Some(base)),
+            mtime_fingerprint(Some(next_second))
+        );
+
+        // Unavailable mtime collapses to 0 (unchanged contract).
+        assert_eq!(mtime_fingerprint(None), 0);
+    }
+
+    #[test]
+    fn entry_fingerprint_falls_back_to_the_zero_sentinel_on_a_metadata_error() {
+        let temp = TempDir::new().expect("temp dir");
+        let file = temp.path().join("lib.rs");
+        fs::write(&file, "pub struct App;").expect("write fixture");
+
+        assert_ne!(entry_fingerprint(&fs::metadata(&file)), 0);
+        assert_eq!(
+            entry_fingerprint(&Err(std::io::Error::other("metadata vanished mid-scan"))),
+            0
+        );
+    }
+
+    #[test]
+    fn combine_fingerprint_is_sensitive_to_mtime_and_size() {
+        // Same mtime, DIFFERENT size — the timestamp-preserving content edit
+        // the size term is here to catch — must produce distinct fingerprints.
+        assert_ne!(
+            combine_fingerprint(42, 100),
+            combine_fingerprint(42, 101),
+            "same mtime + different size must differ (stale-cache guard)"
+        );
+        // Different mtime, same size — still distinguished (mtime term).
+        assert_ne!(combine_fingerprint(42, 100), combine_fingerprint(43, 100));
+        // Identical (mtime, size) — equal (a genuine cache hit).
+        assert_eq!(combine_fingerprint(42, 100), combine_fingerprint(42, 100));
+    }
+
+    #[test]
+    fn normalize_path_key_absolutizes_and_folds_dot_segments() {
+        let cwd = Path::new(if cfg!(windows) {
+            r"C:\work\project"
+        } else {
+            "/work/project"
+        });
+
+        let relative = normalize_path_key("./src/./routes/../models/user.rs", cwd);
+        assert!(
+            relative.ends_with("/work/project/src/models/user.rs"),
+            "`.` must vanish and `..` must pop the previous segment: {relative}"
+        );
+
+        let absolute = normalize_path_key(
+            &normalize_display_path(cwd.join("a/../b.rs")),
+            Path::new("/elsewhere"),
+        );
+        assert!(
+            absolute.ends_with("/work/project/b.rs"),
+            "an absolute path must not be re-rooted at cwd: {absolute}"
+        );
+
+        // `Path::components()` normalizes inner `.` away by itself and only ever
+        // yields `Component::CurDir` for a LEADING `.`, so the folding loop's
+        // `CurDir` arm is reachable only when the joined path stays relative.
+        assert_eq!(
+            normalize_path_key("./routes/./users.rs", Path::new(".")),
+            "routes/users.rs"
+        );
+    }
+
+    #[test]
+    fn normalized_path_helpers_cover_borrowed_and_separator_paths() {
+        assert_eq!(normalize_display_path("routes/users.rs"), "routes/users.rs");
+        assert!(paths_equal_normalized(
+            Some("routes\\users.rs"),
+            Some("routes/users.rs")
+        ));
+        assert!(!paths_equal_normalized(
+            Some("routes/a.rs"),
+            Some("routes/b.rs")
+        ));
     }
 }

@@ -1,1 +1,191 @@
-empty
+# jni_app! & VesperaBridge
+
+## Rust Setup
+
+### 1. Enable the JNI Feature
+
+```toml
+[dependencies]
+vespera = { version = "0.1", features = ["jni"] }
+```
+
+The `jni` feature implies `inprocess` — both are enabled automatically.
+
+### 2. Export Your App
+
+In your cdylib crate's `src/lib.rs`:
+
+```rust
+use vespera::{axum, vespera};
+
+pub fn create_app() -> axum::Router {
+    vespera!(title = "My API", version = "1.0.0")
+}
+
+// Single app — generates JNI_OnLoad and the dispatch symbol
+vespera::jni_app!(create_app);
+```
+
+`jni_app!` generates all JNI boilerplate: `JNI_OnLoad`, the Tokio runtime, and the seven dispatch symbols. You write zero JNI code.
+
+### 3. Build as a cdylib
+
+```toml
+[lib]
+crate-type = ["cdylib"]
+```
+
+```bash
+cargo build --release
+# Produces: target/release/libmy_rust_lib.so (Linux)
+#           target/release/my_rust_lib.dll   (Windows)
+#           target/release/libmy_rust_lib.dylib (macOS)
+```
+
+---
+
+## Java Setup
+
+### Maven
+
+```xml
+<dependency>
+  <groupId>kr.devfive</groupId>
+  <artifactId>vespera-bridge</artifactId>
+  <version>0.2.0</version>
+</dependency>
+```
+
+### Gradle (Kotlin DSL)
+
+```kotlin
+dependencies {
+    implementation("kr.devfive:vespera-bridge:0.2.0")
+}
+```
+
+### Gradle Plugin (Recommended)
+
+The `kr.devfive.vespera-bridge` Gradle plugin replaces ~22 lines of native-library-bundling boilerplate with a 5-line block:
+
+```kotlin
+plugins {
+    id("kr.devfive.vespera-bridge") version "0.1.1"
+}
+
+vespera {
+    crateName.set("my_rust_lib")
+    cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
+    bridgeVersion.set("0.2.0")
+}
+```
+
+The plugin auto-wires `bundleNativeLib` (cdylib → `resources/native/<os>-<arch>/`), the `processResources` dependency, and the `vespera-bridge` implementation dependency.
+
+### Spring Boot Application
+
+```java
+@SpringBootApplication
+@ComponentScan(basePackages = {"com.example.app", "com.devfive.vespera.bridge"})
+public class MyApp {
+    public static void main(String[] args) {
+        VesperaBridge.init("my_rust_lib");  // loads cdylib (bundled or system path)
+        SpringApplication.run(MyApp.class, args);
+    }
+}
+```
+
+`VesperaProxyController` is autoconfigured via Spring Boot's `AutoConfiguration.imports`. It registers a `@RequestMapping("/**")` catch-all that forwards every HTTP request to Rust. The routes published in Vespera's generated `openapi.json` are reachable at the same URLs through Spring.
+
+---
+
+## Native Library Loading
+
+`VesperaBridge.init("crateName")` tries two paths in order:
+
+1. **Bundled** — looks up `native/{os}-{arch}/{libname}` inside the running JAR's classpath. If found, the file is extracted to a temp file (auto-deleted on JVM exit) and loaded via `System.load`.
+2. **Fallback** — `System.loadLibrary("crateName")` searches `java.library.path`.
+
+Supported platform triples: `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64`, `windows-x86_64`.
+
+Place the cdylib at `src/main/resources/native/{os}-{arch}/` to bundle it inside the JAR for single-file deployment.
+
+---
+
+## Zero-Config Defaults
+
+Out of the box the autoconfigure module wires up:
+
+| Concern | Default | Override |
+|---------|---------|----------|
+| App selection | Read `X-Vespera-App` request header; absent → default app | Property `vespera.bridge.app-header`, or custom `AppNameResolver` bean |
+| Dispatch mode | `SmartDispatchModeResolver` since 0.2.0 — `DIRECT` for small/bodyless idempotent, `SYNC` for small non-idempotent, `BIDIRECTIONAL_STREAMING` for the rest | Property `vespera.bridge.dispatch-mode: bidirectional-streaming`, or custom `DispatchModeResolver` bean |
+| URL pattern | `@RequestMapping("/**")` catch-all | Set `vespera.bridge.controller-enabled: false` and supply your own controller |
+
+---
+
+## Customization
+
+### Tweak via application.yml
+
+```yaml
+vespera:
+  bridge:
+    app-header: X-My-App         # change the header that selects the app
+    controller-enabled: true      # set false to disable the proxy controller
+```
+
+### Custom App-Selection Strategy
+
+```java
+@Bean
+public AppNameResolver myAppResolver() {
+    return request -> {
+        String uri = request.getRequestURI();
+        if (uri.startsWith("/admin/")) return "admin";
+        if (uri.startsWith("/public/")) return "public";
+        return null;  // default app
+    };
+}
+```
+
+Spring's `@ConditionalOnMissingBean` automatically disables `HeaderAppNameResolver` when you supply your own bean.
+
+### Custom Dispatch-Mode Policy
+
+```java
+@Bean
+public DispatchModeResolver myModeResolver() {
+    return request -> {
+        long contentLength = request.getContentLengthLong();
+        if (contentLength >= 0 && contentLength < 4096
+            && "application/json".equals(request.getContentType())) {
+            return DispatchMode.SYNC;
+        }
+        return DispatchMode.BIDIRECTIONAL_STREAMING;
+    };
+}
+```
+
+### BYO Controller
+
+```yaml
+vespera:
+  bridge:
+    controller-enabled: false
+```
+
+```java
+@RestController
+public class MyController {
+    @PostMapping("/api/admin/{path}")
+    public ResponseEntity<?> adminRoute(@PathVariable String path, @RequestBody byte[] body) {
+        byte[] wire = VesperaBridge.encodeRequest(
+            "admin", "POST", "/" + path, null,
+            Map.of("content-type", "application/json"), body);
+        byte[] resp = VesperaBridge.dispatchBytes(wire);
+        DecodedResponse d = VesperaBridge.decodeResponse(resp);
+        return ResponseEntity.status(d.status()).body(d.bodyBytes());
+    }
+}
+```

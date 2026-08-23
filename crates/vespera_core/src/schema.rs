@@ -1,38 +1,22 @@
 //! Schema-related structure definitions
 
+mod components;
+mod schema_ref;
+mod serde_impls;
+
+pub use components::{Components, OAuthFlow, OAuthFlows, SecurityScheme, SecuritySchemeType};
+pub use schema_ref::{AdditionalProperties, Reference, SchemaRef};
+
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
-/// Schema reference or inline schema
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum SchemaRef {
-    /// Schema reference (e.g., "#/components/schemas/User")
-    Ref(Reference),
-    /// Inline schema
-    Inline(Box<Schema>),
-}
-
-/// Reference definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Reference {
-    /// Reference path (e.g., "#/components/schemas/User")
-    #[serde(rename = "$ref")]
-    pub ref_path: String,
-}
-
-impl Reference {
-    /// Create a new reference
-    #[must_use]
-    pub const fn new(ref_path: String) -> Self {
-        Self { ref_path }
-    }
-
-    /// Create a component schema reference
-    #[must_use]
-    pub fn schema(name: &str) -> Self {
-        Self::new(format!("#/components/schemas/{name}"))
-    }
+#[cfg(test)]
+#[allow(clippy::ref_option)] // serde serialize_with mandates &Option<T> signature
+fn serialize_number_constraint<S>(value: &Option<f64>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serde_impls::serialize_number_constraint(value, serializer)
 }
 
 /// JSON Schema type
@@ -48,246 +32,167 @@ pub enum SchemaType {
     Null,
 }
 
-/// Serialize `Option<f64>` as integer when the value has no fractional part.
-///
-/// Ensures OpenAPI JSON uses `0` instead of `0.0` for integer constraints like
-/// `minimum`/`maximum`, matching the convention that integer type bounds are integers.
-#[allow(clippy::ref_option)] // serde serialize_with mandates &Option<T> signature
-fn serialize_number_constraint<S>(value: &Option<f64>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    match value {
-        Some(v) if v.fract() == 0.0 => {
-            // Practical OpenAPI constraints are well within i64 range
-            #[allow(clippy::cast_possible_truncation)]
-            let int_val = *v as i64;
-            serializer.serialize_some(&int_val)
-        }
-        Some(v) => serializer.serialize_some(v),
-        None => serializer.serialize_none(),
-    }
+#[allow(clippy::ref_option)] // serde skip_serializing_if mandates &Option<T> signature
+fn is_empty_properties(value: &Option<BTreeMap<String, SchemaRef>>) -> bool {
+    value.as_ref().is_none_or(BTreeMap::is_empty)
+}
+
+#[allow(clippy::ref_option)] // serde skip_serializing_if mandates &Option<T> signature
+fn is_empty_required(value: &Option<Vec<String>>) -> bool {
+    value.as_ref().is_none_or(Vec::is_empty)
 }
 
 /// JSON Schema definition
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default)]
 pub struct Schema {
-    /// Schema reference ($ref) - if present, other fields are ignored
-    #[serde(rename = "$ref")]
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Schema reference (`$ref`).
+    ///
+    /// A *pure* reference should be expressed as [`SchemaRef::Ref`].
+    /// This field exists only for the one legitimate mixed form OpenAPI
+    /// 3.1 permits — a **nullable reference** (`$ref` + `nullable`) —
+    /// which is best built through [`Schema::nullable_reference`] rather
+    /// than by hand, to avoid accidentally mixing `$ref` with unrelated
+    /// inline constraints (the invalid state flagged by CORE-03).
     pub ref_path: Option<String>,
     /// Schema type
-    #[serde(rename = "type")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_type: Option<SchemaType>,
     /// Format (for numbers or strings)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
     /// Title
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// Description
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Default value
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<serde_json::Value>,
     /// Example
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub example: Option<serde_json::Value>,
     /// Examples
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub examples: Option<Vec<serde_json::Value>>,
 
     // Number constraints
     /// Minimum value
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        serialize_with = "serialize_number_constraint"
-    )]
     pub minimum: Option<f64>,
     /// Maximum value
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        serialize_with = "serialize_number_constraint"
-    )]
     pub maximum: Option<f64>,
-    /// Exclusive minimum
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exclusive_minimum: Option<bool>,
-    /// Exclusive maximum
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exclusive_maximum: Option<bool>,
+    /// Exclusive minimum boundary (OpenAPI 3.1 / JSON Schema 2020-12 numeric form).
+    pub exclusive_minimum: Option<f64>,
+    /// Exclusive maximum boundary (OpenAPI 3.1 / JSON Schema 2020-12 numeric form).
+    pub exclusive_maximum: Option<f64>,
     /// Multiple of
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        serialize_with = "serialize_number_constraint"
-    )]
     pub multiple_of: Option<f64>,
 
     // String constraints
     /// Minimum length
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_length: Option<usize>,
     /// Maximum length
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_length: Option<usize>,
     /// Pattern (regex)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub pattern: Option<String>,
 
     // Array constraints
-    /// Array item schema
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub items: Option<Box<SchemaRef>>,
+    /// Array item schema.
+    ///
+    /// No outer `Box`: [`SchemaRef::Inline`] already boxes the nested
+    /// [`Schema`], so the recursive type is finite without a second
+    /// indirection (CORE-02).
+    pub items: Option<SchemaRef>,
     /// Prefix items for tuple arrays (`OpenAPI` 3.1 / JSON Schema 2020-12)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub prefix_items: Option<Vec<SchemaRef>>,
     /// Minimum number of items
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_items: Option<usize>,
     /// Maximum number of items
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_items: Option<usize>,
     /// Unique items flag
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub unique_items: Option<bool>,
 
     // Object constraints
     /// Property definitions
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub properties: Option<BTreeMap<String, SchemaRef>>,
     /// List of required properties
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<Vec<String>>,
-    /// Whether additional properties are allowed (can be boolean or `SchemaRef`)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub additional_properties: Option<serde_json::Value>,
+    /// `additionalProperties`: a boolean or a value-schema (CORE-04).
+    ///
+    /// Typed as [`AdditionalProperties`] (untagged) instead of a raw
+    /// `serde_json::Value`, so invalid shapes can't be constructed and
+    /// the value-schema case avoids the `SchemaRef -> serde_json::Value`
+    /// round-trip the parser previously paid.  Wire output is unchanged.
+    pub additional_properties: Option<AdditionalProperties>,
     /// Minimum number of properties
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_properties: Option<usize>,
     /// Maximum number of properties
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_properties: Option<usize>,
 
     // General constraints
     /// Enum values
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#enum: Option<Vec<serde_json::Value>>,
     /// All conditions must be satisfied (AND)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub all_of: Option<Vec<SchemaRef>>,
     /// At least one condition must be satisfied (OR)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub any_of: Option<Vec<SchemaRef>>,
     /// Exactly one condition must be satisfied (XOR)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub one_of: Option<Vec<SchemaRef>>,
-    /// Condition must not be satisfied (NOT)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub not: Option<Box<SchemaRef>>,
+    /// Condition must not be satisfied (NOT).
+    ///
+    /// No outer `Box` — [`SchemaRef::Inline`] already boxes the nested
+    /// schema (CORE-02).
+    pub not: Option<SchemaRef>,
 
     /// Discriminator for polymorphic schemas (used with oneOf/anyOf/allOf)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub discriminator: Option<Discriminator>,
 
     /// Nullable flag
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub nullable: Option<bool>,
     /// Read-only flag
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub read_only: Option<bool>,
     /// Write-only flag
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub write_only: Option<bool>,
     /// External documentation reference
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub external_docs: Option<ExternalDocumentation>,
 
     // JSON Schema 2020-12 dynamic references
     /// Definitions ($defs) - reusable schema definitions
-    #[serde(rename = "$defs")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub defs: Option<BTreeMap<String, Self>>,
     /// Dynamic anchor ($dynamicAnchor) - defines a dynamic anchor
-    #[serde(rename = "$dynamicAnchor")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub dynamic_anchor: Option<String>,
     /// Dynamic reference ($dynamicRef) - references a dynamic anchor
-    #[serde(rename = "$dynamicRef")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub dynamic_ref: Option<String>,
 }
 
 impl Schema {
-    /// Create a new schema
+    /// Create a new schema of the given type.
+    ///
+    /// Every other field starts at its [`Default`] (`None`/empty), so a newly
+    /// added `Schema` field is auto-defaulted here instead of having to be
+    /// appended to a ~40-field manual initializer that drifts out of sync.
     #[must_use]
-    pub const fn new(schema_type: SchemaType) -> Self {
+    pub fn new(schema_type: SchemaType) -> Self {
         Self {
-            ref_path: None,
             schema_type: Some(schema_type),
-            format: None,
-            title: None,
-            description: None,
-            default: None,
-            example: None,
-            examples: None,
-            minimum: None,
-            maximum: None,
-            exclusive_minimum: None,
-            exclusive_maximum: None,
-            multiple_of: None,
-            min_length: None,
-            max_length: None,
-            pattern: None,
-            items: None,
-            prefix_items: None,
-            min_items: None,
-            max_items: None,
-            unique_items: None,
-            properties: None,
-            required: None,
-            additional_properties: None,
-            min_properties: None,
-            max_properties: None,
-            r#enum: None,
-            all_of: None,
-            any_of: None,
-            one_of: None,
-            not: None,
-            discriminator: None,
-            nullable: None,
-            read_only: None,
-            write_only: None,
-            external_docs: None,
-            defs: None,
-            dynamic_anchor: None,
-            dynamic_ref: None,
+            ..Self::default()
         }
     }
 
     /// Create a string schema
     #[must_use]
-    pub const fn string() -> Self {
+    pub fn string() -> Self {
         Self::new(SchemaType::String)
     }
 
     /// Create an integer schema
     #[must_use]
-    pub const fn integer() -> Self {
+    pub fn integer() -> Self {
         Self::new(SchemaType::Integer)
     }
 
     /// Create a number schema
     #[must_use]
-    pub const fn number() -> Self {
+    pub fn number() -> Self {
         Self::new(SchemaType::Number)
     }
 
     /// Create a boolean schema
     #[must_use]
-    pub const fn boolean() -> Self {
+    pub fn boolean() -> Self {
         Self::new(SchemaType::Boolean)
     }
 
@@ -295,7 +200,7 @@ impl Schema {
     #[must_use]
     pub fn array(items: SchemaRef) -> Self {
         Self {
-            items: Some(Box::new(items)),
+            items: Some(items),
             ..Self::new(SchemaType::Array)
         }
     }
@@ -308,6 +213,66 @@ impl Schema {
             required: Some(Vec::new()),
             ..Self::new(SchemaType::Object)
         }
+    }
+
+    /// Create an object schema without allocating empty `properties` or `required` collections.
+    #[must_use]
+    pub fn object_empty() -> Self {
+        Self::new(SchemaType::Object)
+    }
+
+    /// Build a **nullable reference** schema that serializes as OpenAPI 3.1
+    /// `anyOf`: `[{ "$ref": <path> }, { "type": "null" }]`.
+    ///
+    /// This is the single legitimate mixed `$ref` form (CORE-03): a
+    /// reference that is also allowed to be `null`.  Centralizing it
+    /// here keeps `ref_path` from being hand-mixed with unrelated inline
+    /// constraints at call sites.  `ref_path` is the full reference
+    /// path (e.g. `"#/components/schemas/User"`); `schema_type` stays
+    /// `None` so only the nullable-reference `anyOf` shape is emitted.
+    #[must_use]
+    pub fn nullable_reference(ref_path: String) -> Self {
+        Self {
+            ref_path: Some(ref_path),
+            schema_type: None,
+            nullable: Some(true),
+            ..Self::object_empty()
+        }
+    }
+
+    /// Reconstruct a [`Schema`] from a compile-time-serialized JSON spec.
+    ///
+    /// This is the bridge the `schema!` proc-macro uses to emit a runtime
+    /// `Schema` value that is **identical** to the one the OpenAPI
+    /// generator produces for the same type: the macro builds the schema
+    /// through the shared `parse_struct_to_schema` path, serializes it to
+    /// JSON at compile time, and emits a call to this constructor — so the
+    /// `schema!` result can never drift from the documented component
+    /// schema (required-by-nullability, doc descriptions,
+    /// flatten/transparent, field constraints, `$ref` references).
+    ///
+    /// The input is always valid JSON (the macro just serialized it via
+    /// `serde_json`), so a parse failure means a vespera bug — the macro
+    /// emitted a `Schema` that cannot round-trip.  It degrades to a VISIBLE
+    /// sentinel schema (title `VESPERA_SCHEMA_PARSE_ERROR`, description
+    /// carrying the serde error) rather than a silent [`Schema::default`],
+    /// so the drift is loud in the generated spec.  It deliberately does NOT
+    /// assert: this constructor runs inside macro-generated code in the
+    /// USER's crate, where a `debug_assert!` would panic every downstream
+    /// debug build instead of surfacing the sentinel.
+    #[must_use]
+    pub fn from_compiled_json(json: &str) -> Self {
+        serde_json::from_str(json).unwrap_or_else(|e| schema_parse_failure_sentinel(&e))
+    }
+}
+
+fn schema_parse_failure_sentinel(error: &serde_json::Error) -> Schema {
+    Schema {
+        title: Some("VESPERA_SCHEMA_PARSE_ERROR".to_owned()),
+        description: Some(format!(
+            "vespera: schema unavailable — macro/serde drift ({error})"
+        )),
+        ..Schema::default()
     }
 }
 
@@ -336,187 +301,5 @@ pub struct Discriminator {
     pub mapping: Option<BTreeMap<String, String>>,
 }
 
-/// `OpenAPI` Components (reusable components)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Components {
-    /// Schema definitions
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub schemas: Option<BTreeMap<String, Schema>>,
-    /// Response definitions
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub responses: Option<HashMap<String, crate::route::Response>>,
-    /// Parameter definitions
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parameters: Option<HashMap<String, crate::route::Parameter>>,
-    /// Example definitions
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub examples: Option<HashMap<String, crate::route::Example>>,
-    /// Request body definitions
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub request_bodies: Option<HashMap<String, crate::route::RequestBody>>,
-    /// Header definitions
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub headers: Option<HashMap<String, crate::route::Header>>,
-    /// Security scheme definitions
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub security_schemes: Option<HashMap<String, SecurityScheme>>,
-}
-
-/// Security scheme type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum SecuritySchemeType {
-    ApiKey,
-    Http,
-    MutualTls,
-    OAuth2,
-    OpenIdConnect,
-}
-
-/// Security scheme definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SecurityScheme {
-    /// Security scheme type
-    pub r#type: SecuritySchemeType,
-    /// Description
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// Name (for API Key)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    /// Location (for API Key: query, header, cookie)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub r#in: Option<String>,
-    /// Scheme (for HTTP: bearer, basic, etc.)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scheme: Option<String>,
-    /// Bearer format (for HTTP Bearer)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bearer_format: Option<String>,
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use rstest::rstest;
-
-    #[rstest]
-    #[case(Schema::string(), SchemaType::String)]
-    #[case(Schema::integer(), SchemaType::Integer)]
-    #[case(Schema::number(), SchemaType::Number)]
-    #[case(Schema::boolean(), SchemaType::Boolean)]
-    fn primitive_helpers_set_schema_type(#[case] schema: Schema, #[case] expected: SchemaType) {
-        assert_eq!(schema.schema_type, Some(expected));
-    }
-
-    #[test]
-    fn array_helper_sets_type_and_items() {
-        let item_schema = Schema::boolean();
-        let schema = Schema::array(SchemaRef::Inline(Box::new(item_schema.clone())));
-
-        assert_eq!(schema.schema_type, Some(SchemaType::Array));
-        let items = schema.items.expect("items should be set");
-        match *items {
-            SchemaRef::Inline(inner) => {
-                assert_eq!(inner.schema_type, Some(SchemaType::Boolean));
-            }
-            SchemaRef::Ref(_) => panic!("array helper should set inline items"),
-        }
-    }
-
-    #[test]
-    fn object_helper_initializes_collections() {
-        let schema = Schema::object();
-
-        assert_eq!(schema.schema_type, Some(SchemaType::Object));
-        let props = schema.properties.expect("properties should be initialized");
-        assert!(props.is_empty());
-        let required = schema.required.expect("required should be initialized");
-        assert!(required.is_empty());
-    }
-
-    #[test]
-    fn serialize_number_constraint_none_serializes_null() {
-        // Direct call bypasses skip_serializing_if to cover the None branch
-        let result =
-            super::serialize_number_constraint(&None, serde_json::value::Serializer).unwrap();
-        assert_eq!(result, serde_json::Value::Null);
-    }
-
-    #[test]
-    fn serialize_minimum_whole_number_as_integer() {
-        let schema = Schema {
-            minimum: Some(0.0),
-            ..Schema::integer()
-        };
-        let json = serde_json::to_string(&schema).unwrap();
-        // Must be "minimum":0 (integer), NOT "minimum":0.0
-        assert!(
-            json.contains("\"minimum\":0"),
-            "expected integer 0, got: {json}"
-        );
-        assert!(
-            !json.contains("\"minimum\":0.0"),
-            "must not contain 0.0: {json}"
-        );
-    }
-
-    #[test]
-    fn serialize_minimum_fractional_as_float() {
-        let schema = Schema {
-            minimum: Some(1.5),
-            ..Schema::number()
-        };
-        let json = serde_json::to_string(&schema).unwrap();
-        assert!(
-            json.contains("\"minimum\":1.5"),
-            "expected 1.5, got: {json}"
-        );
-    }
-
-    #[test]
-    fn serialize_minimum_none_omitted() {
-        let schema = Schema::integer();
-        let json = serde_json::to_string(&schema).unwrap();
-        assert!(
-            !json.contains("minimum"),
-            "None minimum should be omitted: {json}"
-        );
-    }
-
-    #[test]
-    fn serialize_maximum_whole_number_as_integer() {
-        let schema = Schema {
-            maximum: Some(100.0),
-            ..Schema::integer()
-        };
-        let json = serde_json::to_string(&schema).unwrap();
-        assert!(
-            json.contains("\"maximum\":100"),
-            "expected integer 100, got: {json}"
-        );
-        assert!(
-            !json.contains("\"maximum\":100.0"),
-            "must not contain 100.0: {json}"
-        );
-    }
-
-    #[test]
-    fn serialize_multiple_of_whole_number_as_integer() {
-        let schema = Schema {
-            multiple_of: Some(2.0),
-            ..Schema::integer()
-        };
-        let json = serde_json::to_string(&schema).unwrap();
-        assert!(
-            json.contains("\"multipleOf\":2"),
-            "expected integer 2, got: {json}"
-        );
-        assert!(
-            !json.contains("\"multipleOf\":2.0"),
-            "must not contain 2.0: {json}"
-        );
-    }
-}
+mod tests;

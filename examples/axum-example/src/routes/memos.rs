@@ -62,7 +62,27 @@ pub struct MemoCommentInMemoDetail {
 
 schema_type!(
     MemoDetailResponse from crate::models::memo::Model,
+    relation_adapters = [("user", UserInMemoDetail)],
     add = [("memo_comments": Vec<MemoCommentInMemoDetail>)]
+);
+
+// Same-file relation adapter whose OpenAPI component name is overridden via
+// `#[schema(name = "...")]`. The generated relation `$ref` must point at that
+// schema NAME (`MemoSummaryUser`), not the Rust struct name
+// (`UserInMemoSummary`) — otherwise it dangles.
+#[derive(serde::Serialize, vespera::Schema)]
+#[serde(rename_all = "camelCase")]
+#[schema(name = "MemoSummaryUser")]
+pub struct UserInMemoSummary {
+    pub id: i32,
+    pub name: String,
+}
+
+schema_type!(
+    MemoSummaryResponse from crate::models::memo::Model,
+    omit = ["updated_at", "memo_comments"],
+    relation_adapters = [("user", UserInMemoSummary)],
+    add = [("note": String)]
 );
 
 /// Create a new memo
@@ -167,6 +187,39 @@ pub async fn get_memo_detail(Path(id): Path<i32>) -> Json<MemoDetailResponse> {
         updated_at: memo.updated_at,
         user: user.into(),
         memo_comments,
+    })
+}
+
+/// Get a memo summary (same-file relation adapter with a custom schema name)
+#[vespera::route(get, path = "/{id}/summary")]
+pub async fn get_memo_summary(Path(id): Path<i32>) -> Json<MemoSummaryResponse> {
+    let now: vespera::chrono::DateTime<vespera::chrono::FixedOffset> =
+        vespera::chrono::Utc::now().fixed_offset();
+    let memo = crate::models::memo::Model {
+        id,
+        user_id: 9,
+        title: "Summary Memo".to_string(),
+        content: "Summary content".to_string(),
+        status: crate::models::memo::MemoStatus::Published,
+        created_at: now,
+        updated_at: now,
+    };
+    let user = Some(crate::models::user::Model {
+        id: 9,
+        email: "summary@example.com".to_string(),
+        name: "Summary User".to_string(),
+        created_at: now,
+        updated_at: now,
+    });
+    Json(MemoSummaryResponse {
+        id: memo.id,
+        user_id: memo.user_id,
+        title: memo.title,
+        content: memo.content,
+        status: memo.status,
+        created_at: memo.created_at,
+        user: user.into(),
+        note: "summary".to_string(),
     })
 }
 

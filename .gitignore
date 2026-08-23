@@ -26,3 +26,4 @@ node_modules
 
 # Generated OpenAPI artifacts at workspace root
 /openapi*.json
+.retry-now/

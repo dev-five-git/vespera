@@ -1,7 +1,8 @@
 //! HTTP method constants and utilities.
 //!
 //! This module provides utilities for working with HTTP methods in route attributes.
-//! It handles method validation and constant definitions for all standard HTTP verbs.
+//! It handles method validation against [`HttpMethod::ALL`], the single
+//! source of truth for the supported-method set (defined in `vespera_core`).
 //!
 //! # Overview
 //!
@@ -25,15 +26,13 @@
 //!
 //! - [`is_http_method`] - Validate if a string is a valid HTTP method
 
-/// All supported HTTP methods as lowercase strings.
-pub const HTTP_METHODS: &[&str] = &[
-    "get", "post", "put", "patch", "delete", "head", "options", "trace",
-];
+use vespera_core::route::HttpMethod;
 
 /// Check if a string is a valid HTTP method (case-insensitive).
 ///
 /// Returns `true` if the input string (in any case) matches one of the
-/// supported HTTP methods defined in [`HTTP_METHODS`].
+/// supported HTTP methods in [`HttpMethod::ALL`], the single source of truth
+/// shared with `vespera_core`'s `Display` / `TryFrom<&str>` impls.
 ///
 /// # Example
 ///
@@ -44,7 +43,13 @@ pub const HTTP_METHODS: &[&str] = &[
 /// assert!(!is_http_method("invalid"));
 /// ```
 pub fn is_http_method(s: &str) -> bool {
-    HTTP_METHODS.contains(&s.to_lowercase().as_str())
+    // Case-insensitive match without allocating a case-folded copy of either
+    // side (HTTP method names are ASCII). Deliberately NOT delegated to
+    // `HttpMethod::try_from(s).is_ok()`: that allocates two `String`s per
+    // non-method identifier on the `args.rs` hot path.
+    HttpMethod::ALL
+        .iter()
+        .any(|method| s.eq_ignore_ascii_case(method.as_str()))
 }
 
 #[cfg(test)]
@@ -53,10 +58,10 @@ mod tests {
 
     #[test]
     fn test_is_http_method_valid() {
-        for method in HTTP_METHODS {
-            assert!(is_http_method(method));
-            assert!(is_http_method(&method.to_uppercase()));
-            assert!(is_http_method(method));
+        for method in HttpMethod::ALL {
+            let upper = method.as_str();
+            assert!(is_http_method(upper));
+            assert!(is_http_method(&upper.to_lowercase()));
         }
     }
 
@@ -69,17 +74,15 @@ mod tests {
 
     #[test]
     fn test_http_methods_includes_trace() {
-        assert!(HTTP_METHODS.contains(&"trace"));
+        assert!(HttpMethod::ALL.contains(&HttpMethod::Trace));
     }
 
     #[test]
     fn test_all_methods_parseable() {
         // Verify all methods can be parsed and recognized
-        for method in HTTP_METHODS {
-            assert!(
-                is_http_method(method),
-                "Method {method} should be recognized"
-            );
+        for method in HttpMethod::ALL {
+            let name = method.as_str();
+            assert!(is_http_method(name), "Method {name} should be recognized");
         }
     }
 }

@@ -12,6 +12,7 @@
 //!   `dispatch_response_streaming`
 
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex, Once};
 
 use axum::Router;
@@ -160,6 +161,14 @@ fn dispatch_text_envelope_returns_serialised_json() {
         parsed["metadata"]["version"].is_string(),
         "metadata.version should always be present"
     );
+    // Locks the invariant that the derive-serialised happy path is taken —
+    // the panic-free fallback inside `dispatch()` is only reachable on a
+    // (currently impossible) `serde_json` failure and would carry a fixed
+    // `body` marker.  Its absence here proves the fallback was not taken.
+    assert!(
+        !json.contains("envelope serialization failed"),
+        "happy path must not trigger the unreachable serialization fallback"
+    );
 }
 
 // ── error_envelope() ─────────────────────────────────────────────────
@@ -220,8 +229,11 @@ async fn streaming_async_version_mismatch_returns_400_in_returned_bytes() {
     let wire = encode_wire(99, "GET", "/ping", HashMap::new(), &[], Some(APP));
     let chunks_buf: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
     let c = Arc::clone(&chunks_buf);
-    let header_bytes =
-        dispatch_streaming_async(wire, move |chunk| c.lock().unwrap().push(chunk.to_vec())).await;
+    let header_bytes = dispatch_streaming_async(wire, move |chunk| {
+        c.lock().unwrap().push(chunk.to_vec());
+        ControlFlow::Continue(())
+    })
+    .await;
     let (header, body) = decode_wire(&header_bytes);
     assert_eq!(header["status"].as_u64(), Some(400));
     let msg = String::from_utf8_lossy(&body);
@@ -242,8 +254,11 @@ async fn streaming_async_unknown_app_returns_404() {
     );
     let chunks_buf: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
     let c = Arc::clone(&chunks_buf);
-    let header_bytes =
-        dispatch_streaming_async(wire, move |chunk| c.lock().unwrap().push(chunk.to_vec())).await;
+    let header_bytes = dispatch_streaming_async(wire, move |chunk| {
+        c.lock().unwrap().push(chunk.to_vec());
+        ControlFlow::Continue(())
+    })
+    .await;
     let (header, _) = decode_wire(&header_bytes);
     assert_eq!(header["status"].as_u64(), Some(404));
     assert!(chunks_buf.lock().unwrap().is_empty());
@@ -255,8 +270,11 @@ async fn streaming_async_invalid_method_returns_405() {
     let wire = encode_wire(1, "BAD METHOD", "/ping", HashMap::new(), &[], Some(APP));
     let chunks_buf: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
     let c = Arc::clone(&chunks_buf);
-    let header_bytes =
-        dispatch_streaming_async(wire, move |chunk| c.lock().unwrap().push(chunk.to_vec())).await;
+    let header_bytes = dispatch_streaming_async(wire, move |chunk| {
+        c.lock().unwrap().push(chunk.to_vec());
+        ControlFlow::Continue(())
+    })
+    .await;
     let (header, body) = decode_wire(&header_bytes);
     assert_eq!(header["status"].as_u64(), Some(405));
     assert!(String::from_utf8_lossy(&body).contains("Method Not Allowed"));
@@ -269,8 +287,11 @@ async fn streaming_async_triple_header_exercises_multi_growth() {
     let wire = encode_wire(1, "GET", "/triple", HashMap::new(), &[], Some(APP));
     let chunks_buf: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
     let c = Arc::clone(&chunks_buf);
-    let header_bytes =
-        dispatch_streaming_async(wire, move |chunk| c.lock().unwrap().push(chunk.to_vec())).await;
+    let header_bytes = dispatch_streaming_async(wire, move |chunk| {
+        c.lock().unwrap().push(chunk.to_vec());
+        ControlFlow::Continue(())
+    })
+    .await;
     let (header, _) = decode_wire(&header_bytes);
     assert_eq!(header["status"].as_u64(), Some(200));
     let trace = &header["headers"]["x-trace-id"];
@@ -343,6 +364,7 @@ async fn streaming_async_forwards_non_empty_query_string() {
     let b = Arc::clone(&buf);
     let header_bytes = dispatch_streaming_async(wire, move |chunk| {
         b.lock().unwrap().extend_from_slice(chunk);
+        ControlFlow::Continue(())
     })
     .await;
     let (header_json, _) = decode_wire(&header_bytes);
@@ -362,6 +384,7 @@ async fn streaming_async_post_body_without_content_type_defaults_to_json() {
     let b = Arc::clone(&buf);
     let header_bytes = dispatch_streaming_async(wire, move |chunk| {
         b.lock().unwrap().extend_from_slice(chunk);
+        ControlFlow::Continue(())
     })
     .await;
     let (header_json, _) = decode_wire(&header_bytes);

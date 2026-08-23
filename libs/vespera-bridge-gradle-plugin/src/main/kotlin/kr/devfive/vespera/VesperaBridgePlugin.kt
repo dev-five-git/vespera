@@ -5,6 +5,7 @@ import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.Exec
+import org.gradle.language.jvm.tasks.ProcessResources
 import java.io.File
 
 /**
@@ -12,10 +13,9 @@ import java.io.File
  * application:
  *
  * 1. Registers a `bundleNativeLib` task that copies the cdylib from
- *    `<cargoRoot>/target/release/` into
- *    `build/resources/main/native/<os>-<arch>/` so
- *    `VesperaBridge.init(...)` can extract it at runtime.
- * 2. Wires `bundleNativeLib` into `processResources`.
+ *    `<cargoRoot>/target/release/` into a generated resources directory.
+ * 2. Wires those generated resources into `processResources` under
+ *    `native/<os>-<arch>/` so `VesperaBridge.init(...)` can extract it.
  * 3. Adds `kr.devfive:vespera-bridge:<bridgeVersion>` as an
  *    `implementation` dependency.
  * 4. Optionally (`autoBuildCargo = true`) registers a `cargoBuild`
@@ -26,13 +26,13 @@ import java.io.File
  *
  * ```kotlin
  * plugins {
- *     id("kr.devfive.vespera-bridge") version "0.0.15"
+ *     id("kr.devfive.vespera-bridge") version "<plugin-version>"
  * }
  *
  * vespera {
  *     crateName.set("my_rust_lib")
  *     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
- *     bridgeVersion.set("0.0.15")
+ *     bridgeVersion.set("<bridge-version>")
  * }
  * ```
  */
@@ -41,17 +41,25 @@ class VesperaBridgePlugin : Plugin<Project> {
         val ext = project.extensions
             .create("vespera", VesperaBridgeExtension::class.java)
         ext.autoBuildCargo.convention(false)
+        ext.cargoSourceRoots.convention(listOf("src", "crates", "examples"))
+        ext.cargoProfile.convention("release")
 
         // Compute platform-derived values eagerly (host machine info).
         val os = detectOs()
         val arch = detectArch()
-        val targetSubdir = "resources/main/native/$os-$arch"
+        val generatedResourcesDir = project.layout.buildDirectory.dir("generated/vesperaNativeResources")
+        val targetSubdir = "native/$os-$arch"
 
-        // Lazy file references — evaluated at task execution.
+        // Lazy file references — evaluated at task execution.  The cdylib
+        // lives under `<targetDir|cargoRoot/target>/<profileDir>/`, so a
+        // debug / custom-profile build or a redirected CARGO_TARGET_DIR is
+        // located correctly instead of being hardcoded to `target/release/`.
         val cdylibFile = project.provider {
-            val root = ext.cargoRoot.get().asFile
             val name = ext.crateName.get()
-            File(root, "target/release/" + mapLibraryName(os, name))
+            val targetBase =
+                if (ext.targetDir.isPresent) ext.targetDir.get().asFile
+                else File(ext.cargoRoot.get().asFile, "target")
+            File(targetBase, profileDir(ext.cargoProfile.get()) + "/" + mapLibraryName(os, name))
         }
 
         val cargoBuildTask = project.tasks.register(
@@ -62,14 +70,36 @@ class VesperaBridgePlugin : Plugin<Project> {
                     t.group = "vespera"
                     t.description = "Build the Rust cdylib via `cargo build --release`."
                     t.workingDir = ext.cargoRoot.get().asFile
-                    t.commandLine("cargo", "build", "-p", ext.crateName.get(), "--release")
-                    // Up-to-date check: re-run on any .rs file or Cargo.lock change.
-                    val rustSources = project.fileTree(
-                        ext.cargoRoot.get().asFile.resolve("src")
-                    )
-                    rustSources.include("**/*.rs")
-                    t.inputs.files(rustSources)
-                    t.inputs.file(ext.cargoRoot.get().asFile.resolve("Cargo.lock"))
+                    // Profile-aware command: `release` → `--release`, `dev`/
+                    // `debug` → default build, any other → `--profile <p>`.
+                    val profile = ext.cargoProfile.get()
+                    val cmd = mutableListOf("cargo", "build", "-p", ext.crateName.get())
+                    when (profile) {
+                        "release" -> cmd.add("--release")
+                        "dev", "debug" -> {} // default profile → target/debug
+                        else -> { cmd.add("--profile"); cmd.add(profile) }
+                    }
+                    t.commandLine(cmd)
+                    // Honour a redirected target dir so cargo writes where
+                    // `bundleNativeLib` later looks for the cdylib.
+                    if (ext.targetDir.isPresent) {
+                        t.environment(
+                            "CARGO_TARGET_DIR",
+                            ext.targetDir.get().asFile.absolutePath,
+                        )
+                    }
+                    // Up-to-date check: re-run on workspace manifests, Cargo.lock,
+                    // and Rust sources in configured roots. This repository keeps
+                    // Rust code under crates/* and examples/*, not only src/.
+                    val cargoRoot = ext.cargoRoot.get().asFile
+                    val cargoInputs = project.fileTree(cargoRoot)
+                    cargoInputs.include("Cargo.toml")
+                    cargoInputs.include("**/Cargo.toml")
+                    ext.cargoSourceRoots.get().forEach { root ->
+                        cargoInputs.include("${root.trimEnd('/', '\\')}/**/*.rs")
+                    }
+                    t.inputs.files(cargoInputs)
+                    t.inputs.file(cargoRoot.resolve("Cargo.lock")).optional()
                     t.outputs.file(cdylibFile)
                 }
             }
@@ -82,16 +112,20 @@ class VesperaBridgePlugin : Plugin<Project> {
                 override fun execute(t: Copy) {
                     t.group = "vespera"
                     t.description =
-                        "Copy the built cdylib into src/main/resources/native/<os>-<arch>/."
+                        "Copy the built cdylib into generated resources/native/<os>-<arch>/."
                     t.from(cdylibFile)
-                    t.into(project.layout.buildDirectory.dir(targetSubdir))
+                    t.into(generatedResourcesDir.map { it.dir(targetSubdir) })
                     t.doFirst(object : org.gradle.api.Action<Task> {
                         override fun execute(@Suppress("UNUSED_PARAMETER") task: Task) {
                             val src = cdylibFile.get()
                             require(src.exists()) {
                                 "Native library not found: $src\n" +
-                                    "Run: cargo build -p ${ext.crateName.get()} --release " +
-                                    "(or set vespera.autoBuildCargo = true)"
+                                    "Build the '${ext.crateName.get()}' cdylib for the " +
+                                    "'${ext.cargoProfile.get()}' profile (or set " +
+                                    "vespera.autoBuildCargo = true). If the workspace " +
+                                    "redirects Cargo output (CARGO_TARGET_DIR / " +
+                                    ".cargo/config.toml build.target-dir), set " +
+                                    "vespera.targetDir to that directory."
                             }
                         }
                     })
@@ -110,28 +144,32 @@ class VesperaBridgePlugin : Plugin<Project> {
             }
         })
 
-        // Hook into Java resource processing + dependency wiring.
-        project.afterEvaluate(object : org.gradle.api.Action<Project> {
-            override fun execute(p: Project) {
-                p.tasks.findByName("processResources")?.dependsOn(bundleTask)
-
-                // Repository configuration is intentionally left to
-                // the user's settings.gradle.kts (dependencyResolution
-                // Management) — Gradle's "fail-on-project-repos" mode
-                // requires us not to mutate project.repositories from
-                // a plugin.  Users typically add mavenCentral() (and
-                // mavenLocal() for development) at the settings level.
-                val version = ext.bridgeVersion.orNull
-                    ?: error(
-                        "vespera.bridgeVersion must be set explicitly. " +
-                            "Example: vespera { bridgeVersion.set(\"0.0.15\") }"
-                    )
-                p.dependencies.add(
-                    "implementation",
-                    "kr.devfive:vespera-bridge:$version",
-                )
+        // Hook into Java resource processing + dependency wiring lazily when a
+        // Java plugin creates `processResources` / `implementation`.  Avoid
+        // afterEvaluate so configuration-cache snapshots do not depend on a
+        // late mutable project callback.
+        project.pluginManager.withPlugin("java") {
+            project.tasks.withType(ProcessResources::class.java).configureEach {
+                dependsOn(bundleTask)
+                from(generatedResourcesDir)
             }
-        })
+
+            // Repository configuration is intentionally left to
+            // the user's settings.gradle.kts (dependencyResolution
+            // Management) — Gradle's "fail-on-project-repos" mode
+            // requires us not to mutate project.repositories from
+            // a plugin.  Users typically add mavenCentral() (and
+            // mavenLocal() for development) at the settings level.
+            val bridgeDependency = ext.bridgeVersion
+                .map { version -> "kr.devfive:vespera-bridge:$version" }
+                .orElse(project.provider {
+                    error(
+                        "vespera.bridgeVersion must be set explicitly. " +
+                            "Example: vespera { bridgeVersion.set(\"<bridge-version>\") }"
+                    )
+                })
+            project.dependencies.addProvider("implementation", bridgeDependency)
+        }
     }
 
     private fun detectOs(): String {
@@ -156,5 +194,15 @@ class VesperaBridgePlugin : Plugin<Project> {
         "windows" -> "$name.dll"
         "macos" -> "lib$name.dylib"
         else -> "lib$name.so"
+    }
+
+    /**
+     * Map a Cargo profile name to its `target/` output subdirectory.
+     * Cargo's built-in `dev` profile emits to `debug`; every other profile
+     * (`release`, or a custom `[profile.X]`) uses its own name verbatim.
+     */
+    private fun profileDir(profile: String): String = when (profile) {
+        "dev", "debug" -> "debug"
+        else -> profile
     }
 }

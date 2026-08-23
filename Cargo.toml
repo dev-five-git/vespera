@@ -1,7 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "examples/*"]
+members = ["crates/*", "examples/*", "benches/*"]
 exclude = ["examples/java-jni-demo"]
+# Bare `cargo build`/`test`/`clippy` (no `--workspace`) stay scoped to the
+# shipped crates + examples; the compile-time benchmark fixture/harness under
+# `benches/*` are built on demand (`cargo run -p compile-bench-runner`) so a
+# deliberately macro-heavy fixture does not tax every local build.
+default-members = ["crates/*", "examples/*"]
 
 [workspace.package]
 version = "0.2.0"
@@ -9,6 +14,34 @@ edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/dev-five-git/vespera"
 readme = "README.md"
+
+# Release profile tuned for the shipped artifacts (JNI cdylibs, server
+# binaries): FAT LTO + single codegen unit deliberately trade much
+# longer release-build time for maximum cross-crate inlining on the
+# runtime-critical paths (wire parse/serialize, dispatch, JNI
+# callbacks).  Runtime performance of the shipped artifact is
+# prioritized over build time by project policy.
+#
+# `strip = "debuginfo"` shrinks the artifact without touching the
+# exported JNI dynamic symbols (they live in `.dynsym`, not the
+# stripped debug/local symbol table).
+#
+# NEVER switch the panic strategy away from unwinding here — the JNI
+# bridge relies on `catch_unwind` to convert handler panics into `500`
+# wire responses; aborting would take down the host JVM instead.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"
+
+# Benchmarks must measure under the SAME codegen as the shipped release
+# artifacts (fat LTO + single codegen unit); otherwise the absolute
+# numbers reflect the default `bench` profile (no LTO, 16 codegen units)
+# instead of production.  Build time is intentionally traded for
+# representative measurements.
+[profile.bench]
+lto = "fat"
+codegen-units = 1
 
 [workspace.dependencies]
 vespera_core = { path = "crates/vespera_core", version = "0.2.0" }

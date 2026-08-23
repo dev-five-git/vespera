@@ -1,0 +1,112 @@
+name: Bench
+
+# Criterion regression gate for the in-process dispatch hot path.
+#
+# - push to main: runs the gated bench groups and saves the results as
+#   the `main` criterion baseline in the actions cache.
+# - pull_request: restores the latest main baseline and compares; the
+#   job FAILS when any bench regresses by more than 10% mean change
+#   AND the 95% confidence interval lower bound exceeds +5% (the
+#   double condition filters shared-runner noise).
+#
+# Gated groups are the stable per-request paths (wire_path,
+# headers_path, request_headers_path, resolve_path, dispatch_path). The
+# streaming and contended groups are noisier (spawn_blocking / scheduler
+# timing) and the router_path setup micro-bench is low-signal, so those
+# are validated locally instead — see PERF_REPORT.md.
+#
+# This TIMING gate fires only at a loose ±10% (shared-runner drift), so it
+# catches BIG regressions. Small, deterministic ALLOCATION regressions are
+# caught noise-free by the `alloc_budget` integration test (a counting
+# global allocator asserting exact per-dispatch allocation budgets) in the
+# normal `cargo test` job — the two gates are complementary.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/bench.yml'
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/bench.yml'
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BENCH_FILTER: 'wire_path|headers_path|request_headers_path|resolve_path|dispatch_path'
+
+jobs:
+  bench:
+    name: Criterion regression gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Restore criterion baseline (latest main)
+        id: restore-baseline
+        uses: actions/cache/restore@v6
+        with:
+          path: target/criterion
+          key: bench-baseline-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            bench-baseline-${{ runner.os }}-
+
+      - name: Run benches and save main baseline
+        if: github.event_name == 'push'
+        run: |
+          cargo bench -p vespera_inprocess --bench dispatch -- \
+            --save-baseline main "${BENCH_FILTER}"
+
+      - name: Save criterion baseline cache
+        if: github.event_name == 'push'
+        uses: actions/cache/save@v6
+        with:
+          path: target/criterion
+          key: bench-baseline-${{ runner.os }}-${{ github.sha }}
+
+      - name: Compare against main baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          if [ ! -d target/criterion ] || ! find target/criterion -maxdepth 4 -type d -name main | grep -q .; then
+            echo "::notice::No main baseline in cache yet — running benches without a gate."
+            cargo bench -p vespera_inprocess --bench dispatch -- "${BENCH_FILTER}"
+            exit 0
+          fi
+          cargo bench -p vespera_inprocess --bench dispatch -- \
+            --baseline main "${BENCH_FILTER}"
+
+      - name: Enforce regression gate
+        if: github.event_name == 'pull_request'
+        run: |
+          shopt -s nullglob
+          fail=0
+          found=0
+          while IFS= read -r f; do
+            found=1
+            mean=$(jq -r '.mean.point_estimate' "$f")
+            lower=$(jq -r '.mean.confidence_interval.lower_bound' "$f")
+            bench=$(dirname "$(dirname "$f")")
+            bench=${bench#target/criterion/}
+            printf '%s: mean %+.2f%% (CI lower %+.2f%%)\n' \
+              "$bench" "$(awk -v v="$mean" 'BEGIN{print v*100}')" \
+              "$(awk -v v="$lower" 'BEGIN{print v*100}')"
+            if awk -v m="$mean" -v l="$lower" 'BEGIN{exit !(m > 0.10 && l > 0.05)}'; then
+              echo "::error::Performance regression: ${bench} mean change exceeds +10% with CI lower bound > +5%"
+              fail=1
+            fi
+          done < <(find target/criterion -path '*/change/estimates.json')
+          if [ "$found" -eq 0 ]; then
+            echo "::notice::No change estimates found (first run against this baseline?) — nothing to gate."
+          fi
+          exit $fail

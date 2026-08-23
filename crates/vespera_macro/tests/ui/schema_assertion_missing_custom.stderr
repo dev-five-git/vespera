@@ -1,0 +1,22 @@
+error[E0277]: the trait bound `MissingSchema: Schema` is not satisfied
+  --> tests/ui/schema_assertion_missing_custom.rs:13:13
+   |
+13 |     custom: MissingSchema,
+   |             ^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `Schema` is not implemented for `MissingSchema`
+  --> tests/ui/schema_assertion_missing_custom.rs:9:1
+   |
+ 9 | struct MissingSchema;
+   | ^^^^^^^^^^^^^^^^^^^^
+help: the trait `Schema` is implemented for `Request`
+  --> tests/ui/schema_assertion_missing_custom.rs:11:10
+   |
+11 | #[derive(Schema)]
+   |          ^^^^^^
+note: required by a bound in `__vespera_assert_schema`
+  --> tests/ui/schema_assertion_missing_custom.rs:13:5
+   |
+13 |     custom: MissingSchema,
+   |     ^^^^^^ required by this bound in `__vespera_assert_schema`
+   = note: this error originates in the derive macro `Schema` (in Nightly builds, run with -Z macro-backtrace for more info)

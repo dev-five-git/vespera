@@ -45,6 +45,15 @@ impl Parse for SchemaInput {
 
             match ident_str.as_str() {
                 "omit" => {
+                    // Reject a second `omit` instead of silently overwriting the
+                    // first (the prior behaviour gave surprising schemas with no
+                    // diagnostic) — matching `schema_type!`'s stricter parser.
+                    if omit.is_some() {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "duplicate parameter `omit` in schema! invocation",
+                        ));
+                    }
                     input.parse::<Token![=]>()?;
                     let content;
                     let _ = bracketed!(content in input);
@@ -53,6 +62,12 @@ impl Parse for SchemaInput {
                     omit = Some(fields.into_iter().map(|s| s.value()).collect());
                 }
                 "pick" => {
+                    if pick.is_some() {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "duplicate parameter `pick` in schema! invocation",
+                        ));
+                    }
                     input.parse::<Token![=]>()?;
                     let content;
                     let _ = bracketed!(content in input);
@@ -102,6 +117,9 @@ pub struct SchemaTypeInput {
     pub pick: Option<Vec<String>>,
     /// Field renames: (`source_field_name`, `new_field_name`)
     pub rename: Option<Vec<(String, String)>>,
+    /// Explicit same-file adapter DTOs for single-value relation fields:
+    /// (`relation_field_name`, `AdapterStructIdent`)
+    pub relation_adapters: Vec<(String, Ident)>,
     /// New fields to add: (`field_name`, `field_type`)
     pub add: Option<Vec<(String, Type)>>,
     /// Whether to derive Clone (default: true)
@@ -178,6 +196,26 @@ impl Parse for RenamePair {
     }
 }
 
+/// Helper struct to parse a relation adapter pair: ("`field_name`", AdapterIdent)
+struct RelationAdapterPair {
+    field_name: String,
+    adapter: Ident,
+}
+
+impl Parse for RelationAdapterPair {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let content;
+        parenthesized!(content in input);
+        let field_name: LitStr = content.parse()?;
+        content.parse::<Token![,]>()?;
+        let adapter: Ident = content.parse()?;
+        Ok(Self {
+            field_name: field_name.value(),
+            adapter,
+        })
+    }
+}
+
 impl Parse for SchemaTypeInput {
     #[allow(clippy::too_many_lines)]
     fn parse(input: ParseStream) -> syn::Result<Self> {
@@ -201,6 +239,7 @@ impl Parse for SchemaTypeInput {
         let mut omit = None;
         let mut pick = None;
         let mut rename = None;
+        let mut relation_adapters = Vec::new();
         let mut add = None;
         let mut derive_clone = true;
         let mut partial = None;
@@ -209,6 +248,10 @@ impl Parse for SchemaTypeInput {
         let mut rename_all = None;
         let mut multipart = false;
         let mut omit_default = false;
+        // Reject a repeated parameter (e.g. `pick = .., pick = ..` or a bare
+        // `partial, partial`) with a spanned error instead of letting the
+        // later value silently overwrite the earlier one.
+        let mut seen_params = std::collections::HashSet::<String>::new();
 
         // Parse optional parameters
         while input.peek(Token![,]) {
@@ -220,6 +263,12 @@ impl Parse for SchemaTypeInput {
 
             let ident: Ident = input.parse()?;
             let ident_str = ident.to_string();
+            if !seen_params.insert(ident_str.clone()) {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    format!("duplicate parameter `{ident_str}` in schema_type! macro"),
+                ));
+            }
 
             match ident_str.as_str() {
                 "omit" => {
@@ -245,6 +294,17 @@ impl Parse for SchemaTypeInput {
                     let pairs: Punctuated<RenamePair, Token![,]> =
                         content.parse_terminated(RenamePair::parse, Token![,])?;
                     rename = Some(pairs.into_iter().map(|p| (p.from, p.to)).collect());
+                }
+                "relation_adapters" => {
+                    input.parse::<Token![=]>()?;
+                    let content;
+                    let _ = bracketed!(content in input);
+                    let pairs: Punctuated<RelationAdapterPair, Token![,]> =
+                        content.parse_terminated(RelationAdapterPair::parse, Token![,])?;
+                    relation_adapters = pairs
+                        .into_iter()
+                        .map(|p| (p.field_name, p.adapter))
+                        .collect();
                 }
                 "add" => {
                     input.parse::<Token![=]>()?;
@@ -306,7 +366,7 @@ impl Parse for SchemaTypeInput {
                     return Err(syn::Error::new(
                         ident.span(),
                         format!(
-                            "unknown parameter: `{ident_str}`. Expected `omit`, `pick`, `rename`, `add`, `clone`, `partial`, `ignore`, `name`, `rename_all`, `multipart`, or `omit_default`"
+                            "unknown parameter: `{ident_str}`. Expected `omit`, `pick`, `rename`, `relation_adapters`, `add`, `clone`, `partial`, `ignore`, `name`, `rename_all`, `multipart`, or `omit_default`"
                         ),
                     ));
                 }
@@ -327,6 +387,7 @@ impl Parse for SchemaTypeInput {
             omit,
             pick,
             rename,
+            relation_adapters,
             add,
             derive_clone,
             partial,
@@ -400,6 +461,7 @@ mod tests {
         assert!(input.omit.is_none());
         assert!(input.pick.is_none());
         assert!(input.rename.is_none());
+        assert!(input.relation_adapters.is_empty());
         assert!(input.derive_clone);
     }
 
@@ -431,6 +493,18 @@ mod tests {
         let rename = input.rename.unwrap();
         assert_eq!(rename.len(), 1);
         assert_eq!(rename[0], ("id".to_string(), "user_id".to_string()));
+    }
+
+    #[test]
+    fn test_parse_schema_type_input_with_relation_adapters() {
+        let tokens = quote::quote!(MemoResponse from Memo, relation_adapters = [("user", UserInMemo), ("category", CategoryInMemo)]);
+        let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
+
+        assert_eq!(input.relation_adapters.len(), 2);
+        assert_eq!(input.relation_adapters[0].0, "user");
+        assert_eq!(input.relation_adapters[0].1.to_string(), "UserInMemo");
+        assert_eq!(input.relation_adapters[1].0, "category");
+        assert_eq!(input.relation_adapters[1].1.to_string(), "CategoryInMemo");
     }
 
     #[test]
@@ -613,20 +687,44 @@ mod tests {
     #[test]
     fn test_parse_schema_type_all_parameters() {
         let tokens = quote::quote!(
-            NewType from User,
+            NewType from crate::models::User,
             pick = ["id", "name"],
             rename = [("id", "user_id")],
+            relation_adapters = [("owner", OwnerSummary)],
+            add = [("request_id": String)],
             clone = false,
             partial,
+            ignore,
             name = "CustomName",
-            rename_all = "snake_case"
+            rename_all = "snake_case",
+            multipart,
+            omit_default
         );
         let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
-        assert_eq!(input.pick.unwrap(), vec!["id", "name"]);
+        let source_type = &input.source_type;
+        assert_eq!(input.new_type, "NewType");
+        assert_eq!(
+            quote::quote!(#source_type).to_string(),
+            "crate :: models :: User"
+        );
+        assert_eq!(
+            input.pick.as_deref(),
+            Some(["id".to_string(), "name".to_string()].as_slice())
+        );
+        assert_eq!(
+            input.rename.as_deref(),
+            Some([("id".to_string(), "user_id".to_string())].as_slice())
+        );
+        assert_eq!(input.relation_adapters[0].0, "owner");
+        assert_eq!(input.relation_adapters[0].1, "OwnerSummary");
+        assert_eq!(input.add.as_ref().unwrap()[0].0, "request_id");
         assert!(!input.derive_clone);
-        assert!(input.partial.is_some());
+        assert!(matches!(input.partial, Some(PartialMode::All)));
+        assert!(input.ignore_schema);
         assert_eq!(input.schema_name.as_deref(), Some("CustomName"));
         assert_eq!(input.rename_all.as_deref(), Some("snake_case"));
+        assert!(input.multipart);
+        assert!(input.omit_default);
     }
 
     // Line 164: Error when "from" keyword is wrong
@@ -739,5 +837,24 @@ mod tests {
         let tokens = quote::quote!(CreateUser from User);
         let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
         assert!(!input.omit_default);
+    }
+
+    #[rstest::rstest]
+    #[case::omit(
+        quote::quote!(User, omit = ["a"], omit = ["b"]),
+        "duplicate parameter `omit` in schema! invocation"
+    )]
+    #[case::pick(
+        quote::quote!(User, pick = ["a"], pick = ["b"]),
+        "duplicate parameter `pick` in schema! invocation"
+    )]
+    fn schema_input_rejects_duplicate_filter(
+        #[case] tokens: proc_macro2::TokenStream,
+        #[case] expected: &str,
+    ) {
+        let Err(error) = syn::parse2::<SchemaInput>(tokens) else {
+            panic!("duplicate must fail");
+        };
+        assert_eq!(error.to_string(), expected);
     }
 }

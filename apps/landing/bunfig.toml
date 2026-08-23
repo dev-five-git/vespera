@@ -1,0 +1,12 @@
+[test]
+# `@devup-ui/react` is compile-time only — every component/`keyframes()` call
+# throws `Cannot run on the runtime` unless a build plugin rewrites it first.
+# Importing `@devup-ui/bun-plugin` registers that transform as a Bun loader
+# plugin (top-level `await` in its entry, so it is live before any test file is
+# loaded), and `bun-test-env-dom` installs happy-dom + readable HTML snapshots.
+#
+# Bun only reads `bunfig.toml` from the current working directory, and the
+# plugin resolves `devup.json` / writes `df/` relative to it too — so these
+# tests MUST run from `apps/landing` (`bun run -F ./apps/landing test`), which
+# is what the root `test` script does.
+preload = ["@devup-ui/bun-plugin", "bun-test-env-dom"]

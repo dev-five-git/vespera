@@ -1,1 +1,198 @@
-empty
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeaderCell,
+  TableRow,
+} from '@/components/mdx/components/Table'
+
+# Route Attribute & Extractors
+
+`#[vespera::route]` marks a `pub async fn` as an HTTP handler. Vespera reads the function signature to extract path parameters, query parameters, request body, and response types for the OpenAPI spec.
+
+## Route Attribute Parameters
+
+```rust
+#[vespera::route(
+    get,                              // HTTP method (default: get)
+    path = "/{id}",                   // Path suffix (appended to file-based prefix)
+    tags = ["users", "admin"],        // OpenAPI tags
+    description = "Get user by ID"    // OpenAPI operation description
+)]
+pub async fn get_user(Path(id): Path<u32>) -> Json<User> { ... }
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| method | `get`, `post`, `put`, `patch`, `delete`, `head`, `options` | `get` | HTTP method |
+| `path` | string | `""` | Path suffix appended to the file-based prefix |
+| `tags` | string array | `[]` | OpenAPI tags for grouping in Swagger UI |
+| `description` | string | `""` | OpenAPI operation description |
+
+## Extractor to OpenAPI Mapping
+
+Vespera reads your handler's extractor types and maps them to OpenAPI parameters and request bodies automatically:
+
+<Table>
+  <TableHead>
+    <TableRow>
+      <TableHeaderCell>Extractor</TableHeaderCell>
+      <TableHeaderCell>OpenAPI Location</TableHeaderCell>
+      <TableHeaderCell>Notes</TableHeaderCell>
+    </TableRow>
+  </TableHead>
+  <TableBody>
+    <TableRow>
+      <TableCell>`Path<T>`</TableCell>
+      <TableCell>Path parameters</TableCell>
+      <TableCell>`T` can be a primitive or a struct</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`Query<T>`</TableCell>
+      <TableCell>Query parameters</TableCell>
+      <TableCell>Struct fields become individual query params</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`Json<T>`</TableCell>
+      <TableCell>Request body (`application/json`)</TableCell>
+      <TableCell></TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`Form<T>`</TableCell>
+      <TableCell>Request body (`application/x-www-form-urlencoded`)</TableCell>
+      <TableCell></TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`TypedMultipart<T>`</TableCell>
+      <TableCell>Request body (`multipart/form-data`)</TableCell>
+      <TableCell>Typed with schema</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`Multipart`</TableCell>
+      <TableCell>Request body (`multipart/form-data`)</TableCell>
+      <TableCell>Untyped, generic object</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`TypedHeader<T>`</TableCell>
+      <TableCell>Header parameters</TableCell>
+      <TableCell></TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`State<T>`</TableCell>
+      <TableCell>Ignored</TableCell>
+      <TableCell>Internal — not part of the API</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`Extension<T>`</TableCell>
+      <TableCell>Ignored</TableCell>
+      <TableCell>Internal — not part of the API</TableCell>
+    </TableRow>
+  </TableBody>
+</Table>
+
+## Examples
+
+### Path Parameters
+
+```rust
+// Single path param
+#[vespera::route(get, path = "/{id}")]
+pub async fn get_user(Path(id): Path<u32>) -> Json<User> { ... }
+
+// Multiple path params via struct
+#[derive(Deserialize)]
+pub struct PostParams {
+    pub user_id: u32,
+    pub post_id: u32,
+}
+
+#[vespera::route(get, path = "/{user_id}/posts/{post_id}")]
+pub async fn get_post(Path(params): Path<PostParams>) -> Json<Post> { ... }
+```
+
+### Query Parameters
+
+```rust
+#[derive(Deserialize, Schema)]
+pub struct ListUsersQuery {
+    pub page: Option<u32>,
+    pub limit: Option<u32>,
+    pub search: Option<String>,
+}
+
+#[vespera::route(get)]
+pub async fn list_users(Query(q): Query<ListUsersQuery>) -> Json<Vec<User>> { ... }
+```
+
+### JSON Body
+
+```rust
+#[derive(Deserialize, Schema)]
+pub struct CreateUserRequest {
+    pub name: String,
+    pub email: String,
+}
+
+#[vespera::route(post)]
+pub async fn create_user(Json(req): Json<CreateUserRequest>) -> Json<User> { ... }
+```
+
+### Validated Body (with 422)
+
+```rust
+use vespera::Validated;
+use garde::Validate;
+
+#[derive(Deserialize, Schema, Validate)]
+pub struct CreateUserRequest {
+    #[garde(length(min = 3, max = 32))]
+    pub username: String,
+    #[garde(email)]
+    pub email: String,
+}
+
+#[vespera::route(post)]
+pub async fn create_user(
+    Validated(Json(req)): Validated<Json<CreateUserRequest>>,
+) -> Json<User> { ... }
+```
+
+### State (Ignored by OpenAPI)
+
+```rust
+#[vespera::route(get)]
+pub async fn list_users(
+    State(db): State<DbPool>,   // ignored by OpenAPI
+    Query(q): Query<ListQuery>, // included in OpenAPI
+) -> Json<Vec<User>> { ... }
+```
+
+### Error Responses
+
+```rust
+#[derive(Serialize, Schema)]
+pub struct ApiError {
+    pub message: String,
+}
+
+#[vespera::route(get, path = "/{id}")]
+pub async fn get_user(
+    Path(id): Path<u32>,
+) -> Result<Json<User>, (StatusCode, Json<ApiError>)> {
+    if id == 0 {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError { message: "Not found".into() }),
+        ));
+    }
+    Ok(Json(User { id, name: "Alice".into() }))
+}
+```
+
+## Handler Requirements
+
+- Must be `pub async fn` — private or non-async functions are ignored
+- Must have `#[vespera::route]` attribute
+- Can live anywhere in `src/routes/` (or your configured `dir`)
+- The URL is: **file path prefix + `path` attribute value**

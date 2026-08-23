@@ -1,1 +1,23 @@
-empty
+# API Reference
+
+Complete reference for Vespera's macros and attributes.
+
+## vespera! Macro
+
+The entry point for every Vespera application. Scans your route folder at compile time, builds an `axum::Router`, and optionally writes an OpenAPI spec file.
+
+See [vespera! Macro](/documentation/api/api-1) for the full parameter reference.
+
+## Route Attribute & Extractors
+
+`#[vespera::route]` marks a `pub async fn` as an HTTP handler. Vespera reads the function signature to extract path parameters, query parameters, request body, and response types for the OpenAPI spec.
+
+See [Route Attribute & Extractors](/documentation/api/api-2) for all options and extractor mappings.
+
+## schema_type!, schema!, and export_app!
+
+- `schema_type!` — derive request/response DTOs from existing structs with `pick`, `omit`, `partial`, `add`, and SeaORM relation support
+- `schema!` — get a `Schema` value at runtime with optional field filtering
+- `export_app!` — export a Vespera app for merging into a parent app
+
+See [schema_type! & More](/documentation/api/api-3) for the full reference.

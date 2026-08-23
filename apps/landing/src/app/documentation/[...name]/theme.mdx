@@ -1,1 +1,47 @@
-empty
+# JNI / Java Integration
+
+Vespera can embed your Axum router directly inside a Java/Spring application — no TCP socket, no JSON envelope overhead, raw bytes from end to end.
+
+The `vespera-bridge` library (`kr.devfive:vespera-bridge`) provides a Spring Boot autoconfiguration that wires up a catch-all `VesperaProxyController`. Every HTTP request Spring receives is forwarded to Rust through a length-prefixed binary wire format, and the response comes back the same way.
+
+## Why In-Process?
+
+A traditional microservice setup adds a full HTTP round-trip between Java and Rust. In-process JNI dispatch eliminates that entirely:
+
+- No TCP connection overhead
+- No JSON serialization of the envelope
+- Binary bodies (multipart, PDFs, images) travel as raw bytes — no base64
+- Measured latency for small requests: **~2,200 ns** with the `DIRECT` dispatch mode
+
+## Quick Navigation
+
+- [jni_app! & VesperaBridge](/documentation/theme/theme-1) — Rust setup, Java setup, native library loading
+- [Dispatch Modes & Wire Format](/documentation/theme/theme-2) — all seven dispatch methods, binary wire layout, `SmartDispatchModeResolver` defaults
+- [Streaming & Multi-App](/documentation/theme/theme-3) — streaming tuning, multi-app routing, virtual thread notes, 0.2.0 breaking changes
+
+## Two-Line Integration
+
+**Rust side:**
+
+```rust
+pub fn create_app() -> vespera::axum::Router {
+    vespera!(title = "My API")
+}
+
+vespera::jni_app!(create_app);
+```
+
+**Java side:**
+
+```java
+@SpringBootApplication
+@ComponentScan(basePackages = {"com.example.app", "com.devfive.vespera.bridge"})
+public class MyApp {
+    public static void main(String[] args) {
+        VesperaBridge.init("my_rust_lib");
+        SpringApplication.run(MyApp.class, args);
+    }
+}
+```
+
+That's it. `VesperaProxyController` is autoconfigured and forwards every HTTP request to Rust. Zero controller code, zero `application.yml` config, zero extra imports beyond the Spring Boot starter.

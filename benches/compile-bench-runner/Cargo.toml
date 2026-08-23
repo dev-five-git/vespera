@@ -1,0 +1,16 @@
+[package]
+name = "compile-bench-runner"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Compile-time benchmark HARNESS. A dependency-free (std-only) orchestrator
+# that drives `cargo rustc -- -Z time-passes` over a target crate and reports
+# the `macro_expand_crate` pass time with min/median/mean/stddev and
+# baseline A/B comparison. Kept as a SEPARATE crate from the fixture so that
+# `cargo clean -p <fixture>` (run between measured iterations) never touches
+# the harness binary that is currently executing.
+
+[[bin]]
+name = "compile-bench-runner"
+path = "src/main.rs"

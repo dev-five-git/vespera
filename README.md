@@ -138,8 +138,38 @@ pub async fn create_user(Json(user): Json<User>) -> Json<User> { ... }
 pub async fn get_user(Path(id): Path<u32>) -> Json<User> { ... }
 
 // Full options
-#[vespera::route(put, path = "/{id}", tags = ["users"], description = "Update user")]
+#[vespera::route(
+    put,
+    path = "/{id}",
+    tags = ["users"],
+    operation_id = "updateUser",
+    summary = "Update a user",
+    description = "Update user",
+    deprecated
+)]
 pub async fn update_user(...) -> ... { ... }
+
+// Override or require auth for one operation in OpenAPI
+#[vespera::route(get, path = "/me", tags = ["users"], security = ["bearerAuth"])]
+pub async fn current_user(...) -> ... { ... }
+
+// Declare headers consumed by custom extractors so they appear in OpenAPI
+#[vespera::route(
+    get,
+    headers = [
+        { name = "Authorization", required = true, description = "Bearer token" },
+        { name = "X-Trace-Id" }
+    ]
+)]
+pub async fn custom_auth_user(...) -> ... { ... }
+
+// Operation-level examples attach to requestBody / 200 response media types
+#[vespera::route(
+    post,
+    request_example = r#"{"name":"Alice"}"#,
+    response_example = r#"{"id":1,"name":"Alice"}"#
+)]
+pub async fn create_user(...) -> ... { ... }
 ```
 
 ### Schema Derivation
@@ -211,6 +241,37 @@ Under JNI, the same `422` body is **hoisted** into the binary wire header as
 `"validation_errors": [...]` — Java decoders consume validation errors
 without parsing the body. See [`crates/vespera/tests/jni_validation.rs`](./crates/vespera/tests/jni_validation.rs).
 
+### Security Schemes
+
+Declare OpenAPI security schemes in `vespera!`, then attach requirements to
+routes with `security = [...]`. Each route entry becomes an OpenAPI security
+requirement object with empty scopes; use `security = []` on a route to emit an
+explicit unauthenticated operation.
+
+```rust
+let app = vespera!(
+    openapi = "openapi.json",
+    docs_url = "/docs",
+    security_schemes = [
+        { name = "bearerAuth", type = "http", scheme = "bearer", bearer_format = "JWT" },
+        { name = "apiKey", type = "apiKey", in = "header", header_name = "X-API-Key" },
+        { name = "basicAuth", type = "http", scheme = "basic" }
+    ],
+    security = ["bearerAuth"] // optional document-level default
+);
+
+#[vespera::route(get, path = "/me", security = ["bearerAuth"])]
+pub async fn current_user(...) -> ... { ... }
+
+#[vespera::route(get, path = "/health", security = [])]
+pub async fn health() -> &'static str { "ok" }
+```
+
+Supported `type` values match OpenAPI's camelCase wire names: `"apiKey"`,
+`"http"`, `"mutualTLS"`, `"oauth2"`, and `"openIdConnect"`. The DSL uses
+`header_name` for the OpenAPI api-key `name` field so it does not conflict with
+the security scheme entry name.
+
 ### Supported Extractors
 
 | Extractor | OpenAPI Mapping |
@@ -274,17 +335,55 @@ This generates a `multipart/form-data` request body with a generic `{ "type": "o
 
 ```rust
 #[derive(Serialize, Schema)]
-pub struct ApiError {
+pub struct NotFoundError {
     pub message: String,
 }
 
-#[vespera::route(get, path = "/{id}")]
-pub async fn get_user(Path(id): Path<u32>) -> Result<Json<User>, (StatusCode, Json<ApiError>)> {
+#[vespera::route(get, path = "/{id}", responses = [(404, NotFoundError)])]
+pub async fn get_user(Path(id): Path<u32>) -> Result<Json<User>, (StatusCode, Json<NotFoundError>)> {
     if id == 0 {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { message: "Not found".into() })));
+        return Err((StatusCode::NOT_FOUND, Json(NotFoundError { message: "Not found".into() })));
     }
     Ok(Json(User { id, name: "Alice".into() }))
 }
+```
+
+Use `responses = [(status, Type)]` to document typed error bodies. `Type` may be
+a bare type name or a path such as `crate::errors::NotFoundError`; Vespera uses
+the last path segment as the OpenAPI schema name and emits a JSON `$ref` under
+that status. `error_status = [400, 404]` remains available for schema-less extra
+error statuses; when both are present, a typed `responses` entry wins for the
+same status code.
+
+#### Explicit error responses are authoritative (no auto-`400`)
+
+By default a handler returning `Result<_, E>` (or `Result<_, (StatusCode, E)>`)
+infers a single `400` error response, because the macro cannot read the runtime
+`StatusCode`. **As soon as you declare any explicit error response** — via
+`responses = [(code, Type)]` and/or `error_status = [code, ...]` — that explicit
+set becomes authoritative and the inferred `400` is dropped (the success
+response is untouched), *unless* `400` is itself among the declared codes:
+
+```rust
+// Handler returns (StatusCode::INTERNAL_SERVER_ERROR, Json<ErrorResponse>).
+// Declaring responses = [(500, ...)] yields exactly { 200, 500 } — no spurious 400.
+#[vespera::route(responses = [(500, ErrorResponse)])]
+pub async fn fail() -> Result<&'static str, (StatusCode, Json<ErrorResponse>)> { ... }
+```
+
+A plain `Result<_, E>` with **no** error annotations keeps the inferred `400`,
+so existing routes are unaffected.
+
+#### Non-`200` success status (`status = <u16>`)
+
+Use `status = <u16>` to override the inferred `200` success key with any `2xx`
+code (a non-`2xx` value is a compile error). No-body statuses (`204`, `304`)
+emit a success response with no `content`:
+
+```rust
+// 204 success + 404 error (text/plain) — no 200, no 400.
+#[vespera::route(delete, path = "/{id}", status = 204, error_status = [404])]
+pub async fn delete_item(Path(id): Path<i64>) -> Result<StatusCode, (StatusCode, String)> { ... }
 ```
 
 ---
@@ -303,9 +402,37 @@ let app = vespera!(
         { url = "https://api.example.com", description = "Production" },
         { url = "http://localhost:3000", description = "Development" }
     ],
+    security_schemes = [               // OpenAPI components.securitySchemes
+        { name = "bearerAuth", type = "http", scheme = "bearer", bearer_format = "JWT" },
+        { name = "apiKey", type = "apiKey", in = "header", header_name = "X-API-Key" }
+    ],
+    security = ["bearerAuth"],         // Optional document-level security
+    tags = [                            // OpenAPI top-level tag descriptions
+        { name = "users", description = "User operations" },
+        { name = "admin", description = "Admin operations" }
+    ],
     merge = [crate1::App1, crate2::App2]  // Merge child vespera apps
 );
 ```
+
+## `#[vespera::route]` Macro Reference
+
+| Parameter | Description |
+|-----------|-------------|
+| HTTP method | `get`, `post`, `put`, `patch`, `delete`, `head`, or `options` (default: `get`) |
+| `path` | Route suffix appended to the file-based path |
+| `tags` | OpenAPI operation tags, e.g. `tags = ["users"]` |
+| `operation_id` | OpenAPI operationId override, e.g. `operation_id = "getUser"`; defaults to the Rust function name |
+| `summary` | OpenAPI operation summary, e.g. `summary = "Get a user"` |
+| `description` | OpenAPI operation description; otherwise doc comments are used |
+| `status` | Success-response status override (must be `2xx`), e.g. `status = 204`; re-keys the inferred `200` response (no body for `204`/`304`) |
+| `error_status` | Extra error status codes to include in OpenAPI responses; declaring any makes the explicit error set authoritative (see below) |
+| `responses` | Typed error responses, e.g. `responses = [(404, NotFoundError), (400, crate::errors::BadRequestError)]`; declaring any makes the explicit error set authoritative (see below) |
+| `security` | Per-operation security requirements, e.g. `security = ["bearerAuth"]`; `security = []` emits explicit no auth |
+| `headers` | Header parameters consumed by custom extractors, e.g. `headers = [{ name = "Authorization", required = true, description = "Bearer token" }]`; `required` defaults to `false` |
+| `request_example` | Operation-level request body example as a JSON string; invalid JSON is emitted as a JSON string value |
+| `response_example` | Operation-level `200` response example as a JSON string; invalid JSON is emitted as a JSON string value |
+| `deprecated` | Bare flag marking the OpenAPI operation as deprecated |
 
 ## `export_app!` Macro Reference
 
@@ -529,6 +656,10 @@ pub struct CategoryInArticle {
 
 schema_type!(
     ArticleResponse from crate::models::article::Model,
+    relation_adapters = [
+        ("user", UserInArticle),
+        ("category", CategoryInArticle),
+    ],
     add = [("article_review_users": Vec<ArticleReviewUserInArticle>)]
 );
 
@@ -543,14 +674,14 @@ Ok(ArticleResponse {
 
 How it works:
 
-- `schema_type!` looks for same-file DTOs named `{RelationNamePascal}In{ResponseBase}`
-  - `user` on `ArticleResponse` → `UserInArticle`
-  - `category` on `ArticleResponse` → `CategoryInArticle`
-- It generates local compile adapters so `Option<Model>.into()` works unchanged in the handler
-- Those adapters stay internal to Rust typing
-- OpenAPI does **not** expose the generated adapter wrapper names; the spec still points at the original related schemas (`UserSchema`, `CategorySchema`)
+- `relation_adapters = [("field", AdapterStruct)]` is an explicit opt-in for single-value relation fields (`HasOne` / `BelongsTo`)
+- The adapter struct name is used verbatim; Vespera does not infer adapter names by convention
+- If an explicitly named adapter struct cannot be found in the same file, compilation fails instead of silently falling back
+- Vespera generates local compile adapters so `Option<Model>.into()` works unchanged in the handler
+- The internal `__Vespera…Relation` wrapper type stays private to Rust typing
+- OpenAPI references the **adapter DTO's own schema** (`UserInArticle`, `CategoryInArticle`) — so the documented response shape matches exactly what the handler serializes, instead of over-promising the base relation schema (`UserSchema`, `CategorySchema`)
 
-Use this when you want route-local response DTOs for single-value relations (`HasOne` / `BelongsTo`) without rewriting the route construction logic.
+Use this when you want route-local response DTOs for single-value relations without rewriting the route construction logic. Relation fields not listed in `relation_adapters` keep the default base-schema relation type.
 
 ### Multipart Mode
 
@@ -791,7 +922,6 @@ vespera::jni_app!(create_app);
 
 ```java
 @SpringBootApplication
-@ComponentScan(basePackages = {"com.example.app", "com.devfive.vespera.bridge"})
 public class MyApp {
     public static void main(String[] args) {
         VesperaBridge.init("my_rust_lib");
@@ -799,6 +929,11 @@ public class MyApp {
     }
 }
 ```
+
+> Do **not** add `com.devfive.vespera.bridge` to `@ComponentScan` — the bridge is
+> registered by Spring Boot autoconfiguration. Scanning it picks the controller
+> up as a plain `@RestController`, which fails to construct and bypasses
+> `vespera.bridge.controller-enabled`.
 
 The `VesperaProxyController` auto-registers as a catch-all and forwards every HTTP request through a length-prefixed **binary wire format** (`[u32 BE | UTF-8 JSON header | raw body]`) — multipart uploads, PDFs, and images travel raw, with zero base64 overhead.
 

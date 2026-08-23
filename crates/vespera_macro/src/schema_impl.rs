@@ -32,78 +32,225 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    path::Path,
-    sync::{LazyLock, Mutex},
+    path::{Path, PathBuf},
+    sync::{Arc, LazyLock, Mutex},
 };
 
 use crate::metadata::StructMetadata;
+use crate::parser::{extract_default, strip_raw_prefix_owned};
+use crate::schema_macro::file_cache::{FileFingerprint, get_file_fingerprint};
 
-pub static SCHEMA_STORAGE: LazyLock<Mutex<HashMap<String, StructMetadata>>> =
+/// Per-crate registry of `#[derive(Schema)]` metadata.
+///
+/// The OUTER key is [`current_crate_key`] (the consuming crate's
+/// `CARGO_MANIFEST_DIR`); the inner map is `schema name -> metadata` exactly
+/// as before. Scoping by crate stops a long-lived rust-analyzer proc-macro
+/// server — which expands MANY crates in ONE process — from leaking crate
+/// A's schemas into crate B's generated `openapi.json`. A plain `cargo build`
+/// runs each crate in its own process, so the outer map only ever holds one
+/// bucket there; the scoping matters only for the shared-server (IDE) case.
+type SchemaBucket = Arc<HashMap<String, StructMetadata>>;
+type SchemaStorage = HashMap<String, SchemaBucket>;
+
+pub static SCHEMA_STORAGE: LazyLock<Mutex<SchemaStorage>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+static DEFAULT_FUNCTION_CACHE: LazyLock<Mutex<HashMap<PathBuf, DefaultFunctionCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Crate-identity key for the process-global metadata registries
+/// ([`SCHEMA_STORAGE`], `ROUTE_STORAGE`, `CRON_STORAGE`).
+///
+/// Uses `CARGO_MANIFEST_DIR` (set per-crate by cargo, and re-set per expanded
+/// crate by the rust-analyzer proc-macro server). When unset — a non-cargo
+/// invocation — all entries share one empty-string bucket, i.e. the prior
+/// un-scoped global behaviour, which is correct for that single-build case.
+#[must_use]
+pub fn current_crate_key() -> String {
+    crate::schema_macro::file_cache::get_manifest_dir().unwrap_or_default()
+}
+
+/// Run `f` against the current crate's schema bucket, creating it when absent.
+///
+/// Centralises the three invariants every mutating access to [`SCHEMA_STORAGE`]
+/// must uphold — poison-tolerant locking, per-crate scoping via
+/// [`current_crate_key`], and copy-on-write mutation of the [`Arc`] bucket —
+/// exactly as [`crate::macro_storage::register`] does for the `Vec`-bucket
+/// registries. Read-only snapshotting deliberately does NOT go through here:
+/// [`current_crate_schemas`] must not create a bucket.
+fn with_current_crate_bucket<R>(f: impl FnOnce(&mut HashMap<String, StructMetadata>) -> R) -> R {
+    let mut guard = SCHEMA_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(Arc::make_mut(
+        guard
+            .entry(current_crate_key())
+            .or_insert_with(|| Arc::new(HashMap::new())),
+    ))
+}
+
+/// Register a `#[derive(Schema)]` metadata entry for the current crate.
+///
+/// Returns `Err(())` when a DIFFERENT source item is already registered under
+/// `name` for THIS crate (the silent duplicate-schema-name footgun) so the
+/// caller can raise a spanned compile error. Re-registration from the same
+/// source identity replaces the previous metadata, which keeps long-lived
+/// proc-macro servers correct across IDE edits.
+pub fn register_schema(name: String, metadata: StructMetadata) -> Result<(), ()> {
+    with_current_crate_bucket(|bucket| {
+        if let Some(existing) = bucket.get(&name) {
+            if existing.definition == metadata.definition
+                || (existing.source_identity.is_some()
+                    && existing.source_identity == metadata.source_identity)
+            {
+                bucket.insert(name, metadata);
+                return Ok(());
+            }
+            return Err(());
+        }
+        bucket.insert(name, metadata);
+        Ok(())
+    })
+}
+
+fn derive_source_identity(
+    input: &syn::DeriveInput,
+    call_site_file: Option<&Path>,
+) -> Option<String> {
+    call_site_file.map(|path| format!("{}::{}", path.display(), input.ident))
+}
+
+/// Builds derive metadata while preserving the invariant that source identity is
+/// attached only when the caller supplies the macro call-site file explicitly.
+fn build_struct_metadata(
+    input: &syn::DeriveInput,
+    schema_name: String,
+    call_site_file: Option<&Path>,
+) -> StructMetadata {
+    let metadata = StructMetadata::new(schema_name, quote::quote!(#input).to_string());
+    match derive_source_identity(input, call_site_file) {
+        Some(identity) => metadata.with_source_identity(identity),
+        None => metadata,
+    }
+}
+
+/// Overwrite-insert a schema for the current crate — the
+/// `schema_type!(.., ignore)` pre-registration path, which has no
+/// duplicate-name semantics.
+pub fn insert_schema(name: String, metadata: StructMetadata) {
+    with_current_crate_bucket(|bucket| {
+        bucket.insert(name, metadata);
+    });
+}
+
+/// Snapshot of the current crate's registered schemas — a cheap `Arc` clone of
+/// this crate's bucket, so consumers never deep-clone every stored definition.
+#[must_use]
+pub fn current_crate_schemas() -> Arc<HashMap<String, StructMetadata>> {
+    SCHEMA_STORAGE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&current_crate_key())
+        .cloned()
+        .unwrap_or_else(|| Arc::new(HashMap::new()))
+}
+
+#[derive(Default)]
+struct SchemaAttributeSummary {
+    name: Option<String>,
+    has_ref_override: bool,
+}
+
+fn collect_schema_attribute_summary(attrs: &[syn::Attribute]) -> SchemaAttributeSummary {
+    let mut summary = SchemaAttributeSummary::default();
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("schema")) {
+        let mut attr_name = None;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("name") {
+                let value = meta.value()?;
+                let lit: syn::LitStr = value.parse()?;
+                attr_name = Some(lit.value());
+            } else {
+                if meta.path.is_ident("ref") {
+                    summary.has_ref_override = true;
+                }
+                if let Ok(value) = meta.value() {
+                    let _ = value.parse::<syn::Lit>();
+                }
+            }
+            Ok(())
+        });
+        if summary.name.is_none() {
+            summary.name = attr_name;
+        }
+        if summary.name.is_some() && summary.has_ref_override {
+            break;
+        }
+    }
+    summary
+}
+
+#[derive(Clone)]
+struct DefaultFunctionCacheEntry {
+    fingerprint: FileFingerprint,
+    /// `Arc` so a cache hit hands back a single pointer-clone instead of
+    /// deep-cloning the whole `field -> default JSON` map on every derive that
+    /// shares a file (the previous `BTreeMap` clone copied every entry).
+    values: Arc<BTreeMap<String, serde_json::Value>>,
+}
 
 /// Extract custom schema name from #[schema(name = "...")] attribute
 pub fn extract_schema_name_attr(attrs: &[syn::Attribute]) -> Option<String> {
-    for attr in attrs {
-        if attr.path().is_ident("schema") {
-            let mut custom_name = None;
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("name") {
-                    let value = meta.value()?;
-                    let lit: syn::LitStr = value.parse()?;
-                    custom_name = Some(lit.value());
-                }
-                Ok(())
-            });
-            if custom_name.is_some() {
-                return custom_name;
-            }
-        }
-    }
-    None
+    collect_schema_attribute_summary(attrs).name
 }
 
 /// Process derive input and return metadata + expanded code
 pub fn process_derive_schema(
     input: &syn::DeriveInput,
-) -> (StructMetadata, proc_macro2::TokenStream) {
+) -> (Option<StructMetadata>, proc_macro2::TokenStream) {
     let name = &input.ident;
 
-    // Check for custom schema name from #[schema(name = "...")] attribute
-    let schema_name = extract_schema_name_attr(&input.attrs).unwrap_or_else(|| name.to_string());
+    // Parse every field's `#[schema(...)]` constraints ONCE here and thread the
+    // resulting slice into the supplement emitter (and, behind the `validation`
+    // feature gate, into garde's `Validate` emitter). The previous codepath
+    // re-ran `try_extract_schema_constraints` per field inside each callee — two
+    // walks by default, three with `validation` on — for byte-identical output.
+    let mut field_constraints: Vec<crate::parser::schema::schema_attrs::SchemaConstraints> =
+        Vec::new();
+    if let syn::Data::Struct(data_struct) = &input.data
+        && let syn::Fields::Named(fields_named) = &data_struct.fields
+    {
+        field_constraints.reserve(fields_named.named.len());
+        for field in &fields_named.named {
+            match crate::parser::schema::schema_attrs::try_extract_schema_constraints(&field.attrs)
+            {
+                Ok(constraints) => field_constraints.push(constraints),
+                Err(error) => return (None, error.to_compile_error()),
+            }
+        }
+    }
+
+    // Check for custom schema settings from #[schema(...)] attributes in one pass.
+    let schema_attr = collect_schema_attribute_summary(&input.attrs);
+    let schema_name = schema_attr.name.unwrap_or_else(|| name.to_string());
 
     // Extract default values from serde(default = "fn_name") attributes at derive time.
     // Span::call_site().local_file() returns None in unit tests — the map/unwrap_or_default
     // chain ensures the line is always executed even when the closure is not entered.
-    let field_defaults = proc_macro2::Span::call_site()
-        .local_file()
-        .map(|file_path| extract_field_defaults_from_path(input, &file_path))
+    let call_site_file = proc_macro2::Span::call_site().local_file();
+    let field_defaults = call_site_file
+        .as_deref()
+        .map(|file_path| extract_field_defaults_from_path(input, file_path))
         .unwrap_or_default();
 
+    if let Err(error) = validate_serde_default_values(input, &field_defaults) {
+        return (None, error.to_compile_error());
+    }
+
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
-    let mut metadata = StructMetadata::new(schema_name, quote::quote!(#input).to_string());
-    if input
-        .attrs
-        .iter()
-        .any(|attr| attr.path().is_ident("schema"))
-    {
-        let mut has_ref_override = false;
-        for attr in &input.attrs {
-            if !attr.path().is_ident("schema") {
-                continue;
-            }
-            let _ = attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("ref") {
-                    has_ref_override = true;
-                }
-                Ok(())
-            });
-            if has_ref_override {
-                break;
-            }
-        }
-        if has_ref_override {
-            metadata.include_in_openapi = false;
-        }
+    let mut metadata = build_struct_metadata(input, schema_name, call_site_file.as_deref());
+    if schema_attr.has_ref_override {
+        metadata.include_in_openapi = false;
     }
     metadata.field_defaults = field_defaults;
 
@@ -113,8 +260,18 @@ pub fn process_derive_schema(
     // constraints carry runtime checks alongside their OpenAPI metadata.
     // The emit function returns an empty `TokenStream` when no field
     // requests a runtime rule or when the feature is off.
-    let expanded = crate::garde_emit::emit_garde_validate(input);
-    (metadata, expanded)
+    let garde = crate::garde_emit::emit_garde_validate(input, &field_constraints);
+    // Emit the `::vespera::Schema` marker impl + per-field
+    // `T: ::vespera::Schema` leaf assertions: a field of a custom type
+    // that forgot its own `#[derive(Schema)]` becomes a compile error
+    // instead of a silent `{type:"object"}` in the spec. Additive — it
+    // does not change the emitted OpenAPI bytes for any field.
+    let supplements = crate::schema_assertions::emit_schema_supplements(input, &field_constraints);
+    let expanded = quote::quote! {
+        #garde
+        #supplements
+    };
+    (Some(metadata), expanded)
 }
 
 /// Extract default values from `#[serde(default = "fn_name")]` attributes
@@ -158,19 +315,153 @@ pub fn extract_field_defaults_from_path(
         return defaults;
     }
 
-    // Read and parse the file (cached via FileCache parsed_file_asts)
-    let Some(file_ast) = crate::schema_macro::file_cache::get_parsed_file(file_path) else {
-        return defaults;
+    defaults.extend(extract_defaults_from_path(&fn_defaults, file_path));
+    defaults
+}
+
+fn validate_serde_default_values(
+    input: &syn::DeriveInput,
+    field_defaults: &BTreeMap<String, serde_json::Value>,
+) -> Result<(), syn::Error> {
+    let fields = match &input.data {
+        syn::Data::Struct(data) => match &data.fields {
+            syn::Fields::Named(named) => &named.named,
+            _ => return Ok(()),
+        },
+        _ => return Ok(()),
     };
 
-    // Extract default values from functions
-    defaults.extend(extract_defaults_from_file(&fn_defaults, &file_ast));
-    defaults
+    let mut errors: Option<syn::Error> = None;
+    for field in fields {
+        let Some(default_kind) = extract_default(&field.attrs) else {
+            continue;
+        };
+        if has_schema_default(&field.attrs)
+            || serde_default_is_resolvable(field, default_kind.as_ref(), field_defaults)
+        {
+            continue;
+        }
+
+        let field_name = field.ident.as_ref().map_or_else(
+            || "unknown".to_string(),
+            |ident| strip_raw_prefix_owned(ident.to_string()),
+        );
+        let error = syn::Error::new_spanned(
+            field,
+            format!(
+                "cannot statically determine the OpenAPI default for field `{field_name}` which has `#[serde(default)]`; add an explicit `#[schema(default = \"...\")]`"
+            ),
+        );
+        if let Some(existing) = &mut errors {
+            existing.combine(error);
+        } else {
+            errors = Some(error);
+        }
+    }
+
+    errors.map_or(Ok(()), Err)
+}
+
+fn serde_default_is_resolvable(
+    field: &syn::Field,
+    default_kind: Option<&String>,
+    field_defaults: &BTreeMap<String, serde_json::Value>,
+) -> bool {
+    match default_kind {
+        Some(_) => field
+            .ident
+            .as_ref()
+            .is_some_and(|ident| field_defaults.contains_key(&ident.to_string())),
+        None => crate::schema_macro::type_utils::get_type_default(&field.ty).is_some(),
+    }
+}
+
+fn has_schema_default(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("schema"))
+        .any(|attr| {
+            let mut found = false;
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("default") {
+                    found = true;
+                }
+                Ok(())
+            });
+            found
+        })
+}
+
+fn extract_defaults_from_path(
+    fn_defaults: &[(String, String)],
+    file_path: &Path,
+) -> BTreeMap<String, serde_json::Value> {
+    let Some(function_defaults) = cached_default_functions(file_path) else {
+        return BTreeMap::new();
+    };
+    fn_defaults
+        .iter()
+        .filter_map(|(field_name, fn_name)| {
+            function_defaults
+                .get(fn_name)
+                .cloned()
+                .map(|value| (field_name.clone(), value))
+        })
+        .collect()
+}
+
+fn cached_default_functions(file_path: &Path) -> Option<Arc<BTreeMap<String, serde_json::Value>>> {
+    // Fingerprint via the SHARED per-epoch file cache: this populates the
+    // epoch cache so the `get_parsed_file` below reuses it instead of issuing
+    // a second `fs::metadata` syscall (the previous direct `fs::metadata` here
+    // double-stat'd every derive with function defaults). The mtime+len
+    // fingerprint also matches the file-content cache, so a size-changing
+    // timestamp-preserving edit invalidates this cache too.
+    let fingerprint = get_file_fingerprint(file_path)?;
+    if let Some(values) = DEFAULT_FUNCTION_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(file_path)
+        .and_then(|entry| (entry.fingerprint == fingerprint).then(|| Arc::clone(&entry.values)))
+    {
+        return Some(values);
+    }
+
+    let file_ast = crate::schema_macro::file_cache::get_parsed_file(file_path)?;
+    let values = Arc::new(extract_default_functions_from_file(&file_ast));
+    DEFAULT_FUNCTION_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(
+            file_path.to_path_buf(),
+            DefaultFunctionCacheEntry {
+                fingerprint,
+                values: Arc::clone(&values),
+            },
+        );
+    Some(values)
+}
+
+fn extract_default_functions_from_file(
+    file_ast: &syn::File,
+) -> BTreeMap<String, serde_json::Value> {
+    file_ast
+        .items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Fn(func) = item else {
+                return None;
+            };
+            crate::openapi_generator::extract_default_value_from_function(func)
+                .map(|value| (func.sig.ident.to_string(), value))
+        })
+        .collect()
 }
 
 /// Extract default values by finding functions in the given file AST.
 /// Separated from `extract_field_defaults` for testability (proc_macro2::Span
 /// is not available in unit tests).
+#[cfg(test)]
 pub fn extract_defaults_from_file(
     fn_defaults: &[(String, String)],
     file_ast: &syn::File,
@@ -187,471 +478,5 @@ pub fn extract_defaults_from_file(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_process_derive_schema_struct() {
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct User {
-                name: String,
-                age: u32,
-            }
-        };
-        let (metadata, _expanded) = process_derive_schema(&input);
-        assert_eq!(metadata.name, "User");
-        assert!(metadata.definition.contains("struct User"));
-    }
-
-    #[test]
-    fn test_process_derive_schema_enum() {
-        let input: syn::DeriveInput = syn::parse_quote! {
-            enum Status {
-                Active,
-                Inactive,
-            }
-        };
-        let (metadata, _expanded) = process_derive_schema(&input);
-        assert_eq!(metadata.name, "Status");
-        assert!(metadata.definition.contains("enum Status"));
-    }
-
-    #[test]
-    fn test_process_derive_schema_generic() {
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct Container<T> {
-                value: T,
-            }
-        };
-        let (metadata, _expanded) = process_derive_schema(&input);
-        assert_eq!(metadata.name, "Container");
-    }
-
-    #[test]
-    fn test_extract_schema_name_attr_with_name() {
-        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
-            #[schema(name = "CustomName")]
-        };
-        let result = extract_schema_name_attr(&attrs);
-        assert_eq!(result, Some("CustomName".to_string()));
-    }
-
-    #[test]
-    fn test_extract_schema_name_attr_without_name() {
-        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
-            #[derive(Debug)]
-        };
-        let result = extract_schema_name_attr(&attrs);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_schema_name_attr_empty_schema() {
-        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
-            #[schema]
-        };
-        let result = extract_schema_name_attr(&attrs);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_schema_name_attr_with_other_attrs() {
-        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
-            #[derive(Clone)]
-            #[schema(name = "MySchema")]
-            #[serde(rename_all = "camelCase")]
-        };
-        let result = extract_schema_name_attr(&attrs);
-        assert_eq!(result, Some("MySchema".to_string()));
-    }
-
-    #[test]
-    fn test_process_derive_schema_simple() {
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct User {
-                id: i32,
-                name: String,
-            }
-        };
-        let (metadata, _tokens) = process_derive_schema(&input);
-        assert_eq!(metadata.name, "User");
-        assert!(metadata.definition.contains("User"));
-    }
-
-    #[test]
-    fn test_process_derive_schema_with_custom_name() {
-        let input: syn::DeriveInput = syn::parse_quote! {
-            #[schema(name = "CustomUserSchema")]
-            struct User {
-                id: i32,
-            }
-        };
-        let (metadata, _) = process_derive_schema(&input);
-        assert_eq!(metadata.name, "CustomUserSchema");
-    }
-
-    #[test]
-    fn test_process_derive_schema_with_generics() {
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct Container<T> {
-                value: T,
-            }
-        };
-        let (metadata, _tokens) = process_derive_schema(&input);
-        assert_eq!(metadata.name, "Container");
-    }
-
-    #[test]
-    fn test_extract_schema_name_attr_non_name_meta_key() {
-        // #[schema(other = "foo")] — has schema attr but no "name" key
-        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
-            #[schema(other = "foo")]
-        };
-        let result = extract_schema_name_attr(&attrs);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_defaults_from_file_finds_functions() {
-        // Directly tests the extracted function (covers lines 123-131)
-        let file_ast: syn::File = syn::parse_quote! {
-            fn default_count() -> i32 { 42 }
-            fn default_name() -> String { "hello".to_string() }
-        };
-        let fn_defaults = vec![
-            ("count".to_string(), "default_count".to_string()),
-            ("name".to_string(), "default_name".to_string()),
-        ];
-        let result = extract_defaults_from_file(&fn_defaults, &file_ast);
-        assert_eq!(result.get("count"), Some(&serde_json::json!(42)));
-        assert_eq!(result.get("name"), Some(&serde_json::json!("hello")));
-    }
-
-    #[test]
-    fn test_extract_defaults_from_file_missing_function() {
-        // Function not found in AST -> skipped
-        let file_ast: syn::File = syn::parse_quote! {
-            fn other_function() -> i32 { 0 }
-        };
-        let fn_defaults = vec![("count".to_string(), "nonexistent_fn".to_string())];
-        let result = extract_defaults_from_file(&fn_defaults, &file_ast);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_extract_defaults_from_file_non_extractable_value() {
-        // Function exists but returns an assignment statement or block (not directly extractable)
-        let file_ast: syn::File = syn::parse_quote! {
-            fn default_value() -> String {
-                let x = String::new();
-                x  // Assignment before return - block statement
-            }
-        };
-        let fn_defaults = vec![("value".to_string(), "default_value".to_string())];
-        let result = extract_defaults_from_file(&fn_defaults, &file_ast);
-        // Block statements with multiple statements are not extractable
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_extract_defaults_from_file_empty_input() {
-        let file_ast: syn::File = syn::parse_quote! {};
-        let fn_defaults: Vec<(String, String)> = vec![];
-        let result = extract_defaults_from_file(&fn_defaults, &file_ast);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_extract_schema_name_attr_multiple_schema_attrs() {
-        // Two #[schema] attrs — first one with name wins
-        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
-            #[schema(name = "First")]
-            #[schema(name = "Second")]
-        };
-        let result = extract_schema_name_attr(&attrs);
-        assert_eq!(result, Some("First".to_string()));
-    }
-
-    #[test]
-    fn test_extract_schema_name_attr_schema_with_unknown_key_value() {
-        // #[schema(other = "x", name = "MyName")] — parse_nested_meta bails on unhandled
-        // key=value (other = "x") since the value isn't consumed. Error is silently ignored.
-        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
-            #[schema(other = "x", name = "MyName")]
-        };
-        let result = extract_schema_name_attr(&attrs);
-        // parse_nested_meta fails at `other = "x"` (value not consumed), so `name` is never reached
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_schema_name_attr_name_before_unknown() {
-        // name comes FIRST, so it's extracted before the unknown key causes a bail
-        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
-            #[schema(name = "Found", other = "x")]
-        };
-        let result = extract_schema_name_attr(&attrs);
-        // name is parsed successfully; parse_nested_meta may error on `other` but name is already set
-        assert_eq!(result, Some("Found".to_string()));
-    }
-
-    // ========== Coverage: process_derive_schema struct variants ==========
-
-    #[test]
-    fn test_process_derive_schema_unit_struct() {
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct Unit;
-        };
-        let (metadata, tokens) = process_derive_schema(&input);
-        assert_eq!(metadata.name, "Unit");
-        assert!(metadata.definition.contains("Unit"));
-        assert!(tokens.is_empty(), "Token stream should be empty");
-    }
-
-    #[test]
-    fn test_process_derive_schema_tuple_struct() {
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct Pair(i32, String);
-        };
-        let (metadata, tokens) = process_derive_schema(&input);
-        assert_eq!(metadata.name, "Pair");
-        assert!(metadata.definition.contains("Pair"));
-        assert!(tokens.is_empty());
-    }
-
-    #[test]
-    fn test_process_derive_schema_empty_struct() {
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct Empty {}
-        };
-        let (metadata, _) = process_derive_schema(&input);
-        assert_eq!(metadata.name, "Empty");
-    }
-
-    #[test]
-    fn test_process_derive_schema_with_lifetime() {
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct Ref<'a> {
-                data: &'a str,
-            }
-        };
-        let (metadata, _) = process_derive_schema(&input);
-        assert_eq!(metadata.name, "Ref");
-    }
-
-    #[test]
-    fn test_process_derive_schema_with_serde_attrs() {
-        let input: syn::DeriveInput = syn::parse_quote! {
-            #[serde(rename_all = "camelCase")]
-            struct UserResponse {
-                user_name: String,
-                #[serde(skip)]
-                internal_id: u64,
-            }
-        };
-        let (metadata, _) = process_derive_schema(&input);
-        assert_eq!(metadata.name, "UserResponse");
-        assert!(metadata.definition.contains("camelCase"));
-        assert!(metadata.definition.contains("skip"));
-    }
-
-    // ========== Coverage: metadata field verification ==========
-
-    #[test]
-    fn test_process_derive_schema_include_in_openapi_true() {
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct Visible { x: i32 }
-        };
-        let (metadata, _) = process_derive_schema(&input);
-        assert!(
-            metadata.include_in_openapi,
-            "Schema-derived types must have include_in_openapi=true"
-        );
-    }
-
-    #[test]
-    fn test_process_derive_schema_definition_contains_fields() {
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct WithFields {
-                id: u64,
-                name: String,
-                active: bool,
-            }
-        };
-        let (metadata, _) = process_derive_schema(&input);
-        assert!(metadata.definition.contains("id"));
-        assert!(metadata.definition.contains("u64"));
-        assert!(metadata.definition.contains("name"));
-        assert!(metadata.definition.contains("active"));
-        assert!(metadata.definition.contains("bool"));
-    }
-
-    // ========== Coverage: SCHEMA_STORAGE direct usage ==========
-
-    #[test]
-    fn test_schema_storage_insert_and_get() {
-        let storage = SCHEMA_STORAGE.lock().unwrap();
-        let key = "__test_coverage_type__".to_string();
-        // Clean up if previous test left data
-        drop(storage);
-
-        {
-            let mut storage = SCHEMA_STORAGE.lock().unwrap();
-            storage.insert(
-                key.clone(),
-                StructMetadata::new(key.clone(), "struct __test_coverage_type__ {}".to_string()),
-            );
-        }
-
-        {
-            let storage = SCHEMA_STORAGE.lock().unwrap();
-            let meta = storage.get(&key);
-            assert!(meta.is_some(), "Inserted metadata should be retrievable");
-            let meta = meta.unwrap();
-            assert_eq!(meta.name, key);
-            assert!(meta.include_in_openapi);
-        }
-
-        // Cleanup
-        {
-            let mut storage = SCHEMA_STORAGE.lock().unwrap();
-            storage.remove(&key);
-        }
-    }
-
-    #[test]
-    fn test_schema_storage_overwrite() {
-        let key = "__test_overwrite_type__".to_string();
-        {
-            let mut storage = SCHEMA_STORAGE.lock().unwrap();
-            storage.insert(
-                key.clone(),
-                StructMetadata::new(key.clone(), "struct V1 {}".to_string()),
-            );
-            storage.insert(
-                key.clone(),
-                StructMetadata::new(key.clone(), "struct V2 {}".to_string()),
-            );
-        }
-        {
-            let storage = SCHEMA_STORAGE.lock().unwrap();
-            let meta = storage.get(&key).unwrap();
-            assert!(meta.definition.contains("V2"), "Last insert should win");
-        }
-        // Cleanup
-        {
-            let mut storage = SCHEMA_STORAGE.lock().unwrap();
-            storage.remove(&key);
-        }
-    }
-
-    #[test]
-    fn test_extract_field_defaults_from_path_with_default_fn() {
-        // Exercises lines 125-133 (was 118-119, 123-124 before refactor):
-        // get_parsed_file succeeds and extract_defaults_from_file runs.
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let file_path = temp_dir.path().join("defaults.rs");
-        std::fs::write(
-            &file_path,
-            r#"
-fn default_status() -> String {
-    "active".to_string()
-}
-
-struct Config {
-    #[serde(default = "default_status")]
-    status: String,
-}
-"#,
-        )
-        .unwrap();
-
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct Config {
-                #[serde(default = "default_status")]
-                status: String,
-            }
-        };
-
-        let defaults = extract_field_defaults_from_path(&input, &file_path);
-        // The function should find default_status and extract its return value
-        assert!(
-            defaults.contains_key("status"),
-            "Should extract default for 'status' field"
-        );
-    }
-
-    #[test]
-    fn test_extract_field_defaults_from_path_file_not_found() {
-        // Exercises the else branch: get_parsed_file returns None for non-existent file
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct Config {
-                #[serde(default = "default_val")]
-                value: String,
-            }
-        };
-
-        let defaults =
-            extract_field_defaults_from_path(&input, Path::new("/nonexistent/path/foo.rs"));
-        assert!(
-            defaults.is_empty(),
-            "Should return empty defaults when file not found"
-        );
-    }
-
-    #[test]
-    fn test_extract_field_defaults_from_path_no_fn_defaults() {
-        // Exercises the early return: fn_defaults is empty
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let file_path = temp_dir.path().join("simple.rs");
-        std::fs::write(&file_path, "struct Foo { x: i32 }").unwrap();
-
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct Foo {
-                x: i32,
-            }
-        };
-
-        let defaults = extract_field_defaults_from_path(&input, &file_path);
-        assert!(defaults.is_empty(), "No serde defaults -> empty result");
-    }
-
-    #[test]
-    fn test_extract_field_defaults_from_path_tuple_struct() {
-        // Exercises line 101: Fields::Named else branch (tuple struct has unnamed fields)
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct Pair(String, i32);
-        };
-        let defaults = extract_field_defaults_from_path(&input, Path::new("/dummy.rs"));
-        assert!(
-            defaults.is_empty(),
-            "Tuple struct should return empty defaults"
-        );
-    }
-
-    #[test]
-    fn test_extract_field_defaults_from_path_enum() {
-        // Exercises line 103: Data::Struct else branch (enum)
-        let input: syn::DeriveInput = syn::parse_quote! {
-            enum Status { Active, Inactive }
-        };
-        let defaults = extract_field_defaults_from_path(&input, Path::new("/dummy.rs"));
-        assert!(defaults.is_empty(), "Enum should return empty defaults");
-    }
-
-    #[test]
-    fn test_process_derive_schema_ref_override_excludes_openapi() {
-        let input: syn::DeriveInput = syn::parse_quote! {
-            #[derive(Clone)]
-            #[schema(ref = "ExternalUser")]
-            struct UserSchema {
-                id: i32,
-            }
-        };
-
-        let (metadata, tokens) = process_derive_schema(&input);
-        assert_eq!(metadata.name, "UserSchema");
-        assert!(!metadata.include_in_openapi);
-        assert!(tokens.is_empty());
-    }
-}
+#[path = "schema_impl/tests.rs"]
+mod tests;

@@ -1,0 +1,5 @@
+error: struct `NonexistentInThisFile` not found in this file; use a qualified path like `crate::models::<module>::NonexistentInThisFile`
+ --> tests/ui/schema_type_bare_missing.rs:7:26
+  |
+7 | schema_type!(Schema from NonexistentInThisFile, name = "MissingSchema");
+  |                          ^^^^^^^^^^^^^^^^^^^^^

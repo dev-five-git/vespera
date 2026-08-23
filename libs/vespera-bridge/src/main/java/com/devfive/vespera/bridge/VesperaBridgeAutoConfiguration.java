@@ -4,8 +4,22 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import jakarta.servlet.Filter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Spring Boot autoconfigure entry point for vespera-bridge.
@@ -25,16 +39,34 @@ import org.springframework.context.annotation.Configuration;
  *       register a {@code @Bean AppNameResolver} —
  *       the default {@link HeaderAppNameResolver} is automatically
  *       disabled.</li>
+ *   <li><strong>Conservative dispatch mode (opt-out from smart)</strong>:
+ *       set {@code vespera.bridge.dispatch-mode=bidirectional-streaming}
+ *       to restore the pre-0.2.0 default
+ *       ({@link BidirectionalStreamingDispatchModeResolver}) — every
+ *       request that may carry a body streams both ways. Use when
+ *       you want maximally uniform handler invocation semantics and
+ *       are willing to pay the ~24 µs/request streaming cost on
+ *       small JSON-RPC payloads.</li>
  *   <li><strong>Custom dispatch mode policy</strong>:
  *       register a {@code @Bean DispatchModeResolver} —
- *       the default
- *       {@link BidirectionalStreamingDispatchModeResolver} is
+ *       the default {@link SmartDispatchModeResolver} is
  *       automatically disabled.</li>
  *   <li><strong>Completely BYO controller</strong>:
  *       set {@code vespera.bridge.controller-enabled=false} and
  *       provide your own {@code @RestController} that calls the
  *       {@link VesperaBridge} native methods directly.</li>
+   *   <li><strong>Async response continuation executor</strong>:
+   *       replace the {@code vesperaBridgeAsyncResponseExecutor} bean.
+   *       The default is a small named daemon-thread pool.</li>
  * </ul>
+ *
+ * <p><strong>0.2.0 behavior change:</strong> the autoconfigured
+ * default {@link DispatchModeResolver} flipped from
+ * {@link BidirectionalStreamingDispatchModeResolver} to
+ * {@link SmartDispatchModeResolver}. Measured on a small {@code GET
+ * /health} round-trip through the real JNI boundary: DIRECT 2.2 µs /
+ * SYNC 3.2 µs vs the old bidirectional 24.1 µs. Restore the old
+ * behavior with {@code vespera.bridge.dispatch-mode=bidirectional-streaming}.
  */
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -47,10 +79,129 @@ public class VesperaBridgeAutoConfiguration {
         return new HeaderAppNameResolver(props.getAppHeader());
     }
 
+    /**
+     * Opt-out conservative dispatch mode: every request that may
+     * carry a body streams both ways
+     * ({@link BidirectionalStreamingDispatchModeResolver}). Restores
+     * the pre-0.2.0 default.
+     *
+     * <p>Declared <em>before</em> the autoconfigured default so that
+     * {@code @ConditionalOnMissingBean} on the default skips when this
+     * one is created.  Opt-in via
+     * {@code vespera.bridge.dispatch-mode=bidirectional-streaming};
+     * the autoconfigured default is now
+     * {@link SmartDispatchModeResolver} because DIRECT/SYNC are
+     * 7–11× cheaper than streaming for small bounded requests
+     * (measured 2.2–3.2 µs vs 24.1 µs on a small {@code GET /health}).
+     */
+    @Bean
+    @ConditionalOnProperty(
+            prefix = "vespera.bridge",
+            name = "dispatch-mode",
+            havingValue = "bidirectional-streaming")
+    @ConditionalOnMissingBean
+    public DispatchModeResolver vesperaBridgeBidirectionalStreamingDispatchModeResolver() {
+        return new BidirectionalStreamingDispatchModeResolver();
+    }
+
+    /**
+     * Autoconfigured default since 0.2.0:
+     * {@link SmartDispatchModeResolver} picks per request — DIRECT
+     * (pooled direct buffers, no JNI array copies) for small/bodyless
+     * safe requests, SYNC for small unsafe requests,
+     * BIDIRECTIONAL_STREAMING for everything else.
+     *
+     * <p>The two trade-offs callers accept on the new default:
+     * <ul>
+     *   <li>DIRECT retries (re-runs the Rust handler) once when a
+     *       response exceeds {@code vespera.direct.maxBufferBytes}
+     *       (default 4 MiB). This is why DIRECT is restricted to safe
+     *       methods (GET/HEAD/OPTIONS).</li>
+     *   <li>SYNC buffers the full response on the JVM heap. The
+     *       256 KiB request-size gate keeps the response size
+     *       reasonable for JSON-RPC-shaped traffic.</li>
+     * </ul>
+     *
+     * <p>Restore the pre-0.2.0 behavior with
+     * {@code vespera.bridge.dispatch-mode=bidirectional-streaming}.
+     */
     @Bean
     @ConditionalOnMissingBean
-    public DispatchModeResolver vesperaBridgeDispatchModeResolver() {
-        return new BidirectionalStreamingDispatchModeResolver();
+    public DispatchModeResolver vesperaBridgeDispatchModeResolver(VesperaBridgeProperties props) {
+        // This default bean is created for `dispatch-mode=smart` AND for any
+        // unrecognized value (the `bidirectional-streaming` opt-out has its own
+        // @ConditionalOnProperty bean above). Surface a typo instead of letting
+        // it silently change dispatch semantics to smart.
+        String mode = props.getDispatchMode();
+        if (mode != null
+                && !mode.equalsIgnoreCase("smart")
+                && !mode.equalsIgnoreCase("bidirectional-streaming")) {
+            throw new IllegalArgumentException(
+                    "Unrecognized vespera.bridge.dispatch-mode '" + mode
+                            + "'. Valid values: 'smart' (default), 'bidirectional-streaming'.");
+        }
+        return new SmartDispatchModeResolver();
+    }
+
+    @Bean("vesperaBridgeAsyncResponseExecutor")
+    @ConditionalOnMissingBean(name = "vesperaBridgeAsyncResponseExecutor")
+    public ExecutorService vesperaBridgeAsyncResponseExecutor(VesperaBridgeProperties props) {
+        // Default (asyncPoolSize <= 0) preserves the historical sizing:
+        // Math.max(2, Math.min(4, cpus)). A positive vespera.bridge.async-pool-size
+        // overrides the cap for high-concurrency async dispatch (clamped to >= 1).
+        int configured = props.getAsyncPoolSize();
+        int threads = configured > 0
+                ? configured
+                : Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
+        AtomicInteger seq = new AtomicInteger(1);
+        ThreadFactory factory = task -> {
+            Thread thread = new Thread(task, "vespera-bridge-async-response-" + seq.getAndIncrement());
+            thread.setDaemon(true);
+            return thread;
+        };
+        int queueCapacity = Math.max(256, threads * 256);
+        return new ThreadPoolExecutor(
+                threads,
+                threads,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(queueCapacity),
+                factory,
+                // AbortPolicy, NOT CallerRunsPolicy: this executor's tasks are
+                // submitted from the thread that completes the native dispatch
+                // future — a Rust Tokio worker. CallerRunsPolicy would run the
+                // heavy wire-response build on that Tokio worker under
+                // saturation, stealing native dispatch capacity (violating the
+                // documented "no heavy continuations on Tokio workers"
+                // contract). AbortPolicy rejects instead; the proxy's
+                // dispatchAsyncFlow maps the rejection to a 503 backpressure
+                // signal. The bounded queue still absorbs bursts first.
+                new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public VesperaBridgeThreadLocalCleanup vesperaBridgeThreadLocalCleanup() {
+        return new VesperaBridgeThreadLocalCleanup();
+    }
+
+    @Bean
+    @ConditionalOnProperty(
+            prefix = "vespera.bridge",
+            name = "clear-threadlocals-after-request",
+            havingValue = "true")
+    public FilterRegistrationBean<Filter> vesperaBridgeThreadLocalCleanupFilter() {
+        FilterRegistrationBean<Filter> registration = new FilterRegistrationBean<>();
+        registration.setFilter((ServletRequest request, ServletResponse response, FilterChain chain) -> {
+            try {
+                chain.doFilter(request, response);
+            } finally {
+                VesperaBridge.clearCurrentThreadBuffers();
+            }
+        });
+        registration.setName("vesperaBridgeThreadLocalCleanupFilter");
+        registration.setOrder(Integer.MAX_VALUE);
+        return registration;
     }
 
     @Bean
@@ -62,7 +213,15 @@ public class VesperaBridgeAutoConfiguration {
     @ConditionalOnMissingBean
     public VesperaProxyController vesperaProxyController(
             AppNameResolver appResolver,
-            DispatchModeResolver modeResolver) {
-        return new VesperaProxyController(appResolver, modeResolver);
+            DispatchModeResolver modeResolver,
+            @Qualifier("vesperaBridgeAsyncResponseExecutor") Executor asyncResponseExecutor,
+            VesperaBridgeProperties props) {
+        return new VesperaProxyController(
+                appResolver,
+                modeResolver,
+                asyncResponseExecutor,
+                props.isDirectRetryOnOverflow(),
+                props.getMaxBufferedRequestBytes(),
+                props.getMaxBufferedResponseBytes());
     }
 }

@@ -1,29 +1,26 @@
 package com.devfive.vespera.bridge;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-
-import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.Objects;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
 /**
  * JNI bridge to any Rust cdylib built with vespera's JNI feature.
+ *
+ * <p>This class owns only the pieces that must stay bound to the
+ * {@code com.devfive.vespera.bridge.VesperaBridge} symbol name — the
+ * {@code native} methods (whose JNI symbols are
+ * {@code Java_com_devfive_vespera_bridge_VesperaBridge_*}), native-library
+ * loading, and the public dispatch API.  The pure-Java helpers live in
+ * sibling classes: wire request encoding / response decoding in
+ * {@link VesperaWireCodec}, and the per-thread direct-buffer pool in
+ * {@link VesperaDirectBufferPool}.  The public methods here delegate to
+ * them, so callers see an unchanged surface.
  *
  * <p><strong>Wire format</strong> — both request and response use the
  * same layout:
@@ -49,12 +46,48 @@ import java.util.function.Consumer;
  */
 public class VesperaBridge {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final int WIRE_VERSION = 1;
+    @FunctionalInterface
+    public interface HeaderSink {
+        void put(String lowerName, String value);
+    }
+
+    @FunctionalInterface
+    public interface HeaderSource {
+        void writeTo(HeaderSink sink);
+    }
+
     private static volatile boolean loaded = false;
+    /** Name passed to the first successful {@link #init(String)} — used to
+     *  reject a later re-init with a <em>different</em> library name. */
+    private static String loadedLibraryName;
+
+    private static volatile Integer pendingChunkBytes = null;
+    private static volatile Integer pendingChannelCapacity = null;
+
+    @FunctionalInterface
+    interface NativeLibraryLoader {
+        void load(String libraryName);
+    }
+
+    @FunctionalInterface
+    interface StreamingConfigurator {
+        void configure(int chunkBytes, int channelCapacity);
+    }
+
+    @FunctionalInterface
+    interface RuntimeConfigurator {
+        void configure(int workerThreads);
+    }
 
     /**
      * Decoded wire-format response.
+     *
+     * <p>The {@code body} component is a zero-copy, read-only
+     * {@link ByteBuffer} view over the original wire response array.
+     * Its position is {@code 0} and its limit is the body length.  The
+     * view does not expose {@link ByteBuffer#array()} access, so callers
+     * that genuinely need an owned {@code byte[]} should use
+     * {@link #bodyBytes()}, which materialises a copy on demand.
      *
      * @param status            HTTP status code from the upstream router
      * @param headers           response headers; each value is either a
@@ -62,7 +95,7 @@ public class VesperaBridge {
      *                          {@link List List&lt;String&gt;}
      *                          (multi-valued, e.g. {@code set-cookie})
      * @param metadata          vespera metadata (e.g. {@code version})
-     * @param body              raw response body bytes
+     * @param body              read-only raw response body view
      * @param validationErrors  Vespera-validation failures hoisted from
      *                          a {@code 422} JSON body so callers can
      *                          read them without a second JSON parse.
@@ -76,24 +109,213 @@ public class VesperaBridge {
             int status,
             Map<String, Object> headers,
             Map<String, String> metadata,
-            byte[] body,
-            List<Map<String, Object>> validationErrors) {}
+            ByteBuffer body,
+            List<Map<String, Object>> validationErrors) {
+
+        public DecodedResponse {
+            Objects.requireNonNull(body, "body");
+            if (!body.isReadOnly() || body.position() != 0) {
+                body = body.slice().asReadOnlyBuffer();
+            }
+        }
+
+        /**
+         * Return a fresh read-only duplicate of the response body view.
+         * The returned buffer is positioned at {@code 0} with
+         * {@code limit()} equal to the body length.
+         */
+        @Override
+        public ByteBuffer body() {
+            return body.asReadOnlyBuffer();
+        }
+
+        /**
+         * Materialise the response body as an owned byte array.
+         *
+         * <p>This method copies the bytes from the zero-copy body view;
+         * use it at API boundaries that require {@code byte[]}.
+         */
+        public byte[] bodyBytes() {
+            ByteBuffer view = body.asReadOnlyBuffer();
+            byte[] bytes = new byte[view.remaining()];
+            view.get(bytes);
+            return bytes;
+        }
+    }
 
     /**
      * Initialize the Rust engine.  Tries bundled (JAR-embedded) first,
      * falls back to {@code java.library.path}.
      *
+     * <p>Streaming configuration is seeded from system properties
+     * <strong>before the first dispatch</strong> (values fixed for
+     * the process lifetime once read):
+     * <ul>
+     *   <li>{@code vespera.streaming.chunkBytes} — per-chunk buffer
+     *       size for streaming dispatches (default 256 KiB, clamped to
+     *       4 KiB – 8 MiB on the Rust side)</li>
+     *   <li>{@code vespera.streaming.channelCapacity} — bound of the
+     *       bidirectional request-body channel in slots (default 16,
+     *       clamped to 1 – 1024)</li>
+     *   <li>{@code vespera.runtime.workerThreads} — worker threads of
+     *       the shared Tokio runtime (default: number of logical
+     *       CPUs, clamped to 1 – 1024)</li>
+     * </ul>
+     * The {@code VESPERA_STREAMING_CHUNK_BYTES} /
+     * {@code VESPERA_STREAMING_CHANNEL_CAPACITY} /
+     * {@code VESPERA_RUNTIME_WORKERS} environment variables apply
+     * when no system property is set.
+     *
      * @param libraryName Cargo crate name (e.g. {@code "rust_jni_demo"})
      */
     public static synchronized void init(String libraryName) {
-        if (loaded) return;
-        try {
-            loadBundled(libraryName);
-        } catch (UnsatisfiedLinkError e) {
-            System.loadLibrary(libraryName);
+        Objects.requireNonNull(libraryName, "libraryName");
+        if (loaded) {
+            // Re-init with the SAME library is a no-op (friendly for test
+            // harness resets / repeated Spring context starts). A DIFFERENT
+            // name is a bug — a JVM process loads exactly one vespera cdylib
+            // for its lifetime — so surface it instead of silently keeping
+            // the first library and dispatching to the wrong Rust app.
+            if (!loadedLibraryName.equals(libraryName)) {
+                throw new IllegalStateException(
+                        "VesperaBridge is already initialised with native library '"
+                        + loadedLibraryName + "' and cannot be re-initialised with a "
+                        + "different library '" + libraryName + "'.");
+            }
+            return;
         }
+        loadNativeLibrary(libraryName, VesperaNativeLoader::loadBundled, System::loadLibrary);
+        // Mark the native library as loaded immediately after System.load /
+        // System.loadLibrary succeeds. Optional post-load configuration hooks
+        // below may still throw (for example, a native-side panic surfaced as an
+        // Error), but a later init() must not try to load the same cdylib again.
         loaded = true;
+        loadedLibraryName = libraryName;
+        // Apply pending streaming config (set via configureStreaming before init).
+        // Pending values beat system properties (Rust-side setter > env > default).
+        int chunkBytes = pendingOrProperty(
+                pendingChunkBytes, "vespera.streaming.chunkBytes");
+        int channelCapacity = pendingOrProperty(
+                pendingChannelCapacity, "vespera.streaming.channelCapacity");
+        configureStreamingIfSupported(chunkBytes, channelCapacity, VesperaBridge::configureStreaming0);
+        configureRuntimeIfSupported(
+                Integer.getInteger("vespera.runtime.workerThreads", 0),
+                VesperaBridge::configureRuntime0);
     }
+
+    static void loadNativeLibrary(
+            String libraryName,
+            NativeLibraryLoader bundledLoader,
+            NativeLibraryLoader systemLoader) {
+        try {
+            bundledLoader.load(libraryName);
+        } catch (VesperaNativeLoader.BundledNativeAbsent absent) {
+            systemLoader.load(libraryName);
+        }
+    }
+
+    static void configureStreamingIfSupported(
+            int chunkBytes,
+            int channelCapacity,
+            StreamingConfigurator configurator) {
+        try {
+            configurator.configure(chunkBytes, channelCapacity);
+        } catch (UnsatisfiedLinkError olderNativeLibrary) {
+            // Pre-0.2 native libraries don't export configureStreaming0.
+            // Streaming config then falls back to env vars / defaults —
+            // never block init over an optional tuning hook.
+        }
+    }
+
+    static void configureRuntimeIfSupported(
+            int workerThreads, RuntimeConfigurator configurator) {
+        try {
+            configurator.configure(workerThreads);
+        } catch (UnsatisfiedLinkError olderNativeLibrary) {
+            // Same guard as above — older native libraries fall back to
+            // the VESPERA_RUNTIME_WORKERS env var / Tokio's default.
+        }
+    }
+
+    static int pendingOrProperty(Integer pendingValue, String propertyName) {
+        return pendingValue != null ? pendingValue : Integer.getInteger(propertyName, 0);
+    }
+
+    /**
+     * Configure streaming tuning parameters for the Rust-side dispatch
+     * engine.  <strong>Call before {@link #init(String)}</strong> for
+     * guaranteed precedence (values are stored pending and applied right
+     * after the native library loads, before any dispatch); calling after
+     * init applies immediately.
+     *
+     * <p>Precedence (first hit wins, then process-fixed): this method &gt;
+     * system properties ({@code vespera.streaming.chunkBytes} /
+     * {@code vespera.streaming.channelCapacity}) &gt; environment variables
+     * ({@code VESPERA_STREAMING_CHUNK_BYTES} /
+     * {@code VESPERA_STREAMING_CHANNEL_CAPACITY}) &gt; defaults
+     * (256 KiB chunk, 16 channel slots).
+     *
+     * @param chunkBytes per-chunk buffer size for streaming dispatches
+     * @param channelCapacity bound of the bidirectional request-body
+     *                        channel in slots
+     * @throws IllegalArgumentException if {@code chunkBytes} is outside
+     *         [4096, 8388608] (4 KiB – 8 MiB) or {@code channelCapacity}
+     *         is outside [1, 1024]
+     */
+    public static synchronized void configureStreaming(int chunkBytes, int channelCapacity) {
+        if (chunkBytes < 4096 || chunkBytes > 8388608) {
+            throw new IllegalArgumentException(
+                    "chunkBytes " + chunkBytes
+                            + " out of range [4096, 8388608] (4 KiB – 8 MiB)");
+        }
+        if (channelCapacity < 1 || channelCapacity > 1024) {
+            throw new IllegalArgumentException(
+                    "channelCapacity " + channelCapacity + " out of range [1, 1024]");
+        }
+        if (loaded) {
+            // Native library already loaded — apply immediately.
+            configureStreamingIfSupported(
+                    chunkBytes, channelCapacity, VesperaBridge::configureStreaming0);
+        } else {
+            // Native library not yet loaded — store pending values.
+            // These will be applied in init() before any dispatch.
+            pendingChunkBytes = chunkBytes;
+            pendingChannelCapacity = channelCapacity;
+        }
+    }
+
+    /**
+     * Clear all vespera-bridge buffers retained by the <em>current</em> Java
+     * thread. This is for servlet-container shutdown/redeploy hooks that want
+     * to release ThreadLocal-held app-class objects and direct buffers from
+     * container worker threads. Normal request handling should not call it;
+     * per-request clearing would defeat the hot-path pools.
+     */
+    public static void clearCurrentThreadBuffers() {
+        VesperaDirectBufferPool.clearCurrentThreadBuffers();
+        VesperaWireCodec.clearCurrentThreadBuffers();
+        WireHeaderReader.clearCurrentThreadBuffers();
+        VesperaProxyController.clearCurrentThreadBuffers();
+    }
+
+    /**
+     * Seed the Rust-side streaming configuration.  Values {@code <= 0}
+     * leave the corresponding setting untouched (environment variable
+     * or built-in default applies).  Calls after the configuration is
+     * fixed are silently ignored.
+     */
+    private static native void configureStreaming0(int chunkBytes, int channelCapacity);
+
+    /**
+     * Seed the shared Tokio runtime's worker thread count (system
+     * property {@code vespera.runtime.workerThreads}, env fallback
+     * {@code VESPERA_RUNTIME_WORKERS}; clamped to 1–1024 on the Rust
+     * side).  Defaults to Tokio's heuristic (number of logical CPUs)
+     * — cap it when the JVM's own thread pools compete for the same
+     * cores.  Values {@code <= 0} leave the setting untouched; calls
+     * after the runtime started are silently ignored.
+     */
+    private static native void configureRuntime0(int workerThreads);
 
     /**
      * Dispatch a wire-format HTTP-like request through the Rust axum
@@ -121,6 +343,27 @@ public class VesperaBridge {
      * release: {@code future.cancel(true)} will mark the future as
      * cancelled on the Java side, but the in-flight Rust dispatch
      * continues to completion (and its result is discarded).
+     *
+     * <p><strong>Threading contract (IMPORTANT):</strong> the future is
+     * completed on a Rust Tokio <em>runtime worker thread</em>, so any
+     * <em>non-async</em> continuation ({@code thenApply}, {@code thenAccept},
+     * {@code whenComplete}, &hellip;) runs <strong>inline on that worker</strong>.
+     * Therefore:
+     * <ul>
+     *   <li>attach heavy or blocking continuations with the {@code *Async}
+     *       variants ({@code thenApplyAsync}, {@code whenCompleteAsync}, &hellip;)
+     *       on your own {@link java.util.concurrent.Executor}; and</li>
+     *   <li>never call a blocking vespera dispatch ({@link #dispatchBytes(byte[])}
+     *       / {@link #dispatchDirect(java.nio.ByteBuffer, int, java.nio.ByteBuffer)})
+     *       from an inline continuation &mdash; that nests a blocking call inside
+     *       the runtime worker and degrades to a {@code 500} wire response.</li>
+     * </ul>
+     * Completing the future off the worker (a {@code spawn_blocking} hand-off)
+     * was measured at ~16&times; the per-dispatch cost, so the worker-thread
+     * completion is kept and this contract is documented instead &mdash; the same
+     * approach Netty and async HTTP clients take. The autoconfigured Spring proxy
+     * never selects this async path (it uses DIRECT / SYNC / streaming), so this
+     * applies only to callers composing {@link CompletableFuture}s directly.
      *
      * @param future        the future to complete with the wire response
      * @param wireRequest   length-prefixed binary wire request
@@ -184,7 +427,8 @@ public class VesperaBridge {
      *       with an empty {@code body} array.</li>
      *   <li>The request body bytes flow through {@code inputStream}
      *       — Rust calls {@code inputStream.read(byte[])} repeatedly
-     *       (16 KiB at a time) until EOF.</li>
+     *       (256 KiB at a time by default; see
+     *       {@code vespera.streaming.chunkBytes}) until EOF.</li>
      *   <li>The response body bytes flow through {@code outputStream}
      *       — Rust calls {@code outputStream.write(byte[])} for each
      *       axum body frame.</li>
@@ -231,6 +475,14 @@ public class VesperaBridge {
         return encodeRequestHeader(null, method, path, query, headers);
     }
 
+    public static byte[] encodeRequestHeader(
+            String method,
+            String path,
+            String query,
+            HeaderSource headers) {
+        return encodeRequestHeader(null, method, path, query, headers);
+    }
+
     /**
      * Same as {@link #encodeRequestHeader(String, String, String, java.util.Map)}
      * but with an explicit app name for multi-app routing.  See
@@ -249,7 +501,22 @@ public class VesperaBridge {
                 Objects.requireNonNull(path, "path"),
                 query,
                 headers != null ? headers : java.util.Map.of(),
-                new byte[0]);
+                VesperaWireCodec.EMPTY_BODY);
+    }
+
+    public static byte[] encodeRequestHeader(
+            String appName,
+            String method,
+            String path,
+            String query,
+            HeaderSource headers) {
+        return encodeRequest(
+                appName,
+                Objects.requireNonNull(method, "method"),
+                Objects.requireNonNull(path, "path"),
+                query,
+                headers,
+                VesperaWireCodec.EMPTY_BODY);
     }
 
     /**
@@ -289,6 +556,268 @@ public class VesperaBridge {
             OutputStream outputStream);
 
     /**
+     * Thrown by {@link #dispatchDirectPooled(byte[], boolean)} when the
+     * response exceeds the out-buffer capacity and the caller disallowed
+     * automatic retry (unsafe requests).  Carries the exact
+     * buffer size needed for a successful retry.
+     *
+     * <p><strong>Retrying re-runs the dispatch</strong> — the Rust
+     * handler executes again.  Only retry safe requests
+     * (GET/HEAD/OPTIONS) automatically; for unsafe methods the caller
+     * must decide.
+     */
+    public static final class BufferTooSmallException extends RuntimeException {
+        private final int requiredSize;
+
+        public BufferTooSmallException(int requiredSize) {
+            super("response requires a " + requiredSize
+                    + "-byte direct out buffer; retry would re-run the dispatch");
+            this.requiredSize = requiredSize;
+        }
+
+        BufferTooSmallException(int requiredSize, String message) {
+            super(message);
+            this.requiredSize = requiredSize;
+        }
+
+        /** Exact out-buffer capacity needed for a successful retry. */
+        public int requiredSize() {
+            return requiredSize;
+        }
+    }
+
+    /**
+     * Raw native entry — validated by {@link #dispatchDirect(ByteBuffer,
+     * int, ByteBuffer)}; never call this directly.
+     */
+    private static native int dispatchDirect0(ByteBuffer in, int inLen, ByteBuffer out);
+
+    /**
+     * <strong>Direct-buffer</strong> synchronous dispatch — eliminates
+     * both JNI region copies ({@code byte[]} ↔ native) and the per-call
+     * Java heap array allocations of {@link #dispatchBytes(byte[])}.
+     *
+     * <p><strong>Contract</strong> (position/limit are IGNORED — the
+     * explicit {@code inLen} parameter is authoritative):
+     * <ul>
+     *   <li>{@code in} and {@code out} MUST be <em>direct</em> buffers;
+     *       heap buffers are rejected here, before crossing JNI.</li>
+     *   <li>The wire request is read from absolute offsets
+     *       {@code in[0..inLen]}.</li>
+     *   <li>Return {@code >= 0}: a complete wire response occupies
+     *       {@code out[0..n]}.</li>
+     *   <li>Return {@code < 0}: {@code -(requiredSize)} — the response
+     *       did not fit.  {@code out} contents are <em>undefined</em>
+     *       (the response streams directly into the buffer, so a
+     *       prefix may have been written).  {@code requiredSize} is
+     *       exact; retrying re-runs the dispatch (see
+     *       {@link BufferTooSmallException}).</li>
+     *   <li>{@code Integer.MIN_VALUE}: response exceeds 2 GiB and is
+     *       unrepresentable in this protocol.</li>
+     * </ul>
+     *
+     * <p>The buffers are only accessed for the duration of this call;
+     * they may be reused immediately after it returns.
+     *
+     * @param in    direct buffer holding the wire request at [0..inLen)
+     * @param inLen number of valid request bytes in {@code in}
+     * @param out   direct buffer that receives the wire response
+     * @return bytes written, or the negative protocol codes above
+     * @throws IllegalArgumentException if either buffer is not direct, read-only,
+     *         {@code inLen} is negative, or exceeds {@code in.capacity()}
+     */
+    public static int dispatchDirect(ByteBuffer in, int inLen, ByteBuffer out) {
+        Objects.requireNonNull(in, "in");
+        Objects.requireNonNull(out, "out");
+        if (!in.isDirect() || !out.isDirect()) {
+            throw new IllegalArgumentException(
+                    "dispatchDirect requires direct ByteBuffers (use ByteBuffer.allocateDirect)");
+        }
+        if (in.isReadOnly()) {
+            throw new IllegalArgumentException(
+                    "dispatchDirect requires a writable in ByteBuffer (got a read-only buffer)");
+        }
+        // SEC-2: the native side writes the wire response straight into
+        // `out` via a `&mut [u8]`; a read-only direct buffer (e.g. a
+        // read-only MappedByteBuffer) is backed by read-only pages, so
+        // writing to it is undefined behavior / a process crash.  Reject
+        // it here — the native code cannot recover from a write fault.
+        if (out.isReadOnly()) {
+            throw new IllegalArgumentException(
+                    "dispatchDirect requires a writable out ByteBuffer (got a read-only buffer)");
+        }
+        if (inLen < 0 || inLen > in.capacity()) {
+            throw new IllegalArgumentException(
+                    "inLen " + inLen + " out of range for in.capacity() " + in.capacity());
+        }
+        return dispatchDirect0(in, inLen, out);
+    }
+
+    /**
+     * Whether the calling thread is a virtual thread (Java 21+); always
+     * {@code false} on the Java 17 baseline.  Delegates to
+     * {@link VesperaDirectBufferPool#currentThreadIsVirtual()} — used by
+     * {@link SmartDispatchModeResolver} to keep pooled direct-buffer work
+     * off virtual threads.
+     */
+    static boolean currentThreadIsVirtual() {
+        return VesperaDirectBufferPool.currentThreadIsVirtual();
+    }
+
+    /**
+     * Pooled convenience around {@link #dispatchDirect(ByteBuffer, int,
+     * ByteBuffer)} using per-thread reusable direct buffers (64 KiB
+     * initial, doubling up to {@code vespera.direct.maxBufferBytes},
+     * default 4 MiB).
+     *
+     * <p>Returns a <strong>read-only view</strong> of the thread-local
+     * response buffer covering exactly the wire response bytes.  The
+     * view is valid only until the next {@code dispatchDirect*} call on
+     * the same thread — consume (or copy) it before dispatching again.
+     *
+     * <p><strong>Virtual thread (Project Loom) limitation:</strong> The
+     * per-thread buffer pool is backed by {@link ThreadLocal}, which
+     * binds to the <em>virtual thread</em> (not the carrier thread) in
+     * Java 21+ semantics.  In a virtual-thread-per-request server, each
+     * virtual thread allocates a fresh direct buffer and loses all
+     * pooling benefit; direct memory accumulates until the virtual thread
+     * is garbage-collected.  {@link VesperaDirectBufferPool} detects this
+     * and routes virtual threads to the GC-managed heap
+     * {@link #dispatchBytes(byte[])} path.
+     *
+     * <p>Fallback / overflow policy:
+     * <ul>
+     *   <li>Request larger than the cap → falls back to
+     *       {@link #dispatchBytes(byte[])} (safe: no dispatch has run
+     *       yet) and wraps the result.</li>
+     *   <li>Response overflow with {@code retryOnOverflow == true} →
+     *       grows the out buffer (or falls back to {@code dispatchBytes}
+     *       beyond the cap) and dispatches again.  <strong>The handler
+     *       runs twice</strong> — only pass {@code true} for safe
+     *       requests.</li>
+     *   <li>Response overflow with {@code retryOnOverflow == false} →
+     *       throws {@link BufferTooSmallException}.</li>
+     * </ul>
+     *
+     * @param wireRequest      length-prefixed binary wire request
+     * @param retryOnOverflow  whether a response overflow may re-run the
+     *                         dispatch (safe requests only)
+     * @return read-only buffer view of the wire response, positioned at
+     *         0 with {@code limit()} = response length
+     */
+    public static ByteBuffer dispatchDirectPooled(byte[] wireRequest, boolean retryOnOverflow) {
+        return VesperaDirectBufferPool.dispatchDirectPooled(wireRequest, retryOnOverflow);
+    }
+
+    /**
+     * Encode-and-dispatch convenience that skips the intermediate
+     * wire-sized {@code byte[]} entirely: the wire request is encoded
+     * <strong>straight into the pooled direct in-buffer</strong>, so the
+     * body bytes are copied heap→direct exactly once.  Same pooling,
+     * fallback, overflow, and view-validity semantics as
+     * {@link #dispatchDirectPooled(byte[], boolean)}.
+     *
+     * @param appName target app name (may be {@code null} for default)
+     * @param method  HTTP method (uppercase)
+     * @param path    URL path
+     * @param query   raw query string (may be {@code null})
+     * @param headers request headers
+     * @param body    request body bytes (may be empty or {@code null})
+     * @param retryOnOverflow whether a response overflow may re-run the
+     *                        dispatch (safe requests only)
+     * @return read-only buffer view of the wire response, valid until
+     *         the next {@code dispatchDirect*} call on this thread
+     */
+    public static ByteBuffer dispatchDirectPooled(
+            String appName,
+            String method,
+            String path,
+            String query,
+            Map<String, String> headers,
+            byte[] body,
+            boolean retryOnOverflow) {
+        requireRequestInputs(method, path, headers);
+        return VesperaDirectBufferPool.dispatchDirectPooled(
+                appName, method, path, query, headers, body, retryOnOverflow);
+    }
+
+    public static ByteBuffer dispatchDirectPooled(
+            String appName,
+            String method,
+            String path,
+            String query,
+            HeaderSource headers,
+            byte[] body,
+            boolean retryOnOverflow) {
+        requireRequestInputs(method, path);
+        return VesperaDirectBufferPool.dispatchDirectPooled(
+                appName, method, path, query, headers, body, retryOnOverflow);
+    }
+
+    static ByteBuffer dispatchDirectPooled(
+            String appName,
+            String method,
+            String path,
+            String query,
+            HeaderSource headers,
+            byte[] body,
+            boolean retryOnOverflow,
+            boolean currentThreadIsVirtual) {
+        requireRequestInputs(method, path);
+        return VesperaDirectBufferPool.dispatchDirectPooled(
+                appName, method, path, query, headers, body,
+                retryOnOverflow, currentThreadIsVirtual);
+    }
+
+    /**
+     * Encode a request <strong>directly into</strong> {@code target}
+     * starting at position 0 — no intermediate wire-sized {@code byte[]}.
+     *
+     * <p>On success the wire bytes occupy {@code target[0..returned]}
+     * and {@code target}'s position is left at the end of the written
+     * region.  If {@code target} is too small, returns
+     * {@code -(requiredSize)} and writes nothing.  This is an
+     * <em>encoding-side</em> size signal: no dispatch has happened, so
+     * growing the buffer and retrying is always safe (unlike the
+     * response-overflow retry, which re-runs the handler).
+     *
+     * @param appName target app name (may be {@code null} for default)
+     * @param method  HTTP method (uppercase)
+     * @param path    URL path
+     * @param query   raw query string (may be {@code null})
+     * @param headers request headers
+     * @param body    request body bytes (may be empty or {@code null})
+     * @param target  destination buffer (any kind; for the JNI direct
+     *                path use {@code ByteBuffer.allocateDirect})
+     * @return total bytes written ({@code >= 4}), or {@code -(required)}
+     */
+    public static int encodeRequestInto(
+            String appName,
+            String method,
+            String path,
+            String query,
+            Map<String, String> headers,
+            byte[] body,
+            ByteBuffer target) {
+        Objects.requireNonNull(target, "target");
+        requireRequestInputs(method, path, headers);
+        return VesperaWireCodec.encodeRequestInto(appName, method, path, query, headers, body, target);
+    }
+
+    public static int encodeRequestInto(
+            String appName,
+            String method,
+            String path,
+            String query,
+            HeaderSource headers,
+            byte[] body,
+            ByteBuffer target) {
+        Objects.requireNonNull(target, "target");
+        requireRequestInputs(method, path);
+        return VesperaWireCodec.encodeRequestInto(appName, method, path, query, headers, body, target);
+    }
+
+    /**
      * Encode a request into the binary wire format.
      *
      * @param method  HTTP method (uppercase: {@code GET}, {@code POST}, ...)
@@ -304,7 +833,18 @@ public class VesperaBridge {
             String query,
             Map<String, String> headers,
             byte[] body) {
-        return encodeRequest(null, method, path, query, headers, body);
+        requireRequestInputs(method, path, headers);
+        return VesperaWireCodec.encodeRequest(null, method, path, query, headers, body);
+    }
+
+    public static byte[] encodeRequest(
+            String method,
+            String path,
+            String query,
+            HeaderSource headers,
+            byte[] body) {
+        requireRequestInputs(method, path);
+        return VesperaWireCodec.encodeRequest(null, method, path, query, headers, body);
     }
 
     /**
@@ -333,35 +873,38 @@ public class VesperaBridge {
             String query,
             Map<String, String> headers,
             byte[] body) {
-        try {
-            ObjectNode header = MAPPER.createObjectNode();
-            header.put("v", WIRE_VERSION);
-            header.put("method", method);
-            header.put("path", path);
-            if (query != null && !query.isEmpty()) {
-                header.put("query", query);
+        requireRequestInputs(method, path, headers);
+        return VesperaWireCodec.encodeRequest(appName, method, path, query, headers, body);
+    }
+
+    public static byte[] encodeRequest(
+            String appName,
+            String method,
+            String path,
+            String query,
+            HeaderSource headers,
+            byte[] body) {
+        requireRequestInputs(method, path);
+        return VesperaWireCodec.encodeRequest(appName, method, path, query, headers, body);
+    }
+
+    private static void requireRequestInputs(
+            String method, String path, Map<String, String> headers) {
+        requireRequestInputs(method, path);
+        if (headers != null) {
+            for (Map.Entry<String, String> header : headers.entrySet()) {
+                Objects.requireNonNull(header.getKey(), "header key");
+                Objects.requireNonNull(header.getValue(), "header value");
             }
-            if (headers != null && !headers.isEmpty()) {
-                ObjectNode hdrs = MAPPER.createObjectNode();
-                for (Map.Entry<String, String> e : headers.entrySet()) {
-                    hdrs.put(e.getKey(), e.getValue());
-                }
-                header.set("headers", hdrs);
-            }
-            if (appName != null && !appName.isBlank()) {
-                header.put("app", appName.trim());
-            }
-            byte[] headerJson = MAPPER.writeValueAsBytes(header);
-            byte[] bodyBytes = body != null ? body : new byte[0];
-            ByteBuffer buf = ByteBuffer
-                    .allocate(4 + headerJson.length + bodyBytes.length)
-                    .order(ByteOrder.BIG_ENDIAN);
-            buf.putInt(headerJson.length);
-            buf.put(headerJson);
-            buf.put(bodyBytes);
-            return buf.array();
-        } catch (IOException e) {
-            throw new IllegalStateException("encodeRequest serialisation failed", e);
+        }
+    }
+
+    private static void requireRequestInputs(String method, String path) {
+        Objects.requireNonNull(method, "method");
+        Objects.requireNonNull(path, "path");
+        if (path.indexOf('?') >= 0) {
+            throw new IllegalArgumentException(
+                    "path must not contain '?' — pass the raw query string via the query parameter");
         }
     }
 
@@ -371,120 +914,7 @@ public class VesperaBridge {
      * @throws IllegalArgumentException if the wire bytes are malformed
      */
     public static DecodedResponse decodeResponse(byte[] wire) {
-        if (wire == null || wire.length < 4) {
-            throw new IllegalArgumentException(
-                    "wire response too short: "
-                            + (wire == null ? "null" : wire.length + " bytes"));
-        }
-        ByteBuffer buf = ByteBuffer.wrap(wire).order(ByteOrder.BIG_ENDIAN);
-        int headerLen = buf.getInt();
-        if (headerLen < 0 || (long) 4 + headerLen > wire.length) {
-            throw new IllegalArgumentException(
-                    "wire header_len " + headerLen
-                            + " overflows response (" + wire.length + " bytes)");
-        }
-        try {
-            JsonNode header = MAPPER.readTree(
-                    new java.io.ByteArrayInputStream(wire, 4, headerLen));
-            int status = header.path("status").asInt(500);
-
-            Map<String, Object> headers = new LinkedHashMap<>();
-            JsonNode hdrs = header.path("headers");
-            if (hdrs.isObject()) {
-                Iterator<Map.Entry<String, JsonNode>> it = hdrs.fields();
-                while (it.hasNext()) {
-                    Map.Entry<String, JsonNode> e = it.next();
-                    JsonNode v = e.getValue();
-                    if (v.isArray()) {
-                        List<String> list = new ArrayList<>(v.size());
-                        for (JsonNode item : v) {
-                            list.add(item.asText());
-                        }
-                        headers.put(e.getKey(), list);
-                    } else {
-                        headers.put(e.getKey(), v.asText());
-                    }
-                }
-            }
-
-            Map<String, String> metadata = new LinkedHashMap<>();
-            JsonNode mdNode = header.path("metadata");
-            if (mdNode.isObject()) {
-                Iterator<Map.Entry<String, JsonNode>> it = mdNode.fields();
-                while (it.hasNext()) {
-                    Map.Entry<String, JsonNode> e = it.next();
-                    metadata.put(e.getKey(), e.getValue().asText());
-                }
-            }
-
-            // Hoisted validation errors (Vespera Validated<T> 422 path).
-            // null when absent (any non-422 or non-Vespera 422).
-            List<Map<String, Object>> validationErrors = null;
-            JsonNode veNode = header.path("validation_errors");
-            if (veNode.isArray()) {
-                validationErrors = new ArrayList<>(veNode.size());
-                for (JsonNode item : veNode) {
-                    Map<String, Object> entry = new LinkedHashMap<>();
-                    Iterator<Map.Entry<String, JsonNode>> it = item.fields();
-                    while (it.hasNext()) {
-                        Map.Entry<String, JsonNode> e = it.next();
-                        entry.put(e.getKey(), e.getValue().asText());
-                    }
-                    validationErrors.add(entry);
-                }
-            }
-
-            int bodyStart = 4 + headerLen;
-            byte[] body = Arrays.copyOfRange(wire, bodyStart, wire.length);
-            return new DecodedResponse(status, headers, metadata, body, validationErrors);
-        } catch (IOException e) {
-            throw new IllegalArgumentException("wire header JSON parse failed", e);
-        }
-    }
-
-    // --- Internal: bundled native lib extraction ---
-
-    private static void loadBundled(String libraryName) {
-        String os = detectOs();
-        String arch = detectArch();
-        String filename = mapLibraryName(os, libraryName);
-        String resourcePath = "native/" + os + "-" + arch + "/" + filename;
-
-        try (InputStream in =
-                VesperaBridge.class.getClassLoader().getResourceAsStream(resourcePath)) {
-            if (in == null) {
-                throw new UnsatisfiedLinkError("Not found in JAR: " + resourcePath);
-            }
-            String suffix = filename.substring(filename.lastIndexOf('.'));
-            Path temp = Files.createTempFile("vespera-", suffix);
-            temp.toFile().deleteOnExit();
-            Files.copy(in, temp, StandardCopyOption.REPLACE_EXISTING);
-            System.load(temp.toAbsolutePath().toString());
-        } catch (IOException e) {
-            throw new UnsatisfiedLinkError("Extract failed: " + e.getMessage());
-        }
-    }
-
-    private static String detectOs() {
-        String os = System.getProperty("os.name", "").toLowerCase();
-        if (os.contains("win")) return "windows";
-        if (os.contains("mac") || os.contains("darwin")) return "macos";
-        return "linux";
-    }
-
-    private static String detectArch() {
-        String arch = System.getProperty("os.arch", "").toLowerCase();
-        if (arch.contains("amd64") || arch.contains("x86_64")) return "x86_64";
-        if (arch.contains("aarch64") || arch.contains("arm64")) return "aarch64";
-        return arch;
-    }
-
-    private static String mapLibraryName(String os, String name) {
-        return switch (os) {
-            case "windows" -> name + ".dll";
-            case "macos" -> "lib" + name + ".dylib";
-            default -> "lib" + name + ".so";
-        };
+        return VesperaWireCodec.decodeResponse(wire);
     }
 
     private VesperaBridge() {}

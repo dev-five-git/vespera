@@ -9,6 +9,7 @@
     ]
   },
   "publish": {
-    "java": "./gradlew publishToMavenCentral --stacktrace"
+    "java": "./gradlew publishToMavenCentral --stacktrace",
+    "libs/vespera-bridge-gradle-plugin/build.gradle.kts": "./gradlew publishToMavenCentral publishPlugins --stacktrace"
   }
 }

@@ -1,1 +1,205 @@
-empty
+# schema_type!, schema!, and export_app!
+
+## schema_type! Macro
+
+Generate request/response types from existing structs. Perfect for creating API DTOs from database models without duplicating field definitions.
+
+### Basic Usage
+
+```rust
+use vespera::schema_type;
+
+// Include only specific fields
+schema_type!(CreateUserRequest from crate::models::user::Model, pick = ["name", "email"]);
+
+// Exclude specific fields
+schema_type!(UserResponse from crate::models::user::Model, omit = ["password_hash"]);
+
+// Add new fields (disables auto From impl)
+schema_type!(UpdateUserRequest from crate::models::user::Model, pick = ["name"], add = [("id": i32)]);
+```
+
+### Auto-Generated From Impl
+
+When `add` is NOT used, a `From` impl is generated automatically:
+
+```rust
+schema_type!(UserResponse from crate::models::user::Model, omit = ["password_hash"]);
+
+// Use it directly:
+let model: Model = db.find_user(id).await?;
+Json(model.into())  // From impl handles the conversion
+```
+
+### Same-File Model Reference
+
+When the model is in the same file, use a simple name with the `name` parameter:
+
+```rust
+// In src/models/user.rs
+pub struct Model {
+    pub id: i32,
+    pub name: String,
+    pub email: String,
+}
+
+vespera::schema_type!(Schema from Model, name = "UserSchema");
+```
+
+### Cross-File References
+
+Reference structs from other files using full module paths:
+
+```rust
+// In src/routes/users.rs
+schema_type!(UserResponse from crate::models::user::Model, omit = ["password_hash"]);
+```
+
+### Partial Updates (PATCH)
+
+```rust
+// All fields become Option<T>
+schema_type!(UserPatch from User, partial);
+
+// Only specific fields become Option<T>
+schema_type!(UserPatch from User, partial = ["name", "email"]);
+```
+
+### Omit Database Defaults
+
+`omit_default` automatically omits fields with `#[sea_orm(primary_key)]` or `#[sea_orm(default_value = "...")]` — perfect for create DTOs:
+
+```rust
+#[derive(DeriveEntityModel)]
+#[sea_orm(table_name = "posts")]
+pub struct Model {
+    #[sea_orm(primary_key)]             // omitted
+    pub id: i32,
+    pub title: String,
+    pub content: String,
+    #[sea_orm(default_value = "NOW()")]  // omitted
+    pub created_at: DateTimeWithTimeZone,
+}
+
+// Generated struct only has: title, content
+schema_type!(CreatePostRequest from crate::models::post::Model, omit_default);
+
+// Combine with add
+schema_type!(CreateItemRequest from Model, omit_default, add = [("tags": Vec<String>)]);
+```
+
+### Multipart Mode
+
+Generate `Multipart` structs from existing types:
+
+```rust
+#[derive(vespera::Multipart, vespera::Schema)]
+pub struct CreateUploadRequest {
+    pub name: String,
+    #[form_data(limit = "10MiB")]
+    pub file: Option<FieldData<NamedTempFile>>,
+    pub description: Option<String>,
+}
+
+// Generates a Multipart struct (no serde derives), all fields Optional
+schema_type!(PatchUploadRequest from CreateUploadRequest, multipart, partial, omit = ["file"]);
+```
+
+When `multipart` is enabled:
+- Derives `Multipart` instead of `Serialize`/`Deserialize`
+- Preserves `#[form_data(...)]` attributes from the source struct
+- Skips SeaORM relation fields
+- Does not generate a `From` impl
+
+### Same-File Relation Adapters
+
+When a route file defines local response DTOs for SeaORM relations, `schema_type!` generates compile adapters so existing handler code stays valid:
+
+```rust
+#[derive(Serialize, vespera::Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInArticle {
+    pub id: Uuid,
+    pub name: String,
+    pub email: String,
+}
+
+schema_type!(
+    ArticleResponse from crate::models::article::Model,
+    add = [("review_users": Vec<ReviewUserInArticle>)]
+);
+
+// Handler code unchanged:
+Ok(ArticleResponse {
+    user: user.into(),   // adapter generated automatically
+    review_users,
+    ..
+})
+```
+
+The naming convention is `{RelationNamePascal}In{ResponseBase}` — `user` on `ArticleResponse` → `UserInArticle`.
+
+### All Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `pick` | Include only specified fields |
+| `omit` | Exclude specified fields |
+| `rename` | Rename fields: `rename = [("old", "new")]` |
+| `add` | Add new fields (disables auto `From` impl) |
+| `clone` | Control Clone derive (default: `true`) |
+| `partial` | Make fields optional: `partial` or `partial = ["field1"]` |
+| `name` | Custom OpenAPI schema name (same-file references only) |
+| `rename_all` | Serde rename strategy: `rename_all = "camelCase"` |
+| `ignore` | Skip Schema derive (bare keyword) |
+| `multipart` | Derive `Multipart` instead of serde (bare keyword) |
+| `omit_default` | Auto-omit fields with DB defaults (bare keyword) |
+
+---
+
+## schema! Macro
+
+Get a `Schema` value at runtime with optional field filtering. Useful for programmatic schema access without generating a new struct type.
+
+```rust
+use vespera::{Schema, schema};
+
+#[derive(Schema)]
+pub struct User {
+    pub id: i32,
+    pub name: String,
+    pub password: String,
+}
+
+// Full schema
+let full: vespera::schema::Schema = schema!(User);
+
+// With fields omitted
+let safe: vespera::schema::Schema = schema!(User, omit = ["password"]);
+
+// With only specified fields
+let summary: vespera::schema::Schema = schema!(User, pick = ["id", "name"]);
+```
+
+> For creating request/response types with `From` impls, use `schema_type!` instead.
+
+---
+
+## export_app! Macro
+
+Export a Vespera app from a library crate for merging into a parent app. See [vespera! Macro](/documentation/api/api-1) for the merge usage.
+
+```rust
+// In the child crate's src/lib.rs
+mod routes;
+
+// Scans "routes" folder by default
+vespera::export_app!(MyApp);
+
+// Or with a custom directory
+vespera::export_app!(MyApp, dir = "api");
+```
+
+Generates:
+- `MyApp::OPENAPI_SPEC: &'static str` — the OpenAPI JSON spec
+- `MyApp::router() -> Router` — the Axum router

@@ -10,7 +10,11 @@
 //! exactly once on every code path (success or error).
 
 use std::collections::HashMap;
+use std::ops::ControlFlow;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Once};
+use std::task::{Context, Poll};
 
 use axum::Router;
 use axum::http::HeaderMap;
@@ -18,11 +22,17 @@ use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use bytes::Bytes;
+use http_body::{Body as HttpBody, Frame};
 use serde_json::Value;
 use vespera_inprocess::{
-    dispatch_bidirectional_streaming_with_header, dispatch_streaming_with_header_async,
-    register_app_named,
+    DirectWriteResult, RequestChunk, StreamOutcome, dispatch_bidirectional_streaming_closing,
+    dispatch_bidirectional_streaming_with_header,
+    dispatch_bidirectional_streaming_with_header_closing, dispatch_into_async,
+    dispatch_streaming_async, dispatch_streaming_with_header_async, register_app_named,
 };
+
+#[path = "streaming_with_header/close_hook_and_body_errors.rs"]
+mod close_hook_and_body_errors;
 
 // ── Test app ─────────────────────────────────────────────────────────
 
@@ -63,6 +73,78 @@ async fn discard_body() -> &'static str {
     "ok"
 }
 
+/// Panics before producing any status/headers — exercises the
+/// "handler panic before the header callback fires" path that the JNI
+/// layer's `header_sent` fallback depends on.
+async fn panic_before_header() -> Response {
+    panic!("intentional handler panic for test");
+}
+
+/// Reads the full request body — which lazily starts the bidirectional
+/// producer — and THEN panics, so the panic unwinds past the explicit
+/// request-source close. Used to verify the RAII close guard still fires
+/// `request_close` on a panic unwind (the panic-path sibling of M3).
+async fn read_then_panic(_body: Bytes) -> Response {
+    panic!("intentional panic after reading request body");
+}
+
+/// Response body that yields one data frame and then errors — simulates a
+/// handler streaming from a source (file / DB / upstream) that fails
+/// mid-stream. Used to verify a body error is never reported as a clean
+/// (truncated) success.
+struct ErroringBody {
+    sent_first: bool,
+}
+
+impl HttpBody for ErroringBody {
+    type Data = Bytes;
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        if self.sent_first {
+            Poll::Ready(Some(Err("simulated mid-stream body failure".into())))
+        } else {
+            self.sent_first = true;
+            Poll::Ready(Some(Ok(Frame::data(Bytes::from_static(b"partial")))))
+        }
+    }
+}
+
+async fn erroring_body_handler() -> Response {
+    Response::new(axum::body::Body::new(ErroringBody { sent_first: false }))
+}
+
+struct MultiChunkBody {
+    index: usize,
+}
+
+impl HttpBody for MultiChunkBody {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let chunk = [
+            b"first".as_slice(),
+            b"second".as_slice(),
+            b"third".as_slice(),
+        ]
+        .get(self.index)
+        .copied();
+        self.index += 1;
+        Poll::Ready(chunk.map(|bytes| Ok(Frame::data(Bytes::copy_from_slice(bytes)))))
+    }
+}
+
+async fn multi_chunk_body() -> Response {
+    Response::new(axum::body::Body::new(MultiChunkBody { index: 0 }))
+}
+
 fn make_router() -> Router {
     Router::new()
         .route("/ping", get(ping))
@@ -70,6 +152,10 @@ fn make_router() -> Router {
         .route("/triple", get(triple_header))
         .route("/q", get(echo_query))
         .route("/discard", post(discard_body))
+        .route("/panic", get(panic_before_header))
+        .route("/read-panic", post(read_then_panic))
+        .route("/err-body", get(erroring_body_handler))
+        .route("/multi-chunk", get(multi_chunk_body))
 }
 
 fn install_router() {
@@ -158,10 +244,13 @@ async fn streaming_with_header_emits_header_before_chunks() {
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
-    dispatch_streaming_with_header_async(
+    let _ = dispatch_streaming_with_header_async(
         wire,
         move |bytes| h.lock().unwrap().extend_from_slice(bytes),
-        move |chunk| c.lock().unwrap().push(chunk.to_vec()),
+        move |chunk| {
+            c.lock().unwrap().push(chunk.to_vec());
+            ControlFlow::Continue(())
+        },
     )
     .await;
 
@@ -184,10 +273,13 @@ async fn streaming_with_header_error_on_short_input_skips_chunk_callback() {
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
-    dispatch_streaming_with_header_async(
+    let _ = dispatch_streaming_with_header_async(
         bad_wire,
         move |bytes| h.lock().unwrap().extend_from_slice(bytes),
-        move |chunk| c.lock().unwrap().push(chunk.to_vec()),
+        move |chunk| {
+            c.lock().unwrap().push(chunk.to_vec());
+            ControlFlow::Continue(())
+        },
     )
     .await;
 
@@ -210,10 +302,13 @@ async fn streaming_with_header_error_on_version_mismatch() {
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
-    dispatch_streaming_with_header_async(
+    let _ = dispatch_streaming_with_header_async(
         bad,
         move |bytes| h.lock().unwrap().extend_from_slice(bytes),
-        move |chunk| c.lock().unwrap().push(chunk.to_vec()),
+        move |chunk| {
+            c.lock().unwrap().push(chunk.to_vec());
+            ControlFlow::Continue(())
+        },
     )
     .await;
 
@@ -231,10 +326,13 @@ async fn streaming_with_header_error_on_unknown_app() {
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
-    dispatch_streaming_with_header_async(
+    let _ = dispatch_streaming_with_header_async(
         bad,
         move |bytes| h.lock().unwrap().extend_from_slice(bytes),
-        move |chunk| c.lock().unwrap().push(chunk.to_vec()),
+        move |chunk| {
+            c.lock().unwrap().push(chunk.to_vec());
+            ControlFlow::Continue(())
+        },
     )
     .await;
 
@@ -252,10 +350,13 @@ async fn streaming_with_header_invalid_method_returns_405_via_header_callback() 
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
-    dispatch_streaming_with_header_async(
+    let _ = dispatch_streaming_with_header_async(
         wire,
         move |bytes| h.lock().unwrap().extend_from_slice(bytes),
-        move |chunk| c.lock().unwrap().push(chunk.to_vec()),
+        move |chunk| {
+            c.lock().unwrap().push(chunk.to_vec());
+            ControlFlow::Continue(())
+        },
     )
     .await;
 
@@ -286,10 +387,13 @@ async fn streaming_with_header_forwards_query_string_via_dispatch_and_split() {
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
-    dispatch_streaming_with_header_async(
+    let _ = dispatch_streaming_with_header_async(
         wire,
         move |bytes| h.lock().unwrap().extend_from_slice(bytes),
-        move |chunk| c.lock().unwrap().extend_from_slice(chunk),
+        move |chunk| {
+            c.lock().unwrap().extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
     )
     .await;
 
@@ -310,10 +414,13 @@ async fn streaming_with_header_triple_header_collapses_into_multi() {
     let h = Arc::clone(&header_buf);
     let c = Arc::clone(&chunks);
 
-    dispatch_streaming_with_header_async(
+    let _ = dispatch_streaming_with_header_async(
         wire,
         move |bytes| h.lock().unwrap().extend_from_slice(bytes),
-        move |chunk| c.lock().unwrap().push(chunk.to_vec()),
+        move |chunk| {
+            c.lock().unwrap().push(chunk.to_vec());
+            ControlFlow::Continue(())
+        },
     )
     .await;
 
@@ -345,17 +452,26 @@ async fn bidirectional_with_header_roundtrips_body() {
 
     let chunks = vec![b"foo".to_vec(), b"bar".to_vec()];
     let chunks_iter = Mutex::new(chunks.into_iter());
-    let pull = move || -> Option<Vec<u8>> { chunks_iter.lock().unwrap().next() };
+    let pull = move || -> RequestChunk {
+        chunks_iter
+            .lock()
+            .unwrap()
+            .next()
+            .map_or(RequestChunk::End, RequestChunk::Data)
+    };
 
     let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         wire,
         pull,
-        move |chunk| b.lock().unwrap().extend_from_slice(chunk),
+        move |chunk| {
+            b.lock().unwrap().extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
         move |hdr| h.lock().unwrap().extend_from_slice(hdr),
     )
     .await;
@@ -368,16 +484,19 @@ async fn bidirectional_with_header_roundtrips_body() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bidirectional_with_header_error_on_short_input() {
     let bad: Vec<u8> = vec![0u8, 0, 0]; // < 4 bytes
-    let pull = || -> Option<Vec<u8>> { None };
+    let pull = || -> RequestChunk { RequestChunk::End };
     let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         bad,
         pull,
-        move |chunk| b.lock().unwrap().extend_from_slice(chunk),
+        move |chunk| {
+            b.lock().unwrap().extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
         move |hdr| h.lock().unwrap().extend_from_slice(hdr),
     )
     .await;
@@ -392,16 +511,19 @@ async fn bidirectional_with_header_error_on_short_input() {
 async fn bidirectional_with_header_error_on_version_mismatch() {
     install_router();
     let bad = encode_bad_version("POST", "/echo");
-    let pull = || -> Option<Vec<u8>> { None };
+    let pull = || -> RequestChunk { RequestChunk::End };
     let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         bad,
         pull,
-        move |chunk| b.lock().unwrap().extend_from_slice(chunk),
+        move |chunk| {
+            b.lock().unwrap().extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
         move |hdr| h.lock().unwrap().extend_from_slice(hdr),
     )
     .await;
@@ -415,16 +537,19 @@ async fn bidirectional_with_header_error_on_version_mismatch() {
 async fn bidirectional_with_header_error_on_unknown_app() {
     install_router();
     let bad = encode_unknown_app("POST", "/echo");
-    let pull = || -> Option<Vec<u8>> { None };
+    let pull = || -> RequestChunk { RequestChunk::End };
     let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         bad,
         pull,
-        move |chunk| b.lock().unwrap().extend_from_slice(chunk),
+        move |chunk| {
+            b.lock().unwrap().extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
         move |hdr| h.lock().unwrap().extend_from_slice(hdr),
     )
     .await;
@@ -438,16 +563,19 @@ async fn bidirectional_with_header_error_on_unknown_app() {
 async fn bidirectional_with_header_invalid_method_returns_405() {
     install_router();
     let wire = encode_wire("BAD METHOD", "/echo", HashMap::new(), &[]);
-    let pull = || -> Option<Vec<u8>> { None };
+    let pull = || -> RequestChunk { RequestChunk::End };
     let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let body_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         wire,
         pull,
-        move |chunk| b.lock().unwrap().extend_from_slice(chunk),
+        move |chunk| {
+            b.lock().unwrap().extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
         move |hdr| h.lock().unwrap().extend_from_slice(hdr),
     )
     .await;
@@ -475,15 +603,15 @@ async fn bidirectional_with_header_break_when_receiver_dropped_mid_stream() {
 
     let counter = Arc::new(Mutex::new(0u32));
     let counter_clone = Arc::clone(&counter);
-    let pull = move || -> Option<Vec<u8>> {
+    let pull = move || -> RequestChunk {
         let mut g = counter_clone.lock().unwrap();
         if *g >= 1000 {
-            return None;
+            return RequestChunk::End;
         }
         *g += 1;
         // 4 KiB chunks — large enough that 16 slots ≈ 64 KiB worth
         // pile up before the handler decides to return.
-        Some(vec![0u8; 4096])
+        RequestChunk::Data(vec![0u8; 4096])
     };
 
     let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
@@ -491,10 +619,13 @@ async fn bidirectional_with_header_break_when_receiver_dropped_mid_stream() {
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         wire,
         pull,
-        move |chunk| b.lock().unwrap().extend_from_slice(chunk),
+        move |chunk| {
+            b.lock().unwrap().extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
         move |hdr| h.lock().unwrap().extend_from_slice(hdr),
     )
     .await;
@@ -522,15 +653,15 @@ async fn bidirectional_with_header_slow_producer_yields_poll_pending() {
 
     let counter = Arc::new(Mutex::new(0u32));
     let counter_clone = Arc::clone(&counter);
-    let pull = move || -> Option<Vec<u8>> {
+    let pull = move || -> RequestChunk {
         let mut g = counter_clone.lock().unwrap();
         if *g >= 3 {
-            return None;
+            return RequestChunk::End;
         }
         *g += 1;
         // Sleep so the consumer drains the channel and hits Pending.
         std::thread::sleep(std::time::Duration::from_millis(25));
-        Some(b"chunk".to_vec())
+        RequestChunk::Data(b"chunk".to_vec())
     };
 
     let header_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
@@ -538,10 +669,13 @@ async fn bidirectional_with_header_slow_producer_yields_poll_pending() {
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         wire,
         pull,
-        move |chunk| b.lock().unwrap().extend_from_slice(chunk),
+        move |chunk| {
+            b.lock().unwrap().extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
         move |hdr| h.lock().unwrap().extend_from_slice(hdr),
     )
     .await;
@@ -565,13 +699,13 @@ async fn bidirectional_with_header_empty_pull_chunks_are_skipped() {
     // Second call returns the real body, third returns None (EOF).
     let counter = Arc::new(Mutex::new(0u32));
     let counter_clone = Arc::clone(&counter);
-    let pull = move || -> Option<Vec<u8>> {
+    let pull = move || -> RequestChunk {
         let mut g = counter_clone.lock().unwrap();
         *g += 1;
         match *g {
-            1 => Some(Vec::new()), // empty chunk — must be skipped
-            2 => Some(b"X".to_vec()),
-            _ => None,
+            1 => RequestChunk::Data(Vec::new()), // empty chunk — must be skipped
+            2 => RequestChunk::Data(b"X".to_vec()),
+            _ => RequestChunk::End,
         }
     };
 
@@ -580,10 +714,13 @@ async fn bidirectional_with_header_empty_pull_chunks_are_skipped() {
     let h = Arc::clone(&header_buf);
     let b = Arc::clone(&body_buf);
 
-    dispatch_bidirectional_streaming_with_header(
+    let _ = dispatch_bidirectional_streaming_with_header(
         wire,
         pull,
-        move |chunk| b.lock().unwrap().extend_from_slice(chunk),
+        move |chunk| {
+            b.lock().unwrap().extend_from_slice(chunk);
+            ControlFlow::Continue(())
+        },
         move |hdr| h.lock().unwrap().extend_from_slice(hdr),
     )
     .await;
@@ -591,4 +728,42 @@ async fn bidirectional_with_header_empty_pull_chunks_are_skipped() {
     let (header_json, _) = decode_wire(&header_buf.lock().unwrap());
     assert_eq!(header_json["status"].as_u64(), Some(200));
     assert_eq!(body_buf.lock().unwrap().as_slice(), b"X");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn streaming_with_header_handler_panic_does_not_emit_header() {
+    // Precondition lock for the JNI layer's `header_sent` fallback: when
+    // an axum handler panics BEFORE producing status/headers, the panic
+    // propagates through dispatch_streaming_with_header_async (the
+    // inprocess layer does NOT catch it) and `on_header` is never called.
+    // The JNI symbol relies on exactly this — its catch_unwind sees the
+    // panic with `header_sent == false` and emits a 500 header itself.
+    install_router();
+    let wire = encode_wire("GET", "/panic", HashMap::new(), &[]);
+
+    let header_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hs = Arc::clone(&header_seen);
+
+    // Drive it on a spawned task so the handler panic surfaces as a
+    // JoinError instead of unwinding the test thread.
+    let join = tokio::spawn(async move {
+        let _ = dispatch_streaming_with_header_async(
+            wire,
+            move |_header: &[u8]| {
+                hs.store(true, std::sync::atomic::Ordering::SeqCst);
+            },
+            |_chunk: &[u8]| ControlFlow::Continue(()),
+        )
+        .await;
+    })
+    .await;
+
+    assert!(
+        join.is_err(),
+        "a handler panic must propagate (inprocess does not catch it)"
+    );
+    assert!(
+        !header_seen.load(std::sync::atomic::Ordering::SeqCst),
+        "on_header must NOT fire when the handler panics before producing a header"
+    );
 }

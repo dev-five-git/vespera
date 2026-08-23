@@ -1,9 +1,9 @@
 //! Route-related structure definitions
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
-use crate::SchemaRef;
+use crate::{SchemaRef, openapi::Server, schema::ExternalDocumentation};
 
 /// HTTP method
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -19,18 +19,43 @@ pub enum HttpMethod {
     Trace,
 }
 
+impl HttpMethod {
+    /// Every supported HTTP method, in `PathItem` field order.
+    ///
+    /// This array plus [`HttpMethod::as_str`] are the **single source of
+    /// truth** for the supported-method set: `Display`, `TryFrom<&str>` and
+    /// `vespera_macro`'s `is_http_method` all read the spellings from here, so
+    /// adding a variant cannot leave one stage of the pipeline behind.
+    pub const ALL: [Self; 8] = [
+        Self::Get,
+        Self::Post,
+        Self::Put,
+        Self::Patch,
+        Self::Delete,
+        Self::Head,
+        Self::Options,
+        Self::Trace,
+    ];
+
+    /// The canonical uppercase wire name of this method (RFC 9110).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Post => "POST",
+            Self::Put => "PUT",
+            Self::Patch => "PATCH",
+            Self::Delete => "DELETE",
+            Self::Head => "HEAD",
+            Self::Options => "OPTIONS",
+            Self::Trace => "TRACE",
+        }
+    }
+}
+
 impl std::fmt::Display for HttpMethod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Get => write!(f, "GET"),
-            Self::Post => write!(f, "POST"),
-            Self::Put => write!(f, "PUT"),
-            Self::Patch => write!(f, "PATCH"),
-            Self::Delete => write!(f, "DELETE"),
-            Self::Head => write!(f, "HEAD"),
-            Self::Options => write!(f, "OPTIONS"),
-            Self::Trace => write!(f, "TRACE"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -38,17 +63,15 @@ impl TryFrom<&str> for HttpMethod {
     type Error = String;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value.to_uppercase().as_str() {
-            "GET" => Ok(Self::Get),
-            "POST" => Ok(Self::Post),
-            "PUT" => Ok(Self::Put),
-            "PATCH" => Ok(Self::Patch),
-            "DELETE" => Ok(Self::Delete),
-            "HEAD" => Ok(Self::Head),
-            "OPTIONS" => Ok(Self::Options),
-            "TRACE" => Ok(Self::Trace),
-            other => Err(format!("unknown HTTP method: {other}")),
-        }
+        // Match case-insensitively without allocating an upper-cased copy
+        // on the success path (HTTP method names are ASCII per RFC 9110);
+        // the cold error path still reports the ASCII-uppercased value so the
+        // message is byte-identical to the previous implementation.
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|method| value.eq_ignore_ascii_case(method.as_str()))
+            .ok_or_else(|| format!("unknown HTTP method: {}", value.to_ascii_uppercase()))
     }
 }
 
@@ -110,7 +133,7 @@ pub struct MediaType {
     pub example: Option<serde_json::Value>,
     /// Examples
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub examples: Option<HashMap<String, Example>>,
+    pub examples: Option<BTreeMap<String, Example>>,
 }
 
 /// Example definition
@@ -136,7 +159,7 @@ pub struct Response {
     pub description: String,
     /// Header definitions
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub headers: Option<HashMap<String, Header>>,
+    pub headers: Option<BTreeMap<String, Header>>,
     /// Schema per Content-Type
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<BTreeMap<String, MediaType>>,
@@ -180,13 +203,28 @@ pub struct Operation {
     pub responses: BTreeMap<String, Response>,
     /// Security requirements
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub security: Option<Vec<HashMap<String, Vec<String>>>>,
+    pub security: Option<Vec<BTreeMap<String, Vec<String>>>>,
+    /// Whether this operation is deprecated
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecated: Option<bool>,
+    /// External documentation for this operation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_docs: Option<ExternalDocumentation>,
+    /// Callback definitions keyed by runtime expression.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callbacks: Option<BTreeMap<String, Box<PathItem>>>,
+    /// Alternative servers for this operation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub servers: Option<Vec<Server>>,
 }
 
 /// Path Item definition (all HTTP methods for a specific path)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PathItem {
+    /// Reference to another path item.
+    #[serde(rename = "$ref", skip_serializing_if = "Option::is_none")]
+    pub ref_path: Option<String>,
     /// GET method
     #[serde(skip_serializing_if = "Option::is_none")]
     pub get: Option<Operation>,
@@ -220,21 +258,36 @@ pub struct PathItem {
     /// Description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Alternative servers for all operations in this path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub servers: Option<Vec<Server>>,
 }
 
 impl PathItem {
-    /// Set an operation for a specific HTTP method
-    pub fn set_operation(&mut self, method: HttpMethod, operation: Operation) {
+    /// Try to set an operation for a specific HTTP method.
+    ///
+    /// Returns the operation that was already present, if this call replaced one.
+    #[must_use]
+    pub fn try_set_operation(
+        &mut self,
+        method: HttpMethod,
+        operation: Operation,
+    ) -> Option<Operation> {
         match method {
-            HttpMethod::Get => self.get = Some(operation),
-            HttpMethod::Post => self.post = Some(operation),
-            HttpMethod::Put => self.put = Some(operation),
-            HttpMethod::Patch => self.patch = Some(operation),
-            HttpMethod::Delete => self.delete = Some(operation),
-            HttpMethod::Head => self.head = Some(operation),
-            HttpMethod::Options => self.options = Some(operation),
-            HttpMethod::Trace => self.trace = Some(operation),
+            HttpMethod::Get => self.get.replace(operation),
+            HttpMethod::Post => self.post.replace(operation),
+            HttpMethod::Put => self.put.replace(operation),
+            HttpMethod::Patch => self.patch.replace(operation),
+            HttpMethod::Delete => self.delete.replace(operation),
+            HttpMethod::Head => self.head.replace(operation),
+            HttpMethod::Options => self.options.replace(operation),
+            HttpMethod::Trace => self.trace.replace(operation),
         }
+    }
+
+    /// Set an operation for a specific HTTP method, discarding any replaced operation.
+    pub fn set_operation(&mut self, method: HttpMethod, operation: Operation) {
+        let _ = self.try_set_operation(method, operation);
     }
 }
 
@@ -321,6 +374,10 @@ mod tests {
             request_body: None,
             responses: BTreeMap::new(),
             security: None,
+            deprecated: None,
+            external_docs: None,
+            callbacks: None,
+            servers: None,
         };
 
         // Test setting GET operation
@@ -391,6 +448,10 @@ mod tests {
             request_body: None,
             responses: BTreeMap::new(),
             security: None,
+            deprecated: None,
+            external_docs: None,
+            callbacks: None,
+            servers: None,
         };
 
         let operation2 = Operation {
@@ -402,6 +463,10 @@ mod tests {
             request_body: None,
             responses: BTreeMap::new(),
             security: None,
+            deprecated: None,
+            external_docs: None,
+            callbacks: None,
+            servers: None,
         };
 
         // Set first operation
@@ -417,6 +482,49 @@ mod tests {
             path_item.get.as_ref().unwrap().operation_id,
             Some("second".to_string())
         );
+    }
+
+    #[test]
+    fn operation_and_path_item_optional_openapi_fields_serialize_when_present() {
+        let mut callbacks = BTreeMap::new();
+        callbacks.insert(
+            "{$request.body#/callbackUrl}".to_string(),
+            Box::new(PathItem::default()),
+        );
+        let operation = Operation {
+            operation_id: None,
+            tags: None,
+            summary: None,
+            description: None,
+            parameters: None,
+            request_body: None,
+            responses: BTreeMap::new(),
+            security: None,
+            deprecated: None,
+            external_docs: None,
+            callbacks: Some(callbacks),
+            servers: Some(vec![Server {
+                url: "https://api.example.com".to_string(),
+                description: None,
+                variables: None,
+            }]),
+        };
+        let path_item = PathItem {
+            ref_path: Some("#/paths/~1users".to_string()),
+            get: Some(operation),
+            servers: Some(vec![Server {
+                url: "https://path.example.com".to_string(),
+                description: None,
+                variables: None,
+            }]),
+            ..PathItem::default()
+        };
+
+        let json = serde_json::to_string(&path_item).unwrap();
+
+        assert!(json.contains("\"$ref\":\"#/paths/~1users\""));
+        assert!(json.contains("callbacks"));
+        assert!(json.contains("servers"));
     }
 
     #[rstest]

@@ -30,34 +30,49 @@
 use proc_macro2::TokenStream;
 use syn::DeriveInput;
 
+// `SchemaConstraints` appears in the public signature of
+// `emit_garde_validate`, so it must be in scope in BOTH the
+// `validation`-on and `validation`-off arms — the off-arm signature still
+// names the slice type even though it ignores the argument.
+use crate::parser::schema::schema_attrs::SchemaConstraints;
+
 #[cfg(feature = "validation")]
 use proc_macro2::Span;
 #[cfg(feature = "validation")]
 use quote::{format_ident, quote};
 #[cfg(feature = "validation")]
-use syn::{Data, Fields, GenericArgument, PathArguments, Type};
-
-#[cfg(feature = "validation")]
-use crate::parser::schema::schema_attrs::{SchemaConstraints, extract_schema_constraints};
+use syn::{Data, Fields, Type};
 
 /// Public entry point used by `process_derive_schema`.
 ///
 /// When `validation` is **off** on `vespera_macro`, this expands to an
 /// empty stub via the `#[cfg(...)]` switch at the bottom of this file.
+///
+/// `field_constraints` is the pre-parsed `#[schema(...)]` slice already
+/// produced by `process_derive_schema` (one entry per named field, in
+/// declaration order). Threading it through here removes the third walk
+/// over every field's `attrs` the previous code performed inside
+/// `emit_impl`.
 #[cfg(feature = "validation")]
 #[must_use]
-pub fn emit_garde_validate(input: &DeriveInput) -> TokenStream {
-    emit_impl(input)
+pub fn emit_garde_validate(
+    input: &DeriveInput,
+    field_constraints: &[SchemaConstraints],
+) -> TokenStream {
+    emit_impl(input, field_constraints)
 }
 
 #[cfg(not(feature = "validation"))]
 #[must_use]
-pub fn emit_garde_validate(_input: &DeriveInput) -> TokenStream {
+pub fn emit_garde_validate(
+    _input: &DeriveInput,
+    _field_constraints: &[SchemaConstraints],
+) -> TokenStream {
     TokenStream::new()
 }
 
 #[cfg(feature = "validation")]
-fn emit_impl(input: &DeriveInput) -> TokenStream {
+fn emit_impl(input: &DeriveInput, field_constraints: &[SchemaConstraints]) -> TokenStream {
     // Only structs with named fields are validated; everything else
     // produces an empty token stream so the derive remains a no-op.
     let Data::Struct(data_struct) = &input.data else {
@@ -67,13 +82,13 @@ fn emit_impl(input: &DeriveInput) -> TokenStream {
         return TokenStream::new();
     };
 
-    // Collect per-field constraints up-front so we can short-circuit
-    // when nothing on the struct opts into validation.
-    let per_field: Vec<(&syn::Field, SchemaConstraints)> = fields_named
-        .named
-        .iter()
-        .map(|f| (f, extract_schema_constraints(&f.attrs)))
-        .collect();
+    // `process_derive_schema` parsed every field's `#[schema(...)]` once and
+    // bailed early on the `Err` arm via `to_compile_error`, so by the time we
+    // reach this function we already have a slice with one valid entry per
+    // named field. Pairwise zip recovers the `(&Field, &SchemaConstraints)`
+    // view the previous code reproduced by re-parsing the attrs.
+    let per_field: Vec<(&syn::Field, &SchemaConstraints)> =
+        fields_named.named.iter().zip(field_constraints).collect();
 
     if per_field.iter().all(|(_, c)| !c.has_runtime_rule()) {
         // No field requested a runtime rule — skip Validate emission.
@@ -156,14 +171,16 @@ fn emit_field_block(
     }
 
     let field_name_str = field_ident.to_string();
-    let numeric_kind = rust_numeric_kind(peel_option(field_ty).unwrap_or(field_ty));
+    let numeric_kind = rust_numeric_kind(
+        crate::schema_macro::type_utils::option_inner(field_ty).unwrap_or(field_ty),
+    );
     let rule_blocks = emit_rule_blocks(c, &field_name_str, numeric_kind.as_deref());
     let dive_block = emit_dive_block(c);
     if rule_blocks.is_empty() && dive_block.is_empty() {
         return None;
     }
 
-    let block = if is_option_type(field_ty) {
+    let block = if crate::schema_macro::type_utils::is_option_type(field_ty) {
         // `field_ident` is `&Option<T>` after the `let Self { .. } = self` destructure.
         // Match ergonomics make `inner` end up as `&T`.
         quote! {
@@ -282,25 +299,66 @@ fn emit_rule_blocks(
 
     // ── Pattern (pattern = "..." → static LazyLock<Regex>) ────────────
     if let Some(pattern) = &c.pattern {
-        let static_ident = format_ident!("__VESPERA_PATTERN_{}", field_name.to_ascii_uppercase());
-        blocks.push(quote! {
-            {
-                static #static_ident: ::std::sync::LazyLock<
-                    ::vespera::__validation::garde::rules::pattern::regex::Regex,
-                > = ::std::sync::LazyLock::new(|| {
-                    ::vespera::__validation::garde::rules::pattern::regex::Regex::new(#pattern)
-                        .expect("regex literal validated at vespera::Schema derive time")
-                });
-                if let ::std::result::Result::Err(__garde_error) =
-                    (::vespera::__validation::garde::rules::pattern::apply)(
-                        &*__garde_binding,
-                        (&*#static_ident,),
-                    )
+        // Validate the user-supplied regex at MACRO-EXPANSION time with
+        // `regex-syntax` (the exact parser `regex` uses), so an invalid
+        // pattern becomes a COMPILE error naming the field instead of a
+        // first-validation runtime panic. Only a syntactically valid pattern
+        // reaches codegen; the runtime `Regex::new` fallback below is retained
+        // solely for the rare case a valid pattern exceeds `regex`'s compiled
+        // size limit (which `regex-syntax` parsing does not enforce).
+        if let Err(__err) = regex_syntax::Parser::new().parse(pattern) {
+            let msg = format!(
+                "vespera: `#[schema(pattern = {pattern:?})]` on field `{field_name}` is not a valid regex: {__err}"
+            );
+            blocks.push(quote! { ::std::compile_error!(#msg); });
+        } else {
+            // Sanitize the field name into a valid identifier fragment before
+            // splicing it into a `static` name: strip a raw-identifier `r#`
+            // prefix and map any non-alphanumeric byte to `_`.  A raw ident
+            // (`r#type`) or otherwise unusual field name would otherwise make
+            // `format_ident!` PANIC at macro-expansion time (e.g.
+            // `__VESPERA_PATTERN_R#TYPE` is not a valid ident).  Each pattern
+            // block is emitted in its own `{ }` scope, so the sanitized name
+            // never needs to be unique across fields.
+            let ident_fragment: String = field_name
+                .trim_start_matches("r#")
+                .chars()
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() {
+                        ch.to_ascii_uppercase()
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            let static_ident = format_ident!("__VESPERA_PATTERN_{}", ident_fragment);
+            blocks.push(quote! {
                 {
-                    __garde_report.append(__garde_path(), __garde_error);
+                    static #static_ident: ::std::sync::LazyLock<
+                        ::vespera::__validation::garde::rules::pattern::regex::Regex,
+                    > = ::std::sync::LazyLock::new(|| {
+                        // Pattern syntax was validated at macro expansion; this
+                        // fallback only trips on the rare compiled-size-limit
+                        // case, with an actionable message naming the pattern.
+                        ::vespera::__validation::garde::rules::pattern::regex::Regex::new(#pattern)
+                            .unwrap_or_else(|__e| {
+                                ::std::panic!(
+                                    "vespera: `#[schema(pattern = {:?})]` is not a valid regex: {__e}",
+                                    #pattern
+                                )
+                            })
+                    });
+                    if let ::std::result::Result::Err(__garde_error) =
+                        (::vespera::__validation::garde::rules::pattern::apply)(
+                            &*__garde_binding,
+                            (&*#static_ident,),
+                        )
+                    {
+                        __garde_report.append(__garde_path(), __garde_error);
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     // ── Format-driven rules (email / uri / ipv4 / ipv6 / ip) ──────────
@@ -398,35 +456,6 @@ fn numeric_some(value: Option<f64>, numeric_kind: Option<&str>) -> TokenStream {
 }
 
 #[cfg(feature = "validation")]
-fn is_option_type(ty: &Type) -> bool {
-    let Type::Path(tp) = ty else {
-        return false;
-    };
-    tp.path
-        .segments
-        .last()
-        .is_some_and(|seg| seg.ident == "Option")
-}
-
-#[cfg(feature = "validation")]
-fn peel_option(ty: &Type) -> Option<&Type> {
-    let Type::Path(tp) = ty else {
-        return None;
-    };
-    let last = tp.path.segments.last()?;
-    if last.ident != "Option" {
-        return None;
-    }
-    let PathArguments::AngleBracketed(args) = &last.arguments else {
-        return None;
-    };
-    args.args.iter().find_map(|arg| match arg {
-        GenericArgument::Type(t) => Some(t),
-        _ => None,
-    })
-}
-
-#[cfg(feature = "validation")]
 fn rust_numeric_kind(ty: &Type) -> Option<String> {
     let Type::Path(tp) = ty else {
         return None;
@@ -455,492 +484,4 @@ fn rust_numeric_kind(ty: &Type) -> Option<String> {
 // ── tests ────────────────────────────────────────────────────────────
 
 #[cfg(all(test, feature = "validation"))]
-mod tests {
-    use super::*;
-    use syn::parse_quote;
-
-    #[allow(clippy::needless_pass_by_value)] // test helper takes owned input by convention
-    fn emit_to_string(input: DeriveInput) -> String {
-        emit_garde_validate(&input).to_string()
-    }
-
-    #[test]
-    fn no_constraints_emits_nothing() {
-        let s: DeriveInput = parse_quote! {
-            struct User {
-                pub name: String,
-                pub age: i32,
-            }
-        };
-        assert!(emit_to_string(s).is_empty());
-    }
-
-    #[test]
-    fn min_length_only_emits_length_chars_apply() {
-        let s: DeriveInput = parse_quote! {
-            struct User {
-                #[schema(min_length = 3)]
-                pub name: String,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("impl :: vespera :: __validation :: garde :: Validate for User"));
-        assert!(out.contains("length :: chars :: apply"));
-        assert!(out.contains("3usize") || out.contains("3 usize"));
-    }
-
-    #[test]
-    fn min_and_max_length_combined_in_single_call() {
-        let s: DeriveInput = parse_quote! {
-            struct User {
-                #[schema(min_length = 3, max_length = 32)]
-                pub name: String,
-            }
-        };
-        let out = emit_to_string(s);
-        // single length::chars::apply call carrying both bounds
-        let occurrences = out.matches("length :: chars :: apply").count();
-        assert_eq!(occurrences, 1);
-    }
-
-    #[test]
-    fn range_emit_uses_field_numeric_type() {
-        let s: DeriveInput = parse_quote! {
-            struct User {
-                #[schema(minimum = 0, maximum = 150)]
-                pub age: u32,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("range :: apply"));
-        assert!(out.contains("as u32"));
-    }
-
-    #[test]
-    fn range_emit_on_float_field_keeps_decimal_point() {
-        let s: DeriveInput = parse_quote! {
-            struct Price {
-                #[schema(minimum = 0.01, maximum = 99.99)]
-                pub amount: f64,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("range :: apply"));
-        assert!(out.contains("as f64"));
-    }
-
-    #[test]
-    fn pattern_emits_static_lazy_lock_regex() {
-        let s: DeriveInput = parse_quote! {
-            struct User {
-                #[schema(pattern = "^[a-z]+$")]
-                pub username: String,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("static __VESPERA_PATTERN_USERNAME"));
-        assert!(out.contains("LazyLock"));
-        assert!(out.contains("regex :: Regex :: new"));
-        assert!(out.contains("pattern :: apply"));
-    }
-
-    #[test]
-    fn format_email_emits_email_apply() {
-        let s: DeriveInput = parse_quote! {
-            struct User {
-                #[schema(format = "email")]
-                pub email: String,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("email :: apply"));
-    }
-
-    #[test]
-    fn format_uri_emits_url_apply() {
-        let s: DeriveInput = parse_quote! {
-            struct Site {
-                #[schema(format = "uri")]
-                pub home: String,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("url :: apply"));
-    }
-
-    #[test]
-    fn format_ipv4_emits_ip_apply_with_v4_kind() {
-        let s: DeriveInput = parse_quote! {
-            struct Host {
-                #[schema(format = "ipv4")]
-                pub addr: String,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("ip :: apply"));
-        assert!(out.contains("IpKind :: V4"));
-    }
-
-    #[test]
-    fn format_uuid_is_annotation_only_no_runtime_rule() {
-        let s: DeriveInput = parse_quote! {
-            struct Entity {
-                #[schema(format = "uuid")]
-                pub id: String,
-            }
-        };
-        // uuid alone has no garde rule → no Validate impl emitted.
-        assert!(emit_to_string(s).is_empty());
-    }
-
-    #[test]
-    fn option_field_wraps_rule_block_in_if_let_some() {
-        let s: DeriveInput = parse_quote! {
-            struct User {
-                #[schema(min_length = 3)]
-                pub nickname: Option<String>,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("if let :: std :: option :: Option :: Some"));
-        assert!(out.contains("length :: chars :: apply"));
-    }
-
-    #[test]
-    fn min_max_items_on_vec_emits_length_simple() {
-        let s: DeriveInput = parse_quote! {
-            struct Post {
-                #[schema(min_items = 1, max_items = 5)]
-                pub tags: Vec<String>,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("length :: simple :: apply"));
-    }
-
-    #[test]
-    fn enum_emits_nothing() {
-        let e: DeriveInput = parse_quote! {
-            enum Status { Active, Inactive }
-        };
-        assert!(emit_to_string(e).is_empty());
-    }
-
-    #[test]
-    fn tuple_struct_emits_nothing() {
-        let s: DeriveInput = parse_quote! {
-            struct Wrapper(pub String);
-        };
-        assert!(emit_to_string(s).is_empty());
-    }
-
-    #[test]
-    fn unit_struct_emits_nothing() {
-        let s: DeriveInput = parse_quote! {
-            struct Empty;
-        };
-        assert!(emit_to_string(s).is_empty());
-    }
-
-    #[test]
-    fn generic_struct_with_constraints_produces_compile_error() {
-        let s: DeriveInput = parse_quote! {
-            struct Wrapper<T> {
-                #[schema(min_length = 3)]
-                pub name: String,
-                pub inner: T,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("compile_error"));
-        assert!(out.contains("generic"));
-    }
-
-    #[test]
-    fn annotation_only_constraints_emit_nothing() {
-        // example / read_only / write_only / unique_items / multiple_of /
-        // exclusive bounds are OpenAPI annotations only; they should not
-        // drag a Validate impl into existence on their own.
-        let s: DeriveInput = parse_quote! {
-            struct Doc {
-                #[schema(read_only, example = "abc", unique_items, multiple_of = 0.5)]
-                pub id: String,
-            }
-        };
-        assert!(emit_to_string(s).is_empty());
-    }
-
-    // ── nested validation (`#[schema(dive)]`) emission ──────────────
-
-    #[test]
-    fn dive_on_plain_field_emits_validate_into_call() {
-        let s: DeriveInput = parse_quote! {
-            struct Order {
-                #[schema(dive)]
-                pub address: Address,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("impl :: vespera :: __validation :: garde :: Validate for Order"));
-        assert!(out.contains("Validate :: validate_into"));
-        assert!(out.contains("\"address\""));
-    }
-
-    #[test]
-    fn dive_on_option_wraps_in_if_let_some() {
-        let s: DeriveInput = parse_quote! {
-            struct Order {
-                #[schema(dive)]
-                pub address: Option<Address>,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("if let :: std :: option :: Option :: Some"));
-        assert!(out.contains("Validate :: validate_into"));
-    }
-
-    #[test]
-    fn dive_on_vec_emits_single_validate_into_call() {
-        // garde's runtime `Vec<T>: Validate` impl iterates and pushes
-        // `[idx]` path components automatically — the macro only emits
-        // one `validate_into` call regardless of container kind.
-        let s: DeriveInput = parse_quote! {
-            struct Order {
-                #[schema(dive)]
-                pub items: Vec<LineItem>,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("Validate :: validate_into"));
-        // `validate_into` appears twice: once as the outer fn declaration
-        // (`fn validate_into(...)`) and once as the inner trait dispatch
-        // (`Validate :: validate_into(...)`).  Anything more would mean
-        // the macro is iterating itself, which is what we explicitly
-        // delegate to garde's runtime `Vec<T>: Validate` impl.
-        assert_eq!(
-            out.matches("validate_into").count(),
-            2,
-            "expected outer fn + one inner trait call; iteration is garde-runtime, \
-             so the macro must NOT emit a `for` loop"
-        );
-        // `for` keyword appears in `impl ... for Order` — count only
-        // tokens that look like loop iteration (`for <ident> in `).
-        let loop_count = out.matches("in __garde_binding").count();
-        assert_eq!(loop_count, 0, "macro must not emit explicit iteration");
-    }
-
-    #[test]
-    fn dive_combined_with_length_emits_both_rules() {
-        let s: DeriveInput = parse_quote! {
-            struct Order {
-                #[schema(min_items = 1, max_items = 10, dive)]
-                pub items: Vec<LineItem>,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("length :: simple :: apply"));
-        assert!(out.contains("Validate :: validate_into"));
-    }
-
-    #[test]
-    fn dive_false_disables_emission() {
-        let s: DeriveInput = parse_quote! {
-            struct Order {
-                #[schema(dive = false)]
-                pub address: Address,
-            }
-        };
-        // `dive = false` is the same as no annotation — no rule
-        // produced means no `impl Validate` emitted.
-        assert!(emit_to_string(s).is_empty());
-    }
-
-    // ── format=ipv6 / format=ip / unknown format ────────────────────
-
-    #[test]
-    fn format_ipv6_emits_ip_apply_with_v6_kind() {
-        let s: DeriveInput = parse_quote! {
-            struct Host {
-                #[schema(format = "ipv6")]
-                pub addr: String,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("ip :: apply"));
-        assert!(out.contains("IpKind :: V6"));
-    }
-
-    #[test]
-    fn format_ip_emits_ip_apply_with_any_kind() {
-        let s: DeriveInput = parse_quote! {
-            struct Host {
-                #[schema(format = "ip")]
-                pub addr: String,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("ip :: apply"));
-        assert!(out.contains("IpKind :: Any"));
-    }
-
-    #[test]
-    fn format_url_alias_emits_url_apply() {
-        // `format = "url"` is the documented alias for `"uri"` —
-        // both must dispatch to garde's `url::apply`.
-        let s: DeriveInput = parse_quote! {
-            struct Site {
-                #[schema(format = "url")]
-                pub home: String,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("url :: apply"));
-    }
-
-    #[test]
-    fn unknown_format_with_other_rule_skips_format_branch() {
-        // Combining an unsupported `format = "custom"` with a known
-        // runtime rule (`min_length = 3`) forces the emitter to enter
-        // `emit_rule_blocks` AND fall through the unknown-format
-        // branch — exercising the `_ => {}` arm.
-        let s: DeriveInput = parse_quote! {
-            struct Doc {
-                #[schema(min_length = 3, format = "custom-thing")]
-                pub id: String,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("length :: chars :: apply"));
-        // The unknown format MUST NOT produce any `ip::`/`email::`/
-        // `url::` call — confirms the `_ => {}` arm took effect.
-        assert!(!out.contains("ip :: apply"));
-        assert!(!out.contains("email :: apply"));
-        assert!(!out.contains("url :: apply"));
-    }
-
-    // ── mixed-field structs exercising the no-runtime-rule early exit
-    //    inside emit_field_block ────────────────────────────────────
-
-    #[test]
-    fn mixed_validated_and_unvalidated_fields_emit_only_validated_blocks() {
-        // `a` has a runtime rule; `b` does not.  emit_field_block must
-        // hit its early `return None` for `b` while still emitting `a`.
-        let s: DeriveInput = parse_quote! {
-            struct Mixed {
-                #[schema(min_length = 3)]
-                pub a: String,
-                pub b: String,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("impl :: vespera :: __validation :: garde :: Validate for Mixed"));
-        assert!(out.contains("\"a\""));
-        // Field `b` has no constraint — no path literal should appear.
-        assert!(!out.contains("\"b\""));
-    }
-
-    // ── one-sided numeric bounds exercising numeric_some(None, _) ───
-
-    #[test]
-    fn only_minimum_set_emits_none_for_max_bound() {
-        let s: DeriveInput = parse_quote! {
-            struct N {
-                #[schema(minimum = 0)]
-                pub n: u32,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("range :: apply"));
-        // The missing upper bound must serialize as Option::None.
-        assert!(out.contains("Option :: None"));
-    }
-
-    #[test]
-    fn only_maximum_set_emits_none_for_min_bound() {
-        let s: DeriveInput = parse_quote! {
-            struct N {
-                #[schema(maximum = 100)]
-                pub n: u32,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("range :: apply"));
-        assert!(out.contains("Option :: None"));
-    }
-
-    // ── numeric_some with unknown numeric_kind (non-primitive field) ─
-
-    #[test]
-    fn minimum_on_non_primitive_field_falls_back_to_as_wildcard() {
-        // Field type is a user-defined `Money` newtype — peel_option
-        // returns None and rust_numeric_kind returns None, forcing
-        // numeric_some down the `as _` fallback branch.
-        let s: DeriveInput = parse_quote! {
-            struct Order {
-                #[schema(minimum = 0)]
-                pub price: Money,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("range :: apply"));
-        assert!(
-            out.contains("as _"),
-            "non-primitive field should emit `as _` fallback, got: {out}"
-        );
-    }
-
-    // ── is_option_type / peel_option / rust_numeric_kind branches ───
-
-    #[test]
-    fn tuple_typed_field_does_not_trip_option_or_numeric_helpers() {
-        // Tuple types are Type::Tuple, not Type::Path — drives the
-        // non-Path early-return branches inside is_option_type,
-        // peel_option, and rust_numeric_kind.
-        let s: DeriveInput = parse_quote! {
-            struct WithTuple {
-                #[schema(min_length = 3)]
-                pub x: (String,),
-            }
-        };
-        let out = emit_to_string(s);
-        // Tuple is not an Option — outer rule block must NOT wrap in
-        // `if let Some`.
-        assert!(!out.contains("if let :: std :: option :: Option :: Some"));
-        assert!(out.contains("length :: chars :: apply"));
-    }
-
-    #[test]
-    fn bare_option_without_angle_brackets_falls_through_peel() {
-        // `Option` with no type argument hits the PathArguments::None
-        // branch inside peel_option.  is_option_type still returns
-        // true (last segment is `Option`), so the rule block wraps in
-        // `if let Some`.
-        let s: DeriveInput = parse_quote! {
-            struct BareOption {
-                #[schema(min_length = 3)]
-                pub x: Option,
-            }
-        };
-        let out = emit_to_string(s);
-        assert!(out.contains("if let :: std :: option :: Option :: Some"));
-    }
-
-    #[test]
-    fn option_with_lifetime_only_arg_falls_through_find_map() {
-        // `Option<'static>` is syntactically a valid path with one
-        // angle-bracketed argument — but the argument is a Lifetime,
-        // not a Type, so peel_option's `find_map` returns None.
-        // Semantically nonsensical, but the macro must not panic.
-        let s: DeriveInput = parse_quote! {
-            struct WithLifetime {
-                #[schema(min_length = 3)]
-                pub x: Option<'static>,
-            }
-        };
-        let out = emit_to_string(s);
-        // The rule block still emits — peel_option returning None just
-        // means rust_numeric_kind is invoked on the outer `Option<'a>`
-        // type, which also returns None.  No panic, no compile_error.
-        assert!(out.contains("length :: chars :: apply"));
-    }
-}
+mod tests;

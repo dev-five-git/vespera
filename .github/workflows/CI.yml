@@ -24,7 +24,7 @@ jobs:
       image: xd009642/tarpaulin:develop-nightly
       options: --security-opt seccomp=unconfined
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -39,6 +39,11 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test Deploy
         run: cargo publish --dry-run
+      - name: Doctest
+        # tarpaulin's --all-targets / default run never compiles doc
+        # tests, which let a never-passing doctest land unnoticed —
+        # run them explicitly before the (slow) coverage step.
+        run: cargo test --workspace --doc
       - name: Test
         run: |
           # rust coverage issue
@@ -53,18 +58,86 @@ jobs:
           cargo fmt
           cargo tarpaulin --out Lcov Stdout --engine llvm
       - name: Upload to codecov.io
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: true
           files: lcov.info
         if: github.ref == 'refs/heads/main'
 
+  # OBSERVATIONAL ONLY — this job must never gate, and its percentage must
+  # never become a threshold. Rust's branch instrumentation is still unstable
+  # (rust-lang/rust#79649), and rust-lang/rust#124118 lists as NOT yet
+  # supported: match arms and or-patterns, the `?` operator, `.await`, and
+  # any branch introduced by macro expansion — "the current implementation
+  # discards any branch span that isn't directly visible in the function
+  # body". vespera_macro owns roughly four fifths of the measured branches
+  # and exists to generate code inside `quote!`, so those generated branches
+  # are not reported as uncovered — they are dropped from the denominator.
+  # The number therefore under-counts precisely where this codebase is most
+  # complex, which is why it is a trend signal and not a pass/fail metric.
+  #
+  # vespera_jni is excluded for the same reason tarpaulin excludes it: it
+  # cannot run without a JVM, and jni-e2e is its real coverage. Including it
+  # reports ~4% branch and drowns out every other crate.
+  rust-branch-coverage:
+    name: Rust branch coverage (observational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Run instrumented tests
+        # Allowed to fail. This pins a MOVING nightly, and toolchain drift
+        # breaks tests that assert compiler output — the trybuild UI suite
+        # blesses its .stderr files against stable, so a nightly diagnostic
+        # reword fails it with nothing actually broken. The profraw data is
+        # still written, so the report step below runs regardless.
+        continue-on-error: true
+        run: cargo llvm-cov --branch --workspace --no-fail-fast --no-report
+      - name: Summarise branch coverage
+        run: |
+          # `--branch` belongs on the instrumented RUN above, not here: the
+          # profdata already carries branch counters, and `report` rejects
+          # the flag.
+          cargo llvm-cov report --summary-only \
+            --ignore-filename-regex '(benches|examples|vespera_jni)' \
+            | tee branch-coverage.txt
+          {
+            echo '### Rust branch coverage (observational)'
+            echo
+            echo 'Excludes benches, examples and `vespera_jni` (JVM-only — covered by jni-e2e).'
+            echo 'Not a gate: see the job comment in CI.yml for why this number under-counts.'
+            echo
+            echo '```'
+            cat branch-coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Generate lcov
+        if: always()
+        run: |
+          cargo llvm-cov report --lcov --output-path branch-lcov.info \
+            --ignore-filename-regex '(benches|examples|vespera_jni)'
+      - name: Upload branch coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-branch-coverage
+          path: |
+            branch-coverage.txt
+            branch-lcov.info
+
   # publish
   changepacks:
     name: changepacks
     runs-on: ubuntu-latest
-    needs: test
+    # jni-e2e gates publishing: a release must never ship with a broken
+    # JNI dispatch path on any supported OS.
+    needs: [test, jni-e2e]
     permissions:
       # create pull request comments
       pull-requests: write
@@ -76,7 +149,7 @@ jobs:
       # Publish to GitHub Packages
       packages: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
@@ -101,6 +174,105 @@ jobs:
           # GPG signing (in-memory key, no keyring file)
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_SIGNING_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_SIGNING_PASSWORD }}
+          # Gradle Plugin Portal credentials (read natively by
+          # com.gradle.plugin-publish for the `publishPlugins` task)
+          GRADLE_PUBLISH_KEY: ${{ secrets.GRADLE_PUBLISH_KEY }}
+          GRADLE_PUBLISH_SECRET: ${{ secrets.GRADLE_PUBLISH_SECRET }}
     outputs:
       changepacks: ${{ steps.changepacks.outputs.changepacks }}
       release_assets_urls: ${{ steps.changepacks.outputs.release_assets_urls }}
+
+  # Java gate — builds the rust-jni-demo cdylib, runs the vespera-bridge unit
+  # suite, publishes the bridge JAR to mavenLocal (so the demo-app Gradle
+  # plugin can resolve kr.devfive:vespera-bridge), then runs the full
+  # :demo-app:test suite (StreamingClosureStressTest + JNI dispatch tests)
+  # across all three target host OSes.
+  #
+  # This is the ONLY thing that exercises Java in this repository, and it is
+  # also what covers `crates/vespera_jni`: that crate is excluded from
+  # tarpaulin (`#![cfg(not(tarpaulin_include))]`) because its symbols cannot
+  # run without a JVM, so this job is its coverage — not the Rust line
+  # coverage number.
+  #
+  # Runs unconditionally on every push/PR (matching the existing CI job's
+  # style — no per-job paths-filter). The whole workflow already inherits
+  # the workflow-level `paths-ignore` for docs-only changes.
+  jni-e2e:
+    name: JNI E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Build rust-jni-demo cdylib (release)
+        # The vespera-bridge Gradle plugin's bundleNativeLib task copies
+        # this cdylib from target/release into demo-app's resources, so it
+        # must exist before `:demo-app:test` (processResources) runs.
+        run: cargo build -p rust-jni-demo --release
+      - name: Make gradlew executable (unix)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x libs/vespera-bridge/gradlew
+          chmod +x libs/vespera-bridge-gradle-plugin/gradlew
+          chmod +x examples/rust-jni-demo/java/gradlew
+      - name: Publish vespera-bridge Gradle plugin to mavenLocal
+        # demo-app's plugins block resolves kr.devfive.vespera-bridge from
+        # mavenLocal (settings.gradle.kts pluginManagement) — the plugin is
+        # not on the Gradle Plugin Portal.
+        shell: bash
+        working-directory: libs/vespera-bridge-gradle-plugin
+        run: ./gradlew publishToMavenLocal --console=plain --no-daemon
+      - name: Run vespera-bridge unit tests
+        # The bridge's own suite: wire codec, zero-copy header reader, direct
+        # buffer pool, hop-by-hop header policy, dispatch-mode resolvers and
+        # the Spring autoconfiguration. Until now the workflow only PUBLISHED
+        # this library, so none of these ever ran in CI — the Rust side was
+        # gated while ~2 kLOC of Java shipped untested. Runs before the publish
+        # step so a broken bridge fails here rather than as a confusing
+        # demo-app failure. Bench knobs are NOT propagated, so the
+        # `vespera.bench`-gated PerfAllocBench cases stay skipped.
+        shell: bash
+        working-directory: libs/vespera-bridge
+        run: ./gradlew test --console=plain --no-daemon
+      - name: Publish vespera-bridge to mavenLocal
+        # demo-app resolves kr.devfive:vespera-bridge from mavenLocal at the
+        # version declared in libs/vespera-bridge/build.gradle.kts (see
+        # examples/rust-jni-demo/java/demo-app/build.gradle.kts — the version
+        # is read from that file, never pinned, so bumping the bridge cannot
+        # silently fall back to the last release on Maven Central).
+        shell: bash
+        working-directory: libs/vespera-bridge
+        run: ./gradlew publishToMavenLocal --console=plain --no-daemon
+      - name: Run demo-app JNI E2E tests
+        # Includes StreamingClosureStressTest (1000 × 1 MiB SHA256
+        # bidirectional round-trip). Bench knobs are NOT propagated —
+        # gated bench tests stay skipped in CI.
+        shell: bash
+        working-directory: examples/rust-jni-demo/java
+        run: ./gradlew :demo-app:test --console=plain --no-daemon
+      - name: Merge Java coverage
+        # Regenerates the bridge's JaCoCo report now that demo-app has run, so
+        # it also credits the classes only reachable with a loaded cdylib — the
+        # JNI wrappers and the Spring proxy, which the unit suite cannot drive.
+        # The report task reads demo-app/build/jacoco/test.exec when present.
+        shell: bash
+        working-directory: libs/vespera-bridge
+        run: ./gradlew jacocoTestReport --console=plain --no-daemon
+      - name: Upload Java test results and coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: jni-e2e-${{ matrix.os }}-test-results
+          path: |
+            examples/rust-jni-demo/java/demo-app/build/test-results/test/*.xml
+            libs/vespera-bridge/build/test-results/test/*.xml
+            libs/vespera-bridge/build/reports/jacoco/test/jacocoTestReport.xml

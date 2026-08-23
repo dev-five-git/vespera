@@ -11,6 +11,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::sync::Once;
 
 use axum::Router;
@@ -24,7 +25,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Mutex;
 use tokio::runtime::Builder;
-use vespera_inprocess::{dispatch_from_bytes, register_app};
+use vespera_inprocess::{RequestChunk, dispatch_from_bytes, register_app};
 
 // ── Test app ─────────────────────────────────────────────────────────
 
@@ -273,6 +274,7 @@ async fn dispatch_streaming_async_chunks_text_body() {
     let mut chunks: Vec<Vec<u8>> = Vec::new();
     let header_bytes = vespera_inprocess::dispatch_streaming_async(wire, |chunk| {
         chunks.push(chunk.to_vec());
+        ControlFlow::Continue(())
     })
     .await;
     let (header, body) = decode_wire(&header_bytes);
@@ -301,6 +303,7 @@ async fn dispatch_streaming_async_large_binary_body() {
     let mut received: Vec<u8> = Vec::with_capacity(big_payload.len());
     let header_bytes = vespera_inprocess::dispatch_streaming_async(wire, |chunk| {
         received.extend_from_slice(chunk);
+        ControlFlow::Continue(())
     })
     .await;
     let (header, _body) = decode_wire(&header_bytes);
@@ -309,6 +312,37 @@ async fn dispatch_streaming_async_large_binary_body() {
         received, big_payload,
         "256 KiB binary body must round-trip byte-for-byte via streaming callback"
     );
+}
+
+#[test]
+fn wire_response_bytes_are_deterministic_across_dispatches() {
+    // Response headers serialise from a BTreeMap — identical requests
+    // MUST produce byte-identical wire responses (golden-file /
+    // SHA-comparison safety).  This pins the V2-C determinism
+    // guarantee; with the previous HashMap the JSON key order varied
+    // per response.
+    install_router();
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    // /echo/bytes responds with content-type + content-length —
+    // multiple headers, which is what exposed the ordering issue.
+    let wire = encode_wire(
+        "POST",
+        "/echo/bytes",
+        None,
+        HashMap::from([("content-type", "application/octet-stream")]),
+        b"determinism-probe",
+    );
+    let first = dispatch_from_bytes(wire.clone(), &runtime);
+    for run in 0..4 {
+        let again = dispatch_from_bytes(wire.clone(), &runtime);
+        assert_eq!(
+            first, again,
+            "wire response bytes must be identical on repeat dispatch (run {run})"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -327,13 +361,20 @@ async fn dispatch_bidirectional_streaming_roundtrips_small_body() {
     // Request body chunks to push.
     let chunks: Vec<Vec<u8>> = vec![b"hello ".to_vec(), b"world".to_vec(), b"!".to_vec()];
     let chunks_iter = Mutex::new(chunks.into_iter());
-    let pull_chunk = move || -> Option<Vec<u8>> { chunks_iter.lock().unwrap().next() };
+    let pull_chunk = move || -> RequestChunk {
+        chunks_iter
+            .lock()
+            .unwrap()
+            .next()
+            .map_or(RequestChunk::End, RequestChunk::Data)
+    };
 
     // Response body sink.
     let received: std::sync::Arc<Mutex<Vec<u8>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
     let received_clone = std::sync::Arc::clone(&received);
     let on_chunk = move |chunk: &[u8]| {
         received_clone.lock().unwrap().extend_from_slice(chunk);
+        ControlFlow::Continue(())
     };
 
     let header_bytes =
@@ -349,6 +390,147 @@ async fn dispatch_bidirectional_streaming_roundtrips_small_body() {
         String::from_utf8_lossy(&final_body),
         "hello world!",
         "request body chunks must roundtrip through the handler verbatim"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dispatch_bidirectional_streaming_endless_empty_pull_aborts_not_hangs() {
+    install_router();
+
+    let header_only_wire = encode_wire(
+        "POST",
+        "/echo/bytes",
+        None,
+        HashMap::from([("content-type", "application/octet-stream")]),
+        &[],
+    );
+
+    // A hostile producer that ALWAYS reports an empty chunk (mirrors a
+    // non-conformant InputStream.read() returning 0 forever).  Without
+    // the consecutive-empty cap this busy-spins the blocking-pool thread
+    // forever; with it, the producer aborts the body so the dispatch
+    // terminates.  A timeout guards against regression to a hang.
+    let pull_chunk = || -> RequestChunk { RequestChunk::Data(Vec::new()) };
+    let on_chunk = |_: &[u8]| ControlFlow::Continue(());
+
+    let dispatched = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        vespera_inprocess::dispatch_bidirectional_streaming(header_only_wire, pull_chunk, on_chunk),
+    )
+    .await;
+
+    let header_bytes = dispatched.expect("dispatch must terminate, not busy-spin forever");
+    let (header, _body) = decode_wire(&header_bytes);
+    assert_eq!(
+        header["status"].as_u64(),
+        Some(400),
+        "endless empty reads must abort the upload (400), not hang"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dispatch_bidirectional_streaming_pull_error_aborts_upload() {
+    install_router();
+
+    let header_only_wire = encode_wire(
+        "POST",
+        "/echo/bytes",
+        None,
+        HashMap::from([("content-type", "application/octet-stream")]),
+        &[],
+    );
+
+    // First pull yields a chunk, the second reports a producer error
+    // (e.g. the source `InputStream` threw mid-upload).  The body must
+    // abort so the handler's `Bytes` extractor fails — NOT be accepted
+    // as a clean EOF carrying the partial "hello ".
+    let counter = Mutex::new(0u32);
+    let pull_chunk = move || -> RequestChunk {
+        let mut g = counter.lock().unwrap();
+        *g += 1;
+        match *g {
+            1 => RequestChunk::Data(b"hello ".to_vec()),
+            _ => RequestChunk::Error,
+        }
+    };
+
+    let received: std::sync::Arc<Mutex<Vec<u8>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let received_clone = std::sync::Arc::clone(&received);
+    let on_chunk = move |chunk: &[u8]| {
+        received_clone.lock().unwrap().extend_from_slice(chunk);
+        ControlFlow::Continue(())
+    };
+
+    let header_bytes =
+        vespera_inprocess::dispatch_bidirectional_streaming(header_only_wire, pull_chunk, on_chunk)
+            .await;
+
+    let (header, _body) = decode_wire(&header_bytes);
+    // axum's `Bytes` extractor rejects a body that errors mid-stream
+    // (400), instead of the 200 echo of the partial "hello " that the
+    // old silent-EOF behaviour would have produced.
+    assert_eq!(
+        header["status"].as_u64(),
+        Some(400),
+        "a producer error must reject the upload, not silently complete it"
+    );
+    // Whatever streams back is axum's 400 rejection body — never the
+    // partial "hello " echoed as a successful upload.
+    let echoed = received.lock().unwrap().clone();
+    assert_ne!(
+        echoed.as_slice(),
+        b"hello ",
+        "the aborted upload must not be echoed back as a completed body"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dispatch_bidirectional_streaming_empty_chunk_is_retry_not_eof() {
+    // Pins the pull contract relied on by the JNI bridge:
+    // `Some(vec![])` means "no data right now, keep pulling" (mirrors
+    // Java `InputStream.read(byte[]) == 0`), NOT end-of-stream.  Data
+    // arriving AFTER an empty chunk must still reach the handler.
+    install_router();
+
+    let header_only_wire = encode_wire(
+        "POST",
+        "/echo/bytes",
+        None,
+        HashMap::from([("content-type", "application/octet-stream")]),
+        &[],
+    );
+
+    let chunks: Vec<Vec<u8>> = vec![
+        b"before".to_vec(),
+        Vec::new(), // empty read — must be skipped, not treated as EOF
+        b" after".to_vec(),
+    ];
+    let chunks_iter = Mutex::new(chunks.into_iter());
+    let pull_chunk = move || -> RequestChunk {
+        chunks_iter
+            .lock()
+            .unwrap()
+            .next()
+            .map_or(RequestChunk::End, RequestChunk::Data)
+    };
+
+    let received: std::sync::Arc<Mutex<Vec<u8>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let received_clone = std::sync::Arc::clone(&received);
+    let on_chunk = move |chunk: &[u8]| {
+        received_clone.lock().unwrap().extend_from_slice(chunk);
+        ControlFlow::Continue(())
+    };
+
+    let header_bytes =
+        vespera_inprocess::dispatch_bidirectional_streaming(header_only_wire, pull_chunk, on_chunk)
+            .await;
+
+    let (header, _body) = decode_wire(&header_bytes);
+    assert_eq!(header["status"].as_u64(), Some(200));
+    assert_eq!(
+        String::from_utf8_lossy(&received.lock().unwrap()),
+        "before after",
+        "data after an empty pull chunk must still reach the handler"
     );
 }
 
@@ -378,12 +560,19 @@ async fn dispatch_bidirectional_streaming_large_request_body() {
         .collect();
     let expected: Vec<u8> = request_chunks.iter().flatten().copied().collect();
     let chunks_iter = Mutex::new(request_chunks.into_iter());
-    let pull_chunk = move || -> Option<Vec<u8>> { chunks_iter.lock().unwrap().next() };
+    let pull_chunk = move || -> RequestChunk {
+        chunks_iter
+            .lock()
+            .unwrap()
+            .next()
+            .map_or(RequestChunk::End, RequestChunk::Data)
+    };
 
     let received: std::sync::Arc<Mutex<Vec<u8>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
     let received_clone = std::sync::Arc::clone(&received);
     let on_chunk = move |chunk: &[u8]| {
         received_clone.lock().unwrap().extend_from_slice(chunk);
+        ControlFlow::Continue(())
     };
 
     let header_bytes =
@@ -401,12 +590,69 @@ async fn dispatch_bidirectional_streaming_large_request_body() {
     );
 }
 
+/// A single host `pull()` chunk LARGER than the configured per-frame cap
+/// (`streaming_chunk_bytes`, default 256 KiB) must be split into bounded
+/// pieces on the wire into the mpsc channel — otherwise one oversized chunk
+/// occupies a slot at its full size, defeating the `slots * chunk_bytes`
+/// memory bound. This pins that the split preserves the body **byte-for-byte
+/// and in order** (a broken split would corrupt or reorder the echo).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dispatch_bidirectional_streaming_oversized_chunk_splits_and_roundtrips() {
+    install_router();
+
+    let header_only_wire = encode_wire(
+        "POST",
+        "/echo/bytes",
+        None,
+        HashMap::from([("content-type", "application/octet-stream")]),
+        &[],
+    );
+
+    // ONE chunk of 1 MiB — 4x the 256 KiB default cap, so the producer must
+    // emit it as several bounded pieces. A position-dependent pattern makes
+    // any reorder/truncation in the split path fail the byte-for-byte assert.
+    let total_size = 1024 * 1024;
+    let oversized: Vec<u8> = (0..total_size)
+        .map(|i| u8::try_from(i % 256).expect("mod 256"))
+        .collect();
+    let expected = oversized.clone();
+    let chunk = Mutex::new(Some(oversized));
+    let pull_chunk = move || -> RequestChunk {
+        chunk
+            .lock()
+            .unwrap()
+            .take()
+            .map_or(RequestChunk::End, RequestChunk::Data)
+    };
+
+    let received: std::sync::Arc<Mutex<Vec<u8>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let received_clone = std::sync::Arc::clone(&received);
+    let on_chunk = move |chunk: &[u8]| {
+        received_clone.lock().unwrap().extend_from_slice(chunk);
+        ControlFlow::Continue(())
+    };
+
+    let header_bytes =
+        vespera_inprocess::dispatch_bidirectional_streaming(header_only_wire, pull_chunk, on_chunk)
+            .await;
+
+    let (header, _) = decode_wire(&header_bytes);
+    assert_eq!(header["status"].as_u64(), Some(200));
+
+    let final_body = received.lock().unwrap().clone();
+    assert_eq!(final_body.len(), expected.len(), "size match after split");
+    assert_eq!(
+        final_body, expected,
+        "1 MiB oversized chunk must split and round-trip byte-for-byte"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatch_bidirectional_streaming_emits_error_wire_on_malformed_header() {
     install_router();
     let bad_header: Vec<u8> = vec![0u8, 0, 0, 99]; // overflow
-    let pull = || -> Option<Vec<u8>> { None };
-    let on = |_: &[u8]| {};
+    let pull = || -> RequestChunk { RequestChunk::End };
+    let on = |_: &[u8]| ControlFlow::Continue(());
 
     let header_bytes =
         vespera_inprocess::dispatch_bidirectional_streaming(bad_header, pull, on).await;
@@ -422,6 +668,7 @@ async fn dispatch_streaming_async_emits_error_wire_on_malformed_input() {
     let mut chunks: Vec<Vec<u8>> = Vec::new();
     let header_bytes = vespera_inprocess::dispatch_streaming_async(bad_wire, |chunk| {
         chunks.push(chunk.to_vec());
+        ControlFlow::Continue(())
     })
     .await;
     // On error the streaming variant emits a normal error_wire — header + body

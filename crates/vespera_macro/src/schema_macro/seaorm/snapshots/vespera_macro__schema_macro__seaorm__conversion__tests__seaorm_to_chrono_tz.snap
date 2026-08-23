@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/schema_macro/seaorm/tests.rs
+expression: "convert_seaorm_type_to_chrono(&ty, &[]).to_string()"
+---
+vespera :: chrono :: DateTime < vespera :: chrono :: FixedOffset >

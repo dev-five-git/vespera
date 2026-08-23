@@ -4,7 +4,7 @@ use syn::{FnArg, PatType, Type};
 use vespera_core::route::{MediaType, RequestBody};
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
-use super::schema::parse_type_to_schema_ref_with_schemas;
+use super::{extractors::unwrap_validated_type, schema::parse_type_to_schema_ref};
 
 fn is_string_like(ty: &Type) -> bool {
     match ty {
@@ -18,140 +18,83 @@ fn is_string_like(ty: &Type) -> bool {
     }
 }
 
+/// Generic single-type body extractors: `(extractor ident, media type)`.
+///
+/// Each entry maps `Extractor<T>` to a request body whose only content entry is
+/// `media type` holding `T`'s schema.
+const GENERIC_BODY_EXTRACTORS: [(&str, &str); 3] = [
+    ("Json", "application/json"),
+    ("Form", "application/x-www-form-urlencoded"),
+    ("TypedMultipart", "multipart/form-data"),
+];
+
+/// Build a required `RequestBody` carrying exactly one media type entry.
+fn single_content_body(media_type: &str, schema: SchemaRef) -> RequestBody {
+    let mut content = BTreeMap::new();
+    content.insert(
+        media_type.to_string(),
+        MediaType {
+            schema: Some(schema),
+            example: None,
+            examples: None,
+        },
+    );
+    RequestBody {
+        description: None,
+        required: Some(true),
+        content,
+    }
+}
+
+/// First angle-bracketed generic argument of `segment`, if it is a type.
+fn first_generic_type(segment: &syn::PathSegment) -> Option<&Type> {
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    match args.args.first() {
+        Some(syn::GenericArgument::Type(inner_ty)) => Some(inner_ty),
+        _ => None,
+    }
+}
+
 /// Analyze function signature and extract `RequestBody`
-#[allow(clippy::too_many_lines)]
 pub fn parse_request_body(
     arg: &FnArg,
-    known_schemas: &HashSet<String>,
-    struct_definitions: &std::collections::HashMap<String, String>,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &std::collections::HashMap<&str, &str>,
 ) -> Option<RequestBody> {
     match arg {
         FnArg::Receiver(_) => None,
         FnArg::Typed(PatType { ty, .. }) => {
-            if let Type::Path(type_path) = ty.as_ref() {
-                let path = &type_path.path;
-
+            let ty = unwrap_validated_type(ty.as_ref());
+            if let Type::Path(type_path) = ty {
                 // Check the last segment (handles both Json<T> and vespera::axum::Json<T>)
-                let segment = path.segments.last().unwrap();
-                let ident_str = segment.ident.to_string();
+                let segment = type_path.path.segments.last()?;
+                let ident = &segment.ident;
 
-                if ident_str == "Json"
-                    && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-                    && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+                // Json<T> / Form<T> / TypedMultipart<T> → single media-type request body
+                if let Some(media_type) = GENERIC_BODY_EXTRACTORS
+                    .iter()
+                    .find_map(|(name, media_type)| (ident == name).then_some(*media_type))
+                    && let Some(inner_ty) = first_generic_type(segment)
                 {
-                    let schema = parse_type_to_schema_ref_with_schemas(
-                        inner_ty,
-                        known_schemas,
-                        struct_definitions,
-                    );
-                    let mut content = BTreeMap::new();
-                    content.insert(
-                        "application/json".to_string(),
-                        MediaType {
-                            schema: Some(schema),
-                            example: None,
-                            examples: None,
-                        },
-                    );
-                    return Some(RequestBody {
-                        description: None,
-                        required: Some(true),
-                        content,
-                    });
-                }
-
-                // Form<T> extractor → application/x-www-form-urlencoded request body
-                if ident_str == "Form"
-                    && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-                    && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
-                {
-                    let schema = parse_type_to_schema_ref_with_schemas(
-                        inner_ty,
-                        known_schemas,
-                        struct_definitions,
-                    );
-                    let mut content = BTreeMap::new();
-                    content.insert(
-                        "application/x-www-form-urlencoded".to_string(),
-                        MediaType {
-                            schema: Some(schema),
-                            example: None,
-                            examples: None,
-                        },
-                    );
-                    return Some(RequestBody {
-                        description: None,
-                        required: Some(true),
-                        content,
-                    });
-                }
-
-                // TypedMultipart<T> extractor → multipart/form-data request body
-                if ident_str == "TypedMultipart"
-                    && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-                    && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
-                {
-                    let schema = parse_type_to_schema_ref_with_schemas(
-                        inner_ty,
-                        known_schemas,
-                        struct_definitions,
-                    );
-                    let mut content = BTreeMap::new();
-                    content.insert(
-                        "multipart/form-data".to_string(),
-                        MediaType {
-                            schema: Some(schema),
-                            example: None,
-                            examples: None,
-                        },
-                    );
-                    return Some(RequestBody {
-                        description: None,
-                        required: Some(true),
-                        content,
-                    });
+                    let schema =
+                        parse_type_to_schema_ref(inner_ty, known_schemas, struct_definitions);
+                    return Some(single_content_body(media_type, schema));
                 }
 
                 // Raw Multipart extractor (untyped) → multipart/form-data with generic object schema
-                if ident_str == "Multipart" && matches!(segment.arguments, syn::PathArguments::None)
-                {
-                    let mut content = BTreeMap::new();
-                    content.insert(
-                        "multipart/form-data".to_string(),
-                        MediaType {
-                            schema: Some(SchemaRef::Inline(Box::new(Schema::new(
-                                SchemaType::Object,
-                            )))),
-                            example: None,
-                            examples: None,
-                        },
-                    );
-                    return Some(RequestBody {
-                        description: None,
-                        required: Some(true),
-                        content,
-                    });
+                if ident == "Multipart" && matches!(segment.arguments, syn::PathArguments::None) {
+                    return Some(single_content_body(
+                        "multipart/form-data",
+                        SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))),
+                    ));
                 }
             }
 
-            if is_string_like(ty.as_ref()) {
-                let schema =
-                    parse_type_to_schema_ref_with_schemas(ty, known_schemas, struct_definitions);
-                let mut content = BTreeMap::new();
-                content.insert(
-                    "text/plain".to_string(),
-                    MediaType {
-                        schema: Some(schema),
-                        example: None,
-                        examples: None,
-                    },
-                );
-
-                return Some(RequestBody {
-                    description: None,
-                    required: Some(true),
-                    content,
-                });
+            if is_string_like(ty) {
+                let schema = parse_type_to_schema_ref(ty, known_schemas, struct_definitions);
+                return Some(single_content_body("text/plain", schema));
             }
             None
         }
@@ -182,6 +125,16 @@ mod tests {
 
     #[rstest]
     #[case::json("fn test(Json(payload): Json<User>) {}", true, "json")]
+    #[case::validated_json(
+        "fn test(Validated(Json(payload)): Validated<Json<User>>) {}",
+        true,
+        "validated_json"
+    )]
+    #[case::validated_form(
+        "fn test(Validated(Form(input)): Validated<Form<User>>) {}",
+        true,
+        "validated_form"
+    )]
     #[case::form("fn test(Form(input): Form<User>) {}", true, "form")]
     #[case::string("fn test(just_string: String) {}", true, "string")]
     #[case::str("fn test(just_str: &str) {}", true, "str")]
@@ -206,5 +159,20 @@ mod tests {
         with_settings!({ snapshot_suffix => format!("req_body_{}", suffix) }, {
             assert_debug_snapshot!(body);
         });
+    }
+
+    #[test]
+    fn first_generic_type_rejects_bare_and_lifetime_arguments() {
+        let bare: Type = syn::parse_quote!(Json);
+        let Type::Path(bare_path) = bare else {
+            panic!("path")
+        };
+        assert!(first_generic_type(bare_path.path.segments.last().unwrap()).is_none());
+
+        let lifetime: Type = syn::parse_quote!(Json<'static>);
+        let Type::Path(lifetime_path) = lifetime else {
+            panic!("path")
+        };
+        assert!(first_generic_type(lifetime_path.path.segments.last().unwrap()).is_none());
     }
 }

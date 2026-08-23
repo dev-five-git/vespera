@@ -1,1 +1,133 @@
-empty
+# vespera! Macro
+
+The `vespera!()` macro is the entry point for every Vespera application. It scans your route folder at compile time, builds an `axum::Router` with all discovered handlers, and optionally writes an OpenAPI 3.1 spec file.
+
+## Full Parameter Reference
+
+```rust
+let app = vespera!(
+    dir = "routes",                    // Route folder (default: "routes")
+    openapi = "openapi.json",          // Output path (writes file at compile time)
+    title = "My API",                  // OpenAPI info.title
+    version = "1.0.0",                 // OpenAPI info.version (default: CARGO_PKG_VERSION)
+    docs_url = "/docs",                // Swagger UI endpoint
+    redoc_url = "/redoc",              // ReDoc endpoint
+    servers = [                        // OpenAPI servers array
+        { url = "https://api.example.com", description = "Production" },
+        { url = "http://localhost:3000",   description = "Development" }
+    ],
+    merge = [crate1::App1, crate2::App2]  // Merge child vespera apps
+);
+```
+
+## Environment Variable Fallbacks
+
+Every parameter has a corresponding environment variable. The macro parameter takes priority over the env var, which takes priority over the built-in default.
+
+| Parameter | Environment Variable | Default |
+|-----------|---------------------|---------|
+| `dir` | `VESPERA_DIR` | `"routes"` |
+| `openapi` | `VESPERA_OPENAPI` | none |
+| `title` | `VESPERA_TITLE` | `"API"` |
+| `version` | `VESPERA_VERSION` | `CARGO_PKG_VERSION` |
+| `docs_url` | `VESPERA_DOCS_URL` | none |
+| `redoc_url` | `VESPERA_REDOC_URL` | none |
+| `servers` | `VESPERA_SERVER_URL` + `VESPERA_SERVER_DESCRIPTION` | none |
+
+## Common Patterns
+
+### Minimal — just a router
+
+```rust
+let app = vespera!();
+```
+
+### With Swagger UI
+
+```rust
+let app = vespera!(docs_url = "/docs");
+```
+
+### Write OpenAPI file + Swagger UI
+
+```rust
+let app = vespera!(
+    openapi = "openapi.json",
+    docs_url = "/docs",
+    title = "My API",
+    version = "1.0.0"
+);
+```
+
+### Multiple OpenAPI output files
+
+```rust
+let app = vespera!(
+    openapi = ["openapi.json", "docs/api-spec.json"]
+);
+```
+
+### Custom route folder
+
+```rust
+// Scans src/api/ instead of src/routes/
+let app = vespera!(dir = "api");
+```
+
+### With state and middleware
+
+```rust
+let app = vespera!(docs_url = "/docs")
+    .with_state(AppState { db: pool })
+    .layer(CorsLayer::permissive())
+    .layer(TraceLayer::new_for_http());
+```
+
+### Merging child apps
+
+```rust
+let app = vespera!(
+    openapi = "openapi.json",
+    docs_url = "/docs",
+    merge = [billing::BillingApp, notifications::NotificationsApp]
+)
+.with_state(app_state);
+```
+
+## The `.serve()` Extension
+
+`vespera!()` returns an `axum::Router`. Vespera adds a `.serve(addr)` extension trait that replaces the usual `TcpListener::bind` + `axum::serve(...)` boilerplate:
+
+```rust
+use vespera::{vespera, Serve};
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    vespera!(docs_url = "/docs")
+        .serve("0.0.0.0:3000")
+        .await
+}
+```
+
+`addr` accepts anything `tokio::net::ToSocketAddrs` takes — strings like `"0.0.0.0:3000"`, tuples like `([0, 0, 0, 0], 3000)`, or a `SocketAddr`.
+
+## export_app! Macro
+
+Export a Vespera app from a library crate so it can be merged into a parent app:
+
+```rust
+// In the child crate's src/lib.rs
+mod routes;
+
+// Scans "routes" folder by default
+vespera::export_app!(MyApp);
+
+// Or with a custom directory
+vespera::export_app!(MyApp, dir = "api");
+```
+
+This generates a struct with two associated items:
+- `MyApp::OPENAPI_SPEC: &'static str` — the OpenAPI JSON spec as a static string
+- `MyApp::router() -> Router` — a function returning the Axum router
+
+The parent app merges it with `merge = [MyApp]` in `vespera!()`.

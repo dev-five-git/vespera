@@ -73,62 +73,49 @@ pub fn substitute_type(ty: &Type, generic_params: &[String], concrete_types: &[&
                 });
             }
 
-            Type::Path(syn::TypePath {
-                qself: type_path.qself.clone(),
-                path: syn::Path {
-                    leading_colon: path.leading_colon,
-                    segments: new_segments,
-                },
-            })
+            let mut new_type_path = type_path.clone();
+            new_type_path.path.segments = new_segments;
+            Type::Path(new_type_path)
         }
         Type::Reference(type_ref) => {
             // Handle &T, &mut T
-            Type::Reference(syn::TypeReference {
-                and_token: type_ref.and_token,
-                lifetime: type_ref.lifetime.clone(),
-                mutability: type_ref.mutability,
-                elem: Box::new(substitute_type(
-                    &type_ref.elem,
-                    generic_params,
-                    concrete_types,
-                )),
-            })
+            let mut new_type_ref = type_ref.clone();
+            new_type_ref.elem = Box::new(substitute_type(
+                &type_ref.elem,
+                generic_params,
+                concrete_types,
+            ));
+            Type::Reference(new_type_ref)
         }
         Type::Slice(type_slice) => {
             // Handle [T]
-            Type::Slice(syn::TypeSlice {
-                bracket_token: type_slice.bracket_token,
-                elem: Box::new(substitute_type(
-                    &type_slice.elem,
-                    generic_params,
-                    concrete_types,
-                )),
-            })
+            let mut new_type_slice = type_slice.clone();
+            new_type_slice.elem = Box::new(substitute_type(
+                &type_slice.elem,
+                generic_params,
+                concrete_types,
+            ));
+            Type::Slice(new_type_slice)
         }
         Type::Array(type_array) => {
             // Handle [T; N]
-            Type::Array(syn::TypeArray {
-                bracket_token: type_array.bracket_token,
-                elem: Box::new(substitute_type(
-                    &type_array.elem,
-                    generic_params,
-                    concrete_types,
-                )),
-                semi_token: type_array.semi_token,
-                len: type_array.len.clone(),
-            })
+            let mut new_type_array = type_array.clone();
+            new_type_array.elem = Box::new(substitute_type(
+                &type_array.elem,
+                generic_params,
+                concrete_types,
+            ));
+            Type::Array(new_type_array)
         }
         Type::Tuple(type_tuple) => {
             // Handle (T1, T2, ...)
-            let new_elems = type_tuple
+            let mut new_type_tuple = type_tuple.clone();
+            new_type_tuple.elems = type_tuple
                 .elems
                 .iter()
                 .map(|elem| substitute_type(elem, generic_params, concrete_types))
                 .collect();
-            Type::Tuple(syn::TypeTuple {
-                paren_token: type_tuple.paren_token,
-                elems: new_elems,
-            })
+            Type::Tuple(new_type_tuple)
         }
         _ => ty.clone(),
     }
@@ -216,6 +203,7 @@ mod tests {
     fn test_substitute_type_empty_path_segments() {
         // Create a TypePath with empty segments
         let ty = Type::Path(syn::TypePath {
+            attrs: Vec::new(),
             qself: None,
             path: syn::Path {
                 leading_colon: None,
@@ -225,6 +213,14 @@ mod tests {
         let concrete: Type = syn::parse_str("String").unwrap();
         let result = substitute_type(&ty, &[String::from("T")], &[&concrete]);
         // Should return the original type unchanged
+        assert_eq!(result, ty);
+    }
+
+    #[test]
+    fn matching_parameter_without_concrete_type_is_preserved() {
+        let ty: Type = syn::parse_str("T").unwrap();
+        let result = substitute_type(&ty, &[String::from("T")], &[]);
+
         assert_eq!(result, ty);
     }
 

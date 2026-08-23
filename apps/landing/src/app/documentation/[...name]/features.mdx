@@ -1,1 +1,171 @@
-empty
+# Features
+
+Beyond routing and OpenAPI generation, Vespera ships several production-ready features that integrate with the same compile-time discovery system.
+
+## Cron Jobs
+
+Schedule background tasks with `#[vespera::cron]`. Jobs are auto-discovered like routes — no extra registration needed.
+
+### Enable the Feature
+
+```toml
+[dependencies]
+vespera = { version = "0.1", features = ["cron"] }
+```
+
+### Define Jobs
+
+Place `#[vespera::cron("...")]` on any `pub async fn` with zero parameters. The function can live anywhere in your project:
+
+```rust
+// src/cron/cleanup.rs, src/tasks.rs, or even src/routes/users.rs — anywhere works
+#[vespera::cron("1/10 * * * * *")]
+pub async fn cleanup_sessions() {
+    println!("Running cleanup every 10 seconds");
+}
+
+#[vespera::cron("0 0 * * * *")]
+pub async fn hourly_report() {
+    println!("Running hourly report");
+}
+```
+
+No extra config in `vespera!()` — jobs are discovered and started automatically:
+
+```rust
+let app = vespera!(docs_url = "/docs");
+// Background scheduler starts when the app starts
+```
+
+### Cron Expression Format
+
+Uses 6-field cron expressions (`sec min hour day month weekday`):
+
+| Expression | Schedule |
+|-----------|----------|
+| `0 */5 * * * *` | Every 5 minutes |
+| `0 0 * * * *` | Every hour |
+| `0 0 0 * * *` | Daily at midnight |
+| `1/10 * * * * *` | Every 10 seconds |
+| `0 30 9 * * Mon-Fri` | Weekdays at 9:30 AM |
+
+### Requirements
+
+- Functions must be `pub async fn`
+- Functions must take **no parameters** (no `State`, no extractors)
+- The `cron` feature must be enabled in `Cargo.toml`
+
+---
+
+## Multipart Form Data
+
+### Typed Multipart (Recommended)
+
+Use `TypedMultipart` for file uploads with a statically-known schema. Vespera generates `multipart/form-data` content type in OpenAPI and maps `FieldData<NamedTempFile>` to `{ "type": "string", "format": "binary" }`:
+
+```rust
+use vespera::multipart::{FieldData, TypedMultipart};
+use vespera::{Multipart, Schema};
+use tempfile::NamedTempFile;
+
+#[derive(Multipart, Schema)]
+pub struct CreateUploadRequest {
+    pub name: String,
+    #[form_data(limit = "10MiB")]
+    pub file: Option<FieldData<NamedTempFile>>,
+}
+
+#[vespera::route(post, tags = ["uploads"])]
+pub async fn create_upload(
+    TypedMultipart(req): TypedMultipart<CreateUploadRequest>,
+) -> Json<UploadResponse> { ... }
+```
+
+### Raw Multipart (Untyped)
+
+For dynamic fields not known at compile time, use Axum's built-in `Multipart` extractor. Vespera generates a generic `{ "type": "object" }` schema:
+
+```rust
+use vespera::axum::extract::Multipart;
+
+#[vespera::route(post, tags = ["uploads"])]
+pub async fn upload(mut multipart: Multipart) -> Json<UploadResponse> {
+    while let Some(field) = multipart.next_field().await.unwrap() {
+        let name = field.name().unwrap_or("unknown").to_string();
+        let data = field.bytes().await.unwrap();
+        // Process each field dynamically...
+    }
+    Json(UploadResponse { success: true })
+}
+```
+
+---
+
+## Merging Multiple Vespera Apps
+
+Combine routes and OpenAPI specs from multiple crates at compile time. Useful for splitting a large API into separate crates while presenting a single unified spec.
+
+### Export a Child App
+
+```rust
+// In the child crate's src/lib.rs
+mod routes;
+
+// Export for merging (scans "routes" folder by default)
+vespera::export_app!(ThirdApp);
+
+// Or with a custom directory
+vespera::export_app!(ThirdApp, dir = "api");
+```
+
+This generates:
+- `ThirdApp::OPENAPI_SPEC: &'static str` — the child's OpenAPI JSON
+- `ThirdApp::router() -> Router` — the child's Axum router
+
+### Merge in the Parent App
+
+```rust
+use vespera::vespera;
+
+let app = vespera!(
+    openapi = "openapi.json",
+    docs_url = "/docs",
+    merge = [third::ThirdApp, other::OtherApp]
+)
+.with_state(app_state);
+```
+
+Vespera automatically:
+- Merges all child routes into the parent router
+- Combines OpenAPI specs (paths, schemas, tags) into a single document
+- Makes Swagger UI show all routes from all apps
+
+---
+
+## Multi-App Routing (JNI)
+
+When embedding Vespera in a Java/Spring application via JNI, you can register multiple independent apps and route between them per request.
+
+```rust
+pub fn create_app()  -> axum::Router { vespera!(title = "Default") }
+pub fn admin_app()   -> axum::Router { vespera!(dir = "admin_routes",  title = "Admin") }
+pub fn public_app()  -> axum::Router { vespera!(dir = "public_routes", title = "Public") }
+
+vespera::jni_apps! {
+    "_default" => create_app,
+    "admin"    => admin_app,
+    "public"   => public_app,
+}
+```
+
+The Java side selects an app per request via the `X-Vespera-App` header (configurable):
+
+```bash
+# Default app (no header)
+curl http://localhost:8080/health
+
+# Admin app
+curl -H "X-Vespera-App: admin" http://localhost:8080/dashboard
+```
+
+See [Streaming & Multi-App](/documentation/theme/theme-3) for the full multi-app routing reference.

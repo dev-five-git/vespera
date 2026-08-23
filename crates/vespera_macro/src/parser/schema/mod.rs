@@ -24,7 +24,7 @@
 //!
 //! # Key Functions
 //!
-//! - [`parse_type_to_schema_ref`] - Convert any Rust type to `SchemaRef`
+//! - `parse_type_to_schema_ref` - Convert any Rust type to `SchemaRef`
 //! - [`parse_struct_to_schema`] - Convert struct to JSON Schema object
 //! - [`parse_enum_to_schema`] - Convert enum to JSON Schema (oneOf or enum array)
 //! - [`extract_rename_all`] - Extract serde `rename_all` attribute
@@ -39,10 +39,10 @@ mod type_schema;
 // Re-export public API
 pub use enum_schema::parse_enum_to_schema;
 pub use serde_attrs::{
-    extract_default, extract_field_rename, extract_rename_all, extract_skip,
-    extract_skip_serializing_if, rename_field, strip_raw_prefix_owned,
+    extract_default, extract_doc_comment, extract_field_rename, extract_rename_all, extract_skip,
+    rename_field, strip_raw_prefix_owned,
 };
 pub use struct_schema::parse_struct_to_schema;
-pub use type_schema::parse_type_to_schema_ref;
-// Re-export for internal use within parser module
-pub use type_schema::{is_primitive_type, parse_type_to_schema_ref_with_schemas};
+// Re-export for internal use within the parser module. `parse_type_to_schema_ref`
+// is reached directly via the `type_schema` submodule path where needed.
+pub use type_schema::{is_builtin_openapi_type, is_primitive_type, parse_type_to_schema_ref};

@@ -27,7 +27,13 @@ pub fn is_keyword_type(ty: &Type, keyword: &KeywordType) -> bool {
 }
 
 pub fn is_keyword_type_by_type_path(ty: &TypePath, keyword: &KeywordType) -> bool {
-    ty.path.segments.last().unwrap().ident == keyword.as_str()
+    // A path with no segments cannot name a keyword type; treat it as "not a match"
+    // rather than panicking (a proc-macro panic has no span, so it surfaces as an
+    // opaque "proc macro panicked" instead of a diagnostic).
+    let Some(segment) = ty.path.segments.last() else {
+        return false;
+    };
+    segment.ident == keyword.as_str()
 }
 
 #[cfg(test)]
@@ -59,5 +65,21 @@ mod tests {
     ) {
         let ty = syn_type(ty_str);
         assert_eq!(is_keyword_type(&ty, &keyword), expected);
+    }
+
+    #[test]
+    fn segment_less_path_is_not_a_keyword_type() {
+        // `syn` cannot parse an empty path, so build one directly - this is the
+        // malformed-AST input the segment guard exists for.
+        let ty = TypePath {
+            attrs: Vec::new(),
+            qself: None,
+            path: syn::Path {
+                leading_colon: None,
+                segments: syn::punctuated::Punctuated::new(),
+            },
+        };
+
+        assert!(!is_keyword_type_by_type_path(&ty, &KeywordType::Result));
     }
 }

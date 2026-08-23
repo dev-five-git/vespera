@@ -22,6 +22,31 @@ pub use vespera_core::openapi::OpenApi;
 // Re-export macros from vespera_macro
 pub use vespera_macro::{Multipart, Schema, cron, export_app, route, schema, schema_type, vespera};
 
+/// Marker trait implemented by every `#[derive(Schema)]` type.
+///
+/// The derive macro auto-implements this trait, which is intentionally
+/// empty — it carries no methods.  Its purpose is to anchor the
+/// compile-time leaf-type assertions emitted by `#[derive(Schema)]`:
+/// for every field whose type is not a builtin OpenAPI primitive,
+/// not `serde_json::Value`, and not marked `#[schema(any)]`, the
+/// derive emits a `T: ::vespera::Schema` bound assertion against the
+/// field's leaf type.  An unbound leaf — typically a custom struct
+/// that forgot its own `#[derive(Schema)]` — becomes a compile error
+/// at the field site instead of silently emitting `{type:object}`
+/// into the OpenAPI document.
+///
+/// Users normally never name this trait directly — `#[derive(Schema)]`
+/// is the entire user surface.  If you intentionally want a field to
+/// stay as opaque `{type:object}` (arbitrary JSON), mark it with
+/// `#[schema(any)]` to skip the assertion AND lock the schema to
+/// `object`.  `serde_json::Value` fields are allowlisted automatically.
+///
+/// The trait and the `vespera::Schema` derive macro share the same
+/// name but live in different namespaces (trait vs. derive-macro), so
+/// the existing `#[derive(Schema)]` syntax continues to work
+/// unchanged.
+pub trait Schema {}
+
 // Re-export serde_json for merge feature (runtime spec merging)
 pub use serde_json;
 
@@ -67,16 +92,40 @@ where
     base: axum::Router<S>,
     /// Routers to merge after `with_state()` is called
     merge_fns: Vec<fn() -> axum::Router<()>>,
+    /// Layers deferred until **after** child routers are merged.
+    ///
+    /// Axum's `Router::layer` only wraps the routes present at call
+    /// time, so applying a layer eagerly to `base` would leave
+    /// `merge`d child routes un-layered (CORS / auth / trace silently
+    /// skipped on merged routes).  Storing the layer as a closure and
+    /// replaying it in `with_state()` after the merge guarantees it
+    /// covers every route.  Each closure captures only the layer value
+    /// (`L: Send + Sync`), so the boxed trait object stays `Send + Sync`
+    /// and `VesperaRouter` keeps its previous auto-trait bounds.
+    layers: Vec<Box<dyn FnOnce(axum::Router) -> axum::Router + Send + Sync>>,
 }
 
 impl<S> VesperaRouter<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    /// Create a new `VesperaRouter` with a base router and routers to merge
+    /// Create a `VesperaRouter` from a base router and the child-app router
+    /// factories to merge into it.
+    ///
+    /// This is invoked by the `vespera!` macro when the `merge = [...]`
+    /// parameter is used; it is rarely constructed directly. Both the merge of
+    /// the child routers and any [`layer`](Self::layer) added afterwards are
+    /// **deferred** until [`with_state`](Self::with_state): Axum can only merge
+    /// routers that share a state type, so the base router's state must be
+    /// applied first. When a `vespera!` app has no `merge` entries the macro
+    /// returns a plain `axum::Router` instead of this wrapper.
     #[must_use]
     pub fn new(base: axum::Router<S>, merge_fns: Vec<fn() -> axum::Router<()>>) -> Self {
-        Self { base, merge_fns }
+        Self {
+            base,
+            merge_fns,
+            layers: Vec::new(),
+        }
     }
 
     /// Provide the state for the router and merge all child routers.
@@ -96,12 +145,24 @@ where
             router = router.merge(merge_fn());
         }
 
+        // Finally replay the deferred layers AFTER the merge so they wrap
+        // both the base routes and every merged child route.  Applied in
+        // insertion order, preserving Axum's "last layer is outermost"
+        // semantics identical to chained `Router::layer` calls.
+        for apply in self.layers {
+            router = apply(router);
+        }
+
         router
     }
 
     /// Add a layer to the router.
+    ///
+    /// The layer is **deferred** and applied in [`with_state`](Self::with_state)
+    /// after child routers are merged, so it covers merged routes as well as
+    /// the base router.
     #[must_use]
-    pub fn layer<L>(self, layer: L) -> Self
+    pub fn layer<L>(mut self, layer: L) -> Self
     where
         L: tower_layer::Layer<axum::routing::Route> + Clone + Send + Sync + 'static,
         L::Service: tower_service::Service<axum::extract::Request> + Clone + Send + Sync + 'static,
@@ -111,10 +172,9 @@ where
             Into<std::convert::Infallible> + 'static,
         <L::Service as tower_service::Service<axum::extract::Request>>::Future: Send + 'static,
     {
-        Self {
-            base: self.base.layer(layer),
-            merge_fns: self.merge_fns,
-        }
+        self.layers
+            .push(Box::new(move |router: axum::Router| router.layer(layer)));
+        self
     }
 }
 
@@ -137,7 +197,9 @@ pub mod __validation;
 #[cfg(feature = "validation")]
 mod validated;
 #[cfg(feature = "validation")]
-pub use validated::{ValidatePayload, Validated};
+pub use validated::{
+    ValidatePayload, ValidatePayloadWith, Validated, ValidatedWith, ValidationContext,
+};
 
 /// In-process dispatch — drive an axum Router without a TCP socket.
 #[cfg(feature = "inprocess")]

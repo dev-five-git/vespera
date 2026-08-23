@@ -18,7 +18,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -45,7 +45,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -72,7 +72,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -281,14 +281,14 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
               }
             }
           },
-          "400": {
+          "500": {
             "description": "Error response",
             "content": {
               "application/json": {
@@ -322,7 +322,7 @@
           "400": {
             "description": "Error response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -339,14 +339,14 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
               }
             }
           },
-          "400": {
+          "500": {
             "description": "Error response",
             "content": {
               "application/json": {
@@ -366,29 +366,9 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Error response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse2"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Error response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse2"
                 }
               }
             }
@@ -413,14 +393,14 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
               }
             }
           },
-          "400": {
+          "500": {
             "description": "Error response",
             "content": {
               "application/json": {
@@ -441,7 +421,7 @@
             "description": "Successful response",
             "headers": {},
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -469,7 +449,7 @@
             "description": "Successful response",
             "headers": {},
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -508,13 +488,13 @@
           }
         ],
         "responses": {
-          "200": {
+          "204": {
             "description": "Successful response"
           },
-          "400": {
+          "404": {
             "description": "Error response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -613,7 +593,7 @@
           "400": {
             "description": "Error response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -893,7 +873,7 @@
           "400": {
             "description": "Error response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -910,7 +890,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -931,7 +911,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -967,9 +947,11 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "integer",
-              "format": "uint32",
-              "nullable": true
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32"
             }
           }
         ],
@@ -977,7 +959,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1049,7 +1031,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1144,16 +1126,28 @@
         }
       }
     },
-    "/no-schema-query": {
+    "/memos/{id}/summary": {
       "get": {
-        "operationId": "mod_file_with_no_schema_query",
+        "operationId": "get_memo_summary",
+        "description": "Get a memo summary (same-file relation adapter with a custom schema name)",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/MemoSummaryResponse"
                 }
               }
             }
@@ -1194,7 +1188,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1206,7 +1200,7 @@
     },
     "/path/multi-path/{var1}": {
       "get": {
-        "operationId": "mod_file_with_test_struct",
+        "operationId": "mod_file_with_multi_path_single",
         "parameters": [
           {
             "name": "var1",
@@ -1215,32 +1209,15 @@
             "schema": {
               "type": "string"
             }
-          },
-          {
-            "name": "name",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "age",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "format": "uint32"
-            }
           }
         ],
         "responses": {
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
-                  "$ref": "#/components/schemas/TestStruct"
+                  "type": "string"
                 }
               }
             }
@@ -1281,7 +1258,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1308,7 +1285,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1335,7 +1312,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1362,7 +1339,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1398,7 +1375,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1482,7 +1459,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1503,7 +1480,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1542,9 +1519,11 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "integer",
-              "format": "uint32",
-              "nullable": true
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32"
             }
           }
         ],
@@ -1552,7 +1531,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1615,7 +1594,7 @@
           "400": {
             "description": "Error response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1667,7 +1646,7 @@
           "400": {
             "description": "Error response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1717,7 +1696,7 @@
           "400": {
             "description": "Error response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1744,7 +1723,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -1777,7 +1756,7 @@
           "200": {
             "description": "Successful response",
             "content": {
-              "application/json": {
+              "text/plain": {
                 "schema": {
                   "type": "string"
                 }
@@ -2018,6 +1997,16 @@
           "validated"
         ],
         "description": "Echo back the validated input.  If the request body fails\nvalidation, this handler never runs — the `Validated` extractor\nreturns a `422` before it is reached.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidatedUserRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful response",
@@ -2025,6 +2014,39 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ValidatedUserRequest"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "message": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "message"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "errors"
+                  ]
                 }
               }
             }
@@ -2155,8 +2177,6 @@
           },
           "map": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "type": "string"
             }
@@ -2172,8 +2192,6 @@
           },
           "nested_map": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/StructBodyWithOptional"
             }
@@ -2191,8 +2209,6 @@
             "type": "array",
             "items": {
               "type": "object",
-              "properties": {},
-              "required": [],
               "additionalProperties": {
                 "$ref": "#/components/schemas/StructBodyWithOptional"
               }
@@ -2200,21 +2216,17 @@
           },
           "nested_struct_map": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/StructBodyWithOptional"
             }
           },
           "nested_struct_map_array": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
+              "type": "array",
               "items": {
                 "$ref": "#/components/schemas/StructBodyWithOptional"
-              },
-              "type": "array"
+              }
             }
           }
         },
@@ -2247,8 +2259,6 @@
           },
           "map": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "type": "string"
             }
@@ -2264,8 +2274,6 @@
           },
           "nestedMap": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/StructBodyWithOptional"
             }
@@ -2283,8 +2291,6 @@
             "type": "array",
             "items": {
               "type": "object",
-              "properties": {},
-              "required": [],
               "additionalProperties": {
                 "$ref": "#/components/schemas/StructBodyWithOptional"
               }
@@ -2292,21 +2298,17 @@
           },
           "nestedStructMap": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
               "$ref": "#/components/schemas/StructBodyWithOptional"
             }
           },
           "nestedStructMapArray": {
             "type": "object",
-            "properties": {},
-            "required": [],
             "additionalProperties": {
+              "type": "array",
               "items": {
                 "$ref": "#/components/schemas/StructBodyWithOptional"
-              },
-              "type": "array"
+              }
             }
           }
         },
@@ -2328,25 +2330,29 @@
         "type": "object",
         "properties": {
           "delimiter": {
-            "type": "string",
-            "format": "char",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "char"
           },
           "discountRate": {
-            "type": "number",
-            "format": "decimal",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "decimal"
           },
           "maxItems": {
             "type": "integer",
             "minimum": 0
           },
           "maxPrice": {
-            "type": "number",
+            "type": "string",
             "format": "decimal"
           },
           "minPrice": {
-            "type": "number",
+            "type": "string",
             "format": "decimal"
           },
           "priority": {
@@ -2362,7 +2368,7 @@
             "format": "char"
           },
           "taxRate": {
-            "type": "number",
+            "type": "string",
             "format": "decimal"
           }
         },
@@ -2385,9 +2391,9 @@
             "default": 0
           },
           "temperature": {
-            "type": "number",
+            "type": "string",
             "format": "decimal",
-            "default": 0.7
+            "default": "0.7"
           }
         },
         "required": [
@@ -2408,8 +2414,10 @@
             "type": "string"
           },
           "subject": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2437,12 +2445,16 @@
         "type": "object",
         "properties": {
           "adminReply": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "category": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "content": {
             "type": "string"
@@ -2455,15 +2467,19 @@
             "format": "int64"
           },
           "repliedAt": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "title": {
             "type": "string"
           },
           "updatedAt": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "userId": {
             "type": "integer",
@@ -2482,21 +2498,27 @@
         "type": "object",
         "properties": {
           "document": {
-            "type": "string",
-            "format": "binary",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "binary"
           },
           "name": {
             "type": "string"
           },
           "tags": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "thumbnail": {
-            "type": "string",
-            "format": "binary",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "binary"
           }
         },
         "required": [
@@ -2539,8 +2561,10 @@
         "description": "Full user model with all fields",
         "properties": {
           "createdAt": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "email": {
             "type": "string"
@@ -2563,10 +2587,12 @@
         "description": "UUID item model for testing UUID format in OpenAPI",
         "properties": {
           "externalRef": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "uuid",
-            "description": "External reference UUID",
-            "nullable": true
+            "description": "External reference UUID"
           },
           "name": {
             "type": "string",
@@ -2695,8 +2721,6 @@
             "properties": {
               "G": {
                 "type": "object",
-                "properties": {},
-                "required": [],
                 "additionalProperties": {
                   "type": "string"
                 }
@@ -2711,8 +2735,6 @@
             "properties": {
               "H": {
                 "type": "object",
-                "properties": {},
-                "required": [],
                 "additionalProperties": {
                   "type": "string"
                 }
@@ -2772,8 +2794,10 @@
             "type": "object",
             "properties": {
               "L": {
-                "type": "string",
-                "nullable": true
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -2786,8 +2810,10 @@
               "M": {
                 "type": "array",
                 "items": {
-                  "type": "string",
-                  "nullable": true
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               }
             },
@@ -2800,11 +2826,11 @@
             "properties": {
               "N": {
                 "type": "object",
-                "properties": {},
-                "required": [],
                 "additionalProperties": {
-                  "nullable": true,
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               }
             },
@@ -2917,8 +2943,10 @@
             "type": "string"
           },
           "documentUrl": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
             "type": "integer",
@@ -2937,8 +2965,10 @@
             }
           },
           "thumbnailUrl": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -3030,8 +3060,10 @@
                 "format": "int32"
               },
               "result": {
-                "type": "string",
-                "nullable": true
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "type": {
                 "type": "string",
@@ -3076,9 +3108,11 @@
             "type": "string"
           },
           "optional_age": {
-            "type": "integer",
-            "format": "uint32",
-            "nullable": true
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32"
           }
         },
         "required": [
@@ -3188,8 +3222,14 @@
             "default": "1970-01-01T00:00:00+00:00"
           },
           "user": {
-            "$ref": "#/components/schemas/UserSchema",
-            "nullable": true
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserInMemoDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "userId": {
             "type": "integer",
@@ -3412,6 +3452,73 @@
           "archived"
         ]
       },
+      "MemoSummaryResponse": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "default": "1970-01-01T00:00:00+00:00"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "default": 0
+          },
+          "note": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MemoStatus"
+          },
+          "title": {
+            "type": "string"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MemoSummaryUser"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "userId": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "title",
+          "content",
+          "status",
+          "createdAt",
+          "user",
+          "note"
+        ]
+      },
+      "MemoSummaryUser": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
       "PaginatedResponse": {
         "type": "object",
         "properties": {
@@ -3467,21 +3574,29 @@
         "type": "object",
         "properties": {
           "isActive": {
-            "type": "boolean",
-            "nullable": true
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "name": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "tags": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "thumbnail": {
-            "type": "string",
-            "format": "binary",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "binary"
           }
         }
       },
@@ -3551,8 +3666,10 @@
         "type": "object",
         "properties": {
           "birthday": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "createdAt": {
             "type": "string"
@@ -3561,23 +3678,29 @@
             "type": "string"
           },
           "gender": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
             "type": "integer",
             "format": "int32"
           },
           "job": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "name": {
             "type": "string"
           },
           "nickname": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "phoneNumber23": {
             "type": "string"
@@ -3622,8 +3745,14 @@
         "type": "object",
         "properties": {
           "singleRel": {
-            "$ref": "#/components/schemas/SingleSchema_SingleRel",
-            "nullable": true
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SingleSchema_SingleRel"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "username": {
             "type": "string",
@@ -3648,13 +3777,11 @@
       "SkipResponse": {
         "type": "object",
         "properties": {
-          "email2": {
-            "type": "string",
-            "nullable": true
-          },
           "email4": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "email5": {
             "type": "string",
@@ -3668,8 +3795,14 @@
             "$ref": "#/components/schemas/InSkipResponse"
           },
           "in_skip2": {
-            "$ref": "#/components/schemas/InSkipResponse",
-            "nullable": true
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InSkipResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "in_skip3": {
             "type": "array",
@@ -3678,29 +3811,31 @@
             }
           },
           "in_skip4": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "$ref": "#/components/schemas/InSkipResponse"
-            },
-            "nullable": true
+            }
           },
           "in_skip5": {
-            "type": "object",
-            "properties": {},
-            "required": [],
+            "type": [
+              "object",
+              "null"
+            ],
             "additionalProperties": {
               "$ref": "#/components/schemas/InSkipResponse"
-            },
-            "nullable": true
+            }
           },
           "in_skip6": {
-            "type": "object",
-            "properties": {},
-            "required": [],
+            "type": [
+              "object",
+              "null"
+            ],
             "additionalProperties": {
               "$ref": "#/components/schemas/InSkipResponse"
-            },
-            "nullable": true
+            }
           },
           "name": {
             "type": "string"
@@ -3713,9 +3848,7 @@
         },
         "required": [
           "name",
-          "email5",
           "email6",
-          "num",
           "in_skip",
           "in_skip3"
         ]
@@ -3740,13 +3873,17 @@
         "type": "object",
         "properties": {
           "age": {
-            "type": "integer",
-            "format": "uint32",
-            "nullable": true
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32"
           },
           "name": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -3850,9 +3987,11 @@
             "type": "string"
           },
           "optional_age": {
-            "type": "integer",
-            "format": "uint32",
-            "nullable": true
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32"
           }
         },
         "required": [
@@ -3898,49 +4037,67 @@
         "type": "object",
         "properties": {
           "delimiter": {
-            "type": "string",
-            "format": "char",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "char"
           },
           "discountRate": {
-            "type": "number",
-            "format": "decimal",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "decimal"
           },
           "maxItems": {
-            "type": "integer",
-            "minimum": 0,
-            "nullable": true
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
           },
           "maxPrice": {
-            "type": "number",
-            "format": "decimal",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "decimal"
           },
           "minPrice": {
-            "type": "number",
-            "format": "decimal",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "decimal"
           },
           "priority": {
-            "type": "integer",
-            "format": "int32",
-            "nullable": true
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
           },
           "retryCount": {
-            "type": "integer",
-            "format": "uint8",
-            "nullable": true
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint8"
           },
           "separator": {
-            "type": "string",
-            "format": "char",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "char"
           },
           "taxRate": {
-            "type": "number",
-            "format": "decimal",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "decimal"
           }
         }
       },
@@ -3948,26 +4105,36 @@
         "type": "object",
         "properties": {
           "document": {
-            "type": "string",
-            "format": "binary",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "binary"
           },
           "isActive": {
-            "type": "boolean",
-            "nullable": true
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "name": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "tags": {
-            "type": "string",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "thumbnail": {
-            "type": "string",
-            "format": "binary",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "binary"
           }
         }
       },
@@ -4003,10 +4170,12 @@
             "format": "uint32"
           },
           "internal_score": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int32",
-            "description": "Internal field - should be omitted in public APIs",
-            "nullable": true
+            "description": "Internal field - should be omitted in public APIs"
           },
           "name": {
             "type": "string"
@@ -4083,13 +4252,16 @@
             "type": "object",
             "properties": {
               "filter": {
-                "type": "string",
-                "description": "Filter users by name (optional)",
-                "nullable": true
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Filter users by name (optional)"
               },
               "sort": {
                 "type": "string",
-                "description": "Sort order: \"asc\" or \"desc\""
+                "description": "Sort order: \"asc\" or \"desc\"",
+                "default": "asc"
               }
             },
             "required": [
@@ -4206,10 +4378,12 @@
         "description": "UUID item model for testing UUID format in OpenAPI",
         "properties": {
           "externalRef": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "uuid",
-            "description": "External reference UUID",
-            "nullable": true
+            "description": "External reference UUID"
           },
           "id": {
             "type": "string",
@@ -4246,10 +4420,12 @@
             "default": "1970-01-01T00:00:00+00:00"
           },
           "externalRef": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "uuid",
-            "description": "External reference UUID",
-            "nullable": true
+            "description": "External reference UUID"
           },
           "id": {
             "type": "string",

@@ -1,117 +1,179 @@
-use crate::{args::RouteArgs, http::is_http_method};
+use crate::{args::RouteArgs, http::is_http_method, metadata::HeaderParam};
 
-/// Extract doc comments from attributes
-/// Returns concatenated doc comment string or None if no doc comments
-pub fn extract_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
-    let mut doc_lines = Vec::new();
-
-    for attr in attrs {
-        if attr.path().is_ident("doc")
-            && let syn::Meta::NameValue(meta_nv) = &attr.meta
-            && let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(lit_str),
-                ..
-            }) = &meta_nv.value
-        {
-            let line = lit_str.value();
-            // Strip `" / "` or `"/ "` prefixes that can appear when doc-comment
-            // markers leak through TokenStream → string → parse roundtrips,
-            // then trim any remaining whitespace.
-            let trimmed = line
-                .strip_prefix(" / ")
-                .or_else(|| line.strip_prefix("/ "))
-                .unwrap_or(&line)
-                .trim();
-            doc_lines.push(trimmed.to_string());
-        }
-    }
-
-    if doc_lines.is_empty() {
-        None
-    } else {
-        Some(doc_lines.join("\n"))
-    }
-}
+// Re-export the canonical `extract_doc_comment` implementation from the
+// parser/schema/serde_attrs module so `crate::route::extract_doc_comment`
+// (via `route/mod.rs`'s `pub use utils::*;`) continues to resolve for every
+// production caller — `route_impl.rs` (route-attribute description fallback)
+// and `collector.rs` (slow-path description fallback) — without holding a
+// second byte-identical copy of the function.
+pub use crate::parser::schema::extract_doc_comment;
 
 #[derive(Debug)]
 pub struct RouteInfo {
     pub method: String,
     pub path: Option<String>,
+    pub success_status: Option<u16>,
     pub error_status: Option<Vec<u16>>,
+    pub typed_responses: Option<Vec<(u16, String)>>,
     pub tags: Option<Vec<String>>,
+    pub security: Option<Vec<String>>,
+    pub headers: Vec<HeaderParam>,
+    pub operation_id: Option<String>,
+    pub summary: Option<String>,
+    pub request_example: Option<serde_json::Value>,
+    pub response_example: Option<serde_json::Value>,
+    pub deprecated: bool,
     pub description: Option<String>,
+}
+
+/// Read an optional string-literal route argument into an owned `String`.
+///
+/// Deliberately written with `if let` instead of `Option::map(...)`: the
+/// unwrap branch then belongs to a real source line rather than an internal
+/// closure call site, which LLVM coverage reports as zero hits even when the
+/// field is `Some`.  The lint suppression is scoped to exactly this helper —
+/// every other line of [`build_route_info_from_args`] stays lint-checked.
+#[allow(clippy::manual_map, clippy::option_if_let_else)]
+fn lit_value(lit: Option<&syn::LitStr>) -> Option<String> {
+    if let Some(lit) = lit {
+        Some(lit.value())
+    } else {
+        None
+    }
 }
 
 /// Convert a parsed [`RouteArgs`] into the simpler [`RouteInfo`] used by
 /// the collector / OpenAPI emitter.  Factored out so the inline conversion
 /// gets its own basic block and shows up cleanly in coverage reports.
-///
-/// The `path` / `description` extraction uses `if let` instead of
-/// `Option::map(...)` so the unwrap branch is attributed to a source
-/// line rather than an internal closure call site that LLVM coverage
-/// reports as zero hits even when the field is `Some`.
-#[allow(clippy::manual_map, clippy::option_if_let_else)]
 fn build_route_info_from_args(route_args: &RouteArgs) -> RouteInfo {
     let method = route_args
         .method
         .as_ref()
         .map_or_else(|| "get".to_string(), syn::Ident::to_string);
-    let path = if let Some(lit) = route_args.path.as_ref() {
-        Some(lit.value())
-    } else {
-        None
-    };
+    let path = lit_value(route_args.path.as_ref());
 
-    let error_status = route_args.error_status.as_ref().and_then(|array| {
-        let mut status_codes = Vec::new();
-        for elem in &array.elems {
+    let error_status = route_args
+        .error_status
+        .as_ref()
+        .and_then(extract_status_codes);
+    let tags = route_args.tags.as_ref().and_then(extract_non_empty_strings);
+    let typed_responses = route_args
+        .responses
+        .as_ref()
+        .and_then(extract_typed_responses);
+    let security = route_args.security.as_ref().map(extract_strings);
+    let headers = route_args.headers.clone().unwrap_or_default();
+
+    let description = lit_value(route_args.description.as_ref());
+    let operation_id = lit_value(route_args.operation_id.as_ref());
+    let summary = lit_value(route_args.summary.as_ref());
+
+    let request_example = route_args
+        .request_example
+        .as_ref()
+        .map(parse_example_string);
+    let response_example = route_args
+        .response_example
+        .as_ref()
+        .map(parse_example_string);
+
+    RouteInfo {
+        method,
+        path,
+        success_status: route_args.success_status,
+        error_status,
+        typed_responses,
+        tags,
+        security,
+        headers,
+        operation_id,
+        summary,
+        request_example,
+        response_example,
+        deprecated: route_args.deprecated,
+        description,
+    }
+}
+
+fn parse_example_string(lit: &syn::LitStr) -> serde_json::Value {
+    let value = lit.value();
+    serde_json::from_str(&value).unwrap_or(serde_json::Value::String(value))
+}
+
+fn extract_status_codes(array: &syn::ExprArray) -> Option<Vec<u16>> {
+    let status_codes: Vec<u16> = array
+        .elems
+        .iter()
+        .filter_map(|elem| {
             if let syn::Expr::Lit(syn::ExprLit {
                 lit: syn::Lit::Int(lit_int),
                 ..
             }) = elem
-                && let Ok(code) = lit_int.base10_parse::<u16>()
             {
-                status_codes.push(code);
+                lit_int.base10_parse::<u16>().ok()
+            } else {
+                None
             }
-        }
-        if status_codes.is_empty() {
-            None
-        } else {
-            Some(status_codes)
-        }
-    });
+        })
+        .collect();
+    (!status_codes.is_empty()).then_some(status_codes)
+}
 
-    let tags = route_args.tags.as_ref().and_then(|array| {
-        let mut tag_list = Vec::new();
-        for elem in &array.elems {
+fn extract_strings(array: &syn::ExprArray) -> Vec<String> {
+    array
+        .elems
+        .iter()
+        .filter_map(|elem| {
             if let syn::Expr::Lit(syn::ExprLit {
                 lit: syn::Lit::Str(lit_str),
                 ..
             }) = elem
             {
-                tag_list.push(lit_str.value());
+                Some(lit_str.value())
+            } else {
+                None
             }
-        }
-        if tag_list.is_empty() {
-            None
-        } else {
-            Some(tag_list)
-        }
-    });
+        })
+        .collect()
+}
 
-    let description = if let Some(lit) = route_args.description.as_ref() {
-        Some(lit.value())
-    } else {
-        None
+fn extract_non_empty_strings(array: &syn::ExprArray) -> Option<Vec<String>> {
+    let values = extract_strings(array);
+    (!values.is_empty()).then_some(values)
+}
+
+fn extract_typed_responses(array: &syn::ExprArray) -> Option<Vec<(u16, String)>> {
+    let responses: Vec<(u16, String)> = array
+        .elems
+        .iter()
+        .filter_map(extract_typed_response)
+        .collect();
+    (!responses.is_empty()).then_some(responses)
+}
+
+fn extract_typed_response(elem: &syn::Expr) -> Option<(u16, String)> {
+    let syn::Expr::Tuple(tuple) = elem else {
+        return None;
     };
-
-    RouteInfo {
-        method,
-        path,
-        error_status,
-        tags,
-        description,
-    }
+    let status = tuple.elems.first().and_then(|status| {
+        if let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(lit_int),
+            ..
+        }) = status
+        {
+            lit_int.base10_parse::<u16>().ok()
+        } else {
+            None
+        }
+    })?;
+    let schema_name = tuple.elems.get(1).and_then(|schema| {
+        if let syn::Expr::Path(path) = schema {
+            path.path.segments.last().map(|seg| seg.ident.to_string())
+        } else {
+            None
+        }
+    })?;
+    Some((status, schema_name))
 }
 
 pub fn check_route_by_meta(meta: &syn::Meta) -> bool {
@@ -175,8 +237,17 @@ fn try_extract_from_meta(meta: &syn::Meta) -> Option<RouteInfo> {
             Some(RouteInfo {
                 method: method_str,
                 path: None,
+                success_status: None,
                 error_status: None,
+                typed_responses: None,
                 tags: None,
+                security: None,
+                headers: Vec::new(),
+                operation_id: None,
+                summary: None,
+                request_example: None,
+                response_example: None,
+                deprecated: false,
                 description: None,
             })
         }
@@ -184,8 +255,17 @@ fn try_extract_from_meta(meta: &syn::Meta) -> Option<RouteInfo> {
         syn::Meta::Path(_) => Some(RouteInfo {
             method: "get".to_string(),
             path: None,
+            success_status: None,
             error_status: None,
+            typed_responses: None,
             tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
             description: None,
         }),
     }
@@ -489,5 +569,65 @@ mod tests {
             route_info.description,
             Some("Create a new user".to_string())
         );
+    }
+
+    #[rstest]
+    #[case::json_object(r#"{"id":7}"#, serde_json::json!({"id": 7}))]
+    #[case::plain_text("not json", serde_json::Value::String("not json".to_string()))]
+    fn parse_example_string_preserves_json_or_falls_back_to_text(
+        #[case] source: &str,
+        #[case] expected: serde_json::Value,
+    ) {
+        let literal = syn::LitStr::new(source, proc_macro2::Span::call_site());
+
+        assert_eq!(parse_example_string(&literal), expected);
+    }
+
+    #[test]
+    fn status_and_string_extractors_ignore_wrong_expression_kinds() {
+        let statuses: syn::ExprArray = syn::parse_quote!([400, BAD_REQUEST, "404", 70_000]);
+        let strings: syn::ExprArray = syn::parse_quote!(["users", admin, 7]);
+        let no_strings: syn::ExprArray = syn::parse_quote!([admin, 7]);
+
+        assert_eq!(extract_status_codes(&statuses), Some(vec![400]));
+        assert_eq!(extract_strings(&strings), vec!["users".to_string()]);
+        assert_eq!(extract_non_empty_strings(&no_strings), None);
+    }
+
+    #[rstest]
+    #[case::not_a_tuple(quote::quote!(NotFound), None)]
+    #[case::missing_status(quote::quote!(()), None)]
+    #[case::non_integer_status(quote::quote!((NOT_FOUND, ErrorBody)), None)]
+    #[case::out_of_range_status(quote::quote!((70_000, ErrorBody)), None)]
+    #[case::missing_schema(quote::quote!((404,)), None)]
+    #[case::non_path_schema(quote::quote!((404, "ErrorBody")), None)]
+    #[case::qualified_schema(
+        quote::quote!((404, crate::errors::NotFound)),
+        Some((404, "NotFound".to_string()))
+    )]
+    fn typed_response_extracts_only_valid_status_and_schema_pairs(
+        #[case] source: proc_macro2::TokenStream,
+        #[case] expected: Option<(u16, String)>,
+    ) {
+        let expression = syn::parse2::<syn::Expr>(source).expect("valid expression fixture");
+
+        assert_eq!(extract_typed_response(&expression), expected);
+    }
+
+    #[test]
+    fn typed_responses_drop_invalid_entries_and_report_empty_results() {
+        let mixed: syn::ExprArray = syn::parse_quote!([
+            NotATuple,
+            (NOT_FOUND, ErrorBody),
+            (404, "ErrorBody"),
+            (422, crate::errors::ValidationError),
+        ]);
+        let invalid: syn::ExprArray = syn::parse_quote!([NotATuple, (404, "ErrorBody")]);
+
+        assert_eq!(
+            extract_typed_responses(&mixed),
+            Some(vec![(422, "ValidationError".to_string())])
+        );
+        assert_eq!(extract_typed_responses(&invalid), None);
     }
 }

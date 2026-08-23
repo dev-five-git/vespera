@@ -80,6 +80,17 @@ pub struct SchemaConstraints {
     /// `garde::Validate` (e.g. `chrono::DateTime`, `uuid::Uuid`,
     /// most third-party newtypes).
     pub dive: Option<bool>,
+
+    // ── schema-generation override ───────────────────────────────────
+    /// When `Some(true)`, the field's OpenAPI schema is forced to the
+    /// generic `{type: "object"}` regardless of its Rust type, AND the
+    /// compile-time `#[derive(Schema)]` leaf-type assertion is skipped
+    /// for this field.  Use this to opt a field out of strict
+    /// "every-custom-type-must-derive-Schema" checking when the field
+    /// is intentionally arbitrary / opaque JSON.  Bare form
+    /// `#[schema(any)]` sets it to `true`; an explicit
+    /// `#[schema(any = false)]` is also accepted.
+    pub any: Option<bool>,
 }
 
 impl SchemaConstraints {
@@ -102,6 +113,15 @@ impl SchemaConstraints {
             && self.read_only.is_none()
             && self.write_only.is_none()
             && self.dive.is_none()
+            && self.any.is_none()
+    }
+
+    /// `true` when the field is marked `#[schema(any)]` (intentionally
+    /// opaque object — skips the derive-Schema leaf-type assertion AND
+    /// overrides the emitted schema to `{type: "object"}`).
+    #[must_use]
+    pub fn is_any(&self) -> bool {
+        self.any == Some(true)
     }
 
     /// `true` when at least one constraint produces a `garde` runtime rule
@@ -140,15 +160,24 @@ impl SchemaConstraints {
 ///
 /// Unknown keys are **silently ignored** so that struct-level keys
 /// (`name`, `ref`, `nullable`) and future additions don't break this
-/// parser when it walks a struct-level `#[schema(...)]` attribute.
+/// parser when it walks a struct-level `#[schema(...)]` attribute.  A
+/// **recognized** key with a malformed value is an error: silently dropping
+/// known constraints makes both OpenAPI output and generated garde validators
+/// lie about user intent.
 #[must_use]
 pub fn extract_schema_constraints(attrs: &[Attribute]) -> SchemaConstraints {
+    try_extract_schema_constraints(attrs).unwrap_or_default()
+}
+
+/// Fallible variant used by macro entry points to emit `compile_error!` for
+/// malformed values of known `#[schema(...)]` keys.
+pub fn try_extract_schema_constraints(attrs: &[Attribute]) -> syn::Result<SchemaConstraints> {
     let mut out = SchemaConstraints::default();
     for attr in attrs {
         if !attr.path().is_ident("schema") {
             continue;
         }
-        let _ = attr.parse_nested_meta(|meta| {
+        attr.parse_nested_meta(|meta| {
             // ── string / array length ────────────────────────────────
             if meta.path.is_ident("min_length") {
                 out.min_length = Some(parse_usize(&meta)?);
@@ -193,6 +222,16 @@ pub fn extract_schema_constraints(attrs: &[Attribute]) -> SchemaConstraints {
                 // `HashMap<_, Validate>` are validated transparently
                 // and errors carry dotted paths like "address.city".
                 out.dive = Some(parse_bool_or_default_true(&meta)?);
+            } else if meta.path.is_ident("any") {
+                // Bare `#[schema(any)]` (or explicit `any = true/false`)
+                // opts the field out of strict schema enforcement: the
+                // emitted schema is `{type: "object"}` (intentionally
+                // opaque arbitrary JSON), and the derive-Schema
+                // compile-time leaf-type assertion is skipped for
+                // this field. Use for fields whose Rust type is some
+                // custom shape the OpenAPI document is meant to leave
+                // unspecified.
+                out.any = Some(parse_bool_or_default_true(&meta)?);
             } else {
                 // Unknown key — could be a struct-level key like `name`,
                 // `ref`, `nullable`, `default` that lives on the same
@@ -204,9 +243,9 @@ pub fn extract_schema_constraints(attrs: &[Attribute]) -> SchemaConstraints {
                 }
             }
             Ok(())
-        });
+        })?;
     }
-    out
+    Ok(out)
 }
 
 // ── primitive value helpers ──────────────────────────────────────────
@@ -336,7 +375,11 @@ mod tests {
     use syn::parse_quote;
 
     fn parse(attrs: &[Attribute]) -> SchemaConstraints {
-        extract_schema_constraints(attrs)
+        try_extract_schema_constraints(attrs).expect("schema attrs parse")
+    }
+
+    fn parse_err(attrs: &[Attribute]) -> syn::Error {
+        try_extract_schema_constraints(attrs).expect_err("schema attrs must fail")
     }
 
     #[test]
@@ -536,65 +579,47 @@ mod tests {
     }
 
     #[test]
-    fn negative_non_literal_minimum_is_silently_ignored() {
-        // parse_f64 rejects non-literal expressions after `-`.  The
-        // outer parse_nested_meta swallows the syn::Error so the
-        // overall constraint set remains empty.
-        let c = parse(&[parse_quote!(#[schema(minimum = -CONST)])]);
-        assert_eq!(c.minimum, None);
+    fn negative_non_literal_minimum_is_rejected() {
+        let err = parse_err(&[parse_quote!(#[schema(minimum = -CONST)])]);
+        assert!(err.to_string().contains("expected a numeric literal"));
     }
 
     #[test]
-    fn non_unary_non_lit_minimum_expr_is_silently_ignored() {
-        // Anything that is neither a literal nor a unary `-` literal
-        // (here: a function call) goes to the `other => Err(...)`
-        // arm at the bottom of parse_f64.
-        let c = parse(&[parse_quote!(#[schema(minimum = foo())])]);
-        assert_eq!(c.minimum, None);
+    fn non_unary_non_lit_minimum_expr_is_rejected() {
+        let err = parse_err(&[parse_quote!(#[schema(minimum = foo())])]);
+        assert!(err.to_string().contains("expected a numeric literal"));
     }
 
     #[test]
-    fn non_neg_unary_minimum_expr_is_silently_ignored() {
-        // `!x` is a unary op but not `Neg` — hits the inner fallback
-        // inside the unary arm of parse_f64.
-        let c = parse(&[parse_quote!(#[schema(minimum = !5)])]);
-        assert_eq!(c.minimum, None);
+    fn non_neg_unary_minimum_expr_is_rejected() {
+        let err = parse_err(&[parse_quote!(#[schema(minimum = !5)])]);
+        assert!(err.to_string().contains("expected a numeric literal"));
     }
 
     #[test]
-    fn negative_non_numeric_literal_minimum_is_silently_ignored() {
-        // `-true` and `-"x"` are unary-neg of non-numeric literals.
-        // Drives the `other =>` arm inside parse_f64's unary branch
-        // (after the Int/Float arms).
-        let c1 = parse(&[parse_quote!(#[schema(minimum = -true)])]);
-        assert_eq!(c1.minimum, None);
-        let c2 = parse(&[parse_quote!(#[schema(minimum = -"x")])]);
-        assert_eq!(c2.minimum, None);
+    fn negative_non_numeric_literal_minimum_is_rejected() {
+        let c1 = parse_err(&[parse_quote!(#[schema(minimum = -true)])]);
+        assert!(c1.to_string().contains("expected a numeric literal"));
+        let c2 = parse_err(&[parse_quote!(#[schema(minimum = -"x")])]);
+        assert!(c2.to_string().contains("expected a numeric literal"));
     }
 
     #[test]
-    fn example_negative_non_lit_is_silently_ignored() {
-        // `example = -CONST` — the inner literal isn't a number, so
-        // expr_to_json_value's "negate a literal" branch falls
-        // through to the trailing Err.
-        let c = parse(&[parse_quote!(#[schema(example = -CONST)])]);
-        assert_eq!(c.example, None);
+    fn example_negative_non_lit_is_rejected() {
+        let err = parse_err(&[parse_quote!(#[schema(example = -CONST)])]);
+        assert!(err.to_string().contains("expected a literal"));
     }
 
     #[test]
-    fn example_non_lit_non_path_is_silently_ignored() {
-        // Function-call expression — neither a literal, a unary
-        // negation of a literal, nor the special `null` path.
-        let c = parse(&[parse_quote!(#[schema(example = some_fn())])]);
-        assert_eq!(c.example, None);
+    fn example_non_lit_non_path_is_rejected() {
+        let err = parse_err(&[parse_quote!(#[schema(example = some_fn())])]);
+        assert!(err.to_string().contains("expected a literal value"));
     }
 
     #[test]
-    fn example_byte_string_literal_is_silently_ignored() {
-        // Byte-string literals fall through `lit_to_json_value`'s
-        // explicit match arms to the `other => Err(...)` fallback.
-        let c = parse(&[parse_quote!(#[schema(example = b"bytes")])]);
-        assert_eq!(c.example, None);
+    fn example_byte_string_literal_is_rejected() {
+        let err = parse_err(&[parse_quote!(#[schema(example = b"bytes")])]);
+        assert!(err.to_string().contains("unsupported literal type"));
     }
 
     #[test]
@@ -614,5 +639,53 @@ mod tests {
         // parse_nested_meta moves on.
         let c = parse(&[parse_quote!(#[schema(unknown_bare_kw, min_length = 3)])]);
         assert_eq!(c.min_length, Some(3));
+    }
+
+    // ── `any` flag tests ────────────────────────────────────────────
+
+    #[test]
+    fn bare_any_defaults_to_true() {
+        let c = parse(&[parse_quote!(#[schema(any)])]);
+        assert_eq!(c.any, Some(true));
+        assert!(c.is_any());
+        // `any` is NOT a runtime rule — it's a schema-shape override.
+        assert!(!c.has_runtime_rule());
+    }
+
+    #[test]
+    fn any_explicit_false_disables_override() {
+        let c = parse(&[parse_quote!(#[schema(any = false)])]);
+        assert_eq!(c.any, Some(false));
+        assert!(!c.is_any());
+    }
+
+    #[test]
+    fn any_combines_with_other_constraints() {
+        // `any` overrides the schema to object, but a user might still
+        // ask for OpenAPI documentation annotations to ride along.
+        let c = parse(&[parse_quote!(#[schema(any, read_only)])]);
+        assert_eq!(c.any, Some(true));
+        assert_eq!(c.read_only, Some(true));
+    }
+
+    #[test]
+    fn is_empty_accounts_for_any() {
+        let c = parse(&[parse_quote!(#[schema(any)])]);
+        assert!(
+            !c.is_empty(),
+            "a field carrying only `#[schema(any)]` must not be reported empty"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case("uri")]
+    #[case("url")]
+    #[case("ipv4")]
+    #[case("ipv6")]
+    #[case("ip")]
+    fn garde_formats_are_runtime_rules(#[case] format: &str) {
+        let item: syn::ItemStruct =
+            syn::parse_str(&format!(r#"#[schema(format = "{format}")] struct Value;"#)).unwrap();
+        assert!(parse(&item.attrs).has_runtime_rule());
     }
 }

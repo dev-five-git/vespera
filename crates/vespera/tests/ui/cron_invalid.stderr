@@ -1,0 +1,5 @@
+error: #[cron] invalid cron expression `not a valid cron expression`: Invalid pattern: Pattern must have 6 or 7 fields when seconds are required and years are optional.. Expected a 6-field expression `sec min hour day month weekday`, e.g. "0 */5 * * * *".
+ --> tests/ui/cron_invalid.rs:9:17
+  |
+9 | #[vespera::cron("not a valid cron expression")]
+  |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

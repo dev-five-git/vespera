@@ -3,7 +3,7 @@
 use crate::route::PathItem;
 use crate::schema::{Components, ExternalDocumentation};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 /// `OpenAPI` document version
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -42,9 +42,19 @@ pub struct Contact {
 pub struct License {
     /// License name
     pub name: String,
+    /// SPDX license expression or identifier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identifier: Option<String>,
     /// License URL
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+}
+
+#[allow(clippy::ref_option)] // serde skip_serializing_if mandates &Option<T> signature
+fn is_empty_components(value: &Option<Components>) -> bool {
+    value
+        .as_ref()
+        .is_none_or(|components| !has_any_component_map(components))
 }
 
 /// API information
@@ -95,9 +105,13 @@ pub struct Server {
     /// Server description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Server variables
+    /// Server variables.
+    ///
+    /// `BTreeMap` (not `HashMap`) so the generated OpenAPI output is
+    /// deterministic across runs/processes, consistent with the rest of
+    /// the document's ordered maps (CORE-01).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub variables: Option<HashMap<String, ServerVariable>>,
+    pub variables: Option<BTreeMap<String, ServerVariable>>,
 }
 
 /// Tag definition
@@ -128,11 +142,11 @@ pub struct OpenApi {
     /// Path definitions
     pub paths: BTreeMap<String, PathItem>,
     /// Components (reusable components)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "is_empty_components")]
     pub components: Option<Components>,
     /// Security requirements
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub security: Option<Vec<HashMap<String, Vec<String>>>>,
+    pub security: Option<Vec<BTreeMap<String, Vec<String>>>>,
     /// Tag definitions
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<Tag>>,
@@ -141,52 +155,196 @@ pub struct OpenApi {
     pub external_docs: Option<ExternalDocumentation>,
 }
 
+/// Merge `other` map entries into `self_map` with self-wins on key
+/// conflicts, allocating the target map only when `other` has entries.
+fn merge_component_map<V>(
+    self_map: &mut Option<BTreeMap<String, V>>,
+    other_map: Option<BTreeMap<String, V>>,
+) {
+    let Some(other_map) = non_empty_component_map(other_map) else {
+        return;
+    };
+    let target = self_map.get_or_insert_with(BTreeMap::new);
+    for (name, value) in other_map {
+        target.entry(name).or_insert(value);
+    }
+}
+
+fn non_empty_component_map<V>(map: Option<BTreeMap<String, V>>) -> Option<BTreeMap<String, V>> {
+    map.filter(|entries| !entries.is_empty())
+}
+
+fn has_any_component_map(components: &Components) -> bool {
+    components
+        .schemas
+        .as_ref()
+        .is_some_and(|entries| !entries.is_empty())
+        || components
+            .responses
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
+        || components
+            .parameters
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
+        || components
+            .examples
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
+        || components
+            .request_bodies
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
+        || components
+            .headers
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
+        || components
+            .security_schemes
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
+}
+
+/// Merge `other`'s per-method operations into `into` with **self-wins**
+/// semantics: an operation (or path-level field) already present on `into`
+/// is kept; a slot empty on `into` is filled from `other`.
+///
+/// Applied on a path-key conflict so two apps that define the same path
+/// under different methods both keep their operations, instead of the
+/// incoming [`PathItem`] being dropped whole.  Destructuring `other` keeps
+/// this exhaustive — adding a `PathItem` field forces this to be updated.
+fn merge_path_item(into: &mut PathItem, other: PathItem) {
+    let PathItem {
+        get,
+        post,
+        put,
+        patch,
+        delete,
+        head,
+        options,
+        trace,
+        parameters,
+        summary,
+        description,
+        ref_path,
+        servers,
+    } = other;
+    if into.get.is_none() {
+        into.get = get;
+    }
+    if into.post.is_none() {
+        into.post = post;
+    }
+    if into.put.is_none() {
+        into.put = put;
+    }
+    if into.patch.is_none() {
+        into.patch = patch;
+    }
+    if into.delete.is_none() {
+        into.delete = delete;
+    }
+    if into.head.is_none() {
+        into.head = head;
+    }
+    if into.options.is_none() {
+        into.options = options;
+    }
+    if into.trace.is_none() {
+        into.trace = trace;
+    }
+    if into.parameters.is_none() {
+        into.parameters = parameters;
+    }
+    if into.summary.is_none() {
+        into.summary = summary;
+    }
+    if into.description.is_none() {
+        into.description = description;
+    }
+    if into.ref_path.is_none() {
+        into.ref_path = ref_path;
+    }
+    if into.servers.is_none() {
+        into.servers = servers;
+    }
+}
+
 impl OpenApi {
     /// Merge another `OpenAPI` document into this one.
-    /// Paths, schemas, and tags from `other` are added to `self`.
-    /// If there are conflicts, `self` takes precedence.
+    ///
+    /// All `paths`, `components` (schemas, responses, parameters,
+    /// examples, request bodies, headers, security schemes), and `tags`
+    /// from `other` are added to `self`. Top-level `servers`, `security`,
+    /// and `external_docs` are adopted from `other` only when `self` has
+    /// not set its own. On any key/field conflict, `self` takes precedence.
     pub fn merge(&mut self, other: Self) {
-        // Merge paths (self takes precedence on conflict)
+        // Merge paths.  On a path-key conflict, merge per HTTP method
+        // (self-wins per operation) instead of dropping the incoming
+        // `PathItem` wholesale: two merged apps that both define the same
+        // path under DIFFERENT methods (parent `GET /users`, child
+        // `POST /users`) must keep BOTH operations in the generated
+        // document — otherwise the spec under-documents what the merged
+        // router actually serves at runtime.
         for (path, item) in other.paths {
-            self.paths.entry(path).or_insert(item);
-        }
-
-        // Merge components
-        if let Some(other_components) = other.components {
-            let self_components = self.components.get_or_insert(Components {
-                schemas: None,
-                responses: None,
-                parameters: None,
-                examples: None,
-                request_bodies: None,
-                headers: None,
-                security_schemes: None,
-            });
-
-            // Merge schemas
-            if let Some(other_schemas) = other_components.schemas {
-                let self_schemas = self_components.schemas.get_or_insert_with(BTreeMap::new);
-                for (name, schema) in other_schemas {
-                    self_schemas.entry(name).or_insert(schema);
+            use std::collections::btree_map::Entry;
+            match self.paths.entry(path) {
+                Entry::Vacant(slot) => {
+                    slot.insert(item);
                 }
-            }
-
-            // Merge security schemes
-            if let Some(other_security_schemes) = other_components.security_schemes {
-                let self_security_schemes = self_components
-                    .security_schemes
-                    .get_or_insert_with(HashMap::new);
-                for (name, scheme) in other_security_schemes {
-                    self_security_schemes.entry(name).or_insert(scheme);
-                }
+                Entry::Occupied(mut slot) => merge_path_item(slot.get_mut(), item),
             }
         }
 
-        // Merge tags (deduplicate by name)
+        // Merge components (every reusable component kind, self-wins on
+        // key conflict) — previously only `schemas` + `security_schemes`
+        // were merged, silently dropping the rest.
+        if let Some(other_components) = other.components
+            && has_any_component_map(&other_components)
+        {
+            let self_components = self.components.get_or_insert_with(Components::default);
+
+            merge_component_map(&mut self_components.schemas, other_components.schemas);
+            merge_component_map(&mut self_components.responses, other_components.responses);
+            merge_component_map(&mut self_components.parameters, other_components.parameters);
+            merge_component_map(&mut self_components.examples, other_components.examples);
+            merge_component_map(
+                &mut self_components.request_bodies,
+                other_components.request_bodies,
+            );
+            merge_component_map(&mut self_components.headers, other_components.headers);
+            merge_component_map(
+                &mut self_components.security_schemes,
+                other_components.security_schemes,
+            );
+        }
+
+        // Merge top-level servers / security / external_docs (self wins:
+        // adopt other's only when self has not set its own).
+        if self.servers.is_none() {
+            self.servers = other.servers;
+        }
+        if self.security.is_none() {
+            self.security = other.security;
+        }
+        if self.external_docs.is_none() {
+            self.external_docs = other.external_docs;
+        }
+
+        // Merge tags, de-duplicating by name with first-wins semantics while
+        // preserving deterministic output order (existing tags first, then
+        // incoming tags in their original order).
+        //
+        // A linear `any` scan beats a `HashSet<String>` here: tag sets are
+        // tiny (OpenAPI tags are top-level operation groupings — a handful,
+        // rarely past a few dozen even for large APIs), so the O(n²) short-
+        // string compare over an already-resident `Vec` is cheaper than
+        // allocating a set and cloning every existing + incoming tag name.
+        // Net: zero allocations and zero `String` clones on the merge path.
         if let Some(other_tags) = other.tags {
             let self_tags = self.tags.get_or_insert_with(Vec::new);
             for tag in other_tags {
-                if !self_tags.iter().any(|t| t.name == tag.name) {
+                if !self_tags.iter().any(|existing| existing.name == tag.name) {
                     self_tags.push(tag);
                 }
             }
@@ -195,277 +353,4 @@ impl OpenApi {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::route::{Operation, PathItem};
-    use crate::schema::{Components, Schema, SchemaType, SecurityScheme, SecuritySchemeType};
-
-    fn create_base_openapi() -> OpenApi {
-        OpenApi {
-            openapi: OpenApiVersion::V3_1_0,
-            info: Info {
-                title: "Base API".to_string(),
-                version: "1.0.0".to_string(),
-                description: None,
-                terms_of_service: None,
-                contact: None,
-                license: None,
-                summary: None,
-            },
-            servers: None,
-            paths: BTreeMap::new(),
-            components: None,
-            security: None,
-            tags: None,
-            external_docs: None,
-        }
-    }
-
-    fn create_path_item(summary: &str) -> PathItem {
-        PathItem {
-            get: Some(Operation {
-                summary: Some(summary.to_string()),
-                description: None,
-                operation_id: None,
-                tags: None,
-                parameters: None,
-                request_body: None,
-                responses: BTreeMap::new(),
-                security: None,
-            }),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn test_merge_paths() {
-        let mut base = create_base_openapi();
-        base.paths
-            .insert("/users".to_string(), create_path_item("Get users"));
-
-        let mut other = create_base_openapi();
-        other
-            .paths
-            .insert("/posts".to_string(), create_path_item("Get posts"));
-        other
-            .paths
-            .insert("/users".to_string(), create_path_item("Other users")); // Conflict
-
-        base.merge(other);
-
-        // Both paths should exist
-        assert!(base.paths.contains_key("/users"));
-        assert!(base.paths.contains_key("/posts"));
-        // Self takes precedence on conflict
-        assert_eq!(
-            base.paths
-                .get("/users")
-                .unwrap()
-                .get
-                .as_ref()
-                .unwrap()
-                .summary,
-            Some("Get users".to_string())
-        );
-    }
-
-    #[test]
-    fn test_merge_schemas() {
-        let mut base = create_base_openapi();
-        let mut base_schemas = BTreeMap::new();
-        base_schemas.insert("User".to_string(), Schema::object());
-        base.components = Some(Components {
-            schemas: Some(base_schemas),
-            responses: None,
-            parameters: None,
-            examples: None,
-            request_bodies: None,
-            headers: None,
-            security_schemes: None,
-        });
-
-        let mut other = create_base_openapi();
-        let mut other_schemas = BTreeMap::new();
-        other_schemas.insert("Post".to_string(), Schema::object());
-        other_schemas.insert("User".to_string(), Schema::string()); // Conflict
-        other.components = Some(Components {
-            schemas: Some(other_schemas),
-            responses: None,
-            parameters: None,
-            examples: None,
-            request_bodies: None,
-            headers: None,
-            security_schemes: None,
-        });
-
-        base.merge(other);
-
-        let schemas = base.components.as_ref().unwrap().schemas.as_ref().unwrap();
-        assert!(schemas.contains_key("User"));
-        assert!(schemas.contains_key("Post"));
-        // Self takes precedence on conflict
-        assert_eq!(
-            schemas.get("User").unwrap().schema_type,
-            Some(SchemaType::Object)
-        );
-    }
-
-    #[test]
-    fn test_merge_schemas_when_self_has_no_components() {
-        let mut base = create_base_openapi();
-        assert!(base.components.is_none());
-
-        let mut other = create_base_openapi();
-        let mut other_schemas = BTreeMap::new();
-        other_schemas.insert("Post".to_string(), Schema::object());
-        other.components = Some(Components {
-            schemas: Some(other_schemas),
-            responses: None,
-            parameters: None,
-            examples: None,
-            request_bodies: None,
-            headers: None,
-            security_schemes: None,
-        });
-
-        base.merge(other);
-
-        assert!(base.components.is_some());
-        let schemas = base.components.as_ref().unwrap().schemas.as_ref().unwrap();
-        assert!(schemas.contains_key("Post"));
-    }
-
-    #[test]
-    fn test_merge_security_schemes() {
-        let mut base = create_base_openapi();
-        let mut base_security_schemes = HashMap::new();
-        base_security_schemes.insert(
-            "bearerAuth".to_string(),
-            SecurityScheme {
-                r#type: SecuritySchemeType::Http,
-                description: None,
-                name: None,
-                r#in: None,
-                scheme: Some("bearer".to_string()),
-                bearer_format: Some("JWT".to_string()),
-            },
-        );
-        base.components = Some(Components {
-            schemas: None,
-            responses: None,
-            parameters: None,
-            examples: None,
-            request_bodies: None,
-            headers: None,
-            security_schemes: Some(base_security_schemes),
-        });
-
-        let mut other = create_base_openapi();
-        let mut other_security_schemes = HashMap::new();
-        other_security_schemes.insert(
-            "apiKey".to_string(),
-            SecurityScheme {
-                r#type: SecuritySchemeType::ApiKey,
-                description: None,
-                name: Some("X-API-Key".to_string()),
-                r#in: Some("header".to_string()),
-                scheme: None,
-                bearer_format: None,
-            },
-        );
-        other.components = Some(Components {
-            schemas: None,
-            responses: None,
-            parameters: None,
-            examples: None,
-            request_bodies: None,
-            headers: None,
-            security_schemes: Some(other_security_schemes),
-        });
-
-        base.merge(other);
-
-        let security_schemes = base
-            .components
-            .as_ref()
-            .unwrap()
-            .security_schemes
-            .as_ref()
-            .unwrap();
-        assert!(security_schemes.contains_key("bearerAuth"));
-        assert!(security_schemes.contains_key("apiKey"));
-    }
-
-    #[test]
-    fn test_merge_tags() {
-        let mut base = create_base_openapi();
-        base.tags = Some(vec![Tag {
-            name: "users".to_string(),
-            description: Some("User operations".to_string()),
-            external_docs: None,
-        }]);
-
-        let mut other = create_base_openapi();
-        other.tags = Some(vec![
-            Tag {
-                name: "posts".to_string(),
-                description: Some("Post operations".to_string()),
-                external_docs: None,
-            },
-            Tag {
-                name: "users".to_string(),
-                description: Some("Duplicate users tag".to_string()),
-                external_docs: None,
-            }, // Duplicate
-        ]);
-
-        base.merge(other);
-
-        let tags = base.tags.as_ref().unwrap();
-        assert_eq!(tags.len(), 2); // No duplicates
-        assert!(tags.iter().any(|t| t.name == "users"));
-        assert!(tags.iter().any(|t| t.name == "posts"));
-        // Self's description takes precedence
-        let users_tag = tags.iter().find(|t| t.name == "users").unwrap();
-        assert_eq!(users_tag.description, Some("User operations".to_string()));
-    }
-
-    #[test]
-    fn test_merge_tags_when_self_has_none() {
-        let mut base = create_base_openapi();
-        assert!(base.tags.is_none());
-
-        let mut other = create_base_openapi();
-        other.tags = Some(vec![Tag {
-            name: "posts".to_string(),
-            description: None,
-            external_docs: None,
-        }]);
-
-        base.merge(other);
-
-        assert!(base.tags.is_some());
-        assert_eq!(base.tags.as_ref().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn test_merge_empty_other() {
-        let mut base = create_base_openapi();
-        base.paths
-            .insert("/users".to_string(), create_path_item("Get users"));
-        base.tags = Some(vec![Tag {
-            name: "users".to_string(),
-            description: None,
-            external_docs: None,
-        }]);
-
-        let other = create_base_openapi(); // Empty paths, no components, no tags
-
-        base.merge(other);
-
-        // Base should remain unchanged
-        assert_eq!(base.paths.len(), 1);
-        assert!(base.paths.contains_key("/users"));
-        assert_eq!(base.tags.as_ref().unwrap().len(), 1);
-    }
-}
+mod tests;

@@ -32,9 +32,11 @@
 //! }
 //! ```
 
-use std::sync::{LazyLock, Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
-use crate::args;
+use crate::macro_storage::{CrateStorage, SourceIdentified};
+use crate::{args, metadata::HeaderParam};
 /// Metadata stored by `#[route]` for later consumption by `vespera!()`.
 ///
 /// Each invocation of `#[route]` pushes one entry into [`ROUTE_STORAGE`].
@@ -53,26 +55,70 @@ pub struct StoredRouteInfo {
     /// Custom path from `path = "/{id}"`.  Used by the collector to
     /// derive the full route URL when present.
     pub custom_path: Option<String>,
+    /// Declared non-200 success status from `status = <u16>` (validated 2xx).
+    pub success_status: Option<u16>,
     /// Additional error status codes from `error_status = [400, 404]`.
     pub error_status: Option<Vec<u16>>,
+    /// Typed error responses from `responses = [(404, NotFoundError)]`.
+    pub typed_responses: Option<Vec<(u16, String)>>,
     /// Tags for `OpenAPI` grouping from `tags = ["users"]`.
     pub tags: Option<Vec<String>>,
+    /// Per-route security requirements from `security = ["bearerAuth"]`.
+    pub security: Option<Vec<String>>,
+    /// Header parameters from `headers = [{ name = "Authorization" }]`.
+    pub headers: Vec<HeaderParam>,
+    /// Explicit OpenAPI operationId from `operation_id = "getUser"`.
+    pub operation_id: Option<String>,
+    /// OpenAPI operation summary from `summary = "Get user"`.
+    pub summary: Option<String>,
+    /// Operation-level request example.
+    pub request_example: Option<serde_json::Value>,
+    /// Operation-level response example.
+    pub response_example: Option<serde_json::Value>,
+    /// Whether the operation is deprecated via bare `deprecated`.
+    pub deprecated: bool,
     /// Description from `description = "Get user by ID"`.
     pub description: Option<String>,
     /// Source file path from `Span::call_site().local_file()` (requires Rust 1.88+).
     /// `None` on older Rust — collector falls back to full file parsing.
     pub file_path: Option<String>,
-    /// Full function item as a string.  Re-parsed via `syn::parse_str()`
-    /// by both [`crate::collector`] and [`crate::openapi_generator`] so
-    /// the source file does not need to be opened from disk for routes
-    /// already known via `ROUTE_STORAGE`.
-    pub fn_item_str: String,
+    /// Function signature as a string. Re-parsed via `syn::parse_str()` by
+    /// [`crate::openapi_generator`] when the source file AST is unavailable.
+    /// Stores only `syn::Signature` tokens, not the handler body.
+    pub fn_sig_str: String,
 }
 
-/// Global storage for route metadata collected by `#[route]` attribute macros.
-/// Read by `vespera!()` to supplement file-based route discovery.
-pub static ROUTE_STORAGE: LazyLock<Mutex<Vec<StoredRouteInfo>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+/// Per-crate storage for route metadata collected by `#[route]` attribute
+/// macros, read by `vespera!()` / `export_app!()` to supplement file-based
+/// route discovery.
+///
+/// Keyed by [`crate::schema_impl::current_crate_key`] so a long-lived
+/// rust-analyzer proc-macro server (one process, many crates) never feeds
+/// crate A's routes into crate B's generated router/spec. See
+/// [`SCHEMA_STORAGE`](crate::schema_impl::SCHEMA_STORAGE) for the rationale.
+pub static ROUTE_STORAGE: CrateStorage<StoredRouteInfo> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+impl SourceIdentified for StoredRouteInfo {
+    fn fn_name(&self) -> &str {
+        &self.fn_name
+    }
+    fn file_path(&self) -> Option<&str> {
+        self.file_path.as_deref()
+    }
+}
+
+/// Replace-insert a `#[route]` metadata entry in the current crate's bucket.
+pub fn register_route(info: StoredRouteInfo) {
+    crate::macro_storage::register(&ROUTE_STORAGE, info);
+}
+
+/// Snapshot of the current crate's registered routes — a cheap `Arc` clone, so
+/// consumers never deep-clone every stored function signature string.
+#[must_use]
+pub fn current_crate_routes() -> Arc<Vec<StoredRouteInfo>> {
+    crate::macro_storage::current_crate_items(&ROUTE_STORAGE)
+}
 
 /// Extract `u16` error status codes from a `syn::ExprArray`.
 fn extract_error_status_codes(arr: &syn::ExprArray) -> Option<Vec<u16>> {
@@ -94,10 +140,35 @@ fn extract_error_status_codes(arr: &syn::ExprArray) -> Option<Vec<u16>> {
     if codes.is_empty() { None } else { Some(codes) }
 }
 
-/// Extract `String` tags from a `syn::ExprArray`.
-fn extract_tag_strings(arr: &syn::ExprArray) -> Option<Vec<String>> {
-    let tags: Vec<String> = arr
-        .elems
+/// Reject any non-string-literal element of a `[...]` attribute array with a
+/// spanned compile error instead of silently dropping it.  A typo such as
+/// `security = [bearerAuth]` (missing quotes) or `tags = [users]` would
+/// otherwise vanish — and for `security` that silently documents a PROTECTED
+/// route as unauthenticated, so this guard is security-relevant.
+fn require_string_literal_elems(arr: &syn::ExprArray, attr_name: &str) -> syn::Result<()> {
+    for elem in &arr.elems {
+        if !matches!(
+            elem,
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(_),
+                ..
+            })
+        ) {
+            return Err(syn::Error::new_spanned(
+                elem,
+                format!(
+                    "#[route] `{attr_name}` entries must be string literals, e.g. `{attr_name} = [\"name\"]`"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Collect every `syn::Lit::Str` value from a validated array.  Call only after
+/// [`require_string_literal_elems`] so non-string elements cannot slip through.
+fn collect_string_literal_values(arr: &syn::ExprArray) -> Vec<String> {
+    arr.elems
         .iter()
         .filter_map(|elem| {
             if let syn::Expr::Lit(syn::ExprLit {
@@ -110,8 +181,68 @@ fn extract_tag_strings(arr: &syn::ExprArray) -> Option<Vec<String>> {
                 None
             }
         })
+        .collect()
+}
+
+/// Extract `String` tags from a `syn::ExprArray`, erroring on any non-string
+/// entry.  An all-empty / no-string array yields `None`.
+fn extract_tag_strings(arr: &syn::ExprArray) -> syn::Result<Option<Vec<String>>> {
+    require_string_literal_elems(arr, "tags")?;
+    let tags = collect_string_literal_values(arr);
+    Ok(if tags.is_empty() { None } else { Some(tags) })
+}
+
+/// Extract security scheme names from a `syn::ExprArray`, erroring on any
+/// non-string entry.
+///
+/// Unlike tags, an empty array is meaningful: `security = []` disables
+/// inherited/global security for that operation in OpenAPI.
+fn extract_security_strings(arr: &syn::ExprArray) -> syn::Result<Vec<String>> {
+    require_string_literal_elems(arr, "security")?;
+    Ok(collect_string_literal_values(arr))
+}
+
+fn parse_example_string(lit: &syn::LitStr) -> serde_json::Value {
+    let value = lit.value();
+    serde_json::from_str(&value).unwrap_or(serde_json::Value::String(value))
+}
+
+/// Extract typed response status/schema pairs from `responses = [(404, NotFoundError)]`.
+fn extract_typed_responses(arr: &syn::ExprArray) -> Option<Vec<(u16, String)>> {
+    let responses: Vec<(u16, String)> = arr
+        .elems
+        .iter()
+        .filter_map(|elem| {
+            let syn::Expr::Tuple(tuple) = elem else {
+                return None;
+            };
+            let status = tuple.elems.first().and_then(|status| {
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Int(lit_int),
+                    ..
+                }) = status
+                {
+                    lit_int.base10_parse::<u16>().ok()
+                } else {
+                    None
+                }
+            })?;
+            let schema_name = tuple.elems.get(1).and_then(|schema| {
+                if let syn::Expr::Path(path) = schema {
+                    path.path.segments.last().map(|seg| seg.ident.to_string())
+                } else {
+                    None
+                }
+            })?;
+            Some((status, schema_name))
+        })
         .collect();
-    if tags.is_empty() { None } else { Some(tags) }
+
+    if responses.is_empty() {
+        None
+    } else {
+        Some(responses)
+    }
 }
 
 /// Validate route function - must be pub and async
@@ -139,31 +270,53 @@ pub fn process_route_attribute(
     let route_args = syn::parse2::<args::RouteArgs>(attr)?;
     let item_fn: syn::ItemFn = syn::parse2(item.clone()).map_err(|e| syn::Error::new(e.span(), "#[route] attribute: can only be applied to functions, not other items. Move or remove the attribute."))?;
     validate_route_fn(&item_fn)?;
+    let fn_sig = &item_fn.sig;
 
     // Store route metadata for later consumption by vespera!() macro
     let stored = StoredRouteInfo {
         fn_name: item_fn.sig.ident.to_string(),
         method: route_args.method.as_ref().map(syn::Ident::to_string),
         custom_path: route_args.path.as_ref().map(syn::LitStr::value),
+        success_status: route_args.success_status,
         error_status: route_args
             .error_status
             .as_ref()
             .and_then(extract_error_status_codes),
-        tags: route_args.tags.as_ref().and_then(extract_tag_strings),
+        typed_responses: route_args
+            .responses
+            .as_ref()
+            .and_then(extract_typed_responses),
+        tags: match route_args.tags.as_ref() {
+            Some(arr) => extract_tag_strings(arr)?,
+            None => None,
+        },
+        security: match route_args.security.as_ref() {
+            Some(arr) => Some(extract_security_strings(arr)?),
+            None => None,
+        },
+        headers: route_args.headers.unwrap_or_default(),
+        operation_id: route_args.operation_id.as_ref().map(syn::LitStr::value),
+        summary: route_args.summary.as_ref().map(syn::LitStr::value),
+        request_example: route_args
+            .request_example
+            .as_ref()
+            .map(parse_example_string),
+        response_example: route_args
+            .response_example
+            .as_ref()
+            .map(parse_example_string),
+        deprecated: route_args.deprecated,
         description: route_args
             .description
             .as_ref()
             .map(syn::LitStr::value)
             .or_else(|| crate::route::extract_doc_comment(&item_fn.attrs)),
-        fn_item_str: item.to_string(),
+        fn_sig_str: quote::quote!(#fn_sig).to_string(),
         file_path: proc_macro2::Span::call_site()
             .local_file()
             .map(|p| p.display().to_string()),
     };
-    ROUTE_STORAGE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(stored);
+    register_route(stored);
 
     Ok(item)
 }
@@ -171,6 +324,7 @@ pub fn process_route_attribute(
 #[cfg(test)]
 mod tests {
     use quote::quote;
+    use rstest::rstest;
 
     use super::*;
 
@@ -347,10 +501,9 @@ mod tests {
         let result = process_route_attribute(attr, item);
         assert!(result.is_ok());
 
-        // Find our entry by unique fn_name (ROUTE_STORAGE is global, shared across parallel tests)
-        let storage = ROUTE_STORAGE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Find our entry by unique fn_name (the current crate's routes are
+        // shared across parallel tests in this crate).
+        let storage = current_crate_routes();
 
         // Find our entry and verify fields
         let stored = storage
@@ -366,7 +519,8 @@ mod tests {
         assert_eq!(stored.tags, Some(vec!["users".to_string()]));
         assert_eq!(stored.description, Some("Get user by ID".to_string()));
         assert_eq!(stored.error_status, Some(vec![404]));
-        assert!(stored.fn_item_str.contains("get_user_test_storage"));
+        assert!(stored.headers.is_empty());
+        assert!(stored.fn_sig_str.contains("get_user_test_storage"));
     }
 
     #[test]
@@ -380,9 +534,7 @@ mod tests {
         let result = process_route_attribute(attr, item);
         assert!(result.is_ok());
 
-        let storage = ROUTE_STORAGE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let storage = current_crate_routes();
 
         let stored = storage.iter().find(|s| s.fn_name == "minimal_handler_test");
         assert!(stored.is_some());
@@ -392,6 +544,53 @@ mod tests {
         assert_eq!(stored.tags, None);
         assert_eq!(stored.description, None);
         assert_eq!(stored.error_status, None);
+        assert!(stored.headers.is_empty());
+    }
+
+    #[test]
+    fn test_register_route_replaces_same_file_and_function() {
+        let file_path = Some("/tmp/vespera/routes/replaced.rs".to_string());
+        let fn_name = "__test_replace_route".to_string();
+        let base = StoredRouteInfo {
+            fn_name: fn_name.clone(),
+            method: Some("get".to_string()),
+            custom_path: Some("/before".to_string()),
+            success_status: None,
+            error_status: None,
+            typed_responses: None,
+            tags: None,
+            security: None,
+            headers: Vec::new(),
+            operation_id: None,
+            summary: None,
+            request_example: None,
+            response_example: None,
+            deprecated: false,
+            description: None,
+            file_path: file_path.clone(),
+            fn_sig_str: "pub async fn __test_replace_route ()".to_string(),
+        };
+        register_route(base);
+        register_route(StoredRouteInfo {
+            method: Some("post".to_string()),
+            custom_path: Some("/after".to_string()),
+            file_path,
+            fn_sig_str: "pub async fn __test_replace_route ()".to_string(),
+            ..current_crate_routes()
+                .iter()
+                .find(|entry| entry.fn_name == fn_name)
+                .cloned()
+                .expect("first route registration should exist")
+        });
+
+        let matches: Vec<_> = current_crate_routes()
+            .iter()
+            .filter(|entry| entry.fn_name == fn_name)
+            .cloned()
+            .collect();
+        assert_eq!(matches.len(), 1, "same source route should replace");
+        assert_eq!(matches[0].method, Some("post".to_string()));
+        assert_eq!(matches[0].custom_path, Some("/after".to_string()));
     }
 
     #[test]
@@ -409,19 +608,101 @@ mod tests {
     #[test]
     fn test_extract_tag_strings_empty() {
         let arr: syn::ExprArray = syn::parse_quote!([]);
-        assert_eq!(extract_tag_strings(&arr), None);
+        assert_eq!(extract_tag_strings(&arr).unwrap(), None);
     }
 
     #[test]
     fn test_extract_tag_strings_values() {
         let arr: syn::ExprArray = syn::parse_quote!(["users", "admin", "api"]);
         assert_eq!(
-            extract_tag_strings(&arr),
+            extract_tag_strings(&arr).unwrap(),
             Some(vec![
                 "users".to_string(),
                 "admin".to_string(),
                 "api".to_string()
             ])
         );
+    }
+
+    #[test]
+    fn test_extract_tag_strings_rejects_non_string() {
+        // `tags = [users]` (bare ident, missing quotes) must be a compile
+        // error, not silently dropped.
+        let arr: syn::ExprArray = syn::parse_quote!([users]);
+        let err = extract_tag_strings(&arr).expect_err("non-string tag must error");
+        assert!(err.to_string().contains("string literals"), "{err}");
+    }
+
+    #[test]
+    fn test_extract_security_strings_values() {
+        let arr: syn::ExprArray = syn::parse_quote!(["bearerAuth", "apiKey"]);
+        assert_eq!(
+            extract_security_strings(&arr).unwrap(),
+            vec!["bearerAuth".to_string(), "apiKey".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_extract_security_strings_empty_is_ok() {
+        // `security = []` is meaningful (explicit no-auth) and must NOT error.
+        let arr: syn::ExprArray = syn::parse_quote!([]);
+        assert_eq!(
+            extract_security_strings(&arr).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn test_extract_security_strings_rejects_non_string() {
+        // `security = [bearerAuth]` (missing quotes) must error rather than
+        // silently documenting a protected route as unauthenticated.
+        let arr: syn::ExprArray = syn::parse_quote!([bearerAuth]);
+        let err = extract_security_strings(&arr).expect_err("non-string security must error");
+        assert!(err.to_string().contains("string literals"), "{err}");
+    }
+
+    #[test]
+    fn low_level_collectors_ignore_non_literal_entries() {
+        let statuses: syn::ExprArray = syn::parse_quote!([400, BAD_REQUEST, "404", 70_000]);
+        let strings: syn::ExprArray = syn::parse_quote!(["users", admin, 7]);
+
+        assert_eq!(extract_error_status_codes(&statuses), Some(vec![400]));
+        assert_eq!(
+            collect_string_literal_values(&strings),
+            vec!["users".to_string()]
+        );
+    }
+
+    #[rstest]
+    #[case::json_array("[1,2]", serde_json::json!([1, 2]))]
+    #[case::plain_text("not json", serde_json::Value::String("not json".to_string()))]
+    fn example_parser_preserves_json_or_falls_back_to_text(
+        #[case] source: &str,
+        #[case] expected: serde_json::Value,
+    ) {
+        let literal = syn::LitStr::new(source, proc_macro2::Span::call_site());
+
+        assert_eq!(parse_example_string(&literal), expected);
+    }
+
+    #[rstest]
+    #[case::empty(quote!([]), None)]
+    #[case::not_a_tuple(quote!([NotFound]), None)]
+    #[case::missing_status(quote!([()]), None)]
+    #[case::non_integer_status(quote!([(NOT_FOUND, ErrorBody)]), None)]
+    #[case::out_of_range_status(quote!([(70_000, ErrorBody)]), None)]
+    #[case::missing_schema(quote!([(404,)]), None)]
+    #[case::non_path_schema(quote!([(404, "ErrorBody")]), None)]
+    #[case::qualified_schema(
+        quote!([(404, crate::errors::NotFound)]),
+        Some(vec![(404, "NotFound".to_string())])
+    )]
+    fn typed_response_extractor_accepts_only_status_path_tuples(
+        #[case] source: proc_macro2::TokenStream,
+        #[case] expected: Option<Vec<(u16, String)>>,
+    ) {
+        let array = syn::parse2::<syn::ExprArray>(source).expect("valid response array fixture");
+
+        assert_eq!(extract_typed_responses(&array), expected);
     }
 }

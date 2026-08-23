@@ -1,0 +1,177 @@
+# Streaming & Multi-App
+
+## Streaming Tuning
+
+Both streaming knobs are fixed for the process lifetime once the first dispatch runs. Configuration precedence (first hit wins):
+
+1. **Programmatic setter** — `VesperaBridge.configureStreaming(chunkBytes, channelCapacity)` (call before or after `init`)
+2. **System properties** — `vespera.streaming.chunkBytes`, `vespera.streaming.channelCapacity`
+3. **Environment variables** — `VESPERA_STREAMING_CHUNK_BYTES`, `VESPERA_STREAMING_CHANNEL_CAPACITY`
+4. **Built-in defaults** — 256 KiB chunk size, 16 channel slots
+
+| Setting | System property | Env var | Default | Range |
+|---------|----------------|---------|---------|-------|
+| Chunk buffer size | `vespera.streaming.chunkBytes` | `VESPERA_STREAMING_CHUNK_BYTES` | 256 KiB | 4 KiB – 8 MiB |
+| Request channel slots | `vespera.streaming.channelCapacity` | `VESPERA_STREAMING_CHANNEL_CAPACITY` | 16 | 1 – 1024 |
+| Tokio worker threads | `vespera.runtime.workerThreads` | `VESPERA_RUNTIME_WORKERS` | logical CPUs | 1 – 1024 |
+
+### Java API
+
+Call before `VesperaBridge.init(...)` for guaranteed precedence:
+
+```java
+VesperaBridge.configureStreaming(
+    131072,  // chunkBytes: 128 KiB (clamped to 4 KiB – 8 MiB)
+    32       // channelCapacity: 32 slots (clamped to 1 – 1024)
+);
+VesperaBridge.init("my_rust_lib");
+```
+
+When called before `init()`, values are stored as pending and applied immediately after the native library loads — before any dispatch can occur. This ensures the programmatic setter beats system properties and environment variables.
+
+Throws `IllegalArgumentException` if `chunkBytes` is outside `[4096, 8388608]` or `channelCapacity` is outside `[1, 1024]`.
+
+### System Properties
+
+```bash
+java -Dvespera.streaming.chunkBytes=131072 \
+     -Dvespera.streaming.channelCapacity=32 \
+     -jar app.jar
+```
+
+### Environment Variables
+
+```bash
+export VESPERA_STREAMING_CHUNK_BYTES=131072
+export VESPERA_STREAMING_CHANNEL_CAPACITY=32
+java -jar app.jar
+```
+
+### Tuning Tips
+
+- Larger chunks reduce the per-chunk JNI crossing cost (one `SetByteArrayRegion` + one `OutputStream.write` per chunk) at the price of per-stream memory. 256 KiB is a reasonable ceiling for throughput-oriented deployments.
+- The Tokio worker-thread knob caps Rust's shared runtime — useful when the JVM's own pools (Tomcat request threads, virtual-thread carriers) compete with Tokio for the same cores, or when a container CPU limit is lower than the host's logical CPU count.
+
+---
+
+## Multi-App Routing
+
+Multi-app routing is primarily a feature for external-dispatcher scenarios — JNI (Java host picks app per request via header), WebAssembly bridge, C FFI, or any in-process embedding where the host distinguishes between multiple independent Vespera API surfaces.
+
+### Rust Side
+
+```rust
+pub fn create_app()  -> axum::Router { vespera!(title = "Default") }
+pub fn admin_app()   -> axum::Router { vespera!(dir = "admin_routes",  title = "Admin") }
+pub fn public_app()  -> axum::Router { vespera!(dir = "public_routes", title = "Public") }
+
+vespera::jni_apps! {
+    "_default" => create_app,
+    "admin"    => admin_app,
+    "public"   => public_app,
+}
+```
+
+`jni_apps!` is the primary multi-app API. `jni_app!(create_app)` is syntactic sugar for a single default app.
+
+### Java Side
+
+The default `HeaderAppNameResolver` selects an app per request via the `X-Vespera-App` header:
+
+```bash
+# Default app (no header)
+curl http://localhost:8080/health
+
+# Admin app
+curl -H "X-Vespera-App: admin" http://localhost:8080/dashboard
+
+# Public app
+curl -H "X-Vespera-App: public" http://localhost:8080/info
+```
+
+Each app's URLs are independent — the same `/users` path can mean different things in `admin` vs `public` apps. Unknown app names return `404`; invalid app names (special characters, > 64 bytes) return `400`.
+
+### Custom App-Selection Strategy
+
+```java
+@Bean
+public AppNameResolver myAppResolver() {
+    // App name from the first path segment:
+    //   /admin/dashboard  →  app "admin", path "/dashboard"
+    //   /public/info      →  app "public", path "/info"
+    return request -> {
+        String uri = request.getRequestURI();
+        if (uri.startsWith("/admin/")) return "admin";
+        if (uri.startsWith("/public/")) return "public";
+        return null;  // default app
+    };
+}
+```
+
+---
+
+## Virtual Thread (Project Loom) Limitation
+
+The pooled direct-buffer methods (`dispatchDirectPooled`) use `ThreadLocal<ByteBuffer[]>` to maintain per-thread reusable buffers. In Java 21+, `ThreadLocal` binds to the **virtual thread** (not the carrier thread) — so in a virtual-thread-per-request server, each virtual thread allocates a fresh direct buffer and loses all pooling benefit. Direct memory accumulates until the virtual thread is garbage-collected, potentially causing memory pressure under high concurrency.
+
+**Recommendations for virtual-thread deployments:**
+
+- Set `vespera.bridge.dispatch-mode=bidirectional-streaming` to opt out of the smart default, so `DIRECT` is never chosen by the autoconfigured resolver.
+- Or use `dispatchBytes`, `dispatchStreaming`, or `dispatchFullStreaming` directly instead of the pooled direct variants.
+- Or run dispatch on a bounded platform-thread executor (e.g. a `ForkJoinPool` with a fixed parallelism cap).
+- Or lower `vespera.direct.maxBufferBytes` to reduce per-thread allocation size.
+
+`DispatchMode.BIDIRECTIONAL_STREAMING` is safe for virtual threads and handles all payload sizes without pooling.
+
+---
+
+## 0.2.0 Breaking Changes
+
+### 1. Default DispatchModeResolver Flipped to SmartDispatchModeResolver
+
+Pre-0.2.0 the autoconfigured default was `BidirectionalStreamingDispatchModeResolver` — every request that may carry a body streamed both ways, ~24.1 µs per round-trip uniform. Since 0.2.0 the default is `SmartDispatchModeResolver`.
+
+| Request shape | Pre-0.2.0 mode | 0.2.0+ mode |
+|---------------|----------------|-------------|
+| Small/bodyless idempotent (GET/HEAD/PUT/DELETE/OPTIONS, ≤ 256 KiB CL or no CL) | `STREAMING` / `BIDIRECTIONAL_STREAMING` | `DIRECT` |
+| Small non-idempotent (POST/PATCH, ≤ 256 KiB CL) | `BIDIRECTIONAL_STREAMING` | `SYNC` |
+| Large or unknown-length body | `BIDIRECTIONAL_STREAMING` | `BIDIRECTIONAL_STREAMING` |
+
+Opt out (restore the pre-0.2.0 default):
+
+```yaml
+vespera:
+  bridge:
+    dispatch-mode: bidirectional-streaming
+```
+
+Or register a custom `DispatchModeResolver` bean — `@ConditionalOnMissingBean` ensures it wins over both the property and the autoconfigured default.
+
+### 2. DecodedResponse.body() Returns ByteBuffer
+
+`DecodedResponse.body()` now returns a read-only `java.nio.ByteBuffer` (zero-copy view over the wire bytes). The owned `byte[]` materialisation moved to `DecodedResponse.bodyBytes()`.
+
+```java
+// Before 0.2.0
+byte[] body = resp.body();
+
+// After 0.2.0
+byte[] body = resp.bodyBytes();          // owned copy
+ByteBuffer view = resp.body();           // zero-copy view
+```
+
+Callers that previously consumed `body()` as `byte[]` must switch to `bodyBytes()`.
+
+---
+
+## Migrating from the JSON-Envelope Bridge (≤ 0.0.13)
+
+The pre-0.0.14 bridge used `dispatch(String) → String` with base64-encoded binary bodies.
+
+| Before | After |
+|--------|-------|
+| `VesperaBridge.dispatch(json)` | `encodeRequest(...)` → `dispatchBytes(...)` → `decodeResponse(...)` |
+| `body_bytes_b64` field on the response JSON | raw body bytes after the wire header (no base64) |
+| ~33% size overhead on binary bodies | zero overhead |
+
+Existing users of `VesperaProxyController` need no code change — the controller was rewritten to the new wire path internally. Direct callers of `VesperaBridge.dispatch(String)` must update; the old method was removed in 0.0.14.

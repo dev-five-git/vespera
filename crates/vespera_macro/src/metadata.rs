@@ -4,6 +4,16 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
+/// Header parameter declared at the route site via `headers = [...]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeaderParam {
+    pub name: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 /// Route metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteMetadata {
@@ -17,14 +27,40 @@ pub struct RouteMetadata {
     pub module_path: String,
     /// File path
     pub file_path: String,
-    /// Function signature (as string for serialization)
-    pub signature: String,
+
+    /// Declared non-200 success status from the `status` attribute.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub success_status: Option<u16>,
     /// Additional error status codes from `error_status` attribute
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_status: Option<Vec<u16>>,
+    /// Typed error responses from `responses` attribute.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typed_responses: Option<Vec<(u16, String)>>,
     /// Tags for `OpenAPI` grouping
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    /// Per-route OpenAPI security requirements.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security: Option<Vec<String>>,
+    /// Header parameters declared by custom extractors at the route site.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<HeaderParam>,
+    /// Explicit OpenAPI operationId override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    /// OpenAPI operation summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Operation-level request example JSON/string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_example: Option<serde_json::Value>,
+    /// Operation-level response example JSON/string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_example: Option<serde_json::Value>,
+    /// Whether the OpenAPI operation is deprecated.
+    #[serde(default)]
+    pub deprecated: bool,
     /// Description for `OpenAPI` (from route attribute or doc comment)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -47,6 +83,13 @@ pub struct StructMetadata {
     /// Populated by `#[derive(Schema)]` to avoid AST re-parsing in `vespera!()`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub field_defaults: BTreeMap<String, serde_json::Value>,
+    /// Stable source identity for proc-macro-server re-expansions.
+    ///
+    /// This is not part of the OpenAPI output. It lets `#[derive(Schema)]`
+    /// replace metadata for the same source item after an IDE edit while still
+    /// rejecting two distinct items that claim the same OpenAPI schema name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_identity: Option<String>,
 }
 
 const fn default_include_in_openapi() -> bool {
@@ -60,6 +103,7 @@ impl Default for StructMetadata {
             definition: String::new(),
             include_in_openapi: true,
             field_defaults: BTreeMap::new(),
+            source_identity: None,
         }
     }
 }
@@ -72,6 +116,7 @@ impl StructMetadata {
             definition,
             include_in_openapi: true,
             field_defaults: BTreeMap::new(),
+            source_identity: None,
         }
     }
 
@@ -82,7 +127,15 @@ impl StructMetadata {
             definition,
             include_in_openapi: false,
             field_defaults: BTreeMap::new(),
+            source_identity: None,
         }
+    }
+
+    /// Attach the source identity used for same-item replacement in global storage.
+    #[must_use]
+    pub fn with_source_identity(mut self, source_identity: String) -> Self {
+        self.source_identity = Some(source_identity);
+        self
     }
 }
 

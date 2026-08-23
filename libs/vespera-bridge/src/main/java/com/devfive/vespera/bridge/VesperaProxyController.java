@@ -1,27 +1,31 @@
 package com.devfive.vespera.bridge;
 
-import com.devfive.vespera.bridge.VesperaBridge.DecodedResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.core.io.AbstractResource;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.Enumeration;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * Catch-all proxy controller — autoconfigured by
@@ -47,10 +51,15 @@ import java.util.concurrent.CompletableFuture;
  * </ol>
  *
  * <p>The autoconfigured defaults ({@link HeaderAppNameResolver} on
- * {@code X-Vespera-App} +
- * {@link BidirectionalStreamingDispatchModeResolver}) keep the
- * proxy transparent for every payload size.  Replace either bean
- * to change the policy without subclassing this controller.
+ * {@code X-Vespera-App} + {@link SmartDispatchModeResolver} since
+ * 0.2.0) keep the proxy transparent for every payload size while
+ * routing small bounded safe requests through the
+ * direct-buffer fast path (DIRECT 2.2 µs / SYNC 3.2 µs vs streaming
+ * 24.1 µs on a small {@code GET /health}).  Restore the pre-0.2.0
+ * bidirectional default with
+ * {@code vespera.bridge.dispatch-mode=bidirectional-streaming}, or
+ * replace either bean to change the policy without subclassing this
+ * controller.
  */
 @RestController
 public class VesperaProxyController {
@@ -60,26 +69,106 @@ public class VesperaProxyController {
 
     private final AppNameResolver appResolver;
     private final DispatchModeResolver modeResolver;
+    private final Executor asyncResponseExecutor;
+    private final boolean directRetryOnOverflow;
+    private final long maxBufferedRequestBytes;
+    private final long maxBufferedResponseBytes;
+
+    // Adaptive DIRECT-overflow avoidance: routes that overflowed the pooled
+    // direct buffer once are streamed up front thereafter, removing the
+    // repeated DIRECT-overflow-then-stream double dispatch a known-large
+    // (download) route would otherwise pay on every request. Internal state, so
+    // it is created directly rather than injected (no bean-wiring change).
+    private final DirectOverflowMemory directOverflowMemory = new DirectOverflowMemory();
+
+    static final long DEFAULT_MAX_BUFFERED_REQUEST_BYTES = 64L * 1024L * 1024L;
+    static final long DEFAULT_MAX_BUFFERED_RESPONSE_BYTES = 64L * 1024L * 1024L;
+
+    /**
+     * One-time guard for the "custom resolver routed an UNSAFE method to
+     * DIRECT, downgraded to SYNC" warning. A misconfigured custom
+     * {@link DispatchModeResolver} would otherwise log on every unsafe
+     * request; warn once at WARN, then DEBUG thereafter, so the
+     * misconfiguration is observable without per-request log spam.
+     */
+    private static final java.util.concurrent.atomic.AtomicBoolean
+            UNSAFE_DIRECT_DOWNGRADE_WARNED =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
 
     public VesperaProxyController(AppNameResolver appResolver,
                                   DispatchModeResolver modeResolver) {
+        this(appResolver, modeResolver, ForkJoinPool.commonPool(), true,
+                DEFAULT_MAX_BUFFERED_REQUEST_BYTES, DEFAULT_MAX_BUFFERED_RESPONSE_BYTES);
+    }
+
+    public VesperaProxyController(AppNameResolver appResolver,
+                                    DispatchModeResolver modeResolver,
+                                    Executor asyncResponseExecutor,
+                                    boolean directRetryOnOverflow) {
+        this(appResolver, modeResolver, asyncResponseExecutor, directRetryOnOverflow,
+                DEFAULT_MAX_BUFFERED_REQUEST_BYTES, DEFAULT_MAX_BUFFERED_RESPONSE_BYTES);
+    }
+
+    public VesperaProxyController(AppNameResolver appResolver,
+                                  DispatchModeResolver modeResolver,
+                                   Executor asyncResponseExecutor,
+                                   boolean directRetryOnOverflow,
+                                   long maxBufferedRequestBytes) {
+        this(appResolver, modeResolver, asyncResponseExecutor, directRetryOnOverflow,
+                maxBufferedRequestBytes, DEFAULT_MAX_BUFFERED_RESPONSE_BYTES);
+    }
+
+    public VesperaProxyController(AppNameResolver appResolver,
+                                  DispatchModeResolver modeResolver,
+                                  Executor asyncResponseExecutor,
+                                  boolean directRetryOnOverflow,
+                                  long maxBufferedRequestBytes,
+                                  long maxBufferedResponseBytes) {
         this.appResolver = Objects.requireNonNull(appResolver, "appResolver");
         this.modeResolver = Objects.requireNonNull(modeResolver, "modeResolver");
+        this.asyncResponseExecutor = Objects.requireNonNull(asyncResponseExecutor, "asyncResponseExecutor");
+        this.directRetryOnOverflow = directRetryOnOverflow;
+        this.maxBufferedRequestBytes = Math.max(0, maxBufferedRequestBytes);
+        this.maxBufferedResponseBytes = Math.max(0, maxBufferedResponseBytes);
     }
 
     @RequestMapping(value = "/**", consumes = MediaType.ALL_VALUE)
     public Object proxy(HttpServletRequest request,
                         HttpServletResponse response) throws IOException {
 
+        final RequestShape shape = RequestShape.capture(request);
         final String appName = appResolver.resolveAppName(request);
-        final DispatchMode mode = modeResolver.resolveMode(request);
-        final String method = request.getMethod();
-        final String path = request.getRequestURI();
+        final Boolean currentThreadIsVirtual;
+        final DispatchMode mode;
+        if (modeResolver instanceof SmartDispatchModeResolver smartResolver) {
+            boolean virtualThread = VesperaBridge.currentThreadIsVirtual();
+            currentThreadIsVirtual = Boolean.valueOf(virtualThread);
+            mode = smartResolver.resolveMode(request, virtualThread);
+        } else {
+            currentThreadIsVirtual = null;
+            mode = modeResolver.resolveMode(request);
+        }
+        final String method = shape.method;
+        // Path RELATIVE to the servlet context: a Spring app deployed under
+        // a non-root context (e.g. server.servlet.context-path=/api) must
+        // still forward `/health` — not `/api/health` — so the Rust router
+        // sees exactly the URL published in the generated openapi.json.
+        final String path = pathWithinApplication(request);
         final String query = Objects.toString(request.getQueryString(), "");
-        final Map<String, String> headers = collectHeaders(request);
+        final VesperaBridge.HeaderSource headers = sink -> HeaderPolicy.forEachRequestHeader(request, sink);
+
+        // Adaptive DIRECT-overflow avoidance: a route that overflowed the
+        // pooled direct buffer before is streamed up front, so it dispatches
+        // ONCE instead of paying the DIRECT-overflow-then-stream double
+        // dispatch again. `shouldAvoidDirect` is a single volatile read until
+        // the first overflow is recorded, so non-overflowing apps pay nothing.
+        final DispatchMode effectiveMode = effectiveMode(
+                mode,
+                mode == DispatchMode.DIRECT
+                        && directOverflowMemory.shouldAvoidDirect(appName, method, path, query));
 
         if (log.isDebugEnabled()) {
-            log.debug("-> Rust  {} {} app={} mode={}", method, path, appName, mode);
+            log.debug("-> Rust  {} {} app={} mode={}", method, path, appName, effectiveMode);
         }
 
         // For bidirectional streaming, pass the servlet InputStream
@@ -87,16 +176,27 @@ public class VesperaProxyController {
         // mode, materialise the body bytes here (replaces Spring's
         // @RequestBody, which we cannot use because it would consume
         // the InputStream and leave the bidirectional path empty).
-        switch (mode) {
+        switch (effectiveMode) {
             case SYNC:
-                return dispatchSync(appName, method, path, query, headers,
-                        readBody(request));
+                dispatchSync(response, appName, method, path, query, headers,
+                        readBody(request, shape, maxBufferedRequestBytes),
+                        maxBufferedResponseBytes);
+                return null;
             case ASYNC:
                 return dispatchAsyncFlow(appName, method, path, query, headers,
-                        readBody(request));
+                        readBody(request, shape, maxBufferedRequestBytes));
             case STREAMING:
-                dispatchStreaming(request, response, appName, method, path, query,
-                        headers, readBody(request));
+                // STREAMING materialises the REQUEST body (only the response
+                // streams), so it must honour the same buffered-request cap
+                // as SYNC/ASYNC/DIRECT — otherwise a custom resolver routing
+                // a bodyful request here would bypass
+                // vespera.bridge.max-buffered-request-bytes.
+                dispatchStreaming(response, appName, method, path, query,
+                        headers, readBody(request, shape, maxBufferedRequestBytes));
+                return null;
+            case DIRECT:
+                dispatchDirectMode(response, appName, method, path, query, headers,
+                        readBody(request, shape, maxBufferedRequestBytes), currentThreadIsVirtual);
                 return null;
             case BIDIRECTIONAL_STREAMING:
             default:
@@ -106,45 +206,385 @@ public class VesperaProxyController {
     }
 
     /**
-     * Fully read the servlet request body into a byte array.  Used
-     * by sync / async / response-streaming modes (the bidirectional
-     * mode forwards the InputStream as-is).
+     * Resolve the request path RELATIVE to the servlet context path so a
+     * Spring app deployed under a non-root context
+     * ({@code server.servlet.context-path=/api}) still forwards the
+     * context-relative URL the Rust router and the generated
+     * {@code openapi.json} know — {@code /api/health} on the wire becomes
+     * {@code /health}.  At the root context ({@code getContextPath()}
+     * empty) the request URI is returned unchanged; a request to the bare
+     * context root collapses to {@code "/"}.
+     *
+     * <p>Package-private so unit tests can verify it directly with
+     * {@code MockHttpServletRequest}.
      */
-    private static byte[] readBody(HttpServletRequest request) throws IOException {
-        try (InputStream in = request.getInputStream()) {
-            return in.readAllBytes();
+    static String pathWithinApplication(HttpServletRequest request) {
+        String uri = request.getRequestURI();
+        String context = request.getContextPath();
+        if (context == null || context.isEmpty() || !uri.startsWith(context)) {
+            return uri;
         }
+        // Only strip when the context is a whole leading path segment — the
+        // servlet container guarantees this, but guard against a degenerate
+        // `/apixyz` being mis-stripped against context `/api`.
+        if (uri.length() > context.length() && uri.charAt(context.length()) != '/') {
+            return uri;
+        }
+        String stripped = uri.substring(context.length());
+        return stripped.isEmpty() ? "/" : stripped;
     }
 
-    // ── Mode handlers ─────────────────────────────────────────────────
-
-    /** Sync — full request body materialised, full response materialised. */
-    private ResponseEntity<?> dispatchSync(
-            String appName, String method, String path, String query,
-            Map<String, String> headers, byte[] body) {
-        byte[] bodyBytes = body != null ? body : new byte[0];
-        byte[] wireReq = VesperaBridge.encodeRequest(
-                appName, method, path, query, headers, bodyBytes);
-        byte[] wireResp = VesperaBridge.dispatchBytes(wireReq);
-        DecodedResponse decoded = VesperaBridge.decodeResponse(wireResp);
-        return buildResponseEntity(decoded);
+    static DispatchMode effectiveMode(DispatchMode mode, boolean avoidDirect) {
+        return mode == DispatchMode.DIRECT && avoidDirect ? DispatchMode.STREAMING : mode;
     }
 
     /**
-     * Async — request body materialised, response delivered via a
-     * {@link CompletableFuture}.  Spring MVC adapts the future
-     * automatically to its servlet-async machinery.
+     * Largest body for which {@link #readBody} trusts {@code
+     * Content-Length} enough to pre-allocate the exact array.  Beyond
+     * this (or for unknown length) it falls back to {@code readAllBytes},
+     * which grows with the bytes actually present — so a lying / huge
+     * {@code Content-Length} header cannot force a giant up-front
+     * allocation.
      */
+    private static final int MAX_FIXED_BODY = 64 * 1024 * 1024;
+
+    /**
+     * Largest body that can be materialised into a single Java {@code byte[]}
+     * (the JVM array-length ceiling is just under {@link Integer#MAX_VALUE}).
+     * A buffered request whose length provably exceeds this can never be read
+     * via {@code readAllBytes}/{@code readNBytes}, so it is rejected with 413
+     * rather than allowed to attempt an impossible allocation; such requests
+     * must go through {@code BIDIRECTIONAL_STREAMING}.
+     */
+    private static final long MAX_BUFFERED_BODY = Integer.MAX_VALUE - 8L;
+
+    private static final int DIRECT_BODY_SCRATCH_INITIAL = 16 * 1024;
+    private static final int DIRECT_BODY_COPY_CHUNK = 1024 * 1024;
+    private static final int DIRECT_BODY_SCRATCH_RETAIN_CAPACITY = 256 * 1024;
+    private static final int DIRECT_BODY_SCRATCH_SHRINK_IDLE_WRITES = 8;
+    private static final ThreadLocal<byte[]> DIRECT_BODY_SCRATCH =
+            ThreadLocal.withInitial(() -> new byte[DIRECT_BODY_SCRATCH_INITIAL]);
+    private static final ThreadLocal<Integer> DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK =
+            ThreadLocal.withInitial(VesperaProxyController::initialSmallWriteStreak);
+
+    static Integer initialSmallWriteStreak() {
+        return 0;
+    }
+
+    /**
+     * Drop this thread's reusable heap scratch buffer used for DIRECT response
+     * body copies. Intended for servlet-container shutdown/redeploy cleanup;
+     * keep pooling active during request handling.
+     */
+    static void clearCurrentThreadBuffers() {
+        DIRECT_BODY_SCRATCH.remove();
+        DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.remove();
+    }
+
+    // Package-private (not private) so unit tests can exercise the
+    // bodyless fast path and length-based reads with MockHttpServletRequest.
+    static byte[] readBody(HttpServletRequest request) throws IOException {
+        return readBody(request, 0);
+    }
+
+    static byte[] readBody(HttpServletRequest request, long maxBufferedRequestBytes)
+            throws IOException {
+        return readBody(request, RequestShape.from(request), maxBufferedRequestBytes);
+    }
+
+    static byte[] readBody(
+            HttpServletRequest request, RequestShape shape, long maxBufferedRequestBytes)
+            throws IOException {
+        // Provably bodyless requests skip the servlet InputStream
+        // acquisition + readAllBytes allocations entirely. This covers
+        // both Content-Length: 0 AND length-less GET/HEAD/OPTIONS (the
+        // hottest path — the small safe GETs the SmartDispatch
+        // resolver routes through DIRECT, which previously still paid a
+        // getInputStream()+readAllBytes() round-trip on an empty body).
+        if (shape.definitelyBodyless) {
+            return VesperaWireCodec.EMPTY_BODY;
+        }
+        long contentLength = shape.contentLength;
+        long cap = Math.max(0, maxBufferedRequestBytes);
+        if (cap > 0 && contentLength > cap) {
+            throw payloadTooLarge(contentLength, cap);
+        }
+        // A buffered body must fit a single Java byte[] (≈ 2 GiB). A larger
+        // known Content-Length can never be materialised here, so reject it
+        // (413) instead of letting readAllBytes()/readNBytes() attempt an
+        // impossible allocation and throw OutOfMemoryError. Such requests must
+        // go through BIDIRECTIONAL_STREAMING.
+        if (contentLength > MAX_BUFFERED_BODY) {
+            throw payloadTooLarge(contentLength, MAX_BUFFERED_BODY);
+        }
+        // Single exit: javac duplicates the resource-close sequence once per
+        // normal return, so keeping exactly one return here keeps the
+        // try-with-resources bytecode in its canonical shape.
+        try (InputStream in = request.getInputStream()) {
+            return readBufferedBody(in, contentLength, cap);
+        }
+    }
+
+    static byte[] readBufferedBody(InputStream in, long contentLength, long cap)
+            throws IOException {
+        if (cap > 0 && contentLength < 0) {
+            long cappedPlusOne = cap == Long.MAX_VALUE ? Long.MAX_VALUE : cap + 1;
+            long effectiveLimit = Math.min(cappedPlusOne, MAX_BUFFERED_BODY);
+            int readLimit = (int) effectiveLimit;
+            byte[] body = in.readNBytes(readLimit);
+            if ((long) body.length > cap) {
+                throw payloadTooLarge(body.length, cap);
+            }
+            rejectAtBufferedBodyLimit(body.length, cap);
+            return body;
+        }
+        if (contentLength > 0 && (cap > 0 || contentLength <= MAX_FIXED_BODY)) {
+            // Known, bounded length: one exact allocation filled in
+            // place, skipping readAllBytes()'s grow-by-doubling and
+            // its final trim copy.  readNBytes blocks until the
+            // buffer is full or EOF; the servlet container caps the
+            // stream at Content-Length, so a well-formed request
+            // returns exactly contentLength bytes (a short read
+            // yields a correctly-sized smaller array).
+            return in.readNBytes((int) contentLength);
+        }
+        // Unknown length (-1) with NO soft cap: a buffered mode is the
+        // WRONG path for an open-ended stream (it should have been routed
+        // to BIDIRECTIONAL_STREAMING). Bound the read at MAX_FIXED_BODY
+        // (64 MiB) instead of the ~2 GiB single-array ceiling, so a
+        // (mis)configured resolver feeding a runaway chunked upload into a
+        // buffered mode cannot grow the JVM heap toward OOM. Reading one
+        // byte past the bound distinguishes "exactly at the bound" from
+        // "over". Known-length bodies keep the documented `cap=0`
+        // "unlimited" behaviour below.
+        if (contentLength < 0) {
+            byte[] body = in.readNBytes(MAX_FIXED_BODY + 1);
+            rejectAboveDefaultBufferedLimit(body.length);
+            return body;
+        }
+        // Oversized KNOWN length with no explicit cap (cap=0,
+        // contentLength > MAX_FIXED_BODY): the caller opted into unlimited
+        // buffering for a SIZED body, so honour it up to the single-array
+        // ceiling (the actual read stops at the known Content-Length).
+        byte[] body = in.readNBytes((int) MAX_BUFFERED_BODY);
+        rejectAtBufferedBodyLimit(body.length, MAX_BUFFERED_BODY);
+        return body;
+    }
+
+    static void rejectAtBufferedBodyLimit(long bodyLength, long cap) {
+        if (bodyLength == MAX_BUFFERED_BODY && cap >= MAX_BUFFERED_BODY) {
+            throw payloadTooLarge(bodyLength, MAX_BUFFERED_BODY);
+        }
+    }
+
+    static void rejectAboveDefaultBufferedLimit(long bodyLength) {
+        if (bodyLength > MAX_FIXED_BODY) {
+            throw payloadTooLarge(bodyLength, MAX_FIXED_BODY);
+        }
+    }
+
+    private static ResponseStatusException payloadTooLarge(long actualBytes, long capBytes) {
+        return new ResponseStatusException(
+                HttpStatus.PAYLOAD_TOO_LARGE,
+                "buffered request body exceeds vespera.bridge.max-buffered-request-bytes="
+                        + capBytes + " (actual " + actualBytes + " bytes)");
+    }
+
+    /**
+     * Synchronous dispatch — writes the wire response straight to the
+     * servlet response (status + headers via {@link WireHeaderReader},
+     * then the body region written directly from the wire array).  This
+     * drops both the body-sized {@code Arrays.copyOfRange} and the
+     * {@code ResponseEntity<byte[]>} object that the prior
+     * {@link #buildResponseEntityFromWire} path allocated per response.
+     * Mirrors {@link #dispatchDirectMode}; the async path still uses
+     * {@code buildResponseEntityFromWire} (Spring async completion), but
+     * returns a zero-copy {@code Resource} view over the wire body.
+     */
+    static void dispatchSync(
+            HttpServletResponse response,
+            String appName, String method, String path, String query,
+            VesperaBridge.HeaderSource headers, byte[] body) throws IOException {
+        dispatchSync(response, appName, method, path, query, headers, body, 0);
+    }
+
+    private static void dispatchSync(
+            HttpServletResponse response,
+            String appName, String method, String path, String query,
+            VesperaBridge.HeaderSource headers, byte[] body,
+            long maxBufferedResponseBytes) throws IOException {
+        byte[] wireReq = VesperaBridge.encodeRequest(
+                appName, method, path, query, headers, body);
+        byte[] wireResp = VesperaBridge.dispatchBytes(wireReq);
+        rejectOversizedBufferedResponse(wireResp, maxBufferedResponseBytes);
+        writeWireResponse(wireResp, response, method);
+    }
+
+    private static void rejectOversizedBufferedResponse(byte[] wireResp, long maxBufferedResponseBytes) {
+        long cap = Math.max(0, maxBufferedResponseBytes);
+        if (cap <= 0) {
+            return;
+        }
+        int headerLen = VesperaWireCodec.readHeaderLength(wireResp);
+        long bodyLen = (long) wireResp.length - 4L - headerLen;
+        if (bodyLen > cap) {
+            throw new ResponseStatusException(
+                    HttpStatus.PAYLOAD_TOO_LARGE,
+                    "buffered response body exceeds vespera.bridge.max-buffered-response-bytes="
+                            + cap + " (actual " + bodyLen + " bytes); use streaming dispatch");
+        }
+    }
+
+    /**
+     * Unified wire-header → servlet-response sink shared by every dispatch
+     * mode's response-commit site (sync, direct, response-streaming header
+     * callback). Builds a {@link HeaderPolicy.ResponseHeaderAccumulator} in
+     * one pass — its {@code accept} captures every Connection-nominated
+     * token as a side-effect of seeing a {@code "connection"} header — then
+     * applies the buffered headers through
+     * {@link HeaderPolicy#addServletResponseHeaders}, which honours those
+     * tokens. Replaces a per-response {@code containsConnectionHeaderKey}
+     * pre-scan that walked the entire wire header byte-by-byte to decide
+     * between an accumulator path and a direct path: the pre-scan is more
+     * work than the accumulator's single internal {@code ArrayList} +
+     * iterate-at-end (typical responses carry a handful of headers), so the
+     * accumulator is the cheapest correct path in every case. Returns the
+     * status the wire response carried, which the caller uses for the
+     * existing body-permission checks.
+     */
+    private static int applyWireHeaderToResponse(
+            byte[] wire, int off, int len, HttpServletResponse response) {
+        HeaderPolicy.ResponseHeaderAccumulator acc = new HeaderPolicy.ResponseHeaderAccumulator();
+        // apply() returns the parsed status (default 500). Previously this
+        // call site allocated an int[1] holder + capturing lambda just to
+        // thread the status back; the returned int drops both per-response
+        // allocations on every sync/direct/streaming/async-build response.
+        // The order matters: setStatus must run AFTER apply() finishes
+        // parsing — which is exactly what the prior IntConsumer did (fired
+        // once at the very end of applyInner), preserving byte-identical
+        // semantics with the response.setStatus(...) the lambda invoked.
+        int status = WireHeaderReader.apply(wire, off, len, acc);
+        response.setStatus(status);
+        HeaderPolicy.addServletResponseHeaders(response, acc);
+        return status;
+    }
+
+    private static int applyWireHeaderToResponse(
+            ByteBuffer wire, int off, int len, HttpServletResponse response) {
+        HeaderPolicy.ResponseHeaderAccumulator acc = new HeaderPolicy.ResponseHeaderAccumulator();
+        int status = WireHeaderReader.apply(wire, off, len, acc);
+        response.setStatus(status);
+        HeaderPolicy.addServletResponseHeaders(response, acc);
+        return status;
+    }
+
+    /**
+     * Sibling of {@link #applyWireHeaderToResponse(byte[], int, int, HttpServletResponse)}
+     * that emits into a Spring {@link HttpHeaders} instead of a servlet
+     * response — used by {@link #buildResponseEntityFromWire} on the ASYNC
+     * dispatch path. Same accumulator-first shape (one pass through the wire
+     * header, Connection-nominated tokens captured as a side-effect), then
+     * the buffered headers are filtered through the same trio
+     * ({@link HeaderPolicy#isHopByHopResponseHeader},
+     * {@link HeaderPolicy#isContentLengthHeader},
+     * {@link HeaderPolicy#isConnectionNominatedHeader}) before reaching
+     * {@code HttpHeaders}.
+     */
+    private static int applyWireHeaderToHttpHeaders(
+            byte[] wire, int off, int len, HttpHeaders httpHeaders) {
+        HeaderPolicy.ResponseHeaderAccumulator acc = new HeaderPolicy.ResponseHeaderAccumulator();
+        int statusCode = WireHeaderReader.apply(wire, off, len, acc);
+        for (HeaderPolicy.HeaderPair header : acc.headers) {
+            if (!HeaderPolicy.isHopByHopResponseHeader(header.name())
+                    && !HeaderPolicy.isContentLengthHeader(header.name())
+                    && !HeaderPolicy.isConnectionNominatedHeader(header.name(), acc.connectionTokens)) {
+                httpHeaders.add(header.name(), header.value());
+            }
+        }
+        return statusCode;
+    }
+
+    /**
+     * Write a complete wire response ({@code [u32 BE header_len | JSON
+     * header | body]}) straight to the servlet response: status + headers
+     * applied from the header region via the allocation-lean
+     * {@link WireHeaderReader}, then the body region written directly from
+     * {@code wire} with no {@code byte[]} slice copy.  The exact body
+     * length is known, so {@code Content-Length} is always proxy-owned and
+     * set to the exact bytes written to the servlet response.
+     */
+    static void writeWireResponse(byte[] wire, HttpServletResponse response)
+            throws IOException {
+        writeWireResponse(wire, response, null);
+    }
+
+    static void writeWireResponse(byte[] wire, HttpServletResponse response, String method)
+            throws IOException {
+        int headerLen = VesperaWireCodec.readHeaderLength(wire);
+        int status = applyWireHeaderToResponse(wire, 4, headerLen, response);
+        int bodyOff = 4 + headerLen;
+        int bodyLen = wire.length - bodyOff;
+        boolean statusPermitsBody = responseStatusPermitsBody(status);
+        boolean methodPermitsBody = requestMethodPermitsBody(method);
+        int bytesToWrite = statusPermitsBody && methodPermitsBody ? bodyLen : 0;
+        response.setContentLength(statusPermitsBody ? bodyLen : 0);
+        if (bytesToWrite > 0) {
+            response.getOutputStream().write(wire, bodyOff, bodyLen);
+        }
+    }
+
     private CompletableFuture<ResponseEntity<?>> dispatchAsyncFlow(
             String appName, String method, String path, String query,
-            Map<String, String> headers, byte[] body) {
-        byte[] bodyBytes = body != null ? body : new byte[0];
+            VesperaBridge.HeaderSource headers, byte[] body) {
         byte[] wireReq = VesperaBridge.encodeRequest(
-                appName, method, path, query, headers, bodyBytes);
-        return VesperaBridge.dispatch(wireReq).thenApply(wireResp -> {
-            DecodedResponse decoded = VesperaBridge.decodeResponse(wireResp);
-            return buildResponseEntity(decoded);
-        });
+                appName, method, path, query, headers, body);
+        return VesperaBridge.dispatch(wireReq)
+                .thenApplyAsync(
+                        wireResp -> buildCappedResponseEntityFromWire(
+                                wireResp, method, maxBufferedResponseBytes),
+                        asyncResponseExecutor)
+                // The async executor uses AbortPolicy (NOT CallerRunsPolicy):
+                // under saturation the heavy wire response build must NOT run on
+                // the thread that completed the native future — that is a Rust
+                // Tokio worker, and stealing it degrades native dispatch
+                // throughput (the documented "no heavy continuations on Tokio
+                // workers" contract). A rejected submission surfaces here as a
+                // RejectedExecutionException; translate it to a clean 503
+                // backpressure signal instead of an opaque 500.  `handle` (not
+                // `exceptionally`) so the wildcard `ResponseEntity<?>` result
+                // type infers cleanly across the success / failure arms.
+                .handle((resp, ex) -> ex == null ? resp : asyncFailureToResponse(ex));
+    }
+
+    /**
+     * Map an async-dispatch failure to a response: a saturated-executor
+     * rejection becomes a {@code 503 Service Unavailable} backpressure signal;
+     * every other failure is re-propagated unchanged so Spring's async error
+     * handling maps it exactly as before.  Package-private + static so the
+     * rejection-classification ({@link #isRejectedExecution}) is unit-testable
+     * without a live JNI dispatch.
+     */
+    static ResponseEntity<?> asyncFailureToResponse(Throwable ex) {
+        if (isRejectedExecution(ex)) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .contentType(MediaType.TEXT_PLAIN)
+                    .body("vespera: async response executor saturated"
+                            .getBytes(StandardCharsets.UTF_8));
+        }
+        throw (ex instanceof CompletionException ce) ? ce : new CompletionException(ex);
+    }
+
+    /** Whether {@code ex} (or any cause in its chain) is a rejected submission. */
+    static boolean isRejectedExecution(Throwable ex) {
+        for (Throwable t = ex; t != null; t = t.getCause()) {
+            if (t instanceof RejectedExecutionException) {
+                return true;
+            }
+            if (t == t.getCause()) {
+                break;
+            }
+        }
+        return false;
     }
 
     /**
@@ -154,16 +594,18 @@ public class VesperaProxyController {
      * first body byte hits the wire.
      */
     private void dispatchStreaming(
-            HttpServletRequest request, HttpServletResponse response,
+            HttpServletResponse response,
             String appName, String method, String path, String query,
-            Map<String, String> headers, byte[] body) throws IOException {
-        byte[] bodyBytes = body != null ? body : new byte[0];
+            VesperaBridge.HeaderSource headers, byte[] body) throws IOException {
         byte[] wireReq = VesperaBridge.encodeRequest(
-                appName, method, path, query, headers, bodyBytes);
+                appName, method, path, query, headers, body);
+        BodyPermittingOutputStream bodyOut =
+                new BodyPermittingOutputStream(response.getOutputStream(), method);
         VesperaBridge.dispatchStreamingWithHeader(
                 wireReq,
-                headerBytes -> applyDecodedHeader(headerBytes, response),
-                response.getOutputStream());
+                headerBytes -> bodyOut.applyPermitsBody(
+                        applyDecodedHeader(headerBytes, response, method)),
+                bodyOut);
         response.getOutputStream().flush();
     }
 
@@ -177,27 +619,245 @@ public class VesperaProxyController {
     private void dispatchBidirectional(
             HttpServletRequest request, HttpServletResponse response,
             String appName, String method, String path, String query,
-            Map<String, String> headers) throws IOException {
+            VesperaBridge.HeaderSource headers) throws IOException {
         byte[] wireHeader = VesperaBridge.encodeRequestHeader(
                 appName, method, path, query, headers);
+        BodyPermittingOutputStream bodyOut =
+                new BodyPermittingOutputStream(response.getOutputStream(), method);
         VesperaBridge.dispatchFullStreamingWithHeader(
                 wireHeader,
-                headerBytes -> applyDecodedHeader(headerBytes, response),
+                headerBytes -> bodyOut.applyPermitsBody(
+                        applyDecodedHeader(headerBytes, response, method)),
                 request.getInputStream(),
-                response.getOutputStream());
+                bodyOut);
         response.getOutputStream().flush();
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────
-
-    private static Map<String, String> collectHeaders(HttpServletRequest request) {
-        Map<String, String> headers = new LinkedHashMap<>();
-        Enumeration<String> names = request.getHeaderNames();
-        while (names.hasMoreElements()) {
-            String name = names.nextElement();
-            headers.put(name.toLowerCase(Locale.ROOT), request.getHeader(name));
+    /**
+     * Direct-buffer dispatch — request body materialised (DIRECT is
+     * gated to small bounded payloads by the resolver), response served
+     * from the pooled direct buffer without a {@code byte[]}
+     * materialisation: the header slice is decoded to commit
+     * status/headers, then the body region is channelled straight into
+     * the servlet output stream.
+     *
+     * <p>Overflow retry (which re-runs the Rust handler) is permitted
+     * only for <em>safe</em> methods (GET/HEAD/OPTIONS), which are not
+     * intended to mutate server state. The replayed response may still
+     * differ (for example timestamps or generated request IDs); for every
+     * other method — including
+     * idempotent-but-unsafe PUT/DELETE, whose second run can return a
+     * different response (e.g. DELETE → 204 then 404) — a
+     * {@link VesperaBridge.BufferTooSmallException} surfaces as a
+     * {@code 500} with the required size, so the controller never
+     * double-executes a handler whose response could change.
+     */
+    void dispatchDirectMode(
+            HttpServletResponse response,
+            String appName, String method, String path, String query,
+            VesperaBridge.HeaderSource headers, byte[] body,
+            Boolean currentThreadIsVirtual) throws IOException {
+        if (!isSafe(method)) {
+            // DIRECT runs the Rust handler on the FIRST dispatch before any
+            // overflow is known; for an UNSAFE method an overflow would 500
+            // *after* the side effect already happened (partial unsafe
+            // execution).  A custom DispatchModeResolver can route an unsafe
+            // method here, so gate it at the controller boundary: serve unsafe
+            // requests via SYNC, which never re-runs the handler.
+            //
+            // The autoconfigured SmartDispatchModeResolver never routes unsafe
+            // methods to DIRECT, so reaching here means a CUSTOM resolver is
+            // misconfigured. Make it observable: warn once (then DEBUG) so the
+            // operator sees the silent downgrade without per-request spam.
+            if (UNSAFE_DIRECT_DOWNGRADE_WARNED.compareAndSet(false, true)) {
+                log.warn("DispatchModeResolver routed unsafe method {} to DIRECT; "
+                        + "downgrading to SYNC (DIRECT overflow retry re-runs the handler, "
+                        + "unsafe for non-safe methods). Fix the custom resolver to avoid "
+                        + "this downgrade. Further occurrences log at DEBUG.", method);
+            } else if (log.isDebugEnabled()) {
+                log.debug("DispatchModeResolver routed unsafe method {} to DIRECT; "
+                        + "downgrading to SYNC.", method);
+            }
+            dispatchSync(response, appName, method, path, query, headers, body,
+                    maxBufferedResponseBytes);
+            return;
         }
-        return headers;
+        boolean retry = shouldRetryDirect(directRetryOnOverflow, method);
+        ByteBuffer wireResp;
+        try {
+            // Encodes straight into the pooled direct buffer — no
+            // intermediate wire-sized byte[].
+            wireResp = currentThreadIsVirtual == null
+                    ? VesperaBridge.dispatchDirectPooled(
+                            appName, method, path, query, headers, body, retry)
+                    : VesperaBridge.dispatchDirectPooled(
+                            appName, method, path, query, headers, body,
+                            retry, currentThreadIsVirtual.booleanValue());
+        } catch (VesperaBridge.BufferTooSmallException overflow) {
+            // The first dispatch already ran; its oversized result was discarded.
+            if (retry) {
+                // Safe method + retry enabled: the response is larger than the
+                // pooled direct buffer's hard cap. Re-route through response
+                // streaming so a large download streams chunk-by-chunk instead
+                // of being heap-buffered — the prior dispatchBytes fallback
+                // could spike the JVM heap (OOM) on multi-GiB responses. A safe
+                // re-run is not intended to mutate state, but its response may
+                // differ (timestamps, random IDs). The DIRECT path has not
+                // committed yet, so streaming takes over cleanly.
+                //
+                // Remember this route so the NEXT request to it streams up
+                // front (see DirectOverflowMemory + the effectiveMode downgrade
+                // in proxy()) — avoiding a repeated DIRECT-overflow-then-stream
+                // double dispatch on a known-large route. Recorded only on this
+                // safe + retry path, where we actually fall back to streaming.
+                directOverflowMemory.recordOverflow(appName, method, path, query);
+                dispatchStreaming(response, appName, method, path, query, headers, body);
+                return;
+            }
+            // Unsafe method (or retry disabled): re-running could return a
+            // different response (e.g. DELETE → 204 then 404), so surface the
+            // size to the operator instead of silently double-executing.
+            byte[] error = ("vespera DIRECT overflow: response needs "
+                    + overflow.requiredSize()
+                    + " bytes; route this request via BIDIRECTIONAL_STREAMING")
+                    .getBytes(StandardCharsets.UTF_8);
+            response.setStatus(500);
+            response.setContentType("text/plain; charset=utf-8");
+            response.setContentLength(error.length);
+            response.getOutputStream().write(error);
+            response.getOutputStream().flush();
+            return;
+        }
+
+        // Commit status + headers parsed straight from the direct buffer —
+        // no byte[] copy, no DecodedResponse object graph (maps / metadata /
+        // body views). addHeader on the still-uncommitted response is
+        // equivalent to setHeader for a header's first value and appends for
+        // multi-valued headers (e.g. set-cookie).
+        int bodyLen = applyDirectHeaderAndPositionBody(wireResp, response, method);
+
+        // Stream the body region of the direct buffer with an explicit
+        // per-thread heap scratch.  Channels.newChannel(OutputStream)
+        // allocates its own temporary heap buffer for direct-buffer writes;
+        // keeping the scratch here makes the copy strategy predictable and
+        // avoids one allocation per DIRECT response.  Loop until the whole
+        // ByteBuffer region is consumed before flushing/committing.
+        if (bodyLen > 0) {
+            writeDirectBody(wireResp, response.getOutputStream());
+        }
+    }
+
+    /**
+     * Read and validate the wire header length prefix against the actual
+     * buffer length BEFORE {@link WireHeaderReader#apply} indexes into it.
+     * The direct / streaming callback paths receive these bytes straight
+     * from native Rust; a malformed length (negative, or overrunning the
+     * buffer) must surface as a clear {@link IllegalArgumentException}
+     * rather than an {@link IndexOutOfBoundsException} escaping mid-response.
+     * Mirrors the guard the heap {@code byte[]} paths
+     * ({@link #writeWireResponse}, {@link #buildResponseEntityFromWire})
+     * already apply.
+     */
+    static int readValidatedHeaderLen(ByteBuffer wire) {
+        // Delegates to the single source of truth in VesperaWireCodec so the
+        // u32 BE prefix decode + bounds contract stays byte-identical across
+        // every wire-frame split site (heap byte[] and direct ByteBuffer). The
+        // helper decodes from absolute bytes (order-independent) — never
+        // wire.getInt(0), which honours the buffer's CURRENT byte order — so a
+        // LITTLE_ENDIAN view can never misparse the big-endian wire prefix.
+        return VesperaWireCodec.readHeaderLength(wire);
+    }
+
+    // Package-private so tests can verify DIRECT header/body-length behavior
+    // without invoking the native dispatchDirect JNI symbol.
+    static int applyDirectHeaderAndPositionBody(
+            ByteBuffer wireResp, HttpServletResponse response) {
+        return applyDirectHeaderAndPositionBody(wireResp, response, null);
+    }
+
+    static int applyDirectHeaderAndPositionBody(
+            ByteBuffer wireResp, HttpServletResponse response, String method) {
+        int headerLen = readValidatedHeaderLen(wireResp);
+        int status = applyWireHeaderToResponse(wireResp, 4, headerLen, response);
+        int bodyOff = 4 + headerLen;
+        int bodyLen = wireResp.limit() - bodyOff;
+        boolean statusPermitsBody = responseStatusPermitsBody(status);
+        boolean methodPermitsBody = requestMethodPermitsBody(method);
+        int bytesToWrite = statusPermitsBody && methodPermitsBody ? bodyLen : 0;
+        response.setContentLength(statusPermitsBody ? bodyLen : 0);
+        wireResp.position(bodyOff);
+        return bytesToWrite;
+    }
+
+    private static boolean responseStatusPermitsBody(int status) {
+        return (status < 100 || status >= 200) && status != 204 && status != 304;
+    }
+
+    private static boolean responsePermitsBody(int status, String method) {
+        return responseStatusPermitsBody(status) && requestMethodPermitsBody(method);
+    }
+
+    private static boolean requestMethodPermitsBody(String method) {
+        return method == null || !"HEAD".equalsIgnoreCase(method);
+    }
+
+    static void writeDirectBody(ByteBuffer body, OutputStream out) throws IOException {
+        int initialRemaining = body.remaining();
+        try {
+            byte[] scratch = directBodyScratch(Math.min(initialRemaining, DIRECT_BODY_COPY_CHUNK));
+            while (body.hasRemaining()) {
+                int n = Math.min(body.remaining(), scratch.length);
+                body.get(scratch, 0, n);
+                out.write(scratch, 0, n);
+            }
+        } finally {
+            shrinkDirectBodyScratchIfIdle(initialRemaining);
+        }
+    }
+
+    private static byte[] directBodyScratch(int required) {
+        byte[] scratch = DIRECT_BODY_SCRATCH.get();
+        if (scratch.length < required) {
+            scratch = new byte[Math.min(DIRECT_BODY_COPY_CHUNK, required)];
+            DIRECT_BODY_SCRATCH.set(scratch);
+        }
+        return scratch;
+    }
+
+    private static void shrinkDirectBodyScratchIfIdle(int remainingAfterWrite) {
+        byte[] scratch = DIRECT_BODY_SCRATCH.get();
+        if (scratch.length <= DIRECT_BODY_SCRATCH_RETAIN_CAPACITY) {
+            DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.set(0);
+            return;
+        }
+        if (remainingAfterWrite > DIRECT_BODY_SCRATCH_RETAIN_CAPACITY) {
+            DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.set(0);
+            return;
+        }
+        int streak = DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.get() + 1;
+        if (streak >= DIRECT_BODY_SCRATCH_SHRINK_IDLE_WRITES) {
+            DIRECT_BODY_SCRATCH.set(new byte[DIRECT_BODY_SCRATCH_INITIAL]);
+            DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.set(0);
+        } else {
+            DIRECT_BODY_SCRATCH_SMALL_WRITE_STREAK.set(streak);
+        }
+    }
+
+    /**
+     * "Safe" per RFC 9110 (GET/HEAD/OPTIONS) — not intended to mutate server
+     * state, so the DIRECT overflow retry is allowed even though the replayed
+     * response may differ (timestamps, random IDs). Idempotent-but-unsafe
+     * methods (PUT/DELETE) are intentionally excluded: their second run can
+     * return a different response (e.g. DELETE → 204 then 404), so on overflow
+     * they fail with {@link VesperaBridge.BufferTooSmallException} instead of
+     * auto-retrying and silently double-executing.
+     */
+    private static boolean isSafe(String method) {
+        return HttpMethods.isSafe(method);
+    }
+
+    static boolean shouldRetryDirect(boolean directRetryOnOverflow, String method) {
+        return directRetryOnOverflow && isSafe(method);
     }
 
     /**
@@ -205,62 +865,136 @@ public class VesperaProxyController {
      * called from streaming dispatch callbacks BEFORE the first body
      * byte is written, while the response is still uncommitted.
      */
-    private static void applyDecodedHeader(byte[] headerBytes,
-                                            HttpServletResponse response) {
-        DecodedResponse meta = VesperaBridge.decodeResponse(headerBytes);
-        response.setStatus(meta.status());
-        for (Map.Entry<String, Object> entry : meta.headers().entrySet()) {
-            Object val = entry.getValue();
-            if (val instanceof List<?> list) {
-                for (Object v : list) {
-                    response.addHeader(entry.getKey(), String.valueOf(v));
-                }
-            } else if (val != null) {
-                response.setHeader(entry.getKey(), String.valueOf(val));
-            }
-        }
+    static boolean applyDecodedHeader(byte[] headerBytes,
+                                      HttpServletResponse response,
+                                      String method) {
+        // Apply status + headers straight from the wire header bytes via
+        // the allocation-lean WireHeaderReader — the same path
+        // dispatchDirectMode uses.  This avoids the DecodedResponse object
+        // graph (headers map, the always-allocated metadata LinkedHashMap,
+        // and the body ByteBuffer view) that VesperaBridge.decodeResponse
+        // builds, on every streaming dispatch's header callback.
+        // addHeader on an uncommitted response equals setHeader for a
+        // header's first value and appends for multi-valued headers
+        // (e.g. set-cookie), preserving the prior semantics.
+        int headerLen = VesperaWireCodec.readHeaderLength(headerBytes);
+        int status = applyWireHeaderToResponse(headerBytes, 4, headerLen, response);
+        return responsePermitsBody(status, method);
     }
 
     /**
-     * Convert a fully-decoded sync/async wire response into a
-     * Spring {@link ResponseEntity}.  Body is delivered as
-     * {@link String} for text-like Content-Types,
-     * {@code byte[]} otherwise.
+     * Build a {@link ResponseEntity} straight from the wire response
+     * {@code byte[]} with minimal allocation:
+     *
+     * <ul>
+     *   <li><b>status + headers</b> via the allocation-lean
+     *       {@link WireHeaderReader} (parses directly to {@link HttpHeaders} —
+     *       no {@code DecodedResponse} graph: no {@code metadata} map, no
+     *       intermediate headers map, no body {@code ByteBuffer} views), and</li>
+     *   <li><b>body</b> exposed as a {@link org.springframework.core.io.Resource}
+     *       view over the wire tail — no body-sized {@code byte[]} slice copy.</li>
+     * </ul>
+     *
+     * <p>{@link VesperaBridge#decodeResponse(byte[])} stays the public API for
+     * external/streaming consumers; this is a controller-internal fast path.
+     * Pure Java (no JNI) — run by the controller on its configured async
+     * response executor instead of the native completion thread.
      */
-    private static ResponseEntity<?> buildResponseEntity(DecodedResponse decoded) {
-        HttpHeaders httpHeaders = new HttpHeaders();
-        for (Map.Entry<String, Object> entry : decoded.headers().entrySet()) {
-            Object val = entry.getValue();
-            if (val instanceof List<?> list) {
-                for (Object v : list) {
-                    httpHeaders.add(entry.getKey(), String.valueOf(v));
-                }
-            } else if (val != null) {
-                httpHeaders.set(entry.getKey(), String.valueOf(val));
-            }
-        }
-        HttpStatus status = HttpStatus.valueOf(decoded.status());
-        String contentType = httpHeaders.getFirst(HttpHeaders.CONTENT_TYPE);
-        if (isTextContentType(contentType)) {
-            String bodyStr = new String(decoded.body(), StandardCharsets.UTF_8);
-            return new ResponseEntity<>(bodyStr, httpHeaders, status);
-        }
-        return new ResponseEntity<>(decoded.body(), httpHeaders, status);
+    static ResponseEntity<?> buildResponseEntityFromWire(byte[] wire) {
+        return buildResponseEntityFromWire(wire, null);
     }
 
-    private static boolean isTextContentType(String ct) {
-        if (ct == null) return true;
-        String mime = ct.split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
-        return mime.startsWith("text/")
-                || mime.equals("application/json")
-                || mime.endsWith("+json")
-                || mime.equals("application/xml")
-                || mime.endsWith("+xml")
-                || mime.equals("application/javascript")
-                || mime.equals("application/ecmascript")
-                || mime.equals("application/yaml")
-                || mime.equals("application/x-yaml")
-                || mime.equals("application/x-www-form-urlencoded")
-                || mime.equals("application/graphql");
+    static ResponseEntity<?> buildResponseEntityFromWire(byte[] wire, String method) {
+        int headerLen = VesperaWireCodec.readHeaderLength(wire);
+        HttpHeaders httpHeaders = new HttpHeaders();
+        int statusCode = applyWireHeaderToHttpHeaders(wire, 4, headerLen, httpHeaders);
+        HttpStatusCode status = HttpStatusCode.valueOf(statusCode);
+        int bodyOff = 4 + headerLen;
+        int bodyLen = wire.length - bodyOff;
+        boolean statusPermitsBody = responseStatusPermitsBody(statusCode);
+        int bytesToExpose = statusPermitsBody && requestMethodPermitsBody(method) ? bodyLen : 0;
+        httpHeaders.setContentLength(statusPermitsBody ? bodyLen : 0);
+        return new ResponseEntity<>(
+                new WireBodyResource(wire, bodyOff, bytesToExpose), httpHeaders, status);
+    }
+
+    /**
+     * Build the buffered {@code ASYNC} response entity, enforcing the
+     * {@code vespera.bridge.max-buffered-response-bytes} cap FIRST — parity with
+     * the {@code SYNC} path ({@link #dispatchSync} via
+     * {@link #rejectOversizedBufferedResponse}). Without this a custom
+     * {@link DispatchModeResolver} returning {@link DispatchMode#ASYNC} would
+     * heap-buffer an arbitrarily large Rust response (retained through
+     * {@link WireBodyResource} until Spring finishes writing it), defeating the
+     * cap and risking OOM / GC pressure. Runs on the async response executor
+     * (NOT the Tokio completion thread), so the cap check stays off the native
+     * worker. Package-private + static so the cap wiring is unit-testable
+     * without a live JNI dispatch.
+     */
+    static ResponseEntity<?> buildCappedResponseEntityFromWire(
+            byte[] wire, String method, long maxBufferedResponseBytes) {
+        rejectOversizedBufferedResponse(wire, maxBufferedResponseBytes);
+        return buildResponseEntityFromWire(wire, method);
+    }
+
+    static final class BodyPermittingOutputStream extends OutputStream {
+        private final OutputStream delegate;
+        private final String method;
+        private boolean permitsBody = true;
+
+        BodyPermittingOutputStream(OutputStream delegate, String method) {
+            this.delegate = Objects.requireNonNull(delegate, "delegate");
+            this.method = method;
+        }
+
+        void applyPermitsBody(boolean permitsBody) {
+            this.permitsBody = permitsBody;
+        }
+
+        @Override
+        public void write(int b) throws IOException {
+            if (permitsBody) {
+                delegate.write(b);
+            }
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws IOException {
+            if (permitsBody) {
+                delegate.write(b, off, len);
+            }
+        }
+
+        @Override
+        public void flush() throws IOException {
+            delegate.flush();
+        }
+    }
+
+    static final class WireBodyResource extends AbstractResource {
+        private final byte[] wire;
+        private final int offset;
+        private final int length;
+
+        WireBodyResource(byte[] wire, int offset, int length) {
+            this.wire = Objects.requireNonNull(wire, "wire");
+            this.offset = offset;
+            this.length = length;
+        }
+
+        @Override
+        public InputStream getInputStream() {
+            return new ByteArrayInputStream(wire, offset, length);
+        }
+
+        @Override
+        public long contentLength() {
+            return length;
+        }
+
+        @Override
+        public String getDescription() {
+            return "vespera wire response body slice";
+        }
     }
 }

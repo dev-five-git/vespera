@@ -1,0 +1,5 @@
+---
+source: crates/vespera/tests/validated_extractor.rs
+expression: body_str
+---
+{"errors":[{"message":"length is lower than 3","path":"title"},{"message":"length is lower than 1","path":"content"}]}

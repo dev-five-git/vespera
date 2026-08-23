@@ -23,3 +23,29 @@ pub async fn echo(headers: HeaderMap, body: Bytes) -> Response {
         .to_owned();
     ([(header::CONTENT_TYPE, ct)], body).into_response()
 }
+
+/// **Streaming** echo — passes the request body stream straight
+/// through as the response body without ever buffering it.  Unlike
+/// `/echo` (which extracts `Bytes` and is therefore subject to axum's
+/// 2 MiB `DefaultBodyLimit`), this handler consumes the raw
+/// [`vespera::axum::body::Body`], so multi-GiB bidirectional streams
+/// can be exercised end-to-end — used by the JNI streaming throughput
+/// benchmark (`StreamingThroughputBenchTest`).
+#[allow(clippy::unused_async)]
+#[vespera::route(post, path = "/stream", tags = ["echo"])]
+pub async fn echo_stream(body: vespera::axum::body::Body) -> Response {
+    Response::new(body)
+}
+
+/// Always panics — exercises the JNI "header callback exactly once"
+/// contract from the Java side.  When this handler panics before
+/// producing status/headers, `dispatchStreamingWithHeader` /
+/// `dispatchFullStreamingWithHeader` must still invoke the header
+/// consumer once with a wire-format `500` header (the `header_sent`
+/// fallback) rather than leaving the caller hanging.  Used by
+/// `StreamingClosureStressTest`'s panic-fallback e2e case.
+#[allow(clippy::unused_async, clippy::panic)]
+#[vespera::route(post, path = "/panic", tags = ["echo"])]
+pub async fn echo_panic() -> Response {
+    panic!("intentional handler panic for the header-once fallback e2e test");
+}

@@ -7,7 +7,7 @@
 use ::axum::{Router, body::Body, http::Request, routing::post};
 use ::serde::Deserialize;
 use ::tower::ServiceExt;
-use ::vespera::{Schema, Validated};
+use ::vespera::{Schema, Validated, ValidatedWith};
 
 #[derive(Deserialize, Schema)]
 #[allow(dead_code)]
@@ -25,8 +25,49 @@ async fn create_post(
     "ok"
 }
 
+#[derive(Clone)]
+struct SlugContext {
+    required_prefix: String,
+}
+
+#[derive(Deserialize, garde::Validate)]
+#[garde(context(SlugContext as ctx))]
+struct ContextPost {
+    #[garde(custom(|value: &str, ctx: &SlugContext| {
+        if value.starts_with(&ctx.required_prefix) {
+            Ok(())
+        } else {
+            Err(garde::Error::new(format!(
+                "must start with {}",
+                ctx.required_prefix
+            )))
+        }
+    }))]
+    slug: String,
+}
+
+async fn create_context_post(
+    validated: ValidatedWith<SlugContext, ::axum::Json<ContextPost>>,
+) -> &'static str {
+    let ::axum::Json(_payload) = validated.into_inner();
+    "ok"
+}
+
+fn context_router() -> Router<SlugContext> {
+    Router::new().route("/context-posts", post(create_context_post))
+}
+
 fn router() -> Router {
     Router::new().route("/posts", post(create_post))
+}
+
+fn post_json_request(uri: &str, body: impl Into<Body>) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(body.into())
+        .unwrap()
 }
 
 async fn body_to_string(body: Body) -> String {
@@ -34,15 +75,17 @@ async fn body_to_string(body: Body) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
+fn assert_json_content_type(headers: &::axum::http::HeaderMap) {
+    assert_eq!(
+        headers.get("content-type").map(|v| v.to_str().unwrap()),
+        Some("application/json"),
+    );
+}
+
 #[tokio::test]
 async fn valid_payload_returns_200() {
     let app = router();
-    let req = Request::builder()
-        .method("POST")
-        .uri("/posts")
-        .header("content-type", "application/json")
-        .body(Body::from(r#"{"title":"My Post","content":"hello world"}"#))
-        .unwrap();
+    let req = post_json_request("/posts", r#"{"title":"My Post","content":"hello world"}"#);
 
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), 200);
@@ -52,21 +95,11 @@ async fn valid_payload_returns_200() {
 #[tokio::test]
 async fn short_title_returns_422_with_path_keyed_envelope() {
     let app = router();
-    let req = Request::builder()
-        .method("POST")
-        .uri("/posts")
-        .header("content-type", "application/json")
-        .body(Body::from(r#"{"title":"X","content":"ok"}"#))
-        .unwrap();
+    let req = post_json_request("/posts", r#"{"title":"X","content":"ok"}"#);
 
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), 422);
-    assert_eq!(
-        res.headers()
-            .get("content-type")
-            .map(|v| v.to_str().unwrap()),
-        Some("application/json"),
-    );
+    assert_json_content_type(res.headers());
 
     let body: ::serde_json::Value =
         ::serde_json::from_str(&body_to_string(res.into_body()).await).unwrap();
@@ -84,12 +117,7 @@ async fn short_title_returns_422_with_path_keyed_envelope() {
 #[tokio::test]
 async fn empty_content_returns_422() {
     let app = router();
-    let req = Request::builder()
-        .method("POST")
-        .uri("/posts")
-        .header("content-type", "application/json")
-        .body(Body::from(r#"{"title":"Valid title","content":""}"#))
-        .unwrap();
+    let req = post_json_request("/posts", r#"{"title":"Valid title","content":""}"#);
 
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), 422);
@@ -103,12 +131,7 @@ async fn empty_content_returns_422() {
 #[tokio::test]
 async fn multiple_violations_all_appear_in_envelope() {
     let app = router();
-    let req = Request::builder()
-        .method("POST")
-        .uri("/posts")
-        .header("content-type", "application/json")
-        .body(Body::from(r#"{"title":"X","content":""}"#))
-        .unwrap();
+    let req = post_json_request("/posts", r#"{"title":"X","content":""}"#);
 
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), 422);
@@ -127,17 +150,53 @@ async fn malformed_json_propagates_400_not_422() {
     // `Validated<T>` must forward that rejection unchanged rather than
     // synthesizing a 422 from a non-existent garde report.
     let app = router();
-    let req = Request::builder()
-        .method("POST")
-        .uri("/posts")
-        .header("content-type", "application/json")
-        .body(Body::from("not json"))
-        .unwrap();
+    let req = post_json_request("/posts", "not json");
 
     let res = app.oneshot(req).await.unwrap();
     // Axum's Json extractor returns 400 (or 415 depending on cause) —
     // anything that is NOT our 422 envelope is acceptable here.
     assert_ne!(res.status(), 422);
+}
+
+#[tokio::test]
+async fn context_validated_payload_returns_200_when_state_context_accepts_value() {
+    let app = context_router().with_state(SlugContext {
+        required_prefix: "vespera-".to_owned(),
+    });
+    let req = post_json_request("/context-posts", r#"{"slug":"vespera-release"}"#);
+
+    let res = app.oneshot(req).await.unwrap();
+
+    assert_eq!(res.status(), 200);
+    assert_eq!(body_to_string(res.into_body()).await, "ok");
+}
+
+#[tokio::test]
+async fn context_validated_payload_returns_422_when_state_context_rejects_value() {
+    let app = context_router().with_state(SlugContext {
+        required_prefix: "vespera-".to_owned(),
+    });
+    let req = post_json_request("/context-posts", r#"{"slug":"other-release"}"#);
+
+    let res = app.oneshot(req).await.unwrap();
+
+    assert_eq!(res.status(), 422);
+    assert_json_content_type(res.headers());
+    let body: ::serde_json::Value =
+        ::serde_json::from_str(&body_to_string(res.into_body()).await).unwrap();
+    assert_envelope_has_field_error(&body, "slug");
+}
+
+#[test]
+fn context_validated_wrapper_accessors_and_deref_mutate_the_inner_value() {
+    let mut validated = ValidatedWith::<SlugContext, String>::new("vespera".to_owned());
+
+    assert_eq!(validated.get(), "vespera");
+    validated.get_mut().push('-');
+    assert_eq!(&*validated, "vespera-");
+    validated.push_str("release");
+
+    assert_eq!(validated.into_inner(), "vespera-release");
 }
 
 // ── per-rule 422 coverage ────────────────────────────────────────────
@@ -219,12 +278,7 @@ async fn dispatch(app: Router, payload: ::serde_json::Value) -> (u16, ::serde_js
     let res = app.oneshot(req).await.unwrap();
     let status = res.status().as_u16();
     if status == 422 {
-        assert_eq!(
-            res.headers()
-                .get("content-type")
-                .map(|v| v.to_str().unwrap()),
-            Some("application/json"),
-        );
+        assert_json_content_type(res.headers());
     }
     let body: ::serde_json::Value = ::serde_json::from_str(&body_to_string(res.into_body()).await)
         .unwrap_or(::serde_json::Value::Null);
@@ -312,12 +366,7 @@ async fn rule_range_minimum_violation_returns_422() {
         "ok"
     }
     let app = Router::new().route("/n", post(handler));
-    let req = Request::builder()
-        .method("POST")
-        .uri("/n")
-        .header("content-type", "application/json")
-        .body(Body::from(r#"{"age":-1}"#))
-        .unwrap();
+    let req = post_json_request("/n", r#"{"age":-1}"#);
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), 422);
     let body: ::serde_json::Value =
@@ -391,4 +440,34 @@ async fn multiple_per_rule_violations_all_appear_in_envelope() {
     ] {
         assert_envelope_has_field_error(&body, field);
     }
+}
+
+// ── byte-snapshot test: 422 validation envelope contract ────────────────
+//
+// This test locks the EXACT serialized bytes of the 422 validation-error
+// envelope produced by `Validated<T>`. The snapshot proves byte-identity
+// across refactors of `crates/vespera/src/validated.rs`.
+//
+// The envelope shape is a public contract:
+// - Used by axum handlers (JSON response body)
+// - Hoisted into JNI wire headers as `"validation_errors": [...]`
+// - Consumed by Java decoders and client libraries
+//
+// Multi-error coverage: triggers 2+ field errors to verify the full
+// envelope structure (message before path, array ordering, etc.).
+
+#[tokio::test]
+async fn byte_snapshot_422_envelope_multi_error() {
+    let app = router();
+    let req = post_json_request("/posts", r#"{"title":"X","content":""}"#);
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), 422);
+
+    let body_bytes = ::axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+    insta::assert_snapshot!("validated_422_envelope_multi_error", body_str);
 }

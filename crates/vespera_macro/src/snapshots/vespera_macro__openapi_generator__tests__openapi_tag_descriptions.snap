@@ -1,0 +1,48 @@
+---
+source: crates/vespera_macro/src/openapi_generator.rs
+expression: "serde_json::to_string_pretty(&doc).unwrap()"
+---
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Tags API",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000"
+    }
+  ],
+  "paths": {
+    "/users": {
+      "get": {
+        "operationId": "list_users",
+        "tags": [
+          "users"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "admin",
+      "description": "Admin operations"
+    },
+    {
+      "name": "users",
+      "description": "User operations"
+    }
+  ]
+}

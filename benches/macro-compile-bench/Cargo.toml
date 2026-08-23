@@ -1,0 +1,15 @@
+[package]
+name = "macro-compile-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Compile-time benchmark FIXTURE: a deliberately schema- and
+# cross-reference-heavy `vespera!` workload. The `compile-bench-runner`
+# harness measures the `macro_expand_crate` rustc pass of THIS crate's lib
+# to gauge proc-macro expansion cost. It is intentionally not a production
+# example, so it depends only on `vespera` + `serde`.
+
+[dependencies]
+vespera = { path = "../../crates/vespera" }
+serde = { version = "1", features = ["derive"] }

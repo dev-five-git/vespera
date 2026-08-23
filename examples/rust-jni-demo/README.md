@@ -145,7 +145,6 @@ vespera::jni_app!(create_app);
 
 ```java
 @SpringBootApplication
-@ComponentScan(basePackages = {"kr.go.demo", "com.devfive.vespera.bridge"})
 public class DemoApplication {
     public static void main(String[] args) {
         VesperaBridge.init("rust_jni_demo");
@@ -154,6 +153,10 @@ public class DemoApplication {
 }
 ```
 
+> No `@ComponentScan` of `com.devfive.vespera.bridge` — the bridge is
+> autoconfigured. Scanning it would pick the controller up as a plain
+> `@RestController`, which fails to construct.
+
 ### What happens at runtime
 
 1. `vespera::jni_app!` generates `JNI_OnLoad` → calls `vespera::inprocess::register_app(create_app)`
@@ -161,7 +164,7 @@ public class DemoApplication {
 3. `VesperaProxyController` catches all HTTP requests → encodes them into the **binary wire format** via `VesperaBridge.encodeRequest(...)` → calls `VesperaBridge.dispatchBytes(byte[])`
 4. JNI symbol delegates to `vespera::inprocess::dispatch_from_bytes()`
 5. `dispatch_from_bytes` parses the wire header, looks up the cached `Router`, and runs `router.oneshot(request)` with the raw body bytes
-6. Response wire bytes flow back the same way; `VesperaBridge.decodeResponse(byte[])` produces a `DecodedResponse` and the controller returns either `ResponseEntity<String>` (text-like Content-Type) or `ResponseEntity<byte[]>` (binary)
+6. Response wire bytes flow back the same way; the controller parses status + headers straight from the wire via `WireHeaderReader` and returns `ResponseEntity<byte[]>` for every content type (the wire header carries the exact `Content-Type`, written verbatim — no UTF-8 round-trip)
 7. No TCP between Java and Rust; **no base64** — multipart uploads, PDFs, images travel as raw bytes
 
 #### Wire format
@@ -188,9 +191,9 @@ All failure paths (malformed wire, Rust panic, no app registered) return a lengt
 ```kotlin
 // build.gradle.kts
 repositories {
-    maven { url = uri("https://maven.pkg.github.com/dev-five-git/vespera") }
+    mavenCentral()
 }
 dependencies {
-    implementation("com.devfive.vespera:vespera-bridge:0.1.0")
+    implementation("kr.devfive:vespera-bridge:0.2.0")
 }
 ```

@@ -30,6 +30,20 @@ public final class HeaderAppNameResolver implements AppNameResolver {
 
     @Override
     public String resolveAppName(HttpServletRequest request) {
-        return request.getHeader(headerName);
+        String value = request.getHeader(headerName);
+        if (value == null) {
+            return null;
+        }
+        if (!hasLeadingOrTrailingWhitespace(value)) {
+            return value.isEmpty() ? null : value;
+        }
+        String trimmed = value.strip();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static boolean hasLeadingOrTrailingWhitespace(String value) {
+        int len = value.length();
+        return len > 0 && (Character.isWhitespace(value.charAt(0))
+                || Character.isWhitespace(value.charAt(len - 1)));
     }
 }

@@ -6,7 +6,23 @@ description = "In-process HTTP dispatch for axum — drive a Router via oneshot 
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Compiles the criterion A/B "before" twins (serde-based wire header
+# parse/serialize, the `http::request::Builder` request build, the
+# `serde_json::Value` 422 hoist) and the `bench_support` surface that
+# `benches/dispatch.rs` calls.  OFF by default so production builds (and
+# the shipped JNI cdylib) never compile the serde wire-header scaffolding
+# that exists only to benchmark the hand-rolled production path against.
+# Enable with `cargo bench -p vespera_inprocess --features bench-support`.
+bench-support = []
+
 [dependencies]
+# Lock-free read snapshot for the multi-app router registry: named-app
+# dispatch (every request in a multi-app JNI deployment) resolves with a
+# single atomic load instead of an `RwLock` read acquisition, matching
+# the lock-free fast path the default app already enjoys.  Registration
+# (startup-only, first-wins) goes through copy-on-write `rcu`.
+arc-swap = "1"
 axum = "0.8"
 bytes = "1"
 http = "1"
@@ -19,7 +35,23 @@ tokio = { version = "1", features = ["rt"] }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
+# The criterion bench runs under mimalloc (set as its `#[global_allocator]`
+# in benches/dispatch.rs) to match the SHIPPED JNI cdylib, which enables
+# mimalloc by default.  Measured 2026-06: the default Windows system heap
+# routes per-request `Vec` allocations >= ~1 MiB through a slow
+# VirtualAlloc commit/decommit path (e.g. 1 MiB `dispatch_from_bytes`
+# materialise = 311 us system-heap vs 30 us mimalloc — a ~10x cliff that is
+# pure harness artifact, never seen by the cdylib).  Benching under mimalloc
+# keeps the large-body absolute numbers representative of production.
+mimalloc = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# `FutureExt::catch_unwind` for the `async_spawn_pattern` bench, which
+# A/Bs the vespera_jni `dispatchAsync` spawn-mechanism change (inner
+# `tokio::spawn` vs in-place `catch_unwind`).
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Case-table unit tests (the repo-wide convention, already used by
+# vespera_core / vespera_macro).  Test-only: never linked into the cdylib.
+rstest = "0.26"
 
 [[bench]]
 name = "dispatch"

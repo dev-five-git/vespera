@@ -16,22 +16,47 @@ proc-macro = true
 # constraints into garde's runtime validators.  The proc-macro itself
 # does NOT depend on `garde` — it only emits token streams that reference
 # the path; the user's `vespera = { features = ["validation"] }` is what
-# actually pulls in the runtime crate.
-validation = []
+# actually pulls in the runtime crate. `regex-syntax` is pulled in only
+    # here, to validate `#[schema(pattern = "...")]` literals at compile time.
+    validation = ["dep:regex-syntax"]
+    # Compile-time validation of `#[vespera::cron("...")]` expressions using the
+    # SAME parser the runtime uses (croner, via tokio-cron-scheduler) so a
+    # malformed cron string becomes a compile error instead of a startup
+    # `JobScheduler` panic. Enabled transitively by `vespera`'s `cron` feature,
+    # so croner (and its chrono/derive_builder/strum tree) only compiles when a
+    # crate actually uses cron.
+    cron = ["dep:croner"]
 
 [dependencies]
 quote = "1"
-syn = { version = "2", features = ["full"] }
+syn = { version = "3", features = ["full"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 vespera_core = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# Compile-time validation of `#[schema(pattern = "...")]` regex literals
+# (the exact parser `regex` uses) so an invalid pattern is a compile error
+# instead of a first-validation runtime panic. Optional: pulled in only by
+# the `validation` feature, which is what emits the pattern validator.
+regex-syntax = { version = "0.8", optional = true }
+# Compile-time validation of `#[cron("...")]` expressions (gated by the `cron`
+# feature). MUST track the croner major version tokio-cron-scheduler resolves
+# at runtime (0.15 → croner 3.x) so compile-time acceptance exactly matches the
+# runtime `CronParser::builder().seconds(Seconds::Required)` parse.
+croner = { version = "3", optional = true }
 
 [dev-dependencies]
+# `extra-traits` (Debug/PartialEq on syn syntax-tree nodes) is required only by
+# the unit tests that `assert_eq!` on `syn::Type`. Declaring it here keeps the
+# feature out of the proc-macro's release build while cargo's feature
+# unification turns it on for every test build.
+syn = { version = "3", features = ["full", "extra-traits"] }
 rstest = "0.26"
-insta = "1.47"
+insta = "1.48"
+prettyplease = "0.3"
 tempfile = "3"
-serial_test = "3"
+serial_test = "4"
+trybuild = "1"
 
 [lints]
 workspace = true

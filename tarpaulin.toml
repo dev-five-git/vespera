@@ -1,0 +1,6 @@
+﻿[default]
+# Benchmarks are dev-only harnesses: criterion drivers and the deliberately
+# macro-heavy compile-time fixture crate. Tarpaulin instruments their targets
+# but never runs them, so they only ever contribute 0%-covered lines to the
+# report. Excluding them keeps the number a statement about shipped code.
+exclude-files = ["*benches*"]

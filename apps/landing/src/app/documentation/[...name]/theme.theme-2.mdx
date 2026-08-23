@@ -1,1 +1,211 @@
-empty
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeaderCell,
+  TableRow,
+} from '@/components/mdx/components/Table'
+
+# Dispatch Modes & Wire Format
+
+## Binary Wire Format
+
+Both request and response use the same length-prefixed layout:
+
+```
+bytes 0..4    : u32 BE = header_json byte length N
+bytes 4..4+N  : UTF-8 JSON
+                  (request)  { "v":1, "method", "path",
+                               "query"?, "headers"? }
+                  (response) { "v":1, "status", "headers",
+                               "metadata", "validation_errors"? }
+bytes 4+N..   : raw body bytes (UTF-8 text or binary —
+                no encoding applied)
+```
+
+Key properties:
+- No base64 — multipart uploads, PDFs, and images travel as raw bytes
+- `"v":1` is the protocol version; mismatched versions return a `400` wire response
+- `"validation_errors"` is an optional array hoisted from `422` JSON bodies — Java decoders read validation errors from the header without parsing the body
+- All failure paths (malformed wire, Rust panic, no app registered) return a valid length-prefixed response, so the decoder never has to special-case errors
+
+## Dispatch Modes
+
+`VesperaBridge` exposes seven native methods — all sharing the same wire format, the same registered router, and the same panic-safe `catch_unwind` discipline:
+
+<Table>
+  <TableHead>
+    <TableRow>
+      <TableHeaderCell>Method</TableHeaderCell>
+      <TableHeaderCell>Mode</TableHeaderCell>
+      <TableHeaderCell>Java return</TableHeaderCell>
+      <TableHeaderCell>Memory</TableHeaderCell>
+    </TableRow>
+  </TableHead>
+  <TableBody>
+    <TableRow>
+      <TableCell>`dispatchBytes(byte[])`</TableCell>
+      <TableCell>sync</TableCell>
+      <TableCell>`byte[]` (header + body)</TableCell>
+      <TableCell>full body in memory</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`dispatchAsync(CompletableFuture, byte[])`</TableCell>
+      <TableCell>async</TableCell>
+      <TableCell>`void` (future completes)</TableCell>
+      <TableCell>full body in memory</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`dispatchStreaming(byte[], OutputStream)`</TableCell>
+      <TableCell>sync, response-streaming</TableCell>
+      <TableCell>`byte[]` (header only)</TableCell>
+      <TableCell>chunk-bounded response</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`dispatchFullStreaming(byte[], InputStream, OutputStream)`</TableCell>
+      <TableCell>sync, bidirectional streaming</TableCell>
+      <TableCell>`byte[]` (header only)</TableCell>
+      <TableCell>chunk-bounded both ways</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`dispatchStreamingWithHeader(byte[], Consumer, OutputStream)`</TableCell>
+      <TableCell>sync, response-streaming</TableCell>
+      <TableCell>`void` (header via callback)</TableCell>
+      <TableCell>chunk-bounded response</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`dispatchFullStreamingWithHeader(byte[], Consumer, InputStream, OutputStream)`</TableCell>
+      <TableCell>sync, bidirectional streaming</TableCell>
+      <TableCell>`void` (header via callback)</TableCell>
+      <TableCell>chunk-bounded both ways</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`dispatchDirect(ByteBuffer, int, ByteBuffer)`</TableCell>
+      <TableCell>sync, direct buffers</TableCell>
+      <TableCell>`int` (response length / overflow code)</TableCell>
+      <TableCell>no Java heap arrays</TableCell>
+    </TableRow>
+  </TableBody>
+</Table>
+
+### Choosing a Mode
+
+- Small JSON RPC, single request/response → `dispatchBytes`
+- Hot small/bounded payloads where JNI copy overhead matters → `dispatchDirect` / `dispatchDirectPooled`
+- Async I/O coordination (parallel Java requests, non-blocking) → `dispatchAsync` + `CompletableFuture`
+- Large download / streaming response (video, PDF, SSE) → `dispatchStreaming` + `OutputStream`
+- Large upload + large download (file transfer, video transcoding) → `dispatchFullStreaming` + `InputStream` + `OutputStream`
+- The `*WithHeader` variants let Spring-style controllers commit status/headers before the first body byte is written
+
+## SmartDispatchModeResolver (Default since 0.2.0)
+
+The autoconfigured default since vespera-bridge 0.2.0 picks the cheapest safe path per request. Measured on a `GET /health` round-trip through the real JNI boundary:
+
+| Request shape | Mode | ns / round-trip |
+|---------------|------|-----------------|
+| Small/bodyless + idempotent (GET/HEAD/PUT/DELETE/OPTIONS, ≤ 256 KiB) | `DIRECT` | ~2,200 |
+| Small (≤ 256 KiB Content-Length) + non-idempotent (POST/PATCH) | `SYNC` | ~3,200 |
+| Large or unknown-length body | `BIDIRECTIONAL_STREAMING` | ~24,100 |
+
+Trade-offs:
+- **DIRECT** writes the wire response straight into a pooled per-thread direct `ByteBuffer` (64 KiB → `vespera.direct.maxBufferBytes`, default 4 MiB). Responses larger than the pooled buffer trigger a single retry that **re-runs the Rust handler** — which is why DIRECT is gated on idempotent methods only.
+- **SYNC** fully buffers the response on the JVM heap. The 256 KiB request-size gate keeps the response size reasonable for JSON-RPC-shaped traffic.
+- **BIDIRECTIONAL_STREAMING** is unchanged for large/unknown-length bodies — multi-GB upload + multi-GB download runs chunk-bounded, ~32 KiB resident each side.
+
+Restore the pre-0.2.0 default (every request that may carry a body streams both ways, ~24 µs uniform):
+
+```yaml
+vespera:
+  bridge:
+    dispatch-mode: bidirectional-streaming
+```
+
+## Direct Buffer Dispatch
+
+`dispatchDirect(ByteBuffer in, int inLen, ByteBuffer out)` eliminates the two JNI `GetByteArrayRegion`/`SetByteArrayRegion` copies that `dispatchBytes` pays. The response is streamed straight into the out buffer — no intermediate `Vec`. Measured at **1.4–3.4× per round-trip** versus `dispatchBytes` depending on payload size.
+
+Contract:
+- Both buffers MUST be direct (`ByteBuffer.allocateDirect`); heap buffers are rejected with `IllegalArgumentException`
+- The request is read from absolute offsets `in[0..inLen]` — the buffer's position/limit are ignored; `inLen` is authoritative
+- Return `>= 0`: a complete wire response occupies `out[0..n]`
+- Return `< 0`: `-(requiredSize)` — the response did not fit; **retrying re-runs the Rust handler**, so only retry idempotent requests
+- `Integer.MIN_VALUE`: response exceeds 2 GiB
+
+`dispatchDirectPooled(byte[] wireRequest, boolean retryOnOverflow)` wraps the raw call with per-thread reusable direct buffers (64 KiB initial, doubling up to `vespera.direct.maxBufferBytes`, default 4 MiB).
+
+## Direct API (Without the Proxy Controller)
+
+```java
+import com.devfive.vespera.bridge.VesperaBridge;
+import com.devfive.vespera.bridge.VesperaBridge.DecodedResponse;
+
+// 1. Initialise once at startup
+VesperaBridge.init("my_rust_lib");
+
+// 2. Encode a request
+byte[] wireRequest = VesperaBridge.encodeRequest(
+    "POST",
+    "/documents/validate",
+    /* query */ null,
+    Map.of("content-type", "application/json"),
+    "{\"title\":\"…\"}".getBytes(StandardCharsets.UTF_8));
+
+// 3. Dispatch through Rust
+byte[] wireResponse = VesperaBridge.dispatchBytes(wireRequest);
+
+// 4. Decode
+DecodedResponse resp = VesperaBridge.decodeResponse(wireResponse);
+System.out.println(resp.status());               // 200
+System.out.println(resp.headers());              // { "content-type": "application/json", … }
+System.out.println(new String(resp.bodyBytes())); // copies the raw response body
+```
+
+> **0.2.0 breaking change:** `DecodedResponse.body()` now returns a read-only `java.nio.ByteBuffer` (zero-copy view over the wire bytes). The owned `byte[]` materialisation moved to `DecodedResponse.bodyBytes()`. Callers that previously used `body()` as `byte[]` must switch to `bodyBytes()`.
+
+## Async Dispatch
+
+```java
+CompletableFuture<byte[]> future = VesperaBridge.dispatch(wireRequest);
+
+future.thenAccept(wireResponse -> {
+    DecodedResponse resp = VesperaBridge.decodeResponse(wireResponse);
+    System.out.println("Status: " + resp.status());
+});
+```
+
+The future is **always** completed with a valid wire response, even on Rust panics or JNI conversion failures. You will never see a dangling future.
+
+## Streaming Dispatch
+
+```java
+byte[] wireRequest = VesperaBridge.encodeRequest(
+    "GET", "/files/large.pdf", null, Map.of(), new byte[0]);
+
+try (ByteArrayOutputStream sink = new ByteArrayOutputStream()) {
+    byte[] headerOnly = VesperaBridge.dispatchStreaming(wireRequest, sink);
+    DecodedResponse meta = VesperaBridge.decodeResponse(headerOnly);
+    System.out.println("Status: " + meta.status());
+    System.out.println("Body size: " + sink.size());
+}
+```
+
+## Bidirectional Streaming
+
+```java
+try (InputStream upload = Files.newInputStream(Path.of("huge.mp4"));
+     OutputStream download = Files.newOutputStream(Path.of("transcoded.mp4"))) {
+
+    byte[] wireHeader = VesperaBridge.encodeRequestHeader(
+        "POST", "/transcode", null,
+        Map.of("content-type", "video/mp4"));
+
+    byte[] respHeader = VesperaBridge.dispatchFullStreaming(
+        wireHeader, upload, download);
+
+    DecodedResponse meta = VesperaBridge.decodeResponse(respHeader);
+    System.out.println("Status: " + meta.status());
+}
+```
+
+A 1 GiB upload paired with a 1 GiB download runs in low-single-digit MiB resident memory on each side. Backpressure is enforced naturally — if Axum reads slowly, `InputStream.read()` blocks on the bounded channel.
