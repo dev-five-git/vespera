@@ -509,4 +509,46 @@ mod tests {
         let result = extract_content(&[path_attr]);
         assert_eq!(result, None);
     }
+
+    #[test]
+    fn untagged_takes_precedence_over_tag_and_content() {
+        let attrs = get_enum_attrs(r#"untagged, tag = "type", content = "data""#);
+        assert_eq!(extract_enum_repr(&attrs), SerdeEnumRepr::Untagged);
+    }
+
+    #[rstest]
+    #[case("tag = 42")]
+    #[case("tag = true")]
+    #[case("tag = value")]
+    fn non_string_tag_is_ignored(#[case] tokens: &str) {
+        let attr = create_enum_attr_with_raw_tokens(tokens.parse().unwrap());
+        assert_eq!(extract_tag(&[attr]), None);
+    }
+
+    #[rstest]
+    #[case(r#"tag = "type", content = 42"#)]
+    #[case(r#"tag = "type", content = true"#)]
+    #[case(r#"tag = "type", content = value"#)]
+    fn non_string_content_is_ignored(#[case] tokens: &str) {
+        let attr = create_enum_attr_with_raw_tokens(tokens.parse().unwrap());
+        assert_eq!(extract_content(&[attr]), None);
+    }
+
+    #[rstest]
+    #[case(r#"qualified::tag = "type""#, Some("type"))]
+    #[case("qualified::tag = value", None)]
+    #[case("qualified::tag", None)]
+    fn malformed_tag_fallback_is_exact(#[case] tokens: &str, #[case] expected: Option<&str>) {
+        let attr = create_enum_attr_with_raw_tokens(tokens.parse().unwrap());
+        assert_eq!(extract_tag(&[attr]).as_deref(), expected);
+    }
+
+    #[rstest]
+    #[case(r#"qualified::content = "data""#, Some("data"))]
+    #[case("qualified::content = value", None)]
+    #[case("qualified::content", None)]
+    fn malformed_content_fallback_is_exact(#[case] tokens: &str, #[case] expected: Option<&str>) {
+        let attr = create_enum_attr_with_raw_tokens(tokens.parse().unwrap());
+        assert_eq!(extract_content(&[attr]).as_deref(), expected);
+    }
 }

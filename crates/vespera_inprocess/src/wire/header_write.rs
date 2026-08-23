@@ -574,4 +574,23 @@ mod tests {
             )
         );
     }
+
+    #[test]
+    fn present_empty_validation_errors_serializes_as_an_empty_array() {
+        let mut bytes = Vec::new();
+        write_response_header(
+            &mut bytes,
+            422,
+            &http::HeaderMap::new(),
+            &ResponseMetadata::current(),
+            Some(&[]),
+        );
+
+        assert_eq!(
+            std::str::from_utf8(&bytes).unwrap(),
+            format!(
+                r#"{{"v":1,"status":422,"headers":{{}},"metadata":{{"version":"{VESPERA_VERSION}"}},"validation_errors":[]}}"#
+            )
+        );
+    }
 }

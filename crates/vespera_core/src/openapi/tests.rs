@@ -1,6 +1,7 @@
 use super::*;
 use crate::route::{Operation, PathItem};
 use crate::schema::{Components, Schema, SchemaType, SecurityScheme, SecuritySchemeType};
+use ::rstest::rstest;
 
 fn create_base_openapi() -> OpenApi {
     OpenApi {
@@ -532,6 +533,80 @@ fn test_merge_empty_component_maps_do_not_create_empty_sections() {
 }
 
 #[test]
+fn merge_same_path_adopts_empty_slots_and_preserves_occupied_slots_for_every_field() {
+    let path_item = |prefix: &str| {
+        let operation = |method: &str| {
+            create_path_item(&format!("{prefix}-{method}"))
+                .get
+                .expect("fixture operation")
+        };
+        PathItem {
+            get: Some(operation("get")),
+            post: Some(operation("post")),
+            put: Some(operation("put")),
+            patch: Some(operation("patch")),
+            delete: Some(operation("delete")),
+            head: Some(operation("head")),
+            options: Some(operation("options")),
+            trace: Some(operation("trace")),
+            parameters: Some(Vec::new()),
+            summary: Some(format!("{prefix}-summary")),
+            description: Some(format!("{prefix}-description")),
+            ref_path: Some(format!("#/paths/{prefix}")),
+            servers: Some(Vec::new()),
+        }
+    };
+
+    let incoming = path_item("incoming");
+    let incoming_json = serde_json::to_value(&incoming).unwrap();
+    let mut adopting = create_base_openapi();
+    adopting
+        .paths
+        .insert("/all".to_string(), PathItem::default());
+    let mut other = create_base_openapi();
+    other.paths.insert("/all".to_string(), incoming);
+    adopting.merge(other);
+    assert_eq!(
+        serde_json::to_value(adopting.paths.get("/all").unwrap()).unwrap(),
+        incoming_json
+    );
+
+    let occupied = path_item("occupied");
+    let occupied_json = serde_json::to_value(&occupied).unwrap();
+    let mut preserving = create_base_openapi();
+    preserving.paths.insert("/all".to_string(), occupied);
+    let mut other = create_base_openapi();
+    other
+        .paths
+        .insert("/all".to_string(), path_item("discarded"));
+    preserving.merge(other);
+    assert_eq!(
+        serde_json::to_value(preserving.paths.get("/all").unwrap()).unwrap(),
+        occupied_json
+    );
+}
+
+#[rstest]
+#[case(serde_json::json!({"parameters":{"shared":{"name":"id","in":"query","required":false,"schema":{"type":"string"}}}}))]
+#[case(serde_json::json!({"examples":{"shared":{"summary":"sample","value":7}}}))]
+#[case(serde_json::json!({"requestBodies":{"shared":{"required":true,"content":{}}}}))]
+#[case(serde_json::json!({"headers":{"shared":{"description":"trace header","schema":{"type":"string"}}}}))]
+fn merge_accepts_each_reusable_component_kind_when_it_is_the_only_nonempty_map(
+    #[case] expected: serde_json::Value,
+) {
+    let mut base = create_base_openapi();
+    let mut other = create_base_openapi();
+    other.components = Some(serde_json::from_value(expected.clone()).unwrap());
+
+    base.merge(other);
+
+    assert_eq!(
+        serde_json::to_value(base.components.expect("components should be adopted")).unwrap(),
+        expected
+    );
+}
+
+#[test]
 fn test_merge_top_level_servers_security_external_docs() {
     use crate::schema::ExternalDocumentation;
 
@@ -577,9 +652,36 @@ fn test_merge_top_level_servers_security_external_docs() {
         description: None,
         variables: None,
     }]);
+    base2.security = Some(vec![BTreeMap::from([(
+        "selfAuth".to_string(),
+        vec!["selfScope".to_string()],
+    )])]);
+    other2.security = Some(vec![BTreeMap::from([(
+        "otherAuth".to_string(),
+        vec!["otherScope".to_string()],
+    )])]);
+    base2.external_docs = Some(ExternalDocumentation {
+        description: Some("self docs".to_string()),
+        url: "https://self.example.com/docs".to_string(),
+    });
+    other2.external_docs = Some(ExternalDocumentation {
+        description: Some("other docs".to_string()),
+        url: "https://other.example.com/docs".to_string(),
+    });
     base2.merge(other2);
     assert_eq!(
         base2.servers.as_ref().unwrap()[0].url,
         "https://self.example.com"
+    );
+    assert_eq!(
+        base2.security,
+        Some(vec![BTreeMap::from([(
+            "selfAuth".to_string(),
+            vec!["selfScope".to_string()],
+        )])])
+    );
+    assert_eq!(
+        base2.external_docs.as_ref().unwrap().url,
+        "https://self.example.com/docs"
     );
 }

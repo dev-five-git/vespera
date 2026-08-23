@@ -300,4 +300,23 @@ mod tests {
         assert_eq!(hoisted.len(), 1);
         assert_eq!(hoisted[0].path, "name");
     }
+
+    #[test]
+    fn hoisting_rejects_content_types_shorter_than_a_json_suffix() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("json"),
+        );
+        let body = Bytes::from_static(br#"{"errors":[{"path":"name"}]}"#);
+
+        assert!(try_hoist_validation_errors(&headers, &body).is_none());
+    }
+
+    #[test]
+    fn hoisting_collapses_an_empty_validation_envelope_to_none() {
+        let body = Bytes::from_static(br#"{"errors":[]}"#);
+
+        assert!(try_hoist_validation_errors(&json_headers(), &body).is_none());
+    }
 }

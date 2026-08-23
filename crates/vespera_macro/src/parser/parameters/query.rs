@@ -182,6 +182,24 @@ mod tests {
             parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions).is_none()
         );
 
+        struct_definitions.insert("TupleQuery", r"pub struct TupleQuery(i32);");
+        let ty: Type = syn::parse_str("TupleQuery").unwrap();
+        assert!(
+            parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions).is_none()
+        );
+
+        struct_definitions.insert("EmptyQuery", r"pub struct EmptyQuery {}");
+        let ty: Type = syn::parse_str("EmptyQuery").unwrap();
+        assert!(
+            parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions).is_none()
+        );
+
+        struct_definitions.insert("BrokenQuery", "pub struct BrokenQuery {");
+        let ty: Type = syn::parse_str("BrokenQuery").unwrap();
+        assert!(
+            parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions).is_none()
+        );
+
         struct_definitions.insert(
             "OptionalQuery",
             r"pub struct OptionalQuery { pub required: i32, pub optional: Option<String> }",
@@ -293,6 +311,23 @@ mod tests {
         let params = parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions)
             .expect("query should parse");
         assert!(matches!(params[0].schema, Some(SchemaRef::Inline(_))));
+    }
+
+    #[test]
+    fn schema_ref_is_preserved_when_nested_definition_is_invalid() {
+        let mut struct_definitions = HashMap::new();
+        let mut known_schemas = HashSet::new();
+        struct_definitions.insert(
+            "QueryWithBrokenNested",
+            r"pub struct QueryWithBrokenNested { pub nested: BrokenNested }",
+        );
+        known_schemas.insert("BrokenNested");
+        struct_definitions.insert("BrokenNested", "pub struct BrokenNested {");
+
+        let ty: Type = syn::parse_str("QueryWithBrokenNested").unwrap();
+        let params = parse_query_struct_to_parameters(&ty, &known_schemas, &struct_definitions)
+            .expect("query should parse");
+        assert!(matches!(params[0].schema, Some(SchemaRef::Ref(_))));
     }
 
     #[test]

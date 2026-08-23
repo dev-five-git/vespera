@@ -676,4 +676,16 @@ mod tests {
             "a field carrying only `#[schema(any)]` must not be reported empty"
         );
     }
+
+    #[rstest::rstest]
+    #[case("uri")]
+    #[case("url")]
+    #[case("ipv4")]
+    #[case("ipv6")]
+    #[case("ip")]
+    fn garde_formats_are_runtime_rules(#[case] format: &str) {
+        let item: syn::ItemStruct =
+            syn::parse_str(&format!(r#"#[schema(format = "{format}")] struct Value;"#)).unwrap();
+        assert!(parse(&item.attrs).has_runtime_rule());
+    }
 }

@@ -714,4 +714,27 @@ mod tests {
     ) {
         assert_eq!(super::quoted_value_after_key(tokens, key), None);
     }
+
+    #[rstest]
+    #[case("default", "default", true)]
+    #[case("(default)", "default", true)]
+    #[case("default,", "default", true)]
+    #[case("xdefault", "default", false)]
+    #[case("defaultx", "default", false)]
+    fn standalone_word_boundaries(
+        #[case] tokens: &str,
+        #[case] word: &str,
+        #[case] expected: bool,
+    ) {
+        let start = tokens.find(word).unwrap();
+        assert_eq!(super::is_standalone_word_at(tokens, start, word), expected);
+    }
+
+    #[rstest]
+    #[case("module::rename", 8, true)]
+    #[case("module:rename", 7, false)]
+    #[case("rename", 0, false)]
+    fn qualified_key_detection(#[case] tokens: &str, #[case] start: usize, #[case] expected: bool) {
+        assert_eq!(super::is_qualified_key(tokens, start), expected);
+    }
 }

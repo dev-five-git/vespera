@@ -555,6 +555,45 @@ fn test_untagged_tuple_variant_with_known_schema_ref() {
     }
 }
 
+#[test]
+fn internally_tagged_only_tuple_variants_have_no_one_of() {
+    let enum_item: syn::ItemEnum =
+        syn::parse_str(r#"#[serde(tag = "type")] enum Message { Text(String), Number(i32) }"#)
+            .unwrap();
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
+    assert!(schema.one_of.is_none());
+    assert_eq!(schema.discriminator.unwrap().property_name, "type");
+}
+
+#[test]
+fn adjacently_tagged_empty_enum_has_no_one_of() {
+    let enum_item: syn::ItemEnum =
+        syn::parse_str(r#"#[serde(tag = "type", content = "data")] enum Empty {}"#).unwrap();
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
+    assert!(schema.one_of.is_none());
+    assert_eq!(schema.discriminator.unwrap().property_name, "type");
+}
+
+#[test]
+fn untagged_empty_enum_has_no_one_of_or_discriminator() {
+    let enum_item: syn::ItemEnum = syn::parse_str("#[serde(untagged)] enum Empty {}").unwrap();
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
+    assert!(schema.one_of.is_none());
+    assert!(schema.discriminator.is_none());
+}
+
 // Edge case: Untagged enum with multi-field tuple variant
 #[test]
 fn test_untagged_multi_field_tuple_variant() {

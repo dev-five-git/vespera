@@ -374,6 +374,23 @@ fn test_parse_struct_to_schema_with_multiple_flatten() {
 }
 
 #[test]
+fn flatten_only_schema_omits_empty_properties_and_required() {
+    let struct_item: syn::ItemStruct =
+        syn::parse_str(r"struct Combined { #[serde(flatten)] pagination: Pagination }").unwrap();
+    let known = HashSet::from(["Pagination".to_string()]);
+    let schema = parse_struct_to_schema(&struct_item, &known, &HashMap::<String, String>::new());
+
+    let all_of = schema.all_of.unwrap();
+    assert_eq!(all_of.len(), 2);
+    let SchemaRef::Inline(inline_schema) = &all_of[0] else {
+        panic!("first allOf element should be inline");
+    };
+    assert_eq!(inline_schema.schema_type, Some(SchemaType::Object));
+    assert!(inline_schema.properties.is_none());
+    assert!(inline_schema.required.is_none());
+}
+
+#[test]
 fn test_parse_struct_to_schema_no_flatten() {
     // Existing struct without flatten should NOT use allOf
     let struct_item: syn::ItemStruct = syn::parse_str(

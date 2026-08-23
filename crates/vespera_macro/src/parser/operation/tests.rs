@@ -818,3 +818,42 @@ fn route_security_generates_requirement_objects_and_preserves_empty() {
     let op = build_with_security("fn public() -> String", "/public", Some(&empty));
     assert_eq!(op.security, Some(Vec::new()));
 }
+
+#[test]
+fn request_example_is_attached_to_request_body_media() {
+    let sig: syn::Signature =
+        syn::parse_str("fn create(Json(body): Json<CreateUser>) -> String").unwrap();
+    let request_example = serde_json::json!({ "name": "Alice" });
+    let op = build_operation_from_function(
+        &sig,
+        "/users",
+        &HashSet::new(),
+        &HashMap::new(),
+        OperationRouteConfig {
+            request_example: Some(&request_example),
+            ..OperationRouteConfig::default()
+        },
+    );
+
+    let media = &op.request_body.unwrap().content["application/json"];
+    assert_eq!(media.example, Some(request_example));
+}
+
+#[test]
+fn response_example_is_attached_to_200_media() {
+    let sig: syn::Signature = syn::parse_str("fn get() -> Json<User>").unwrap();
+    let response_example = serde_json::json!({ "id": 1, "name": "Alice" });
+    let op = build_operation_from_function(
+        &sig,
+        "/users/1",
+        &HashSet::new(),
+        &HashMap::new(),
+        OperationRouteConfig {
+            response_example: Some(&response_example),
+            ..OperationRouteConfig::default()
+        },
+    );
+
+    let media = &op.responses["200"].content.as_ref().unwrap()["application/json"];
+    assert_eq!(media.example, Some(response_example));
+}

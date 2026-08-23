@@ -717,6 +717,27 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_route_file_import_is_ignored() {
+        let ast: syn::File = syn::parse_quote! {
+            use crate::routes::missing::Bar;
+        };
+        let route_module_files = HashMap::from([("routes::missing", "missing.rs")]);
+        let file_cache = HashMap::new();
+        let mut out = HashSet::new();
+
+        collect_imported_route_types(
+            &ast,
+            "routes::handler",
+            &route_module_files,
+            &file_cache,
+            &HashSet::new(),
+            &mut out,
+        );
+
+        assert!(out.is_empty());
+    }
+
+    #[test]
     fn file_declares_type_accepts_enums_and_ignores_other_items() {
         let ast: syn::File = syn::parse_quote! { enum Kind { A } fn helper() {} };
         assert!(file_declares_type(&ast, &syn::parse_quote!(Kind)));

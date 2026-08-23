@@ -181,6 +181,7 @@ pub(super) fn extract_struct_default(attrs: &[syn::Attribute]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use syn::Fields;
 
     fn parse_field(code: &str) -> syn::Field {
@@ -224,6 +225,28 @@ mod tests {
     fn test_extract_form_data_field_name_other_form_data_attr() {
         let attrs = parse_attrs(r#"#[form_data(limit = "100")] pub x: String"#);
         assert_eq!(extract_form_data_field_name(&attrs), None);
+    }
+
+    #[test]
+    fn malformed_form_data_field_name_falls_back_to_serde_rename() {
+        let field = parse_field(
+            r#"#[form_data(field_name = 42)] #[serde(rename = "wire_name")] pub rust_name: String"#,
+        );
+
+        assert_eq!(
+            resolve_field_name(field.ident.as_ref().unwrap(), &field.attrs, None),
+            "wire_name"
+        );
+    }
+
+    #[test]
+    fn valueless_form_data_field_name_falls_back_to_rust_name() {
+        let field = parse_field(r"#[form_data(field_name)] pub rust_name: String");
+
+        assert_eq!(
+            resolve_field_name(field.ident.as_ref().unwrap(), &field.attrs, None),
+            "rust_name"
+        );
     }
 
     #[test]
@@ -407,6 +430,20 @@ mod tests {
             extract_limit_tokens(&attrs).to_string(),
             format!("std :: option :: Option :: Some ({expected}usize)")
         );
+    }
+
+    #[rstest]
+    #[case::valueless(r"#[form_data(limit)] pub file: String")]
+    #[case::non_string(r"#[form_data(limit = 10)] pub file: String")]
+    #[case::invalid_size(r#"#[form_data(limit = "not-a-size")] pub file: String"#)]
+    fn malformed_limit_is_neither_emitted_nor_treated_as_explicit(#[case] code: &str) {
+        let attrs = parse_attrs(code);
+
+        assert_eq!(
+            extract_limit_tokens(&attrs).to_string(),
+            "std :: option :: Option :: None"
+        );
+        assert!(!has_explicit_limit(&attrs));
     }
 
     #[test]

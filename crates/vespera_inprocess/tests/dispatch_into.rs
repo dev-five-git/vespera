@@ -7,6 +7,7 @@ use std::sync::Once;
 use axum::Json;
 use axum::Router;
 use axum::http::StatusCode;
+use axum::response::Response;
 use axum::routing::{get, post};
 use bytes::Bytes;
 use serde_json::{Value, json};
@@ -24,6 +25,14 @@ async fn echo(body: Bytes) -> Bytes {
     body
 }
 
+async fn streamed() -> Response {
+    let chunks = futures_util::stream::iter([
+        Ok::<_, std::io::Error>(Bytes::from_static(b"stream-")),
+        Ok(Bytes::from_static(b"payload")),
+    ]);
+    Response::new(axum::body::Body::from_stream(chunks))
+}
+
 /// Mimics the `Validated<T>` 422 contract: JSON body with an `errors`
 /// array — the wire layer must hoist it into the response header.
 async fn reject() -> (StatusCode, Json<Value>) {
@@ -39,6 +48,7 @@ fn install() {
         register_app(|| {
             Router::new()
                 .route("/ping", get(ping))
+                .route("/stream", get(streamed))
                 .route("/echo", post(echo))
                 .route("/reject", post(reject))
         });
@@ -204,6 +214,25 @@ fn overflow_then_retry_with_exact_size_succeeds() {
     let result = dispatch_into(wire.clone(), &mut exact, &rt);
     assert_eq!(result, DirectWriteResult::Complete(required));
     assert_eq!(exact, dispatch_from_bytes(wire, &rt));
+}
+
+#[test]
+fn unknown_length_stream_overflow_reports_exact_retry_size() {
+    install();
+    let rt = runtime();
+    let wire = encode("GET", "/stream", &[]);
+    let reference = dispatch_from_bytes(wire.clone(), &rt);
+
+    let mut small = vec![0u8; 8];
+    let result = dispatch_into(wire.clone(), &mut small, &rt);
+    assert_eq!(result, DirectWriteResult::Overflow(reference.len()));
+
+    let mut exact = vec![0u8; reference.len()];
+    assert_eq!(
+        dispatch_into(wire, &mut exact, &rt),
+        DirectWriteResult::Complete(reference.len())
+    );
+    assert_eq!(exact, reference);
 }
 
 #[test]

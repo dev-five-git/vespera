@@ -7,7 +7,7 @@ use super::bench_serde::{
 };
 use super::{
     ValidationErrorItem, WIRE_VERSION, WireRequestHeader, build_wire_header_bytes,
-    build_wire_header_bytes_hoisting, parse_wire_header, split_wire_request,
+    build_wire_header_bytes_hoisting, parse_wire_header, split_wire_request, to_wire_bytes,
     write_wire_header_into, write_wire_header_into_slice,
 };
 
@@ -58,6 +58,10 @@ use super::{
     "invalid low surrogate in unicode escape"
 )]
 #[case(
+    br#"{"v":1,"method":"GET","path":"\uD800\x"}"#,
+    "unpaired surrogate in unicode escape"
+)]
+#[case(
     br#"{"v":1,"method":"GET","path":"\uDC00"}"#,
     "lone low surrogate in unicode escape"
 )]
@@ -78,6 +82,22 @@ fn hand_parser_decodes_every_short_escape_and_whitespace_before_app() {
 }
 
 #[test]
+fn hand_parser_accepts_a_multi_digit_u8_version_for_later_protocol_validation() {
+    let header = parse_wire_header(br#"{"v":12,"method":"GET","path":"/p"}"#)
+        .expect("12 is representable as u8 even though it is not this protocol version");
+
+    assert_eq!(header.v, 12);
+}
+
+#[test]
+fn hand_parser_accepts_zero_as_the_lower_u8_version_boundary() {
+    let header = parse_wire_header(br#"{"v":0,"method":"GET","path":"/p"}"#)
+        .expect("zero is representable as u8 even though it is not this protocol version");
+
+    assert_eq!(header.v, 0);
+}
+
+#[test]
 fn hand_parser_skips_empty_object_and_false_unknown_values() {
     let input = br#"{"unknown":{},"flag":false,"v":1,"method":"GET","path":"/p"}"#;
     let header = parse_wire_header(input).expect("unknown values are validated then ignored");
@@ -95,6 +115,27 @@ fn non_422_hoisting_builder_is_exactly_the_regular_header_builder() {
         build_wire_header_bytes_hoisting(400, &headers, &metadata, &body),
         build_wire_header_bytes(400, &headers, &metadata)
     );
+}
+
+#[test]
+fn to_wire_bytes_preserves_non_422_body_without_validation_hoisting() {
+    let body = bytes::Bytes::from_static(br#"{"errors":[{"path":"x"}]}"#);
+    let wire = to_wire_bytes((
+        400,
+        http::HeaderMap::new(),
+        body,
+        ResponseMetadata::current(),
+    ));
+    let header = format!(
+        r#"{{"v":1,"status":400,"headers":{{}},"metadata":{{"version":"{}"}}}}"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&u32::try_from(header.len()).unwrap().to_be_bytes());
+    expected.extend_from_slice(header.as_bytes());
+    expected.extend_from_slice(br#"{"errors":[{"path":"x"}]}"#);
+
+    assert_eq!(wire, expected);
 }
 
 /// Pins the zero-copy contract: the returned body must point into

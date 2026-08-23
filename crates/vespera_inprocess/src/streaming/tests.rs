@@ -55,6 +55,29 @@ impl HttpBody for ErrorBody {
     }
 }
 
+struct SparseFrameBody {
+    index: u8,
+}
+
+impl HttpBody for SparseFrameBody {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let frame = match self.index {
+            0 => Some(Frame::trailers(http::HeaderMap::new())),
+            1 => Some(Frame::data(Bytes::new())),
+            2 => Some(Frame::data(Bytes::from_static(b"payload"))),
+            _ => None,
+        };
+        self.index += 1;
+        Poll::Ready(frame.map(Ok))
+    }
+}
+
 fn decode_status(wire: &[u8]) -> u64 {
     let header_len = u32::from_be_bytes(wire[..4].try_into().expect("wire prefix")) as usize;
     let header: serde_json::Value =
@@ -104,6 +127,56 @@ async fn validation_body_sink_stop_is_reported_after_422_header() {
 
     assert_eq!(outcome, StreamOutcome::SinkStopped);
     assert_eq!(decode_status(&header), 422);
+}
+
+#[tokio::test]
+async fn empty_validation_body_emits_only_a_complete_422_header() {
+    let mut header = Vec::new();
+    let mut chunk_calls = 0;
+    let outcome = emit_header_then_stream_body(
+        422,
+        http::HeaderMap::new(),
+        ResponseMetadata::current(),
+        Body::empty(),
+        &mut |bytes| header.extend_from_slice(bytes),
+        &mut |_bytes| {
+            chunk_calls += 1;
+            ControlFlow::Continue(())
+        },
+    )
+    .await;
+
+    let expected = crate::wire::build_wire_header_bytes_hoisting(
+        422,
+        &http::HeaderMap::new(),
+        &ResponseMetadata::current(),
+        &Bytes::new(),
+    );
+    assert_eq!(outcome, StreamOutcome::Complete);
+    assert_eq!(header, expected);
+    assert_eq!(chunk_calls, 0);
+}
+
+#[tokio::test]
+async fn trailers_and_empty_data_frames_are_ignored_before_payload() {
+    let mut header = Vec::new();
+    let mut chunks = Vec::new();
+    let outcome = emit_header_then_stream_body(
+        200,
+        http::HeaderMap::new(),
+        ResponseMetadata::current(),
+        Body::new(SparseFrameBody { index: 0 }),
+        &mut |bytes| header.extend_from_slice(bytes),
+        &mut |bytes| {
+            chunks.extend_from_slice(bytes);
+            ControlFlow::Continue(())
+        },
+    )
+    .await;
+
+    assert_eq!(outcome, StreamOutcome::Complete);
+    assert_eq!(decode_status(&header), 200);
+    assert_eq!(chunks, b"payload");
 }
 
 #[tokio::test]

@@ -240,4 +240,39 @@ mod tests {
         let result = rename_field("test_name", Some("not_a_real_format"));
         assert_eq!(result, "test_name");
     }
+
+    #[rstest]
+    #[case("user_", Some("camelCase"), "user")]
+    #[case("_user", Some("camelCase"), "User")]
+    #[case("__user", Some("camelCase"), "User")]
+    #[case("user_", Some("PascalCase"), "User")]
+    #[case("user__name", Some("PascalCase"), "UserName")]
+    fn rename_case_separator_edges(
+        #[case] input: &str,
+        #[case] rename_all: Option<&str>,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(rename_field(input, rename_all), expected);
+    }
+
+    // serde applies SCREAMING_SNAKE_CASE differently by position: a field is
+    // taken as already snake_case (plain uppercase), a variant as PascalCase
+    // (split on uppercase, then uppercase). Measured against serde 1, variant
+    // `USER` is "U_S_E_R" and field `USER` is "USER". `rename_field` serves
+    // both positions, so these cases pin the variant rule.
+    #[rstest]
+    #[case("USER", "U_S_E_R")]
+    #[case("USER_NAME", "USER_NAME")]
+    #[case("user_name", "USER_NAME")]
+    fn screaming_snake_cases(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(rename_field(input, Some("SCREAMING_SNAKE_CASE")), expected);
+    }
+
+    #[rstest]
+    #[case("User_Name", "USER-NAME")]
+    #[case("user__name", "USER--NAME")]
+    #[case("user-name", "USER-NAME")]
+    fn screaming_kebab_separator_cases(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(rename_field(input, Some("SCREAMING-KEBAB-CASE")), expected);
+    }
 }

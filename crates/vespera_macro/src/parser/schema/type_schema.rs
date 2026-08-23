@@ -202,6 +202,19 @@ mod tests {
         assert!(matches!(schema_ref, SchemaRef::Inline(_)));
     }
 
+    #[rstest]
+    #[case("Box<'a>")]
+    #[case("Vec<'a>")]
+    fn non_type_generic_argument_falls_back_to_object(#[case] ty_source: &str) {
+        let ty: Type = syn::parse_str(ty_source).unwrap();
+        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
+
+        let SchemaRef::Inline(schema) = schema_ref else {
+            panic!("expected inline object schema for {ty_source}");
+        };
+        assert_eq!(schema.schema_type, Some(SchemaType::Object));
+    }
+
     // Test parse_type_to_schema_ref with unknown custom type (not in known_schemas)
     #[test]
     fn test_parse_type_to_schema_ref_unknown_custom_type() {

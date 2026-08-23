@@ -217,6 +217,14 @@ mod tests {
     }
 
     #[test]
+    fn matching_parameter_without_concrete_type_is_preserved() {
+        let ty: Type = syn::parse_str("T").unwrap();
+        let result = substitute_type(&ty, &[String::from("T")], &[]);
+
+        assert_eq!(result, ty);
+    }
+
+    #[test]
     fn test_substitute_type_with_lifetime_generic_argument() {
         // Test type with lifetime: Cow<'static, T>
         // The lifetime argument should be preserved while T is substituted

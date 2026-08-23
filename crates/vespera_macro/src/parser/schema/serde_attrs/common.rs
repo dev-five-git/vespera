@@ -234,4 +234,13 @@ mod tests {
         assert_eq!(strip_raw_prefix_owned("normal".to_string()), "normal");
         assert_eq!(strip_raw_prefix_owned("r#".to_string()), "");
     }
+
+    #[rstest::rstest]
+    #[case(" / leaked", "leaked")]
+    #[case("/ leaked", "leaked")]
+    fn doc_marker_prefixes_are_removed(#[case] input: &str, #[case] expected: &str) {
+        let item: syn::ItemStruct =
+            syn::parse_str(&format!(r#"#[doc = "{input}"] struct Value;"#)).unwrap();
+        assert_eq!(extract_doc_comment(&item.attrs), Some(expected.to_string()));
+    }
 }

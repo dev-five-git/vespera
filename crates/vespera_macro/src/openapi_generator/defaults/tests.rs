@@ -27,6 +27,7 @@ fn parse_type(src: &str) -> syn::Type {
 #[case::bool_false("false", Some(Value::Bool(false)))]
 #[case::to_string(r#""hello".to_string()"#, Some(Value::String("hello".to_string())))]
 #[case::string_from(r#"String::from("hello")"#, Some(Value::String("hello".to_string())))]
+#[case::string_from_non_string("String::from(42)", None)]
 #[case::vec_macro("vec![]", Some(Value::Array(vec![])))]
 #[case::vec_macro_nonempty("vec![1, 2, 3]", Some(json!([1, 2, 3])))]
 #[case::vec_macro_strings(r#"vec!["a", "b"]"#, Some(json!(["a", "b"])))]

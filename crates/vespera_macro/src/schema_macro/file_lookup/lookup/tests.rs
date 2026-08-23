@@ -143,6 +143,30 @@ fn test_collect_rs_files_recursive_with_files() {
 }
 
 #[test]
+fn collect_rs_files_recursive_classifies_entries_by_type_before_extension() {
+    let temp = TempDir::new().unwrap();
+    let root_rs = temp.path().join("root.rs");
+    let nested_rs = temp.path().join("nested").join("user.rs");
+    let fake_rs_dir = temp.path().join("fake.rs");
+    let rust_file_inside_fake_dir = fake_rs_dir.join("hidden.rs");
+    let text_file = temp.path().join("README.txt");
+    std::fs::create_dir_all(nested_rs.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(&fake_rs_dir).unwrap();
+    std::fs::write(&root_rs, "pub struct Root;").unwrap();
+    std::fs::write(&nested_rs, "pub struct User;").unwrap();
+    std::fs::write(&rust_file_inside_fake_dir, "pub struct Hidden;").unwrap();
+    std::fs::write(&text_file, "not Rust").unwrap();
+
+    let mut files = Vec::new();
+    collect_rs_files_recursive(temp.path(), &mut files);
+    files.sort();
+    let mut expected = vec![root_rs, nested_rs, rust_file_inside_fake_dir];
+    expected.sort();
+
+    assert_eq!(files, expected);
+}
+
+#[test]
 #[serial]
 fn test_find_struct_from_path_non_path_type() {
     let ty: Type = syn::parse_str("&str").unwrap();
@@ -299,4 +323,23 @@ fn string_schema_and_model_lookups_reject_empty_paths() {
     assert!(find_struct_from_schema_path(":: ::").is_none());
     assert!(find_model_from_schema_path("Schema").is_none());
     assert!(find_model_from_schema_path("crate::Schema").is_none());
+}
+
+#[test]
+#[serial]
+fn qualified_schema_path_ignores_empty_namespace_segments() {
+    let temp = TempDir::new().unwrap();
+    let models = temp.path().join("src").join("models");
+    std::fs::create_dir_all(&models).unwrap();
+    std::fs::write(models.join("user.rs"), "pub struct Model { pub id: i32 }").unwrap();
+    let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
+    // SAFETY: this serialized test restores the process environment through RAII.
+    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp.path()) };
+    bump_epoch();
+
+    let metadata = find_struct_from_schema_path("crate::::models::user::Model")
+        .expect("empty namespace segments should be ignored");
+
+    assert_eq!(metadata.name, "Model");
+    assert!(metadata.definition.contains("pub struct Model"));
 }

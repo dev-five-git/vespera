@@ -713,6 +713,15 @@ mod tests {
             .block_on(fut)
     }
 
+    #[test]
+    fn header_value_falls_back_to_copy_when_value_is_outside_owner() {
+        let owner = Bytes::from_static(b"wire-owned-value");
+
+        let value = header_value_from_owner("external-value", Some(&owner)).unwrap();
+
+        assert_eq!(value.as_bytes(), b"external-value");
+    }
+
     /// A wire `path` that cannot be parsed into an [`http::Uri`] (a raw
     /// space is illegal) must surface as an `Err((4xx, _))` the caller
     /// turns into a wire response — never a panic.  Guards the

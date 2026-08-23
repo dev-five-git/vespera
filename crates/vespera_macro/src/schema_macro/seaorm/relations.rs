@@ -426,6 +426,36 @@ mod tests {
     }
 
     #[test]
+    fn relation_path_resolves_multiple_super_segments() {
+        let ty: syn::Type = syn::parse_str("HasMany<super::super::user::Entity>").unwrap();
+        let struct_item = make_test_struct("struct Model { id: i32 }");
+        let module_path = vec![
+            "crate".to_string(),
+            "models".to_string(),
+            "nested".to_string(),
+            "memo".to_string(),
+        ];
+
+        let (tokens, info) = convert_relation_type_to_schema_with_info(
+            &ty,
+            &[],
+            &struct_item,
+            &module_path,
+            ident("users"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            tokens.to_string(),
+            "Vec < crate :: models :: user :: Schema >"
+        );
+        assert_eq!(
+            info.schema_path.to_string(),
+            "crate :: models :: user :: Schema"
+        );
+    }
+
+    #[test]
     fn test_convert_relation_type_to_schema_with_info_crate_path() {
         let ty: syn::Type = syn::parse_str("HasMany<crate::models::memo::Entity>").unwrap();
         let struct_item = make_test_struct("struct Model { id: i32 }");

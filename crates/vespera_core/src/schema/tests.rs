@@ -532,6 +532,14 @@ fn schema_ref_pure_ref_deserializes_as_ref() {
 }
 
 #[test]
+fn schema_ref_empty_object_round_trips_as_an_inline_empty_schema() {
+    let schema_ref: SchemaRef = serde_json::from_str("{}").unwrap();
+
+    assert!(matches!(schema_ref, SchemaRef::Inline(_)));
+    assert_eq!(serde_json::to_string(&schema_ref).unwrap(), "{}");
+}
+
+#[test]
 fn schema_ref_with_nullable_sibling_preserves_fields() {
     let v: SchemaRef =
         serde_json::from_str(r##"{"$ref":"#/components/schemas/User","nullable":true}"##).unwrap();

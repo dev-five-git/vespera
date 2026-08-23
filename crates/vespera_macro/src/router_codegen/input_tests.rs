@@ -235,6 +235,39 @@ fn test_process_vespera_input_tag_descriptions() {
 }
 
 #[test]
+fn empty_tag_list_is_preserved_by_parsing_and_omitted_after_processing() {
+    let input = syn::parse2::<AutoRouterInput>(quote::quote!(tags = []))
+        .expect("empty tag list should parse");
+    assert_eq!(input.tags.as_ref().map(Vec::len), Some(0));
+
+    let processed = process_vespera_input(input);
+
+    assert!(processed.tag_descriptions.is_none());
+}
+
+#[test]
+fn empty_security_scheme_list_is_preserved_by_parsing_and_omitted_after_processing() {
+    let input = syn::parse2::<AutoRouterInput>(quote::quote!(security_schemes = []))
+        .expect("empty security-scheme list should parse");
+    assert_eq!(input.security_schemes.as_ref().map(Vec::len), Some(0));
+
+    let processed = process_vespera_input(input);
+
+    assert!(processed.security_schemes.is_none());
+}
+
+#[test]
+fn empty_server_list_is_preserved_by_parsing_and_processing() {
+    let input = syn::parse2::<AutoRouterInput>(quote::quote!(servers = []))
+        .expect("empty server list should parse");
+    assert_eq!(input.servers.as_ref().map(Vec::len), Some(0));
+
+    let processed = process_vespera_input(input);
+
+    assert_eq!(processed.servers.as_ref().map(Vec::len), Some(0));
+}
+
+#[test]
 fn test_auto_router_input_parse_unknown_field() {
     let tokens = quote::quote!(unknown_field = "value");
     let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
@@ -650,12 +683,9 @@ fn test_tag_duplicate_field_rejected() {
     let tokens = quote::quote!(tags = [{ name = "a", name = "b" }]);
     let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
     assert!(result.is_err(), "duplicate tag field must be rejected");
-    assert!(
-        result
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("duplicate tag field")
+    assert_eq!(
+        result.err().unwrap().to_string(),
+        "duplicate tag field: `name`"
     );
 }
 
@@ -667,12 +697,9 @@ fn test_server_duplicate_field_rejected() {
         quote::quote!(servers = [{ url = "http://localhost:3000", url = "http://other:3000" }]);
     let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
     assert!(result.is_err(), "duplicate server field must be rejected");
-    assert!(
-        result
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("duplicate server field")
+    assert_eq!(
+        result.err().unwrap().to_string(),
+        "duplicate server field: `url`"
     );
 }
 

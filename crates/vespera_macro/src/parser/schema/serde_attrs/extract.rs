@@ -524,4 +524,32 @@ mod tests {
 
         assert!(extract_flatten(&attrs));
     }
+
+    #[test]
+    fn qualified_default_is_detected() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[serde(module::default)]
+        };
+        assert_eq!(extract_default(&attrs), Some(None));
+    }
+
+    #[rstest]
+    #[case(r"#[try_from_multipart(rename_all = 42)] struct Foo;")]
+    #[case(r"#[try_from_multipart(strict)] struct Foo;")]
+    fn multipart_rename_all_invalid_or_missing(#[case] source: &str) {
+        let item: syn::ItemStruct = syn::parse_str(source).unwrap();
+        assert_eq!(extract_rename_all(&item.attrs), None);
+    }
+
+    #[rstest]
+    #[case(r#"#[form_data(limit = "10MiB")] field: i32"#)]
+    #[case(r"#[form_data(field_name = 42)] field: i32")]
+    fn form_data_field_name_invalid_or_missing(#[case] field_source: &str) {
+        let item: syn::ItemStruct =
+            syn::parse_str(&format!("struct Foo {{ {field_source} }}")).unwrap();
+        let syn::Fields::Named(fields) = &item.fields else {
+            unreachable!("test input must contain named fields");
+        };
+        assert_eq!(extract_field_rename(&fields.named[0].attrs), None);
+    }
 }

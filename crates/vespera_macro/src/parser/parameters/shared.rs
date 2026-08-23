@@ -142,6 +142,12 @@ mod tests {
     }
 
     #[test]
+    fn known_type_non_path_type_is_false() {
+        let ty: Type = syn::parse_str("(i32, String)").unwrap();
+        assert!(!is_known_type(&ty, &HashSet::new(), &HashMap::new()));
+    }
+
+    #[test]
     fn known_type_non_vec_option_generic() {
         let known_schemas = HashSet::new();
         let struct_definitions = HashMap::new();
