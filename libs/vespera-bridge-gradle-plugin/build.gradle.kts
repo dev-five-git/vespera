@@ -9,8 +9,25 @@ plugins {
     id("com.gradle.plugin-publish") version "2.1.1"
 }
 
+tasks.named("publishPlugins") {
+    onlyIf("Gradle Plugin Portal credentials are present") {
+        val publishKey = providers.environmentVariable("GRADLE_PUBLISH_KEY").orNull
+        val publishSecret = providers.environmentVariable("GRADLE_PUBLISH_SECRET").orNull
+        val hasCredentials = !publishKey.isNullOrBlank() && !publishSecret.isNullOrBlank()
+
+        if (!hasCredentials) {
+            logger.lifecycle(
+                "Skipping publishPlugins: GRADLE_PUBLISH_KEY and GRADLE_PUBLISH_SECRET " +
+                    "must both be set and non-blank."
+            )
+        }
+
+        hasCredentials
+    }
+}
+
 group = "kr.devfive"
-version = "0.2.0"
+version = "0.3.1"
 
 java {
     toolchain {
