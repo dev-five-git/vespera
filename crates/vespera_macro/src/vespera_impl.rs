@@ -9,5 +9,6 @@ mod openapi_io;
 mod orchestrator;
 mod path_utils;
 mod route_merge;
+mod schema_merge;
 
 pub use orchestrator::{process_export_app, process_vespera_macro};

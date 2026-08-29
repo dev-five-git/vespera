@@ -8,11 +8,21 @@ use crate::{
     router_codegen::ProcessedVesperaInput,
 };
 use proc_macro2::Span;
+use syn::spanned::Spanned;
 
 use super::{
     cache::{MergeSpecCache, MergeSpecRead, path_fingerprint},
     path_utils::{current_crate_tag, find_target_dir},
+    schema_merge::SchemaMergeGuard,
 };
+
+fn display_merge_path(path: &syn::Path) -> String {
+    path.segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::")
+}
 
 /// OpenAPI write result consumed by router/doc codegen and incremental cache sidecars.
 ///
@@ -80,8 +90,12 @@ pub fn generate_and_write_openapi(
         route_storage,
     )?;
 
-    // Merge specs from child apps at compile time
+    // Merge specs from child apps at compile time. This is the one point where
+    // the parent and every exported child definition are all available, so
+    // schema-name conflicts are checked here before OpenApi's first-wins merge
+    // can discard a later definition.
     if !input.merge.is_empty() {
+        let mut schema_guard = SchemaMergeGuard::new(&openapi_doc)?;
         for merge_path in &input.merge {
             // Extract the struct name (last segment, e.g., "ThirdApp" from "third::ThirdApp")
             if let Some((struct_name, spec_file)) = merge_specs.spec_file_for(merge_path) {
@@ -95,6 +109,8 @@ pub fn generate_and_write_openapi(
                     }
                 };
                 let child_spec = serde_json::from_str::<vespera_core::openapi::OpenApi>(spec_content).map_err(|e| err_call_site(format!("OpenAPI merge: failed to parse child spec for `{struct_name}` at '{}'. Error: {e}.", spec_file.display())))?;
+                let child_origin = format!("merged app `{}`", display_merge_path(merge_path));
+                schema_guard.check_child(&child_spec, &child_origin, merge_path.span())?;
                 openapi_doc.merge(child_spec);
             }
         }
@@ -592,6 +608,58 @@ mod tests {
         }
 
         assert!(result.is_ok());
+    }
+
+    #[serial_test::serial]
+    #[test]
+    fn merged_child_schema_conflict_is_a_spanned_compile_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let target_dir = temp_dir.path().join("target/vespera");
+        fs::create_dir_all(&target_dir).unwrap();
+        let spec = |property: &str, schema_type: &str| {
+            serde_json::json!({
+                "openapi": "3.1.0",
+                "info": { "title": "child", "version": "1.0.0" },
+                "paths": {},
+                "components": {
+                    "schemas": {
+                        "ExampleItem": {
+                            "type": "object",
+                            "properties": { (property): { "type": schema_type } }
+                        }
+                    }
+                }
+            })
+            .to_string()
+        };
+        fs::write(
+            target_dir.join("PluginA.openapi.json"),
+            spec("id", "string"),
+        )
+        .unwrap();
+        fs::write(
+            target_dir.join("PluginB.openapi.json"),
+            spec("collisionMarker", "boolean"),
+        )
+        .unwrap();
+
+        let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
+        // SAFETY: this serialized test restores the process environment through RAII.
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        let mut processed = merge_input(syn::parse_quote!(plugin_a::PluginA));
+        processed.merge.push(syn::parse_quote!(plugin_b::PluginB));
+        let error = generate_and_write_openapi(
+            &processed,
+            &CollectedMetadata::new(),
+            HashMap::new(),
+            &[],
+            &mut MergeSpecCache::new(),
+        )
+        .expect_err("different same-named child schemas must fail the build");
+        let message = error.to_string();
+        assert!(message.contains("Duplicate OpenAPI schema name 'ExampleItem'"));
+        assert!(message.contains("plugin_a::PluginA"));
+        assert!(message.contains("plugin_b::PluginB"));
     }
 
     #[test]
