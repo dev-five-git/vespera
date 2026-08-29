@@ -9,7 +9,10 @@ use quote::quote;
 use crate::{
     metadata::{CollectedMetadata, StructMetadata},
     route_impl::StoredRouteInfo,
-    router_codegen::{ProcessedVesperaInput, generate_router_code},
+    router_codegen::{
+        ProcessedVesperaInput, apply_export_prefix, generate_router_code, namespace_export_schemas,
+        schema_namespace_from_prefix,
+    },
 };
 
 use super::{
@@ -302,6 +305,27 @@ fn cron_module_path(relative: &str) -> String {
     module_path
 }
 
+fn namespace_and_serialize_export_openapi(
+    openapi: &mut vespera_core::OpenApi,
+    metadata: &CollectedMetadata,
+    prefix: &str,
+) -> syn::Result<String> {
+    let schema_namespace = schema_namespace_from_prefix(prefix);
+    namespace_export_schemas(openapi, metadata, &schema_namespace)?;
+    serde_json::to_string(openapi).map_err(|error| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to serialize OpenAPI spec to JSON. Error: {error}. Check that all schema types are serializable.")))
+}
+
+fn finish_export_metadata(
+    mut metadata: CollectedMetadata,
+    schema_storage: &HashMap<String, StructMetadata>,
+    route_storage: &[StoredRouteInfo],
+    prefix: &str,
+) -> syn::Result<CollectedMetadata> {
+    finalize_metadata(&mut metadata, schema_storage, route_storage, "export_app!")?;
+    apply_export_prefix(&mut metadata, prefix);
+    Ok(metadata)
+}
+
 /// Process `export_app` macro - extracted for testability
 pub fn process_export_app(
     name: &syn::Ident,
@@ -309,6 +333,7 @@ pub fn process_export_app(
     schema_storage: &HashMap<String, StructMetadata>,
     manifest_dir: &str,
     route_storage: &[StoredRouteInfo],
+    prefix: &str,
     folder_span: Span,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let profile_start = if std::env::var("VESPERA_PROFILE").is_ok() {
@@ -332,12 +357,12 @@ pub fn process_export_app(
     let target_dir = find_target_dir(manifest_path);
     let vespera_dir = target_dir.join("vespera");
     let spec_file = vespera_dir.join(format!("{app_name}.openapi.json"));
-    let cache_path = get_export_cache_path(&app_name, folder_name);
+    let cache_path = get_export_cache_path(&app_name, folder_name, prefix);
     let scanned = crate::collector::scan_route_folder(&folder_path)
         .map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: {e}")))?;
     let fingerprints = crate::collector::fingerprints_from_scan(&scanned);
     let schema_hash = compute_schema_hash(schema_storage);
-    let config_hash = compute_export_config_hash(&app_name, folder_name);
+    let config_hash = compute_export_config_hash(&app_name, folder_name, prefix);
     let macro_version = env!("CARGO_PKG_VERSION").to_string();
     let macro_dev_fingerprint = compute_macro_dev_fingerprint();
     let cache_key = CacheKey {
@@ -348,8 +373,6 @@ pub fn process_export_app(
         config_hash,
     };
     let cached = read_cache(&cache_path);
-    // Shared header clauses come from `is_fresh`; only the `export_app!`-specific
-    // spec sidecar check stays here.
     let cache_hit = cached.as_ref().is_some_and(|c| {
         c.is_fresh(&cache_key)
             && sidecar_matches(&spec_file, c.spec_json_hash, c.spec_json_fingerprint)
@@ -362,20 +385,17 @@ pub fn process_export_app(
     // each branch returns the already-extended `CollectedMetadata` and the
     // duplicated outer pass is removed.
     let metadata = if let (true, Some(cache)) = (cache_hit, cached) {
-        let mut metadata = cache.metadata;
-        finalize_metadata(&mut metadata, schema_storage, route_storage, "export_app!")?;
-        metadata
+        finish_export_metadata(cache.metadata, schema_storage, route_storage, prefix)?
     } else {
         let (mut metadata, file_asts) = crate::collector::collect_metadata_from_files(scanned.iter().map(|(path, _)| path.as_path()), &folder_path, folder_name, route_storage).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to scan route folder '{folder_name}'. Error: {e}. Check that all .rs files have valid Rust syntax.")))?;
         let cache_metadata = metadata.clone();
-        finalize_metadata(&mut metadata, schema_storage, route_storage, "export_app!")?;
+        metadata = finish_export_metadata(metadata, schema_storage, route_storage, prefix)?;
 
         // B2: same-file extractor structs without `#[derive(Schema)]` would be
         // silently dropped from the spec — reject them at compile time.
         crate::parser::validate_schema_backed_extractors_with_cache(&metadata, &file_asts)?;
 
-        // Generate OpenAPI spec JSON string
-        let openapi_doc = crate::openapi_generator::try_generate_openapi_doc_with_metadata(
+        let mut openapi_doc = crate::openapi_generator::try_generate_openapi_doc_with_metadata(
             None,
             None,
             None,
@@ -384,7 +404,8 @@ pub fn process_export_app(
             Some(file_asts),
             route_storage,
         )?;
-        let spec_json = serde_json::to_string(&openapi_doc).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to serialize OpenAPI spec to JSON. Error: {e}. Check that all schema types are serializable.")))?;
+        let spec_json =
+            namespace_and_serialize_export_openapi(&mut openapi_doc, &metadata, prefix)?;
 
         // Write spec to temp file for compile-time merging by parent apps
         std::fs::create_dir_all(&vespera_dir).map_err(|e| syn::Error::new(Span::call_site(), format!("export_app! macro: failed to create build cache directory '{}'. Error: {}. Ensure the target directory is writable.", vespera_dir.display(), e)))?;
@@ -410,7 +431,6 @@ pub fn process_export_app(
     };
     let spec_path_str = crate::file_utils::path_to_include_str_literal(&spec_file);
 
-    // Generate router code (without docs routes, no merge)
     let router_code = generate_router_code(&metadata, None, None, None, &[], &[]);
 
     let result = Ok(quote! {

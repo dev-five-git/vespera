@@ -232,6 +232,7 @@ pub fn process_derive_schema(
 
     // Check for custom schema settings from #[schema(...)] attributes in one pass.
     let schema_attr = collect_schema_attribute_summary(&input.attrs);
+    let has_explicit_schema_name = schema_attr.name.is_some();
     let schema_name = schema_attr.name.unwrap_or_else(|| name.to_string());
 
     // Extract default values from serde(default = "fn_name") attributes at derive time.
@@ -249,6 +250,9 @@ pub fn process_derive_schema(
 
     // Schema-derived types appear in OpenAPI spec (include_in_openapi: true)
     let mut metadata = build_struct_metadata(input, schema_name, call_site_file.as_deref());
+    if has_explicit_schema_name {
+        metadata.explicit_schema_name = true;
+    }
     if schema_attr.has_ref_override {
         metadata.include_in_openapi = false;
     }

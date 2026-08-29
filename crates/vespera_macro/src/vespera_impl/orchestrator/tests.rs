@@ -229,6 +229,7 @@ fn test_process_export_app_folder_not_found() {
         &HashMap::new(),
         &temp_dir.path().to_string_lossy(),
         &[],
+        "",
         Span::call_site(),
     );
     assert!(result.is_err());
@@ -253,6 +254,7 @@ fn test_process_export_app_with_empty_folder() {
         &HashMap::new(),
         &temp_dir.path().to_string_lossy(),
         &[],
+        "",
         Span::call_site(),
     );
     // We only care about exercising the code path
@@ -283,6 +285,7 @@ fn test_process_export_app_with_schema_storage() {
         &schema_storage,
         &temp_dir.path().to_string_lossy(),
         &[],
+        "",
         Span::call_site(),
     );
     // Exercises the schema_storage.extend path
@@ -306,6 +309,7 @@ fn test_process_export_app_collect_metadata_error() {
         &HashMap::new(),
         &temp_dir.path().to_string_lossy(),
         &[],
+        "",
         Span::call_site(),
     );
 
@@ -336,6 +340,7 @@ fn test_process_export_app_create_dir_error() {
         &HashMap::new(),
         &temp_dir.path().to_string_lossy(),
         &[],
+        "",
         Span::call_site(),
     );
 
@@ -368,6 +373,7 @@ fn test_process_export_app_write_spec_error() {
         &HashMap::new(),
         &temp_dir.path().to_string_lossy(),
         &[],
+        "",
         Span::call_site(),
     );
 
@@ -456,6 +462,7 @@ fn test_process_export_app_with_profiling() {
         &HashMap::new(),
         &temp_dir.path().to_string_lossy(),
         &[],
+        "",
         Span::call_site(),
     );
 
@@ -574,6 +581,7 @@ fn process_export_app_reuses_fresh_cache_and_sidecar() {
         &HashMap::new(),
         &temp.path().to_string_lossy(),
         &[],
+        "",
         Span::call_site(),
     )
     .expect("first expansion populates cache");
@@ -583,6 +591,7 @@ fn process_export_app_reuses_fresh_cache_and_sidecar() {
         &HashMap::new(),
         &temp.path().to_string_lossy(),
         &[],
+        "",
         Span::call_site(),
     )
     .expect("second expansion reuses cache");

@@ -642,6 +642,7 @@ fn test_generate_schema_type_code_preserves_struct_doc() {
             "
         .to_string(),
         include_in_openapi: true,
+        explicit_schema_name: false,
         field_defaults: std::collections::BTreeMap::new(),
         source_identity: None,
     };

@@ -307,11 +307,12 @@ fn hash_security_scheme(scheme: &SecurityScheme, hasher: &mut impl Hasher) {
 }
 
 /// Compute a deterministic hash for `export_app!` inputs.
-pub(super) fn compute_export_config_hash(app_name: &str, folder_name: &str) -> u64 {
+pub(super) fn compute_export_config_hash(app_name: &str, folder_name: &str, prefix: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     "export_app:v1".hash(&mut hasher);
     app_name.hash(&mut hasher);
     folder_name.hash(&mut hasher);
+    prefix.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -334,14 +335,18 @@ pub(super) fn get_cache_path() -> std::path::PathBuf {
 }
 
 /// Get the path to this crate/app/folder's `export_app!` route cache file.
-pub(super) fn get_export_cache_path(app_name: &str, folder_name: &str) -> std::path::PathBuf {
+pub(super) fn get_export_cache_path(
+    app_name: &str,
+    folder_name: &str,
+    prefix: &str,
+) -> std::path::PathBuf {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let manifest_path = Path::new(&manifest_dir);
     find_target_dir(manifest_path).join("vespera").join(format!(
         "export-routes-{}-{}-{:016x}.cache",
         current_crate_tag(),
         app_name,
-        compute_export_config_hash(app_name, folder_name)
+        compute_export_config_hash(app_name, folder_name, prefix)
     ))
 }
 
@@ -620,10 +625,14 @@ mod tests {
 
     #[test]
     fn export_config_hash_is_namespaced_by_app_and_folder() {
-        let base = compute_export_config_hash("ThirdApp", "routes");
+        let base = compute_export_config_hash("ThirdApp", "routes", "");
 
-        assert_ne!(base, compute_export_config_hash("AdminApp", "routes"));
-        assert_ne!(base, compute_export_config_hash("ThirdApp", "api"));
+        assert_ne!(base, compute_export_config_hash("AdminApp", "routes", ""));
+        assert_ne!(base, compute_export_config_hash("ThirdApp", "api", ""));
+        assert_ne!(
+            base,
+            compute_export_config_hash("ThirdApp", "routes", "/api")
+        );
     }
 
     #[test]
