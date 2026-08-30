@@ -65,8 +65,10 @@ jobs:
           files: lcov.info
         if: github.ref == 'refs/heads/main'
 
-  # OBSERVATIONAL ONLY — this job must never gate, and its percentage must
-  # never become a threshold. Rust's branch instrumentation is still unstable
+  # OBSERVATIONAL PERCENTAGE ONLY — this job never gates on the percentage.
+  # "observational" applies only to the percentage: instrumented test failures
+  # still gate CI. Rust's branch instrumentation is unstable and therefore has
+  # no percentage threshold.
   # (rust-lang/rust#79649), and rust-lang/rust#124118 lists as NOT yet
   # supported: match arms and or-patterns, the `?` operator, `.await`, and
   # any branch introduced by macro expansion — "the current implementation
@@ -83,22 +85,20 @@ jobs:
   rust-branch-coverage:
     name: Rust branch coverage (observational)
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
+          toolchain: nightly-2026-08-29
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Run instrumented tests
-        # Allowed to fail. This pins a MOVING nightly, and toolchain drift
-        # breaks tests that assert compiler output — the trybuild UI suite
-        # blesses its .stderr files against stable, so a nightly diagnostic
-        # reword fails it with nothing actually broken. The profraw data is
-        # still written, so the report step below runs regardless.
-        continue-on-error: true
-        run: cargo llvm-cov --branch --workspace --no-fail-fast --no-report
+        # Pinned nightly keeps branch instrumentation reproducible. The
+        # trybuild UI suite is blessed against stable, whose diagnostic
+        # rendering can differ with nothing actually broken, so that
+        # stable-specific harness alone is skipped here and still runs in Test.
+        run: cargo llvm-cov --branch --workspace --no-fail-fast --no-report -- --skip ui_diagnostics
       - name: Summarise branch coverage
         run: |
           # `--branch` belongs on the instrumented RUN above, not here: the
