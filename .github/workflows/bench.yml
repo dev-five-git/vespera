@@ -2,12 +2,15 @@ name: Bench
 
 # Criterion regression gate for the in-process dispatch hot path.
 #
-# - push to main: runs the gated bench groups and saves the results as
-#   the `main` criterion baseline in the actions cache.
-# - pull_request: restores the latest main baseline and compares; the
-#   job FAILS when any bench regresses by more than 10% mean change
-#   AND the 95% confidence interval lower bound exceeds +5% (the
-#   double condition filters shared-runner noise).
+# - push to main: runs the gated bench groups as an informational smoke run.
+# - pull_request: measures the PR merge base as the `main` baseline, then
+#   measures the PR head in the same job on the same runner. The job FAILS
+#   when any bench regresses by more than 30% mean change AND the 95%
+#   confidence interval lower bound exceeds +20%.
+# - Cargo.toml remains a trigger so dependency/profile changes are covered,
+#   but a PR whose only relevant edits are version assignments is skipped.
+# - Cargo build outputs are reused between the two measurements within the job;
+#   target/criterion is never restored from a cross-run cache.
 #
 # Gated groups are the stable per-request paths (wire_path,
 # headers_path, request_headers_path, resolve_path, dispatch_path). The
@@ -15,11 +18,14 @@ name: Bench
 # timing) and the router_path setup micro-bench is low-signal, so those
 # are validated locally instead — see PERF_REPORT.md.
 #
-# This TIMING gate fires only at a loose ±10% (shared-runner drift), so it
-# catches BIG regressions. Small, deterministic ALLOCATION regressions are
-# caught noise-free by the `alloc_budget` integration test (a counting
-# global allocator asserting exact per-dispatch allocation budgets) in the
-# normal `cargo test` job — the two gates are complementary.
+# The +30% / +20% thresholds are calibrated to the measured noise floor of this
+# runner class. Two back-to-back runs of PR #144, whose merge base and head hold
+# byte-identical Rust, still swung -12.33%..+14.92% and tripped a DIFFERENT
+# benchmark each time, so anything tighter is structurally unachievable here.
+# This TIMING gate therefore catches only BIG regressions. Small, deterministic
+# ALLOCATION regressions are caught noise-free by the `alloc_budget` integration
+# test (a counting global allocator asserting exact per-dispatch allocation
+# budgets) in the normal `cargo test` job — the two gates are complementary.
 
 on:
   push:
@@ -50,44 +56,113 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      - name: Restore criterion baseline (latest main)
-        id: restore-baseline
-        uses: actions/cache/restore@v6
-        with:
-          path: target/criterion
-          key: bench-baseline-${{ runner.os }}-${{ github.sha }}
-          restore-keys: |
-            bench-baseline-${{ runner.os }}-
-
-      - name: Run benches and save main baseline
-        if: github.event_name == 'push'
+      - name: Determine PR benchmark scope
+        if: github.event_name == 'pull_request'
+        id: scope
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          echo "merge_base=$merge_base" >> "$GITHUB_OUTPUT"
+
+          should_run=false
+          while IFS= read -r path; do
+            case "$path" in
+              crates/*|Cargo.lock|.github/workflows/bench.yml)
+                should_run=true
+                ;;
+            esac
+          done < <(git diff --name-only "$merge_base" "$HEAD_SHA")
+
+          # Compare parsed TOML after removing only changepacks-managed release
+          # versions. External dependency versions, profiles, features, and any
+          # unparseable change fail safe by keeping the gate enabled.
+          if ! python3 - "$merge_base" "$HEAD_SHA" <<'PY'
+          import copy
+          import subprocess
+          import sys
+          import tomllib
+
+
+          def cargo_toml_at(revision):
+              contents = subprocess.check_output(
+                  ["git", "show", f"{revision}:Cargo.toml"],
+                  text=True,
+                  encoding="utf-8",
+              )
+              return tomllib.loads(contents)
+
+
+          def without_release_versions(document):
+              normalized = copy.deepcopy(document)
+              workspace = normalized.get("workspace")
+              if not isinstance(workspace, dict):
+                  return normalized
+
+              package = workspace.get("package")
+              if isinstance(package, dict):
+                  package.pop("version", None)
+
+              dependencies = workspace.get("dependencies")
+              if isinstance(dependencies, dict):
+                  for name, spec in dependencies.items():
+                      if not isinstance(spec, dict):
+                          continue
+                      if spec.get("path") == f"crates/{name}":
+                          spec.pop("version", None)
+
+              return normalized
+
+
+          base = without_release_versions(cargo_toml_at(sys.argv[1]))
+          head = without_release_versions(cargo_toml_at(sys.argv[2]))
+          version_only = base == head
+          print(f"cargo_version_only={str(version_only).lower()}")
+          raise SystemExit(0 if version_only else 1)
+          PY
+          then
+            echo "::notice::Could not prove Cargo.toml changes are version-only; keeping the performance gate enabled."
+            should_run=true
+          fi
+
+          echo "should_run=$should_run" >> "$GITHUB_OUTPUT"
+
+      - name: Skip version-only PR
+        if: github.event_name == 'pull_request' && steps.scope.outputs.should_run != 'true'
+        run: echo "::notice::The only benchmark-relevant edits are Cargo.toml version assignments; skipping the performance gate."
+
+      - name: Run benchmark smoke test on main
+        if: github.event_name == 'push'
+        run: cargo bench -p vespera_inprocess --bench dispatch -- "${BENCH_FILTER}"
+
+      - name: Measure merge-base baseline
+        if: github.event_name == 'pull_request' && steps.scope.outputs.should_run == 'true'
+        env:
+          MERGE_BASE: ${{ steps.scope.outputs.merge_base }}
+        run: |
+          git checkout --detach "$MERGE_BASE"
+          rm -rf target/criterion
           cargo bench -p vespera_inprocess --bench dispatch -- \
             --save-baseline main "${BENCH_FILTER}"
 
-      - name: Save criterion baseline cache
-        if: github.event_name == 'push'
-        uses: actions/cache/save@v6
-        with:
-          path: target/criterion
-          key: bench-baseline-${{ runner.os }}-${{ github.sha }}
-
-      - name: Compare against main baseline
-        if: github.event_name == 'pull_request'
+      - name: Compare PR head against merge-base baseline
+        if: github.event_name == 'pull_request' && steps.scope.outputs.should_run == 'true'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          if [ ! -d target/criterion ] || ! find target/criterion -maxdepth 4 -type d -name main | grep -q .; then
-            echo "::notice::No main baseline in cache yet — running benches without a gate."
-            cargo bench -p vespera_inprocess --bench dispatch -- "${BENCH_FILTER}"
-            exit 0
-          fi
+          git checkout --detach "$HEAD_SHA"
           cargo bench -p vespera_inprocess --bench dispatch -- \
             --baseline main "${BENCH_FILTER}"
 
       - name: Enforce regression gate
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.scope.outputs.should_run == 'true'
         run: |
           shopt -s nullglob
           fail=0
@@ -101,8 +176,8 @@ jobs:
             printf '%s: mean %+.2f%% (CI lower %+.2f%%)\n' \
               "$bench" "$(awk -v v="$mean" 'BEGIN{print v*100}')" \
               "$(awk -v v="$lower" 'BEGIN{print v*100}')"
-            if awk -v m="$mean" -v l="$lower" 'BEGIN{exit !(m > 0.10 && l > 0.05)}'; then
-              echo "::error::Performance regression: ${bench} mean change exceeds +10% with CI lower bound > +5%"
+            if awk -v m="$mean" -v l="$lower" 'BEGIN{exit !(m > 0.30 && l > 0.20)}'; then
+              echo "::error::Performance regression: ${bench} mean change exceeds +30% with CI lower bound > +20%"
               fail=1
             fi
           done < <(find target/criterion -path '*/change/estimates.json')
