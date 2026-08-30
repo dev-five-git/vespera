@@ -184,9 +184,18 @@ impl CollectedMetadata {
             if let Some(&prev_idx) = seen.get(s.name.as_str()) {
                 // Only report if definitions actually differ (identical re-registration is OK)
                 if self.structs[prev_idx].definition != s.definition {
+                    let origins = match (
+                        self.structs[prev_idx].source_identity.as_deref(),
+                        s.source_identity.as_deref(),
+                    ) {
+                        (Some(first), Some(second)) => {
+                            format!(" Conflicting definitions came from {first} and {second}.")
+                        }
+                        _ => String::new(),
+                    };
                     return Err(format!(
-                        "Duplicate OpenAPI schema name '{}'. Two different structs produce the same schema name, which would corrupt the OpenAPI spec. Rename one of them or use #[schema(name = \"...\")].",
-                        s.name
+                        "Duplicate OpenAPI schema name '{}'. Two different structs produce the same schema name, which would corrupt the OpenAPI spec.{origins} Rename one of them or use #[schema(name = \"...\")].",
+                        s.name,
                     ));
                 }
             } else {
