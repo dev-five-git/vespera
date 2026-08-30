@@ -5,8 +5,8 @@ name: Bench
 # - push to main: runs the gated bench groups as an informational smoke run.
 # - pull_request: measures the PR merge base as the `main` baseline, then
 #   measures the PR head in the same job on the same runner. The job FAILS
-#   when any bench regresses by more than 10% mean change AND the 95%
-#   confidence interval lower bound exceeds +5%.
+#   when any bench regresses by more than 30% mean change AND the 95%
+#   confidence interval lower bound exceeds +20%.
 # - Cargo.toml remains a trigger so dependency/profile changes are covered,
 #   but a PR whose only relevant edits are version assignments is skipped.
 # - Cargo build outputs are reused between the two measurements within the job;
@@ -18,11 +18,14 @@ name: Bench
 # timing) and the router_path setup micro-bench is low-signal, so those
 # are validated locally instead — see PERF_REPORT.md.
 #
-# This TIMING gate fires only at a loose ±10% (residual same-runner noise), so it
-# catches BIG regressions. Small, deterministic ALLOCATION regressions are
-# caught noise-free by the `alloc_budget` integration test (a counting
-# global allocator asserting exact per-dispatch allocation budgets) in the
-# normal `cargo test` job — the two gates are complementary.
+# The +30% / +20% thresholds are calibrated to the measured noise floor of this
+# runner class. Two back-to-back runs of PR #144, whose merge base and head hold
+# byte-identical Rust, still swung -12.33%..+14.92% and tripped a DIFFERENT
+# benchmark each time, so anything tighter is structurally unachievable here.
+# This TIMING gate therefore catches only BIG regressions. Small, deterministic
+# ALLOCATION regressions are caught noise-free by the `alloc_budget` integration
+# test (a counting global allocator asserting exact per-dispatch allocation
+# budgets) in the normal `cargo test` job — the two gates are complementary.
 
 on:
   push:
@@ -173,8 +176,8 @@ jobs:
             printf '%s: mean %+.2f%% (CI lower %+.2f%%)\n' \
               "$bench" "$(awk -v v="$mean" 'BEGIN{print v*100}')" \
               "$(awk -v v="$lower" 'BEGIN{print v*100}')"
-            if awk -v m="$mean" -v l="$lower" 'BEGIN{exit !(m > 0.10 && l > 0.05)}'; then
-              echo "::error::Performance regression: ${bench} mean change exceeds +10% with CI lower bound > +5%"
+            if awk -v m="$mean" -v l="$lower" 'BEGIN{exit !(m > 0.30 && l > 0.20)}'; then
+              echo "::error::Performance regression: ${bench} mean change exceeds +30% with CI lower bound > +20%"
               fail=1
             fi
           done < <(find target/criterion -path '*/change/estimates.json')
