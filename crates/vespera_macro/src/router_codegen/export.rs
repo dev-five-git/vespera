@@ -123,16 +123,18 @@ pub fn schema_namespace_from_prefix(prefix: &str) -> String {
         .filter(|word| !word.is_empty())
     {
         let mut chars = word.chars();
-        if let Some(first) = chars.next() {
-            namespace.extend(first.to_uppercase());
-            namespace.extend(chars);
-        }
+        let first = chars
+            .next()
+            .expect("schema namespace words are filtered to be non-empty");
+        namespace.extend(first.to_uppercase());
+        namespace.extend(chars);
     }
     namespace
 }
 
 /// Apply the normalized prefix to collected route metadata exactly once.
 /// Both router generation and OpenAPI generation consume this same metadata.
+#[inline(never)]
 pub fn apply_export_prefix(metadata: &mut CollectedMetadata, prefix: &str) {
     if prefix.is_empty() {
         return;
