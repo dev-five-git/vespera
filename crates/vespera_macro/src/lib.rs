@@ -365,8 +365,13 @@ pub fn vespera(input: TokenStream) -> TokenStream {
 /// // Simple - uses "routes" folder by default
 /// vespera::export_app!(MyApp);
 ///
-/// // Custom directory
+/// // Custom directory and explicit public route prefix
 /// vespera::export_app!(MyApp, dir = "api");
+/// vespera::export_app!(MyPlugin, prefix = "/api/media-library");
+/// // The latter emits routes under /api/media-library and namespaces generated
+/// // component schemas (for example Item -> MediaLibraryItem). A conventional
+/// // leading /api is omitted from the PascalCase schema namespace. An explicit
+/// // #[schema(name = "SharedThing")] remains global and is not namespaced.
 ///
 /// // Generates:
 /// // pub struct MyApp;
@@ -381,7 +386,7 @@ pub fn vespera(input: TokenStream) -> TokenStream {
 pub fn export_app(input: TokenStream) -> TokenStream {
     schema_macro::file_cache::bump_epoch();
 
-    let ExportAppInput { name, dir } = syn::parse_macro_input!(input as ExportAppInput);
+    let ExportAppInput { name, dir, prefix } = syn::parse_macro_input!(input as ExportAppInput);
     // Capture the `dir = "..."` literal span (or the macro call site when
     // `dir` is omitted) before `dir` is consumed below, so a "route folder
     // not found" diagnostic points at the offending argument.
@@ -392,6 +397,7 @@ pub fn export_app(input: TokenStream) -> TokenStream {
         .map(|d| d.value())
         .or_else(|| std::env::var("VESPERA_DIR").ok())
         .unwrap_or_else(|| "routes".to_string());
+    let prefix = prefix.map_or_else(String::new, |value| value.value());
     let schema_storage = schema_impl::current_crate_schemas();
     let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") else {
         return syn::Error::new(proc_macro2::Span::call_site(), "export_app! macro: CARGO_MANIFEST_DIR is not set. This macro must be used within a cargo build.").to_compile_error().into();
@@ -405,6 +411,7 @@ pub fn export_app(input: TokenStream) -> TokenStream {
         &schema_storage,
         &manifest_dir,
         &route_storage,
+        &prefix,
         folder_span,
     ) {
         Ok(tokens) => tokens.into(),

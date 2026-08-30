@@ -79,6 +79,20 @@ fn test_extract_schema_name_attr_with_name() {
 }
 
 #[test]
+fn explicit_schema_name_is_retained_in_metadata() {
+    let input: syn::DeriveInput = syn::parse_quote! {
+        #[schema(name = "SharedThing")]
+        struct Item { id: i32 }
+    };
+
+    let (metadata, _) = process_derive_schema(&input);
+
+    let metadata = metadata.expect("derive metadata");
+    assert_eq!(metadata.name, "SharedThing");
+    assert!(metadata.explicit_schema_name);
+}
+
+#[test]
 fn test_extract_schema_name_attr_without_name() {
     let attrs: Vec<syn::Attribute> = syn::parse_quote! {
         #[derive(Debug)]

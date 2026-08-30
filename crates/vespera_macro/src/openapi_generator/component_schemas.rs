@@ -237,6 +237,7 @@ mod tests {
             name: "Hidden".to_string(),
             definition: "struct Hidden { id: i32 }".to_string(),
             include_in_openapi: false,
+            explicit_schema_name: false,
             field_defaults: BTreeMap::new(),
             source_identity: None,
         });
@@ -285,6 +286,7 @@ mod tests {
             name: "Invalid".to_string(),
             definition: "struct { invalid syntax {{{{".to_string(),
             include_in_openapi: true,
+            explicit_schema_name: false,
             field_defaults: BTreeMap::new(),
             source_identity: None,
         });
@@ -461,6 +463,7 @@ pub fn get_config() -> Config { Config { count: 0, name: String::new() } }
             name: "Config".to_string(),
             definition: "struct Config { count: i32, name: String }".to_string(),
             include_in_openapi: true,
+            explicit_schema_name: false,
             field_defaults: BTreeMap::from([
                 ("count".to_string(), json!(42)),
                 ("name".to_string(), json!("default_name")),

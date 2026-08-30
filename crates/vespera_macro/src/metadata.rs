@@ -78,6 +78,10 @@ pub struct StructMetadata {
     /// - false: from cross-file lookup - only for `schema_type`! source, NOT in openapi.json
     #[serde(default = "default_include_in_openapi")]
     pub include_in_openapi: bool,
+    /// Whether the public component name came from `#[schema(name = "...")]`.
+    /// Explicit names are global and opt out of export prefix namespacing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub explicit_schema_name: bool,
     /// Pre-extracted default values for fields with `#[serde(default = "fn_name")]`.
     /// Key: Rust field name, Value: extracted default value.
     /// Populated by `#[derive(Schema)]` to avoid AST re-parsing in `vespera!()`.
@@ -102,6 +106,7 @@ impl Default for StructMetadata {
             name: String::new(),
             definition: String::new(),
             include_in_openapi: true,
+            explicit_schema_name: false,
             field_defaults: BTreeMap::new(),
             source_identity: None,
         }
@@ -115,6 +120,7 @@ impl StructMetadata {
             name,
             definition,
             include_in_openapi: true,
+            explicit_schema_name: false,
             field_defaults: BTreeMap::new(),
             source_identity: None,
         }
@@ -126,6 +132,7 @@ impl StructMetadata {
             name,
             definition,
             include_in_openapi: false,
+            explicit_schema_name: false,
             field_defaults: BTreeMap::new(),
             source_identity: None,
         }
