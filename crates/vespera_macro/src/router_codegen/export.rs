@@ -120,7 +120,6 @@ pub fn schema_namespace_from_prefix(prefix: &str) -> String {
     for word in segments[start..]
         .iter()
         .flat_map(|segment| segment.split(|ch: char| !ch.is_alphanumeric()))
-        .filter(|word| !word.is_empty())
     {
         let mut chars = word.chars();
         if let Some(first) = chars.next() {
@@ -131,8 +130,8 @@ pub fn schema_namespace_from_prefix(prefix: &str) -> String {
     namespace
 }
 
-/// Apply the normalized prefix to collected route metadata exactly once.
-/// Both router generation and OpenAPI generation consume this same metadata.
+// Apply the normalized prefix to collected route metadata exactly once.
+// Both router generation and OpenAPI generation consume this same metadata.
 pub fn apply_export_prefix(metadata: &mut CollectedMetadata, prefix: &str) {
     if prefix.is_empty() {
         return;
@@ -352,6 +351,34 @@ mod tests {
         );
     }
 
+    #[rstest::rstest]
+    #[case("/api media", "must be a URL path")]
+    #[case("/api?version=1", "must be a URL path")]
+    #[case("/api#section", "must be a URL path")]
+    #[case("/api//users", "must not contain empty path segments")]
+    #[case("/---", "must contain at least one alphanumeric character")]
+    fn normalize_prefix_rejects_each_invalid_shape(#[case] raw: &str, #[case] expected: &str) {
+        let prefix = LitStr::new(raw, proc_macro2::Span::call_site());
+
+        let error = normalize_prefix(&prefix).expect_err("invalid prefix must be rejected");
+
+        assert!(error.to_string().contains(expected));
+    }
+
+    #[rstest::rstest]
+    #[case("", "")]
+    #[case("/", "")]
+    #[case("/api", "Api")]
+    #[case("/api/media-library", "MediaLibrary")]
+    #[case("/api/v1/user_profile", "V1UserProfile")]
+    #[case("/api/-media--library-", "MediaLibrary")]
+    fn schema_namespace_covers_empty_api_and_composite_prefixes(
+        #[case] prefix: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(schema_namespace_from_prefix(prefix), expected);
+    }
+
     fn route_metadata(path: &str) -> crate::metadata::RouteMetadata {
         crate::metadata::RouteMetadata {
             method: "get".to_string(),
@@ -412,6 +439,27 @@ mod tests {
         apply_export_prefix(&mut metadata, "");
 
         assert_eq!(serde_json::to_vec(&metadata).unwrap(), before);
+    }
+
+    #[test]
+    fn prefix_replaces_root_route_and_extends_nested_route() {
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(route_metadata("/"));
+        metadata.routes.push(route_metadata("/users"));
+
+        apply_export_prefix(&mut metadata, "/api/admin");
+
+        assert_eq!(metadata.routes[0].path, "/api/admin");
+        assert_eq!(metadata.routes[1].path, "/api/admin/users");
+    }
+
+    #[test]
+    fn nonempty_prefix_leaves_empty_route_collection_empty() {
+        let mut metadata = CollectedMetadata::new();
+
+        apply_export_prefix(&mut metadata, "/api/admin");
+
+        assert!(metadata.routes.is_empty());
     }
 
     fn schema_metadata(
@@ -545,5 +593,41 @@ mod tests {
         namespace_export_schemas(&mut openapi, &metadata, "").unwrap();
 
         assert_eq!(serde_json::to_vec(&openapi).unwrap(), before);
+    }
+
+    #[test]
+    fn nonempty_namespace_without_schema_components_is_a_noop() {
+        let (metadata, mut openapi) = schema_doc("/items", "struct Item { id: i32 }");
+        openapi.components = None;
+        let before = serde_json::to_vec(&openapi).unwrap();
+
+        namespace_export_schemas(&mut openapi, &metadata, "Media").unwrap();
+
+        assert_eq!(serde_json::to_vec(&openapi).unwrap(), before);
+    }
+
+    #[test]
+    fn generated_schema_namespace_rejects_an_explicit_name_collision() {
+        let (mut metadata, mut openapi) = schema_doc("/items", "struct Item { id: i32 }");
+        metadata.structs.push(schema_metadata(
+            "MediaItem",
+            "struct MediaItem { id: i32 }",
+            true,
+        ));
+        let schemas = openapi
+            .components
+            .as_mut()
+            .and_then(|components| components.schemas.as_mut())
+            .unwrap();
+        schemas.insert("MediaItem".to_string(), schemas["Item"].clone());
+
+        let error = namespace_export_schemas(&mut openapi, &metadata, "Media")
+            .expect_err("generated names must not replace explicit schemas");
+
+        assert!(
+            error
+                .to_string()
+                .contains("schema namespace `Media` maps `Item` to existing component `MediaItem`")
+        );
     }
 }

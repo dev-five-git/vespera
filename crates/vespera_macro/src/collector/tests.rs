@@ -526,7 +526,8 @@ fn test_collect_metadata_file_read_error_permissions() {
 
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
-    assert!(error_msg.contains("failed to read route file"));
+    assert!(error_msg.contains("cannot read or parse"));
+    assert!(error_msg.contains("unreadable.rs"));
 
     let permissions = fs::Permissions::from_mode(0o644);
     fs::set_permissions(&file_path, permissions).ok();
