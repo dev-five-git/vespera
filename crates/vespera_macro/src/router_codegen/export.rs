@@ -120,19 +120,18 @@ pub fn schema_namespace_from_prefix(prefix: &str) -> String {
     for word in segments[start..]
         .iter()
         .flat_map(|segment| segment.split(|ch: char| !ch.is_alphanumeric()))
-        .filter(|word| !word.is_empty())
     {
         let mut chars = word.chars();
-        let first = chars.next().expect("filtered non-empty word");
-        namespace.extend(first.to_uppercase());
-        namespace.extend(chars);
+        if let Some(first) = chars.next() {
+            namespace.extend(first.to_uppercase());
+            namespace.extend(chars);
+        }
     }
     namespace
 }
 
 // Apply the normalized prefix to collected route metadata exactly once.
 // Both router generation and OpenAPI generation consume this same metadata.
-#[inline(never)]
 pub fn apply_export_prefix(metadata: &mut CollectedMetadata, prefix: &str) {
     if prefix.is_empty() {
         return;
@@ -372,6 +371,7 @@ mod tests {
     #[case("/api", "Api")]
     #[case("/api/media-library", "MediaLibrary")]
     #[case("/api/v1/user_profile", "V1UserProfile")]
+    #[case("/api/-media--library-", "MediaLibrary")]
     fn schema_namespace_covers_empty_api_and_composite_prefixes(
         #[case] prefix: &str,
         #[case] expected: &str,
@@ -451,6 +451,15 @@ mod tests {
 
         assert_eq!(metadata.routes[0].path, "/api/admin");
         assert_eq!(metadata.routes[1].path, "/api/admin/users");
+    }
+
+    #[test]
+    fn nonempty_prefix_leaves_empty_route_collection_empty() {
+        let mut metadata = CollectedMetadata::new();
+
+        apply_export_prefix(&mut metadata, "/api/admin");
+
+        assert!(metadata.routes.is_empty());
     }
 
     fn schema_metadata(
