@@ -44,7 +44,7 @@ jobs:
         # tests, which let a never-passing doctest land unnoticed —
         # run them explicitly before the (slow) coverage step.
         run: cargo test --workspace --doc
-      - name: Test
+      - name: Test and enforce 100% line coverage
         run: |
           # rust coverage issue
           echo 'max_width = 100000' > .rustfmt.toml
@@ -56,7 +56,7 @@ jobs:
           echo 'merge_derives = true' >> .rustfmt.toml
           echo 'use_small_heuristics = "Default"' >> .rustfmt.toml
           cargo fmt
-          cargo tarpaulin --out Lcov Stdout --engine llvm
+          cargo tarpaulin --out Lcov Stdout --engine llvm --fail-under 100
       - name: Upload to codecov.io
         uses: codecov/codecov-action@v7
         with:

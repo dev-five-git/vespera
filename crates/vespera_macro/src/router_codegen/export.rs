@@ -352,6 +352,33 @@ mod tests {
         );
     }
 
+    #[rstest::rstest]
+    #[case("/api media", "must be a URL path")]
+    #[case("/api?version=1", "must be a URL path")]
+    #[case("/api#section", "must be a URL path")]
+    #[case("/api//users", "must not contain empty path segments")]
+    #[case("/---", "must contain at least one alphanumeric character")]
+    fn normalize_prefix_rejects_each_invalid_shape(#[case] raw: &str, #[case] expected: &str) {
+        let prefix = LitStr::new(raw, proc_macro2::Span::call_site());
+
+        let error = normalize_prefix(&prefix).expect_err("invalid prefix must be rejected");
+
+        assert!(error.to_string().contains(expected));
+    }
+
+    #[rstest::rstest]
+    #[case("", "")]
+    #[case("/", "")]
+    #[case("/api", "Api")]
+    #[case("/api/media-library", "MediaLibrary")]
+    #[case("/api/v1/user_profile", "V1UserProfile")]
+    fn schema_namespace_covers_empty_api_and_composite_prefixes(
+        #[case] prefix: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(schema_namespace_from_prefix(prefix), expected);
+    }
+
     fn route_metadata(path: &str) -> crate::metadata::RouteMetadata {
         crate::metadata::RouteMetadata {
             method: "get".to_string(),
@@ -412,6 +439,18 @@ mod tests {
         apply_export_prefix(&mut metadata, "");
 
         assert_eq!(serde_json::to_vec(&metadata).unwrap(), before);
+    }
+
+    #[test]
+    fn prefix_replaces_root_route_and_extends_nested_route() {
+        let mut metadata = CollectedMetadata::new();
+        metadata.routes.push(route_metadata("/"));
+        metadata.routes.push(route_metadata("/users"));
+
+        apply_export_prefix(&mut metadata, "/api/admin");
+
+        assert_eq!(metadata.routes[0].path, "/api/admin");
+        assert_eq!(metadata.routes[1].path, "/api/admin/users");
     }
 
     fn schema_metadata(
