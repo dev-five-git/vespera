@@ -1,1 +1,0 @@
-{"changes":{"crates/vespera_macro/Cargo.toml":"Patch"},"note":"Cover every export prefix branch and require 100% Rust line coverage in CI.","date":"2026-08-30T07:06:00.000Z"}

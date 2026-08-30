@@ -1,1 +1,0 @@
-{"changes":{"crates/vespera_macro/Cargo.toml":"Minor"},"note":"Fail the build when merged apps define conflicting same-named OpenAPI schemas, turning a previously silent first-wins condition into an actionable compile error while preserving identical-schema deduplication.","date":"2026-08-29T17:10:09.921Z"}
