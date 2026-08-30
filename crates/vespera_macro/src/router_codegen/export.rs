@@ -594,4 +594,40 @@ mod tests {
 
         assert_eq!(serde_json::to_vec(&openapi).unwrap(), before);
     }
+
+    #[test]
+    fn nonempty_namespace_without_schema_components_is_a_noop() {
+        let (metadata, mut openapi) = schema_doc("/items", "struct Item { id: i32 }");
+        openapi.components = None;
+        let before = serde_json::to_vec(&openapi).unwrap();
+
+        namespace_export_schemas(&mut openapi, &metadata, "Media").unwrap();
+
+        assert_eq!(serde_json::to_vec(&openapi).unwrap(), before);
+    }
+
+    #[test]
+    fn generated_schema_namespace_rejects_an_explicit_name_collision() {
+        let (mut metadata, mut openapi) = schema_doc("/items", "struct Item { id: i32 }");
+        metadata.structs.push(schema_metadata(
+            "MediaItem",
+            "struct MediaItem { id: i32 }",
+            true,
+        ));
+        let schemas = openapi
+            .components
+            .as_mut()
+            .and_then(|components| components.schemas.as_mut())
+            .unwrap();
+        schemas.insert("MediaItem".to_string(), schemas["Item"].clone());
+
+        let error = namespace_export_schemas(&mut openapi, &metadata, "Media")
+            .expect_err("generated names must not replace explicit schemas");
+
+        assert!(
+            error
+                .to_string()
+                .contains("schema namespace `Media` maps `Item` to existing component `MediaItem`")
+        );
+    }
 }
