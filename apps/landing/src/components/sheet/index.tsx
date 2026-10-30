@@ -73,7 +73,7 @@ export function SheetTrigger({
   asChild,
   children,
   ...props
-}: ComponentProps<typeof Button<'button'>> & { asChild?: boolean }) {
+}: ComponentProps<typeof Button> & { asChild?: boolean }) {
   const { setIsOpen } = useSheet()
 
   if (asChild) {

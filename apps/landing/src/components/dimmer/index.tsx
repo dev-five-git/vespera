@@ -25,7 +25,7 @@ export function Dimmer({
   dimmed = false,
   className,
   ...props
-}: { dimmed?: boolean } & ComponentProps<typeof Box<'div'>>) {
+}: { dimmed?: boolean } & ComponentProps<typeof Box>) {
   const [innerDimmed, setInnerDimmed] = useState(false)
   const render = dimmed || innerDimmed
   return (
