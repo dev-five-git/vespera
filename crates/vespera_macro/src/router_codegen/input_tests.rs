@@ -389,7 +389,7 @@ fn test_process_vespera_input_defaults() {
     let input: AutoRouterInput = syn::parse2(tokens).unwrap();
     let processed = process_vespera_input(input);
     assert_eq!(processed.folder_name, "routes");
-    assert!(processed.openapi_file_names.is_empty());
+    assert_eq!(processed.openapi_file_names, [] as [std::string::String; 0]);
     assert!(processed.title.is_none());
     assert!(processed.docs_url.is_none());
 }
@@ -460,7 +460,7 @@ fn test_parse_merge_values_empty() {
     let tokens = quote::quote!(merge = []);
     let input: AutoRouterInput = syn::parse2(tokens).unwrap();
     let merge = input.merge.unwrap();
-    assert!(merge.is_empty());
+    assert_eq!(merge, [] as [syn::Path; 0]);
 }
 
 #[test]
