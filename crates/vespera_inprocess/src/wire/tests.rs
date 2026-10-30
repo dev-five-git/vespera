@@ -478,10 +478,12 @@ fn validation_items() -> Vec<ValidationErrorItem> {
 /// both the `Vec` path and the `&mut [u8]` slice path.
 ///
 /// Both `metadata` arms of `write_response_header` (`header_write.rs`)
-/// are covered: the pointer-eq fast path that emits the pre-baked
-/// `METADATA_SEGMENT_CURRENT` const for `ResponseMetadata::current()`,
-/// and the general `_ =>` arm that must run `write_json_string` over an
-/// owned version.  The owned twin deliberately carries quote /
+/// are covered: the content-compared fast path that emits the pre-baked
+/// `METADATA_SEGMENT_CURRENT` const when the version equals the engine
+/// version (whether borrowed from `current()` or an owned equal copy —
+/// the branch must not depend on where the string lives), and the
+/// general arm that must run `write_json_string` over any other
+/// version.  The escaped twin deliberately carries quote /
 /// backslash / newline bytes, because a plain SemVer version never
 /// trips the escape table and so would leave the escaper unexercised.
 #[test]
@@ -506,10 +508,18 @@ fn hand_serialize_matches_serde_serialize() {
     headers.append(cookie, HeaderValue::from_bytes(b"c=\"q\"").unwrap());
 
     let metadata_cases = [
-        // Pointer-eq fast path -> pre-baked `METADATA_SEGMENT_CURRENT`.
+        // Fast path -> pre-baked `METADATA_SEGMENT_CURRENT`.
         ("current", ResponseMetadata::current()),
-        // General `_ =>` arm -> `write_json_string` over an owned version
-        // whose bytes force the escaper (quote, backslash, newline).
+        // Same version held in its own heap allocation: still the fast
+        // path, because the branch compares content, not addresses.
+        (
+            "owned_current",
+            ResponseMetadata {
+                version: Cow::Owned(env!("CARGO_PKG_VERSION").to_owned()),
+            },
+        ),
+        // General arm -> `write_json_string` over a version whose bytes
+        // force the escaper (quote, backslash, newline).
         (
             "owned_escaped",
             ResponseMetadata {
