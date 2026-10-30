@@ -1,0 +1,1 @@
+{"changes":{"crates/vespera/Cargo.toml":"Patch","crates/vespera_core/Cargo.toml":"Patch","crates/vespera_inprocess/Cargo.toml":"Patch","crates/vespera_macro/Cargo.toml":"Patch"},"note":"Refresh Rust dependencies and support Rust 1.99 Clippy diagnostics while preserving legacy cron step expressions with croner 4.","date":"2026-10-30T12:20:00.000Z"}
