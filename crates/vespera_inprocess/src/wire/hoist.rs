@@ -82,10 +82,10 @@ struct BorrowedStr<'a>(Cow<'a, str>);
 
 impl<'de: 'a, 'a> Deserialize<'de> for BorrowedStr<'a> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor<'a>(std::marker::PhantomData<&'a ()>);
+        struct Visitor;
 
-        impl<'de: 'a, 'a> serde::de::Visitor<'de> for Visitor<'a> {
-            type Value = BorrowedStr<'a>;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Cow<'de, str>;
 
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.write_str("a string")
@@ -95,15 +95,15 @@ impl<'de: 'a, 'a> Deserialize<'de> for BorrowedStr<'a> {
                 self,
                 v: &'de str,
             ) -> Result<Self::Value, E> {
-                Ok(BorrowedStr(Cow::Borrowed(v)))
+                Ok(Cow::Borrowed(v))
             }
 
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                Ok(BorrowedStr(Cow::Owned(v.to_owned())))
+                Ok(Cow::Owned(v.to_owned()))
             }
         }
 
-        deserializer.deserialize_str(Visitor(std::marker::PhantomData))
+        deserializer.deserialize_str(Visitor).map(BorrowedStr)
     }
 }
 
