@@ -4,9 +4,7 @@ import { ComponentProps, MouseEvent } from 'react'
 
 import { useSheet } from '../sheet'
 
-export function SideMenuClickDetector(
-  props: ComponentProps<typeof VStack<'div'>>,
-) {
+export function SideMenuClickDetector(props: ComponentProps<typeof VStack>) {
   const { setIsOpen } = useSheet()
   const handleClick = (e: MouseEvent) => {
     if (!(e.target instanceof HTMLElement)) return
