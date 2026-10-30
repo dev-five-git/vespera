@@ -4,7 +4,7 @@ import { ComponentProps } from 'react'
 export function Button({
   children,
   ...props
-}: ComponentProps<typeof Center<'button'>>) {
+}: Omit<ComponentProps<typeof Center<'button'>>, 'as'>) {
   return (
     <Center
       _active={{
