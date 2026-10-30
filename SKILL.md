@@ -7,6 +7,15 @@ description: Build APIs with Vespera - FastAPI-like DX for Rust/Axum. Covers rou
 
 Vespera = FastAPI DX for Rust. Zero-config OpenAPI 3.1 generation via compile-time macro scanning.
 
+## API Naming Contract (MANDATORY)
+
+API fields and query params are camelCase; ERD columns stay snake_case; drafts carry both (name + column).
+For example, the API field `imageUrl` maps to the ERD column `image_url`.
+Request, response and query structs must use `#[serde(rename_all = "camelCase")]`;
+use `rename_all = "camelCase"` with `schema_type!` as well. Keep multipart
+`#[form_data(field_name = "imageUrl")]` aligned with the same wire name.
+Different casing is a contract violation, not an equivalent spelling.
+
 ## Quick Start
 
 ```rust
