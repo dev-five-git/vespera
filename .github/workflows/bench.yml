@@ -151,6 +151,7 @@ jobs:
           rm -rf target/criterion
           cargo bench -p vespera_inprocess --bench dispatch -- \
             --save-baseline main "${BENCH_FILTER}"
+          git restore -- Cargo.lock
 
       - name: Compare PR head against merge-base baseline
         if: github.event_name == 'pull_request' && steps.scope.outputs.should_run == 'true'
