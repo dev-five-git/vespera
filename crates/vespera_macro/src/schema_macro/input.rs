@@ -461,7 +461,10 @@ mod tests {
         assert!(input.omit.is_none());
         assert!(input.pick.is_none());
         assert!(input.rename.is_none());
-        assert!(input.relation_adapters.is_empty());
+        assert_eq!(
+            input.relation_adapters,
+            [] as [(std::string::String, syn::Ident); 0]
+        );
         assert!(input.derive_clone);
     }
 
