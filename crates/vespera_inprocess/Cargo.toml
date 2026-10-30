@@ -51,7 +51,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Case-table unit tests (the repo-wide convention, already used by
 # vespera_core / vespera_macro).  Test-only: never linked into the cdylib.
-rstest = "0.26"
+rstest = "0.28"
 
 [[bench]]
 name = "dispatch"

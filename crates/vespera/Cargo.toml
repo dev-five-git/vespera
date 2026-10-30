@@ -79,7 +79,7 @@ tower = { version = "0.5", features = ["util"] }
 # they don't need the `inprocess` cargo feature to be enabled.
 vespera_inprocess = { workspace = true }
 # Byte-snapshot testing for 422 validation envelope contract
-insta = "1.48"
+insta = "1.49"
 # `Validated<T>` 422-envelope serialization before/after A/B bench.
 criterion = { version = "0.8", features = ["html_reports"] }
 # `derive` for the `#[derive(Validate)]` fixture; `email`/`url` for its

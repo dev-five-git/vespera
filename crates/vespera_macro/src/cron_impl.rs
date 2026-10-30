@@ -119,8 +119,8 @@ pub fn process_cron_attribute(
     Ok(item)
 }
 
-/// Validate a cron expression at **compile time** using the SAME parser the
-/// runtime uses, so a malformed expression is a clean span-attached compile
+/// Validate a cron expression at **compile time** using runtime-compatible
+/// parser settings, so a malformed expression is a clean span-attached compile
 /// error instead of a `JobScheduler` panic at application startup.
 ///
 /// Parity basis: `tokio-cron-scheduler`'s `Job::new_async` parses the schedule
@@ -128,15 +128,15 @@ pub fn process_cron_attribute(
 /// `vespera` enables `tokio-cron-scheduler` **without** its `english` feature,
 /// so the runtime `schedule_to_cron` step is an identity passthrough and the
 /// only parse is the 6-field (seconds-required) croner parse replicated here.
-/// The `croner` major version is pinned (in `Cargo.toml`) to the one
-/// `tokio-cron-scheduler` resolves, so compile-time acceptance exactly matches
-/// runtime acceptance.
+/// Enable croner 4's legacy range syntax to preserve expressions such as
+/// `1/10` accepted by tokio-cron-scheduler's croner 3 parser.
 #[cfg(feature = "cron")]
 fn validate_cron_expression(expression: &syn::LitStr) -> syn::Result<()> {
     use croner::parser::{CronParser, Seconds};
     let expr = expression.value();
     CronParser::builder()
         .seconds(Seconds::Required)
+        .sloppy_ranges(true)
         .build()
         .parse(&expr)
         .map_err(|e| {

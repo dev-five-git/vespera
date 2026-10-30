@@ -40,10 +40,9 @@ serde_json = "1.0"
 # the `validation` feature, which is what emits the pattern validator.
 regex-syntax = { version = "0.8", optional = true }
 # Compile-time validation of `#[cron("...")]` expressions (gated by the `cron`
-# feature). MUST track the croner major version tokio-cron-scheduler resolves
-# at runtime (0.15 → croner 3.x) so compile-time acceptance exactly matches the
-# runtime `CronParser::builder().seconds(Seconds::Required)` parse.
-croner = { version = "3", optional = true }
+# feature). Enable legacy ranges in the compile-time parser to match
+# tokio-cron-scheduler 0.15's croner 3 syntax (including `1/10` steps).
+croner = { version = "4", optional = true }
 
 [dev-dependencies]
 # `extra-traits` (Debug/PartialEq on syn syntax-tree nodes) is required only by
@@ -51,8 +50,8 @@ croner = { version = "3", optional = true }
 # feature out of the proc-macro's release build while cargo's feature
 # unification turns it on for every test build.
 syn = { version = "3", features = ["full", "extra-traits"] }
-rstest = "0.26"
-insta = "1.48"
+rstest = "0.28"
+insta = "1.49"
 prettyplease = "0.3"
 tempfile = "3"
 serial_test = "4"
