@@ -39,10 +39,9 @@ fn test_detect_circular_fields(
 
 #[test]
 fn test_detect_circular_fields_invalid_struct() {
-    assert!(
-        analyze_circular_refs(&["crate".to_string()], "not valid rust")
-            .circular_fields
-            .is_empty()
+    assert_eq!(
+        analyze_circular_refs(&["crate".to_string()], "not valid rust").circular_fields,
+        [] as [std::string::String; 0]
     );
 }
 
@@ -53,10 +52,9 @@ fn test_detect_circular_fields_unnamed_fields() {
         "models".to_string(),
         "test".to_string(),
     ];
-    assert!(
-        analyze_circular_refs(&path, "pub struct TupleStruct(i32, String);")
-            .circular_fields
-            .is_empty()
+    assert_eq!(
+        analyze_circular_refs(&path, "pub struct TupleStruct(i32, String);").circular_fields,
+        [] as [std::string::String; 0]
     );
 }
 
@@ -343,10 +341,9 @@ fn test_generate_default_for_relation_field_has_one_no_fk_found() {
 
 #[test]
 fn test_circular_fields_empty_module_path() {
-    assert!(
-        analyze_circular_refs(&[], "pub struct Schema { pub id: i32 }")
-            .circular_fields
-            .is_empty()
+    assert_eq!(
+        analyze_circular_refs(&[], "pub struct Schema { pub id: i32 }").circular_fields,
+        [] as [std::string::String; 0]
     );
 }
 
@@ -387,10 +384,9 @@ fn test_circular_fields_schema_suffix_pattern() {
 #[test]
 fn test_circular_fields_field_without_ident() {
     let path = vec!["crate".to_string(), "test".to_string()];
-    assert!(
-        analyze_circular_refs(&path, r"pub struct Schema { pub id: i32, }")
-            .circular_fields
-            .is_empty()
+    assert_eq!(
+        analyze_circular_refs(&path, r"pub struct Schema { pub id: i32, }").circular_fields,
+        [] as [std::string::String; 0]
     );
 }
 
