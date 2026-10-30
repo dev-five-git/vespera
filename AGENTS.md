@@ -24,7 +24,7 @@ Also provides in-process dispatch (`vespera_inprocess` crate) and JNI integratio
 | **Binary wire format (JNI)** | `vespera_inprocess` | `[u32 BE len | UTF-8 JSON header | raw body]` — multipart / PDFs / images travel as raw bytes; **`422` validation errors hoisted** into the wire header as `"validation_errors": [...]` so Java decoders never special-case error shapes |
 | **Multi-app routing (JNI/FFI)** | `vespera::jni_apps! { "_default" => app, "admin" => admin_app }` | Wire header carries optional `"app"` field; Java side picks per request via `X-Vespera-App` header (configurable via `AppNameResolver`) |
 | **Zero-config Spring autoconfigure** | `libs/vespera-bridge/.../VesperaBridgeAutoConfiguration` | `VesperaProxyController` + `AppNameResolver` + `DispatchModeResolver` beans auto-registered; replace any of them via `@ConditionalOnMissingBean` |
-| **Cron jobs** | `#[vespera::cron("...")]` | Auto-discovered like routes; runs via `tokio-cron-scheduler` |
+| **Cron jobs** | `#[vespera::cron("...")]` | Auto-discovered like routes; runs via the built-in `vespera::cron` tokio scheduler (croner 4, shared parser in `vespera_core::cron`) |
 
 ## STRUCTURE
 

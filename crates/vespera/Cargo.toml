@@ -27,7 +27,7 @@ default = [
     "validation",
     "mimalloc",
 ]
-cron = ["dep:tokio-cron-scheduler", "vespera_macro/cron"]
+cron = ["tokio/time", "vespera_core/cron-chrono", "vespera_macro/cron"]
 inprocess = ["dep:vespera_inprocess"]
 jni = ["inprocess", "dep:vespera_jni"]
 # mimalloc as the cdylib's global allocator (see vespera_jni docs).
@@ -53,7 +53,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tower-layer = "0.3"
 tower-service = "0.3"
-tokio-cron-scheduler = { version = "0.15", optional = true }
 # Used by the `Serve` extension trait to bind a TcpListener and drive
 # axum::serve, and by the multipart extractor to keep temp-file I/O
 # off the async workers (`fs` + `io-util` for tokio::fs writes,

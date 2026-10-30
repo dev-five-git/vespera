@@ -755,7 +755,7 @@ let summary: vespera::schema::Schema = schema!(User, pick = ["id", "name"]);
 
 ## Cron Jobs
 
-Schedule background tasks with `#[vespera::cron]`. Uses [tokio-cron-scheduler](https://crates.io/crates/tokio-cron-scheduler) under the hood.
+Schedule background tasks with `#[vespera::cron]`. A tiny built-in tokio scheduler (one task per job, [croner](https://crates.io/crates/croner) for expression parsing) runs them.
 
 ### Enable Feature
 
@@ -803,6 +803,12 @@ Uses 6-field cron expressions (`sec min hour day month weekday`):
 | `0 0 0 * * *` | Daily at midnight |
 | `1/10 * * * * *` | Every 10 seconds |
 | `0 30 9 * * Mon-Fri` | Weekdays at 9:30 AM |
+
+Expressions are validated at compile time by the very parser the runtime
+scheduler uses ([croner](https://crates.io/crates/croner) 4: `L`, `W`, `#`,
+`?`, names and an optional trailing year are supported), so an accepted
+expression can never fail at startup. Times are UTC. When both day-of-month and
+day-of-week are restricted, **both** must match (AND, not the classic cron OR).
 
 ### Requirements
 

@@ -6,9 +6,17 @@ description = "Core types and utilities for Vespera"
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Cron expression parser shared by the `#[cron]` validator and the runtime
+# scheduler. `cron-chrono` adds croner's chrono backend (next-occurrence
+# search), which only the runtime scheduler needs.
+cron = ["dep:croner"]
+cron-chrono = ["cron", "croner/chrono"]
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+croner = { version = "4", default-features = false, optional = true }
 
 [dev-dependencies]
 rstest = "0.28"

@@ -60,9 +60,8 @@ pub mod multipart;
 // Re-export tempfile for schema_type! multipart mode (NamedTempFile)
 pub use tempfile;
 
-// Re-export tokio-cron-scheduler for cron job support
 #[cfg(feature = "cron")]
-pub use tokio_cron_scheduler;
+pub mod cron;
 
 // Re-export tokio for cron scheduler spawning
 #[cfg(feature = "cron")]

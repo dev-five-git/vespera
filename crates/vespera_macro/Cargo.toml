@@ -19,13 +19,11 @@ proc-macro = true
 # actually pulls in the runtime crate. `regex-syntax` is pulled in only
     # here, to validate `#[schema(pattern = "...")]` literals at compile time.
     validation = ["dep:regex-syntax"]
-    # Compile-time validation of `#[vespera::cron("...")]` expressions using the
-    # SAME parser the runtime uses (croner, via tokio-cron-scheduler) so a
-    # malformed cron string becomes a compile error instead of a startup
-    # `JobScheduler` panic. Enabled transitively by `vespera`'s `cron` feature,
-    # so croner (and its chrono/derive_builder/strum tree) only compiles when a
-    # crate actually uses cron.
-    cron = ["dep:croner"]
+    # Compile-time validation of `#[vespera::cron("...")]` expressions with the
+    # SAME parser the runtime scheduler uses (`vespera_core::cron`), so a
+    # malformed cron string becomes a compile error. Enabled transitively by
+    # `vespera`'s `cron` feature, so croner only compiles when a crate uses cron.
+    cron = ["vespera_core/cron"]
 
 [dependencies]
 quote = "1"
@@ -39,10 +37,6 @@ serde_json = "1.0"
 # instead of a first-validation runtime panic. Optional: pulled in only by
 # the `validation` feature, which is what emits the pattern validator.
 regex-syntax = { version = "0.8", optional = true }
-# Compile-time validation of `#[cron("...")]` expressions (gated by the `cron`
-# feature). Enable legacy ranges in the compile-time parser to match
-# tokio-cron-scheduler 0.15's croner 3 syntax (including `1/10` steps).
-croner = { version = "4", optional = true }
 
 [dev-dependencies]
 # `extra-traits` (Debug/PartialEq on syn syntax-tree nodes) is required only by

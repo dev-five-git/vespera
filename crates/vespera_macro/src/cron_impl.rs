@@ -63,7 +63,7 @@ pub fn register_cron(info: StoredCronInfo) {
     crate::macro_storage::register(&CRON_STORAGE, info);
 }
 
-/// Snapshot of the current crate's registered cron jobs — a cheap `Arc` clone.
+/// Snapshot of the current crate's registered cron jobs ??a cheap `Arc` clone.
 #[must_use]
 pub fn current_crate_crons() -> Arc<Vec<StoredCronInfo>> {
     crate::macro_storage::current_crate_items(&CRON_STORAGE)
@@ -100,8 +100,7 @@ pub fn process_cron_attribute(
     let expression: syn::LitStr = syn::parse2(attr).map_err(|_| syn::Error::new(proc_macro2::Span::call_site(), "#[cron] attribute: expected a cron expression string. Example: #[cron(\"0 */5 * * * *\")]"))?;
     // Compile-time cron-syntax validation (gated by the `cron` feature, enabled
     // transitively by `vespera`'s `cron` feature). A malformed expression is a
-    // span-attached compile error here instead of a `JobScheduler` panic at app
-    // startup (see `router_codegen::generator`'s `Job::new_async(...).expect`).
+    // span-attached compile error here instead of a failure at app startup.
     #[cfg(feature = "cron")]
     validate_cron_expression(&expression)?;
     let item_fn: syn::ItemFn = syn::parse2(item.clone()).map_err(|e| syn::Error::new(e.span(), "#[cron] attribute: can only be applied to functions, not other items. Move or remove the attribute."))?;
@@ -119,36 +118,21 @@ pub fn process_cron_attribute(
     Ok(item)
 }
 
-/// Validate a cron expression at **compile time** using runtime-compatible
-/// parser settings, so a malformed expression is a clean span-attached compile
-/// error instead of a `JobScheduler` panic at application startup.
-///
-/// Parity basis: `tokio-cron-scheduler`'s `Job::new_async` parses the schedule
-/// with `croner`'s `CronParser::builder().seconds(Seconds::Required).build()`.
-/// `vespera` enables `tokio-cron-scheduler` **without** its `english` feature,
-/// so the runtime `schedule_to_cron` step is an identity passthrough and the
-/// only parse is the 6-field (seconds-required) croner parse replicated here.
-/// Enable croner 4's legacy range syntax to preserve expressions such as
-/// `1/10` accepted by tokio-cron-scheduler's croner 3 parser.
+/// Validate a cron expression at **compile time** with the exact parser the
+/// runtime scheduler uses (`vespera_core::cron`), so a malformed expression is
+/// a clean span-attached compile error instead of a startup failure.
 #[cfg(feature = "cron")]
 fn validate_cron_expression(expression: &syn::LitStr) -> syn::Result<()> {
-    use croner::parser::{CronParser, Seconds};
     let expr = expression.value();
-    CronParser::builder()
-        .seconds(Seconds::Required)
-        .sloppy_ranges(true)
-        .build()
-        .parse(&expr)
-        .map_err(|e| {
-            syn::Error::new_spanned(
-                expression,
-                format!(
-                    "#[cron] invalid cron expression `{expr}`: {e}. Expected a 6-field \
-                     expression `sec min hour day month weekday`, e.g. \"0 */5 * * * *\"."
-                ),
-            )
-        })?;
-    Ok(())
+    vespera_core::cron::parse(&expr).map(drop).map_err(|e| {
+        syn::Error::new_spanned(
+            expression,
+            format!(
+                "#[cron] invalid cron expression `{expr}`: {e}. Expected a 6-field \
+                 expression `sec min hour day month weekday`, e.g. \"0 */5 * * * *\"."
+            ),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -352,7 +336,7 @@ mod tests {
     #[cfg(feature = "cron")]
     #[test]
     fn test_process_cron_attribute_invalid_cron_syntax_is_compile_error() {
-        // Each is rejected at compile time (was a runtime `JobScheduler` panic):
+        // Each is rejected at compile time (was a runtime scheduler failure):
         // 1-field, 5-field (missing seconds), out-of-range minute, garbage token.
         for bad in [
             quote!("invalid"),
