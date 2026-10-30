@@ -456,15 +456,15 @@ fn hand_parse_accepts_shallow_unknown_with_escapes() {
 /// Fresh `validation_errors` table exercising the full escape set
 /// (quote, backslash, newline, a `\u0001` control, tab, non-ASCII)
 /// plus the skip-if-none `code`/`message` fields.
-fn validation_items() -> Vec<ValidationErrorItem> {
+fn validation_items() -> Vec<ValidationErrorItem<'static>> {
     vec![
         ValidationErrorItem {
-            path: "user\"name".to_owned(),
-            code: Some("E\\01".to_owned()),
-            message: Some("bad\nvalue\u{1}\tré".to_owned()),
+            path: "user\"name".into(),
+            code: Some("E\\01".into()),
+            message: Some("bad\nvalue\u{1}\tré".into()),
         },
         ValidationErrorItem {
-            path: "tags".to_owned(),
+            path: "tags".into(),
             code: None,
             message: None,
         },
@@ -619,6 +619,27 @@ fn hoist_422_is_best_effort_for_wrong_typed_fields() {
     assert_eq!(items[2].path, "c");
     assert_eq!(items[2].code, None);
     assert_eq!(items[2].message, None);
+}
+
+/// A JSON string holding an escape cannot be borrowed from the body; it must
+/// still hoist (owned) next to plain strings that do borrow.
+#[test]
+fn hoist_422_unescapes_escaped_strings_and_borrows_plain_ones() {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("application/json"),
+    );
+    let body = bytes::Bytes::from_static(
+        br#"{"errors":[{"path":"user\"name","code":"plain","message":"line\nbreak"}]}"#,
+    );
+    let items = super::hoist::try_hoist_validation_errors(&headers, &body)
+        .expect("escaped strings must hoist");
+    assert_eq!(items[0].path, "user\"name");
+    assert!(matches!(items[0].path, std::borrow::Cow::Owned(_)));
+    assert_eq!(items[0].code.as_deref(), Some("plain"));
+    assert!(matches!(items[0].code, Some(std::borrow::Cow::Borrowed(_))));
+    assert_eq!(items[0].message.as_deref(), Some("line\nbreak"));
 }
 
 /// Regression: a NON-OBJECT array element (`null`, a bare string, a number)

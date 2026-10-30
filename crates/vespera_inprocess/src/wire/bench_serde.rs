@@ -143,7 +143,7 @@ pub(super) struct WireResponseHeader<'a, H: Serialize> {
     /// can read them with a single header parse.  `None` for any other
     /// status; the original body is preserved verbatim regardless.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) validation_errors: Option<Vec<ValidationErrorItem>>,
+    pub(super) validation_errors: Option<Vec<ValidationErrorItem<'a>>>,
 }
 
 /// Zero-allocation serializer for response headers: renders an

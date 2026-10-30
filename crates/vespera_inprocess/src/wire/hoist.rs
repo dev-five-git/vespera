@@ -1,6 +1,8 @@
 //! 422 validation-error hoisting, split out to keep `wire.rs` under the
 //! 1000-line cap.  Pure code move: no logic or byte-behaviour change.
 
+use std::borrow::Cow;
+
 use bytes::Bytes;
 use serde::Deserialize;
 
@@ -59,27 +61,65 @@ fn body_is_json(headers: &http::HeaderMap) -> bool {
 /// fallback walk in [`try_hoist_validation_errors`], so the hoist stays
 /// genuinely best-effort without taxing the common case.
 #[derive(Deserialize)]
-struct HoistEnvelope {
-    errors: Vec<HoistErrorIn>,
+struct HoistEnvelope<'a> {
+    #[serde(borrow)]
+    errors: Vec<HoistErrorIn<'a>>,
 }
 
 #[derive(Deserialize)]
-struct HoistErrorIn {
-    #[serde(default)]
-    path: Option<String>,
-    #[serde(default)]
-    code: Option<String>,
-    #[serde(default)]
-    message: Option<String>,
+struct HoistErrorIn<'a> {
+    #[serde(default, borrow)]
+    path: Option<BorrowedStr<'a>>,
+    #[serde(default, borrow)]
+    code: Option<BorrowedStr<'a>>,
+    #[serde(default, borrow)]
+    message: Option<BorrowedStr<'a>>,
+}
+
+/// A JSON string that borrows from the input when it holds no escape and is
+/// owned otherwise (serde's own `Cow<str>` impl always allocates).
+struct BorrowedStr<'a>(Cow<'a, str>);
+
+impl<'de: 'a, 'a> Deserialize<'de> for BorrowedStr<'a> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor<'a>(std::marker::PhantomData<&'a ()>);
+
+        impl<'de: 'a, 'a> serde::de::Visitor<'de> for Visitor<'a> {
+            type Value = BorrowedStr<'a>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a string")
+            }
+
+            fn visit_borrowed_str<E: serde::de::Error>(
+                self,
+                v: &'de str,
+            ) -> Result<Self::Value, E> {
+                Ok(BorrowedStr(Cow::Borrowed(v)))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(BorrowedStr(Cow::Owned(v.to_owned())))
+            }
+        }
+
+        deserializer.deserialize_str(Visitor(std::marker::PhantomData))
+    }
 }
 
 /// Collect hoistable `(path, code, message)` triples into wire items,
 /// skipping any error that lacks a usable `path` (matches the previous
 /// `e.get("path")?.as_str()?` behaviour).  Shared by the strict fast path
 /// and the lenient fallback so both apply identical selection rules.
-fn hoist_items(
-    errors: impl Iterator<Item = (Option<String>, Option<String>, Option<String>)>,
-) -> Vec<ValidationErrorItem> {
+fn hoist_items<'a>(
+    errors: impl Iterator<
+        Item = (
+            Option<Cow<'a, str>>,
+            Option<Cow<'a, str>>,
+            Option<Cow<'a, str>>,
+        ),
+    >,
+) -> Vec<ValidationErrorItem<'a>> {
     errors
         .filter_map(|(path, code, message)| {
             Some(ValidationErrorItem {
@@ -109,14 +149,14 @@ fn hoist_items(
 /// accept-identical and the hoisted envelope stays byte-identical.  Only the
 /// walk is shared — never the strict fast-path dispatch above it, which the
 /// `value_old` twin must keep paying the `Value` DOM without.
-fn hoist_from_value(body_bytes: &Bytes) -> Option<Vec<ValidationErrorItem>> {
+fn hoist_from_value<'a>(body_bytes: &Bytes) -> Option<Vec<ValidationErrorItem<'a>>> {
     let parsed: serde_json::Value = serde_json::from_slice(body_bytes).ok()?;
     let errors = parsed.get("errors")?.as_array()?;
     Some(hoist_items(errors.iter().map(|e| {
         let field = |key| {
             e.get(key)
                 .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
+                .map(|text| Cow::Owned(text.to_owned()))
         };
         (field("path"), field("code"), field("message"))
     })))
@@ -132,10 +172,10 @@ fn hoist_from_value(body_bytes: &Bytes) -> Option<Vec<ValidationErrorItem>> {
 ///
 /// This is intentionally lenient — a malformed 422 body must never
 /// degrade to a 5xx; the original body is still surfaced verbatim.
-pub(super) fn try_hoist_validation_errors(
+pub(super) fn try_hoist_validation_errors<'a>(
     headers: &http::HeaderMap,
-    body_bytes: &Bytes,
-) -> Option<Vec<ValidationErrorItem>> {
+    body_bytes: &'a Bytes,
+) -> Option<Vec<ValidationErrorItem<'a>>> {
     if !body_is_json(headers) {
         return None;
     }
@@ -149,13 +189,14 @@ pub(super) fn try_hoist_validation_errors(
     // Fast path: strict typed deserialize (no intermediate `serde_json::Value`
     // DOM, no per-field visitor) — the common all-string framework envelope
     // parses here directly.
-    let items = if let Ok(envelope) = serde_json::from_slice::<HoistEnvelope>(body_bytes) {
-        hoist_items(
-            envelope
-                .errors
-                .into_iter()
-                .map(|e| (e.path, e.code, e.message)),
-        )
+    let items = if let Ok(envelope) = serde_json::from_slice::<HoistEnvelope<'_>>(body_bytes) {
+        hoist_items(envelope.errors.into_iter().map(|e| {
+            (
+                e.path.map(|s| s.0),
+                e.code.map(|s| s.0),
+                e.message.map(|s| s.0),
+            )
+        }))
     } else {
         // The strict typed parse aborted — either a wrong-typed field
         // (`"code": 123`) OR a non-object array element (`null`, a bare
@@ -177,10 +218,10 @@ pub(super) fn try_hoist_validation_errors(
 /// replaced; byte-identical result for the framework-generated envelope.  Not
 /// used on any production path.
 #[cfg(any(test, feature = "bench-support"))]
-fn try_hoist_validation_errors_value_old(
+fn try_hoist_validation_errors_value_old<'a>(
     headers: &http::HeaderMap,
     body_bytes: &Bytes,
-) -> Option<Vec<ValidationErrorItem>> {
+) -> Option<Vec<ValidationErrorItem<'a>>> {
     if !body_is_json(headers) {
         return None;
     }
@@ -197,7 +238,7 @@ fn try_hoist_validation_errors_value_old(
 /// Sum every hoisted item's field byte lengths so neither `hoist_422_ab` arm
 /// can be optimised down to a partial parse.  `None` (no hoist) sums to 0.
 #[cfg(any(test, feature = "bench-support"))]
-fn hoist_field_len_sum(items: Option<Vec<ValidationErrorItem>>) -> usize {
+fn hoist_field_len_sum(items: Option<Vec<ValidationErrorItem<'_>>>) -> usize {
     items.map_or(0, |v| {
         v.iter()
             .map(|i| {

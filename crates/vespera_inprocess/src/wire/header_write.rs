@@ -414,7 +414,7 @@ fn write_header_value<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap, name
 /// Serialize one `validation_errors` entry — fields in struct order
 /// (`path`, then `code`/`message` when present), matching the
 /// `#[serde(skip_serializing_if = "Option::is_none")]` derive.
-fn write_validation_item<S: JsonSink>(sink: &mut S, item: &ValidationErrorItem) {
+fn write_validation_item<S: JsonSink>(sink: &mut S, item: &ValidationErrorItem<'_>) {
     sink.put(b"{\"path\":");
     write_json_string(sink, &item.path);
     if let Some(code) = &item.code {
@@ -438,7 +438,7 @@ pub(super) fn write_response_header<S: JsonSink>(
     status: u16,
     headers: &http::HeaderMap,
     metadata: &ResponseMetadata,
-    validation_errors: Option<&[ValidationErrorItem]>,
+    validation_errors: Option<&[ValidationErrorItem<'_>]>,
 ) {
     // `WIRE_VERSION` is a single-digit constant; write its ASCII digit
     // directly in the scaffolding literal to avoid the per-response

@@ -187,7 +187,7 @@ pub fn header_capacity_with_floor(headers: &http::HeaderMap, metadata: &Response
 /// shrink the real output), so it only ever prevents the mid-serialize
 /// realloc the hoisted errors would otherwise force; it never changes the
 /// emitted bytes.
-fn validation_errors_capacity_estimate(items: &[ValidationErrorItem]) -> usize {
+fn validation_errors_capacity_estimate(items: &[ValidationErrorItem<'_>]) -> usize {
     // `,"validation_errors":[]` wrapper, plus per item the
     // `{"path":"","code":"","message":""},` scaffold — both sized via
     // `str::len()` of the literals they document so a future shape change
@@ -217,7 +217,7 @@ fn write_wire_header_into(
     status: u16,
     headers: &http::HeaderMap,
     metadata: &ResponseMetadata,
-    validation_errors: Option<&[ValidationErrorItem]>,
+    validation_errors: Option<&[ValidationErrorItem<'_>]>,
 ) -> bool {
     out.extend_from_slice(&[0u8; 4]);
     let start = out.len();
@@ -257,7 +257,7 @@ fn build_header_vec(
     status: u16,
     headers: &http::HeaderMap,
     metadata: &ResponseMetadata,
-    validation_errors: Option<&[ValidationErrorItem]>,
+    validation_errors: Option<&[ValidationErrorItem<'_>]>,
     body_reserve: usize,
 ) -> Result<Vec<u8>, Vec<u8>> {
     let header_cap = header_capacity_with_floor(headers, metadata)
@@ -304,23 +304,25 @@ pub fn write_wire_header_into_vec(
 }
 
 /// One entry in the wire header's `validation_errors` array.  Fields
-/// are best-effort: missing values in the source body become `None`.
+/// are best-effort: missing values in the source body become `None`. String
+/// fields borrow from the 422 body (owned only when the JSON string held an
+/// escape), so hoisting allocates nothing per error in the common case.
 /// The `Serialize` derive is **bench-only** — production serializes these
 /// fields with the hand-rolled `header_write` writer, never via serde.
 #[derive(Debug)]
 #[cfg_attr(any(test, feature = "bench-support"), derive(serde::Serialize))]
-struct ValidationErrorItem {
-    path: String,
+struct ValidationErrorItem<'a> {
+    path: Cow<'a, str>,
     #[cfg_attr(
         any(test, feature = "bench-support"),
         serde(skip_serializing_if = "Option::is_none")
     )]
-    code: Option<String>,
+    code: Option<Cow<'a, str>>,
     #[cfg_attr(
         any(test, feature = "bench-support"),
         serde(skip_serializing_if = "Option::is_none")
     )]
-    message: Option<String>,
+    message: Option<Cow<'a, str>>,
 }
 
 /// The fixed, single-entry header map every [`error_wire`] response
