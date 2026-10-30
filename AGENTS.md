@@ -353,6 +353,12 @@ cd apps/landing && bun test           # Same tests from the app directory
 
 # --- Release tooling ---
 bun run changepacks                   # @changepacks/cli version bumps
+
+# --- Perf regression triage ---
+# Bisect ONE dependency across crates.io releases (exit 0 = good, non-zero = bad;
+# Cargo.lock is restored afterwards). See the header of each script.
+scripts/bisect-dep.sh <crate> <good> <bad> <probe command...>
+./scripts/bisect-dep.ps1 -Crate <crate> -Good <v> -Bad <v> -Command '<probe>'
 ```
 
 > **`prelint` gotcha:** any Rust warning fails the JS lint. Run `bun run
