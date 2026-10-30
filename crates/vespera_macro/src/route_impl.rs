@@ -519,7 +519,7 @@ mod tests {
         assert_eq!(stored.tags, Some(vec!["users".to_string()]));
         assert_eq!(stored.description, Some("Get user by ID".to_string()));
         assert_eq!(stored.error_status, Some(vec![404]));
-        assert!(stored.headers.is_empty());
+        assert!(stored.headers.is_empty(), "expected an empty value");
         assert!(stored.fn_sig_str.contains("get_user_test_storage"));
     }
 
@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(stored.tags, None);
         assert_eq!(stored.description, None);
         assert_eq!(stored.error_status, None);
-        assert!(stored.headers.is_empty());
+        assert!(stored.headers.is_empty(), "expected an empty value");
     }
 
     #[test]

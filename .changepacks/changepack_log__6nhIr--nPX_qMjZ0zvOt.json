@@ -1,0 +1,9 @@
+{
+  "changes": {
+    "Cargo.toml": "Patch",
+    "libs/vespera-bridge/build.gradle.kts": "Patch",
+    "libs/vespera-bridge-gradle-plugin/build.gradle.kts": "Patch"
+  },
+  "note": "Test assertions satisfy clippy's assert_is_empty lint (Rust 1.99)",
+  "date": "2026-10-30T12:02:02.505707500Z"
+}

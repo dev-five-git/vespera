@@ -42,7 +42,8 @@ fn test_detect_circular_fields_invalid_struct() {
     assert!(
         analyze_circular_refs(&["crate".to_string()], "not valid rust")
             .circular_fields
-            .is_empty()
+            .is_empty(),
+        "expected an empty value"
     );
 }
 
@@ -56,7 +57,8 @@ fn test_detect_circular_fields_unnamed_fields() {
     assert!(
         analyze_circular_refs(&path, "pub struct TupleStruct(i32, String);")
             .circular_fields
-            .is_empty()
+            .is_empty(),
+        "expected an empty value"
     );
 }
 
@@ -346,7 +348,8 @@ fn test_circular_fields_empty_module_path() {
     assert!(
         analyze_circular_refs(&[], "pub struct Schema { pub id: i32 }")
             .circular_fields
-            .is_empty()
+            .is_empty(),
+        "expected an empty value"
     );
 }
 
@@ -390,7 +393,8 @@ fn test_circular_fields_field_without_ident() {
     assert!(
         analyze_circular_refs(&path, r"pub struct Schema { pub id: i32, }")
             .circular_fields
-            .is_empty()
+            .is_empty(),
+        "expected an empty value"
     );
 }
 

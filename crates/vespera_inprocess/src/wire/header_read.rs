@@ -806,6 +806,6 @@ mod tests {
 
         assert_eq!(stack.depth, 0);
         assert!(stack.top().is_none());
-        assert!(stack.overflow.is_empty());
+        assert!(stack.overflow.is_empty(), "expected an empty value");
     }
 }

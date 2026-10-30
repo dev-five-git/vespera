@@ -178,7 +178,7 @@ fn inline_field_struct_holds_constructor_inputs() {
         vec![syn::parse_quote!(#[doc = "Test doc"])],
     );
     assert_eq!(field.name.to_string(), "test_field");
-    assert!(!field.attrs.is_empty());
+    assert!(!field.attrs.is_empty(), "expected a non-empty value");
 }
 
 #[test]

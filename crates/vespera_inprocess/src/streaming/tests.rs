@@ -104,7 +104,7 @@ async fn validation_body_error_commits_a_complete_500_header() {
 
     assert_eq!(outcome, StreamOutcome::Complete);
     assert_eq!(decode_status(&header), 500);
-    assert!(chunks.is_empty());
+    assert!(chunks.is_empty(), "expected an empty value");
 }
 
 #[tokio::test]

@@ -461,7 +461,10 @@ mod tests {
         assert!(input.omit.is_none());
         assert!(input.pick.is_none());
         assert!(input.rename.is_none());
-        assert!(input.relation_adapters.is_empty());
+        assert!(
+            input.relation_adapters.is_empty(),
+            "expected an empty value"
+        );
         assert!(input.derive_clone);
     }
 

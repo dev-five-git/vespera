@@ -115,14 +115,14 @@ fn test_collect_rs_files_recursive_empty_dir() {
     let temp_dir = TempDir::new().unwrap();
     let mut files = Vec::new();
     collect_rs_files_recursive(temp_dir.path(), &mut files);
-    assert!(files.is_empty());
+    assert!(files.is_empty(), "expected an empty value");
 }
 
 #[test]
 fn test_collect_rs_files_recursive_nonexistent_dir() {
     let mut files = Vec::new();
     collect_rs_files_recursive(Path::new("/nonexistent/path"), &mut files);
-    assert!(files.is_empty());
+    assert!(files.is_empty(), "expected an empty value");
 }
 
 #[test]
