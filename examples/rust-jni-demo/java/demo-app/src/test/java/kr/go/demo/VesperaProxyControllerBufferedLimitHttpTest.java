@@ -42,7 +42,7 @@ class VesperaProxyControllerBufferedLimitHttpTest extends AbstractVesperaHttpInt
                 MediaType.APPLICATION_OCTET_STREAM,
                 "12345".getBytes(StandardCharsets.UTF_8));
 
-        assertEquals(HttpStatus.PAYLOAD_TOO_LARGE, response.getStatusCode());
+        assertEquals(HttpStatus.CONTENT_TOO_LARGE, response.getStatusCode());
         assertNotNull(response.getBody());
         String body = new String(response.getBody(), StandardCharsets.UTF_8);
         assertTrue(body.contains("413"), body);

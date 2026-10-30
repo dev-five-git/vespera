@@ -385,7 +385,7 @@ public class VesperaProxyController {
 
     private static ResponseStatusException payloadTooLarge(long actualBytes, long capBytes) {
         return new ResponseStatusException(
-                HttpStatus.PAYLOAD_TOO_LARGE,
+                HttpStatus.CONTENT_TOO_LARGE,
                 "buffered request body exceeds vespera.bridge.max-buffered-request-bytes="
                         + capBytes + " (actual " + actualBytes + " bytes)");
     }
@@ -429,7 +429,7 @@ public class VesperaProxyController {
         long bodyLen = (long) wireResp.length - 4L - headerLen;
         if (bodyLen > cap) {
             throw new ResponseStatusException(
-                    HttpStatus.PAYLOAD_TOO_LARGE,
+                    HttpStatus.CONTENT_TOO_LARGE,
                     "buffered response body exceeds vespera.bridge.max-buffered-response-bytes="
                             + cap + " (actual " + bodyLen + " bytes); use streaming dispatch");
         }

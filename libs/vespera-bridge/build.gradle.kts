@@ -1,7 +1,7 @@
 plugins {
     `java-library`
     jacoco
-    id("com.vanniktech.maven.publish") version "0.36.0"
+    id("com.vanniktech.maven.publish") version "0.37.0"
 }
 
 group = "kr.devfive"
@@ -28,18 +28,18 @@ repositories {
 }
 
 dependencies {
-    api("org.springframework.boot:spring-boot-starter-web:3.2.5")
-    api("com.fasterxml.jackson.core:jackson-databind:2.17.0")
+    api("org.springframework.boot:spring-boot-starter-web:4.1.2")
+    api("com.fasterxml.jackson.core:jackson-databind:2.22.4")
 
-    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
     // MockHttpServletRequest for resolver unit tests (no servlet container).
-    testImplementation("org.springframework:spring-test:6.1.6")
+    testImplementation("org.springframework:spring-test:7.0.10")
     // WebApplicationContextRunner for autoconfigure branch tests
     // (its AssertableWebApplicationContext implements AssertJ's
     // AssertProvider, so assertj-core must be on the test classpath).
-    testImplementation("org.springframework.boot:spring-boot-test:3.2.5")
-    testImplementation("org.assertj:assertj-core:3.25.3")
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.10.2")
+    testImplementation("org.springframework.boot:spring-boot-test:4.1.2")
+    testImplementation("org.assertj:assertj-core:3.27.7")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.1.3")
 }
 
 tasks.named<Test>("test") {

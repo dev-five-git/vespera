@@ -5,8 +5,8 @@ plugins {
     // the bridge's own unit tests cannot reach. libs/vespera-bridge merges this
     // `build/jacoco/test.exec` into its report.
     jacoco
-    id("org.springframework.boot") version "3.2.5"
-    id("io.spring.dependency-management") version "1.1.4"
+    id("org.springframework.boot") version "4.1.2"
+    id("io.spring.dependency-management") version "1.1.7"
     // ───────────────────────────────────────────────────────────────────
     // Vespera bridge plugin — auto-wires:
     //   - bundleNativeLib task (cdylib → resources/native/<os>-<arch>/)
@@ -48,6 +48,8 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("com.fasterxml.jackson.core:jackson-databind")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    testImplementation("org.springframework.boot:spring-boot-restclient")
+    testImplementation("org.springframework.boot:spring-boot-resttestclient")
 }
 
 tasks.test {

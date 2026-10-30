@@ -410,8 +410,8 @@ class ProxyControllerBodyHeaderTest {
 
         ResponseEntity<?> entity = VesperaProxyController.buildResponseEntityFromWire(wire, "GET");
 
-        assertFalse(entity.getHeaders().containsKey("connection"));
-        assertFalse(entity.getHeaders().containsKey("x-internal-hop"));
+        assertFalse(entity.getHeaders().containsHeader("connection"));
+        assertFalse(entity.getHeaders().containsHeader("x-internal-hop"));
         assertEquals("ok", entity.getHeaders().getFirst("x-visible"));
     }
 
