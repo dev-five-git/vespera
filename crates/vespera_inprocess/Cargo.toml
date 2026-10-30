@@ -57,5 +57,9 @@ rstest = "0.28"
 name = "dispatch"
 harness = false
 
+[[bench]]
+name = "extreme"
+harness = false
+
 [lints]
 workspace = true
