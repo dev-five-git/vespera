@@ -503,7 +503,7 @@ async fn bidirectional_with_header_error_on_short_input() {
 
     let (header_json, body) = decode_wire(&header_buf.lock().unwrap());
     assert_eq!(header_json["status"].as_u64(), Some(400));
-    assert_ne!(body, [] as [u8; 0]);
+    assert_ne!(body, Vec::<u8>::new());
     assert!(body_buf.lock().unwrap().is_empty());
 }
 

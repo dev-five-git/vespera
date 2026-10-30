@@ -413,11 +413,11 @@ mod tests {
         // References, slices, tuples produce no leaf to assert on.
         assert_eq!(
             collect_leaf_custom_types(&parse_ty("(i32, String)")),
-            [] as [(syn::Type, std::string::String); 0]
+            Vec::<(Type, String)>::new()
         );
         assert_eq!(
             collect_leaf_custom_types(&parse_ty("&MyType")),
-            [] as [(syn::Type, std::string::String); 0]
+            Vec::<(Type, String)>::new()
         );
     }
 
@@ -426,7 +426,7 @@ mod tests {
         // `Vec` with no type args (degenerate) has no leaf.
         assert_eq!(
             collect_leaf_custom_types(&parse_ty("Vec")),
-            [] as [(syn::Type, std::string::String); 0]
+            Vec::<(Type, String)>::new()
         );
     }
 
@@ -434,7 +434,7 @@ mod tests {
     fn leaf_of_empty_path_is_empty() {
         assert_eq!(
             collect_leaf_custom_types(&empty_path_type()),
-            [] as [(syn::Type, std::string::String); 0]
+            Vec::<(Type, String)>::new()
         );
     }
 

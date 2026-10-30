@@ -227,7 +227,7 @@ fn test_extract_form_data_attrs_empty() {
     ];
 
     let form_data = extract_form_data_attrs(&attrs);
-    assert_eq!(form_data, [] as [&syn::Attribute; 0]);
+    assert_eq!(form_data, Vec::<&syn::Attribute>::new());
 }
 
 #[test]

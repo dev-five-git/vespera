@@ -33,7 +33,7 @@ fn object_helper_initializes_collections() {
     let props = schema.properties.expect("properties should be initialized");
     assert!(props.is_empty());
     let required = schema.required.expect("required should be initialized");
-    assert_eq!(required, [] as [std::string::String; 0]);
+    assert_eq!(required, Vec::<String>::new());
 }
 
 #[test]

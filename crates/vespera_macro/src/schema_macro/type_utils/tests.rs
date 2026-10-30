@@ -185,7 +185,7 @@ fn test_is_seaorm_model_regular_struct() {
 fn test_extract_module_path_simple() {
     let ty: syn::Type = syn::parse_str("User").unwrap();
     let result = extract_module_path(&ty);
-    assert_eq!(result, [] as [std::string::String; 0]);
+    assert_eq!(result, Vec::<String>::new());
 }
 
 #[test]
@@ -199,7 +199,7 @@ fn test_extract_module_path_qualified() {
 fn test_extract_module_path_non_path_type() {
     let ty: syn::Type = syn::parse_str("&str").unwrap();
     let result = extract_module_path(&ty);
-    assert_eq!(result, [] as [std::string::String; 0]);
+    assert_eq!(result, Vec::<String>::new());
 }
 
 #[test]

@@ -806,6 +806,6 @@ mod tests {
 
         assert_eq!(stack.depth, 0);
         assert!(stack.top().is_none());
-        assert_eq!(stack.overflow, [] as [bool; 0]);
+        assert_eq!(stack.overflow, Vec::<bool>::new());
     }
 }

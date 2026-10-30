@@ -115,14 +115,14 @@ fn test_collect_rs_files_recursive_empty_dir() {
     let temp_dir = TempDir::new().unwrap();
     let mut files = Vec::new();
     collect_rs_files_recursive(temp_dir.path(), &mut files);
-    assert_eq!(files, [] as [std::path::PathBuf; 0]);
+    assert_eq!(files, Vec::<PathBuf>::new());
 }
 
 #[test]
 fn test_collect_rs_files_recursive_nonexistent_dir() {
     let mut files = Vec::new();
     collect_rs_files_recursive(Path::new("/nonexistent/path"), &mut files);
-    assert_eq!(files, [] as [std::path::PathBuf; 0]);
+    assert_eq!(files, Vec::<PathBuf>::new());
 }
 
 #[test]
