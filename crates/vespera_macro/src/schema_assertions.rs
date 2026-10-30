@@ -411,19 +411,31 @@ mod tests {
     #[test]
     fn leaf_of_non_path_type_is_empty() {
         // References, slices, tuples produce no leaf to assert on.
-        assert!(collect_leaf_custom_types(&parse_ty("(i32, String)")).is_empty());
-        assert!(collect_leaf_custom_types(&parse_ty("&MyType")).is_empty());
+        assert_eq!(
+            collect_leaf_custom_types(&parse_ty("(i32, String)")),
+            [] as [(syn::Type, std::string::String); 0]
+        );
+        assert_eq!(
+            collect_leaf_custom_types(&parse_ty("&MyType")),
+            [] as [(syn::Type, std::string::String); 0]
+        );
     }
 
     #[test]
     fn leaf_of_empty_wrapper_is_empty() {
         // `Vec` with no type args (degenerate) has no leaf.
-        assert!(collect_leaf_custom_types(&parse_ty("Vec")).is_empty());
+        assert_eq!(
+            collect_leaf_custom_types(&parse_ty("Vec")),
+            [] as [(syn::Type, std::string::String); 0]
+        );
     }
 
     #[test]
     fn leaf_of_empty_path_is_empty() {
-        assert!(collect_leaf_custom_types(&empty_path_type()).is_empty());
+        assert_eq!(
+            collect_leaf_custom_types(&empty_path_type()),
+            [] as [(syn::Type, std::string::String); 0]
+        );
     }
 
     #[test]
@@ -698,28 +710,25 @@ mod tests {
         let input: syn::DeriveInput = parse_quote! {
             pub enum E { A(MyUnknown) }
         };
-        assert!(
-            emit_field_assertions(&input, &constraints_for(&input))
-                .to_string()
-                .is_empty()
+        assert_eq!(
+            emit_field_assertions(&input, &constraints_for(&input)).to_string(),
+            ""
         );
 
         let input: syn::DeriveInput = parse_quote! {
             pub struct Tuple(MyUnknown);
         };
-        assert!(
-            emit_field_assertions(&input, &constraints_for(&input))
-                .to_string()
-                .is_empty()
+        assert_eq!(
+            emit_field_assertions(&input, &constraints_for(&input)).to_string(),
+            ""
         );
 
         let input: syn::DeriveInput = parse_quote! {
             pub struct Unit;
         };
-        assert!(
-            emit_field_assertions(&input, &constraints_for(&input))
-                .to_string()
-                .is_empty()
+        assert_eq!(
+            emit_field_assertions(&input, &constraints_for(&input)).to_string(),
+            ""
         );
     }
 }
