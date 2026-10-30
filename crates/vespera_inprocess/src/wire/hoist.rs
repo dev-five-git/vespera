@@ -68,43 +68,12 @@ struct HoistEnvelope<'a> {
 
 #[derive(Deserialize)]
 struct HoistErrorIn<'a> {
-    #[serde(default, borrow)]
-    path: Option<BorrowedStr<'a>>,
-    #[serde(default, borrow)]
-    code: Option<BorrowedStr<'a>>,
-    #[serde(default, borrow)]
-    message: Option<BorrowedStr<'a>>,
-}
-
-/// A JSON string that borrows from the input when it holds no escape and is
-/// owned otherwise (serde's own `Cow<str>` impl always allocates).
-struct BorrowedStr<'a>(Cow<'a, str>);
-
-impl<'de: 'a, 'a> Deserialize<'de> for BorrowedStr<'a> {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-
-        impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = Cow<'de, str>;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("a string")
-            }
-
-            fn visit_borrowed_str<E: serde::de::Error>(
-                self,
-                v: &'de str,
-            ) -> Result<Self::Value, E> {
-                Ok(Cow::Borrowed(v))
-            }
-
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                Ok(Cow::Owned(v.to_owned()))
-            }
-        }
-
-        deserializer.deserialize_str(Visitor).map(BorrowedStr)
-    }
+    #[serde(default)]
+    path: Option<&'a str>,
+    #[serde(default)]
+    code: Option<&'a str>,
+    #[serde(default)]
+    message: Option<&'a str>,
 }
 
 /// Collect hoistable `(path, code, message)` triples into wire items,
@@ -192,9 +161,9 @@ pub(super) fn try_hoist_validation_errors<'a>(
     let items = if let Ok(envelope) = serde_json::from_slice::<HoistEnvelope<'_>>(body_bytes) {
         hoist_items(envelope.errors.into_iter().map(|e| {
             (
-                e.path.map(|s| s.0),
-                e.code.map(|s| s.0),
-                e.message.map(|s| s.0),
+                e.path.map(Cow::Borrowed),
+                e.code.map(Cow::Borrowed),
+                e.message.map(Cow::Borrowed),
             )
         }))
     } else {

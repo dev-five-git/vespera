@@ -621,24 +621,36 @@ fn hoist_422_is_best_effort_for_wrong_typed_fields() {
     assert_eq!(items[2].message, None);
 }
 
-/// A JSON string holding an escape cannot be borrowed from the body; it must
-/// still hoist (owned) next to plain strings that do borrow.
+/// Plain (escape-free) strings are borrowed from the body; a string holding an
+/// escape cannot be, so the strict borrow parse fails and the lenient walk
+/// hoists the same errors with owned, unescaped values.
 #[test]
-fn hoist_422_unescapes_escaped_strings_and_borrows_plain_ones() {
+fn hoist_422_borrows_plain_strings_and_unescapes_escaped_ones() {
     let mut headers = http::HeaderMap::new();
     headers.insert(
         http::header::CONTENT_TYPE,
         http::HeaderValue::from_static("application/json"),
     );
-    let body = bytes::Bytes::from_static(
+    let plain =
+        bytes::Bytes::from_static(br#"{"errors":[{"path":"name","code":"c","message":"m"}]}"#);
+    let items = super::hoist::try_hoist_validation_errors(&headers, &plain).expect("plain hoists");
+    assert!(matches!(items[0].path, std::borrow::Cow::Borrowed("name")));
+    assert!(matches!(
+        items[0].code,
+        Some(std::borrow::Cow::Borrowed("c"))
+    ));
+    assert!(matches!(
+        items[0].message,
+        Some(std::borrow::Cow::Borrowed("m"))
+    ));
+
+    let escaped = bytes::Bytes::from_static(
         br#"{"errors":[{"path":"user\"name","code":"plain","message":"line\nbreak"}]}"#,
     );
-    let items = super::hoist::try_hoist_validation_errors(&headers, &body)
+    let items = super::hoist::try_hoist_validation_errors(&headers, &escaped)
         .expect("escaped strings must hoist");
     assert_eq!(items[0].path, "user\"name");
-    assert!(matches!(items[0].path, std::borrow::Cow::Owned(_)));
     assert_eq!(items[0].code.as_deref(), Some("plain"));
-    assert!(matches!(items[0].code, Some(std::borrow::Cow::Borrowed(_))));
     assert_eq!(items[0].message.as_deref(), Some("line\nbreak"));
 }
 
