@@ -7,9 +7,7 @@ import { ComponentProps, useEffect, useMemo, useState } from 'react'
 import { MarkdownParser } from '../markdown-parser'
 import { useSearchContext } from './provider'
 
-export function Result(
-  props: Omit<ComponentProps<typeof VStack<'div'>>, 'children'>,
-) {
+export function Result(props: Omit<ComponentProps<typeof VStack>, 'children'>) {
   const { debouncedValue: query, insideClickRefs } = useSearchContext()
   const inputRef = Array.from(insideClickRefs.current).find(
     (el) => el.tagName === 'INPUT',
@@ -103,13 +101,13 @@ export function Result(
                       {item.title}
                     </Text>
                     <Text
-                      WebkitBoxOrient="vertical"
-                      WebkitLineClamp="6"
                       color="$title"
                       display="-webkit-box"
                       overflow="hidden"
                       textOverflow="ellipsis"
                       typography="caption"
+                      WebkitBoxOrient="vertical"
+                      WebkitLineClamp="6"
                       whiteSpace="pre-wrap"
                     >
                       <MarkdownParser
