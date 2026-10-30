@@ -23,7 +23,7 @@ bench-support = []
 # the lock-free fast path the default app already enjoys.  Registration
 # (startup-only, first-wins) goes through copy-on-write `rcu`.
 arc-swap = "1"
-axum = "0.8"
+axum = { version = "0.8", default-features = false }
 bytes = "1"
 http = "1"
 http-body = "1"
@@ -31,9 +31,10 @@ http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "sync"] }
 
 [dev-dependencies]
+axum = { version = "0.8", default-features = false, features = ["json", "query", "tokio", "http1"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 # The criterion bench runs under mimalloc (set as its `#[global_allocator]`
 # in benches/dispatch.rs) to match the SHIPPED JNI cdylib, which enables
@@ -44,7 +45,7 @@ criterion = { version = "0.8", features = ["html_reports"] }
 # pure harness artifact, never seen by the cdylib).  Benching under mimalloc
 # keeps the large-body absolute numbers representative of production.
 mimalloc = "0.1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 # `FutureExt::catch_unwind` for the `async_spawn_pattern` bench, which
 # A/Bs the vespera_jni `dispatchAsync` spawn-mechanism change (inner
 # `tokio::spawn` vs in-place `catch_unwind`).

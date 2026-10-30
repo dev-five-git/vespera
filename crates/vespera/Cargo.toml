@@ -45,8 +45,8 @@ validation = ["dep:garde", "vespera_macro/validation"]
 [dependencies]
 vespera_core = { workspace = true }
 vespera_macro = { workspace = true }
-axum = { version = "0.8", features = ["multipart"] }
-axum-extra = { version = "0.12" }
+axum = { version = "0.8", default-features = false, features = ["form", "http1", "json", "matched-path", "multipart", "original-uri", "query", "tokio"] }
+axum-extra = { version = "0.12", default-features = false }
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
 serde = { version = "1", features = ["derive"] }
