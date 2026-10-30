@@ -1,7 +1,7 @@
 import { Flex } from '@devup-ui/react'
 import { ComponentProps } from 'react'
 
-export function Effect(props: ComponentProps<typeof Flex<'div'>>) {
+export function Effect(props: ComponentProps<typeof Flex>) {
   return (
     <Flex
       _active={{

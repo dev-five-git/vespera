@@ -16,7 +16,7 @@ export interface GnbIconProps {
 export function GnbIcon({
   icon,
   ...props
-}: GnbIconProps & ComponentProps<typeof Box<'div'>>) {
+}: GnbIconProps & ComponentProps<typeof Box>) {
   return (
     <Box
       bg="$title"
