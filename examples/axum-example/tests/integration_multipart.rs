@@ -1,8 +1,5 @@
-use axum_test::{
-    TestServer,
-    multipart::{MultipartForm, Part},
-};
 use serde_json::json;
+use testkit::{MultipartForm, Part, TestServer};
 use vespera::{
     Multipart, axum,
     multipart::{FieldData, TypedMultipart},

@@ -50,6 +50,7 @@ vespera/
 │       └── VesperaProxyController.java # Auto-configured Spring proxy
 ├── examples/
 │   ├── axum-example/         # Standard axum server demo
+│   ├── testkit/              # Tiny in-process test client (tower oneshot) for the examples' integration tests
 │   └── rust-jni-demo/        # JNI + standalone server demo
 │       ├── src/              # Rust: routes, create_app(), jni_app!
 │       └── java/demo-app/    # Java: Spring Boot proxy

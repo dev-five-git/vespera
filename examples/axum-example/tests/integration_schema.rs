@@ -1,7 +1,7 @@
 use axum_example::create_app;
-use axum_test::TestServer;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use testkit::TestServer;
 use vespera::{Schema, schema};
 
 // Tests for schema! macro

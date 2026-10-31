@@ -17,6 +17,6 @@ tempfile = "3"
 third = { path = "../third" }
 
 [dev-dependencies]
-axum-test = "21.1"
+testkit = { path = "../testkit" }
 insta = "1.49"
 
