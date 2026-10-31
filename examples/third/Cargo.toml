@@ -7,8 +7,3 @@ publish = false
 [dependencies]
 vespera = { path = "../../crates/vespera" }
 serde = { version = "1", features = ["derive"] }
-
-[dev-dependencies]
-axum-test = "21.1"
-insta = "1.49"
-
