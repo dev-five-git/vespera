@@ -3,7 +3,7 @@ import { Box } from '@devup-ui/react'
 import { useRouter } from 'next/navigation'
 import { ComponentProps } from 'react'
 
-export function Form(props: ComponentProps<typeof Box<'form'>>) {
+export function Form(props: Omit<ComponentProps<typeof Box<'form'>>, 'as'>) {
   const router = useRouter()
   return (
     <Box

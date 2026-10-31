@@ -759,7 +759,7 @@ fn test_generate_router_code_with_merge_and_cron() {
         "Should use VesperaRouter for merge, got: {code}"
     );
     assert!(
-        code.contains("JobScheduler"),
+        code.contains("CronJob"),
         "Should contain cron scheduler code, got: {code}"
     );
     assert!(
@@ -786,7 +786,7 @@ fn test_generate_router_code_with_cron_no_merge() {
         "Should NOT use VesperaRouter without merge, got: {code}"
     );
     assert!(
-        code.contains("JobScheduler"),
+        code.contains("CronJob"),
         "Should contain cron scheduler code, got: {code}"
     );
     assert!(

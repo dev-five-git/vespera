@@ -24,7 +24,7 @@ Also provides in-process dispatch (`vespera_inprocess` crate) and JNI integratio
 | **Binary wire format (JNI)** | `vespera_inprocess` | `[u32 BE len | UTF-8 JSON header | raw body]` — multipart / PDFs / images travel as raw bytes; **`422` validation errors hoisted** into the wire header as `"validation_errors": [...]` so Java decoders never special-case error shapes |
 | **Multi-app routing (JNI/FFI)** | `vespera::jni_apps! { "_default" => app, "admin" => admin_app }` | Wire header carries optional `"app"` field; Java side picks per request via `X-Vespera-App` header (configurable via `AppNameResolver`) |
 | **Zero-config Spring autoconfigure** | `libs/vespera-bridge/.../VesperaBridgeAutoConfiguration` | `VesperaProxyController` + `AppNameResolver` + `DispatchModeResolver` beans auto-registered; replace any of them via `@ConditionalOnMissingBean` |
-| **Cron jobs** | `#[vespera::cron("...")]` | Auto-discovered like routes; runs via `tokio-cron-scheduler` |
+| **Cron jobs** | `#[vespera::cron("...")]` | Auto-discovered like routes; runs via the built-in `vespera::cron` tokio scheduler (croner 4, shared parser in `vespera_core::cron`) |
 
 ## STRUCTURE
 
@@ -50,6 +50,7 @@ vespera/
 │       └── VesperaProxyController.java # Auto-configured Spring proxy
 ├── examples/
 │   ├── axum-example/         # Standard axum server demo
+│   ├── testkit/              # Tiny in-process test client (tower oneshot) for the examples' integration tests
 │   └── rust-jni-demo/        # JNI + standalone server demo
 │       ├── src/              # Rust: routes, create_app(), jni_app!
 │       └── java/demo-app/    # Java: Spring Boot proxy
@@ -353,6 +354,12 @@ cd apps/landing && bun test           # Same tests from the app directory
 
 # --- Release tooling ---
 bun run changepacks                   # @changepacks/cli version bumps
+
+# --- Perf regression triage ---
+# Bisect ONE dependency across crates.io releases (exit 0 = good, non-zero = bad;
+# Cargo.lock is restored afterwards). See the header of each script.
+scripts/bisect-dep.sh <crate> <good> <bad> <probe command...>
+./scripts/bisect-dep.ps1 -Crate <crate> -Good <v> -Bad <v> -Command '<probe>'
 ```
 
 > **`prelint` gotcha:** any Rust warning fails the JS lint. Run `bun run

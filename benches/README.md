@@ -75,3 +75,36 @@ cargo run -p compile-bench-runner -- --target axum-example --runs 8 --save-basel
 `compile-bench-runner/baselines/*.txt` hold absolute timings that are specific
 to the machine/toolchain that produced them, so they are **git-ignored**.
 Capture your own before/after on the same machine in one session.
+
+## Scale / extreme-input tooling
+
+Micro benches hide per-op costs that compound (or turn non-linear) in large
+applications, so there are two opt-in scale harnesses. Neither is part of the PR
+bench gate (`bench.yml` runs only `--bench dispatch`) and neither joins
+`cargo build --workspace`.
+
+### Macro build cost vs. number of routes
+
+`scripts/gen-stress-app.ps1 -Routes N` emits a standalone crate (own `[workspace]`,
+under `target/stress-app/`) with N routes, 50 handlers per file, plus per-route
+`#[derive(Schema)]` request/response structs, a 12-variant enum every 10th route, a
+40-field struct every 25th, a self-referential node every 30th, an 8-deep nesting
+chain, the generic `Page<T>` and a `schema_type!` derivation every 20th.
+
+`scripts/measure-stress.ps1 -Sizes 10,100,500,2000 -Runs 3` reports, per N: clean
+rebuild wall time, the `macro_expand_crate` pass, peak rustc working set (sampled every
+25 ms), an incremental rebuild, a `vespera!` cache-hit rebuild and `openapi.json` size,
+then the log-log slope (1.0 = linear). `-Control -Keep schema,route[,axum]` strips
+vespera pieces (or swaps `vespera!` for a hand-written axum router) so the cost vespera
+itself adds can be attributed; `VESPERA_PROFILE=1` prints `vespera!`'s per-stage timings.
+
+### Runtime scale ladders
+
+`cargo bench -p vespera_inprocess --bench extreme` runs size ladders for route tables
+(1k-50k routes), request/response headers (10-10k), header values (ASCII / Unicode /
+escape-heavy up to the 1 MiB wire-header cap), 422 envelopes (10-100k entries, crossing
+the 64 KiB hoist cap), long paths/queries, buffered bodies (1-100 MiB), response and
+bidirectional streaming (16-1000 MiB, peak heap printed by a counting allocator),
+1k-100k concurrent dispatches and 100-10k registered apps. Every case asserts the status
+it intends to measure. Read each ladder as ns per unit and check that figure is flat.
+`VESPERA_EXTREME=1` adds the heaviest rungs.

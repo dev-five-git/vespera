@@ -9,7 +9,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.http.HttpHeaders;
@@ -34,8 +33,7 @@ class VesperaProxyControllerSmartHttpTest extends AbstractVesperaHttpIntegration
                     + "\"effectiveDate\":\"2025-01-01\"}")
             .getBytes(StandardCharsets.UTF_8);
 
-    @Autowired
-    private ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
     void bodylessGetUsesDirectAndPropagatesTextResponse() {
@@ -76,7 +74,7 @@ class VesperaProxyControllerSmartHttpTest extends AbstractVesperaHttpIntegration
                 MediaType.APPLICATION_JSON,
                 missingFields);
 
-        assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, response.getStatusCode());
+        assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, response.getStatusCode());
         assertNotNull(response.getHeaders().getContentType());
         assertTrue(response.getHeaders().getContentType().isCompatibleWith(MediaType.TEXT_PLAIN));
         String body = new String(requireBody(response), StandardCharsets.UTF_8);

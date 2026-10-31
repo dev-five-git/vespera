@@ -1,6 +1,6 @@
 use axum_example::{create_app, create_app_with_layer};
-use axum_test::TestServer;
 use serde_json::json;
+use testkit::TestServer;
 use vespera::axum;
 
 #[tokio::test]

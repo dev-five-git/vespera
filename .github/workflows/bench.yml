@@ -3,14 +3,26 @@ name: Bench
 # Criterion regression gate for the in-process dispatch hot path.
 #
 # - push to main: runs the gated bench groups as an informational smoke run.
-# - pull_request: measures the PR merge base as the `main` baseline, then
-#   measures the PR head in the same job on the same runner. The job FAILS
-#   when any bench regresses by more than 30% mean change AND the 95%
-#   confidence interval lower bound exceeds +20%.
+# - pull_request: builds the PR merge base and the PR head (two separate target
+#   dirs, one bench binary each), then measures them INTERLEAVED in this one job
+#   on this one runner: 5 rounds alternating base,head / head,base / ... with
+#   per-side CRITERION_HOME. The job FAILS when a bench's median PAIRED change
+#   (head/base - 1 within a round) exceeds +30% AND every one of the 5 paired
+#   rounds exceeds +20% (min of N paired samples = the sign-test lower
+#   confidence limit of the median, 93.75% for N=5). See the header of
+#   scripts/bench-interleaved.sh for the full method and why a shared/prebuilt
+#   target dir would silently benchmark one binary against itself.
 # - Cargo.toml remains a trigger so dependency/profile changes are covered,
 #   but a PR whose only relevant edits are version assignments is skipped.
-# - Cargo build outputs are reused between the two measurements within the job;
-#   target/criterion is never restored from a cross-run cache.
+#
+# Why interleaved: runner conditions drift on a minutes scale, so measuring the
+# baseline in one block and the PR in a later block turned drift into fake
+# regressions (two back-to-back runs of PR #144, whose merge base and head hold
+# byte-identical Rust, swung -12.33%..+14.92% and tripped a DIFFERENT bench
+# each time). Pairing each head measurement with a base measurement taken
+# seconds apart cancels that drift, and requiring the +20% floor in every
+# round means one noisy round cannot trip the gate while a real >30% slowdown
+# (present in every round) still does. The thresholds are unchanged.
 #
 # Gated groups are the stable per-request paths (wire_path,
 # headers_path, request_headers_path, resolve_path, dispatch_path). The
@@ -18,14 +30,10 @@ name: Bench
 # timing) and the router_path setup micro-bench is low-signal, so those
 # are validated locally instead — see PERF_REPORT.md.
 #
-# The +30% / +20% thresholds are calibrated to the measured noise floor of this
-# runner class. Two back-to-back runs of PR #144, whose merge base and head hold
-# byte-identical Rust, still swung -12.33%..+14.92% and tripped a DIFFERENT
-# benchmark each time, so anything tighter is structurally unachievable here.
-# This TIMING gate therefore catches only BIG regressions. Small, deterministic
-# ALLOCATION regressions are caught noise-free by the `alloc_budget` integration
-# test (a counting global allocator asserting exact per-dispatch allocation
-# budgets) in the normal `cargo test` job — the two gates are complementary.
+# Small, deterministic ALLOCATION regressions are caught noise-free by the
+# `alloc_budget` integration test (a counting global allocator asserting exact
+# per-dispatch allocation budgets) in the normal `cargo test` job — the two
+# gates are complementary.
 
 on:
   push:
@@ -36,12 +44,14 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/bench.yml'
+      - 'scripts/bench-interleaved.sh'
   pull_request:
     paths:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/bench.yml'
+      - 'scripts/bench-interleaved.sh'
 
 concurrency:
   group: bench-${{ github.ref }}
@@ -59,7 +69,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
 
       - name: Determine PR benchmark scope
         if: github.event_name == 'pull_request'
@@ -75,7 +85,7 @@ jobs:
           should_run=false
           while IFS= read -r path; do
             case "$path" in
-              crates/*|Cargo.lock|.github/workflows/bench.yml)
+              crates/*|Cargo.lock|.github/workflows/bench.yml|scripts/bench-interleaved.sh)
                 should_run=true
                 ;;
             esac
@@ -142,46 +152,11 @@ jobs:
         if: github.event_name == 'push'
         run: cargo bench -p vespera_inprocess --bench dispatch -- "${BENCH_FILTER}"
 
-      - name: Measure merge-base baseline
+      - name: Interleaved merge-base vs PR head benchmark gate
         if: github.event_name == 'pull_request' && steps.scope.outputs.should_run == 'true'
         env:
           MERGE_BASE: ${{ steps.scope.outputs.merge_base }}
-        run: |
-          git checkout --detach "$MERGE_BASE"
-          rm -rf target/criterion
-          cargo bench -p vespera_inprocess --bench dispatch -- \
-            --save-baseline main "${BENCH_FILTER}"
-
-      - name: Compare PR head against merge-base baseline
-        if: github.event_name == 'pull_request' && steps.scope.outputs.should_run == 'true'
-        env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           git checkout --detach "$HEAD_SHA"
-          cargo bench -p vespera_inprocess --bench dispatch -- \
-            --baseline main "${BENCH_FILTER}"
-
-      - name: Enforce regression gate
-        if: github.event_name == 'pull_request' && steps.scope.outputs.should_run == 'true'
-        run: |
-          shopt -s nullglob
-          fail=0
-          found=0
-          while IFS= read -r f; do
-            found=1
-            mean=$(jq -r '.mean.point_estimate' "$f")
-            lower=$(jq -r '.mean.confidence_interval.lower_bound' "$f")
-            bench=$(dirname "$(dirname "$f")")
-            bench=${bench#target/criterion/}
-            printf '%s: mean %+.2f%% (CI lower %+.2f%%)\n' \
-              "$bench" "$(awk -v v="$mean" 'BEGIN{print v*100}')" \
-              "$(awk -v v="$lower" 'BEGIN{print v*100}')"
-            if awk -v m="$mean" -v l="$lower" 'BEGIN{exit !(m > 0.30 && l > 0.20)}'; then
-              echo "::error::Performance regression: ${bench} mean change exceeds +30% with CI lower bound > +20%"
-              fail=1
-            fi
-          done < <(find target/criterion -path '*/change/estimates.json')
-          if [ "$found" -eq 0 ]; then
-            echo "::notice::No change estimates found (first run against this baseline?) — nothing to gate."
-          fi
-          exit $fail
+          scripts/bench-interleaved.sh "$MERGE_BASE" "${BENCH_FILTER}"

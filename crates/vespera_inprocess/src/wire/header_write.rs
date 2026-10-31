@@ -17,8 +17,6 @@
 //! escaped; `/` and 0x7F pass through, and every byte `>= 0x80` is
 //! copied through verbatim (raw UTF-8).
 
-use std::borrow::Cow;
-
 use crate::envelope::ResponseMetadata;
 
 use super::{STACK_CAP, ValidationErrorItem, WIRE_VERSION};
@@ -143,9 +141,12 @@ const HEX: &[u8; 16] = b"0123456789abcdef";
 // falls through to the general path, so the slow-path output is byte-for-byte
 // unchanged for non-`current()` inputs.
 
-/// Engine version — the `&'static str` `ResponseMetadata::current()` stores
-/// in its `version` field.  Used by the production fast path below to
-/// pointer-eq detect that exact constructor at zero runtime cost.
+/// Engine version — the string `ResponseMetadata::current()` stores in its
+/// `version` field.  Compared **by content** (a length check plus a
+/// ~5-byte `memcmp`) by the production fast path below.  Identity
+/// (`ptr::eq`) must not be used instead: a `const` has no stable address, so
+/// whether two uses share one allocation depends on codegen-unit partitioning
+/// and silently flips with unrelated edits or a toolchain change.
 const VESPERA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Pre-baked `,"metadata":{"version":"X.Y.Z"}` segment for the production
@@ -413,7 +414,7 @@ fn write_header_value<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap, name
 /// Serialize one `validation_errors` entry — fields in struct order
 /// (`path`, then `code`/`message` when present), matching the
 /// `#[serde(skip_serializing_if = "Option::is_none")]` derive.
-fn write_validation_item<S: JsonSink>(sink: &mut S, item: &ValidationErrorItem) {
+fn write_validation_item<S: JsonSink>(sink: &mut S, item: &ValidationErrorItem<'_>) {
     sink.put(b"{\"path\":");
     write_json_string(sink, &item.path);
     if let Some(code) = &item.code {
@@ -437,7 +438,7 @@ pub(super) fn write_response_header<S: JsonSink>(
     status: u16,
     headers: &http::HeaderMap,
     metadata: &ResponseMetadata,
-    validation_errors: Option<&[ValidationErrorItem]>,
+    validation_errors: Option<&[ValidationErrorItem<'_>]>,
 ) {
     // `WIRE_VERSION` is a single-digit constant; write its ASCII digit
     // directly in the scaffolding literal to avoid the per-response
@@ -464,25 +465,22 @@ pub(super) fn write_response_header<S: JsonSink>(
     // is the drift tripwire, so keep the two in lockstep.
     //
     // Fast path: every production response producer constructs
-    // `ResponseMetadata::current()`, whose `version` is
-    // `Cow::Borrowed(env!("CARGO_PKG_VERSION"))` — the same `'static`
-    // pointer as `VESPERA_VERSION` (string-literal deduplication within
-    // this crate).  Detect that exact constructor by pointer-eq and emit
-    // the pre-baked segment in one `sink.put`; everything else (owned
-    // versions, manually-constructed metadata in tests / custom callers)
-    // falls through to the unchanged general path.  Byte-identity for the
-    // fast path is locked by `hand_serialize_matches_serde_serialize` in
-    // `wire/tests.rs` (which writes `ResponseMetadata::current()` through
-    // both hand and serde and asserts byte equality).
-    match &metadata.version {
-        Cow::Borrowed(v) if std::ptr::eq(v.as_ptr(), VESPERA_VERSION.as_ptr()) => {
-            write_current_metadata(sink);
-        }
-        _ => {
-            sink.put(b",\"metadata\":{\"version\":");
-            write_json_string(sink, &metadata.version);
-            sink.put(b"}");
-        }
+    // `ResponseMetadata::current()`, whose `version` equals
+    // `VESPERA_VERSION`.  Detect it by content and emit the pre-baked
+    // segment in one `sink.put`; any other version (manually-constructed
+    // metadata in tests / custom callers) takes the general path.  Either
+    // way the bytes are identical (SemVer never trips the `ESCAPE` table),
+    // so the branch is purely an optimisation: it cannot change the wire
+    // format.  Byte-identity for the fast path is locked by
+    // `hand_serialize_matches_serde_serialize` in `wire/tests.rs` (which
+    // writes `ResponseMetadata::current()` through both hand and serde and
+    // asserts byte equality).
+    if metadata.version == VESPERA_VERSION {
+        write_current_metadata(sink);
+    } else {
+        sink.put(b",\"metadata\":{\"version\":");
+        write_json_string(sink, &metadata.version);
+        sink.put(b"}");
     }
     if let Some(items) = validation_errors {
         sink.put(b",\"validation_errors\":[");
@@ -513,6 +511,8 @@ fn write_current_metadata<S: JsonSink>(sink: &mut S) {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
 
     #[test]

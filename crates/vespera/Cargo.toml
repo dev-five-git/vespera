@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-# `validation` is on by default — `#[derive(Schema)]` automatically emits
+# `validation` is on by default ??`#[derive(Schema)]` automatically emits
 # `impl garde::Validate` blocks and the `Validated<T>` extractor is
 # available.  Opt out with `default-features = false` if you need a
 # leaner build without the `garde` runtime dependency.
@@ -15,7 +15,7 @@ repository.workspace = true
 # `mimalloc` is also default-on, but it is a **weak no-op unless the
 # `jni` feature is also enabled** (see the `mimalloc` feature below): a
 # pure axum/OpenAPI build never compiles the mimalloc C library.  JNI
-# cdylib builds get the faster global allocator automatically (~9–14%
+# cdylib builds get the faster global allocator automatically (~9??4%
 # on the dispatch hot path); set `default-features = false` to supply
 # your own `#[global_allocator]` instead.
 default = [
@@ -27,13 +27,12 @@ default = [
     "validation",
     "mimalloc",
 ]
-cron = ["dep:tokio-cron-scheduler", "vespera_macro/cron"]
+cron = ["tokio/time", "vespera_core/cron-chrono", "vespera_macro/cron"]
 inprocess = ["dep:vespera_inprocess"]
 jni = ["inprocess", "dep:vespera_jni"]
 # mimalloc as the cdylib's global allocator (see vespera_jni docs).
 # Default-on, but the `vespera_jni?/mimalloc` weak-dep syntax means it
-# only does anything when the `jni` feature has pulled in vespera_jni —
-# so non-JNI builds neither set a global allocator nor compile the
+# only does anything when the `jni` feature has pulled in vespera_jni ??# so non-JNI builds neither set a global allocator nor compile the
 # mimalloc C library.  Disable via `default-features = false` to bring
 # your own allocator in a JNI cdylib.
 mimalloc = ["vespera_jni?/mimalloc"]
@@ -45,15 +44,14 @@ validation = ["dep:garde", "vespera_macro/validation"]
 [dependencies]
 vespera_core = { workspace = true }
 vespera_macro = { workspace = true }
-axum = { version = "0.8", features = ["multipart"] }
-axum-extra = { version = "0.12" }
-chrono = { version = "0.4", features = ["serde"] }
+axum = { version = "0.8", default-features = false, features = ["form", "http1", "json", "matched-path", "multipart", "original-uri", "query", "tokio"] }
+axum-extra = { version = "0.12", default-features = false }
+chrono = { version = "0.4", default-features = false, features = ["serde", "now"] }
 tempfile = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tower-layer = "0.3"
 tower-service = "0.3"
-tokio-cron-scheduler = { version = "0.15", optional = true }
 # Used by the `Serve` extension trait to bind a TcpListener and drive
 # axum::serve, and by the multipart extractor to keep temp-file I/O
 # off the async workers (`fs` + `io-util` for tokio::fs writes,
@@ -79,9 +77,9 @@ tower = { version = "0.5", features = ["util"] }
 # they don't need the `inprocess` cargo feature to be enabled.
 vespera_inprocess = { workspace = true }
 # Byte-snapshot testing for 422 validation envelope contract
-insta = "1.48"
+insta = "1.49"
 # `Validated<T>` 422-envelope serialization before/after A/B bench.
-criterion = { version = "0.8", features = ["html_reports"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 # `derive` for the `#[derive(Validate)]` fixture; `email`/`url` for its
 # field validators (the workspace `garde` is `default-features = false`).
 garde = { version = "0.23", features = ["derive", "email", "url"] }

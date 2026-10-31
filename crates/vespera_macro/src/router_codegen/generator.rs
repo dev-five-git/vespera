@@ -45,64 +45,16 @@ fn generate_cron_scheduler_code(cron_jobs: &[CronMetadata]) -> proc_macro2::Toke
         return quote!();
     }
 
-    let job_additions: Vec<proc_macro2::TokenStream> = cron_jobs
-        .iter()
-        .map(|cron| {
-            let expression = &cron.expression;
-            let module_path = &cron.module_path;
-            let function_name = &cron.function_name;
-
-            // Build the full path: crate::module::function
-            let call_path = crate_path_to(module_path, function_name);
-
-            let err_create = format!("vespera: failed to create cron job '{function_name}'");
-            let err_add = format!("vespera: failed to add cron job '{function_name}'");
-
-            quote! {
-                // A cron expression is compile-time validated (vespera_macro/cron
-                // feature), so `new_async` failing here is a runtime library/env
-                // condition, not user error — log it and skip THIS job rather than
-                // `.expect()`-panicking the whole scheduler task (which tokio would
-                // swallow as a silent `JoinError`, hiding the failure entirely).
-                match vespera::tokio_cron_scheduler::Job::new_async(#expression, |_uuid, _l| {
-                    Box::pin(async move {
-                        #call_path().await;
-                    })
-                }) {
-                    Ok(__vespera_job) => {
-                        if let Err(__vespera_err) =
-                            __vespera_cron_scheduler.add(__vespera_job).await
-                        {
-                            eprintln!("{}: {__vespera_err}", #err_add);
-                        }
-                    }
-                    Err(__vespera_err) => eprintln!("{}: {__vespera_err}", #err_create),
-                }
-            }
-        })
-        .collect();
+    let jobs = cron_jobs.iter().map(|cron| {
+        let expression = &cron.expression;
+        let call_path = crate_path_to(&cron.module_path, &cron.function_name);
+        quote! {
+            vespera::cron::CronJob::new(#expression, || ::std::boxed::Box::pin(#call_path()))
+        }
+    });
 
     quote! {
-        vespera::tokio::spawn(async move {
-            // Scheduler setup runs in a detached `tokio::spawn` task: a panic here
-            // would be swallowed as a silent `JoinError`, so log + bail instead of
-            // `.expect()` so a scheduler-init failure is observable, not invisible.
-            let mut __vespera_cron_scheduler =
-                match vespera::tokio_cron_scheduler::JobScheduler::new().await {
-                    Ok(__vespera_sched) => __vespera_sched,
-                    Err(__vespera_err) => {
-                        eprintln!("vespera: failed to create cron scheduler: {__vespera_err}");
-                        return;
-                    }
-                };
-            #(#job_additions)*
-            if let Err(__vespera_err) = __vespera_cron_scheduler.start().await {
-                eprintln!("vespera: failed to start cron scheduler: {__vespera_err}");
-                return;
-            }
-            // Keep the scheduler alive for the process lifetime.
-            ::std::future::pending::<()>().await;
-        });
+        vespera::cron::start([#(#jobs),*]);
     }
 }
 

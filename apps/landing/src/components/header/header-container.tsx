@@ -6,7 +6,7 @@ import { ComponentProps } from 'react'
 import { useSearchContext } from '../search/provider'
 import { useHeader } from './header-provider'
 
-export function HeaderContainer(props: ComponentProps<typeof Center<'div'>>) {
+export function HeaderContainer(props: ComponentProps<typeof Center>) {
   const { transparent } = useHeader()
   const { dimmed } = useSearchContext()
   return (

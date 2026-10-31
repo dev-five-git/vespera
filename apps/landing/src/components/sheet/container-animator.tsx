@@ -54,7 +54,7 @@ export function ContainerAnimator({
   setIsOpen,
   ref: refProp,
   ...props
-}: ComponentProps<typeof Box<'div'>> & {
+}: ComponentProps<typeof Box> & {
   position?: 'left' | 'right' | 'top' | 'bottom'
   isOpen: boolean
   setIsOpen: (isOpen: boolean) => void

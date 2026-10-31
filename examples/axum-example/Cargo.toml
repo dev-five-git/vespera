@@ -6,20 +6,17 @@ publish = false
 
 [dependencies]
 vespera = { path = "../../crates/vespera", features = ["cron"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tower-http = { version = "0.7", features = ["cors"] }
-sea-orm = { version = "^2.0.1", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "with-uuid"] }
+sea-orm = { version = "^2.0.4", features = ["sqlx-sqlite", "runtime-tokio", "macros", "with-uuid"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 tempfile = "3"
 
 third = { path = "../third" }
 
-[build-dependencies]
-vespera = { path = "../../crates/vespera" }
-
 [dev-dependencies]
-axum-test = "21.0"
-insta = "1.48"
+testkit = { path = "../testkit" }
+insta = "1.49"
 

@@ -68,7 +68,7 @@ function RouteTrigger({
   children,
   asChild,
   ...props
-}: ComponentProps<typeof Button<'button'>> & {
+}: ComponentProps<typeof Button> & {
   asChild?: boolean
   name: string
 }) {

@@ -3,10 +3,10 @@ import com.vanniktech.maven.publish.GradlePublishPlugin
 plugins {
     `java-gradle-plugin`
     `kotlin-dsl`
-    id("com.vanniktech.maven.publish") version "0.36.0"
+    id("com.vanniktech.maven.publish") version "0.37.0"
     // Gradle Plugin Portal publishing (`publishPlugins` task). Credentials
     // come from GRADLE_PUBLISH_KEY / GRADLE_PUBLISH_SECRET env vars in CI.
-    id("com.gradle.plugin-publish") version "2.1.1"
+    id("com.gradle.plugin-publish") version "2.2.1"
 }
 
 tasks.named("publishPlugins") {

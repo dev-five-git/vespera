@@ -3,7 +3,7 @@
 exports[`ThemeScript should render the theme bootstrap script 1`] = `
 "<div>
   <script>
-    (function (){document.documentElement.setAttribute('data-theme',localStorage.getItem('__DF_THEME_SELECTED__')||(true&&window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'default'));})()
+    (function (){document.documentElement.setAttribute('data-theme',localStorage.getItem('__DF_THEME_SELECTED__')||(true&&window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':"default"));})()
   </script>
 </div>"
 `;

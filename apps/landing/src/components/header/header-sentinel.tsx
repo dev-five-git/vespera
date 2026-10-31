@@ -5,9 +5,7 @@ import { ComponentPropsWithoutRef } from 'react'
 
 import { useHeader } from './header-provider'
 
-export function HeaderSentinel(
-  props: ComponentPropsWithoutRef<typeof Box<'div'>>,
-) {
+export function HeaderSentinel(props: ComponentPropsWithoutRef<typeof Box>) {
   const { intersectionObserver, setIsSentinelVisible } = useHeader()
   return (
     <Box

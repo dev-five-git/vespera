@@ -326,4 +326,6 @@ const BUDGET_DISPATCH_INTO: usize = 15; // dispatch_into: +input clone, reused o
 // into the response-`Vec` capacity estimate, so the wire header serialises
 // without the mid-write realloc a hoist-blind estimate paid (26 alloc + 0
 // realloc; was 26 alloc + 1 realloc). A re-introduced realloc trips this.
-const BUDGET_VALIDATE_422: usize = 26; // realloc-free 422 hoist (was 27 w/ realloc)
+// Hoisted error strings now borrow from the 422 body (owned only when the JSON
+// string held an escape): 19-21 measured, so the budget drops from 26 to 22.
+const BUDGET_VALIDATE_422: usize = 22; // realloc-free, borrowed-string 422 hoist

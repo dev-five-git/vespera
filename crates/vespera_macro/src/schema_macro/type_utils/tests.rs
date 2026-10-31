@@ -185,7 +185,7 @@ fn test_is_seaorm_model_regular_struct() {
 fn test_extract_module_path_simple() {
     let ty: syn::Type = syn::parse_str("User").unwrap();
     let result = extract_module_path(&ty);
-    assert!(result.is_empty());
+    assert_eq!(result, Vec::<String>::new());
 }
 
 #[test]
@@ -199,7 +199,7 @@ fn test_extract_module_path_qualified() {
 fn test_extract_module_path_non_path_type() {
     let ty: syn::Type = syn::parse_str("&str").unwrap();
     let result = extract_module_path(&ty);
-    assert!(result.is_empty());
+    assert_eq!(result, Vec::<String>::new());
 }
 
 #[test]
@@ -316,7 +316,7 @@ fn test_resolve_type_to_absolute_path_empty_segments() {
     let module_path = vec!["crate".to_string()];
     let tokens = resolve_type_to_absolute_path(&ty, &module_path);
     let output = tokens.to_string();
-    assert!(output.trim().is_empty());
+    assert_eq!(output.trim(), "");
 }
 
 #[rstest]
@@ -509,7 +509,7 @@ fn test_resolve_type_to_absolute_path_leading_colon_and_empty_path() {
 
     let empty_ty = empty_type_path();
     let tokens = resolve_type_to_absolute_path(&empty_ty, &["crate".to_string()]);
-    assert!(tokens.to_string().trim().is_empty());
+    assert_eq!(tokens.to_string().trim(), "");
 }
 
 #[test]

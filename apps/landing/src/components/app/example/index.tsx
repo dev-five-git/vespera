@@ -54,7 +54,7 @@ export function ExampleProvider({
 export function ExampleContainer({
   value,
   ...props
-}: ComponentProps<typeof Flex<'div'>> & { value?: string }) {
+}: ComponentProps<typeof Flex> & { value?: string }) {
   const { selected, setSelected } = useExample()
   const isSelected = selected === value
   return (
@@ -84,7 +84,7 @@ export function ExampleContainer({
 
 export function ExampleImage({
   ...props
-}: Omit<ComponentProps<typeof Image<'img'>>, 'src'>) {
+}: Omit<ComponentProps<typeof Image>, 'src'>) {
   const { selectedExample } = useExample()
   return (
     <Image

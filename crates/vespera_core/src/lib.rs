@@ -2,6 +2,8 @@
 //!
 //! Provides structures conforming to the `OpenAPI` 3.1 specification.
 
+#[cfg(feature = "cron")]
+pub mod cron;
 pub mod openapi;
 pub mod route;
 pub mod schema;

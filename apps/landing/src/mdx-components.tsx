@@ -3,19 +3,19 @@ import type { MDXComponents } from 'mdx/types'
 import { ComponentProps } from 'react'
 
 export const _components = {
-  h1(props: ComponentProps<typeof Text<'h1'>>) {
+  h1(props: Omit<ComponentProps<typeof Text<'h1'>>, 'as'>) {
     return <Text as="h1" color="$title" typography="h1" {...props} />
   },
-  h2(props: ComponentProps<typeof Text<'h2'>>) {
+  h2(props: Omit<ComponentProps<typeof Text<'h2'>>, 'as'>) {
     return <Text as="h2" color="$title" typography="h2" {...props} />
   },
-  h3(props: ComponentProps<typeof Text<'h3'>>) {
+  h3(props: Omit<ComponentProps<typeof Text<'h3'>>, 'as'>) {
     return <Text as="h3" color="$title" typography="h3" {...props} />
   },
-  h4(props: ComponentProps<typeof Text<'h4'>>) {
+  h4(props: Omit<ComponentProps<typeof Text<'h4'>>, 'as'>) {
     return <Text as="h4" color="$title" typography="h4" {...props} />
   },
-  h5(props: ComponentProps<typeof Text<'h5'>>) {
+  h5(props: Omit<ComponentProps<typeof Text<'h5'>>, 'as'>) {
     return <Text as="h5" color="$title" typography="h5" {...props} />
   },
   p({ children }: { children: React.ReactNode }) {

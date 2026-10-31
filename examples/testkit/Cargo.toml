@@ -1,0 +1,11 @@
+[package]
+name = "testkit"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+vespera = { path = "../../crates/vespera" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower = { version = "0.5", features = ["util"] }

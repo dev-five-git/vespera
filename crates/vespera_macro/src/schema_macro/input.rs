@@ -461,7 +461,7 @@ mod tests {
         assert!(input.omit.is_none());
         assert!(input.pick.is_none());
         assert!(input.rename.is_none());
-        assert!(input.relation_adapters.is_empty());
+        assert_eq!(input.relation_adapters, Vec::<(String, syn::Ident)>::new());
         assert!(input.derive_clone);
     }
 

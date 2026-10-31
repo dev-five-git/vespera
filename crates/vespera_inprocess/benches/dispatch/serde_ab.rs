@@ -185,17 +185,17 @@ pub fn bench_request_build_path(c: &mut Criterion) {
 /// small `HeaderMap` + status fixture in the SAME criterion run so the
 /// per-response metadata-block delta is read without cross-run drift.
 ///
-/// - `metadata_static_fast`: `ResponseMetadata::current()` — the
-///   `Cow::Borrowed(env!("CARGO_PKG_VERSION"))` pointer that the production
-///   fast path detects (one bulk `sink.put` of the pre-baked const segment).
+/// - `metadata_static_fast`: `ResponseMetadata::current()` — the engine
+///   version that the production fast path detects by content (one bulk
+///   `sink.put` of the pre-baked const segment).
 /// - `metadata_owned_general`: `ResponseMetadata { version: Cow::Owned(...) }`
-///   over the SAME version bytes — forces the general path (three `sink.put`
-///   calls + per-byte ESCAPE scan).
+///   over a different, same-length version — forces the general path (three
+///   `sink.put` calls + per-byte ESCAPE scan).
 ///
 /// Fixture: a small `HeaderMap` with one `content-type` entry + `status:200`,
 /// matching the single-content-type response shape that dominates the DIRECT
-/// dispatch hot path.  Output is byte-identical between the two arms (SemVer
-/// never trips the ESCAPE table), so the delta is the metadata block's
+/// dispatch hot path.  Output length is identical between the two arms (the
+/// versions have equal length, and neither trips the ESCAPE table), so the delta is the metadata block's
 /// scan + extra `sink.put`s — exactly what the fast path skips.  The decision
 /// guard: if `metadata_static_fast` does NOT beat `metadata_owned_general` on
 /// the median of 5 runs the production fast-path-detect is providing no
@@ -211,13 +211,13 @@ pub fn bench_metadata_segment(c: &mut Criterion) {
         "application/json".parse().expect("static header value"),
     );
 
-    // Production fast path: borrowed `'static` SemVer (pointer-eq vs
-    // `VESPERA_VERSION` in `wire/header_write.rs`).
+    // Production fast path: the version equals `VESPERA_VERSION` in
+    // `wire/header_write.rs` (compared by content).
     let meta_current = ResponseMetadata::current();
-    // General path: SAME bytes but `Cow::Owned`, so the production fast-path
-    // detect fails and the existing `write_json_string` block runs.
+    // General path: a same-length version that differs from the engine's, so
+    // the content check fails and the `write_json_string` block runs.
     let meta_owned = ResponseMetadata {
-        version: Cow::Owned(env!("CARGO_PKG_VERSION").to_owned()),
+        version: Cow::Owned("9.9.9".to_owned()),
     };
 
     // Size the out buffer once outside the timed loop (mirrors the pooled

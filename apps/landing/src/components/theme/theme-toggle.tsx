@@ -3,7 +3,7 @@
 import { Button, setTheme, useTheme } from '@devup-ui/react'
 import { ComponentProps } from 'react'
 
-export function ThemeToggle(props: ComponentProps<typeof Button<'button'>>) {
+export function ThemeToggle(props: ComponentProps<typeof Button>) {
   const theme = useTheme() as 'light' | 'dark' | null
   return (
     <Button

@@ -33,7 +33,7 @@ fn no_constraints_emits_nothing() {
             pub age: i32,
         }
     };
-    assert!(emit_to_string(s).is_empty());
+    assert_eq!(emit_to_string(s), "");
 }
 
 #[test]
@@ -201,7 +201,7 @@ fn format_uuid_is_annotation_only_no_runtime_rule() {
         }
     };
     // uuid alone has no garde rule → no Validate impl emitted.
-    assert!(emit_to_string(s).is_empty());
+    assert_eq!(emit_to_string(s), "");
 }
 
 #[test]
@@ -234,7 +234,7 @@ fn enum_emits_nothing() {
     let e: DeriveInput = parse_quote! {
         enum Status { Active, Inactive }
     };
-    assert!(emit_to_string(e).is_empty());
+    assert_eq!(emit_to_string(e), "");
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn tuple_struct_emits_nothing() {
     let s: DeriveInput = parse_quote! {
         struct Wrapper(pub String);
     };
-    assert!(emit_to_string(s).is_empty());
+    assert_eq!(emit_to_string(s), "");
 }
 
 #[test]
@@ -250,7 +250,7 @@ fn unit_struct_emits_nothing() {
     let s: DeriveInput = parse_quote! {
         struct Empty;
     };
-    assert!(emit_to_string(s).is_empty());
+    assert_eq!(emit_to_string(s), "");
 }
 
 #[test]
@@ -278,7 +278,7 @@ fn annotation_only_constraints_emit_nothing() {
             pub id: String,
         }
     };
-    assert!(emit_to_string(s).is_empty());
+    assert_eq!(emit_to_string(s), "");
 }
 
 // ── nested validation (`#[schema(dive)]`) emission ──────────────
@@ -363,7 +363,7 @@ fn dive_false_disables_emission() {
     };
     // `dive = false` is the same as no annotation — no rule
     // produced means no `impl Validate` emitted.
-    assert!(emit_to_string(s).is_empty());
+    assert_eq!(emit_to_string(s), "");
 }
 
 // ── format=ipv6 / format=ip / unknown format ────────────────────
