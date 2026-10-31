@@ -64,10 +64,10 @@ fn build_filtered_schema(
     // Same resolution context the OpenAPI component path builds: every
     // known schema name (for `$ref` resolution) and its source definition
     // (for generic expansion).
-    let known_schemas: HashSet<String> = schema_storage.keys().cloned().collect();
-    let struct_definitions: HashMap<String, String> = schema_storage
+    let known_schemas: HashSet<&str> = schema_storage.keys().map(String::as_str).collect();
+    let struct_definitions: HashMap<&str, &str> = schema_storage
         .values()
-        .map(|s| (s.name.clone(), s.definition.clone()))
+        .map(|s| (s.name.as_str(), s.definition.as_str()))
         .collect();
 
     // Single source of truth — identical logic to OpenAPI generation

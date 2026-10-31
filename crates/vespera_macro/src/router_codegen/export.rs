@@ -163,12 +163,18 @@ pub fn namespace_export_schemas(
         .filter(|schema| schema.explicit_schema_name)
         .map(|schema| schema.name.as_str())
         .collect();
-    let mut value = serde_json::to_value(&*openapi).map_err(|error| {
-        syn::Error::new(
-            proc_macro2::Span::call_site(),
-            format!("export_app! macro: failed to namespace OpenAPI schemas: {error}"),
-        )
-    })?;
+    // Round-trip through JSON text rather than `to_value`/`from_value`: the
+    // text serializer/reader are already instantiated for the spec, whereas the
+    // `Value` (de)serializer would compile a second copy of every OpenAPI type's
+    // serde impl into the proc-macro.
+    let mut value = serde_json::to_string(&*openapi)
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text))
+        .map_err(|error| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!("export_app! macro: failed to namespace OpenAPI schemas: {error}"),
+            )
+        })?;
     let Some(schemas) = value
         .pointer_mut("/components/schemas")
         .and_then(serde_json::Value::as_object_mut)
@@ -202,12 +208,14 @@ pub fn namespace_export_schemas(
         }
     }
     rewrite_schema_refs(&mut value, &renames);
-    *openapi = serde_json::from_value(value).map_err(|error| {
-        syn::Error::new(
-            proc_macro2::Span::call_site(),
-            format!("export_app! macro: failed to rebuild namespaced OpenAPI spec: {error}"),
-        )
-    })?;
+    *openapi = serde_json::to_string(&value)
+        .and_then(|text| serde_json::from_str(&text))
+        .map_err(|error| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!("export_app! macro: failed to rebuild namespaced OpenAPI spec: {error}"),
+            )
+        })?;
     Ok(())
 }
 
