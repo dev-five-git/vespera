@@ -161,6 +161,7 @@ jobs:
         env:
           MERGE_BASE: ${{ steps.scope.outputs.merge_base }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUSTFLAGS: "-C llvm-args=-align-all-functions=6 -C llvm-args=-align-all-nofallthru-blocks=5"
         run: |
           git checkout --detach "$HEAD_SHA"
           scripts/bench-interleaved.sh "$MERGE_BASE" "${BENCH_FILTER}"
