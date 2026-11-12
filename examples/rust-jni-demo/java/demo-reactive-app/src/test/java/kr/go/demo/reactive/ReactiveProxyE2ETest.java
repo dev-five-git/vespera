@@ -162,7 +162,6 @@ class ReactiveProxyE2ETest {
 
     @Test
     void eventStreamArrivesIncrementally() throws Exception {
-        long start = System.nanoTime();
         HttpResponse<InputStream> response = http.send(
                 HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/stream/events"))
                         .header("Accept", "text/event-stream").build(),
@@ -172,13 +171,16 @@ class ReactiveProxyE2ETest {
         try (BufferedReader lines = new BufferedReader(
                 new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
             assertEquals("data: event-0", lines.readLine());
-            long firstEventMillis = Duration.ofNanos(System.nanoTime() - start).toMillis();
-            // The three events take >= 600 ms in total: the first one must not wait for them.
-            assertTrue(firstEventMillis < 550, "first event after " + firstEventMillis + " ms");
+            // Measured from the first event, not from the request: a cold runner may take
+            // long to start the stream, but a buffered response would deliver all three
+            // events together, while the handler spaces them 300 ms apart (~600 ms from event-0 to event-2).
+            long firstEvent = System.nanoTime();
             assertEquals("", lines.readLine());
             assertEquals("data: event-1", lines.readLine());
             assertEquals("", lines.readLine());
             assertEquals("data: event-2", lines.readLine());
+            long spreadMillis = Duration.ofNanos(System.nanoTime() - firstEvent).toMillis();
+            assertTrue(spreadMillis >= 300, "events arrived together (" + spreadMillis + " ms apart)");
         }
     }
 
