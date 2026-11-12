@@ -308,12 +308,63 @@ Works with every common extractor — same `422` envelope on the wire:
 | `Validated<Query<T>>` | URL query parameters |
 | `Validated<Path<T>>` | Path parameters |
 
+Every route with a `Validated<...>` / `ValidatedWith<...>` argument documents the
+`422` response in the OpenAPI spec, wherever the argument sits in the signature
+(e.g. after a plain `Path<T>`).
+
+`T` must implement `garde::Validate`. `#[derive(Schema)]` generates that impl
+only for a struct with named fields and at least one runtime `#[schema(...)]`
+rule. A rule-less struct or an enum inside `Validated` is a compile error at the
+argument (`` `T` cannot be validated by `Validated` / `ValidatedWith` ``): add a
+rule, derive `garde::Validate` yourself, or take the plain extractor.
+
 Input that is well-formed but does not deserialize into `T` — a wrong JSON
 type, a missing field, an unparsable query/form/path value — is reported
 through the **same `422` envelope**, with `path` pointing at the offending
 field (e.g. `"age"`, `"tags[1]"`). Malformed JSON syntax (`400`), a missing
 or unsupported `Content-Type` (`415`) and body-limit errors keep axum's
 default rejection.
+
+#### Context-aware validation (`ValidatedWith<C, T>`)
+
+`ValidatedWith<C, T>` works like `Validated<T>`, but validates with a context
+`C` borrowed from the router state. Use it for garde rules declared with
+`#[garde(context(C))]`. The state provides the context through
+`vespera::ValidationContext<C>`: state that *is* `C` gets this for free,
+and app state can expose a field without cloning it per request:
+
+```rust
+use std::sync::Arc;
+use vespera::{Schema, ValidatedWith, ValidationContext, axum::Json};
+
+pub struct TagPolicy { pub required_prefix: String }
+pub struct AppState { pub tag_policy: TagPolicy }
+
+impl ValidationContext<TagPolicy> for Arc<AppState> {
+    fn validation_context(&self) -> &TagPolicy { &self.tag_policy }
+}
+
+#[derive(serde::Deserialize, Schema, garde::Validate)]
+#[garde(context(TagPolicy as policy))]
+pub struct TaggedPost {
+    #[garde(custom(|tags: &Vec<String>, policy: &TagPolicy| {
+        if tags.iter().all(|t| t.starts_with(&policy.required_prefix)) { Ok(()) }
+        else { Err(garde::Error::new("bad tag prefix")) }
+    }))]
+    pub tags: Vec<String>,
+}
+
+#[vespera::route(post)]
+pub async fn create_post(post: ValidatedWith<TagPolicy, Json<TaggedPost>>) -> &'static str {
+    let Json(_post) = post.into_inner();
+    "ok"
+}
+```
+
+`ValidatedWith` wraps the same extractors as `Validated` and answers the same
+`422` envelope. The spec documents the wrapped body or query parameters plus the
+`422` response. The context never appears in the spec. Keep `#[schema(...)]` rules off a type that
+derives `garde::Validate` itself (`E0119`).
 
 Under JNI, the same `422` body is **hoisted** into the binary wire header as
 `"validation_errors": [...]` — Java decoders consume validation errors
@@ -989,6 +1040,9 @@ This automatically:
 | `NaiveTime` | `string` with `format: time` |
 | `DateTime`, `DateTimeWithTimeZone` | `string` with `format: date-time` |
 | `FieldData<NamedTempFile>` | `string` with `format: binary` |
+| `Ipv4Addr` / `Ipv6Addr` | `string` with `format: ipv4` / `ipv6` |
+| `IpAddr`, `SocketAddr` (`V4` / `V6`), `PathBuf` | `string` |
+| `url::Url` | `string` with `format: uri` |
 | `serde_json::Value` | `{}` (any JSON value) |
 | `std::time::Duration` (bare `Duration`, `std::time::` / `core::time::`) | `object` `{secs, nanos}` (serde's std shape) |
 | other qualified `Duration` (`time::`, `chrono::`) | `{}` — no single serde shape; annotate explicitly |

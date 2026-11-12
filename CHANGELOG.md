@@ -38,6 +38,10 @@ of an existing 0.5 application.
   `required: false`.
 - `serde_json::Value` is `{}`, `std::time::Duration` is `{secs, nanos}`;
   `{*rest}` wildcards are documented as `{rest}`.
+- `IpAddr`, `SocketAddr` (and `V4` / `V6`) and `PathBuf` are `string`.
+  `Ipv4Addr` / `Ipv6Addr` are `string` with `format: ipv4` / `ipv6`, and
+  `url::Url` is `string` with `format: uri`. These fields no longer need a
+  `Schema` impl. A user `Schema` type with the same name keeps its `$ref`.
 - `flatten` on an `Option<T>` makes `T`'s fields optional; an enum's
   `rename_all` no longer renames struct-variant fields (as in serde);
   `rename_all_fields` and `deny_unknown_fields` are supported.
@@ -95,6 +99,15 @@ of an existing 0.5 application.
 - `Json` / `Form` / `Query` / `Path` deserialization failures now return
   `422` with the `{"errors":[{"path","message"}]}` envelope instead of axum's
   plain-text rejection.
+- A `Validated<...>` argument that follows a `Path<T>` argument now documents
+  the `422` response. `ValidatedWith<C, T>` arguments now document their wrapped
+  body or query parameters and the `422` response. Both were previously missing
+  from the spec.
+- New compile error: a `Validated` / `ValidatedWith` payload without
+  `garde::Validate`, such as a `Schema` struct with no runtime `#[schema(...)]`
+  rule, or an enum. It is reported at the argument (`` `T` cannot be validated
+  by `Validated` / `ValidatedWith` ``) rather than as a `Handler` trait-bound
+  error. Such code never compiled; only the message changes.
 
 ### In-process / JNI (`vespera_inprocess`, `vespera_jni`)
 

@@ -109,6 +109,18 @@ pub struct CreateUserRequest {
       <TableCell>`string` with `format: binary`</TableCell>
     </TableRow>
     <TableRow>
+      <TableCell>`Ipv4Addr`, `Ipv6Addr`</TableCell>
+      <TableCell>`string` with `format: ipv4` / `ipv6`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`IpAddr`, `SocketAddr`, `PathBuf`</TableCell>
+      <TableCell>`string`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`url::Url`</TableCell>
+      <TableCell>`string` with `format: uri`</TableCell>
+    </TableRow>
+    <TableRow>
       <TableCell>`()`</TableCell>
       <TableCell>empty response (204 No Content)</TableCell>
     </TableRow>
