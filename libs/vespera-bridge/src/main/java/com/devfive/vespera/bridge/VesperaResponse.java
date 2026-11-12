@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 
 import com.devfive.vespera.bridge.VesperaBridge.DecodedResponse;
 
@@ -24,6 +26,7 @@ import com.devfive.vespera.bridge.VesperaBridge.DecodedResponse;
  * header byte, see {@link WireHeaderStringSupport}); ASCII values read as-is.
  * Instances are immutable and thread-safe.
  */
+@NullMarked
 public final class VesperaResponse {
 
     private final DecodedResponse decoded;
@@ -56,7 +59,7 @@ public final class VesperaResponse {
      * First value of header {@code name} (case-insensitive), or {@code null}
      * when the response does not carry it.
      */
-    public String header(String name) {
+    public @Nullable String header(String name) {
         Object value = rawHeader(name);
         if (value instanceof List<?> list) {
             return list.isEmpty() ? null : (String) list.get(0);
@@ -78,7 +81,7 @@ public final class VesperaResponse {
         return List.of((String) value);
     }
 
-    private Object rawHeader(String name) {
+    private @Nullable Object rawHeader(String name) {
         Objects.requireNonNull(name, "name");
         Map<String, Object> headers = decoded.headers();
         Object value = headers.get(name);
@@ -86,7 +89,7 @@ public final class VesperaResponse {
     }
 
     /** The {@code content-type} header, or {@code null}. */
-    public String contentType() {
+    public @Nullable String contentType() {
         return header("content-type");
     }
 
@@ -155,7 +158,7 @@ public final class VesperaResponse {
     }
 
     /** The {@code charset} parameter of a media type, or UTF-8. */
-    static Charset charsetOf(String contentType) {
+    static Charset charsetOf(@Nullable String contentType) {
         if (contentType == null) {
             return StandardCharsets.UTF_8;
         }

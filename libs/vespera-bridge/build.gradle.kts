@@ -1,5 +1,12 @@
+import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
+
 plugins {
     `java-library`
+    // Kotlin extensions (src/main/kotlin, `VesperaKotlin.kt`) ship INSIDE this
+    // JAR — no separate artifact. kotlin-stdlib / kotlinx-coroutines are
+    // compileOnly (gradle.properties: kotlin.stdlib.default.dependency=false),
+    // so the POM stays empty and Java users never load a Kotlin class.
+    kotlin("jvm") version "2.4.21"
     jacoco
     id("com.vanniktech.maven.publish") version "0.37.0"
     // CycloneDX SBOM of the published JAR (see "SBOM" at the end of this file).
@@ -14,6 +21,20 @@ java {
         languageVersion.set(JavaLanguageVersion.of(17))
     }
     withSourcesJar()
+}
+
+kotlin {
+    jvmToolchain(17)
+    explicitApi()
+    compilerOptions {
+        // Oldest language/API level the compiler still accepts, so Kotlin
+        // consumers on older compilers (Spring Boot 3.5 ships Kotlin 1.9)
+        // can read the extension metadata (a compiler reads metadata up to one
+        // version ahead). 2.0 is deprecated as a language version: silence that.
+        languageVersion.set(KotlinVersion.KOTLIN_2_0)
+        apiVersion.set(KotlinVersion.KOTLIN_2_0)
+        freeCompilerArgs.add("-Xsuppress-version-warnings")
+    }
 }
 
 tasks.withType<Javadoc>().configureEach {
@@ -67,8 +88,22 @@ val micrometerVersion = "1.15.12"
 // springdoc 3.x targets Boot 4, 2.x Boot 3.5 — the APIs the bridge uses exist in both.
 val springdocVersion = "3.2.0"
 val springdoc3Version = "2.10.0"
+// Kotlin extensions: compiled against these, provided by the Kotlin app.
+// kotlinx-coroutines >= 1.7 carries `kotlinx.coroutines.future.await` in core.
+val kotlinVersion = "2.4.21"
+val coroutinesVersion = "1.8.0"
 
 dependencies {
+    // Optional Kotlin extensions (VesperaKotlin.kt) — provided by the Kotlin app;
+    // only `sendAwait` needs kotlinx-coroutines-core at runtime.
+    compileOnly("org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion")
+    compileOnly("org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion")
+    // JSpecify nullability on the client API (VesperaClient / VesperaRequest /
+    // VesperaResponse / VesperaClientException): Kotlin reads them from the
+    // class files, so callers get `String?` / `String` instead of platform
+    // types. Annotations are not needed at runtime.
+    compileOnly("org.jspecify:jspecify:1.0.0")
+
     compileOnly("org.springframework.boot:spring-boot-autoconfigure:$springBootVersion")
     compileOnly("org.springframework:spring-webmvc:$springFrameworkVersion")
     compileOnly("jakarta.servlet:jakarta.servlet-api:6.1.0")
@@ -106,6 +141,8 @@ dependencies {
     // VesperaWireTest cross-checks the hand-rolled JSON codec against Jackson.
     testImplementation("com.fasterxml.jackson.core:jackson-databind:2.23.0")
     testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
+    testImplementation("org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion")
     // MockHttpServletRequest for resolver unit tests (no servlet container).
     testImplementation("org.springframework:spring-test:$springFrameworkVersion")
     // WebApplicationContextRunner for autoconfigure branch tests
@@ -137,6 +174,8 @@ dependencies {
     testBoot3Runtime("org.springframework:spring-test:$springFramework3Version")
     testBoot3Runtime("com.fasterxml.jackson.core:jackson-databind:2.23.0")
     testBoot3Runtime("org.junit.jupiter:junit-jupiter:6.1.3")
+    testBoot3Runtime("org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion")
+    testBoot3Runtime("org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion")
     testBoot3Runtime("org.assertj:assertj-core:3.27.7")
     testBoot3Runtime("org.junit.platform:junit-platform-launcher:6.1.3")
 }

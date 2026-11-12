@@ -6,6 +6,7 @@
 
 mod cache;
 mod cron_discovery;
+mod invocation;
 mod openapi_io;
 mod orchestrator;
 mod path_utils;

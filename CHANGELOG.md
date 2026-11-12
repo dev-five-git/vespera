@@ -88,6 +88,13 @@ of an existing 0.5 application.
 - `#[cron]` jobs start once per process (repeated `create_app()` calls no
   longer duplicate schedulers) and run on a dedicated thread when no Tokio
   runtime is present.
+- Several `vespera!` calls in one crate with different settings (e.g. a
+  default and an admin app) no longer share one route cache and embedded-spec
+  file: build files under `target/vespera/` are named per invocation
+  (`routes-<crate>-<hash>.cache`, `vespera_spec-<crate>-<hash>.json`), so each
+  invocation hits its own cache on warm rebuilds and embeds only its own spec.
+  The first build after upgrading regenerates the cache; the old
+  `routes-<crate>.cache` / `*-<crate>.json` files can be deleted.
 - `#[route]` no longer parses handler bodies (it reads only the attributes,
   visibility and signature, and re-emits the item unchanged), which makes it
   faster to expand. A syntax error inside a handler body is now reported by

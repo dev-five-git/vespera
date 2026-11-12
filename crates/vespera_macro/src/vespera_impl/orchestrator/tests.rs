@@ -564,3 +564,77 @@ fn process_export_app_reuses_fresh_cache_and_sidecar() {
 
     assert_eq!(first.to_string(), second.to_string());
 }
+
+/// Two `vespera!` invocations in ONE crate with different settings (a
+/// default app and an admin app) must each keep their own route cache and
+/// spec sidecars.  With per-crate file names they overwrote each other on
+/// every expansion: neither ever hit its cache, and the shared embed sidecar
+/// held whichever spec was written last.
+#[test]
+fn distinct_invocations_in_one_crate_keep_separate_caches_and_specs() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let _env_guard = isolated_manifest_dir(&temp_dir);
+    create_temp_file(
+        &temp_dir,
+        "routes/users.rs",
+        "pub async fn list_users() -> String { String::new() }\n",
+    );
+    create_temp_file(
+        &temp_dir,
+        "admin/stats.rs",
+        "pub async fn stats() -> String { String::new() }\n",
+    );
+    let invocation = |dir: &str, title: &str| ProcessedVesperaInput {
+        folder_name: temp_dir.path().join(dir).to_string_lossy().into_owned(),
+        title: Some(title.to_string()),
+        spec_url: Some("/openapi.json".to_string()),
+        ..ProcessedVesperaInput::default()
+    };
+    let apps = [
+        invocation("routes", "Default API"),
+        invocation("admin", "Admin API"),
+    ];
+    let expand = |processed| {
+        process_vespera_macro(processed, &HashMap::new(), &[], Span::call_site())
+            .expect("expansion succeeds")
+            .to_string()
+    };
+    for processed in &apps {
+        expand(processed);
+    }
+
+    // Mark every cache file: a cache MISS rewrites the file (dropping the
+    // marker), a HIT leaves it untouched.
+    let vespera_dir = temp_dir.path().join("target").join("vespera");
+    let caches: Vec<_> = fs::read_dir(&vespera_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "cache"))
+        .collect();
+    assert_eq!(caches.len(), 2, "one route cache per invocation");
+    for cache in &caches {
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(cache).unwrap()).unwrap();
+        json["hit_probe"] = serde_json::Value::Bool(true);
+        fs::write(cache, json.to_string()).unwrap();
+    }
+
+    for (processed, title) in apps.iter().zip(["Default API", "Admin API"]) {
+        let tokens = expand(processed);
+        let embed = tokens
+            .split("include_str ! (\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("spec is embedded via include_str!")
+            .replace("\\\\", "\\");
+        let spec = fs::read_to_string(&embed).expect("embed sidecar exists");
+        assert!(spec.contains(title), "{embed} must hold {title}: {spec}");
+    }
+    for cache in &caches {
+        assert!(
+            fs::read_to_string(cache).unwrap().contains("hit_probe"),
+            "second round must hit {}",
+            cache.display()
+        );
+    }
+}
