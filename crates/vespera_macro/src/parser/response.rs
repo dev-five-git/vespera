@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use syn::{ReturnType, Type};
 use vespera_core::route::{Header, MediaType, Response};
+use vespera_core::schema::{Schema, SchemaRef};
 
 use super::schema::parse_type_to_schema_ref;
 use crate::parser::is_keyword_type::{KeywordType, is_keyword_type, is_keyword_type_by_type_path};
@@ -78,8 +79,10 @@ fn extract_status_code_tuple(err_ty: &Type) -> Option<(u16, Type)> {
 /// Check if a type is a non-body response type (metadata only).
 /// These types contribute to the HTTP response (status, headers, cookies)
 /// but do not form the response body.
+/// `[(HeaderName, &str); N]` header arrays are axum `IntoResponseParts` too.
 fn is_non_body_type(ty: &Type) -> bool {
-    is_keyword_type(ty, &KeywordType::StatusCode)
+    matches!(ty, Type::Array(array) if matches!(array.elem.as_ref(), Type::Tuple(_)))
+        || is_keyword_type(ty, &KeywordType::StatusCode)
         || is_keyword_type(ty, &KeywordType::HeaderMap)
         || is_keyword_type(ty, &KeywordType::CookieJar)
 }
@@ -128,14 +131,76 @@ fn is_string_like(ty: &Type) -> bool {
     }
 }
 
+/// Media type of a raw-bytes body.
+const OCTET_STREAM: &str = "application/octet-stream";
+/// Media type of an `Html<T>` body.
+const TEXT_HTML: &str = "text/html";
+/// Media type of an `Sse<S>` body.
+const EVENT_STREAM: &str = "text/event-stream";
+
+/// True for raw byte bodies axum sends as `application/octet-stream`:
+/// `Bytes`, `BytesMut`, `Body`, `Vec<u8>`, `Box<[u8]>` and `&[u8]`.
+fn is_bytes_like(ty: &Type) -> bool {
+    match ty {
+        Type::Reference(reference) => {
+            matches!(reference.elem.as_ref(), Type::Slice(slice) if is_u8(&slice.elem))
+        }
+        Type::Path(type_path) => type_path.path.segments.last().is_some_and(|seg| {
+            match seg.ident.to_string().as_str() {
+                "Bytes" | "BytesMut" | "Body" => true,
+                "Vec" | "Box" => matches!(&seg.arguments, syn::PathArguments::AngleBracketed(args)
+                    if matches!(args.args.first(), Some(syn::GenericArgument::Type(inner))
+                        if is_u8(inner) || matches!(inner, Type::Slice(slice) if is_u8(&slice.elem)))),
+                _ => false,
+            }
+        }),
+        _ => false,
+    }
+}
+
+fn is_u8(ty: &Type) -> bool {
+    matches!(ty, Type::Path(type_path) if type_path.path.is_ident("u8"))
+}
+
+/// True for bodies whose shape the signature does not reveal: `impl
+/// IntoResponse` (any `impl Trait`), a type-erased `Response` and a
+/// `Redirect` (no body at all). They are documented by description only.
+fn is_opaque_body(ty: &Type) -> bool {
+    match ty {
+        Type::ImplTrait(_) => true,
+        Type::Path(type_path) => type_path
+            .path
+            .segments
+            .last()
+            .is_some_and(|seg| seg.ident == "Response" || seg.ident == "Redirect"),
+        _ => false,
+    }
+}
+
+/// The last path segment's ident of `ty`, if it is a path.
+fn last_ident_is(ty: &Type, ident: &str) -> bool {
+    matches!(ty, Type::Path(type_path)
+        if type_path.path.segments.last().is_some_and(|seg| seg.ident == ident))
+}
+
 /// The response `Content-Type` for a body of the given original (pre-`unwrap_json`)
-/// type: bare strings are `text/plain`; `Json<T>` and structs are
-/// `application/json`.
-fn body_content_type(ty: &Type) -> &'static str {
-    if is_string_like(ty) {
-        "text/plain"
+/// type, or `None` when the body is opaque (no `content` is documented):
+/// bare strings are `text/plain`, `Html<T>` is `text/html`, `Sse<S>` is
+/// `text/event-stream`, raw bytes are `application/octet-stream`; `Json<T>`
+/// and structs are `application/json`.
+fn body_content_type(ty: &Type) -> Option<&'static str> {
+    if is_opaque_body(ty) {
+        None
+    } else if is_string_like(ty) {
+        Some("text/plain")
+    } else if last_ident_is(ty, "Html") {
+        Some(TEXT_HTML)
+    } else if last_ident_is(ty, "Sse") {
+        Some(EVENT_STREAM)
+    } else if is_bytes_like(ty) {
+        Some(OCTET_STREAM)
     } else {
-        "application/json"
+        Some("application/json")
     }
 }
 
@@ -178,31 +243,40 @@ fn result_args(ty: &Type) -> Option<(&Type, &Type)> {
     }
 }
 
-/// `(200-body content-type, error-body content-type)` for a handler return type.
-/// Bare `String`/`&str` bodies map to `text/plain` (what axum actually sends);
-/// `Json<T>` and structs map to `application/json`.
-fn response_content_types(ty: &Type) -> (&'static str, &'static str) {
+/// `(200-body content-type, error-body content-type)` for a handler return
+/// type (see [`body_content_type`]; `None` = opaque, no content).
+fn response_content_types(ty: &Type) -> (Option<&'static str>, Option<&'static str>) {
     if let Some((ok, err)) = result_args(ty) {
         (
             body_content_type(tuple_body(ok)),
             body_content_type(tuple_body(err)),
         )
     } else {
-        (body_content_type(tuple_body(ty)), "application/json")
+        (body_content_type(tuple_body(ty)), Some("application/json"))
     }
 }
 
 fn content_for_type(
     ty: &Type,
-    content_type: &str,
+    content_type: Option<&str>,
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) -> Option<BTreeMap<String, MediaType>> {
+    let content_type = content_type?;
     if is_keyword_type(ty, &KeywordType::StatusCode) {
         return None;
     }
 
-    let schema = parse_type_to_schema_ref(ty, known_schemas, struct_definitions);
+    // Html / Sse / raw-byte bodies are strings on the wire regardless of the
+    // Rust payload type; bytes are documented as `format: binary`.
+    let schema = match content_type {
+        TEXT_HTML | EVENT_STREAM => SchemaRef::Inline(Box::new(Schema::string())),
+        OCTET_STREAM => SchemaRef::Inline(Box::new(Schema {
+            format: Some("binary".to_string()),
+            ..Schema::string()
+        })),
+        _ => parse_type_to_schema_ref(ty, known_schemas, struct_definitions),
+    };
     let mut content = BTreeMap::new();
     content.insert(
         content_type.to_string(),
@@ -238,8 +312,8 @@ fn insert_result_responses(
     responses: &mut BTreeMap<String, Response>,
     ok_ty: &Type,
     err_ty: &Type,
-    ok_content_type: &str,
-    err_content_type: &str,
+    ok_content_type: Option<&str>,
+    err_content_type: Option<&str>,
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) {
@@ -275,7 +349,7 @@ fn insert_result_responses(
 fn insert_plain_response(
     responses: &mut BTreeMap<String, Response>,
     ty: &Type,
-    content_type: &str,
+    content_type: Option<&str>,
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) {
