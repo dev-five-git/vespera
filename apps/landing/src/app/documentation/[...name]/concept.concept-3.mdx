@@ -144,6 +144,56 @@ Input that is well-formed but does not deserialize into the target type — a wr
   </TableBody>
 </Table>
 
+Every route with a `Validated` or `ValidatedWith` argument documents the `422` response in the OpenAPI spec, wherever the argument sits in the signature (for example after a plain `Path<T>`).
+
+### The payload must implement `garde::Validate`
+
+`#[derive(Schema)]` generates `garde::Validate` only for a struct with named fields and at least one runtime `#[schema(...)]` rule. A rule-less struct or an enum inside `Validated` fails to compile at the argument, with an error saying that the type cannot be validated by `Validated` / `ValidatedWith`. To fix it, add a rule, derive `garde::Validate` yourself, or take the plain extractor.
+
+## Context-Aware Validation: `ValidatedWith<C, T>`
+
+`ValidatedWith<C, T>` works like `Validated<T>`, but validates with a context `C` borrowed from the router state. Use it for garde rules declared with `#[garde(context(C))]`. The state provides the context through `vespera::ValidationContext<C>`. A state of type `C` implements it automatically. App state can expose a field without cloning it per request:
+
+```rust
+use std::sync::Arc;
+use vespera::{Schema, ValidatedWith, ValidationContext, axum::Json};
+
+pub struct TagPolicy {
+    pub required_prefix: String,
+}
+
+pub struct AppState {
+    pub tag_policy: TagPolicy,
+}
+
+impl ValidationContext<TagPolicy> for Arc<AppState> {
+    fn validation_context(&self) -> &TagPolicy {
+        &self.tag_policy
+    }
+}
+
+#[derive(serde::Deserialize, Schema, garde::Validate)]
+#[garde(context(TagPolicy as policy))]
+pub struct TaggedPost {
+    #[garde(custom(|tags: &Vec<String>, policy: &TagPolicy| {
+        if tags.iter().all(|t| t.starts_with(&policy.required_prefix)) {
+            Ok(())
+        } else {
+            Err(garde::Error::new("bad tag prefix"))
+        }
+    }))]
+    pub tags: Vec<String>,
+}
+
+#[vespera::route(post)]
+pub async fn create_post(post: ValidatedWith<TagPolicy, Json<TaggedPost>>) -> &'static str {
+    let Json(_post) = post.into_inner();
+    "ok"
+}
+```
+
+`ValidatedWith` wraps the same extractors as `Validated` and answers the same `422` envelope. The spec documents the wrapped body or query parameters plus the `422` response. The context never appears in the spec. Its second field is private, so take the argument by name and use `into_inner()`, `get()` or `Deref`.
+
 ## JNI Hoisting
 
 Under JNI, the same `422` body is **hoisted** into the binary wire header as `"validation_errors": [...]`. Java decoders can read validation errors directly from the header without parsing the response body — no special-casing needed on the Java side.

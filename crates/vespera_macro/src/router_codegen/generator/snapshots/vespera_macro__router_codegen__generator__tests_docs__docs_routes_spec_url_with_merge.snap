@@ -1,0 +1,45 @@
+---
+source: crates/vespera_macro/src/router_codegen/generator/tests_docs.rs
+expression: "render(docs_url, redoc_url, spec_url, &merge_apps)"
+---
+fn create_app() {
+    {
+        const __VESPERA_SPEC: &str = "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"x\",\"description\":\"</script>\"}}";
+        fn __vespera_merged_spec() -> &'static str {
+            static MERGED_SPEC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+            MERGED_SPEC
+                .get_or_init(|| {
+                    let Ok(mut merged) = vespera::serde_json::from_str::<
+                        vespera::OpenApi,
+                    >(__VESPERA_SPEC) else {
+                        return __VESPERA_SPEC.to_string();
+                    };
+                    if let Ok(other) = vespera::serde_json::from_str::<
+                        vespera::OpenApi,
+                    >(third::ThirdApp::OPENAPI_SPEC) {
+                        merged.merge(other);
+                    }
+                    vespera::serde_json::to_string(&merged)
+                        .unwrap_or_else(|_| __VESPERA_SPEC.to_string())
+                })
+        }
+        vespera::VesperaRouter::new(
+            vespera::axum::Router::new()
+                .route(
+                    "/openapi.json",
+                    vespera::axum::routing::get(|| async {
+                        (
+                            [
+                                (
+                                    vespera::axum::http::header::CONTENT_TYPE,
+                                    "application/json",
+                                ),
+                            ],
+                            __vespera_merged_spec(),
+                        )
+                    }),
+                ),
+            vec![third::ThirdApp::router],
+        )
+    }
+}

@@ -222,6 +222,7 @@ pub fn process_vespera_macro(
         &metadata,
         processed.docs_url.as_deref(),
         processed.redoc_url.as_deref(),
+        processed.spec_url.as_deref(),
         spec_tokens,
         &processed.merge,
         &cron_jobs,
@@ -365,7 +366,7 @@ pub fn process_export_app(
     };
     let spec_path_str = crate::file_utils::path_to_include_str_literal(&spec_file);
 
-    let router_code = generate_router_code(&metadata, None, None, None, &[], &[]);
+    let router_code = generate_router_code(&metadata, None, None, None, None, &[], &[]);
 
     let result = Ok(quote! {
         /// Auto-generated vespera app struct

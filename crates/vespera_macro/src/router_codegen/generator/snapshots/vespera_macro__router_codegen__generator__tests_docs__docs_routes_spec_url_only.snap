@@ -1,0 +1,24 @@
+---
+source: crates/vespera_macro/src/router_codegen/generator/tests_docs.rs
+expression: "render(docs_url, redoc_url, spec_url, &merge_apps)"
+---
+fn create_app() {
+    {
+        const __VESPERA_SPEC: &str = "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"x\",\"description\":\"</script>\"}}";
+        vespera::axum::Router::new()
+            .route(
+                "/openapi.json",
+                vespera::axum::routing::get(|| async {
+                    (
+                        [
+                            (
+                                vespera::axum::http::header::CONTENT_TYPE,
+                                "application/json",
+                            ),
+                        ],
+                        __VESPERA_SPEC,
+                    )
+                }),
+            )
+    }
+}

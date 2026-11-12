@@ -308,12 +308,63 @@ Works with every common extractor — same `422` envelope on the wire:
 | `Validated<Query<T>>` | URL query parameters |
 | `Validated<Path<T>>` | Path parameters |
 
+Every route with a `Validated<...>` / `ValidatedWith<...>` argument documents the
+`422` response in the OpenAPI spec, wherever the argument sits in the signature
+(e.g. after a plain `Path<T>`).
+
+`T` must implement `garde::Validate`. `#[derive(Schema)]` generates that impl
+only for a struct with named fields and at least one runtime `#[schema(...)]`
+rule. A rule-less struct or an enum inside `Validated` is a compile error at the
+argument (`` `T` cannot be validated by `Validated` / `ValidatedWith` ``): add a
+rule, derive `garde::Validate` yourself, or take the plain extractor.
+
 Input that is well-formed but does not deserialize into `T` — a wrong JSON
 type, a missing field, an unparsable query/form/path value — is reported
 through the **same `422` envelope**, with `path` pointing at the offending
 field (e.g. `"age"`, `"tags[1]"`). Malformed JSON syntax (`400`), a missing
 or unsupported `Content-Type` (`415`) and body-limit errors keep axum's
 default rejection.
+
+#### Context-aware validation (`ValidatedWith<C, T>`)
+
+`ValidatedWith<C, T>` works like `Validated<T>`, but validates with a context
+`C` borrowed from the router state. Use it for garde rules declared with
+`#[garde(context(C))]`. The state provides the context through
+`vespera::ValidationContext<C>`: state that *is* `C` gets this for free,
+and app state can expose a field without cloning it per request:
+
+```rust
+use std::sync::Arc;
+use vespera::{Schema, ValidatedWith, ValidationContext, axum::Json};
+
+pub struct TagPolicy { pub required_prefix: String }
+pub struct AppState { pub tag_policy: TagPolicy }
+
+impl ValidationContext<TagPolicy> for Arc<AppState> {
+    fn validation_context(&self) -> &TagPolicy { &self.tag_policy }
+}
+
+#[derive(serde::Deserialize, Schema, garde::Validate)]
+#[garde(context(TagPolicy as policy))]
+pub struct TaggedPost {
+    #[garde(custom(|tags: &Vec<String>, policy: &TagPolicy| {
+        if tags.iter().all(|t| t.starts_with(&policy.required_prefix)) { Ok(()) }
+        else { Err(garde::Error::new("bad tag prefix")) }
+    }))]
+    pub tags: Vec<String>,
+}
+
+#[vespera::route(post)]
+pub async fn create_post(post: ValidatedWith<TagPolicy, Json<TaggedPost>>) -> &'static str {
+    let Json(_post) = post.into_inner();
+    "ok"
+}
+```
+
+`ValidatedWith` wraps the same extractors as `Validated` and answers the same
+`422` envelope. The spec documents the wrapped body or query parameters plus the
+`422` response. The context never appears in the spec. Keep `#[schema(...)]` rules off a type that
+derives `garde::Validate` itself (`E0119`).
 
 Under JNI, the same `422` body is **hoisted** into the binary wire header as
 `"validation_errors": [...]` — Java decoders consume validation errors
@@ -476,6 +527,7 @@ let app = vespera!(
     version = "1.0.0",                 // OpenAPI info.version (default: CARGO_PKG_VERSION)
     docs_url = "/docs",                // Swagger UI endpoint
     redoc_url = "/redoc",              // ReDoc endpoint
+    spec_url = "/openapi.json",        // Raw OpenAPI JSON endpoint (application/json)
     servers = [                        // OpenAPI servers
         { url = "https://api.example.com", description = "Production" },
         { url = "http://localhost:3000", description = "Development" }
@@ -492,6 +544,25 @@ let app = vespera!(
     merge = [crate1::App1, crate2::App2]  // Merge child vespera apps
 );
 ```
+
+### Documentation endpoints
+
+`docs_url`, `redoc_url` and `spec_url` are opt-in `GET` routes; each must start
+with `/` and they must not share a path (both are compile errors).
+
+- `docs_url` serves Swagger UI and `redoc_url` serves ReDoc. The pages load
+  `swagger-ui-dist` / `redoc` from unpkg at **exact pinned versions with
+  Subresource Integrity** (`integrity` + `crossorigin="anonymous"`), so a
+  tampered CDN file is refused by the browser. The spec is embedded in the page
+  and escaped for the `<script>` context, so `</script>` or `<!--` in a
+  description or example cannot break the page. The renderers are public as
+  `vespera::docs::{swagger_ui_html, redoc_html}` if you want to serve a page
+  yourself (pinned versions: `vespera::docs::SWAGGER_UI_VERSION` /
+  `REDOC_VERSION`).
+- `spec_url` serves the generated OpenAPI document (including `merge`d apps)
+  as `application/json` for client generators and API gateways. The docs pages
+  keep embedding the spec rather than fetching `spec_url`, so they also work
+  when the router is nested under a prefix.
 
 ## `#[vespera::route]` Macro Reference
 
@@ -540,6 +611,7 @@ All parameters support environment variable fallbacks:
 | `version` | `VESPERA_VERSION` |
 | `docs_url` | `VESPERA_DOCS_URL` |
 | `redoc_url` | `VESPERA_REDOC_URL` |
+| `spec_url` | `VESPERA_SPEC_URL` |
 | `servers` | `VESPERA_SERVER_URL` + `VESPERA_SERVER_DESCRIPTION` |
 
 **Priority**: Macro parameter > Environment variable > Default
@@ -989,6 +1061,9 @@ This automatically:
 | `NaiveTime` | `string` with `format: time` |
 | `DateTime`, `DateTimeWithTimeZone` | `string` with `format: date-time` |
 | `FieldData<NamedTempFile>` | `string` with `format: binary` |
+| `Ipv4Addr` / `Ipv6Addr` | `string` with `format: ipv4` / `ipv6` |
+| `IpAddr`, `SocketAddr` (`V4` / `V6`), `PathBuf` | `string` |
+| `url::Url` | `string` with `format: uri` |
 | `serde_json::Value` | `{}` (any JSON value) |
 | `std::time::Duration` (bare `Duration`, `std::time::` / `core::time::`) | `object` `{secs, nanos}` (serde's std shape) |
 | other qualified `Duration` (`time::`, `chrono::`) | `{}` — no single serde shape; annotate explicitly |
