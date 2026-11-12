@@ -62,7 +62,7 @@ permissions:
   contents: read
 
 env:
-  BENCH_FILTER: 'wire_path|headers_path|request_headers_path|resolve_path|dispatch_path'
+  BENCH_FILTER: 'router_path|dispatch_path|wire_path|bytes_path|direct_write_path|resolve_path|contended_path|registry_ab|headers_path|request_headers_path|query_path'
 
 jobs:
   bench:
