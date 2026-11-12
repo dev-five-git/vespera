@@ -54,8 +54,24 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-resttestclient")
 }
 
+// Tests tagged `isolated-jvm` change process-wide native settings (e.g. the
+// buffered-response cap, fixed on the first dispatch), so they run in their
+// own JVM: excluded from `test`, run by `isolatedJvmTest`, which finalizes
+// `test` so `:demo-app:test` (CI's jni-e2e job) always runs both.
+val isolatedJvmTag = "isolated-jvm"
+val isolatedJvmTest = tasks.register<Test>("isolatedJvmTest") {
+    description = "Runs the E2E tests that need a JVM of their own."
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform { includeTags(isolatedJvmTag) }
+    testLogging.showStandardStreams = true
+}
+tasks.check { dependsOn(isolatedJvmTest) }
+
 tasks.test {
-    useJUnitPlatform()
+    useJUnitPlatform { excludeTags(isolatedJvmTag) }
+    finalizedBy(isolatedJvmTest)
     // Propagate streaming bench knobs from the Gradle CLI into the
     // forked test JVM (chunk size is process-fixed, so each value
     // needs its own `gradlew test -D...` run).
