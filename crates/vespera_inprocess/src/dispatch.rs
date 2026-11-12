@@ -25,9 +25,9 @@ use crate::internal::{
 };
 use crate::registry::resolve_app_router;
 use crate::wire::{
-    TOO_MANY_HEADERS_MSG, WIRE_VERSION, WireRequestHeader, error_wire, header_capacity_with_floor,
-    parse_wire_header, split_wire_borrowed, split_wire_request, to_wire_bytes,
-    write_wire_header_into_vec,
+    MAX_REQUEST_HEADERS, TOO_MANY_HEADERS_MSG, WIRE_VERSION, WireRequestHeader, error_wire,
+    header_capacity_with_floor, parse_wire_header, split_wire_borrowed, split_wire_request,
+    to_wire_bytes, write_wire_header_into_vec,
 };
 
 // ── Shared wire prelude (used by every wire entry point) ─────────────
@@ -118,6 +118,19 @@ pub fn parse_validate_resolve(
     }
     let router = resolve_app_router(&header)?;
     Ok((header, router))
+}
+
+/// `431` envelope for a [`dispatch_owned`] call with more than
+/// [`MAX_REQUEST_HEADERS`] headers.
+#[cold]
+#[inline(never)]
+fn too_many_headers_envelope() -> ResponseEnvelope {
+    ResponseEnvelope {
+        status: 431,
+        headers: BTreeMap::new(),
+        body: TOO_MANY_HEADERS_MSG.to_owned(),
+        metadata: ResponseMetadata::current(),
+    }
 }
 
 /// Status for a wire-header parse failure: `431` when the header carried
@@ -318,6 +331,13 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
         headers,
         body,
     } = envelope;
+    // `http::HeaderMap` panics past 32 768 entries; the wire parser caps
+    // the count at `MAX_REQUEST_HEADERS`, this envelope entry does it here
+    // (kept out of the shared request builder so the buffered fast path's
+    // codegen is unchanged).
+    if headers.len() > MAX_REQUEST_HEADERS {
+        return too_many_headers_envelope();
+    }
     let parts = match dispatch_parts(
         router,
         &method,
