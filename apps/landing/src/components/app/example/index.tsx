@@ -1,7 +1,13 @@
 'use client'
 
 import { Flex, Image } from '@devup-ui/react'
-import { ComponentProps, createContext, useContext, useState } from 'react'
+import {
+  ComponentProps,
+  createContext,
+  KeyboardEvent,
+  useContext,
+  useState,
+} from 'react'
 
 const ExampleContext = createContext<{
   selected: string
@@ -57,6 +63,22 @@ export function ExampleContainer({
 }: ComponentProps<typeof Flex> & { value?: string }) {
   const { selected, setSelected } = useExample()
   const isSelected = selected === value
+  // The picker is a group of toggle buttons: focusable, operable with
+  // Enter / Space, and announcing which example is shown.
+  const interactive = value
+    ? {
+        role: 'button',
+        tabIndex: 0,
+        'aria-pressed': isSelected,
+        onClick: () => setSelected(value),
+        onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            setSelected(value)
+          }
+        },
+      }
+    : {}
   return (
     <Flex
       _hover={{
@@ -71,12 +93,13 @@ export function ExampleContainer({
       borderRadius="$spacingSpacing08"
       borderStyle="solid"
       borderWidth="2px"
-      onClick={value ? () => setSelected(value) : undefined}
+      cursor={value ? 'pointer' : undefined}
       overflow="hidden"
       px="$spacingSpacing24"
       py="$spacingSpacing20"
       styleOrder={1}
       transition="all .1s"
+      {...interactive}
       {...props}
     />
   )

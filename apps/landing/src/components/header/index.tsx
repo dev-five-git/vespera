@@ -52,13 +52,13 @@ export function Header() {
         <Flex alignItems="center" gap="$spacingSpacing24">
           <Flex alignItems="center" display={['flex', null, null, 'none']}>
             <SheetRouteBoundary name="mobile-menu" reverse>
-              <SheetRouteTrigger name="search">
+              <SheetRouteTrigger aria-label="Open search" name="search">
                 <Effect className={css({ _hover: { bg: 'revert' } })}>
                   <HeaderGnbIcon icon="search" />
                 </Effect>
               </SheetRouteTrigger>
             </SheetRouteBoundary>
-            <SheetRouteTrigger name="mobile-menu">
+            <SheetRouteTrigger aria-label="Toggle menu" name="mobile-menu">
               <Effect className={css({ _hover: { bg: 'revert' } })}>
                 <HeaderHamburger />
               </Effect>
@@ -79,6 +79,7 @@ export function Header() {
 
             <Flex alignItems="center" display={['none', null, null, 'flex']}>
               <Link
+                aria-label="Vespera on GitHub"
                 href="https://github.com/dev-five-git/vespera"
                 rel="noopener noreferrer"
                 target="_blank"
@@ -88,6 +89,7 @@ export function Header() {
                 </Effect>
               </Link>
               <Link
+                aria-label="Join the Vespera Discord"
                 href="https://discord.com/invite/8zjcGc7cWh"
                 rel="noopener noreferrer"
                 target="_blank"
@@ -97,6 +99,7 @@ export function Header() {
                 </Effect>
               </Link>
               <Link
+                aria-label="Join the Vespera KakaoTalk open chat"
                 href="https://open.kakao.com/o/giONwVAh"
                 rel="noopener noreferrer"
                 target="_blank"

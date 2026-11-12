@@ -11,6 +11,7 @@ export function Hamburger({ className, ...props }: ComponentProps<'svg'>) {
   const isOpen = route === 'mobile-menu'
   return (
     <svg
+      aria-hidden
       className={clsx(
         css({
           color: isOpen ? '#FAFAFA' : '$title',

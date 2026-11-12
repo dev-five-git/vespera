@@ -7,6 +7,7 @@ export function ThemeToggle(props: ComponentProps<typeof Button>) {
   const theme = useTheme() as 'light' | 'dark' | null
   return (
     <Button
+      aria-label="Toggle color theme"
       bg="transparent"
       border="none"
       cursor="pointer"
