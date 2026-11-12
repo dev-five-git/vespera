@@ -3470,6 +3470,7 @@ name = "vespera_core"
 version = "0.5.0"
 dependencies = [
  "croner",
+ "insta",
  "rstest",
  "serde",
  "serde_json",

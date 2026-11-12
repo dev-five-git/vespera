@@ -476,6 +476,7 @@ let app = vespera!(
     version = "1.0.0",                 // OpenAPI info.version (default: CARGO_PKG_VERSION)
     docs_url = "/docs",                // Swagger UI endpoint
     redoc_url = "/redoc",              // ReDoc endpoint
+    spec_url = "/openapi.json",        // Raw OpenAPI JSON endpoint (application/json)
     servers = [                        // OpenAPI servers
         { url = "https://api.example.com", description = "Production" },
         { url = "http://localhost:3000", description = "Development" }
@@ -492,6 +493,25 @@ let app = vespera!(
     merge = [crate1::App1, crate2::App2]  // Merge child vespera apps
 );
 ```
+
+### Documentation endpoints
+
+`docs_url`, `redoc_url` and `spec_url` are opt-in `GET` routes; each must start
+with `/` and they must not share a path (both are compile errors).
+
+- `docs_url` serves Swagger UI and `redoc_url` serves ReDoc. The pages load
+  `swagger-ui-dist` / `redoc` from unpkg at **exact pinned versions with
+  Subresource Integrity** (`integrity` + `crossorigin="anonymous"`), so a
+  tampered CDN file is refused by the browser. The spec is embedded in the page
+  and escaped for the `<script>` context, so `</script>` or `<!--` in a
+  description or example cannot break the page. The renderers are public as
+  `vespera::docs::{swagger_ui_html, redoc_html}` if you want to serve a page
+  yourself (pinned versions: `vespera::docs::SWAGGER_UI_VERSION` /
+  `REDOC_VERSION`).
+- `spec_url` serves the generated OpenAPI document (including `merge`d apps)
+  as `application/json` for client generators and API gateways. The docs pages
+  keep embedding the spec rather than fetching `spec_url`, so they also work
+  when the router is nested under a prefix.
 
 ## `#[vespera::route]` Macro Reference
 
@@ -540,6 +560,7 @@ All parameters support environment variable fallbacks:
 | `version` | `VESPERA_VERSION` |
 | `docs_url` | `VESPERA_DOCS_URL` |
 | `redoc_url` | `VESPERA_REDOC_URL` |
+| `spec_url` | `VESPERA_SPEC_URL` |
 | `servers` | `VESPERA_SERVER_URL` + `VESPERA_SERVER_DESCRIPTION` |
 
 **Priority**: Macro parameter > Environment variable > Default

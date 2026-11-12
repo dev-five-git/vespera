@@ -12,6 +12,7 @@ let app = vespera!(
     version = "1.0.0",                 // OpenAPI info.version (default: CARGO_PKG_VERSION)
     docs_url = "/docs",                // Swagger UI endpoint
     redoc_url = "/redoc",              // ReDoc endpoint
+    spec_url = "/openapi.json",        // Raw OpenAPI JSON endpoint (application/json)
     servers = [                        // OpenAPI servers array
         { url = "https://api.example.com", description = "Production" },
         { url = "http://localhost:3000",   description = "Development" }
@@ -32,7 +33,23 @@ Every parameter has a corresponding environment variable. The macro parameter ta
 | `version` | `VESPERA_VERSION` | `CARGO_PKG_VERSION` |
 | `docs_url` | `VESPERA_DOCS_URL` | none |
 | `redoc_url` | `VESPERA_REDOC_URL` | none |
+| `spec_url` | `VESPERA_SPEC_URL` | none |
 | `servers` | `VESPERA_SERVER_URL` + `VESPERA_SERVER_DESCRIPTION` | none |
+
+## Documentation Endpoints
+
+`docs_url`, `redoc_url` and `spec_url` each add an opt-in `GET` route. Every path must start with `/`, and no two of them may share a path — both mistakes are compile errors.
+
+- **`docs_url`** serves Swagger UI and **`redoc_url`** serves ReDoc. Their assets load from unpkg at exact pinned versions with Subresource Integrity (`integrity` + `crossorigin="anonymous"`), so a tampered CDN file is refused by the browser. The spec is embedded in the page and escaped for the `<script>` context, so `</script>` or `<!--` inside a description or example cannot break the page.
+- **`spec_url`** serves the generated OpenAPI document — including `merge`d apps — as `application/json`, ready for client generators and API gateways. The docs pages keep embedding the spec instead of fetching `spec_url`, so they still work when the router is nested under a prefix.
+
+```rust
+let app = vespera!(
+    docs_url = "/docs",
+    redoc_url = "/redoc",
+    spec_url = "/openapi.json"
+);
+```
 
 ## Common Patterns
 
