@@ -32,6 +32,8 @@ bytes = "1"
 http = "1"
 http-body = "1"
 http-body-util = "0.1"
+# Pin projection for the `Deadline::run` future (already in the tree via tokio).
+pin-project-lite = "0.2"
 tower = { version = "0.5", features = ["util"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

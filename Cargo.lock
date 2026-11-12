@@ -3487,6 +3487,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "mimalloc",
+ "pin-project-lite",
  "rstest",
  "serde",
  "serde_json",
