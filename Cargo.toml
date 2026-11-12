@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "examples/*", "benches/*"]
-exclude = ["examples/java-jni-demo"]
 # Bare `cargo build`/`test`/`clippy` (no `--workspace`) stay scoped to the
 # shipped crates + examples; the compile-time benchmark fixture/harness under
 # `benches/*` are built on demand (`cargo run -p compile-bench-runner`) so a
@@ -11,6 +10,11 @@ default-members = ["crates/*", "examples/*"]
 [workspace.package]
 version = "0.5.0"
 edition = "2024"
+# MSRV of the published crates (crates/*). 1.88 is the floor set by
+# let-chains (`if a && let Some(..)`), stabilised in Rust 1.88 for edition
+# 2024. Examples (sea-orm 2 ⇒ 1.94) are NOT held to it. Verified by the
+# `msrv` CI job.
+rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/dev-five-git/vespera"
 readme = "README.md"
