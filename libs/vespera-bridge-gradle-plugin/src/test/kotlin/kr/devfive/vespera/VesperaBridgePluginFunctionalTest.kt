@@ -17,8 +17,7 @@ class VesperaBridgePluginFunctionalTest {
     @TempDir
     lateinit var dir: File
 
-    private val host = NativePlatform.detectOs(System.getProperty("os.name", "")) +
-        "-" + NativePlatform.detectArch(System.getProperty("os.arch", ""))
+    private val host = NativePlatform.hostPlatform()
     private val hostOs = host.substringBefore('-')
 
     private fun write(path: String, text: String = path) {

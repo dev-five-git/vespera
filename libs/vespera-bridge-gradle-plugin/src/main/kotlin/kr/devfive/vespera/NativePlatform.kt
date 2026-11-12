@@ -1,11 +1,23 @@
 package kr.devfive.vespera
 
+import java.io.IOException
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.Paths
+
 /**
  * Pure platform / Cargo helpers behind [VesperaBridgePlugin], kept free of
  * Gradle types so they are unit-testable.
  */
 internal object NativePlatform {
-    private val PLATFORM_KEY = Regex("(windows|macos|linux)-[a-z0-9_]+")
+    /** `<os>-<arch>`; only Linux takes the `-musl` libc classifier. */
+    private val PLATFORM_KEY = Regex("(windows|macos)-[a-z0-9_]+|linux-[a-z0-9_]+(-musl)?")
+
+    /** Folder classifier of a musl-libc Linux library (`native/linux-<arch>-musl/`). */
+    const val MUSL_SUFFIX = "-musl"
+
+    /** System property forcing the host libc (`musl` / `glibc` / `gnu`), as in the bridge. */
+    const val LIBC_PROPERTY = "vespera.native.libc"
 
     /**
      * Map `os.name` to the bridge's `native/<os>-<arch>` OS segment.
@@ -28,6 +40,93 @@ internal object NativePlatform {
             "aarch64" in arch || "arm64" in arch -> "aarch64"
             else -> arch
         }
+    }
+
+    /**
+     * Whether a Linux process runs on musl libc, with the same probe order as
+     * the bridge's `NativePlatformDetector`: the [override] property, then the
+     * libc actually mapped into this process (`/proc/self/maps`: musl maps
+     * `ld-musl-<arch>.so.1`, glibc `libc.so.6` / `ld-linux*`). Unlike a
+     * `/lib/ld-musl-*` existence check it is not fooled by Debian's `musl`
+     * package on a glibc host, and unlike `ldd --version` it spawns no
+     * process. Without a readable `/proc` it falls back to the loader files:
+     * musl iff `/lib/ld-musl-*` exists and no `ld-linux*` does.
+     * [selfMaps] returns `null` when unreadable; [listDir] an empty list.
+     */
+    fun isMusl(
+        override: String?,
+        selfMaps: () -> List<String>?,
+        listDir: (String) -> List<String>,
+    ): Boolean {
+        when (override?.trim()?.lowercase()) {
+            "musl" -> return true
+            "glibc", "gnu" -> return false
+        }
+        selfMaps()?.forEach { line ->
+            val file = mappedFileName(line) ?: return@forEach
+            if (file.startsWith("ld-musl-") || file.startsWith("libc.musl-")) return true
+            if (file.startsWith("libc.so.6") || file.startsWith("libc-2.") || file.startsWith("ld-linux")) {
+                return false
+            }
+        }
+        if (listDir("/lib").none { it.startsWith("ld-musl-") }) return false
+        return (listDir("/lib") + listDir("/lib64")).none { it.startsWith("ld-linux") }
+    }
+
+    /** File name of the path column of a `/proc/self/maps` line, or `null`. */
+    fun mappedFileName(line: String): String? {
+        val slash = line.indexOf('/')
+        if (slash < 0) return null
+        val path = line.substring(slash).trim().removeSuffix(" (deleted)")
+        return path.substringAfterLast('/').ifEmpty { null }
+    }
+
+    /** `<os>-<arch>`, plus [MUSL_SUFFIX] on a musl Linux. */
+    fun platformKey(os: String, arch: String, musl: Boolean): String =
+        if (os == "linux" && musl) "$os-$arch$MUSL_SUFFIX" else "$os-$arch"
+
+    /** The platform key of the JVM running this code (the Gradle daemon = the build host). */
+    fun hostPlatform(): String {
+        val os = detectOs(System.getProperty("os.name", ""))
+        val arch = detectArch(System.getProperty("os.arch", ""))
+        val musl = os == "linux" && isMusl(System.getProperty(LIBC_PROPERTY), ::readSelfMaps, ::listDir)
+        return platformKey(os, arch, musl)
+    }
+
+    private fun readSelfMaps(): List<String>? = try {
+        Files.readAllLines(Paths.get("/proc/self/maps"), StandardCharsets.ISO_8859_1)
+    } catch (e: IOException) {
+        null
+    } catch (e: SecurityException) {
+        null
+    }
+
+    private fun listDir(dir: String): List<String> = try {
+        Files.newDirectoryStream(Paths.get(dir)).use { entries -> entries.map { it.fileName.toString() } }
+    } catch (e: IOException) {
+        emptyList()
+    } catch (e: SecurityException) {
+        emptyList()
+    }
+
+    /** A musl Rust target triple (`x86_64-unknown-linux-musl`, `armv7-unknown-linux-musleabihf`). */
+    fun isMuslTriple(triple: String): Boolean = "-linux-musl" in triple
+
+    /**
+     * The `native/<platform>/` folder a `targets` entry is bundled under: the
+     * key itself, except that a plain `linux-<arch>` key built for a
+     * `*-linux-musl*` triple gets the [MUSL_SUFFIX] the bridge looks for first
+     * on a musl JVM (`linux-x86_64` + `x86_64-unknown-linux-musl` →
+     * `linux-x86_64-musl`). A `-musl` key with a glibc triple is rejected.
+     */
+    fun bundlePlatform(key: String, triple: String): String {
+        val os = osOfPlatformKey(key)
+        val muslKey = key.endsWith(MUSL_SUFFIX)
+        require(!muslKey || "-linux-gnu" !in triple) {
+            "vespera.targets['$key'] names a musl platform but '$triple' is a glibc target; " +
+                "use a *-linux-musl triple or the key '${key.removeSuffix(MUSL_SUFFIX)}'."
+        }
+        return if (os == "linux" && !muslKey && isMuslTriple(triple)) key + MUSL_SUFFIX else key
     }
 
     /**
@@ -78,13 +177,14 @@ internal object NativePlatform {
     }
 
     /**
-     * Validate a `targets` key (`<os>-<arch>`, e.g. `linux-aarch64`) and
-     * return its OS segment, which selects the library file name.
+     * Validate a `targets` key (`<os>-<arch>`, e.g. `linux-aarch64`, or
+     * `linux-<arch>-musl`) and return its OS segment, which selects the
+     * library file name.
      */
     fun osOfPlatformKey(key: String): String {
         require(PLATFORM_KEY.matches(key)) {
             "vespera.targets key '$key' must look like '<os>-<arch>' with os one of " +
-                "windows, macos, linux (e.g. 'linux-x86_64', 'macos-aarch64')."
+                "windows, macos, linux (e.g. 'linux-x86_64', 'macos-aarch64'), or 'linux-<arch>-musl'."
         }
         return key.substringBefore('-')
     }
@@ -132,8 +232,10 @@ internal object NativePlatform {
     data class NativeBuild(val platform: String, val triple: String?, val relativePath: String)
 
     /**
-     * Every library to bundle: each `targets` entry is cross-built; the host
-     * build is added unless a target already covers the host platform.
+     * Every library to bundle: each `targets` entry is cross-built into its
+     * [bundlePlatform] folder; the host build is added unless a target already
+     * covers the host platform (its key or its bundle folder names it).
+     * [hostPlatform] carries the `-musl` classifier on a musl build host.
      * [libStem] is the library file stem ([libraryStem]).
      */
     fun plannedBuilds(
@@ -142,11 +244,21 @@ internal object NativePlatform {
         profile: String,
         targets: Map<String, String>,
     ): List<NativeBuild> {
-        val builds = targets.toSortedMap().map { (platform, triple) ->
-            require(triple.isNotBlank()) { "vespera.targets['$platform'] must name a Rust target triple." }
-            NativeBuild(platform, triple, cdylibRelativePath(osOfPlatformKey(platform), libStem, profile, triple))
+        val builds = targets.toSortedMap().map { (key, triple) ->
+            require(triple.isNotBlank()) { "vespera.targets['$key'] must name a Rust target triple." }
+            NativeBuild(
+                bundlePlatform(key, triple),
+                triple,
+                cdylibRelativePath(osOfPlatformKey(key), libStem, profile, triple),
+            )
         }
-        if (hostPlatform in targets) return builds
+        builds.groupBy { it.platform }.forEach { (platform, same) ->
+            require(same.size == 1) {
+                "vespera.targets bundle more than one library into native/$platform/: " +
+                    same.joinToString { it.triple.orEmpty() }
+            }
+        }
+        if (hostPlatform in targets || builds.any { it.platform == hostPlatform }) return builds
         val host = NativeBuild(
             hostPlatform,
             null,
