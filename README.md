@@ -321,8 +321,30 @@ pub struct CreateUser {
 
 Use one approach per type: runtime `#[schema(...)]` constraints *and*
 `#[derive(garde::Validate)]` on the same struct both implement
-`garde::Validate` and fail to compile (`E0119`). `#[garde(...)]` rules are not
-reflected in the OpenAPI document.
+`garde::Validate` and fail to compile (`E0119`).
+
+`#[derive(Schema)]` documents every `#[garde(...)]` rule that has a
+deterministic JSON Schema equivalent, so the spec states what the `422`
+enforces (object properties and `Query<T>` / `Path<T>` struct parameters alike):
+
+| `#[garde(...)]` rule | OpenAPI |
+|---|---|
+| `length(chars, min, max)` on a string | `minLength` / `maxLength` |
+| `length(min, max)` on a string in the default `simple` (byte) mode, or `bytes` / `graphemes` / `utf16` | only `min = 1` → `minLength: 1` (JSON Schema counts code points; other bounds are skipped) |
+| `length(min, max)` on a `Vec` / set / map | `minItems` / `maxItems`, `minProperties` / `maxProperties` |
+| `range(min, max)` / `range(equal)` (numeric literals) | `minimum` / `maximum` |
+| `email` / `url` / `ipv4` / `ipv6` / `ip` | `format: email` / `uri` / `ipv4` / `ipv6` / `anyOf` of both |
+| `pattern("...")` / `prefix("x")` / `suffix("x")` / `contains("x")` / `ascii` | `pattern` (literals escaped; extra patterns as `allOf`) |
+| `inner(...)` on `Vec<T>` / `[T; N]` (on `Option<T>`: the value) | the rules on `items` |
+
+Rules on an `Option<T>` field constrain the non-null value. A keyword the
+field's `#[schema(...)]` sets wins over the derived one, and type-implied bounds
+(`u32` → `minimum: 0`) are only tightened. Not documented (no exact
+equivalent): `alphanumeric` (Unicode), `required` (the component also documents
+responses), `credit_card`, `phone_number`, `matches`, `custom`, `dive`, `if`,
+non-literal arguments (consts, static regexes), and byte / grapheme / UTF-16
+length bounds above 1. Prefer `length(chars, ...)` when the bound should
+appear in the spec.
 
 **Failure response (`HTTP/1.1 422 Unprocessable Entity`):**
 

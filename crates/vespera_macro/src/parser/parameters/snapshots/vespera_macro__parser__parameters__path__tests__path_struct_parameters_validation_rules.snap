@@ -1,0 +1,25 @@
+---
+source: crates/vespera_macro/src/parser/parameters/path.rs
+expression: "serde_json::to_string_pretty(&params).unwrap()"
+---
+[
+  {
+    "name": "user",
+    "in": "path",
+    "required": true,
+    "schema": {
+      "type": "string",
+      "pattern": "^u-"
+    }
+  },
+  {
+    "name": "post",
+    "in": "path",
+    "required": true,
+    "schema": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 1
+    }
+  }
+]
