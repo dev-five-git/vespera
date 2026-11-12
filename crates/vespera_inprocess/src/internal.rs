@@ -658,15 +658,24 @@ pub async fn dispatch_and_split<'h>(
     // opaque here (already-built `Body`, not a `Bytes` we can probe for
     // emptiness), so content-type defaulting follows the caller's
     // `default_json_when_absent` flag rather than body-emptiness detection.
-    let mut request = build_axum_request_inner(
-        http_method,
-        uri,
-        body,
-        headers,
-        header_bytes_owner,
-        default_json_when_absent,
-    )?;
-    connection.apply_to(request.extensions_mut());
+    //
+    // Block-scoped on purpose: `extensions_mut()` borrows the request, and a
+    // borrowed local of an `async fn` keeps its storage in the future across
+    // the `.await` below even after it is moved out — a second ~250-byte
+    // `Request` copy every dispatch future then carries.  Ending the binding
+    // here keeps only the copy moved into `router_oneshot`.
+    let request = {
+        let mut request = build_axum_request_inner(
+            http_method,
+            uri,
+            body,
+            headers,
+            header_bytes_owner,
+            default_json_when_absent,
+        )?;
+        connection.apply_to(request.extensions_mut());
+        request
+    };
 
     let response = router_oneshot(router, request).await;
 

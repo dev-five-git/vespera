@@ -3,7 +3,7 @@
 
 use std::future::Future;
 use std::ops::ControlFlow;
-use std::pin::Pin;
+use std::pin::{Pin, pin};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
@@ -157,7 +157,7 @@ where
     };
     let default_json_when_absent = !body_bytes.is_empty();
     let dispatched = deadline
-        .run(dispatch_and_split(
+        .run(pin!(dispatch_and_split(
             router,
             &header.method,
             &header.path,
@@ -170,7 +170,7 @@ where
             Body::from(body_bytes),
             default_json_when_absent,
             header.connection_info(),
-        ))
+        )))
         .await;
     let (status, headers, metadata, body) = match dispatched {
         None => return (timeout_wire(), StreamOutcome::Complete),
@@ -315,7 +315,7 @@ where
     F: FnMut(&[u8]) -> ControlFlow<()>,
 {
     if status == 422 {
-        match deadline.run(prefetch_422_body(body)).await {
+        match deadline.run(pin!(prefetch_422_body(body))).await {
             None => {
                 on_header(&timeout_wire());
                 return StreamOutcome::Complete;
@@ -561,7 +561,7 @@ where
     // request — share `header_bytes` so each plain value is constructed
     // zero-copy via `HeaderValue::from_maybe_shared`.
     let (status, headers, metadata, body) = match deadline
-        .run(dispatch_and_split(
+        .run(pin!(dispatch_and_split(
             router,
             &header.method,
             &header.path,
@@ -572,7 +572,7 @@ where
             Body::from(body_bytes),
             default_json_when_absent,
             header.connection_info(),
-        ))
+        )))
         .await
     {
         Some(Ok(parts)) => parts,
@@ -845,7 +845,7 @@ where
     // Share `header_bytes` for the per-request `HeaderValue` insertions so
     // each plain value is constructed zero-copy.
     let dispatched = deadline
-        .run(dispatch_and_split(
+        .run(pin!(dispatch_and_split(
             router,
             &header.method,
             &header.path,
@@ -856,7 +856,7 @@ where
             body,
             default_json_when_absent,
             header.connection_info(),
-        ))
+        )))
         .await;
     // Pre-commit failures (bad method/path → 405/400, expired deadline →
     // 504, request body over `max_streaming_request_bytes` → 413): close the
