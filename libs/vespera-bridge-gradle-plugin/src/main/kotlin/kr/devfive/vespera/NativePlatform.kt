@@ -5,9 +5,6 @@ package kr.devfive.vespera
  * Gradle types so they are unit-testable.
  */
 internal object NativePlatform {
-    /** Directories never fingerprinted as `cargoBuild` inputs. */
-    val CARGO_INPUT_EXCLUDES = listOf("**/target/**", "**/node_modules/**", "**/.git/**")
-
     private val PLATFORM_KEY = Regex("(windows|macos|linux)-[a-z0-9_]+")
 
     /**
@@ -31,6 +28,47 @@ internal object NativePlatform {
             "aarch64" in arch || "arm64" in arch -> "aarch64"
             else -> arch
         }
+    }
+
+    /**
+     * File stem of the cdylib Cargo emits for [crateName]: an explicit
+     * `[lib] name` ([libName]) wins, otherwise Cargo's default — the package
+     * name with every `-` turned into `_` (`rust-jni-demo` → `rust_jni_demo`).
+     */
+    fun libraryStem(crateName: String, libName: String? = null): String =
+        libName?.takeIf { it.isNotBlank() } ?: crateName.replace('-', '_')
+
+    /**
+     * The `cargo build -p` spec when it is known without asking Cargo: an
+     * explicit [packageName], or [crateName] itself when it contains a `-`
+     * (a hyphenated name can only be the package name). `null` means
+     * [crateName] may be the underscore form of a hyphenated package; it is
+     * resolved against `cargo metadata` at execution time
+     * ([resolvePackageName]).
+     */
+    fun knownPackageSpec(crateName: String, packageName: String? = null): String? = when {
+        !packageName.isNullOrBlank() -> packageName
+        '-' in crateName -> crateName
+        else -> null
+    }
+
+    private val JSON_NAME = Regex(""""name"\s*:\s*"([^"\\]+)"""")
+
+    /**
+     * Pick the Cargo package whose underscore form is [crateName] from
+     * `cargo metadata --no-deps --format-version 1` output: a name `n` with
+     * `n != crateName` and `n.replace('-', '_') == crateName` (so the demo's
+     * `rust_jni_demo` resolves to the `rust-jni-demo` package). Falls back to
+     * [crateName] when there is none (an underscore package name, or no
+     * metadata). A plain scan of `"name":"..."` suffices: the only other
+     * `name` equal to the underscore form is the lib target itself.
+     */
+    fun resolvePackageName(crateName: String, metadataJson: String?): String {
+        if (metadataJson.isNullOrBlank()) return crateName
+        return JSON_NAME.findAll(metadataJson)
+            .map { it.groupValues[1] }
+            .firstOrNull { it != crateName && it.replace('-', '_') == crateName }
+            ?: crateName
     }
 
     fun mapLibraryName(os: String, name: String): String = when (os) {
@@ -62,8 +100,8 @@ internal object NativePlatform {
     }
 
     /** Profile-aware `cargo build` command, optionally cross-compiling. */
-    fun cargoCommand(crate: String, profile: String, triple: String? = null): List<String> {
-        val cmd = mutableListOf("cargo", "build", "-p", crate)
+    fun cargoCommand(packageSpec: String, profile: String, triple: String? = null): List<String> {
+        val cmd = mutableListOf("cargo", "build", "-p", packageSpec)
         when (profile) {
             "release" -> cmd.add("--release")
             "dev", "debug" -> {} // default profile → target/debug
@@ -81,9 +119,9 @@ internal object NativePlatform {
      * builds land under `<triple>/<profileDir>/`, host builds directly under
      * `<profileDir>/`.
      */
-    fun cdylibRelativePath(os: String, crate: String, profile: String, triple: String? = null): String {
+    fun cdylibRelativePath(os: String, libStem: String, profile: String, triple: String? = null): String {
         val dir = profileDir(profile)
-        val lib = mapLibraryName(os, crate)
+        val lib = mapLibraryName(os, libStem)
         return if (triple == null) "$dir/$lib" else "$triple/$dir/$lib"
     }
 
@@ -96,22 +134,23 @@ internal object NativePlatform {
     /**
      * Every library to bundle: each `targets` entry is cross-built; the host
      * build is added unless a target already covers the host platform.
+     * [libStem] is the library file stem ([libraryStem]).
      */
     fun plannedBuilds(
         hostPlatform: String,
-        crate: String,
+        libStem: String,
         profile: String,
         targets: Map<String, String>,
     ): List<NativeBuild> {
         val builds = targets.toSortedMap().map { (platform, triple) ->
             require(triple.isNotBlank()) { "vespera.targets['$platform'] must name a Rust target triple." }
-            NativeBuild(platform, triple, cdylibRelativePath(osOfPlatformKey(platform), crate, profile, triple))
+            NativeBuild(platform, triple, cdylibRelativePath(osOfPlatformKey(platform), libStem, profile, triple))
         }
         if (hostPlatform in targets) return builds
         val host = NativeBuild(
             hostPlatform,
             null,
-            cdylibRelativePath(hostPlatform.substringBefore('-'), crate, profile),
+            cdylibRelativePath(hostPlatform.substringBefore('-'), libStem, profile),
         )
         return listOf(host) + builds
     }
