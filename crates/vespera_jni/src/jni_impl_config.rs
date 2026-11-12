@@ -164,6 +164,15 @@ pub fn set_async_max_in_flight(max: usize) -> bool {
         .is_ok()
 }
 
+/// `dispatchAsync` calls currently holding an in-flight slot (admitted and
+/// not yet completed, cancelled or dropped).  Always `0` while the cap is
+/// disabled (`0` = unlimited admits without counting).  A diagnostic: a
+/// cancelled dispatch must hand its slot back promptly.
+#[must_use]
+pub fn async_in_flight() -> usize {
+    ASYNC_IN_FLIGHT.load(Ordering::Acquire)
+}
+
 /// One admitted `dispatchAsync` slot; releases it on drop (task completion,
 /// a caught panic, or the runtime dropping the task at shutdown).
 pub struct AsyncPermit {

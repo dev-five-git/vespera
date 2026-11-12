@@ -3,6 +3,11 @@
 //! dispatch entry point (buffered, direct-write, response streaming and
 //! bidirectional streaming); without them a `ConnectInfo` handler rejects
 //! with `500` exactly as before.
+//!
+//! `ConnectInfo` insertion is compiled only with the `connect-info` feature
+//! (`vespera` turns it on), so a bare `cargo test -p vespera_inprocess`
+//! skips this file instead of failing it.
+#![cfg(feature = "connect-info")]
 
 use std::net::SocketAddr;
 use std::ops::ControlFlow;

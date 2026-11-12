@@ -70,13 +70,33 @@
 //! [`Router::clone`], which is cheap because axum's router is
 //! internally `Arc`-shared.
 
+/// Run `$body` (an `async` block body) inside a `vespera.dispatch` span with
+/// the given `mode` when the `tracing` feature is on; expands to the bare
+/// `$body` — byte-identical to the uninstrumented code, `$mode` never
+/// evaluated — when it is off.
+#[cfg(feature = "tracing")]
+macro_rules! traced {
+    ($mode:expr, $body:block) => {
+        $crate::obs::instrument($mode, async move $body).await
+    };
+}
+#[cfg(not(feature = "tracing"))]
+macro_rules! traced {
+    ($mode:expr, $body:block) => {
+        $body
+    };
+}
+
 mod bounded;
+mod cancel;
 mod config;
 mod direct;
 mod dispatch;
 mod envelope;
 mod header_latin1;
 mod internal;
+#[cfg(feature = "tracing")]
+mod obs;
 mod principal;
 mod registry;
 mod streaming;
@@ -85,6 +105,7 @@ mod wire;
 /// Re-export `axum::Router` so consumers don't need a direct axum dependency.
 pub use axum::Router;
 pub use bounded::DISPATCH_TIMEOUT_MSG;
+pub use cancel::{cancel, cancellable, cancellable_in_flight};
 pub use config::{
     DEFAULT_MAX_BUFFERED_RESPONSE_BYTES, DEFAULT_MAX_REQUEST_BYTES,
     DEFAULT_MAX_STREAMING_REQUEST_PRODUCERS, DEFAULT_STREAMING_CHANNEL_CAPACITY,

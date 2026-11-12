@@ -308,6 +308,31 @@ class VesperaClientTest {
     }
 
     @Test
+    void cancellingTheAsyncResponseCancelsTheNativeDispatch() {
+        List<CompletableFuture<byte[]>> pending = new ArrayList<>();
+        VesperaClient pendingClient = new VesperaClient(new FakeTransport() {
+            @Override
+            public CompletableFuture<byte[]> dispatchAsync(byte[] wireRequest) {
+                CompletableFuture<byte[]> f = new CompletableFuture<>();
+                pending.add(f);
+                return f;
+            }
+        }, null);
+
+        assertTrue(pendingClient.get("/x").sendAsync().cancel(true));
+        assertTrue(pending.get(0).isCancelled(), "sendAsync() cancel reaches the dispatch future");
+
+        CompletableFuture<VesperaResponse> viaExecutor = pendingClient.get("/x").sendAsync(Runnable::run);
+        viaExecutor.completeExceptionally(new IllegalStateException("timeout"));
+        assertTrue(pending.get(1).isCancelled(), "sendAsync(executor) failure reaches it too");
+
+        CompletableFuture<VesperaResponse> done = pendingClient.get("/x").sendAsync();
+        pending.get(2).complete(transport.response);
+        assertEquals("ok", done.join().bodyString());
+        assertFalse(pending.get(2).isCancelled(), "a normal completion never cancels");
+    }
+
+    @Test
     void streamedBodyUsesTheBidirectionalPathOnce() throws Exception {
         transport.response = responseWire(200, "{\"content-type\":\"application/octet-stream\"}", null, "");
         transport.streamedBody = "echoed".getBytes(StandardCharsets.UTF_8);

@@ -687,6 +687,8 @@ pub async fn dispatch_and_split<'h>(
     let response = router_oneshot(router, request).await;
 
     let (parts, body) = response.into_parts();
+    #[cfg(feature = "tracing")]
+    crate::obs::record_status(parts.status.as_u16());
     Ok((
         parts.status.as_u16(),
         parts.headers,

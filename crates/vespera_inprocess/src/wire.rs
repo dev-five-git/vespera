@@ -412,6 +412,8 @@ static ERROR_WIRE_HEADERS: LazyLock<http::HeaderMap> = LazyLock::new(|| {
 /// `content-type: text/plain; charset=utf-8`.
 #[must_use]
 pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
+    #[cfg(feature = "tracing")]
+    crate::obs::error_response(status, msg);
     let headers = &*ERROR_WIRE_HEADERS;
     let metadata = ResponseMetadata::current();
     // Write the header + plain-text body straight into one buffer.  An error

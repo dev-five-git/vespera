@@ -61,6 +61,17 @@ pub async fn create_app() -> axum::Router {
         contact_url = "https://github.com/dev-five-git/vespera",
         contact_email = "vespera@example.com",
         license = "Apache-2.0",
+        // Declared once here, referenced per route via
+        // `#[route(security = [...])]` (see `routes/secured.rs`).
+        security_schemes = [
+            { name = "bearerAuth", type = "http", scheme = "bearer", bearer_format = "JWT" },
+            { name = "apiKey", type = "apiKey", in = "header", header_name = "X-API-Key" }
+        ],
+        // Top-level tag descriptions (`tags[]` in the document).
+        tags = [
+            { name = "secured", description = "Security-scheme demo routes" },
+            { name = "events", description = "Server-sent events" }
+        ],
         merge = [ThirdApp]
     )
     .with_state(app_state(db))
@@ -88,6 +99,14 @@ pub async fn create_app_with_layer() -> axum::Router {
         contact_url = "https://github.com/dev-five-git/vespera",
         contact_email = "vespera@example.com",
         license = "Apache-2.0",
+        security_schemes = [
+            { name = "bearerAuth", type = "http", scheme = "bearer", bearer_format = "JWT" },
+            { name = "apiKey", type = "apiKey", in = "header", header_name = "X-API-Key" }
+        ],
+        tags = [
+            { name = "secured", description = "Security-scheme demo routes" },
+            { name = "events", description = "Server-sent events" }
+        ],
         merge = [ThirdApp]
     )
     .layer(cors)

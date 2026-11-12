@@ -1,0 +1,78 @@
+name: JNI Bench Gate
+
+# JNI dispatch regression gate — the JNI counterpart of the criterion gate in
+# bench.yml, which only covers the Rust in-process hot path. This one drives
+# the real JNI symbols from a JVM through the vespera-bridge JAR:
+#   sync_get                  dispatchBytes, GET /health
+#   direct_get                dispatchDirect (caller-owned direct buffers)
+#   streaming_get             dispatchStreaming, GET /health
+#   full_streaming_post_64k   dispatchFullStreaming, 64 KiB POST /echo
+#   async_get                 dispatchAsync + blocking wait
+# (harness: libs/vespera-bridge/bench/JniDispatchBench.java).
+#
+# Method (scripts/jni-bench-interleaved.sh): build the PR merge base and the PR
+# head — rust-jni-demo cdylib with pinned code alignment + the bridge JAR, one
+# target dir per side — then run 5 INTERLEAVED rounds (base,head / head,base /
+# ...), one fresh JVM per side per round. scripts/jni-bench-compare.ts pairs
+# round i of both sides (c_i = head_i / base_i - 1) and FAILS a mode when
+# median(c_i) > +30% AND every c_i > +20% — the exact rule of bench.yml, so a
+# single noisy round cannot trip the gate while a real slowdown still does.
+# The markdown table lands in the job summary.
+#
+# The nightly jni-bench.yml keeps recording the broader *BenchTest suite
+# (throughput, allocation, concurrency) informationally.
+
+on:
+  pull_request:
+    paths:
+      - 'crates/vespera_inprocess/**'
+      - 'crates/vespera_jni/**'
+      - 'libs/vespera-bridge/**'
+      - '.github/workflows/jni-bench-gate.yml'
+      - 'scripts/jni-bench-interleaved.sh'
+      - 'scripts/jni-bench-compare.ts'
+
+concurrency:
+  group: jni-bench-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+# Read-only token: this job only checks out, builds and measures.
+permissions:
+  contents: read
+
+jobs:
+  jni-bench-gate:
+    name: JNI regression gate (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      - name: Interleaved merge-base vs PR head JNI gate
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ROUNDS: '5'
+          # Pinned code layout for BOTH cdylibs (see bench.yml / PR #161: fat
+          # LTO alignment shifts swung identical code by up to +/-40%). The
+          # script exports this as RUSTFLAGS, replacing the toolchain action's
+          # `-D warnings` default.
+          JNI_BENCH_RUSTFLAGS: "-C llvm-args=-align-all-functions=6 -C llvm-args=-align-all-nofallthru-blocks=5"
+        run: |
+          merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          git checkout --detach "$HEAD_SHA"
+          scripts/jni-bench-interleaved.sh "$merge_base"
