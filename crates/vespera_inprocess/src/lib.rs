@@ -33,7 +33,9 @@
 //!    bytes 0..4      : u32 BE = header_json byte length N
 //!    bytes 4..4+N    : UTF-8 JSON
 //!                        (request)  { "v":1, "method", "path",
-//!                                     "query"?, "headers"? }
+//!                                     "query"?, "headers"?, "app"?,
+//!                                     "remote_addr"?, "scheme"?,
+//!                                     "principal"? }
 //!                        (response) { "v":1, "status", "headers",
 //!                                     "metadata", "validation_errors"? }
 //!    bytes 4+N..end  : raw body bytes (UTF-8 text or binary —
@@ -68,13 +70,34 @@
 //! [`Router::clone`], which is cheap because axum's router is
 //! internally `Arc`-shared.
 
+/// Run `$body` (an `async` block body) inside a `vespera.dispatch` span with
+/// the given `mode` when the `tracing` feature is on; expands to the bare
+/// `$body` — byte-identical to the uninstrumented code, `$mode` never
+/// evaluated — when it is off.
+#[cfg(feature = "tracing")]
+macro_rules! traced {
+    ($mode:expr, $body:block) => {
+        $crate::obs::instrument($mode, async move $body).await
+    };
+}
+#[cfg(not(feature = "tracing"))]
+macro_rules! traced {
+    ($mode:expr, $body:block) => {
+        $body
+    };
+}
+
 mod bounded;
+mod cancel;
 mod config;
 mod direct;
 mod dispatch;
 mod envelope;
 mod header_latin1;
 mod internal;
+#[cfg(feature = "tracing")]
+mod obs;
+mod principal;
 mod registry;
 mod streaming;
 mod wire;
@@ -82,6 +105,7 @@ mod wire;
 /// Re-export `axum::Router` so consumers don't need a direct axum dependency.
 pub use axum::Router;
 pub use bounded::DISPATCH_TIMEOUT_MSG;
+pub use cancel::{cancel, cancellable, cancellable_in_flight};
 pub use config::{
     DEFAULT_MAX_BUFFERED_RESPONSE_BYTES, DEFAULT_MAX_REQUEST_BYTES,
     DEFAULT_MAX_STREAMING_REQUEST_PRODUCERS, DEFAULT_STREAMING_CHANNEL_CAPACITY,
@@ -101,6 +125,7 @@ pub use dispatch::{
 pub use envelope::{
     HeaderValue, RequestEnvelope, ResponseEnvelope, ResponseMetadata, error_envelope,
 };
+pub use principal::{MISSING_PRINCIPAL_MSG, MissingPrincipal, Principal};
 pub use registry::{DEFAULT_APP_NAME, register_app, register_app_named, try_register_app_named};
 pub use streaming::{
     REQUEST_PRODUCER_JOIN_GRACE, RequestChunk, StreamAbort, StreamOutcome,
@@ -109,7 +134,7 @@ pub use streaming::{
     dispatch_bidirectional_streaming_with_header_closing, dispatch_streaming_async,
     dispatch_streaming_with_header_async, dispatch_streaming_with_outcome_async,
 };
-pub use wire::{MAX_REQUEST_HEADERS, error_wire, panic_error_wire};
+pub use wire::{MAX_PRINCIPAL_ENTRIES, MAX_REQUEST_HEADERS, error_wire, panic_error_wire};
 
 /// Bench-only surface for the same-run hand-rolled vs `serde_json` A/B in
 /// `benches/dispatch.rs` (the `wire_header_serde` criterion group).

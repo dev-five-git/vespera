@@ -13,7 +13,8 @@
 //!   ([`Cow::Borrowed`]) when it carries no escapes, and falls back to
 //!   an owned decode ([`Cow::Owned`]) for `\" \\ \/ \b \f \n \r \t
 //!   \uXXXX` — including UTF-16 surrogate pairs;
-//! * `v` defaults to `0`, `query` to empty, `headers` to empty, `app` /
+//! * `v` defaults to `0`, `query` to empty, `headers` to empty, `principal`
+//!   (parsed by [`principal`]) / `app` /
 //!   `remote_addr` / `scheme` to `None`; `method`/`path` are required;
 //! * duplicate known keys, lone/invalid surrogates, bad escapes,
 //!   unescaped control characters, invalid UTF-8, and trailing content
@@ -28,7 +29,12 @@
 
 use std::borrow::Cow;
 
-use super::{CowPairs, WireRequestHeader};
+use super::{CowPairs, WirePrincipal, WireRequestHeader};
+
+/// Parser for the optional `principal` object (split out to keep this file
+/// under the size cap; it extends [`Parser`] with `impl` blocks).
+mod principal;
+pub use principal::MAX_PRINCIPAL_ENTRIES;
 
 /// Container-nesting levels tracked **inline** (zero-allocation) while
 /// skipping the value of an unknown (forward-compat) header field, before
@@ -138,6 +144,8 @@ impl<'a> Parser<'a> {
         let mut app = OptField::default();
         let mut remote_addr = OptField::default();
         let mut scheme = OptField::default();
+        let mut principal: Option<WirePrincipal<'a>> = None;
+        let mut principal_seen = false;
 
         self.skip_ws();
         if self.cur() == Some(b'}') {
@@ -187,6 +195,13 @@ impl<'a> Parser<'a> {
                     "app" => self.read_opt_string_once(&mut app, "app")?,
                     "remote_addr" => self.read_opt_string_once(&mut remote_addr, "remote_addr")?,
                     "scheme" => self.read_opt_string_once(&mut scheme, "scheme")?,
+                    "principal" => {
+                        if principal_seen {
+                            return Err("duplicate field `principal`".to_owned());
+                        }
+                        principal = self.read_principal()?;
+                        principal_seen = true;
+                    }
                     // Unknown (forward-compat) key: iteratively
                     // validate-and-skip its value (no native recursion).
                     _ => self.skip_value()?,
@@ -216,6 +231,7 @@ impl<'a> Parser<'a> {
             app: app.value,
             remote_addr: remote_addr.value,
             scheme: scheme.value,
+            principal,
         })
     }
 

@@ -129,6 +129,7 @@ fn make_envelope(body_kb: usize) -> RequestEnvelope {
     let mut headers = HashMap::new();
     headers.insert("content-type".to_owned(), "application/json".to_owned());
     RequestEnvelope {
+        principal: None,
         method: "POST".to_owned(),
         path: "/echo".to_owned(),
         query: String::new(),

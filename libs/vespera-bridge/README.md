@@ -26,6 +26,8 @@ dependencies {
 
 `vespera-bridge` declares **no transitive dependencies** (its POM is empty): Spring Boot, Spring MVC, the servlet API and SLF4J are compile-only and must come from the application. Every Spring Boot web app already has them through `spring-boot-starter-web` (Boot 3) / `spring-boot-starter-webmvc` (Boot 4), so nothing changes there. The autoconfiguration only activates in a servlet web application with Spring MVC on the classpath (`@ConditionalOnClass` + `@ConditionalOnWebApplication(type = SERVLET)`), and the non-Spring API (`VesperaBridge` dispatch / `encodeRequest` / `decodeResponse`) runs with no Spring jars at all.
 
+Kotlin is optional too: the [Kotlin extensions](#kotlin) ship inside the same JAR, but `kotlin-stdlib` and `kotlinx-coroutines-core` are compile-only — Java applications never load a Kotlin class.
+
 > Up to and including 0.5.0 the bridge exported `spring-boot-starter-web` and `jackson-databind` as `api` dependencies. If your build relied on getting either of them transitively from the bridge, declare it yourself.
 
 ### One-line setup via the Gradle plugin (recommended)
@@ -144,6 +146,7 @@ vespera:
     exclude-patterns: []         # paths left to Spring MVC, e.g. ["/assets/**", "/*.html"]
     cors: rust                   # rust (default) | spring — who answers CORS, see "CORS"
     direct-retry-on-overflow: true # set false to avoid DIRECT retry double-execution
+    forward-principal: true      # forward the authenticated principal to Rust, see "Forwarded principal"
     max-buffered-request-bytes: 67108864 # default 64 MiB; 0 = unlimited
     max-buffered-response-bytes: 67108864 # SYNC/ASYNC response cap → 500 (default 64 MiB; 0 = unlimited)
     native:                      # Rust-side knobs, applied before the first dispatch
@@ -239,7 +242,7 @@ exclusion condition once the context's singletons are initialised.
 The JAR ships `META-INF/spring-configuration-metadata.json`, so IntelliJ IDEA
 and the Spring Tools for VS Code / Eclipse complete and document every
 `vespera.bridge.*` key (plus `management.health.vespera.enabled`) and offer the
-values of `dispatch-mode` and `cors`.
+values of `dispatch-mode`, `cors` and `springdoc.mode`.
 
 ### 2. Custom app-selection strategy
 
@@ -395,8 +398,81 @@ The proxy is an ordinary Spring MVC controller, so Spring Security's filter chai
 - **CSRF blocks proxied writes by default.** With Spring Security on the classpath, `CsrfFilter` rejects every `POST` / `PUT` / `PATCH` / `DELETE` without a CSRF token with `403` before the proxy runs. For a token-authenticated JSON API, disable CSRF for the proxied paths (`http.csrf(csrf -> csrf.ignoringRequestMatchers("/api/**"))`) or implement the token exchange; keep it for cookie-session browser forms.
 - **Match on the path Rust sees.** Authorization rules match the servlet path. The proxy forwards the path *within the application* (context path and a prefix servlet mapping stripped, `;` path parameters dropped — see [Operability](#client-address-scheme-and-servlet-path)), so write rules against that path, not the raw request URI, and keep Spring's default `StrictHttpFirewall` (it rejects encoded `/`, `;`, `..` that could make a path look different to Spring and to Rust).
 - **App selection bypasses path rules.** `X-Vespera-App` picks a whole router; restrict it with `vespera.bridge.exposed-apps` (see [Multi-app routing → Security](#security-the-app-header-is-client-controlled)) or with a custom `AppNameResolver` that checks the authenticated principal.
-- **Forward the principal through a trusted header, and strip client copies.** Rust only sees forwarded request headers. To pass the authenticated user, add a servlet filter **after** Spring Security that removes any client-supplied copy of the header (e.g. `X-Authenticated-User`) and sets it from `SecurityContextHolder` (wrap the request in an `HttpServletRequestWrapper` overriding `getHeader` / `getHeaders` / `getHeaderNames`). Rust handlers must trust that header only because every request reaches them through this proxy.
+- **The authenticated principal is forwarded for you — don't use headers for it.** The proxy puts the authenticated user into the trusted `principal` wire field (see [Forwarded principal](#forwarded-principal)), which a client cannot set; Rust handlers take `vespera::inprocess::Principal`. Do not identify the user from a forwarded `X-User`-style header: request headers are client-controlled unless every copy is stripped.
 - **Preflights.** With `vespera.bridge.cors=rust`, permit unauthenticated `OPTIONS` preflights (`.requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()`), or browsers cannot reach the Rust CORS layer.
+
+### Forwarded principal
+
+The proxy asks the `PrincipalResolver` bean for the request's authenticated principal and sends it in the request wire header's `principal` field — a side channel only the bridge writes, never built from client headers. The default `ServletPrincipalResolver` forwards `HttpServletRequest.getUserPrincipal()` (set by the servlet container or by Spring Security's request wrapper) by name, plus — when Spring Security is on the classpath (detected reflectively; the bridge does not depend on it) — the `Authentication`'s `getAuthorities()`. Anonymous requests forward nothing. Forwarding is on by default: the value comes from server-side authentication, so it is safe to pass, and Rust handlers that do not ask for it ignore it.
+
+```rust
+use vespera::inprocess::Principal;
+
+#[vespera::route(get)]
+pub async fn me(principal: Principal) -> String {          // 401 when anonymous
+    format!("{} admin={}", principal.name, principal.has_authority("ROLE_ADMIN"))
+}
+// Option<Principal> never rejects; Extension<Principal> also works (500 when absent).
+```
+
+- `vespera.bridge.forward-principal=false` forwards no principal.
+- A custom resolver replaces the default, e.g. to add token claims as attributes:
+
+  ```java
+  @Bean
+  PrincipalResolver principalResolver() {
+      ServletPrincipalResolver servlet = new ServletPrincipalResolver();
+      return request -> {
+          VesperaPrincipal p = servlet.resolvePrincipal(request);
+          return p == null ? null
+                  : new VesperaPrincipal(p.name(), p.authorities(), Map.of("tenant", tenantOf(request)));
+      };
+  }
+  ```
+
+  Build it only from authentication state the server established, never from raw request headers.
+- A hand-written `VesperaBridge.HeaderSource` forwards one by overriding `principal()`.
+
+## springdoc-openapi (Swagger UI)
+
+An application that uses [springdoc-openapi](https://springdoc.org/) for its Java controllers gets the Rust routes into the same Swagger UI. The integration (`VesperaSpringdocAutoConfiguration`) activates by itself when springdoc is on the classpath — springdoc stays **your** dependency (`org.springdoc:springdoc-openapi-starter-webmvc-ui`, 3.x for Boot 4, 2.8+ for Boot 3.5); the bridge only compiles against it.
+
+**Requirement:** the Rust app serves its document — add `spec_url` to `vespera!`:
+
+```rust
+pub fn create_app() -> axum::Router {
+    vespera!(spec_url = "/openapi.json", title = "My API", version = "1.0.0")
+}
+```
+
+The bridge fetches it **in-process** (a native `GET /openapi.json` dispatch, no HTTP or socket), so it is always the document of the loaded cdylib, including any `merge = [...]`. A different route goes in `vespera.bridge.springdoc.spec-path` (per app: `spec-paths.<app>`); to read it from somewhere else (e.g. the `openapi.json` written by `vespera!(openapi = ...)`, bundled as a resource), register your own `VesperaOpenApiSource` bean.
+
+Two modes (`vespera.bridge.springdoc.mode`):
+
+| Mode | Result |
+|---|---|
+| `group` (default) | Every documented app becomes its own entry of the Swagger UI definition dropdown (`vespera`, `vespera (admin)`, …), served **verbatim** at `/v3/api-docs/vespera/<app>`. springdoc's own document stays as it is and is listed as `application` (selected first) unless you configured `springdoc.swagger-ui.urls` or springdoc groups — those are kept. |
+| `merge` | The Rust paths, components and tags are merged into springdoc's default `/v3/api-docs` (an `OpenApiCustomizer`): paths outside `include-patterns` / inside `exclude-patterns` are dropped; a path springdoc already documents keeps the Java definition (logged); a different component under a clashing name is renamed `vespera_<Name>` (`<app>_<Name>` for a named app) with every `$ref` rewritten, an identical one is shared; a named app's operations get a required `X-Vespera-App` (`app-header`) parameter so "Try it out" reaches it; the Rust top-level `security` is copied onto its operations. springdoc caches the document, so initialise the native library before the first `/v3/api-docs` request. |
+
+```yaml
+vespera:
+  bridge:
+    springdoc:
+      enabled: true                # false: no integration (the proxy stays hidden from springdoc)
+      mode: group                  # group | merge
+      spec-path: /openapi.json     # the Rust spec_url, dispatched in-process
+      spec-paths:
+        admin: /admin/openapi.json # per-app override
+      apps: [_default, admin]      # default: _default + vespera.bridge.exposed-apps
+      docs-path: /v3/api-docs/vespera # group mode: documents served at <docs-path>/<app>
+      display-name: vespera        # group mode: Swagger UI label (named apps: "vespera (admin)")
+```
+
+- **Multi-app (`jni_apps!`):** every documented app gets its own definition (`group`) or is merged with the app header parameter (`merge`). Only `_default` and `vespera.bridge.exposed-apps` are documented by default; `<docs-path>/<app>` answers `404` for any other app, `503` while the native library is not loaded and `502` when the Rust route fails (e.g. no `spec_url` — the reason is logged).
+- In `group` mode "Try it out" on a named app's definition does not send `X-Vespera-App` (the Rust document does not know about it); use `merge` mode, or a gateway that selects the app.
+- The documents live under springdoc's `/v3/api-docs/**`, so an existing Spring Security rule for the API docs covers them.
+- The proxy's catch-all `/**` mapping is hidden from springdoc's document whenever springdoc is present.
+- springdoc's `springdoc.api-docs.enabled=false` disables the integration too.
 
 ## Binary wire format
 
@@ -406,14 +482,17 @@ Both request and response use the same length-prefixed layout:
 bytes 0..4    : u32 BE = header_json byte length N
 bytes 4..4+N  : UTF-8 JSON
                   (request)  { "v":1, "method", "path",
-                               "query"?, "headers"? }
+                               "query"?, "headers"?, "app"?,
+                               "remote_addr"?, "scheme"?,
+                               "principal"? }
                   (response) { "v":1, "status", "headers",
-                               "metadata" }
+                               "metadata", "validation_errors"? }
 bytes 4+N..   : raw body bytes (UTF-8 text or binary —
                 no encoding applied)
 ```
 
 - `"v":1` is the protocol version. Mismatched versions return a `400` wire response with an explanatory plain-text body.
+- `"principal"` is `null` or `{"name": string, "authorities"?: [string], "attributes"?: {string: string}}` (at most 1024 authorities and 1024 attributes; otherwise `400`). The bridge sets it from the `PrincipalResolver` only — see [Forwarded principal](#forwarded-principal).
 - Multi-valued response headers (e.g. `set-cookie`) render as JSON arrays so semantics are preserved — they're never comma-joined.
 - All failure paths (malformed wire, Rust panic, no app registered) return a valid length-prefixed response with status `4xx` / `5xx`, so the decoder never has to special-case errors.
 - **Header values use a Latin-1 mapping.** Servlet containers expose header bytes as ISO-8859-1 strings and write response header chars back the same way, so each byte travels as the JSON char `U+0000–U+00FF`. Rust maps a request value whose chars are all `≤ U+00FF` back to those bytes (a value with a wider char keeps its UTF-8 encoding), and renders every response value byte as one char — so a UTF-8 `Content-Disposition: attachment; filename="résumé.pdf"` reaches the client byte-for-byte (previously the whole value was dropped). ASCII values are unchanged.
@@ -555,12 +634,20 @@ pool); virtual-thread deployments transparently fall back to the heap
 path at a small per-call allocation cost.
 
 **Carrier pinning:** a virtual thread blocked inside a native call is
-pinned to its carrier.  On a virtual thread the proxy's `SYNC` path (and
-the heap fallback above) therefore dispatches through `dispatchAsync` +
-`join()` — the virtual thread parks and releases its carrier while the
-handler runs (~1.5 µs extra; the `vespera.async.maxInFlight` cap applies).
-Platform threads keep the direct call.  The streaming modes still pin
-(they write to the servlet streams from the calling thread).
+pinned to its carrier.  On a virtual thread the proxy's `SYNC` path (the
+heap fallback above, and `VesperaClient.send()`) therefore never blocks
+natively across a wait.  Since 0.6 it is **poll-first**: the Rust dispatch
+is polled once on the calling thread; a handler that completes without
+waiting answers right there (pinned-call cost, ~1.3 µs p50), and one that
+has to wait (I/O, timers) is handed to a Tokio worker while the virtual
+thread parks on a `CompletableFuture` — the carrier is released for the
+wait.  `-Dvespera.virtualThread.pollFirst=false` restores the pre-0.6
+`dispatchAsync` + `join()` for every request (~15 µs p50 and ~1/5 the
+throughput for a handler that never waits).  Both apply the
+`vespera.async.maxInFlight` cap.  Measurements:
+[`docs/virtual-thread-park.md`](docs/virtual-thread-park.md).  Platform
+threads keep the direct call.  The streaming modes still pin (they write to
+the servlet streams from the calling thread).
 
 You can still opt out of DIRECT entirely if you prefer streaming
 end-to-end:
@@ -649,7 +736,7 @@ CompletableFuture<VesperaResponse> f = client.get("/x").sendAsync();
 
 | Call | Dispatch path |
 |---|---|
-| `send()` | SYNC `dispatchBytes`; on a virtual thread it parks on `dispatchAsync` instead of pinning the carrier |
+| `send()` | SYNC `dispatchBytes`; on a virtual thread it polls the dispatch once inline and parks on a Tokio-completed future only when the handler waits (never pins the carrier across a wait) |
 | `sendAsync()` | ASYNC `dispatchAsync` (counts toward `vespera.async.maxInFlight` → `503`). The future completes on a Tokio worker: use `*Async` continuations for heavy work, or `sendAsync(executor)` |
 | `body(InputStream, contentType)` + `send()` | bidirectional streaming: Rust pulls the request body chunk-by-chunk (capped by `maxStreamingRequestBytes`); the response is collected in memory. Sent once; async only via `sendAsync(executor)` |
 
@@ -666,6 +753,9 @@ CompletableFuture<VesperaResponse> f = client.get("/x").sendAsync();
   `VesperaClient.encodePathSegment(id)` encodes path segments.
 - `remoteAddr("ip:port")` / `scheme("https")` fill the optional
   `remote_addr` / `scheme` wire fields (`ConnectInfo<SocketAddr>` / `Scheme`).
+- `principal(VesperaPrincipal.of("alice", "ROLE_USER"))` fills the trusted
+  `principal` wire field (Rust: `vespera::inprocess::Principal`); the client
+  never derives it from headers.
 - **Spring:** the autoconfiguration exposes a `VesperaClient` bean (default
   app; `@ConditionalOnMissingBean`), also when
   `vespera.bridge.controller-enabled=false`. It is created after
@@ -684,6 +774,49 @@ class ReportJob {
     }
 }
 ```
+
+### Kotlin
+
+The same JAR carries Kotlin extensions for the client (`VesperaKotlin.kt`,
+package `com.devfive.vespera.bridge`) — no extra artifact. `kotlin-stdlib`
+and `kotlinx-coroutines-core` are **not** dependencies of the bridge: a Kotlin
+app already has the stdlib, and `sendAwait` needs
+`org.jetbrains.kotlinx:kotlinx-coroutines-core` (>= 1.7) on the classpath.
+Compiled with Kotlin language/API version 2.0, so Kotlin 1.9+ compilers
+(Spring Boot 3.5) can consume it.
+
+```kotlin
+import com.devfive.vespera.bridge.VesperaClient
+import com.devfive.vespera.bridge.get
+import com.devfive.vespera.bridge.post
+import com.devfive.vespera.bridge.query
+import com.devfive.vespera.bridge.sendAwait
+
+@Service
+class UserService(private val vespera: VesperaClient) {
+    suspend fun user(id: String): String? {
+        val r = vespera.get("/users/${VesperaClient.encodePathSegment(id)}") {
+            header("accept", "application/json")
+            query("expand" to "roles", "flag" to null)   // -> ?expand=roles&flag
+        }.sendAwait()                                     // suspends, never blocks
+        return if (r.isSuccessful) r.bodyString() else null
+    }
+
+    suspend fun create(body: String) = vespera.post("/users") { json(body) }.sendAwait()
+}
+```
+
+| Extension | What it does |
+|---|---|
+| `VesperaRequest.sendAwait()` | `sendAsync().await()`: suspends until the ASYNC dispatch completes. **Cancelling the coroutine** (`withTimeout`, a cancelled scope, a client disconnect in a coroutine controller) cancels the `CompletableFuture` and thereby the native dispatch (cancel-on-disconnect: the Rust handler is dropped, its in-flight slot released). Transport failures throw `VesperaClientException`; statuses are responses |
+| `VesperaRequest.sendAwait(executor)` | `sendAsync(executor).await()` — required for an `InputStream` body (the blocking streamed upload runs on `executor`) |
+| `client.get(path) { ... }` (`head` / `post` / `put` / `patch` / `delete` / `options` / `request(method, path)`) | builds the request with a `VesperaRequest.() -> Unit` block (`header`, `query`, `json`, `app`, `principal`, ...); returns the request for `send()` / `sendAwait()` |
+| `query("a" to 1, "b" to null)` / `headers("x" to "y")` | vararg `Pair` helpers |
+
+The Java client API carries [JSpecify](https://jspecify.dev) nullability
+annotations (`@NullMarked` + `@Nullable`, compile-only), so Kotlin sees
+`response.header("x")` / `contentType()` / `appName()` as `String?` and
+everything else as non-null instead of platform types.
 
 The DIRECT pooled-buffer path stays a proxy optimisation (its per-thread
 buffer view would have to be copied out anyway). For full control (header-first
@@ -746,10 +879,23 @@ Always-complete contract: the future is **always** completed with a
 valid wire response, even on Rust panics or JNI conversion failures.
 You will never see a dangling future.
 
-> Cancellation note: `future.cancel(true)` marks the Java side as
-> cancelled but does not abort the in-flight Rust dispatch in this
-> release. The Rust task continues to completion and its result is
-> discarded.
+**Cancellation propagates to Rust.** When the future completes
+exceptionally — `future.cancel(..)`, `future.orTimeout(..)`, or your own
+`completeExceptionally(..)` — the in-flight Rust handler is dropped at its
+next `.await` (its DB queries, timers and other owned work stop) and its
+`vespera.async.maxInFlight` slot is released at once. A normal completion
+never cancels anything, and a cancel that races the completion is harmless.
+The proxy's `ASYNC` mode cancels the native future when the servlet async
+request ends first (Spring async timeout, container-reported error or client
+disconnect).
+
+#### Client disconnects per dispatch mode
+
+| Mode | What happens when the HTTP client goes away |
+|---|---|
+| `ASYNC` (`dispatchAsync`) | The native future is cancelled on async timeout / container error → the Rust handler is dropped and its in-flight slot freed. |
+| `STREAMING` / `BIDIRECTIONAL_STREAMING` (all streaming natives) | The next servlet write or flush fails → Rust stops polling and drops the response body immediately (the body is flushed before it waits, so a slow producer is detected at its first pause). A handler that has not produced its response header yet is not interrupted until it does. |
+| `SYNC` / `DIRECT` | Not cancellable: the handler runs on `block_on` and the disconnect is only visible when the finished response is written. Bound these with `vespera.dispatch.timeoutMillis` / `vespera.bridge.native.dispatch-timeout`. |
 
 ### Streaming dispatch (large bodies, file uploads/downloads)
 

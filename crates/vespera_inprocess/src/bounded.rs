@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 use std::future::{Future, poll_fn};
-use std::pin::{Pin, pin};
+use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
@@ -143,13 +143,20 @@ impl Deadline {
     }
 
     /// Drive `fut` until it completes (`Some`) or the deadline elapses
-    /// (`None`, with `fut` dropped — Tokio cancellation).  Once elapsed,
-    /// every later call returns `None` unless `fut` is immediately ready.
-    pub async fn run<F: Future>(&mut self, fut: F) -> Option<F::Output> {
+    /// (`None`; the caller then drops `fut` — Tokio cancellation).  Once
+    /// elapsed, every later call returns `None` unless `fut` is immediately
+    /// ready.
+    ///
+    /// Takes the future **pinned by the caller** (`deadline.run(pin!(fut))`)
+    /// instead of by value: an `async fn` keeps a by-value future argument
+    /// AND its pinned / awaited copy in its own state (rust-lang/rust#62958),
+    /// which doubled the buffered dispatch future (1488 → 3056 bytes) that
+    /// every small request then moves around.  Pinned in the caller's state,
+    /// the inner future is stored exactly once.
+    pub async fn run<F: Future>(&mut self, mut fut: Pin<&mut F>) -> Option<F::Output> {
         let Some(sleep) = self.sleep.as_mut() else {
             return Some(fut.await);
         };
-        let mut fut = pin!(fut);
         poll_fn(|cx| {
             if let Poll::Ready(out) = fut.as_mut().poll(cx) {
                 return Poll::Ready(Some(out));
@@ -298,6 +305,7 @@ impl HttpBody for PrefixedBody {
 mod tests {
     use super::*;
     use rstest::rstest;
+    use std::pin::pin;
 
     fn block_on<F: Future>(fut: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
@@ -474,7 +482,7 @@ mod tests {
     #[test]
     fn deadline_disabled_by_default_runs_to_completion() {
         let mut deadline = Deadline::disabled();
-        assert_eq!(block_on(deadline.run(async { 7 })), Some(7));
+        assert_eq!(block_on(deadline.run(pin!(async { 7 }))), Some(7));
     }
 
     #[test]
@@ -485,14 +493,14 @@ mod tests {
                     std::time::Duration::from_millis(5),
                 ))),
             };
-            assert_eq!(deadline.run(std::future::pending::<()>()).await, None);
+            assert_eq!(deadline.run(pin!(std::future::pending::<()>())).await, None);
             assert_eq!(
-                deadline.run(std::future::pending::<()>()).await,
+                deadline.run(pin!(std::future::pending::<()>())).await,
                 None,
                 "an elapsed deadline stays elapsed"
             );
             assert_eq!(
-                deadline.run(async { 1 }).await,
+                deadline.run(pin!(async { 1 })).await,
                 Some(1),
                 "an immediately-ready future still wins"
             );

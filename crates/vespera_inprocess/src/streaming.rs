@@ -3,7 +3,7 @@
 
 use std::future::Future;
 use std::ops::ControlFlow;
-use std::pin::Pin;
+use std::pin::{Pin, pin};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
@@ -139,8 +139,20 @@ where
 ///   callers that still want one.
 pub async fn dispatch_streaming_with_outcome_async<F>(
     input: Vec<u8>,
-    mut on_chunk: F,
+    on_chunk: F,
 ) -> (Vec<u8>, StreamOutcome)
+where
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+{
+    // The bodies of the `traced!` entry points live in plain `async fn`s (not
+    // inside the macro's tokens): code inside macro arguments loses its
+    // match-arm line mapping under LLVM coverage.
+    traced!("streaming", {
+        streaming_with_outcome_body(input, on_chunk).await
+    })
+}
+
+async fn streaming_with_outcome_body<F>(input: Vec<u8>, mut on_chunk: F) -> (Vec<u8>, StreamOutcome)
 where
     F: FnMut(&[u8]) -> ControlFlow<()>,
 {
@@ -159,7 +171,7 @@ where
     };
     let default_json_when_absent = !body_bytes.is_empty();
     let dispatched = deadline
-        .run(dispatch_and_split(
+        .run(pin!(dispatch_and_split(
             router,
             &header.method,
             &header.path,
@@ -172,7 +184,7 @@ where
             Body::from(body_bytes),
             default_json_when_absent,
             header.connection_info(),
-        ))
+        )))
         .await;
     let (status, headers, metadata, body) = match dispatched {
         None => return (timeout_wire(), StreamOutcome::Complete),
@@ -317,7 +329,7 @@ where
     F: FnMut(&[u8]) -> ControlFlow<()>,
 {
     if status == 422 {
-        match deadline.run(prefetch_422_body(body)).await {
+        match deadline.run(pin!(prefetch_422_body(body))).await {
             None => {
                 on_header(&timeout_wire());
                 return StreamOutcome::Complete;
@@ -520,6 +532,20 @@ impl FrameBatch {
 /// immediately.  Sinks that do not buffer can ignore it.
 pub async fn dispatch_streaming_with_header_async<H, F>(
     input: Vec<u8>,
+    on_header: H,
+    on_chunk: F,
+) -> StreamOutcome
+where
+    H: FnMut(&[u8]),
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+{
+    traced!("streaming", {
+        streaming_with_header_body(input, on_header, on_chunk).await
+    })
+}
+
+async fn streaming_with_header_body<H, F>(
+    input: Vec<u8>,
     mut on_header: H,
     mut on_chunk: F,
 ) -> StreamOutcome
@@ -563,7 +589,7 @@ where
     // request — share `header_bytes` so each plain value is constructed
     // zero-copy via `HeaderValue::from_maybe_shared`.
     let (status, headers, metadata, body) = match deadline
-        .run(dispatch_and_split(
+        .run(pin!(dispatch_and_split(
             router,
             &header.method,
             &header.path,
@@ -574,7 +600,7 @@ where
             Body::from(body_bytes),
             default_json_when_absent,
             header.connection_info(),
-        ))
+        )))
         .await
     {
         Some(Ok(parts)) => parts,
@@ -786,6 +812,33 @@ where
 async fn bidirectional_streaming_inner<P, F, H, C>(
     input_header: Vec<u8>,
     pull_chunk: P,
+    on_chunk: F,
+    on_header: H,
+    request_close: C,
+    flush_hints: bool,
+) -> StreamOutcome
+where
+    P: FnMut() -> RequestChunk + Send + 'static,
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+    H: FnMut(&[u8]),
+    C: FnOnce(),
+{
+    traced!("bidirectional", {
+        bidirectional_streaming_body(
+            input_header,
+            pull_chunk,
+            on_chunk,
+            on_header,
+            request_close,
+            flush_hints,
+        )
+        .await
+    })
+}
+
+async fn bidirectional_streaming_body<P, F, H, C>(
+    input_header: Vec<u8>,
+    pull_chunk: P,
     mut on_chunk: F,
     mut on_header: H,
     request_close: C,
@@ -867,7 +920,7 @@ where
     // Share `header_bytes` for the per-request `HeaderValue` insertions so
     // each plain value is constructed zero-copy.
     let dispatched = deadline
-        .run(dispatch_and_split(
+        .run(pin!(dispatch_and_split(
             router,
             &header.method,
             &header.path,
@@ -878,7 +931,7 @@ where
             body,
             default_json_when_absent,
             header.connection_info(),
-        ))
+        )))
         .await;
     // The handler returned: any further body poll comes from the streaming
     // response, which must never block on an inline read.

@@ -7,7 +7,7 @@ use futures_util::FutureExt;
 use jni::EnvUnowned;
 use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{JByteArray, JClass, JObject};
-use jni::sys::jbyteArray;
+use jni::sys::{jboolean, jbyteArray, jlong};
 
 use crate::daemon_env::with_cached_daemon_env;
 use crate::streaming_closures::{
@@ -27,9 +27,10 @@ use streaming_buffer::{PullPushBuffers, mark_streaming_buffer_reusable, release_
 #[path = "jni_impl_config.rs"]
 mod config;
 pub use config::{
-    DEFAULT_ASYNC_MAX_IN_FLIGHT, DEFAULT_RUNTIME_MAX_BLOCKING_THREADS, async_max_in_flight,
-    runtime_max_blocking_threads, runtime_worker_threads, set_async_max_in_flight,
-    set_runtime_max_blocking_threads, set_runtime_worker_threads, streaming_chunk_size,
+    DEFAULT_ASYNC_MAX_IN_FLIGHT, DEFAULT_RUNTIME_MAX_BLOCKING_THREADS, async_in_flight,
+    async_max_in_flight, runtime_max_blocking_threads, runtime_worker_threads,
+    set_async_max_in_flight, set_runtime_max_blocking_threads, set_runtime_worker_threads,
+    streaming_chunk_size,
 };
 use config::{async_overloaded_wire, try_acquire_async_permit};
 
@@ -349,14 +350,23 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchByt
 
 #[path = "jni_impl_direct.rs"]
 mod direct;
+
+// Poll-first dispatch behind the bridge's virtual-thread `ParkingDispatch`.
+#[path = "jni_impl_park.rs"]
+mod park;
 pub use direct::stash as direct_stash;
 
-/// `com.devfive.vespera.bridge.VesperaBridge.dispatchAsync(CompletableFuture<byte[]>, byte[]) -> void`
+/// `com.devfive.vespera.bridge.AsyncDispatch.dispatch0(CompletableFuture<byte[]>, byte[]) -> long`
+/// (behind the public `VesperaBridge.dispatchAsync`)
 ///
 /// **Asynchronous** binary wire-format JNI entry point.  Returns
 /// immediately after spawning the dispatch on the shared Tokio
 /// runtime.  Completes the supplied `CompletableFuture<byte[]>`
 /// from a runtime worker thread once the response is ready.
+///
+/// Returns the dispatch's **cancellation token** (non-zero) when a task was
+/// spawned, or `0` when the future was already completed on the calling
+/// thread (overloaded, invalid input, scheduling failure) — nothing to cancel.
 ///
 /// Contract (always-complete):
 /// - **success** → `future.complete(responseBytes)`
@@ -390,16 +400,25 @@ pub use direct::stash as direct_stash;
 /// `SmartDispatchModeResolver` uses DIRECT / SYNC / streaming), so this path is
 /// opt-in for callers doing their own `CompletableFuture` composition.
 ///
-/// Cancellation: Java's `future.cancel(true)` does NOT abort the
-/// in-flight Rust task in this iteration (defer to follow-up).
-/// Java callers may still observe cancellation via `future.isCancelled()`.
+/// Cancellation: the spawned dispatch is registered with
+/// [`vespera_inprocess::cancellable`] under the returned token.  The Java
+/// side (`AsyncDispatch`) calls [`Java_com_devfive_vespera_bridge_AsyncDispatch_cancel0`]
+/// when the future completes exceptionally (`cancel(..)`, `orTimeout`, an
+/// external `completeExceptionally`): the handler future is dropped at its
+/// next poll, the task completes the (already cancelled) future with a
+/// no-op `503` wire, and the in-flight permit and runtime lease are released
+/// with the task.  A cancel that races the normal completion is harmless —
+/// the token is deregistered before the future is completed, so a late
+/// `cancel0` finds nothing.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsync<'local>(
+pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'local>(
     mut unowned_env: EnvUnowned<'local>,
     _class: JClass<'local>,
     future_obj: JObject<'local>,
     request_bytes: JByteArray<'local>,
-) {
+) -> jlong {
+    // Cancellation token of the spawned task; stays 0 on every on-thread path.
+    let mut token: u64 = 0;
     let future_notified = Arc::new(AtomicBool::new(false));
     let future_notified_body = Arc::clone(&future_notified);
     // The only unrecoverable path is failing to promote the future to a
@@ -499,20 +518,33 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
                     jvm,
                     future: Some(future_for_task),
                 };
+                // Registered BEFORE the spawn, so a cancel can never miss it.
+                let (cancel_token, dispatch) = vespera_inprocess::cancellable(
+                    std::panic::AssertUnwindSafe(vespera_inprocess::dispatch_from_bytes_async(
+                        input,
+                    ))
+                    .catch_unwind(),
+                );
                 runtime.handle().spawn(async move {
-                    // Held until the future is completed; released with the
-                    // task on every path (including runtime shutdown).  The
-                    // lease keeps `shutdown_runtime`'s drain waiting for it.
-                    let _permit = permit;
+                    // The in-flight permit is released with the task on every
+                    // path (including runtime shutdown and cancellation) and,
+                    // on the normal path, just BEFORE the future is
+                    // completed — so a caller that observes the completion
+                    // also observes its slot as free.  The lease is held until
+                    // the completion so `shutdown_runtime`'s drain waits for it.
                     let _lease = runtime;
-                    let response = std::panic::AssertUnwindSafe(
-                        vespera_inprocess::dispatch_from_bytes_async(input),
-                    )
-                    .catch_unwind()
-                    .await
-                    .unwrap_or_else(|_| panic_wire());
+                    let response = match dispatch.await {
+                        Some(Ok(response)) => response,
+                        Some(Err(_)) => panic_wire(),
+                        // Cancelled: the handler was dropped; the Java future
+                        // is already done, so this completion is a no-op that
+                        // only keeps the always-complete contract.
+                        None => vespera_inprocess::error_wire(503, ASYNC_CANCELLED_MSG),
+                    };
+                    drop(permit);
                     completion.complete(&response);
                 });
+                token = cancel_token;
                 true
             }));
             if matches!(scheduled, Ok(true)) {
@@ -534,6 +566,30 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchAsy
             complete_future_local(env, &future_obj, &panic_wire())
         });
     }
+    // Tokens are sequential from 1, far below `i64::MAX`.
+    jlong::try_from(token).unwrap_or(0)
+}
+
+/// Body of the `503` wire a cancelled `dispatchAsync` task completes its
+/// (already cancelled, so unaffected) future with.
+pub const ASYNC_CANCELLED_MSG: &str = "dispatch cancelled by the caller";
+
+/// `com.devfive.vespera.bridge.AsyncDispatch.cancel0(long) -> boolean`
+///
+/// Cancel the `dispatchAsync` task registered under `token` (returned by
+/// [`Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0`]): its handler
+/// future is dropped at the next poll and its in-flight slot is released.
+/// `true` when a live dispatch was found; `false` for `0`, a negative or
+/// unknown token, or one that already finished — cancelling late is
+/// harmless.  Needs no runtime and makes no JNI call back into Java.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_cancel0<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    token: jlong,
+) -> jboolean {
+    std::panic::catch_unwind(|| u64::try_from(token).is_ok_and(vespera_inprocess::cancel))
+        .unwrap_or(false)
 }
 
 /// Completes a `dispatchAsync` `CompletableFuture` exactly once — with the

@@ -1089,7 +1089,9 @@ pub async fn reindex() {}
 
 - Every run is supervised: a panicking job is logged to stderr
   (`vespera: cron job `module::function` panicked: …`) and its schedule keeps
-  going.
+  going. With the `tracing` feature, cron diagnostics are `tracing` events on
+  target `vespera::cron` instead (panic / unschedulable job at ERROR, overlap
+  skip at WARN).
 - `vespera::cron::shutdown()` stops scheduling new runs (process-wide, for
   good); `vespera::cron::shutdown_and_wait(timeout).await` additionally waits
   up to `timeout` for in-flight runs and returns whether they all finished.
@@ -1258,6 +1260,34 @@ public class MyApp {
 
 The `VesperaProxyController` auto-registers as a catch-all and forwards every HTTP request through a length-prefixed **binary wire format** (`[u32 BE | UTF-8 JSON header | raw body]`) — multipart uploads, PDFs, and images travel raw, with zero base64 overhead.
 
+The user Spring Security (or the servlet container) authenticated reaches Rust through a trusted side channel — the wire header's `principal` field, which only the bridge writes and a client cannot forge with a header:
+
+```rust
+use vespera::inprocess::Principal;
+
+#[vespera::route(get)]
+pub async fn me(principal: Principal) -> String { // 401 when anonymous; Option<Principal> never rejects
+    format!("{} {:?}", principal.name, principal.authorities)
+}
+```
+
+### Rust-side observability (`tracing` feature)
+
+```toml
+vespera = { version = "0.6", features = ["jni", "tracing"] }
+```
+
+With the opt-in `tracing` feature every in-process / JNI dispatch runs inside a
+`vespera.dispatch` span (INFO) with the fields `mode` (`bytes` / `async` /
+`direct` / `streaming` / `bidirectional`), `method`, `path` (never the query
+string), `app`, `status`, `duration_ms` and `panicked`. Synthesised error
+responses emit an event — WARN for malformed wire (`400`), size limits
+(`413`), too many headers (`431`), runtime shut down / overloaded (`503`),
+deadline (`504`) and other `4xx`; ERROR for engine `5xx` and for a panic that
+unwinds out of a dispatch. Install any subscriber (e.g.
+`tracing_subscriber::fmt().init()`) in your library's init code. Without the
+feature there is no `tracing` dependency and no instrumentation code.
+
 See [`libs/vespera-bridge`](./libs/vespera-bridge/) for the Java library docs and [`examples/rust-jni-demo`](./examples/rust-jni-demo/) for a complete end-to-end demo.
 
 ## Project Structure
@@ -1276,9 +1306,22 @@ vespera/
 ├── examples/
 │   ├── axum-example/         # Standalone OpenAPI server
 │   ├── rust-jni-demo/        # Rust + Spring Boot JNI integration
+│   ├── third/                # Child app merged into axum-example
 │   └── testkit/              # In-process test client used by the examples
 └── benches/                  # Compile-time macro benchmarks (not default members)
 ```
+
+## Examples
+
+Each example has integration tests (`cargo test -p <name>`) that run against
+the generated router, so they double as executable documentation.
+
+| Example | Demonstrates |
+|---------|--------------|
+| [`axum-example`](./examples/axum-example) | File-based routing (`routes/foo`, `routes/path`), `#[derive(Schema)]` (generics, enums, `#[serde(flatten)]`, std/`url` string types), `schema_type!` (`pick` / `omit` / `rename` / `add` / `partial` / `multipart` / `omit_default`, SeaORM relations in `models/`), `Json` / `Form` / `Query` / `Path` / `TypedHeader` / `TypedMultipart` / raw `Multipart` extractors, binary / HTML / text bodies, typed error responses (`responses`, `error_status`, `status = 204`), `Validated<Json \| Query \| Form \| Path>` and `ValidatedWith` (`routes/validated.rs`), security schemes + `security = [...]` and operation metadata (`operation_id`, `summary`, `description`, `response_example`, `deprecated` — `routes/secured.rs`), top-level tag descriptions, `Sse<S>` (`routes/events.rs`), `docs_url` / `redoc_url` / `spec_url`, `merge = [ThirdApp]`, layers + state, `#[vespera::cron]` jobs, and `serve_with_graceful_shutdown` (`main.rs`) |
+| [`third`](./examples/third) | A child app exported with `export_app!` and merged by `axum-example` |
+| [`rust-jni-demo`](./examples/rust-jni-demo) | Embedding in Spring Boot: `jni_apps!` multi-app routing (`_default` + `admin`, one OpenAPI file per app), urlencoded forms, Latin-1 header round-trips, `ConnectInfo` / scheme forwarding, streaming + `text/event-stream` responses, and `.serve(addr)` standalone mode (`main.rs`); the Java side lives in `java/` |
+| [`testkit`](./examples/testkit) | The tiny in-process (`tower::oneshot`) test client the examples' tests use |
 
 ---
 

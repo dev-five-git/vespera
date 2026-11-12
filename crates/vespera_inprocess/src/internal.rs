@@ -30,15 +30,20 @@ use crate::envelope::{HeaderValue, ResponseEnvelope, ResponseMetadata};
 pub struct ConnectionInfo {
     pub remote_addr: Option<SocketAddr>,
     pub scheme: Option<Scheme>,
+    /// The trusted host's `principal` wire field, inserted as a
+    /// [`crate::Principal`] request extension.
+    pub principal: Option<crate::Principal>,
 }
 
 impl ConnectionInfo {
     /// Parse the raw wire values; see the type docs for the accepted forms.
+    /// `principal` starts unset (the caller attaches the parsed one).
     #[must_use]
     pub fn parse(remote_addr: Option<&str>, scheme: Option<&str>) -> Self {
         Self {
             remote_addr: remote_addr.and_then(|addr| addr.trim().parse().ok()),
             scheme: scheme.and_then(parse_scheme),
+            principal: None,
         }
     }
 
@@ -51,6 +56,9 @@ impl ConnectionInfo {
         }
         if let Some(scheme) = self.scheme {
             extensions.insert(scheme);
+        }
+        if let Some(principal) = self.principal {
+            extensions.insert(principal);
         }
     }
 }
@@ -220,6 +228,10 @@ async fn router_oneshot(router: Router, request: Request<Body>) -> axum::respons
 /// [`header_value_from_owner`].  Pass `None` on non-wire paths (envelope
 /// dispatch) where the header strings are owned and unrelated to any
 /// `Bytes` allocation — the helper falls back to the existing copy path.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "distinct per-request inputs, mirroring `dispatch_and_split`"
+)]
 pub async fn dispatch_parts<'h>(
     router: Router,
     method_str: &str,
@@ -228,8 +240,9 @@ pub async fn dispatch_parts<'h>(
     headers: impl Iterator<Item = (&'h str, &'h str)>,
     body_bytes: Bytes,
     header_bytes_owner: Option<&Bytes>,
+    principal: Option<crate::Principal>,
 ) -> Result<ResponseParts, (u16, String)> {
-    let request = build_request_from_bytes(
+    let mut request = build_request_from_bytes(
         method_str,
         path,
         query,
@@ -237,6 +250,9 @@ pub async fn dispatch_parts<'h>(
         body_bytes,
         header_bytes_owner,
     )?;
+    if let Some(principal) = principal {
+        request.extensions_mut().insert(principal);
+    }
 
     let response = router_oneshot(router, request).await;
 
@@ -658,19 +674,30 @@ pub async fn dispatch_and_split<'h>(
     // opaque here (already-built `Body`, not a `Bytes` we can probe for
     // emptiness), so content-type defaulting follows the caller's
     // `default_json_when_absent` flag rather than body-emptiness detection.
-    let mut request = build_axum_request_inner(
-        http_method,
-        uri,
-        body,
-        headers,
-        header_bytes_owner,
-        default_json_when_absent,
-    )?;
-    connection.apply_to(request.extensions_mut());
+    //
+    // Block-scoped on purpose: `extensions_mut()` borrows the request, and a
+    // borrowed local of an `async fn` keeps its storage in the future across
+    // the `.await` below even after it is moved out — a second ~250-byte
+    // `Request` copy every dispatch future then carries.  Ending the binding
+    // here keeps only the copy moved into `router_oneshot`.
+    let request = {
+        let mut request = build_axum_request_inner(
+            http_method,
+            uri,
+            body,
+            headers,
+            header_bytes_owner,
+            default_json_when_absent,
+        )?;
+        connection.apply_to(request.extensions_mut());
+        request
+    };
 
     let response = router_oneshot(router, request).await;
 
     let (parts, body) = response.into_parts();
+    #[cfg(feature = "tracing")]
+    crate::obs::record_status(parts.status.as_u16());
     Ok((
         parts.status.as_u16(),
         parts.headers,
@@ -731,6 +758,7 @@ mod tests {
                 "",
                 std::iter::empty(),
                 Bytes::new(),
+                None,
                 None,
             )
             .await

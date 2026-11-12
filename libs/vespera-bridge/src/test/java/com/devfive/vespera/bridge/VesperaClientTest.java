@@ -227,6 +227,19 @@ class VesperaClientTest {
     }
 
     @Test
+    void principalTravelsAsTrustedWireField() throws IOException {
+        client.get("/headers/principal")
+                .principal(VesperaPrincipal.of("alice", "ROLE_USER"))
+                .send();
+        JsonNode p = header(transport.requests.get(0)).get("principal");
+        assertEquals("alice", p.get("name").asText());
+        assertEquals("ROLE_USER", p.get("authorities").get(0).asText());
+
+        client.get("/headers/principal").send();
+        assertNull(header(transport.requests.get(1)).get("principal"));
+    }
+
+    @Test
     void validationErrorsAndMultiValueHeadersAreExposed() {
         transport.response = responseWire(422,
                 "{\"content-type\":\"application/json\",\"set-cookie\":[\"a=1\",\"b=2\"]}",
@@ -292,6 +305,31 @@ class VesperaClientTest {
         assertEquals("ok", r.bodyString());
         VesperaResponse viaExecutor = client.get("/x").sendAsync(Runnable::run).get();
         assertEquals(200, viaExecutor.status());
+    }
+
+    @Test
+    void cancellingTheAsyncResponseCancelsTheNativeDispatch() {
+        List<CompletableFuture<byte[]>> pending = new ArrayList<>();
+        VesperaClient pendingClient = new VesperaClient(new FakeTransport() {
+            @Override
+            public CompletableFuture<byte[]> dispatchAsync(byte[] wireRequest) {
+                CompletableFuture<byte[]> f = new CompletableFuture<>();
+                pending.add(f);
+                return f;
+            }
+        }, null);
+
+        assertTrue(pendingClient.get("/x").sendAsync().cancel(true));
+        assertTrue(pending.get(0).isCancelled(), "sendAsync() cancel reaches the dispatch future");
+
+        CompletableFuture<VesperaResponse> viaExecutor = pendingClient.get("/x").sendAsync(Runnable::run);
+        viaExecutor.completeExceptionally(new IllegalStateException("timeout"));
+        assertTrue(pending.get(1).isCancelled(), "sendAsync(executor) failure reaches it too");
+
+        CompletableFuture<VesperaResponse> done = pendingClient.get("/x").sendAsync();
+        pending.get(2).complete(transport.response);
+        assertEquals("ok", done.join().bodyString());
+        assertFalse(pending.get(2).isCancelled(), "a normal completion never cancels");
     }
 
     @Test

@@ -2,6 +2,7 @@
 //! binary wire API, and the direct-write (caller buffer) API.
 
 use std::collections::BTreeMap;
+use std::pin::pin;
 
 use axum::body::Body;
 use bytes::Bytes;
@@ -107,6 +108,8 @@ pub fn parse_validate_resolve(
 ) -> Result<(WireRequestHeader<'_>, Router), Vec<u8>> {
     let header = parse_wire_header(header_bytes)
         .map_err(|msg| error_wire(parse_error_status(&msg), &msg))?;
+    #[cfg(feature = "tracing")]
+    crate::obs::record_request(&header.method, &header.path, header.app.as_deref());
     if header.v != WIRE_VERSION {
         return Err(error_wire(
             400,
@@ -330,6 +333,7 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
         query,
         headers,
         body,
+        principal,
     } = envelope;
     // `http::HeaderMap` panics past 32 768 entries; the wire parser caps
     // the count at `MAX_REQUEST_HEADERS`, this envelope entry does it here
@@ -350,6 +354,7 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
         // and let `header_value_from_owner` fall back to `from_str` (same
         // bytes, same errors, no behaviour change).
         None,
+        principal,
     )
     .await
     {
@@ -413,10 +418,12 @@ pub fn dispatch_from_bytes(input: Vec<u8>, runtime: &tokio::runtime::Runtime) ->
 /// wire response.  A body larger than [`crate::max_buffered_response_bytes`]
 /// yields a `500` wire response naming the limit.
 pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
-    Deadline::start()
-        .run(dispatch_from_bytes_inner(input))
-        .await
-        .unwrap_or_else(timeout_wire)
+    traced!(crate::obs::buffered_mode(), {
+        Deadline::start()
+            .run(pin!(dispatch_from_bytes_inner(input)))
+            .await
+            .unwrap_or_else(timeout_wire)
+    })
 }
 
 async fn dispatch_from_bytes_inner(input: Vec<u8>) -> Vec<u8> {
@@ -579,10 +586,12 @@ pub fn dispatch_into(
 /// A configured [`crate::dispatch_timeout`] that expires writes a `504`
 /// wire response into `out` instead.
 pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResult {
-    Deadline::start()
-        .run(dispatch_into_inner(input, &mut *out))
-        .await
-        .unwrap_or_else(|| write_wire_into(out, &timeout_wire()))
+    traced!("direct", {
+        let done = Deadline::start()
+            .run(pin!(dispatch_into_inner(input, &mut *out)))
+            .await;
+        done.unwrap_or_else(|| write_wire_into(out, &timeout_wire()))
+    })
 }
 
 async fn dispatch_into_inner(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResult {
@@ -622,10 +631,12 @@ async fn dispatch_into_inner(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResul
 /// Byte-identical to [`dispatch_into_async`] for the same wire bytes; all
 /// the same error / `422` / overflow semantics apply.
 pub async fn dispatch_into_async_borrowed(input: &[u8], out: &mut [u8]) -> DirectWriteResult {
-    Deadline::start()
-        .run(dispatch_into_borrowed_inner(input, &mut *out))
-        .await
-        .unwrap_or_else(|| write_wire_into(out, &timeout_wire()))
+    traced!("direct", {
+        let done = Deadline::start()
+            .run(pin!(dispatch_into_borrowed_inner(input, &mut *out)))
+            .await;
+        done.unwrap_or_else(|| write_wire_into(out, &timeout_wire()))
+    })
 }
 
 async fn dispatch_into_borrowed_inner(input: &[u8], out: &mut [u8]) -> DirectWriteResult {
@@ -657,10 +668,14 @@ pub async fn dispatch_into_async_borrowed_resumable(
     input: &[u8],
     out: &mut [u8],
 ) -> ResumableDirectWrite {
-    let done = Deadline::start()
-        .run(dispatch_into_borrowed_resumable_inner(input, &mut *out))
-        .await;
-    done.unwrap_or_else(|| resumable_from_wire(out, timeout_wire()))
+    traced!("direct", {
+        let done = Deadline::start()
+            .run(pin!(dispatch_into_borrowed_resumable_inner(
+                input, &mut *out
+            )))
+            .await;
+        done.unwrap_or_else(|| resumable_from_wire(out, timeout_wire()))
+    })
 }
 
 async fn dispatch_into_borrowed_resumable_inner(
