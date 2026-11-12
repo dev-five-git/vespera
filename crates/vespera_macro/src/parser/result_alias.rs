@@ -136,10 +136,13 @@ fn find_alias(
 /// The `type <name>` item in the file at `path`. Files whose text lacks
 /// `needle` are skipped without parsing.
 fn alias_in_file(path: &Path, needle: &str, name: &str) -> Option<syn::ItemType> {
-    file_cache::get_file_content(path)
-        .filter(|content| content.contains(needle))
-        .and_then(|_| file_cache::get_parsed_file(path))
-        .and_then(|file| alias_in_items(&file.items, name))
+    if let Some(content) = file_cache::get_file_content(path)
+        && content.contains(needle)
+        && let Some(file) = file_cache::get_parsed_file(path)
+    {
+        return alias_in_items(&file.items, name);
+    }
+    None
 }
 
 /// A `type <name>` item among `items`, searching inline modules too.

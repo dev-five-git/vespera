@@ -216,26 +216,22 @@ fn tuple_body(ty: &Type) -> &Type {
 /// (no `Json` unwrapping). `Err` is `None` for axum's one-argument
 /// `Result<T>`, whose error (`ErrorResponse`) is opaque.
 fn result_args(ty: &Type) -> Option<(&Type, Option<&Type>)> {
-    let inner = match unwrap_json(ty) {
-        Type::Reference(type_ref) => type_ref.elem.as_ref(),
-        other => other,
-    };
-    let type_path = match inner {
-        Type::Path(type_path) if is_keyword_type_by_type_path(type_path, &KeywordType::Result) => {
-            type_path
-        }
-        _ => return None,
-    };
-    let segment = type_path.path.segments.last()?;
-    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return None;
-    };
-    let mut types = args.args.iter().filter_map(|arg| match arg {
-        syn::GenericArgument::Type(ty) => Some(ty),
-        _ => None,
-    });
-    let ok = types.next()?;
-    Some((ok, types.next()))
+    let mut inner = unwrap_json(ty);
+    if let Type::Reference(type_ref) = inner {
+        inner = type_ref.elem.as_ref();
+    }
+    if let Type::Path(type_path) = inner
+        && is_keyword_type_by_type_path(type_path, &KeywordType::Result)
+        && let Some(segment) = type_path.path.segments.last()
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+    {
+        let mut types = args.args.iter().filter_map(|arg| match arg {
+            syn::GenericArgument::Type(ty) => Some(ty),
+            _ => None,
+        });
+        return types.next().map(|ok| (ok, types.next()));
+    }
+    None
 }
 
 /// `(200-body content-type, error-body content-type)` for a handler return
