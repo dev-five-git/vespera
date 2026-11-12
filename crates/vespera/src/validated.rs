@@ -168,6 +168,7 @@ where
     }
 }
 
+#[cfg(feature = "multipart")]
 impl<U, C> ValidatePayloadWith<C> for crate::multipart::TypedMultipart<U>
 where
     U: Validate<Context = C>,

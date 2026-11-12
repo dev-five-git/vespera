@@ -2,7 +2,10 @@
  * Versions quoted in the documentation code samples. MDX code fences cannot
  * interpolate values, so the samples spell them out literally;
  * `src/__tests__/docs-versions.test.ts` fails when any sample drifts from
- * these constants. Bump them together with a release.
+ * these constants, and `scripts/check-version-alignment.ts` (CI lint job)
+ * fails when their `major.minor` matches neither the workspace version nor the
+ * release the pending changepacks will produce. Bump them together with a
+ * release.
  */
 export const VESPERA_VERSION = '0.6'
 export const VESPERA_BRIDGE_VERSION = '0.6.0'
@@ -48,6 +51,7 @@ export const SIDE_MENU_ITEMS: Record<string, SideMenuItem[]> = {
         { label: 'jni_app! & VesperaBridge', value: 'theme-1' },
         { label: 'Dispatch Modes & Wire', value: 'theme-2' },
         { label: 'Streaming & Multi-App', value: 'theme-3' },
+        { label: 'Spring Configuration', value: 'theme-4' },
       ],
     },
   ],

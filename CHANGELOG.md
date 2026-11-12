@@ -36,6 +36,13 @@ of an existing 0.5 application.
   `Html<T>` is `text/html`, `Sse` is `text/event-stream`, `Bytes` / `Vec<u8>`
   bodies are `application/octet-stream`; `Option<Json<T>>` request bodies are
   `required: false`.
+- `#[garde(...)]` rules on a `#[derive(Schema, garde::Validate)]` type are
+  documented: `length` (`chars` mode, or `min = 1`; item / property counts),
+  `range`, `email` / `url` / `ip*`, `pattern` / `prefix` / `suffix` /
+  `contains` / `ascii`, and `inner(...)` on `items` now appear in the schema,
+  and `#[schema(...)]` / `#[garde(...)]` rules on `Query<Struct>` /
+  `Path<Struct>` fields reach the parameter schemas. Explicit `#[schema(...)]`
+  keywords win; snapshots of such types change.
 - `serde_json::Value` is `{}`, `std::time::Duration` is `{secs, nanos}`;
   `{*rest}` wildcards are documented as `{rest}`.
 - `IpAddr`, `SocketAddr` (and `V4` / `V6`) and `PathBuf` are `string`.
@@ -69,6 +76,17 @@ of an existing 0.5 application.
 - `#[cron]` jobs start once per process (repeated `create_app()` calls no
   longer duplicate schedulers) and run on a dedicated thread when no Tokio
   runtime is present.
+
+### Cargo features (`vespera`, `vespera_macro`)
+
+- Multipart support (`vespera::multipart`, `vespera::tempfile`,
+  `#[derive(Multipart)]`, `schema_type!(..., multipart)`) is behind the new
+  `multipart` feature. It is **default-on**, so default builds are unaffected;
+  **breaking only for `default-features = false` builds that use multipart** —
+  add `features = ["multipart"]` (without it `#[derive(Multipart)]` is a
+  compile error naming the feature). Dropping it removes tempfile, multer,
+  encoding_rs and their dependencies; `axum-extra/multipart` moved from the
+  default list into the feature.
 
 ### Documentation UI (`vespera`, `vespera_macro`, `vespera_core`)
 

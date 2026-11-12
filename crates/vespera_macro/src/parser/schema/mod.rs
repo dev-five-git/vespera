@@ -30,6 +30,7 @@
 //! - [`extract_rename_all`] - Extract serde `rename_all` attribute
 
 mod enum_schema;
+mod garde_rules;
 mod generics;
 pub mod request_view;
 pub mod schema_attrs;
@@ -48,7 +49,7 @@ pub use serde_attrs::{
     extract_field_rename_for, extract_flatten, extract_rename_all, extract_rename_all_for,
     extract_serde_skip_flags, extract_skip, rename_field, strip_raw_prefix_owned,
 };
-pub use struct_schema::parse_struct_to_schema;
+pub use struct_schema::{apply_field_rules, parse_struct_to_schema};
 // Re-export for internal use within the parser module. `parse_type_to_schema_ref`
 // is reached directly via the `type_schema` submodule path where needed.
 pub use type_schema::generic_instances;

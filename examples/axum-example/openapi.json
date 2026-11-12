@@ -2566,6 +2566,70 @@
         }
       }
     },
+    "/validated/profiles": {
+      "post": {
+        "operationId": "create_garde_profile",
+        "tags": [
+          "validated"
+        ],
+        "summary": "Create a profile validated by `#[derive(garde::Validate)]`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GardeProfile"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GardeProfile"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "message": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "message"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "errors"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/validated/tags": {
       "post": {
         "operationId": "create_tagged_post",
@@ -3800,6 +3864,90 @@
           "tags",
           "isActive",
           "createdAt"
+        ]
+      },
+      "GardeProfile": {
+        "type": "object",
+        "description": "Profile validated by garde's own derive — `#[derive(Schema)]` documents\nevery `#[garde(...)]` rule with a JSON Schema equivalent, so the\nconstraints in `openapi.json` match the `422` this route answers.",
+        "properties": {
+          "age": {
+            "type": "integer",
+            "format": "uint8",
+            "description": "`range` → `minimum` / `maximum` (inclusive).",
+            "minimum": 18,
+            "maximum": 120
+          },
+          "avatar": {
+            "type": "string",
+            "description": "Avatar file name ending in `.png` (`suffix` → escaped `pattern`).",
+            "pattern": "\\.png$"
+          },
+          "country": {
+            "type": "string",
+            "description": "ISO 3166-1 alpha-2 code (`pattern`).",
+            "pattern": "^[A-Z]{2}$"
+          },
+          "display_name": {
+            "type": "string",
+            "description": "2–20 characters (`chars` mode → `minLength` / `maxLength`).",
+            "minLength": 2,
+            "maxLength": 20
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "`email` → `format: email`."
+          },
+          "hashtags": {
+            "type": "array",
+            "description": "1–3 hashtags, each a `#`-prefixed ASCII word of at most 16 chars\n(`inner(...)` → `items`).",
+            "items": {
+              "type": "string",
+              "maxLength": 16,
+              "pattern": "^#",
+              "allOf": [
+                {
+                  "pattern": "^[\\x00-\\x7F]*$"
+                }
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 3
+          },
+          "homepage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Optional homepage — `url` → `format: uri` on the non-null value."
+          },
+          "last_ip": {
+            "type": "string",
+            "description": "`ip` → `anyOf: [{format: ipv4}, {format: ipv6}]`.",
+            "anyOf": [
+              {
+                "format": "ipv4"
+              },
+              {
+                "format": "ipv6"
+              }
+            ]
+          },
+          "nickname": {
+            "type": "string",
+            "description": "Unicode-aware `alphanumeric` has no portable regex — enforced at\nruntime, not documented."
+          }
+        },
+        "required": [
+          "display_name",
+          "email",
+          "age",
+          "hashtags",
+          "last_ip",
+          "country",
+          "avatar",
+          "nickname"
         ]
       },
       "GenericStruct": {
@@ -5113,7 +5261,8 @@
           },
           "title": {
             "type": "string",
-            "description": "Post title."
+            "description": "Post title.",
+            "minLength": 1
           }
         },
         "required": [
