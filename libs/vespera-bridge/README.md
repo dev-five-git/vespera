@@ -26,6 +26,8 @@ dependencies {
 
 `vespera-bridge` declares **no transitive dependencies** (its POM is empty): Spring Boot, Spring MVC, the servlet API and SLF4J are compile-only and must come from the application. Every Spring Boot web app already has them through `spring-boot-starter-web` (Boot 3) / `spring-boot-starter-webmvc` (Boot 4), so nothing changes there. The autoconfiguration only activates in a servlet web application with Spring MVC on the classpath (`@ConditionalOnClass` + `@ConditionalOnWebApplication(type = SERVLET)`), and the non-Spring API (`VesperaBridge` dispatch / `encodeRequest` / `decodeResponse`) runs with no Spring jars at all.
 
+Kotlin is optional too: the [Kotlin extensions](#kotlin) ship inside the same JAR, but `kotlin-stdlib` and `kotlinx-coroutines-core` are compile-only — Java applications never load a Kotlin class.
+
 > Up to and including 0.5.0 the bridge exported `spring-boot-starter-web` and `jackson-databind` as `api` dependencies. If your build relied on getting either of them transitively from the bridge, declare it yourself.
 
 ### One-line setup via the Gradle plugin (recommended)
@@ -764,6 +766,49 @@ class ReportJob {
     }
 }
 ```
+
+### Kotlin
+
+The same JAR carries Kotlin extensions for the client (`VesperaKotlin.kt`,
+package `com.devfive.vespera.bridge`) — no extra artifact. `kotlin-stdlib`
+and `kotlinx-coroutines-core` are **not** dependencies of the bridge: a Kotlin
+app already has the stdlib, and `sendAwait` needs
+`org.jetbrains.kotlinx:kotlinx-coroutines-core` (>= 1.7) on the classpath.
+Compiled with Kotlin language/API version 2.0, so Kotlin 1.9+ compilers
+(Spring Boot 3.5) can consume it.
+
+```kotlin
+import com.devfive.vespera.bridge.VesperaClient
+import com.devfive.vespera.bridge.get
+import com.devfive.vespera.bridge.post
+import com.devfive.vespera.bridge.query
+import com.devfive.vespera.bridge.sendAwait
+
+@Service
+class UserService(private val vespera: VesperaClient) {
+    suspend fun user(id: String): String? {
+        val r = vespera.get("/users/${VesperaClient.encodePathSegment(id)}") {
+            header("accept", "application/json")
+            query("expand" to "roles", "flag" to null)   // -> ?expand=roles&flag
+        }.sendAwait()                                     // suspends, never blocks
+        return if (r.isSuccessful) r.bodyString() else null
+    }
+
+    suspend fun create(body: String) = vespera.post("/users") { json(body) }.sendAwait()
+}
+```
+
+| Extension | What it does |
+|---|---|
+| `VesperaRequest.sendAwait()` | `sendAsync().await()`: suspends until the ASYNC dispatch completes. **Cancelling the coroutine** (`withTimeout`, a cancelled scope, a client disconnect in a coroutine controller) cancels the `CompletableFuture` and thereby the native dispatch (cancel-on-disconnect: the Rust handler is dropped, its in-flight slot released). Transport failures throw `VesperaClientException`; statuses are responses |
+| `VesperaRequest.sendAwait(executor)` | `sendAsync(executor).await()` — required for an `InputStream` body (the blocking streamed upload runs on `executor`) |
+| `client.get(path) { ... }` (`head` / `post` / `put` / `patch` / `delete` / `options` / `request(method, path)`) | builds the request with a `VesperaRequest.() -> Unit` block (`header`, `query`, `json`, `app`, `principal`, ...); returns the request for `send()` / `sendAwait()` |
+| `query("a" to 1, "b" to null)` / `headers("x" to "y")` | vararg `Pair` helpers |
+
+The Java client API carries [JSpecify](https://jspecify.dev) nullability
+annotations (`@NullMarked` + `@Nullable`, compile-only), so Kotlin sees
+`response.header("x")` / `contentType()` / `appName()` as `String?` and
+everything else as non-null instead of platform types.
 
 The DIRECT pooled-buffer path stays a proxy optimisation (its per-thread
 buffer view would have to be copied out anyway). For full control (header-first
