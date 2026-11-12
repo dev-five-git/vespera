@@ -201,7 +201,7 @@ public class VesperaBridge {
             try {
                 bundledLoader.load(libraryName);
             } catch (VesperaNativeLoader.BundledNativeAbsent absent) {
-                systemLoader.load(libraryName);
+                VesperaNativeLoader.loadFromSystemPath(libraryName, absent, systemLoader);
             }
         } catch (UnsatisfiedLinkError failure) {
             throw VesperaNativeLoader.withDeploymentGuidance(failure, libraryName);
