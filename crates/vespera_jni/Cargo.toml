@@ -6,6 +6,11 @@ rust-version.workspace = true
 description = "JNI bridge for vespera — call Rust axum apps from Java"
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/vespera_jni"
+readme.workspace = true
+keywords = ["jni", "java", "axum", "spring", "vespera"]
+categories = ["api-bindings", "web-programming::http-server"]
 
 [dependencies]
 vespera_inprocess = { workspace = true }

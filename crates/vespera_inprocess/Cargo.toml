@@ -6,6 +6,11 @@ rust-version.workspace = true
 description = "In-process HTTP dispatch for axum — drive a Router via oneshot without a TCP socket"
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/vespera_inprocess"
+readme.workspace = true
+keywords = ["axum", "in-process", "ffi", "dispatch", "vespera"]
+categories = ["web-programming::http-server", "network-programming"]
 
 [features]
 # Compiles the criterion A/B "before" twins (serde-based wire header

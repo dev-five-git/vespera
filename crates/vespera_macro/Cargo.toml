@@ -6,6 +6,11 @@ rust-version.workspace = true
 description = "Procedural macros for Vespera - automatic route discovery and OpenAPI generation"
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/vespera_macro"
+readme.workspace = true
+keywords = ["openapi", "axum", "proc-macro", "swagger", "vespera"]
+categories = ["web-programming::http-server", "development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true

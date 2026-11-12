@@ -6,6 +6,17 @@ rust-version.workspace = true
 description = "A fully automated OpenAPI engine for Axum with zero-config route and schema discovery"
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/vespera"
+readme.workspace = true
+keywords = ["openapi", "axum", "swagger", "api", "web"]
+categories = ["web-programming::http-server", "development-tools"]
+
+[package.metadata.docs.rs]
+# Document every feature-gated item (`cron`, `jni`, `inprocess`, …) and
+# badge it with the feature that enables it (`doc(cfg)`).
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # `validation` is on by default — `#[derive(Schema)]` automatically emits
