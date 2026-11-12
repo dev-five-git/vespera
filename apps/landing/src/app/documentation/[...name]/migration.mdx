@@ -20,6 +20,17 @@ The 0.6 release (unreleased) is a hardening pass: OpenAPI output becomes more fa
 - **Plain tuple returns** (e.g. `(StatusCode, Json<T>)`) and body-less `error_status` codes are documented.
 - **Colliding default `operationId`s** are module-qualified. Two explicit, identical `operation_id = "..."` values are now a compile error.
 - **Known `headers::*` `TypedHeader` parameters** use the real HTTP header name.
+- **`Path<Struct>`** parameters are typed per field (serde names). **`Query<Struct>`** drops `skip` / `skip_deserializing` fields, expands `flatten`, and array fields carry `style: form, explode: true`.
+- **Opaque and raw bodies:** `impl IntoResponse` / `Response` / `Redirect` responses are description-only; `Html<T>` is `text/html`, `Sse` is `text/event-stream`, `Bytes` / `Vec<u8>` are `application/octet-stream`; `Option<Json<T>>` request bodies are `required: false`.
+- **Type mappings:** `serde_json::Value` is `{}`, `std::time::Duration` is `{secs, nanos}`; `{*rest}` wildcards are documented as `{rest}`.
+- **Serde attributes:** `flatten` on `Option<T>` makes `T`'s fields optional; an enum's `rename_all` no longer renames struct-variant fields; `rename_all_fields` and `deny_unknown_fields` (`additionalProperties: false`) are supported.
+
+## Served URLs and Build Output
+
+- **Explicit route paths are used verbatim.** `#[route(path = "/my_route")]` now serves `/my_route` (previously kebab-cased to `/my-route`). Only segments derived from file and module names are kebab-cased. Update clients, or write the path in kebab-case yourself.
+- **`openapi = "..."` output location:** a relative path resolves against the crate's `CARGO_MANIFEST_DIR`, so workspace members write `openapi.json` next to their own `Cargo.toml`. The cache directory honours `CARGO_TARGET_DIR`.
+- **`Serve`:** `serve()` provides `ConnectInfo<SocketAddr>`, and the trait gained `serve_with_graceful_shutdown(addr, signal)` — custom implementors must add it.
+- **Cron:** jobs start once per process even if `create_app()` runs several times, and run on a dedicated `vespera-cron` thread when no Tokio runtime is present.
 
 ### New compile errors
 
@@ -124,4 +135,15 @@ Streaming dispatch also changed:
 5. **The new `configure*` methods return `boolean`** (`false` when the native side already fixed the value). `configureStreaming(int, int)` keeps its `void` signature.
 6. **Upgrade the JAR and the native library together.** A new bridge JAR paired with a cdylib built against an older `vespera` crate binds the `configure*0` JNI hooks to the wrong signatures — rebuild the Rust library whenever you upgrade `vespera-bridge`.
 
-The Gradle plugin's `publishPlugins` task now fails without Plugin Portal credentials.
+7. **The app-selection header is client-controlled and no longer forwarded.** Restrict reachable apps with `vespera.bridge.exposed-apps` (unlisted names get `404` without dispatch); Rust handlers no longer see `X-Vespera-App`.
+8. **Header values use a Latin-1 byte mapping** in both directions, so non-ASCII response header values are no longer dropped.
+9. **Consumed form bodies are rebuilt.** `application/x-www-form-urlencoded` bodies already read by Spring (`FormContentFilter`, `CsrfFilter`) are reconstructed from the request parameters.
+10. **Forwarded path:** the servlet context path, a prefix servlet mapping and `;` path parameters (e.g. `;jsessionid`) are stripped.
+11. **Request ids:** responses carry `X-Request-Id` by default (`vespera.bridge.request-id.enabled` / `.header`).
+12. **Proxy-generated errors** are `text/plain` (like Rust's `error_wire`) instead of Spring error pages; the unknown-app `404` no longer echoes the app name. `ASYNC` mode returns `ResponseEntity<byte[]>`.
+
+### Gradle Plugin
+
+- `publishPlugins` fails without Plugin Portal credentials.
+- `cargoBuild` is now a `CargoBuildTask` instead of an `Exec`; build scripts that configure it as `Exec` must be updated.
+- A missing `Cargo.lock` no longer fails the build; `extraNativeLibs` and `targets` add multi-platform jars.

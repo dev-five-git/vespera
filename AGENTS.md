@@ -171,9 +171,11 @@ Feature flags:
 
 | Feature | Re-exports | Adds |
 |---------|-----------|------|
-| `inprocess` | `vespera::inprocess` (= `vespera_inprocess`) | dispatch, register_app, envelopes |
+| `inprocess` | `vespera::inprocess` (= `vespera_inprocess`) | dispatch, register_app, envelopes; enables `vespera_inprocess/connect-info` (`remote_addr` wire field → `ConnectInfo<SocketAddr>`, which needs `axum/tokio`) |
 | `jni` | `vespera::jni` (= `vespera_jni`) + implies `inprocess` | RUNTIME, jni_app!, JNI symbol |
-| `mimalloc` | (with `jni`) mimalloc as the cdylib's `#[global_allocator]` | measured -15~19% on sync/direct dispatch vs Windows HeapAlloc |
+| `mimalloc` (default) | (with `jni`) mimalloc as the cdylib's `#[global_allocator]` | measured -15~19% on sync/direct dispatch vs Windows HeapAlloc; weak no-op without `jni` |
+| `validation` (default) | `vespera::Validated` | `#[derive(Schema)]` also emits `garde::Validate`; `Validated<T>` extractor + 422 envelope |
+| `cron` | `vespera::cron` | `#[vespera::cron("...")]` jobs, started once per process by `vespera!` |
 
 ## JNI ARCHITECTURE
 
@@ -435,6 +437,7 @@ props only.
 - **No direct vespera_jni/vespera_inprocess dep**: Use `vespera` features
 - **Java package**: `com.devfive.vespera.bridge` (fixed for JNI symbol stability)
 - **Java build**: Gradle (Kotlin DSL), published to Maven Central (`kr.devfive:vespera-bridge`, `kr.devfive:vespera-bridge-gradle-plugin`) via changepacks → `./gradlew publishToMavenCentral` (vanniktech maven-publish + GPG in-memory signing)
+- **One version for every package**: the five `vespera*` crates, `vespera-bridge` and the Gradle plugin always share a version. List **all seven** packages in every `.changepacks/changepack_log_*.json` with the **same** level (0.x: breaking = `Minor`); `bun scripts/check-version-alignment.ts` (CI lint job) fails otherwise.
 
 ## ANTI-PATTERNS (THIS PROJECT)
 

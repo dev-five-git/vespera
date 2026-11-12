@@ -6,19 +6,19 @@ JNI bridge that lets a Java/Spring application embed a Rust [`vespera`](../../) 
 <dependency>
   <groupId>kr.devfive</groupId>
   <artifactId>vespera-bridge</artifactId>
-  <version>0.5.0</version>
+  <version>0.6.0</version>
 </dependency>
 ```
 
 ```kotlin
 dependencies {
-    implementation("kr.devfive:vespera-bridge:0.5.0")
+    implementation("kr.devfive:vespera-bridge:0.6.0")
 }
 ```
 
 ### Version compatibility
 
-- **Bridge ↔ Rust crate:** the `vespera-bridge` version must match the **minor** version of the `vespera` crate your cdylib is built with (bridge `0.5.x` ↔ `vespera = "0.5"`). The JNI symbol set and the binary wire format are only guaranteed stable within a minor line.
+- **Bridge ↔ Rust crate:** the `vespera-bridge` version must match the **minor** version of the `vespera` crate your cdylib is built with (bridge `0.6.x` ↔ `vespera = "0.6"`). The JNI symbol set and the binary wire format are only guaranteed stable within a minor line.
 - **Spring Boot:** compiled against Spring Boot 4.1 / Spring Framework 7.0; supported on **Spring Boot 3.5.x and 4.x** (Spring Framework 6.2 / 7.0, Jakarta Servlet 6.0+). The Boot 3.5 runtime is verified by the `testBoot3` Gradle task (run automatically after `./gradlew test`), which runs the unit suite against a Spring Boot 3.5 classpath. Spring Boot ≤ 3.4 / `javax.servlet` is not supported.
 - **Java:** 17+.
 
@@ -34,13 +34,13 @@ For Spring Boot apps the [`kr.devfive.vespera-bridge`](../vespera-bridge-gradle-
 
 ```kotlin
 plugins {
-    id("kr.devfive.vespera-bridge") version "0.4.1"
+    id("kr.devfive.vespera-bridge") version "0.6.0"
 }
 
 vespera {
     crateName.set("my_rust_lib")
     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
-    bridgeVersion.set("0.5.0")
+    bridgeVersion.set("0.6.0")
 }
 ```
 
@@ -823,6 +823,11 @@ See [`examples/rust-jni-demo`](../../examples/rust-jni-demo/) for a complete Rus
 10. **App selection is restrictable and the app header is no longer forwarded.** New `vespera.bridge.exposed-apps`; the `X-Vespera-App` header (or whatever `app-header` names) is stripped before dispatch — Rust handlers no longer see it (each app is its own router, so a handler already knows which app serves it). See [Security](#security-the-app-header-is-client-controlled).
 11. **Non-ASCII header values** now cross the wire under the Latin-1 mapping (see [Binary wire format](#binary-wire-format)) instead of being dropped (responses) or double-encoded (requests).
 12. **Consumed form-urlencoded bodies are rebuilt** from the request parameters (see [VesperaProxyController behaviour](#vesperaproxycontroller-behaviour)); a resolver's `BIDIRECTIONAL_STREAMING` choice for a form request becomes `STREAMING`.
+13. **Request ids are on by default.** Responses carry `X-Request-Id` (an incoming valid id is reused, otherwise a UUID is generated); disable with `vespera.bridge.request-id.enabled=false`. Controllers built by hand with the old constructors have request ids off.
+14. **The forwarded path is the application path.** The servlet context path, a prefix servlet mapping and `;` path parameters (e.g. `;jsessionid`) are stripped before dispatch.
+15. **Proxy-generated errors are `text/plain`** (the same shape as Rust's `error_wire`) instead of going through Spring's `/error` page; the unknown-app `404` no longer echoes the requested app name.
+16. **`ASYNC` returns `ResponseEntity<byte[]>`**, so Spring no longer applies `Range` handling to it.
+17. **Gradle plugin `cargoBuild` is a `CargoBuildTask`**, not an `Exec`; build scripts that configure it as `Exec` must be updated.
 
 ## 0.2.0 breaking changes
 
