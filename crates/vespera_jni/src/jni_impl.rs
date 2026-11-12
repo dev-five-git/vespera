@@ -27,22 +27,46 @@ use streaming_buffer::{PullPushBuffers, mark_streaming_buffer_reusable, release_
 #[path = "jni_impl_config.rs"]
 mod config;
 pub use config::{
-    DEFAULT_ASYNC_MAX_IN_FLIGHT, DEFAULT_RUNTIME_MAX_BLOCKING_THREADS, async_in_flight,
-    async_max_in_flight, runtime_max_blocking_threads, runtime_worker_threads,
-    set_async_max_in_flight, set_runtime_max_blocking_threads, set_runtime_worker_threads,
+    DEFAULT_ASYNC_MAX_IN_FLIGHT, async_in_flight, async_max_in_flight, set_async_max_in_flight,
     streaming_chunk_size,
 };
 use config::{async_overloaded_wire, try_acquire_async_permit};
 
 // Shared runtime lifecycle (lazy build, in-flight leases, deferred hooks,
-// graceful shutdown) lives in a sidecar module.
-#[path = "jni_impl_lifecycle.rs"]
-mod lifecycle;
-pub use lifecycle::{
-    RUNTIME_SHUT_DOWN_MSG, RuntimeHook, block_on_shared_runtime, jni_loaded, mark_jni_loaded,
-    on_shared_runtime, runtime, runtime_unavailable_wire, shutdown_runtime,
-    start_runtime_for_hooks,
+// graceful shutdown) and its worker / blocking-pool knobs live in
+// `vespera_inprocess::runtime`, shared with the C ABI (`vespera_inprocess::ffi`)
+// so a cdylib exporting both serves JVM and C hosts from ONE runtime.
+pub use vespera_inprocess::runtime::{
+    DEFAULT_RUNTIME_MAX_BLOCKING_THREADS, RUNTIME_SHUT_DOWN_MSG, RuntimeHook,
+    block_on_shared_runtime, on_shared_runtime, runtime, runtime_max_blocking_threads,
+    runtime_unavailable_wire, runtime_worker_threads, set_runtime_max_blocking_threads,
+    set_runtime_worker_threads, start_runtime_for_hooks,
 };
+
+/// Set by [`mark_jni_loaded`]: a JVM (not a C host) loaded this library.
+static JNI_LOADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Mark that the library was loaded by a JVM (`jni_app!` / `jni_apps!` call
+/// this at the top of the generated `JNI_OnLoad`); also marks the host as
+/// loaded for `vespera::cron`
+/// ([`vespera_inprocess::runtime::mark_host_loaded`]).
+#[doc(hidden)]
+pub fn mark_jni_loaded() {
+    JNI_LOADED.store(true, std::sync::atomic::Ordering::SeqCst);
+    vespera_inprocess::runtime::mark_host_loaded();
+}
+
+/// Whether a JVM loaded this library (see [`mark_jni_loaded`]).
+pub fn jni_loaded() -> bool {
+    JNI_LOADED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Shut the shared runtime down
+/// ([`vespera_inprocess::runtime::shutdown_runtime`]), then drop the stashed
+/// DIRECT overflows, which can no longer be redeemed.
+pub fn shutdown_runtime(timeout: std::time::Duration) -> bool {
+    vespera_inprocess::runtime::shutdown_runtime_then(timeout, direct_stash::clear_stash)
+}
 
 /// Check-and-clear the pending Java exception, reporting whether one
 /// was pending (and therefore cleared).

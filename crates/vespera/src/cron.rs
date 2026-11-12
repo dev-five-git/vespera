@@ -28,7 +28,8 @@
 //! several `serve` calls) never stacks duplicate schedulers.  Scheduling
 //! works with or without an ambient Tokio runtime: inside one the jobs are
 //! spawned onto it.  In a JNI library (the factory runs inside `JNI_OnLoad`,
-//! with no runtime) they are handed to `vespera_jni`'s shared runtime, so
+//! with no runtime — likewise `vespera_init` from `ffi_app!`) they are handed
+//! to the shared host runtime (`vespera_inprocess::runtime`), so
 //! they honour `configureRuntime` and stop with `shutdown0` (which cancels
 //! in-flight runs with the runtime).  Anywhere else outside a runtime (a
 //! plain `#[test]`) they run on a dedicated `vespera-cron` background thread
@@ -142,8 +143,8 @@ pub fn start_once(guard: &'static Once, jobs: impl IntoIterator<Item = CronJob>)
 
 /// Spawn one scheduling task per job.
 ///
-/// Uses the current Tokio runtime when there is one; in a JVM-loaded JNI
-/// library the jobs wait for the shared JNI runtime; otherwise starts a
+/// Uses the current Tokio runtime when there is one; in a host-loaded (JNI / C ABI)
+/// library the jobs wait for the shared host runtime; otherwise starts a
 /// dedicated `vespera-cron` thread running a current-thread runtime, so this
 /// never panics outside a runtime.  Every call starts a new set of
 /// schedulers — prefer [`start_once`] for anything that can run twice.
@@ -156,9 +157,9 @@ pub fn start(jobs: impl IntoIterator<Item = CronJob>) {
         return;
     }
     let jobs: Vec<CronJob> = jobs.into_iter().collect();
-    #[cfg(feature = "jni")]
-    if vespera_jni::jni_loaded() {
-        vespera_jni::on_shared_runtime(Box::new(move |handle| {
+    #[cfg(any(feature = "jni", feature = "ffi"))]
+    if vespera_inprocess::runtime::host_loaded() {
+        vespera_inprocess::runtime::on_shared_runtime(Box::new(move |handle| {
             for job in jobs {
                 handle.spawn(run_job(job, &CONTROLLER));
             }

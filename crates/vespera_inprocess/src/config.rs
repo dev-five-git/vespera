@@ -84,7 +84,7 @@ fn parse_config_value(
 /// [`parse_config_value`] stays as the pure, `Option<&str>`-taking
 /// predicate the existing unit tests exercise; this thin wrapper adds
 /// only the `std::env::var` lookup and is a straight-line delegate.
-fn read_env_clamped(var_name: &'static str, default: usize, min: usize, max: usize) -> usize {
+pub fn read_env_clamped(var_name: &'static str, default: usize, min: usize, max: usize) -> usize {
     let raw = std::env::var(var_name).ok();
     parse_config_value(var_name, raw.as_deref(), default, min, max)
 }

@@ -1290,6 +1290,61 @@ feature there is no `tracing` dependency and no instrumentation code.
 
 See [`libs/vespera-bridge`](./libs/vespera-bridge/) for the Java library docs and [`examples/rust-jni-demo`](./examples/rust-jni-demo/) for a complete end-to-end demo.
 
+## C ABI (C/C++, Go, Python, .NET, Node)
+
+The `ffi` feature exposes the same in-process dispatch through a stable C ABI, so any
+host that can load a shared library embeds the app without HTTP or a JVM:
+
+```rust
+// Cargo.toml: vespera = { version = "0.6", features = ["ffi"] }, crate-type = ["cdylib"]
+pub fn create_app() -> axum::Router {
+    vespera!(title = "My API")
+}
+
+vespera::ffi_app!(create_app); // or ffi_apps! { "_default" => create_app, "admin" => admin_app }
+```
+
+```c
+#include <string.h>
+#include "vespera.h" /* crates/vespera_inprocess/include/vespera.h */
+
+int main(void) {
+    if (vespera_init() != VESPERA_OK) return 1;
+
+    const char head[] = "{\"v\":1,\"method\":\"GET\",\"path\":\"/health\"}";
+    uint32_t n = sizeof head - 1;
+    uint8_t req[4 + sizeof head];
+    req[0] = n >> 24; req[1] = n >> 16; req[2] = n >> 8; req[3] = n;
+    memcpy(req + 4, head, n);
+
+    uint8_t *resp; size_t resp_len;
+    vespera_dispatch(req, 4 + n, &resp, &resp_len); /* wire response, Rust-owned */
+    /* ... read [u32 BE len | JSON header {"status",...} | body] ... */
+    vespera_free(resp, resp_len);
+
+    vespera_shutdown(5000);
+    return 0;
+}
+```
+
+| Symbol | Purpose |
+|---|---|
+| `vespera_init()` | register the app(s) + start the shared runtime; idempotent (emitted by `ffi_app!` / `ffi_apps!`) |
+| `vespera_dispatch(req, len, &out, &out_len)` | wire in → Rust-allocated wire out; release with `vespera_free(out, out_len)` |
+| `vespera_dispatch_into(req, len, buf, cap, &written)` | wire out written into your buffer; `VESPERA_OVERFLOW` sets `written` to the required size (a retry re-runs the handler) |
+| `vespera_dispatch_async(req, len, callback, user_data)` | returns at once; `callback(user_data, resp, resp_len)` runs exactly once, possibly on another thread, and owns `resp` |
+| `vespera_shutdown(timeout_ms)` | drain in-flight work, stop the runtime for good (later dispatches answer `503`) |
+
+Request and response use the [binary wire format](./AGENTS.md#binary-wire-format); every HTTP-expressible
+failure (malformed wire `400`, unknown app `404`, too large `413`, handler panic `500`, shut down `503`)
+is a normal wire response returning `VESPERA_OK`. Negative codes mean API misuse
+(`VESPERA_ERR_INVALID_ARGUMENT`) or init failures. All functions are thread-safe; panics never unwind
+across the ABI. Don't call the synchronous functions from an async-completion callback (it runs on a
+runtime worker). Runtime sizing comes from `VESPERA_RUNTIME_WORKERS` /
+`VESPERA_RUNTIME_MAX_BLOCKING_THREADS`, limits from the same `VESPERA_*` variables as JNI. A cdylib may
+use both `jni_apps!` and `ffi_apps!` — [`examples/rust-jni-demo`](./examples/rust-jni-demo/) does, and
+[`ffi/ctypes_demo.py`](./examples/rust-jni-demo/ffi/ctypes_demo.py) drives it from Python.
+
 ## Project Structure
 
 ```

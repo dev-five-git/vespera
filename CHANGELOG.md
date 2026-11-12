@@ -389,3 +389,26 @@ Additive.
   new unchecked `VesperaClientException`.
 - The Spring autoconfiguration registers a `VesperaClient` bean
   (`@ConditionalOnMissingBean`), also with `controller-enabled=false`.
+
+### C ABI for non-JVM hosts (`vespera`, `vespera_inprocess`, `vespera_jni`)
+
+Additive.
+
+- New `vespera` feature `ffi` (`vespera_inprocess/ffi`): a stable C ABI so
+  C/C++, Go (cgo), Python (`ctypes`), .NET (P/Invoke) and Node (N-API) hosts
+  can embed a vespera app in-process. `vespera::ffi_app!(create_app)` /
+  `vespera::ffi_apps! { "_default" => .., "admin" => .. }` export
+  `vespera_init`; the library exports `vespera_dispatch` (wire in →
+  Rust-allocated wire out), `vespera_dispatch_into` (direct write;
+  `VESPERA_OVERFLOW` + required size), `vespera_dispatch_async` (completion
+  callback, exactly once), `vespera_free`, `vespera_shutdown` and
+  `vespera_abi_version`. Hand-written header:
+  `crates/vespera_inprocess/include/vespera.h` (also
+  `vespera_inprocess::ffi::HEADER`), kept in sync by a test.
+- The shared host runtime (lazy build, in-flight leases, deferred hooks,
+  graceful irreversible shutdown, worker / blocking-pool knobs) moved from
+  `vespera_jni` into `vespera_inprocess::runtime` (feature `runtime`), so JNI
+  and the C ABI share one runtime. `vespera_jni` re-exports the same items
+  under the same names (no API change); `vespera::cron` now routes jobs to the
+  shared runtime whenever a host (JVM or C) loaded the library
+  (`vespera_inprocess::runtime::host_loaded`).

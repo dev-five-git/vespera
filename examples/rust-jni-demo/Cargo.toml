@@ -15,7 +15,7 @@ path = "src/main.rs"
 # mimalloc is default-on for JNI cdylibs (it rides vespera's default
 # features), so `["jni"]` alone already wires up the faster global
 # allocator — pass `default-features = false` to bring your own.
-vespera = { path = "../../crates/vespera", features = ["jni"] }
+vespera = { path = "../../crates/vespera", features = ["jni", "ffi"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }

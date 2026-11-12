@@ -19,25 +19,7 @@ use jni::EnvUnowned;
 use jni::objects::JClass;
 use jni::sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong};
 
-use super::guard_void_symbol;
-
-const MIN_RUNTIME_WORKERS: usize = 1;
-const MAX_RUNTIME_WORKERS: usize = 1024;
-
-/// Default cap on the shared runtime's blocking pool.
-///
-/// Kept at Tokio's own default (512).  The blocking pool hosts one request
-/// producer per in-flight bidirectional upload (parked in
-/// `InputStream.read`) plus any handler `spawn_blocking` work (e.g. the
-/// multipart extractor's temp-file I/O).  A producer waiting for its handler
-/// and a handler waiting for a blocking thread can deadlock once the pool is
-/// exhausted, so the cap must stay well above the host's request concurrency
-/// (Tomcat's default pool is 200 threads).  Threads are spawned lazily and
-/// reaped after 10 s idle, so a high cap costs nothing when unused; it now
-/// bounds the whole process (sync / direct dispatch no longer build one
-/// runtime — and one blocking pool — per Java thread).
-pub const DEFAULT_RUNTIME_MAX_BLOCKING_THREADS: usize = 512;
-const MAX_RUNTIME_MAX_BLOCKING_THREADS: usize = 8192;
+use super::{guard_void_symbol, set_runtime_max_blocking_threads, set_runtime_worker_threads};
 
 /// Default cap on concurrently in-flight `dispatchAsync` calls.
 ///
@@ -50,8 +32,6 @@ const MAX_RUNTIME_MAX_BLOCKING_THREADS: usize = 8192;
 pub const DEFAULT_ASYNC_MAX_IN_FLIGHT: usize = 4096;
 const MAX_ASYNC_MAX_IN_FLIGHT: usize = 1 << 24;
 
-static RUNTIME_WORKER_THREADS: OnceLock<Option<usize>> = OnceLock::new();
-static RUNTIME_MAX_BLOCKING_THREADS: OnceLock<usize> = OnceLock::new();
 static ASYNC_MAX_IN_FLIGHT: OnceLock<usize> = OnceLock::new();
 static ASYNC_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
@@ -72,73 +52,6 @@ fn read_env_usize(var: &str, default: usize, min: usize, max: usize) -> usize {
         },
         |v| v.clamp(min, max),
     )
-}
-
-/// Worker thread count for the shared Tokio runtime, resolved once
-/// (first hit wins, then fixed for the process lifetime):
-///
-/// 1. [`set_runtime_worker_threads`] called before the runtime is
-///    first used (the `configureRuntime0` JNI hook from
-///    `VesperaBridge.init()` lands here)
-/// 2. `VESPERA_RUNTIME_WORKERS` environment variable
-/// 3. `None` — Tokio's default (number of logical CPUs)
-///
-/// Values are clamped to `[1, 1024]`.  An env value that is present but
-/// fails to parse emits a one-time stderr warning and falls back to the
-/// Tokio default.
-#[must_use]
-pub fn runtime_worker_threads() -> Option<usize> {
-    *RUNTIME_WORKER_THREADS.get_or_init(|| {
-        // Absent env var: silently fall through to the Tokio default — only a
-        // PRESENT-but-INVALID value triggers the warning.
-        let raw = std::env::var("VESPERA_RUNTIME_WORKERS").ok()?;
-        raw.trim().parse::<usize>().map_or_else(
-            |_| {
-                eprintln!(
-                    "vespera: ignoring invalid VESPERA_RUNTIME_WORKERS={raw:?} \
-                     (expected a positive integer); using the Tokio default \
-                     (logical CPU count)"
-                );
-                None
-            },
-            |v| Some(v.clamp(MIN_RUNTIME_WORKERS, MAX_RUNTIME_WORKERS)),
-        )
-    })
-}
-
-/// Override the shared runtime's worker thread count **before the
-/// first dispatch**.  Returns `false` when the value was already
-/// fixed.  Clamped to `[1, 1024]`.
-pub fn set_runtime_worker_threads(workers: usize) -> bool {
-    RUNTIME_WORKER_THREADS
-        .set(Some(
-            workers.clamp(MIN_RUNTIME_WORKERS, MAX_RUNTIME_WORKERS),
-        ))
-        .is_ok()
-}
-
-/// Blocking-pool cap of the shared runtime.  Precedence:
-/// [`set_runtime_max_blocking_threads`], then
-/// `VESPERA_RUNTIME_MAX_BLOCKING_THREADS`, then
-/// [`DEFAULT_RUNTIME_MAX_BLOCKING_THREADS`] (512).  Clamped to `[1, 8192]`.
-#[must_use]
-pub fn runtime_max_blocking_threads() -> usize {
-    *RUNTIME_MAX_BLOCKING_THREADS.get_or_init(|| {
-        read_env_usize(
-            "VESPERA_RUNTIME_MAX_BLOCKING_THREADS",
-            DEFAULT_RUNTIME_MAX_BLOCKING_THREADS,
-            1,
-            MAX_RUNTIME_MAX_BLOCKING_THREADS,
-        )
-    })
-}
-
-/// Override the shared runtime's blocking-pool cap **before the first
-/// dispatch**.  Returns `false` when already fixed.  Clamped to `[1, 8192]`.
-pub fn set_runtime_max_blocking_threads(threads: usize) -> bool {
-    RUNTIME_MAX_BLOCKING_THREADS
-        .set(threads.clamp(1, MAX_RUNTIME_MAX_BLOCKING_THREADS))
-        .is_ok()
 }
 
 /// Cap on concurrently in-flight `dispatchAsync` calls.  Precedence:

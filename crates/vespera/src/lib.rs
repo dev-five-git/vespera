@@ -79,6 +79,7 @@
 //! | `cron-tz` | no | `#[vespera::cron("...", tz = "Asia/Seoul")]` — IANA time zones for cron jobs (implies `cron`, adds chrono-tz) |
 //! | `inprocess` | no | `inprocess` — drive a `Router` in-process without a TCP socket |
 //! | `jni` | no | `jni`, `jni_app!` / `jni_apps!` — embed the app in a Java/Spring host |
+//! | `ffi` | no | `ffi_app!` / `ffi_apps!` + the C ABI (`inprocess::ffi`, header `vespera.h`) — embed the app in a C/C++, Go, Python, .NET or Node host |
 //! | `tracing` | no | `tracing` spans/events for in-process / JNI dispatch (`vespera.dispatch` span, error/panic events) and cron diagnostics (target `vespera::cron`) instead of `eprintln!` |
 //!
 //! See the [repository README](https://github.com/dev-five-git/vespera#readme)
@@ -357,6 +358,45 @@ macro_rules! jni_app {
 macro_rules! jni_apps {
     ( $( $name:literal => $factory:expr ),+ $(,)? ) => {
         $crate::jni::jni_apps! {
+            $( $name => $factory ),+
+        }
+    };
+}
+
+/// Export the C ABI's `vespera_init` registering your app as the default
+/// app (feature `ffi`) — embed the app in a C/C++, Go, Python, .NET or Node
+/// host.  The other C symbols (`vespera_dispatch`, `vespera_free`, …) are
+/// exported by [`inprocess::ffi`]; the header is `vespera_inprocess`'s
+/// `include/vespera.h` ([`inprocess::ffi::HEADER`]).
+///
+/// ```ignore
+/// vespera::ffi_app!(create_app);
+/// ```
+#[cfg(feature = "ffi")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ffi")))]
+#[macro_export]
+macro_rules! ffi_app {
+    ($factory:expr) => {
+        $crate::inprocess::ffi_app!($factory);
+    };
+}
+
+/// Export the C ABI's `vespera_init` registering **multiple named apps**
+/// (feature `ffi`; the C twin of `jni_apps!`).  The wire header's `"app"`
+/// field selects one per request.
+///
+/// ```ignore
+/// vespera::ffi_apps! {
+///     "_default" => create_app,
+///     "admin"    => admin_app,
+/// }
+/// ```
+#[cfg(feature = "ffi")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ffi")))]
+#[macro_export]
+macro_rules! ffi_apps {
+    ( $( $name:literal => $factory:expr ),+ $(,)? ) => {
+        $crate::inprocess::ffi_apps! {
             $( $name => $factory ),+
         }
     };
