@@ -1,0 +1,68 @@
+{
+  "groups": [
+    {
+      "name": "vespera.bridge.native",
+      "type": "com.devfive.vespera.bridge.VesperaBridgeProperties$Native",
+      "sourceType": "com.devfive.vespera.bridge.VesperaBridgeProperties",
+      "sourceMethod": "getNative()",
+      "description": "Rust-side runtime knobs forwarded to the VesperaBridge configure* methods during context startup, before the first native dispatch. Unset values keep the native default (or the vespera.limits.* / vespera.dispatch.* / vespera.async.* / vespera.runtime.* system properties and their VESPERA_* environment variables)."
+    }
+  ],
+  "properties": [
+    {
+      "name": "vespera.bridge.include-patterns",
+      "defaultValue": ["/**"]
+    },
+    {
+      "name": "vespera.bridge.max-buffered-request-bytes",
+      "defaultValue": 67108864
+    },
+    {
+      "name": "vespera.bridge.max-buffered-response-bytes",
+      "defaultValue": 67108864
+    },
+    {
+      "name": "management.health.vespera.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether to enable the vespera native-library health indicator (UP when the library is loaded and running, OUT_OF_SERVICE after shutdown, DOWN otherwise). Requires Spring Boot Actuator.",
+      "defaultValue": true
+    }
+  ],
+  "hints": [
+    {
+      "name": "vespera.bridge.dispatch-mode",
+      "values": [
+        {
+          "value": "smart",
+          "description": "Default since 0.2.0: DIRECT for small or bodyless safe requests, SYNC for small unsafe requests, bidirectional streaming for everything else."
+        },
+        {
+          "value": "bidirectional-streaming",
+          "description": "Restores the pre-0.2.0 default: every request that may carry a body streams both ways; bodyless requests stream only the response."
+        }
+      ]
+    },
+    {
+      "name": "vespera.bridge.cors",
+      "values": [
+        {
+          "value": "rust",
+          "description": "Default: CORS preflights are routed to the Rust router, whose Access-Control-* headers win."
+        },
+        {
+          "value": "spring",
+          "description": "Spring MVC / Spring Security answer CORS preflights; Rust's duplicate Access-Control-* headers are dropped."
+        }
+      ]
+    },
+    {
+      "name": "vespera.bridge.include-patterns",
+      "values": [
+        {
+          "value": "/**",
+          "description": "Default: the whole URL space (more specific Spring MVC handlers still win)."
+        }
+      ]
+    }
+  ]
+}

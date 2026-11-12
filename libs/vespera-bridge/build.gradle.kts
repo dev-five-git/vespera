@@ -23,6 +23,12 @@ tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
 }
 
+// The configuration processor merges additional-spring-configuration-metadata.json
+// from the processed resources, so they must exist before compileJava runs.
+tasks.named<JavaCompile>("compileJava") {
+    inputs.files(tasks.named("processResources"))
+}
+
 // Embed the bridge version for VesperaVersions (bridge <-> native release check).
 val bridgeVersion = project.version.toString()
 tasks.named<ProcessResources>("processResources") {
@@ -74,6 +80,14 @@ dependencies {
     compileOnly("org.springframework.boot:spring-boot-actuator:$springBoot3Version") {
         isTransitive = false
     }
+
+    // IDE metadata for `vespera.bridge.*`: generates
+    // META-INF/spring-configuration-metadata.json (field Javadoc becomes the
+    // description) and merges src/main/resources/META-INF/
+    // additional-spring-configuration-metadata.json (value hints, properties
+    // read only through @ConditionalOnProperty). Compile-time only — the
+    // generated JSON is a plain resource, valid for Boot 3.5 and 4 alike.
+    annotationProcessor("org.springframework.boot:spring-boot-configuration-processor:$springBootVersion")
 
     testImplementation("org.springframework.boot:spring-boot-starter-web:$springBootVersion")
     testImplementation("io.micrometer:micrometer-core:$micrometerVersion")
