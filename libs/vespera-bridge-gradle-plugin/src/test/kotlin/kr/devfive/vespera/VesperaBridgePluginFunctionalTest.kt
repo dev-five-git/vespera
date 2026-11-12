@@ -136,11 +136,11 @@ class VesperaBridgePluginFunctionalTest {
     fun missingCrossBuildNamesTheTarget() {
         val hostLib = NativePlatform.mapLibraryName(hostOs, "demo")
         write("rust/target/release/$hostLib")
-        setUp("""    targets.put("linux-aarch64", "aarch64-unknown-linux-gnu")""")
+        setUp("""    targets.put("$crossPlatform", "$crossTriple")""")
 
         val result = run("processResources").buildAndFail()
 
-        assertTrue(result.output.contains("target 'aarch64-unknown-linux-gnu'"), result.output)
+        assertTrue(result.output.contains("target '$crossTriple'"), result.output)
     }
 
     @Test
@@ -149,14 +149,14 @@ class VesperaBridgePluginFunctionalTest {
         setUp(
             """
                 packageName.set("demo")
-                targets.put("linux-aarch64", "aarch64-unknown-linux-gnu")
+                targets.put("$crossPlatform", "$crossTriple")
             """ + printCommands,
         )
 
         val first = run("cargoBuild").build()
         val second = run("cargoBuild").build()
 
-        assertTrue(first.output.contains("--target, aarch64-unknown-linux-gnu"), first.output)
+        assertTrue(first.output.contains("--target, $crossTriple"), first.output)
         assertEquals(TaskOutcome.SUCCESS, second.task(":cargoBuild")?.outcome)
     }
 
