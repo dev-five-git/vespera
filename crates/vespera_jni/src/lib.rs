@@ -56,6 +56,7 @@ macro_rules! jni_app {
             // must never unwind across this `extern "system"` boundary
             // into the JVM.  Catch it and fail library load with
             // `JNI_ERR` instead of aborting the host process.
+            $crate::__mark_jni_loaded();
             let loaded = ::std::panic::catch_unwind(|| {
                 $crate::vespera_inprocess::register_app($factory);
             });
@@ -136,6 +137,7 @@ macro_rules! jni_apps {
             // `Ok(false)` (name already registered) is accepted: it only
             // happens when the library is loaded again into a process that
             // already registered these apps, where first-wins is intended.
+            $crate::__mark_jni_loaded();
             let loaded = ::std::panic::catch_unwind(|| -> bool {
                 $(
                     if let ::std::result::Result::Err(err) =
@@ -231,6 +233,8 @@ mod jni_buf;
 #[allow(unsafe_code)]
 pub(crate) mod jni_impl;
 
+#[doc(hidden)]
+pub use jni_impl::mark_jni_loaded as __mark_jni_loaded;
 /// Process-wide JNI runtime / admission knobs.  Like the
 /// `configure*0` JNI hooks (which call them), they are first-wins and must
 /// run before the first dispatch; each returns `false` once fixed.
@@ -240,6 +244,8 @@ pub use jni_impl::{
     set_async_max_in_flight, set_runtime_max_blocking_threads, set_runtime_worker_threads,
     shutdown_runtime,
 };
+/// Deferred shared-runtime work (used by `vespera::cron` in JNI mode).
+pub use jni_impl::{RuntimeHook, jni_loaded, on_shared_runtime};
 // SAFETY SCOPE: streaming-with-header JNI exports contain FFI entry points.
 #[allow(unsafe_code)]
 pub(crate) mod jni_impl_streaming_header;
