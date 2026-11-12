@@ -6,6 +6,17 @@ rust-version.workspace = true
 description = "Core types and utilities for Vespera"
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/vespera_core"
+readme.workspace = true
+keywords = ["openapi", "json-schema", "axum", "vespera"]
+categories = ["web-programming", "data-structures"]
+
+[package.metadata.docs.rs]
+# Document the feature-gated `cron` module and
+# badge it with the feature that enables it (`doc(cfg)`).
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # Cron expression parser shared by the `#[cron]` validator and the runtime

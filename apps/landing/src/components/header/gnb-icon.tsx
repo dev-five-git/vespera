@@ -19,6 +19,7 @@ export function GnbIcon({
 }: GnbIconProps & ComponentProps<typeof Box>) {
   return (
     <Box
+      aria-hidden
       bg="$title"
       boxSize="24px"
       maskImage={

@@ -32,10 +32,12 @@ let app = vespera!(openapi = "openapi.json", docs_url = "/docs");
 ```toml
 [dependencies]
 vespera = "0.5"
-axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 ```
+
+> Vespera re-exports axum as `vespera::axum`, so you do not need a direct
+> `axum` dependency (the re-export keeps the version in sync).
 
 > **MSRV:** Rust 1.88 (edition 2024), checked in CI.
 
@@ -45,14 +47,20 @@ serde = { version = "1", features = ["derive"] }
 src/
 ├── main.rs
 └── routes/
+    ├── mod.rs
     └── users.rs
+```
+
+**`src/routes/mod.rs`**:
+```rust
+pub mod users;
 ```
 
 **`src/routes/users.rs`**:
 ```rust
-use axum::{Json, Path};
 use serde::{Deserialize, Serialize};
 use vespera::Schema;
+use vespera::axum::{Json, extract::Path};
 
 #[derive(Serialize, Deserialize, Schema)]
 pub struct User {
@@ -77,7 +85,9 @@ pub async fn create_user(Json(user): Json<User>) -> Json<User> {
 
 **`src/main.rs`**:
 ```rust
-use vespera::{vespera, Serve};
+mod routes;
+
+use vespera::{Serve, vespera};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -192,21 +202,26 @@ pub struct CreateUserRequest {
 ### Request Validation (`Validated<T>` → `422`)
 
 `Validated<T>` wraps any axum extractor (`Json`, `Form`, `Query`, `Path`) and
-runs the inner type's [`garde::Validate`] impl **before** the handler is
+runs the inner type's `garde::Validate` impl **before** the handler is
 called. Validation failures are converted to **`422 Unprocessable Entity`**
 with a canonical JSON envelope — no manual error mapping per handler.
 
-```rust
-use vespera::{Validated, Schema, axum::Json};
-use garde::Validate;
+The recommended way to declare constraints is `#[schema(...)]` on a
+`#[derive(Schema)]` type. The derive generates the validator itself (no
+`garde` dependency in your `Cargo.toml`), and the same constraints appear in
+the generated OpenAPI schema (`minLength`, `pattern`, `format`, `minimum`, …):
 
-#[derive(serde::Deserialize, Schema, Validate)]
+```rust
+use serde::Deserialize;
+use vespera::{Schema, Validated, axum::Json};
+
+#[derive(Deserialize, Schema)]
 pub struct CreateUser {
-    #[garde(length(min = 3, max = 32))]
+    #[schema(min_length = 3, max_length = 32, pattern = "^[a-z0-9_]+$")]
     pub username: String,
-    #[garde(email)]
+    #[schema(format = "email")]
     pub email: String,
-    #[garde(range(min = 18, max = 120))]
+    #[schema(minimum = 18, maximum = 120)]
     pub age: u8,
 }
 
@@ -214,10 +229,47 @@ pub struct CreateUser {
 pub async fn create_user(
     Validated(Json(req)): Validated<Json<CreateUser>>,
 ) -> Json<&'static str> {
-    // `req` has already passed garde validation.
+    // `req` has already passed validation.
     Json("ok")
 }
 ```
+
+| `#[schema(...)]` key | OpenAPI | Runtime check |
+|---|---|---|
+| `min_length` / `max_length` | `minLength` / `maxLength` | yes |
+| `pattern = "..."` | `pattern` (regex checked at compile time) | yes |
+| `format = "email"` / `"url"` / `"uri"` / `"ipv4"` / `"ipv6"` / `"ip"` | `format` | yes |
+| `minimum` / `maximum` | `minimum` / `maximum` | yes (inclusive) |
+| `min_items` / `max_items` | `minItems` / `maxItems` | yes |
+| `dive` | — | validates a nested `Schema` field |
+| `exclusive_minimum` / `exclusive_maximum` / `multiple_of` / `unique_items` / `format = "uuid"` | emitted | no (annotation only) |
+
+**Alternative — `garde` directly.** If you need garde rules that
+`#[schema(...)]` does not cover (custom validators, contexts), derive
+`garde::Validate` yourself. This requires your own dependency on
+**garde 0.23** (the version `Validated` is built against):
+
+```toml
+[dependencies]
+garde = { version = "0.23", features = ["derive", "email"] }
+```
+
+```rust
+use garde::Validate;
+
+#[derive(serde::Deserialize, vespera::Schema, Validate)]
+pub struct CreateUser {
+    #[garde(length(min = 3, max = 32))]
+    pub username: String,
+    #[garde(email)]
+    pub email: String,
+}
+```
+
+Use one approach per type: runtime `#[schema(...)]` constraints *and*
+`#[derive(garde::Validate)]` on the same struct both implement
+`garde::Validate` and fail to compile (`E0119`). `#[garde(...)]` rules are not
+reflected in the OpenAPI document.
 
 **Failure response (`HTTP/1.1 422 Unprocessable Entity`):**
 
@@ -238,6 +290,13 @@ Works with every common extractor — same `422` envelope on the wire:
 | `Validated<Form<T>>` | URL-encoded form body |
 | `Validated<Query<T>>` | URL query parameters |
 | `Validated<Path<T>>` | Path parameters |
+
+Input that is well-formed but does not deserialize into `T` — a wrong JSON
+type, a missing field, an unparsable query/form/path value — is reported
+through the **same `422` envelope**, with `path` pointing at the offending
+field (e.g. `"age"`, `"tags[1]"`). Malformed JSON syntax (`400`), a missing
+or unsupported `Content-Type` (`415`) and body-limit errors keep axum's
+default rejection.
 
 Under JNI, the same `422` body is **hoisted** into the binary wire header as
 `"validation_errors": [...]` — Java decoders consume validation errors

@@ -24,9 +24,10 @@ export function SearchSheet() {
       name="search"
       position="top"
     >
-      <SheetRouteTrigger name="search">
+      <SheetRouteTrigger aria-label="Close search" name="search">
         <Effect>
           <Box
+            aria-hidden
             aspectRatio="1"
             bg="$title"
             boxSize="24px"

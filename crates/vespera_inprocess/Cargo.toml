@@ -3,9 +3,14 @@ name = "vespera_inprocess"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "In-process HTTP dispatch for axum ??drive a Router via oneshot without a TCP socket"
+description = "In-process HTTP dispatch for axum — drive a Router via oneshot without a TCP socket"
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/vespera_inprocess"
+readme.workspace = true
+keywords = ["axum", "in-process", "ffi", "dispatch", "vespera"]
+categories = ["web-programming::http-server", "network-programming"]
 
 [features]
 # Compiles the criterion A/B "before" twins (serde-based wire header
@@ -44,7 +49,7 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 # mimalloc by default.  Measured 2026-06: the default Windows system heap
 # routes per-request `Vec` allocations >= ~1 MiB through a slow
 # VirtualAlloc commit/decommit path (e.g. 1 MiB `dispatch_from_bytes`
-# materialise = 311 us system-heap vs 30 us mimalloc ??a ~10x cliff that is
+# materialise = 311 us system-heap vs 30 us mimalloc — a ~10x cliff that is
 # pure harness artifact, never seen by the cdylib).  Benching under mimalloc
 # keeps the large-body absolute numbers representative of production.
 mimalloc = "0.1"

@@ -466,21 +466,31 @@ blocking pool: `vespera.runtime.maxBlockingThreads` /
 
 ### Operational sizing (threads & off-heap)
 
-The `DIRECT` fast path keeps per-platform-thread pooled direct
-`ByteBuffer`s (64 KiB → `vespera.direct.maxBufferBytes`, default 4 MiB),
-and `SYNC`/`DIRECT` keep one current-thread runtime per Java request
-thread. On a large servlet pool (e.g. 200 Tomcat threads) the steady-state
-cost is therefore bounded but not negligible:
+All dispatch modes share **one** process-wide multi-threaded Tokio runtime;
+`SYNC`/`DIRECT` no longer create a runtime per Java request thread, so the
+thread footprint no longer scales with the servlet pool size. On a large
+servlet pool (e.g. 200 Tomcat threads) the steady-state cost is:
 
-- **Off-heap**: up to `poolThreads × maxBufferBytes` retained direct
-  memory once each thread has served a large response (adaptive shrink
-  reclaims it after idle dispatches). Lower `vespera.direct.maxBufferBytes`
-  if off-heap pressure matters more than the DIRECT copy savings.
-- **Threads**: worst case `poolThreads × 4` Tokio blocking threads if many
-  handlers use `spawn_blocking` concurrently (the multipart temp-file
-  extractor does). Cap Rust's shared async runtime with
-  `vespera.runtime.workerThreads` when the JVM's own pools compete for the
-  same cores, or when a container CPU limit is below the host CPU count.
+- **Off-heap**: the `DIRECT` fast path keeps per-platform-thread pooled
+  direct `ByteBuffer`s (64 KiB → `vespera.direct.maxBufferBytes`, default
+  4 MiB), so up to `poolThreads × maxBufferBytes` retained direct memory
+  once each thread has served a large response (adaptive shrink reclaims it
+  after idle dispatches). Lower `vespera.direct.maxBufferBytes` if off-heap
+  pressure matters more than the DIRECT copy savings.
+- **Runtime workers**: one fixed set of async workers for the whole process
+  (default: logical CPUs). `SYNC`/`DIRECT` drive their request future on the
+  calling Java thread (`block_on`), so they add no worker threads. Cap the
+  workers with `vespera.runtime.workerThreads` /
+  `VESPERA_RUNTIME_WORKERS` when the JVM's own pools compete for the same
+  cores, or when a container CPU limit is below the host CPU count.
+- **Blocking threads**: `spawn_blocking` work (the multipart temp-file
+  extractor, request-body pulls on the bidirectional streaming paths, user
+  handlers) shares a single blocking pool capped at
+  `vespera.runtime.maxBlockingThreads` /
+  `VESPERA_RUNTIME_MAX_BLOCKING_THREADS` (default 512). The cap is
+  process-wide, independent of the servlet pool; excess blocking work queues
+  instead of spawning more threads. Idle blocking threads are reaped by
+  Tokio after a keep-alive period.
 
 ## Direct API (without the proxy controller)
 

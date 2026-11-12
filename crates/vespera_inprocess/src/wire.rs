@@ -341,7 +341,7 @@ static ERROR_WIRE_HEADERS: LazyLock<http::HeaderMap> = LazyLock::new(|| {
 
 /// Build a wire-format error response with a plain-text body.
 ///
-/// Used by [`dispatch_from_bytes`] for malformed input and by the
+/// Used by [`crate::dispatch_from_bytes`] for malformed input and by the
 /// JNI bridge for panic fallback.  The response always carries
 /// `content-type: text/plain; charset=utf-8`.
 #[must_use]

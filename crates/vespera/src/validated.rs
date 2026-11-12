@@ -1,32 +1,6 @@
 //! `Validated<T>` extractor — wraps any axum `FromRequest` extractor and
 //! runs the inner type's [`garde::Validate`] impl before handing the
-//! value to the handler.
-//!
-//! ```ignore
-//! use vespera::{Validated, Schema, axum::Json};
-//! use garde::Validate;
-//!
-//! #[derive(serde::Deserialize, Schema, Validate)]
-//! struct CreateUser {
-//!     #[schema(min_length = 3, max_length = 32)]
-//!     #[garde(length(min = 3, max = 32))]
-//!     username: String,
-//! }
-//!
-//! async fn create(Validated(Json(req)): Validated<Json<CreateUser>>)
-//!     -> &'static str
-//! {
-//!     // `req` has already passed validation.
-//!     "ok"
-//! }
-//! ```
-//!
-//! On validation failure the rejection is `422 Unprocessable Entity`
-//! with a JSON body of shape:
-//!
-//! ```json
-//! { "errors": [ { "message": "...", "path": "username" }, ... ] }
-//! ```
+//! value to the handler.  See [`Validated`] for usage.
 
 use ::axum::{
     Json,
@@ -45,9 +19,77 @@ use std::{
 /// Extractor wrapper that validates the inner extractor's output via
 /// [`garde::Validate`] before handing it to the handler.
 ///
-/// `T` is typically `axum::Json<U>` / `axum::Form<U>` /
-/// `axum::extract::Query<U>` where `U: serde::Deserialize +
+/// `T` is `axum::Json<U>` / `axum::Form<U>` / `axum::extract::Query<U>` /
+/// `axum::extract::Path<U>` where `U: serde::Deserialize +
 /// garde::Validate<Context = ()>`.
+///
+/// # Declaring constraints with `#[schema(...)]` (recommended)
+///
+/// `#[derive(Schema)]` turns field-level `#[schema(...)]` constraints into
+/// **both** OpenAPI keywords (`minLength`, `pattern`, `format`, `minimum`, …)
+/// **and** a generated `garde::Validate` impl — no `garde` dependency is
+/// needed in your own `Cargo.toml`:
+///
+/// ```no_run
+/// use serde::Deserialize;
+/// use vespera::{Schema, Validated, axum::Json};
+///
+/// #[derive(Deserialize, Schema)]
+/// pub struct CreateUser {
+///     #[schema(min_length = 3, max_length = 32, pattern = "^[a-z0-9_]+$")]
+///     pub username: String,
+///     #[schema(format = "email")]
+///     pub email: String,
+///     #[schema(minimum = 18, maximum = 120)]
+///     pub age: u8,
+/// }
+///
+/// pub async fn create(Validated(Json(req)): Validated<Json<CreateUser>>) -> &'static str {
+///     // `req` has already passed validation.
+///     let _ = req;
+///     "ok"
+/// }
+/// ```
+///
+/// # Using `garde` directly
+///
+/// Alternatively derive `garde::Validate` yourself (add
+/// `garde = { version = "0.23", features = ["derive"] }` plus any validator
+/// features such as `email`).  Do **not** combine this with runtime
+/// `#[schema(...)]` constraints on the same type — both would implement
+/// `garde::Validate` (`E0119`):
+///
+/// ```no_run
+/// use garde::Validate;
+/// use serde::Deserialize;
+/// use vespera::{Schema, Validated, axum::Json};
+///
+/// #[derive(Deserialize, Schema, Validate)]
+/// pub struct CreateUser {
+///     #[garde(length(min = 3, max = 32))]
+///     pub username: String,
+///     #[garde(email)]
+///     pub email: String,
+/// }
+///
+/// pub async fn create(Validated(Json(req)): Validated<Json<CreateUser>>) -> &'static str {
+///     let _ = req;
+///     "ok"
+/// }
+/// ```
+///
+/// # Rejections
+///
+/// A validation failure — and input that is well-formed but does not
+/// deserialize into `U` (wrong type, missing field, unparsable path/query
+/// value) — is rejected with `422 Unprocessable Entity` and the body
+///
+/// ```json
+/// { "errors": [ { "message": "length is lower than 3", "path": "username" } ] }
+/// ```
+///
+/// Other inner-extractor rejections (malformed JSON syntax `400`, missing or
+/// wrong `Content-Type` `415`, body-limit errors, …) pass through unchanged.
 #[derive(Debug, Clone, Copy)]
 pub struct Validated<T>(pub T);
 

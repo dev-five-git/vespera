@@ -70,6 +70,7 @@ export function MobileMenu() {
           </VStack>
           <Flex alignItems="center">
             <Link
+              aria-label="Vespera on GitHub"
               href="https://github.com/dev-five-git/vespera"
               rel="noopener noreferrer"
               target="_blank"
@@ -79,6 +80,7 @@ export function MobileMenu() {
               </Effect>
             </Link>
             <Link
+              aria-label="Join the Vespera Discord"
               href="https://discord.com/invite/8zjcGc7cWh"
               rel="noopener noreferrer"
               target="_blank"
@@ -88,6 +90,7 @@ export function MobileMenu() {
               </Effect>
             </Link>
             <Link
+              aria-label="Join the Vespera KakaoTalk open chat"
               href="https://open.kakao.com/o/giONwVAh"
               rel="noopener noreferrer"
               target="_blank"

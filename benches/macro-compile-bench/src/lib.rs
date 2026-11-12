@@ -1,7 +1,7 @@
 //! Macro compile-time benchmark **fixture**.
 //!
 //! A deliberately schema- and cross-reference-heavy `vespera!` application
-//! whose sole purpose is to give the [`compile-bench-runner`] harness a
+//! whose sole purpose is to give the `compile-bench-runner` harness a
 //! stable, representative proc-macro expansion workload to measure. Hub
 //! schemas (`User`, `Product`, `Order`) are referenced by many routes so the
 //! per-reference schema-generation cost — exactly what compile-time macro

@@ -266,6 +266,7 @@ export default function HomePage() {
               </VStack>
               <Flex alignItems="center" gap="16px">
                 <Link
+                  aria-label="Join the Vespera Discord"
                   href="https://discord.com/invite/8zjcGc7cWh"
                   rel="noopener noreferrer"
                   target="_blank"
@@ -290,6 +291,7 @@ export default function HomePage() {
                   </Flex>
                 </Link>
                 <Link
+                  aria-label="Join the Vespera KakaoTalk open chat"
                   href="https://open.kakao.com/o/giONwVAh"
                   rel="noopener noreferrer"
                   target="_blank"
@@ -313,6 +315,7 @@ export default function HomePage() {
                   </Flex>
                 </Link>
                 <Link
+                  aria-label="DevFive website"
                   href="https://devfive.kr"
                   rel="noopener noreferrer"
                   target="_blank"

@@ -6,9 +6,20 @@ rust-version.workspace = true
 description = "A fully automated OpenAPI engine for Axum with zero-config route and schema discovery"
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/vespera"
+readme.workspace = true
+keywords = ["openapi", "axum", "swagger", "api", "web"]
+categories = ["web-programming::http-server", "development-tools"]
+
+[package.metadata.docs.rs]
+# Document every feature-gated item (`cron`, `jni`, `inprocess`, …) and
+# badge it with the feature that enables it (`doc(cfg)`).
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-# `validation` is on by default ??`#[derive(Schema)]` automatically emits
+# `validation` is on by default — `#[derive(Schema)]` automatically emits
 # `impl garde::Validate` blocks and the `Validated<T>` extractor is
 # available.  Opt out with `default-features = false` if you need a
 # leaner build without the `garde` runtime dependency.
@@ -16,7 +27,7 @@ repository.workspace = true
 # `mimalloc` is also default-on, but it is a **weak no-op unless the
 # `jni` feature is also enabled** (see the `mimalloc` feature below): a
 # pure axum/OpenAPI build never compiles the mimalloc C library.  JNI
-# cdylib builds get the faster global allocator automatically (~9??4%
+# cdylib builds get the faster global allocator automatically (~9–14%
 # on the dispatch hot path); set `default-features = false` to supply
 # your own `#[global_allocator]` instead.
 default = [
@@ -33,7 +44,8 @@ inprocess = ["dep:vespera_inprocess"]
 jni = ["inprocess", "dep:vespera_jni"]
 # mimalloc as the cdylib's global allocator (see vespera_jni docs).
 # Default-on, but the `vespera_jni?/mimalloc` weak-dep syntax means it
-# only does anything when the `jni` feature has pulled in vespera_jni ??# so non-JNI builds neither set a global allocator nor compile the
+# only does anything when the `jni` feature has pulled in vespera_jni —
+# so non-JNI builds neither set a global allocator nor compile the
 # mimalloc C library.  Disable via `default-features = false` to bring
 # your own allocator in a JNI cdylib.
 mimalloc = ["vespera_jni?/mimalloc"]

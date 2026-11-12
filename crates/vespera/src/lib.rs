@@ -1,7 +1,87 @@
-//! Vespera - `OpenAPI` generation for Rust web frameworks
+//! **FastAPI-like developer experience for Rust.** Zero-config OpenAPI 3.1
+//! generation for [Axum](https://docs.rs/axum).
 //!
-//! This crate provides macros and utilities for generating `OpenAPI` documentation
-//! from your route definitions.
+//! Vespera discovers your route handlers at compile time (one file under
+//! `src/routes/` per URL segment), turns your Rust types into JSON Schema via
+//! [`#[derive(Schema)]`](macro@Schema), writes `openapi.json`, and serves
+//! Swagger UI / ReDoc — all from a single [`vespera!`] call.
+//!
+//! # Quick start
+//!
+//! ```toml
+//! [dependencies]
+//! vespera = "0.5"
+//! tokio = { version = "1", features = ["full"] }
+//! serde = { version = "1", features = ["derive"] }
+//! ```
+//!
+//! ```text
+//! src/
+//! ├── main.rs
+//! └── routes/
+//!     ├── mod.rs      // pub mod users;
+//!     └── users.rs
+//! ```
+//!
+//! **`src/routes/users.rs`** — handlers are `pub async fn` with
+//! [`#[vespera::route]`](macro@route):
+//!
+//! ```
+//! use serde::{Deserialize, Serialize};
+//! use vespera::Schema;
+//! use vespera::axum::{Json, extract::Path};
+//!
+//! #[derive(Serialize, Deserialize, Schema)]
+//! pub struct User {
+//!     pub id: u32,
+//!     pub name: String,
+//! }
+//!
+//! /// Get user by ID
+//! #[vespera::route(get, path = "/{id}", tags = ["users"])]
+//! pub async fn get_user(Path(id): Path<u32>) -> Json<User> {
+//!     Json(User { id, name: "Alice".into() })
+//! }
+//! ```
+//!
+//! **`src/main.rs`** (`ignore`d here because [`vespera!`] scans the caller's
+//! `src/routes/` directory at compile time):
+//!
+//! ```ignore
+//! mod routes;
+//!
+//! use vespera::{Serve, vespera};
+//!
+//! #[tokio::main]
+//! async fn main() -> std::io::Result<()> {
+//!     vespera!(openapi = "openapi.json", title = "My API", docs_url = "/docs")
+//!         .serve("0.0.0.0:3000")
+//!         .await
+//! }
+//! ```
+//!
+//! # Request validation
+//!
+//! Field constraints in `#[schema(...)]` are emitted into the OpenAPI document
+//! **and** compiled into a runtime validator, which the [`Validated`]
+//! extractor runs before your handler (failures become
+//! `422 Unprocessable Entity` with an `{"errors":[{"path","message"}]}` body).
+//! No extra dependency is needed — see [`Validated`] for details.
+//!
+//! # Cargo features
+//!
+//! | Feature | Default | Adds |
+//! |---|---|---|
+//! | `validation` | yes | [`Validated`] / [`ValidatedWith`] and the `#[derive(Schema)]`-generated validator |
+//! | `mimalloc` | yes | mimalloc as the JNI cdylib's global allocator (no-op unless `jni` is enabled) |
+//! | `cron` | no | `#[vespera::cron("...")]` jobs and the `cron` scheduler module |
+//! | `inprocess` | no | `inprocess` — drive a `Router` in-process without a TCP socket |
+//! | `jni` | no | `jni`, `jni_app!` / `jni_apps!` — embed the app in a Java/Spring host |
+//!
+//! See the [repository README](https://github.com/dev-five-git/vespera#readme)
+//! and the [documentation site](https://vespera.devfive.kr) for the full guide.
+
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 // Re-export vespera_core types so users don't need to depend on vespera_core directly
 pub mod schema {
@@ -61,10 +141,12 @@ pub mod multipart;
 pub use tempfile;
 
 #[cfg(feature = "cron")]
+#[cfg_attr(docsrs, doc(cfg(feature = "cron")))]
 pub mod cron;
 
 // Re-export tokio for cron scheduler spawning
 #[cfg(feature = "cron")]
+#[cfg_attr(docsrs, doc(cfg(feature = "cron")))]
 pub use tokio;
 
 // Re-export axum for convenience
@@ -196,12 +278,14 @@ pub mod __validation;
 #[cfg(feature = "validation")]
 mod validated;
 #[cfg(feature = "validation")]
+#[cfg_attr(docsrs, doc(cfg(feature = "validation")))]
 pub use validated::{
     ValidatePayload, ValidatePayloadWith, Validated, ValidatedWith, ValidationContext,
 };
 
 /// In-process dispatch — drive an axum Router without a TCP socket.
 #[cfg(feature = "inprocess")]
+#[cfg_attr(docsrs, doc(cfg(feature = "inprocess")))]
 pub use vespera_inprocess as inprocess;
 
 /// One-liner `Router::serve(addr)` extension — see [`serve::Serve`].
@@ -210,6 +294,7 @@ pub use serve::Serve;
 
 /// JNI bridge — call Rust axum apps from Java.
 #[cfg(feature = "jni")]
+#[cfg_attr(docsrs, doc(cfg(feature = "jni")))]
 pub use vespera_jni as jni;
 
 /// Generate the `JNI_OnLoad` export that registers your app
@@ -219,6 +304,7 @@ pub use vespera_jni as jni;
 /// vespera::jni_app!(create_app);
 /// ```
 #[cfg(feature = "jni")]
+#[cfg_attr(docsrs, doc(cfg(feature = "jni")))]
 #[macro_export]
 macro_rules! jni_app {
     ($factory:expr) => {
@@ -237,6 +323,7 @@ macro_rules! jni_app {
 /// }
 /// ```
 #[cfg(feature = "jni")]
+#[cfg_attr(docsrs, doc(cfg(feature = "jni")))]
 #[macro_export]
 macro_rules! jni_apps {
     ( $( $name:literal => $factory:expr ),+ $(,)? ) => {

@@ -408,7 +408,7 @@ pub fn register_multipart_part() -> Result<(), TypedMultipartError> {
 ///
 /// The public counterpart of [`register_multipart_part`] for the **byte**
 /// dimension of [`MultipartLimits`]. Vespera's built-in field parsers
-/// ([`read_field_data`] / the `NamedTempFile` path) already call this once per
+/// (`read_field_data` / the `NamedTempFile` path) already call this once per
 /// `field.chunk()`, so typed multipart structs are accounted automatically.
 ///
 /// Built-in field parsers — and any **custom [`TryFromFieldWithState`]**
