@@ -23,6 +23,7 @@ use super::{
         with_route_signature_hash, write_cache,
     },
     cron_discovery::discover_cron_jobs,
+    invocation::invocation_tag,
     openapi_io::{
         ensure_openapi_files_from_cache, generate_and_write_openapi, load_validated_sidecar_specs,
         write_pretty_sidecar, write_spec_for_embedding,
@@ -94,8 +95,11 @@ pub fn process_vespera_macro(
 
     // --- Incremental cache check ---
     // One directory walk serves both the fingerprint map and (on a
-    // cache miss) route collection below.
-    let cache_path = get_cache_path();
+    // cache miss) route collection below.  Every build file is keyed by
+    // this invocation's settings, so several `vespera!` calls in one crate
+    // never overwrite each other's cache / spec sidecars.
+    let tag = invocation_tag(processed);
+    let cache_path = get_cache_path(&tag);
     let scanned = crate::collector::scan_route_folder(&folder_path)
         .map_err(|e| syn::Error::new(Span::call_site(), format!("vespera! macro: {e}")))?;
     let fingerprints = crate::collector::fingerprints_from_scan(&scanned);
@@ -128,6 +132,7 @@ pub fn process_vespera_macro(
     // sidecars: corruption self-heals on the next build.
     let sidecars = cached.as_ref().and_then(|c| {
         load_validated_sidecar_specs(
+            &tag,
             c.spec_json_hash,
             c.spec_pretty_hash,
             c.spec_json_fingerprint,
@@ -175,8 +180,8 @@ pub fn process_vespera_macro(
 
         let spec_json_hash = openapi.spec_json.as_deref().map(hash_str);
         let spec_pretty_hash = openapi.spec_pretty.as_deref().map(hash_str);
-        let spec_pretty_fingerprint = write_pretty_sidecar(openapi.spec_pretty.as_deref());
-        let embed_spec = write_spec_for_embedding(openapi.spec_json)?;
+        let spec_pretty_fingerprint = write_pretty_sidecar(&tag, openapi.spec_pretty.as_deref());
+        let embed_spec = write_spec_for_embedding(&tag, openapi.spec_json)?;
         let (spec_tokens, spec_json_fingerprint) =
             embed_spec.map_or((None, None), |spec| (Some(spec.tokens), spec.fingerprint));
         stage("write_spec_for_embedding");

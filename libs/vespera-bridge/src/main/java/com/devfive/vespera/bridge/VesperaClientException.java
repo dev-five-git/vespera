@@ -1,5 +1,8 @@
 package com.devfive.vespera.bridge;
 
+import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
+
 /**
  * A {@link VesperaClient} request could not be dispatched or its wire
  * response could not be read: the native library is not initialised, the
@@ -10,6 +13,7 @@ package com.devfive.vespera.bridge;
  * {@code 5xx}, the {@code 503} a shut-down runtime answers, the {@code 500} a
  * Rust panic answers — all come back as a normal {@link VesperaResponse}.
  */
+@NullMarked
 public final class VesperaClientException extends RuntimeException {
     private static final long serialVersionUID = 1L;
 
@@ -24,7 +28,7 @@ public final class VesperaClientException extends RuntimeException {
      * @param message what failed
      * @param cause   the underlying error
      */
-    public VesperaClientException(String message, Throwable cause) {
+    public VesperaClientException(String message, @Nullable Throwable cause) {
         super(message, cause);
     }
 }
