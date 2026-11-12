@@ -200,6 +200,7 @@ async fn channel_body_without_a_producer_is_clean_eof() {
         received: 0,
         limit_exceeded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         clean_end: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        slots: Arc::new(tokio::sync::Semaphore::new(1)),
         permit_wait: None,
     };
 
@@ -261,6 +262,7 @@ async fn channel_close_is_eof_only_after_a_clean_end(
         received: 0,
         limit_exceeded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         clean_end: Arc::new(std::sync::atomic::AtomicBool::new(clean_end)),
+        slots: Arc::new(tokio::sync::Semaphore::new(1)),
         permit_wait: None,
     };
     let first = body.frame().await;
@@ -278,25 +280,60 @@ async fn channel_close_is_eof_only_after_a_clean_end(
 async fn producer_slot_waits_while_saturated() {
     let slots = Arc::new(tokio::sync::Semaphore::new(1));
     let mut first = channel_body(|| crate::RequestChunk::End);
-    let held = std::future::poll_fn(|cx| first.poll_producer_slot(&slots, cx)).await;
+    first.slots = Arc::clone(&slots);
+    let held = std::future::poll_fn(|cx| first.poll_producer_slot(cx)).await;
     assert!(held.is_some(), "uncontended slot");
     assert!(first.permit_wait.is_none(), "fast path does not box");
 
     let mut second = channel_body(|| crate::RequestChunk::End);
+    second.slots = Arc::clone(&slots);
     let pending =
-        std::future::poll_fn(|cx| Poll::Ready(second.poll_producer_slot(&slots, cx).is_pending()))
-            .await;
+        std::future::poll_fn(|cx| Poll::Ready(second.poll_producer_slot(cx).is_pending())).await;
     assert!(pending, "saturated cap waits");
     assert!(second.permit_wait.is_some());
     drop(held);
-    let acquired = std::future::poll_fn(|cx| second.poll_producer_slot(&slots, cx)).await;
+    let acquired = std::future::poll_fn(|cx| second.poll_producer_slot(cx)).await;
     assert!(acquired.is_some(), "freed slot is handed over");
     assert!(second.permit_wait.is_none());
 
     slots.close();
     let mut third = channel_body(|| crate::RequestChunk::End);
-    let closed = std::future::poll_fn(|cx| third.poll_producer_slot(&slots, cx)).await;
+    third.slots = Arc::clone(&slots);
+    let closed = std::future::poll_fn(|cx| third.poll_producer_slot(cx)).await;
     assert!(closed.is_none(), "a closed semaphore runs uncapped");
+}
+
+/// A body whose producer cannot get a slot stays pending (no producer, no
+/// thread) and starts once a slot frees up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn body_waits_for_a_producer_slot() {
+    let slots = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut sent = false;
+    let mut body = channel_body(move || {
+        if std::mem::replace(&mut sent, true) {
+            crate::RequestChunk::End
+        } else {
+            crate::RequestChunk::Data(b"x".to_vec())
+        }
+    });
+    body.slots = Arc::clone(&slots);
+    let mut pinned = std::pin::Pin::new(&mut body);
+    let first =
+        std::future::poll_fn(|cx| Poll::Ready(pinned.as_mut().poll_frame(cx).is_pending())).await;
+    assert!(first, "no slot: the body waits");
+    assert!(pinned.rx.is_none(), "producer not started");
+    slots.add_permits(1);
+    let frame = body.frame().await.expect("frame").expect("data");
+    assert_eq!(frame.into_data().unwrap(), Bytes::from_static(b"x"));
+    assert!(body.frame().await.is_none());
+}
+
+#[rstest::rstest]
+#[case::unlimited(0, tokio::sync::Semaphore::MAX_PERMITS)]
+#[case::capped(8, 8)]
+#[case::clamped(usize::MAX, tokio::sync::Semaphore::MAX_PERMITS)]
+fn producer_permits_map_the_cap(#[case] max: usize, #[case] permits: usize) {
+    assert_eq!(super::producer::producer_permits(max), permits);
 }
 
 /// One scripted step of [`ScriptedBody`].

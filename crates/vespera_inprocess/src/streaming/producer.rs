@@ -20,18 +20,26 @@ use http_body::{Body as HttpBody, Frame};
 use super::{MAX_CONSECUTIVE_EMPTY_READS, RequestChunk, StreamAbort};
 use crate::config::{effective_streaming_channel_capacity, max_streaming_request_producers};
 
-/// Process-wide request-producer slots ([`max_streaming_request_producers`]);
-/// `None` when uncapped.  Built on the first producer start, after which the
-/// cap is fixed like every other knob.
-static PRODUCER_SLOTS: OnceLock<Option<Arc<Semaphore>>> = OnceLock::new();
+/// Process-wide request-producer slots ([`max_streaming_request_producers`];
+/// uncapped = [`Semaphore::MAX_PERMITS`]).  Built on the first body, after
+/// which the cap is fixed like every other knob.
+static PRODUCER_SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
-fn producer_slots() -> Option<&'static Arc<Semaphore>> {
-    PRODUCER_SLOTS
-        .get_or_init(|| match max_streaming_request_producers() {
-            0 => None,
-            max => Some(Arc::new(Semaphore::new(max.min(Semaphore::MAX_PERMITS)))),
-        })
-        .as_ref()
+fn producer_slots() -> &'static Arc<Semaphore> {
+    PRODUCER_SLOTS.get_or_init(|| {
+        Arc::new(Semaphore::new(producer_permits(
+            max_streaming_request_producers(),
+        )))
+    })
+}
+
+/// Semaphore permits for a producer cap (`0` = unlimited).
+pub(super) const fn producer_permits(max: usize) -> usize {
+    match max {
+        0 => Semaphore::MAX_PERMITS,
+        n if n > Semaphore::MAX_PERMITS => Semaphore::MAX_PERMITS,
+        n => n,
+    }
 }
 
 type PermitFuture =
@@ -168,6 +176,8 @@ pub struct ChannelBody {
     /// producer exited any other way) is an aborted upload, never a clean
     /// EOF — see the `Poll::Ready(None)` arm of `poll_frame`.
     pub(super) clean_end: Arc<AtomicBool>,
+    /// Producer slots this body draws from (the process-wide cap).
+    pub(super) slots: Arc<Semaphore>,
     /// In-progress wait for a producer slot while the cap is saturated.
     pub(super) permit_wait: Option<PermitFuture>,
 }
@@ -191,6 +201,7 @@ impl ChannelBody {
             received: 0,
             limit_exceeded,
             clean_end: Arc::new(AtomicBool::new(false)),
+            slots: Arc::clone(producer_slots()),
             permit_wait: None,
         }
     }
@@ -199,17 +210,14 @@ impl ChannelBody {
     /// ([`max_streaming_request_producers`]) is available.  `Pending` while
     /// waiting for a slot (no thread is held meanwhile).
     pub(super) fn poll_start_producer(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        if self.rx.is_some() || self.pull_chunk.is_none() {
-            return Poll::Ready(());
+        if self.rx.is_none() && self.pull_chunk.is_some() {
+            let Poll::Ready(permit) = self.poll_producer_slot(cx) else {
+                return Poll::Pending;
+            };
+            if let Some(pull) = self.pull_chunk.take() {
+                self.start_producer(pull, permit);
+            }
         }
-        let permit = match producer_slots() {
-            None => None,
-            Some(slots) => match self.poll_producer_slot(slots, cx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(permit) => permit,
-            },
-        };
-        self.start_producer(permit);
         Poll::Ready(())
     }
 
@@ -217,29 +225,27 @@ impl ChannelBody {
     /// no allocation; only a saturated cap boxes the waiting future.
     pub(super) fn poll_producer_slot(
         &mut self,
-        slots: &Arc<Semaphore>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<OwnedSemaphorePermit>> {
         if self.permit_wait.is_none()
-            && let Ok(permit) = Arc::clone(slots).try_acquire_owned()
+            && let Ok(permit) = Arc::clone(&self.slots).try_acquire_owned()
         {
             return Poll::Ready(Some(permit));
         }
+        let slots = &self.slots;
         let wait = self
             .permit_wait
             .get_or_insert_with(|| Box::pin(Arc::clone(slots).acquire_owned()));
-        let acquired = std::task::ready!(wait.as_mut().poll(cx));
+        let Poll::Ready(acquired) = wait.as_mut().poll(cx) else {
+            return Poll::Pending;
+        };
         self.permit_wait = None;
         // The semaphore is never closed; an `Err` ("closed") would only run
         // this producer uncapped rather than stall the upload.
         Poll::Ready(acquired.ok())
     }
 
-    fn start_producer(&mut self, permit: Option<OwnedSemaphorePermit>) {
-        let Some(pull) = self.pull_chunk.take() else {
-            return;
-        };
-
+    fn start_producer(&mut self, pull: PullChunk, permit: Option<OwnedSemaphorePermit>) {
         // Bounded mpsc (default 16 slots, see effective_streaming_channel_capacity)
         // — gives natural backpressure between the pull_chunk producer
         // thread and the axum handler consumer. The channel is created
