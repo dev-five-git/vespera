@@ -216,13 +216,12 @@ fn tuple_body(ty: &Type) -> &Type {
 /// (no `Json` unwrapping). `Err` is `None` for axum's one-argument
 /// `Result<T>`, whose error (`ErrorResponse`) is opaque.
 fn result_args(ty: &Type) -> Option<(&Type, Option<&Type>)> {
-    let type_path = match unwrap_json(ty) {
-        Type::Path(type_path) => type_path,
-        Type::Reference(type_ref) => match type_ref.elem.as_ref() {
-            Type::Path(type_path) => type_path,
-            _ => return None,
-        },
-        _ => return None,
+    let inner = match unwrap_json(ty) {
+        Type::Reference(type_ref) => type_ref.elem.as_ref(),
+        other => other,
+    };
+    let Type::Path(type_path) = inner else {
+        return None;
     };
     if !is_keyword_type_by_type_path(type_path, &KeywordType::Result) {
         return None;

@@ -121,28 +121,20 @@ fn find_alias(
     }
     let src_dir = src_dir?;
     let needle = format!("type {name}");
-    let mut found: Option<syn::ItemType> = None;
-    for path in file_cache::list_rs_files(src_dir).iter() {
-        if !file_cache::get_file_content(path).is_some_and(|content| content.contains(&needle)) {
-            continue;
-        }
-        let Some(file) = file_cache::get_parsed_file(path) else {
-            continue;
-        };
-        let Some(alias) = alias_in_items(&file.items, name) else {
-            continue;
-        };
-        // The same alias seen twice (e.g. a re-declaration) is fine; two
-        // different definitions are ambiguous without name resolution.
-        if found
-            .as_ref()
-            .is_some_and(|previous| !same_definition(previous, &alias))
-        {
-            return None;
-        }
-        found.get_or_insert(alias);
-    }
-    found
+    let files = file_cache::list_rs_files(src_dir);
+    let mut definitions = files
+        .iter()
+        .filter(|path| {
+            file_cache::get_file_content(path).is_some_and(|content| content.contains(&needle))
+        })
+        .filter_map(|path| file_cache::get_parsed_file(path))
+        .filter_map(|file| alias_in_items(&file.items, name));
+    let first = definitions.next()?;
+    // The same alias seen twice (e.g. a re-declaration) is fine; two
+    // different definitions are ambiguous without name resolution.
+    definitions
+        .all(|alias| same_definition(&first, &alias))
+        .then_some(first)
 }
 
 /// A `type <name>` item among `items`, searching inline modules too.
