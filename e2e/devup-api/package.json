@@ -1,0 +1,15 @@
+{
+  "name": "devup-api-e2e",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end check: examples/axum-example/openapi.json → @devup-api typed client → tsc --noEmit",
+  "scripts": {
+    "generate": "bun generate.ts",
+    "typecheck": "bun generate.ts && tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "@devup-api/fetch": "0.1.27",
+    "@devup-api/generator": "0.1.29",
+    "typescript": "6.0.3"
+  }
+}
