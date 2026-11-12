@@ -1260,6 +1260,17 @@ public class MyApp {
 
 The `VesperaProxyController` auto-registers as a catch-all and forwards every HTTP request through a length-prefixed **binary wire format** (`[u32 BE | UTF-8 JSON header | raw body]`) — multipart uploads, PDFs, and images travel raw, with zero base64 overhead.
 
+The user Spring Security (or the servlet container) authenticated reaches Rust through a trusted side channel — the wire header's `principal` field, which only the bridge writes and a client cannot forge with a header:
+
+```rust
+use vespera::inprocess::Principal;
+
+#[vespera::route(get)]
+pub async fn me(principal: Principal) -> String { // 401 when anonymous; Option<Principal> never rejects
+    format!("{} {:?}", principal.name, principal.authorities)
+}
+```
+
 ### Rust-side observability (`tracing` feature)
 
 ```toml

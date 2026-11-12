@@ -144,6 +144,7 @@ vespera:
     exclude-patterns: []         # paths left to Spring MVC, e.g. ["/assets/**", "/*.html"]
     cors: rust                   # rust (default) | spring — who answers CORS, see "CORS"
     direct-retry-on-overflow: true # set false to avoid DIRECT retry double-execution
+    forward-principal: true      # forward the authenticated principal to Rust, see "Forwarded principal"
     max-buffered-request-bytes: 67108864 # default 64 MiB; 0 = unlimited
     max-buffered-response-bytes: 67108864 # SYNC/ASYNC response cap → 500 (default 64 MiB; 0 = unlimited)
     native:                      # Rust-side knobs, applied before the first dispatch
@@ -395,8 +396,40 @@ The proxy is an ordinary Spring MVC controller, so Spring Security's filter chai
 - **CSRF blocks proxied writes by default.** With Spring Security on the classpath, `CsrfFilter` rejects every `POST` / `PUT` / `PATCH` / `DELETE` without a CSRF token with `403` before the proxy runs. For a token-authenticated JSON API, disable CSRF for the proxied paths (`http.csrf(csrf -> csrf.ignoringRequestMatchers("/api/**"))`) or implement the token exchange; keep it for cookie-session browser forms.
 - **Match on the path Rust sees.** Authorization rules match the servlet path. The proxy forwards the path *within the application* (context path and a prefix servlet mapping stripped, `;` path parameters dropped — see [Operability](#client-address-scheme-and-servlet-path)), so write rules against that path, not the raw request URI, and keep Spring's default `StrictHttpFirewall` (it rejects encoded `/`, `;`, `..` that could make a path look different to Spring and to Rust).
 - **App selection bypasses path rules.** `X-Vespera-App` picks a whole router; restrict it with `vespera.bridge.exposed-apps` (see [Multi-app routing → Security](#security-the-app-header-is-client-controlled)) or with a custom `AppNameResolver` that checks the authenticated principal.
-- **Forward the principal through a trusted header, and strip client copies.** Rust only sees forwarded request headers. To pass the authenticated user, add a servlet filter **after** Spring Security that removes any client-supplied copy of the header (e.g. `X-Authenticated-User`) and sets it from `SecurityContextHolder` (wrap the request in an `HttpServletRequestWrapper` overriding `getHeader` / `getHeaders` / `getHeaderNames`). Rust handlers must trust that header only because every request reaches them through this proxy.
+- **The authenticated principal is forwarded for you — don't use headers for it.** The proxy puts the authenticated user into the trusted `principal` wire field (see [Forwarded principal](#forwarded-principal)), which a client cannot set; Rust handlers take `vespera::inprocess::Principal`. Do not identify the user from a forwarded `X-User`-style header: request headers are client-controlled unless every copy is stripped.
 - **Preflights.** With `vespera.bridge.cors=rust`, permit unauthenticated `OPTIONS` preflights (`.requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()`), or browsers cannot reach the Rust CORS layer.
+
+### Forwarded principal
+
+The proxy asks the `PrincipalResolver` bean for the request's authenticated principal and sends it in the request wire header's `principal` field — a side channel only the bridge writes, never built from client headers. The default `ServletPrincipalResolver` forwards `HttpServletRequest.getUserPrincipal()` (set by the servlet container or by Spring Security's request wrapper) by name, plus — when Spring Security is on the classpath (detected reflectively; the bridge does not depend on it) — the `Authentication`'s `getAuthorities()`. Anonymous requests forward nothing. Forwarding is on by default: the value comes from server-side authentication, so it is safe to pass, and Rust handlers that do not ask for it ignore it.
+
+```rust
+use vespera::inprocess::Principal;
+
+#[vespera::route(get)]
+pub async fn me(principal: Principal) -> String {          // 401 when anonymous
+    format!("{} admin={}", principal.name, principal.has_authority("ROLE_ADMIN"))
+}
+// Option<Principal> never rejects; Extension<Principal> also works (500 when absent).
+```
+
+- `vespera.bridge.forward-principal=false` forwards no principal.
+- A custom resolver replaces the default, e.g. to add token claims as attributes:
+
+  ```java
+  @Bean
+  PrincipalResolver principalResolver() {
+      ServletPrincipalResolver servlet = new ServletPrincipalResolver();
+      return request -> {
+          VesperaPrincipal p = servlet.resolvePrincipal(request);
+          return p == null ? null
+                  : new VesperaPrincipal(p.name(), p.authorities(), Map.of("tenant", tenantOf(request)));
+      };
+  }
+  ```
+
+  Build it only from authentication state the server established, never from raw request headers.
+- A hand-written `VesperaBridge.HeaderSource` forwards one by overriding `principal()`.
 
 ## Binary wire format
 
@@ -406,14 +439,17 @@ Both request and response use the same length-prefixed layout:
 bytes 0..4    : u32 BE = header_json byte length N
 bytes 4..4+N  : UTF-8 JSON
                   (request)  { "v":1, "method", "path",
-                               "query"?, "headers"? }
+                               "query"?, "headers"?, "app"?,
+                               "remote_addr"?, "scheme"?,
+                               "principal"? }
                   (response) { "v":1, "status", "headers",
-                               "metadata" }
+                               "metadata", "validation_errors"? }
 bytes 4+N..   : raw body bytes (UTF-8 text or binary —
                 no encoding applied)
 ```
 
 - `"v":1` is the protocol version. Mismatched versions return a `400` wire response with an explanatory plain-text body.
+- `"principal"` is `null` or `{"name": string, "authorities"?: [string], "attributes"?: {string: string}}` (at most 1024 authorities and 1024 attributes; otherwise `400`). The bridge sets it from the `PrincipalResolver` only — see [Forwarded principal](#forwarded-principal).
 - Multi-valued response headers (e.g. `set-cookie`) render as JSON arrays so semantics are preserved — they're never comma-joined.
 - All failure paths (malformed wire, Rust panic, no app registered) return a valid length-prefixed response with status `4xx` / `5xx`, so the decoder never has to special-case errors.
 - **Header values use a Latin-1 mapping.** Servlet containers expose header bytes as ISO-8859-1 strings and write response header chars back the same way, so each byte travels as the JSON char `U+0000–U+00FF`. Rust maps a request value whose chars are all `≤ U+00FF` back to those bytes (a value with a wider char keeps its UTF-8 encoding), and renders every response value byte as one char — so a UTF-8 `Content-Disposition: attachment; filename="résumé.pdf"` reaches the client byte-for-byte (previously the whole value was dropped). ASCII values are unchanged.
@@ -666,6 +702,9 @@ CompletableFuture<VesperaResponse> f = client.get("/x").sendAsync();
   `VesperaClient.encodePathSegment(id)` encodes path segments.
 - `remoteAddr("ip:port")` / `scheme("https")` fill the optional
   `remote_addr` / `scheme` wire fields (`ConnectInfo<SocketAddr>` / `Scheme`).
+- `principal(VesperaPrincipal.of("alice", "ROLE_USER"))` fills the trusted
+  `principal` wire field (Rust: `vespera::inprocess::Principal`); the client
+  never derives it from headers.
 - **Spring:** the autoconfiguration exposes a `VesperaClient` bean (default
   app; `@ConditionalOnMissingBean`), also when
   `vespera.bridge.controller-enabled=false`. It is created after

@@ -11,6 +11,7 @@ use vespera_inprocess::{RequestEnvelope, dispatch_typed};
 
 fn envelope_with_method(method: &str) -> RequestEnvelope {
     RequestEnvelope {
+        principal: None,
         method: method.to_owned(),
         path: "/test".to_owned(),
         query: String::new(),

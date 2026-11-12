@@ -7,7 +7,7 @@ import jakarta.servlet.http.HttpServletRequest;
  * forwards to Rust: the {@link HeaderPolicy} filter, minus the app-selection
  * header, with {@code content-length} replaced when the buffered body was
  * rebuilt, the request-id header replaced by the resolved id, and the
- * client's {@code remote_addr} / {@code scheme}.
+ * client's {@code remote_addr} / {@code scheme}, plus the trusted principal.
  *
  * <p>Package-private: an internal collaborator of the proxy controller.
  */
@@ -19,15 +19,18 @@ final class ProxyHeaderSource implements VesperaBridge.HeaderSource {
     private final String requestId;
     private final String remoteAddr;
     private final String scheme;
+    private final VesperaPrincipal principal;
 
     /**
      * @param excludedHeader  lower-case header to drop (the app selector), or {@code null}
      * @param contentLength   replacement {@code content-length} value, or {@code null}
      * @param requestIdHeader lower-case request-id header, or {@code null} when disabled
      * @param requestId       id forwarded under {@code requestIdHeader} (replacing the client's)
+     * @param principal       trusted principal from the {@link PrincipalResolver}, or {@code null}
      */
     ProxyHeaderSource(HttpServletRequest request, String excludedHeader, String contentLength,
-            String requestIdHeader, String requestId) {
+            String requestIdHeader, String requestId, VesperaPrincipal principal) {
+        this.principal = principal;
         this.request = request;
         this.excludedHeader = excludedHeader;
         this.contentLength = contentLength;
@@ -58,6 +61,11 @@ final class ProxyHeaderSource implements VesperaBridge.HeaderSource {
     @Override
     public String scheme() {
         return scheme;
+    }
+
+    @Override
+    public VesperaPrincipal principal() {
+        return principal;
     }
 
     /**

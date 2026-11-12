@@ -296,6 +296,22 @@ Additive; the defaults keep the previous behaviour.
   folder. A jar built this way needs a bridge from this release to load the
   musl library on Alpine.
 
+### Trusted principal side channel (`vespera_inprocess`, `kr.devfive:vespera-bridge`)
+
+- New optional request wire-header field
+  `"principal": {"name", "authorities"?: [..], "attributes"?: {..}}`, set only
+  by the host (never derived from client headers). Rust handlers extract it as
+  `vespera::inprocess::Principal` (`401` when absent), `Option<Principal>` or
+  `Extension<Principal>`; `RequestEnvelope` gained a `principal` field (a
+  struct literal needs `principal: None`). `authorities` / `attributes` are
+  capped at 1024 entries each (`400`).
+- **Behaviour change:** the Spring proxy now forwards the authenticated
+  servlet principal (`getUserPrincipal()`, plus Spring Security authorities)
+  through a new `PrincipalResolver` bean (default `ServletPrincipalResolver`).
+  Disable with `vespera.bridge.forward-principal=false`, or replace the bean.
+  `VesperaBridge.HeaderSource` gained a `principal()` default method.
+  `VesperaRequest.principal(VesperaPrincipal)` sends it from the programmatic
+  `VesperaClient`.
 ### Cancel on disconnect (`vespera_inprocess`, `vespera_jni`, `kr.devfive:vespera-bridge`)
 
 - `dispatchAsync` cancellation reaches Rust: when its `CompletableFuture`

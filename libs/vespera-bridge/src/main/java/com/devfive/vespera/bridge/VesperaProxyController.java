@@ -49,6 +49,9 @@ import java.util.concurrent.ThreadLocalRandom;
  *       ({@code null} → default app).</li>
  *   <li>{@link DispatchModeResolver#resolveMode(HttpServletRequest)}
  *       — which {@link DispatchMode} JNI path to use.</li>
+ *   <li>{@link PrincipalResolver#resolvePrincipal(HttpServletRequest)}
+ *       — the trusted authenticated principal forwarded in the wire
+ *       header's {@code "principal"} field (never client headers).</li>
  * </ol>
  *
  * <p>The autoconfigured defaults ({@link HeaderAppNameResolver} on
@@ -70,6 +73,7 @@ public class VesperaProxyController {
 
     private final AppNameResolver appResolver;
     private final DispatchModeResolver modeResolver;
+    private final PrincipalResolver principalResolver;
     private final Executor asyncResponseExecutor;
     private final DirectModeDispatcher direct;
     private final long maxBufferedRequestBytes;
@@ -161,7 +165,7 @@ public class VesperaProxyController {
     }
 
     /**
-     * Full constructor (used by the autoconfiguration).
+     * Constructor with CORS handling; forwards no principal.
      *
      * @param cors who owns CORS ({@code vespera.bridge.cors}); decides how
      *             Rust {@code Access-Control-*} response headers are merged
@@ -177,6 +181,29 @@ public class VesperaProxyController {
                                   String requestIdHeader,
                                   List<DispatchObserver> observers,
                                   CorsHandling cors) {
+        this(appResolver, modeResolver, asyncResponseExecutor, directRetryOnOverflow,
+                maxBufferedRequestBytes, maxBufferedResponseBytes, requestIdHeader, observers, cors,
+                null);
+    }
+
+    /**
+     * Full constructor (used by the autoconfiguration).
+     *
+     * @param principalResolver trusted principal forwarded to Rust
+     *                          ({@code vespera.bridge.forward-principal}), or
+     *                          {@code null} to forward none
+     */
+    public VesperaProxyController(AppNameResolver appResolver,
+                                  DispatchModeResolver modeResolver,
+                                  Executor asyncResponseExecutor,
+                                  boolean directRetryOnOverflow,
+                                  long maxBufferedRequestBytes,
+                                  long maxBufferedResponseBytes,
+                                  String requestIdHeader,
+                                  List<DispatchObserver> observers,
+                                  CorsHandling cors,
+                                  PrincipalResolver principalResolver) {
+        this.principalResolver = principalResolver == null ? PrincipalResolver.none() : principalResolver;
         this.cors = cors;
         this.requestIdHeader = requestIdHeader == null || requestIdHeader.isBlank()
                 ? null : requestIdHeader.trim();
@@ -429,14 +456,17 @@ public class VesperaProxyController {
      */
     static VesperaBridge.HeaderSource requestHeaders(
             HttpServletRequest request, String excludedHeader, String contentLength) {
-        return new ProxyHeaderSource(request, excludedHeader, contentLength, null, null);
+        return new ProxyHeaderSource(request, excludedHeader, contentLength, null, null, null);
     }
 
-    /** {@link #requestHeaders} plus this controller's request-id header and the client address. */
+    /**
+     * {@link #requestHeaders} plus this controller's request-id header, the
+     * client address and the {@link PrincipalResolver}'s trusted principal.
+     */
     private VesperaBridge.HeaderSource forwardedHeaders(
             HttpServletRequest request, String contentLength, ProxyExchange exchange) {
         return new ProxyHeaderSource(request, appSelectionHeader, contentLength,
-                requestIdHeaderLower, exchange.requestId);
+                requestIdHeaderLower, exchange.requestId, principalResolver.resolvePrincipal(request));
     }
 
     /**

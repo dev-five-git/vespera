@@ -42,6 +42,7 @@ public final class VesperaRequest {
     private boolean streamConsumed;
     private String remoteAddr;
     private String scheme;
+    private VesperaPrincipal principal;
 
     VesperaRequest(VesperaClient.Transport transport, String appName, String method, String path) {
         this.transport = transport;
@@ -152,6 +153,15 @@ public final class VesperaRequest {
     /** {@code http} / {@code https}, forwarded as the {@code scheme} wire field. */
     public VesperaRequest scheme(String scheme) {
         this.scheme = scheme;
+        return this;
+    }
+
+    /**
+     * Trusted principal forwarded as the {@code principal} wire field (Rust
+     * extracts {@code vespera::inprocess::Principal}); {@code null} = anonymous.
+     */
+    public VesperaRequest principal(VesperaPrincipal principal) {
+        this.principal = principal;
         return this;
     }
 
@@ -356,6 +366,7 @@ public final class VesperaRequest {
         Map<String, String> snapshot = headers;
         String addr = remoteAddr;
         String sch = scheme;
+        VesperaPrincipal who = principal;
         VesperaBridge.HeaderSource source = new VesperaBridge.HeaderSource() {
             @Override
             public void writeTo(VesperaBridge.HeaderSink sink) {
@@ -370,6 +381,11 @@ public final class VesperaRequest {
             @Override
             public String scheme() {
                 return sch;
+            }
+
+            @Override
+            public VesperaPrincipal principal() {
+                return who;
             }
         };
         return VesperaWireCodec.encodeRequest(

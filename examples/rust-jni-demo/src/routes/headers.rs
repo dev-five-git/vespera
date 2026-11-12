@@ -49,3 +49,23 @@ pub async fn client(
     let scheme = scheme.map_or_else(|| "none".to_owned(), |Extension(s)| s.to_string());
     format!("{scheme} {addr}")
 }
+
+/// The trusted principal the Java proxy forwarded in the `principal` wire
+/// field (never derived from client headers), as
+/// `"<name> [<authority>,...] <key>=<value>,..."`.  The `Principal` extractor
+/// fails closed: an anonymous request answers `401`.
+#[allow(clippy::unused_async)]
+#[vespera::route(get, path = "/principal", tags = ["headers"])]
+pub async fn principal(principal: vespera::inprocess::Principal) -> String {
+    let attributes: Vec<String> = principal
+        .attributes
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    format!(
+        "{} [{}] {}",
+        principal.name,
+        principal.authorities.join(","),
+        attributes.join(",")
+    )
+}

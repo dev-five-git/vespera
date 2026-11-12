@@ -67,6 +67,7 @@ mod tests {
 
     fn req(method: &str, path: &str, body: &str) -> RequestEnvelope {
         RequestEnvelope {
+            principal: None,
             method: method.into(),
             path: path.into(),
             query: String::new(),
@@ -241,6 +242,7 @@ mod tests {
     #[tokio::test]
     async fn request_headers_forwarded() {
         let envelope = RequestEnvelope {
+            principal: None,
             method: "GET".into(),
             path: "/health".into(),
             query: String::new(),
@@ -257,6 +259,7 @@ mod tests {
     #[tokio::test]
     async fn query_string_forwarded() {
         let envelope = RequestEnvelope {
+            principal: None,
             method: "GET".into(),
             path: "/health".into(),
             query: "foo=bar&baz=1".into(),
@@ -293,6 +296,7 @@ mod tests {
     async fn body_without_content_type_gets_default() {
         // Send a body WITHOUT content-type header — dispatch should inject it
         let envelope = RequestEnvelope {
+            principal: None,
             method: "POST".into(),
             path: "/documents/validate".into(),
             query: String::new(),
@@ -317,6 +321,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_method_falls_back_to_get() {
         let envelope = RequestEnvelope {
+            principal: None,
             method: "INVALID_METHOD".into(),
             path: "/nonexistent".into(),
             query: String::new(),
@@ -336,6 +341,7 @@ mod tests {
         body: &str,
     ) -> RequestEnvelope {
         RequestEnvelope {
+            principal: None,
             method: method.into(),
             path: path.into(),
             query: String::new(),
@@ -430,5 +436,22 @@ mod tests {
             vespera::inprocess::dispatch_from_bytes_async(call(r#","remote_addr":"10.0.0.1:80""#))
                 .await;
         assert_eq!(body(plain), "none 10.0.0.1:80");
+    }
+
+    /// The trusted `principal` reaches `/headers/principal`; anonymous requests get `401`.
+    #[tokio::test]
+    async fn principal_route_reads_the_trusted_principal() {
+        let mut envelope = req("GET", "/headers/principal", "");
+        envelope.principal = Some(vespera::inprocess::Principal {
+            name: "alice".to_owned(),
+            authorities: vec!["ROLE_USER".to_owned(), "ROLE_ADMIN".to_owned()],
+            attributes: [("tenant".to_owned(), "acme".to_owned())].into(),
+        });
+        let v = parse(&dispatch(create_app(), &envelope).await);
+        assert_eq!(v["status"], 200);
+        assert_eq!(v["body"], "alice [ROLE_USER,ROLE_ADMIN] tenant=acme");
+
+        let anonymous = parse(&dispatch(create_app(), &req("GET", "/headers/principal", "")).await);
+        assert_eq!(anonymous["status"], 401);
     }
 }
