@@ -453,3 +453,57 @@ fn generic_tuple_struct_substitutes_type_params() {
         assert_eq!(item.schema_type, Some(SchemaType::String));
     }
 }
+
+/// `macro_rules!`-expanded `$t:ty` fragments arrive as invisible
+/// `Type::Group`s and must map exactly like the bare type.
+#[test]
+fn invisible_type_group_maps_like_its_contents() {
+    let known: HashSet<String> = HashSet::from(["User".to_string()]);
+    for inner in [
+        quote::quote!(i64),
+        quote::quote!(Vec<User>),
+        quote::quote!(Option<String>),
+    ] {
+        let bare: Type = syn::parse2(inner.clone()).unwrap();
+        let grouped: Type = syn::parse2(
+            proc_macro2::TokenTree::Group(proc_macro2::Group::new(
+                proc_macro2::Delimiter::None,
+                inner.clone(),
+            ))
+            .into(),
+        )
+        .unwrap();
+        assert!(matches!(grouped, Type::Group(_)));
+        assert_eq!(
+            serde_json::to_value(parse_type_to_schema_ref(
+                &grouped,
+                &known,
+                &empty_struct_definitions()
+            ))
+            .unwrap(),
+            serde_json::to_value(parse_type_to_schema_ref(
+                &bare,
+                &known,
+                &empty_struct_definitions()
+            ))
+            .unwrap(),
+            "{inner}"
+        );
+    }
+}
+
+/// Types with no JSON shape of their own (fn pointers, `impl Trait`,
+/// trait objects) fall back to an unconstrained object schema.
+#[rstest::rstest]
+#[case::fn_pointer("fn(i32) -> i32")]
+#[case::impl_trait("impl Iterator<Item = u8>")]
+#[case::trait_object("dyn std::any::Any")]
+fn shapeless_types_fall_back_to_object(#[case] ty_src: &str) {
+    let ty: Type = syn::parse_str(ty_src).unwrap();
+    let SchemaRef::Inline(schema) =
+        parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions())
+    else {
+        panic!("{ty_src} must not become a $ref");
+    };
+    assert_eq!(schema.schema_type, Some(SchemaType::Object), "{ty_src}");
+}

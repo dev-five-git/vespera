@@ -240,6 +240,13 @@ mod tests {
     #[case::user_vec("my::Vec<i32>", false)]
     #[case::option_struct("Option<Payload>", false)]
     #[case::map("std::collections::HashMap<String, i32>", false)]
+    #[case::parenthesized("(String)", true)]
+    #[case::option_str_ref("Option<&'static str>", true)]
+    #[case::option_parenthesized("Option<(u8)>", true)]
+    #[case::option_array("Option<[u8; 2]>", false)]
+    #[case::qualified_self("<T as Trait>::Output", false)]
+    #[case::fn_pointer("fn() -> i32", false)]
+    #[case::cow_lifetime_first("std::borrow::Cow<'static, str>", false)]
     fn internally_tagged_newtype_payload_classification(
         #[case] inner: &str,
         #[case] is_error: bool,
@@ -255,6 +262,42 @@ mod tests {
             "{}",
             quote::quote!(#inner)
         );
+    }
+
+    /// `macro_rules!`-generated enums carry `$t:ty` payloads as invisible
+    /// `Type::Group`s; classification must look through them.
+    #[test]
+    fn invisible_type_groups_are_classified_by_their_contents() {
+        let group = |elem: syn::Type| -> syn::Type {
+            let tokens =
+                proc_macro2::Group::new(proc_macro2::Delimiter::None, quote::quote!(#elem));
+            let ty = syn::parse2(proc_macro2::TokenTree::Group(tokens).into()).unwrap();
+            assert!(
+                matches!(ty, syn::Type::Group(_)),
+                "None-delimited group parses as Type::Group"
+            );
+            ty
+        };
+        assert!(is_unambiguous_non_object(&group(syn::parse_quote!(String))));
+        assert!(!is_unambiguous_non_object(&group(syn::parse_quote!(
+            Payload
+        ))));
+        let option_of_group: syn::Type = {
+            let inner = group(syn::parse_quote!(u32));
+            syn::parse_quote!(Option<#inner>)
+        };
+        assert!(is_unambiguous_non_object(&option_of_group));
+    }
+
+    /// Multi-field tuple variants are a serde compile error under
+    /// `#[serde(tag = ...)]`; the schema check leaves that diagnosis to serde.
+    #[test]
+    fn internally_tagged_multi_field_tuple_variant_is_left_to_serde() {
+        let enum_item: syn::ItemEnum = syn::parse_quote! {
+            #[serde(tag = "type")]
+            enum Event { Ping, Pair(String, String) }
+        };
+        assert!(validate_enum_for_schema(&enum_item).is_ok());
     }
 
     #[rstest]

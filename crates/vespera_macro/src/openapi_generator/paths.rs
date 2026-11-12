@@ -266,10 +266,12 @@ fn resolve_operation_ids(
     }
 
     let mut claimed: HashMap<&str, usize> = HashMap::new();
-    for (idx, method, operation) in results.iter() {
-        let Some(operation_id) = operation.operation_id.as_deref() else {
-            continue;
-        };
+    // `build_operation` always sets an id (explicit or the fn name); an
+    // operation without one simply has nothing to claim.
+    let with_ids = results.iter().filter_map(|(idx, method, operation)| {
+        Some((idx, method, operation.operation_id.as_deref()?))
+    });
+    for (idx, method, operation_id) in with_ids {
         if let Some(&previous_idx) = claimed.get(operation_id) {
             let previous = &metadata.routes[previous_idx];
             let route_meta = &metadata.routes[*idx];
@@ -306,16 +308,17 @@ fn module_segments(route: &crate::metadata::RouteMetadata) -> Vec<&str> {
 /// routes folder name the collector prepends (`routes::users` → `routes`).
 fn common_module_prefix_len(routes: &[crate::metadata::RouteMetadata]) -> usize {
     let mut all = routes.iter().map(module_segments);
-    let Some(first) = all.next() else {
-        return 0;
-    };
-    all.fold(first.len(), |common, segments| {
-        first
-            .iter()
-            .zip(&segments)
-            .take(common)
-            .take_while(|(a, b)| a == b)
-            .count()
+    // No routes → no shared prefix (callers only ask when ids collide, i.e.
+    // with at least two routes, but `0` is the honest answer regardless).
+    all.next().map_or(0, |first| {
+        all.fold(first.len(), |common, segments| {
+            first
+                .iter()
+                .zip(&segments)
+                .take(common)
+                .take_while(|(a, b)| a == b)
+                .count()
+        })
     })
 }
 

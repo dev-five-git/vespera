@@ -77,12 +77,12 @@ pub async fn collect_capped(mut body: Body, max: usize) -> Result<Bytes, (u16, S
         }
         let pending = first.take();
         let extra = pending.as_ref().map_or(0, Bytes::len) + data.len();
-        if joined.try_reserve(extra).is_err() {
-            return Err((
-                500,
-                format!("response buffer of {total} bytes could not be allocated"),
-            ));
-        }
+        // `extra` is bounded by real frame lengths, so this cannot fail short
+        // of genuine memory exhaustion — kept fallible (one expression) so
+        // that case degrades to a 500 instead of aborting the host.
+        joined
+            .try_reserve(extra)
+            .map_err(|_| (500, response_alloc_failed_msg(total)))?;
         if let Some(prev) = pending {
             joined.extend_from_slice(&prev);
         }
@@ -91,14 +91,17 @@ pub async fn collect_capped(mut body: Body, max: usize) -> Result<Bytes, (u16, S
     Ok(first.unwrap_or_else(|| Bytes::from(joined)))
 }
 
+/// Message of the `500` produced when a buffered response's buffer could
+/// not be allocated.
+fn response_alloc_failed_msg(len: usize) -> String {
+    format!("response buffer of {len} bytes could not be allocated")
+}
+
 /// `500` wire response for a buffered response whose buffer could not be
 /// allocated (fallible `try_reserve` failed instead of aborting the host).
 #[must_use]
 pub fn response_alloc_failed_wire(len: usize) -> Vec<u8> {
-    error_wire(
-        500,
-        &format!("response buffer of {len} bytes could not be allocated"),
-    )
+    error_wire(500, &response_alloc_failed_msg(len))
 }
 
 /// Per-dispatch deadline driven by a single Tokio [`tokio::time::Sleep`].
@@ -169,11 +172,11 @@ pub fn append_capped(
     if max != 0 && next > max {
         return Err(response_too_large_wire(max));
     }
-    if out.try_reserve(data.len()).is_err() {
-        return Err(response_alloc_failed_wire(
-            out.len().saturating_add(data.len()),
-        ));
-    }
+    // `data` is a real, already-allocated frame, so this cannot fail short of
+    // genuine memory exhaustion — kept fallible (one expression) so that case
+    // degrades to a 500 instead of aborting the host.
+    out.try_reserve(data.len())
+        .map_err(|_| response_alloc_failed_wire(out.len().saturating_add(data.len())))?;
     out.extend_from_slice(data);
     *body_len = next;
     Ok(())
@@ -379,6 +382,87 @@ mod tests {
         let collected = block_on(body.collect()).expect("forwarded body").to_bytes();
         assert_eq!(collected.len(), expected.len());
         assert_eq!(&collected[..], &expected[..]);
+    }
+
+    /// Body built from explicit frames, so data / trailers / errors can be
+    /// interleaved exactly.
+    fn framed_body(frames: Vec<Result<Frame<Bytes>, std::io::Error>>) -> Body {
+        Body::new(http_body_util::StreamBody::new(futures_util::stream::iter(
+            frames,
+        )))
+    }
+
+    fn trailers() -> Frame<Bytes> {
+        let mut map = http::HeaderMap::new();
+        map.insert("x-trailer", http::HeaderValue::from_static("1"));
+        Frame::trailers(map)
+    }
+
+    #[test]
+    fn collect_capped_skips_empty_and_trailer_frames() {
+        let body = framed_body(vec![
+            Ok(Frame::data(Bytes::from_static(b"ab"))),
+            Ok(Frame::data(Bytes::new())),
+            Ok(trailers()),
+            Ok(Frame::data(Bytes::from_static(b"cd"))),
+        ]);
+        let bytes = block_on(collect_capped(body, 0)).expect("collects");
+        assert_eq!(&bytes[..], b"abcd");
+    }
+
+    #[test]
+    fn collect_capped_reports_a_failed_body_as_500() {
+        let body = framed_body(vec![
+            Ok(Frame::data(Bytes::from_static(b"partial"))),
+            Err(std::io::Error::other("boom")),
+        ]);
+        let (status, message) = block_on(collect_capped(body, 0)).expect_err("body error");
+        assert_eq!(status, 500);
+        assert_eq!(message, crate::internal::BODY_STREAM_ERROR_MSG);
+    }
+
+    #[test]
+    fn response_alloc_failed_wire_is_a_500_naming_the_size() {
+        let wire = response_alloc_failed_wire(1234);
+        assert_eq!(status_of(&wire), 500);
+        assert!(String::from_utf8_lossy(&wire).contains("buffer of 1234 bytes"));
+    }
+
+    #[test]
+    fn prefetch_skips_trailer_frames() {
+        let body = framed_body(vec![
+            Ok(Frame::data(Bytes::from_static(b"{}"))),
+            Ok(trailers()),
+        ]);
+        let Prefetched422::Small(bytes) = block_on(prefetch_422_body(body)) else {
+            panic!("small body must prefetch whole");
+        };
+        assert_eq!(&bytes[..], b"{}");
+    }
+
+    /// A single oversized first frame is re-queued as the prefix, and the
+    /// forwarded body reports its remaining size and end-of-stream honestly.
+    #[test]
+    fn prefetch_single_oversized_frame_is_forwarded_with_accurate_hints() {
+        let payload = vec![b'z'; MAX_HOIST_BODY_BYTES + 1];
+        let Prefetched422::Large(body) = block_on(prefetch_422_body(Body::from(payload.clone())))
+        else {
+            panic!("oversized 422 must not be materialised for hoisting");
+        };
+        assert!(
+            !body.is_end_stream(),
+            "the re-queued prefix is still unread"
+        );
+        let hint = body.size_hint();
+        let len = u64::try_from(payload.len()).unwrap();
+        assert_eq!(hint.lower(), len);
+        assert_eq!(
+            hint.upper(),
+            Some(len),
+            "exact rest hint keeps an upper bound"
+        );
+        let collected = block_on(body.collect()).expect("forwarded body").to_bytes();
+        assert_eq!(&collected[..], &payload[..]);
     }
 
     #[test]

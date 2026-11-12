@@ -136,14 +136,13 @@ fn typed_header_parameter(
     typed_header: &syn::PathSegment,
     required: bool,
 ) -> Option<Parameter> {
-    let header_ident = match &typed_header.arguments {
-        syn::PathArguments::AngleBracketed(args) => args.args.iter().find_map(|arg| match arg {
-            syn::GenericArgument::Type(Type::Path(path)) => {
-                path.path.segments.last().map(|seg| seg.ident.to_string())
-            }
-            _ => None,
-        }),
-        _ => None,
+    // `TypedHeader<T>` has exactly one (type) parameter.
+    let header_ident = if let syn::PathArguments::AngleBracketed(args) = &typed_header.arguments
+        && let Some(syn::GenericArgument::Type(Type::Path(path))) = args.args.first()
+    {
+        path.path.segments.last().map(|seg| seg.ident.to_string())
+    } else {
+        None
     };
     // Only the well-known `headers::*` types have a wire name we can trust.
     // A custom `headers::Header` impl declares its name in `Header::name()`,
@@ -178,6 +177,10 @@ mod tests {
         assert!(parse_option_typed_header("x", &bare_option).is_none());
         let lifetime_option: Type = syn::parse_quote!(Option<'static>);
         assert!(parse_option_typed_header("x", &lifetime_option).is_none());
+        // An `Option` of anything but `TypedHeader` is left to the other
+        // extractor parsers.
+        let plain_option: Type = syn::parse_quote!(Option<String>);
+        assert!(parse_option_typed_header("x", &plain_option).is_none());
 
         let bare_header: Type = syn::parse_quote!(Header);
         assert!(

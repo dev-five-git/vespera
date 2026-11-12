@@ -263,6 +263,12 @@ fn find_duplicate_operation_id_reports_both_locations() {
     b.set_operation(HttpMethod::Post, op("other"));
     b.set_operation(HttpMethod::Get, op("health"));
     paths.insert("/a".to_string(), a);
+    // A merged child may carry operations without an `operationId`: they
+    // claim nothing, so two of them never collide.
+    let mut anonymous = PathItem::default();
+    anonymous.set_operation(HttpMethod::Get, Operation::default());
+    anonymous.set_operation(HttpMethod::Delete, Operation::default());
+    paths.insert("/anonymous".to_string(), anonymous);
     assert!(super::find_duplicate_operation_id(&paths).is_none());
     paths.insert("/b".to_string(), b);
     assert_eq!(

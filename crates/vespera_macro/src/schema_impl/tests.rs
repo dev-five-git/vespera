@@ -983,3 +983,10 @@ fn cached_default_functions_reuses_the_cached_arc_for_unchanged_files() {
     assert_eq!(first.get("default_count"), Some(&serde_json::json!(42)));
     assert!(Arc::ptr_eq(&first, &second));
 }
+
+/// An identity without a `file::Ident` part (never produced by `derive`, e.g.
+/// hand-built metadata) can never be proven to be the same item that moved.
+#[test]
+fn identity_without_file_component_is_never_a_move() {
+    assert!(!is_same_item_moved(Some("User@1:7"), Some("User@3:7")));
+}

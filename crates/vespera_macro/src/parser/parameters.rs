@@ -116,6 +116,7 @@ mod tests {
     #[case("fn test(input: Form<User>) {}", vec![], vec![vec![]], "form_body")]
     #[case("fn test(upload: TypedMultipart<UploadRequest>) {}", vec![], vec![vec![]], "typed_multipart_body")]
     #[case("fn test(multipart: Multipart) {}", vec![], vec![vec![]], "raw_multipart_body")]
+    #[case("fn test(user_agent: Option<TypedHeader<UserAgent>>, page: Option<i32>) {}", vec![], vec![vec![ParameterLocation::Header], vec![]], "optional_typed_header")]
     fn parse_function_parameter_cases(
         #[case] func_src: &str,
         #[case] path_params: Vec<String>,

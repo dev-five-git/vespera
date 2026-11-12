@@ -93,6 +93,8 @@ serde_json = "1"
 # `#[cron("...")]` macros reject malformed input with a clean compile error
 # instead of silently dropping it / panicking at runtime. See tests/ui/.
 trybuild = "1"
+# Table-driven integration cases (AGENTS.md: rstest for unit tests).
+rstest = "0.28"
 
 [[bench]]
 name = "validation"

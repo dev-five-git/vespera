@@ -555,7 +555,18 @@ fn build_validation_response(report: &::garde::Report) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::FALLBACK_VALIDATION_ENVELOPE;
+    use super::{FALLBACK_VALIDATION_ENVELOPE, serde_error_entry};
+
+    /// A rejection whose source chain carries no `serde_path_to_error` error
+    /// (every axum extractor wraps one today, so this guards against axum
+    /// changing that) reports the rejection's own text at the root path.
+    #[test]
+    fn serde_error_without_path_source_falls_back_to_root_entry() {
+        let error = std::io::Error::other("opaque rejection");
+        let entry = serde_error_entry(&error, "fallback text".to_owned());
+        assert_eq!(entry.message, "fallback text");
+        assert_eq!(entry.path, "");
+    }
 
     #[test]
     fn fallback_envelope_matches_the_snapshot_locked_shape() {

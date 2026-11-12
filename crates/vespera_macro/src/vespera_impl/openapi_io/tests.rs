@@ -332,9 +332,56 @@ fn merged_child_schema_conflict_is_a_spanned_compile_error() {
     )
     .expect_err("different same-named child schemas must fail the build");
     let message = error.to_string();
-    assert!(message.contains("Duplicate OpenAPI schema name 'ExampleItem'"));
-    assert!(message.contains("plugin_a::PluginA"));
-    assert!(message.contains("plugin_b::PluginB"));
+    assert!(
+        message.contains("Duplicate OpenAPI schema name 'ExampleItem'"),
+        "unexpected merge error: {message}"
+    );
+    assert!(
+        message.contains("plugin_a::PluginA"),
+        "unexpected merge error: {message}"
+    );
+    assert!(
+        message.contains("plugin_b::PluginB"),
+        "unexpected merge error: {message}"
+    );
+}
+
+/// macOS temp dirs live under `/var`, a symlink to `/private/var`. Child-spec
+/// lookup must work when `CARGO_MANIFEST_DIR` is reached through a symlink
+/// (no canonical-vs-literal path comparison anywhere in the merge path).
+#[cfg(unix)]
+#[serial_test::serial]
+#[test]
+fn merge_resolves_child_specs_through_a_symlinked_manifest_dir() {
+    let temp_dir = TempDir::new().unwrap();
+    let real = temp_dir.path().join("real");
+    let target_dir = real.join("target/vespera");
+    fs::create_dir_all(&target_dir).unwrap();
+    let child = serde_json::json!({
+        "openapi": "3.1.0",
+        "info": { "title": "child", "version": "1.0.0" },
+        "paths": { "/child": { "get": { "operationId": "child", "responses": {} } } }
+    });
+    fs::write(target_dir.join("ChildApp.openapi.json"), child.to_string()).unwrap();
+    let link = temp_dir.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
+    // SAFETY: this serialized test restores the process environment through RAII.
+    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", &link) };
+    let result = generate_and_write_openapi(
+        &merge_input(syn::parse_quote!(child::ChildApp)),
+        &CollectedMetadata::new(),
+        HashMap::new(),
+        &[],
+        &mut MergeSpecCache::new(),
+    )
+    .expect("child spec behind a symlinked manifest dir must merge");
+    let spec = result.spec_json.expect("docs_url embeds the merged spec");
+    assert!(
+        spec.contains("\"/child\""),
+        "merged spec lacks child path: {spec}"
+    );
 }
 
 #[test]
@@ -662,10 +709,17 @@ fn merged_children_with_same_operation_id_is_a_compile_error() {
 /// A parent route may reference a security scheme that only a merged child
 /// declares: validation runs against the MERGED `components.securitySchemes`.
 /// A name declared nowhere is still rejected.
+///
+/// `#[serial]` MUST follow the `#[case]` list. Placed between `#[rstest]` and
+/// the cases, the generated case functions did not hold the serial lock
+/// (`serial_test::is_locked_serially` was false inside them), so they raced
+/// every other `CARGO_MANIFEST_DIR`-mutating test in this crate — the cause
+/// of the flaky merge / sidecar / from_model failures under multi-threaded
+/// `cargo test`.
 #[rstest::rstest]
-#[serial_test::serial]
 #[case::declared_by_child("childAuth", true)]
 #[case::declared_nowhere("ghostAuth", false)]
+#[serial_test::serial]
 fn security_references_are_validated_after_merge(#[case] scheme: &str, #[case] ok: bool) {
     let temp_dir = TempDir::new().unwrap();
     let target_dir = temp_dir.path().join("target/vespera");

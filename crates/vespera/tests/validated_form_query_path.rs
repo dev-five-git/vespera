@@ -398,3 +398,187 @@ async fn deserialization_failures_use_the_422_envelope() {
         insta::assert_snapshot!(format!("validated_422_deserialize_{name}"), body);
     }
 }
+
+// ── Path / Form rejection kinds → envelope `path` (or pass-through) ──
+
+/// Single-param newtype: a parse failure carries no key (`ParseError`).
+#[derive(Deserialize, garde::Validate)]
+#[serde(transparent)]
+#[allow(dead_code)]
+struct Num(#[garde(skip)] u32);
+
+/// Tuple struct: per-segment parse failures are reported by index.
+#[derive(Deserialize, garde::Validate)]
+#[allow(dead_code)]
+struct Pair(#[garde(skip)] u32, #[garde(skip)] u32);
+
+/// Parses fine but rejects odd values with a custom serde message, which axum
+/// surfaces as `ErrorKind::Message` (no key).
+#[derive(garde::Validate)]
+#[allow(dead_code)]
+struct Even(#[garde(skip)] u32);
+
+impl<'de> Deserialize<'de> for Even {
+    fn deserialize<D: ::serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let n = u32::deserialize(deserializer)?;
+        if n % 2 == 0 {
+            Ok(Self(n))
+        } else {
+            Err(::serde::de::Error::custom("value must be even"))
+        }
+    }
+}
+
+#[derive(Deserialize, garde::Validate)]
+struct Address {
+    #[garde(skip)]
+    #[allow(dead_code)]
+    city: String,
+}
+
+#[derive(Deserialize, garde::Validate)]
+struct Customer {
+    #[garde(dive)]
+    #[allow(dead_code)]
+    address: Address,
+}
+
+async fn num(Validated(Path(_n)): Validated<Path<Num>>) -> &'static str {
+    "ok"
+}
+
+async fn pair(Validated(Path(_p)): Validated<Path<Pair>>) -> &'static str {
+    "ok"
+}
+
+async fn even(Validated(Path(_e)): Validated<Path<Even>>) -> &'static str {
+    "ok"
+}
+
+async fn customer(Validated(::axum::Json(_c)): Validated<::axum::Json<Customer>>) -> &'static str {
+    "ok"
+}
+
+fn rejection_kind_router() -> Router {
+    Router::new()
+        .route("/num/{n}", get(num))
+        .route("/pair/{a}/{b}", get(pair))
+        .route("/even/{n}", get(even))
+        // Server-side misuse: two-element tuple on a one-param route, and a
+        // `Path` extractor on a route with no params at all.
+        .route("/one/{a}", get(pair))
+        .route("/no-params", get(num))
+        // `Form` on GET reads the query string (`FailedToDeserializeForm`).
+        .route("/login", get(login))
+        .route("/customers", post(customer))
+}
+
+async fn send(req: Request<Body>) -> (u16, String) {
+    let res = rejection_kind_router().oneshot(req).await.unwrap();
+    let status = res.status().as_u16();
+    (status, body_to_string(res.into_body()).await)
+}
+
+fn get_req(uri: &str) -> Request<Body> {
+    Request::builder().uri(uri).body(Body::empty()).unwrap()
+}
+
+#[rstest::rstest]
+#[case::path_parse_error_without_key("/num/abc", "")]
+#[case::path_parse_error_at_index("/pair/1/x", "1")]
+#[case::path_custom_message("/even/3", "")]
+#[case::form_on_get_reads_query_string("/login?username=alice", "password")]
+#[tokio::test]
+async fn data_errors_map_to_the_envelope_path(#[case] uri: &str, #[case] expected_path: &str) {
+    let (status, body) = send(get_req(uri)).await;
+    assert_eq!(status, 422, "{uri}: {body}");
+    let parsed: ::serde_json::Value = ::serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["errors"][0]["path"], expected_path, "{uri}: {body}");
+    assert!(
+        !parsed["errors"][0]["message"].as_str().unwrap().is_empty(),
+        "{uri}: {body}"
+    );
+}
+
+#[tokio::test]
+async fn custom_path_message_is_reported_verbatim() {
+    let (status, body) = send(get_req("/even/3")).await;
+    assert_eq!(status, 422);
+    let parsed: ::serde_json::Value = ::serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["errors"][0]["message"], "value must be even");
+}
+
+/// Route/extractor mismatches are server bugs: `Validated` must not dress
+/// them up as a client `422` — axum's own `500` passes through unchanged.
+#[rstest::rstest]
+#[case::wrong_number_of_parameters("/one/1")]
+#[case::path_extractor_on_route_without_params("/no-params")]
+#[tokio::test]
+async fn server_side_path_misuse_passes_through_as_500(#[case] uri: &str) {
+    let (status, body) = send(get_req(uri)).await;
+    assert_eq!(status, 500, "{uri}: {body}");
+    assert!(
+        ::serde_json::from_str::<::serde_json::Value>(&body).is_err(),
+        "{uri} must keep axum's plain-text body, got {body}"
+    );
+}
+
+/// serde reports `missing field` at the PARENT path; the envelope points at
+/// the missing field itself, joined with a `.` below the root.
+#[tokio::test]
+async fn nested_missing_field_path_points_at_the_field() {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/customers")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"address":{}}"#))
+        .unwrap();
+    let (status, body) = send(req).await;
+    assert_eq!(status, 422, "{body}");
+    let parsed: ::serde_json::Value = ::serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["errors"][0]["path"], "address.city", "{body}");
+}
+
+#[derive(::vespera::Multipart, garde::Validate)]
+#[allow(dead_code)]
+struct Upload {
+    #[garde(length(min = 1))]
+    name: String,
+}
+
+async fn upload(
+    Validated(::vespera::multipart::TypedMultipart(_u)): Validated<
+        ::vespera::multipart::TypedMultipart<Upload>,
+    >,
+) -> &'static str {
+    "ok"
+}
+
+async fn upload_unvalidated(
+    ::vespera::multipart::TypedMultipart(_u): ::vespera::multipart::TypedMultipart<Upload>,
+) -> &'static str {
+    "ok"
+}
+
+/// Rejections of extractors other than `Json`/`Form`/`Query`/`Path` (here
+/// `TypedMultipart` without a multipart content type) are not re-shaped:
+/// the inner extractor's own response passes through untouched.
+#[tokio::test]
+async fn non_serde_extractor_rejection_passes_through_unchanged() {
+    let request = || {
+        Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("content-type", "text/plain")
+            .body(Body::from("name=x"))
+            .unwrap()
+    };
+    let validated = Router::new().route("/upload", post(upload));
+    let res = validated.oneshot(request()).await.unwrap();
+    let (status, body) = (res.status(), body_to_string(res.into_body()).await);
+    let unwrapped = Router::new().route("/upload", post(upload_unvalidated));
+    let raw_res = unwrapped.oneshot(request()).await.unwrap();
+    assert_ne!(status, 200);
+    assert_eq!(status, raw_res.status());
+    assert_eq!(body, body_to_string(raw_res.into_body()).await);
+}

@@ -348,6 +348,53 @@ mod tests {
         }
     }
 
+    /// The post-build check only fires on the exact
+    /// `allOf: [{tag object}, {$ref: "#/components/schemas/<non-object>"}]`
+    /// shape; any other discriminated `oneOf` branch is left alone, and a tag
+    /// schema it cannot read is reported as variant `?` rather than skipped.
+    #[rstest]
+    #[case::ref_branch(json!({ "$ref": "#/components/schemas/Inner" }), None)]
+    #[case::external_ref(
+        json!({ "allOf": [
+            { "type": "object", "properties": { "type": { "type": "string", "enum": ["Data"] } } },
+            { "$ref": "other.json#/Inner" }
+        ] }),
+        None
+    )]
+    #[case::ref_tag_schema(
+        json!({ "allOf": [
+            { "type": "object", "properties": { "type": { "$ref": "#/components/schemas/Tag" } } },
+            { "$ref": "#/components/schemas/Inner" }
+        ] }),
+        Some("`?`")
+    )]
+    fn internally_tagged_check_inspects_only_tag_object_plus_local_ref(
+        #[case] branch: Value,
+        #[case] error_variant: Option<&str>,
+    ) {
+        let schemas: BTreeMap<String, vespera_core::schema::Schema> =
+            serde_json::from_value(json!({
+                "Inner": { "type": "string" },
+                "Event": {
+                    "discriminator": { "propertyName": "type" },
+                    "oneOf": [branch]
+                }
+            }))
+            .expect("hand-built components deserialize");
+        match (
+            reject_internally_tagged_non_object_refs(&schemas),
+            error_variant,
+        ) {
+            (Ok(()), None) => {}
+            (Err(error), Some(variant)) => {
+                let message = error.to_string();
+                assert!(message.starts_with("`Event`: "), "{message}");
+                assert!(message.contains(variant), "{message}");
+            }
+            (got, want) => panic!("got {got:?}, want error variant {want:?}"),
+        }
+    }
+
     #[rstest]
     #[case::struct_schema("User", "struct User { id: i32, name: String }")]
     #[case::enum_schema("Status", "enum Status { Active, Inactive, Pending }")]

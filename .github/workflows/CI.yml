@@ -95,13 +95,27 @@ jobs:
       - name: cargo deny check
         run: cargo deny check
 
-  # Public-API semver gate for the five crates.io packages, against their
+  # Public-API semver gate for the crates.io library packages, against their
   # latest published release. Blocking — but a PR that INTENTIONALLY breaks
   # an API declares it the changepacks way: a `.changepacks/changepack_log_*.json`
   # bumping that crate's Cargo.toml to Minor (0.x: minor = breaking) or Major.
-  # The bump declared there is passed as `release-type`, so a declared
-  # breaking change passes while an undeclared one fails. No changepack for a
-  # crate ⇒ checked as a patch release (no breaking changes allowed).
+  # The declared bump is translated into cargo-semver-checks' `release-type`,
+  # so a declared breaking change passes while an undeclared one fails.
+  #
+  # cargo-semver-checks names release types after the semver component that
+  # changes in 1.x terms; for 0.y.z crates that is shifted by one position
+  # (0.5 -> 0.6 is its breaking "major", 0.5.0 -> 0.5.1 may add API = "minor"):
+  #
+  #   changepack   0.y.z crate   >=1.0 crate
+  #   Major        major         major
+  #   Minor        major         minor
+  #   Patch        minor         patch
+  #   (none)       patch         patch
+  #
+  # vespera_macro is deliberately NOT checked: it is a proc-macro crate with
+  # no library target, which cargo-semver-checks rejects ("no crates with
+  # library targets selected"). Its public surface is the macro expansion,
+  # covered by the trybuild / insta suites instead of rustdoc JSON.
   semver:
     name: cargo-semver-checks
     if: github.event_name == 'pull_request'
@@ -113,30 +127,46 @@ jobs:
         id: bump
         shell: bash
         run: |
+          set -euo pipefail
           shopt -s nullglob
           files=(.changepacks/changepack_log_*.json)
-          for crate in vespera vespera_core vespera_macro vespera_inprocess vespera_jni; do
-            level=patch
+          # Resolved package versions (handles `version.workspace = true`).
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          for crate in vespera vespera_core vespera_inprocess vespera_jni; do
+            version=$(jq -r --arg n "$crate" '.packages[] | select(.name == $n) | .version' <<<"$metadata")
+            if [[ -z "$version" ]]; then
+              echo "::error::crate $crate not found in cargo metadata"
+              exit 1
+            fi
+            bump=none
             if (( ${#files[@]} )); then
               bumps=$(jq -r --arg p "crates/$crate/Cargo.toml" '.changes[$p] // empty' "${files[@]}")
-              if grep -qx Major <<<"$bumps"; then level=major
-              elif grep -qx Minor <<<"$bumps"; then level=minor
+              if grep -qx Major <<<"$bumps"; then bump=Major
+              elif grep -qx Minor <<<"$bumps"; then bump=Minor
+              elif grep -qx Patch <<<"$bumps"; then bump=Patch
               fi
             fi
-            echo "$crate=$level" | tee -a "$GITHUB_OUTPUT"
+            if [[ "$version" == 0.* ]]; then
+              case "$bump" in
+                Major|Minor) level=major ;;
+                Patch) level=minor ;;
+                *) level=patch ;;
+              esac
+            else
+              case "$bump" in
+                Major) level=major ;;
+                Minor) level=minor ;;
+                *) level=patch ;;
+              esac
+            fi
+            echo "$crate $version (changepack: $bump) -> release-type $level"
+            echo "$crate=$level" >> "$GITHUB_OUTPUT"
           done
       - name: vespera_core
         uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
         with:
           package: vespera_core
           release-type: ${{ steps.bump.outputs.vespera_core }}
-          shared-key: semver
-      - name: vespera_macro
-        if: ${{ !cancelled() }}
-        uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
-        with:
-          package: vespera_macro
-          release-type: ${{ steps.bump.outputs.vespera_macro }}
           shared-key: semver
       - name: vespera_inprocess
         if: ${{ !cancelled() }}

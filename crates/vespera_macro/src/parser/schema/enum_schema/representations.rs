@@ -36,11 +36,14 @@ fn tag_value_schema(variant_key: String) -> SchemaRef {
     }))
 }
 
-/// Tag-value schema for every emitted variant of a tagged enum, keyed by
-/// variant ident. The `#[serde(other)]` catch-all accepts any string that is
+/// Every emitted variant of a tagged enum paired with its tag-value schema
+/// (in declaration order). The `#[serde(other)]` catch-all accepts any string that is
 /// NOT one of the other variants' tags (`{type: string, not: {enum: [...]}}`),
 /// which keeps the `oneOf` branches mutually exclusive.
-fn tag_schemas(enum_item: &syn::ItemEnum, rename_all: Option<&str>) -> HashMap<String, SchemaRef> {
+fn tagged_variants<'a>(
+    enum_item: &'a syn::ItemEnum,
+    rename_all: Option<&str>,
+) -> Vec<(&'a syn::Variant, SchemaRef)> {
     let known_tags: Vec<serde_json::Value> = emitted_variants(enum_item)
         .filter(|variant| !is_other_variant(variant))
         .map(|variant| serde_json::Value::String(get_variant_key(variant, rename_all)))
@@ -58,7 +61,7 @@ fn tag_schemas(enum_item: &syn::ItemEnum, rename_all: Option<&str>) -> HashMap<S
             } else {
                 tag_value_schema(get_variant_key(variant, rename_all))
             };
-            (variant.ident.to_string(), schema)
+            (variant, schema)
         })
         .collect()
 }
@@ -132,13 +135,8 @@ pub(super) fn parse_internally_tagged_enum(
 ) -> Schema {
     let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
     let tag_string = tag.to_string();
-    let mut tags = tag_schemas(enum_item, rename_all);
-
-    for variant in emitted_variants(enum_item) {
+    for (variant, tag_schema) in tagged_variants(enum_item, rename_all) {
         let variant_description = extract_doc_comment(&variant.attrs);
-        let Some(tag_schema) = tags.remove(&variant.ident.to_string()) else {
-            continue;
-        };
         let tag_object = |description: Option<String>| Schema {
             description,
             properties: Some(BTreeMap::from([(tag_string.clone(), tag_schema.clone())])),
@@ -221,13 +219,8 @@ pub(super) fn parse_adjacently_tagged_enum(
     let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
     let tag_string = tag.to_string();
     let content_string = content.to_string();
-    let mut tags = tag_schemas(enum_item, rename_all);
-
-    for variant in emitted_variants(enum_item) {
+    for (variant, tag_schema) in tagged_variants(enum_item, rename_all) {
         let variant_description = extract_doc_comment(&variant.attrs);
-        let Some(tag_schema) = tags.remove(&variant.ident.to_string()) else {
-            continue;
-        };
 
         let mut properties = BTreeMap::new();
         let mut required = vec![tag_string.clone()];

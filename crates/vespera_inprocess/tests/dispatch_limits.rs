@@ -41,6 +41,7 @@ fn ensure() {
             .route("/small", get(|| async { "ok" }))
             .route("/big_422", get(big_422))
             .route("/small_422", get(small_422))
+            .route("/slow_422", get(slow_422))
             .route("/upload", post(upload))
     });
 }
@@ -83,6 +84,20 @@ async fn small_422() -> (http::StatusCode, &'static str) {
     (
         http::StatusCode::UNPROCESSABLE_ENTITY,
         r#"{"errors":[{"path":"x","message":"bad"}]}"#,
+    )
+}
+
+/// A `422` whose status is returned immediately but whose body only arrives
+/// after twice the deadline: the bounded hoist prefetch is still pre-commit,
+/// so the streaming paths must time it out as a clean `504` header.
+async fn slow_422() -> (http::StatusCode, Body) {
+    let stream = futures_util::stream::once(async {
+        tokio::time::sleep(TIMEOUT * 2).await;
+        Ok::<_, std::convert::Infallible>(Bytes::from_static(br#"{"errors":[]}"#))
+    });
+    (
+        http::StatusCode::UNPROCESSABLE_ENTITY,
+        Body::from_stream(stream),
     )
 }
 
@@ -340,4 +355,46 @@ async fn buffered_and_direct_422_agree_on_the_response_cap(
         &out[..n],
         "buffered and direct must produce byte-identical wire for {path}"
     );
+}
+
+#[tokio::test]
+async fn header_last_streaming_deadline_before_commit_is_a_504() {
+    ensure();
+    let started = Instant::now();
+    let mut chunks = 0;
+    let (header, outcome) =
+        dispatch_streaming_with_outcome_async(encode("GET", "/slow", b""), |_c: &[u8]| {
+            chunks += 1;
+            ControlFlow::Continue(())
+        })
+        .await;
+    assert_quick(started);
+    assert_eq!(outcome, StreamOutcome::Complete);
+    let (json, body) = split(&header);
+    assert_eq!(json["status"], 504);
+    assert!(String::from_utf8_lossy(body).contains("VESPERA_DISPATCH_TIMEOUT_MS"));
+    assert_eq!(chunks, 0, "nothing may stream after a pre-commit timeout");
+}
+
+/// The `422` hoist prefetch runs before the header is committed, so it is
+/// bounded by the deadline like the handler itself.
+#[tokio::test]
+async fn streaming_422_prefetch_past_the_deadline_is_a_504_header() {
+    ensure();
+    let started = Instant::now();
+    let mut header = Vec::new();
+    let mut chunks = 0;
+    let outcome = dispatch_streaming_with_header_async(
+        encode("GET", "/slow_422", b""),
+        |h: &[u8]| header.extend_from_slice(h),
+        |_c: &[u8]| {
+            chunks += 1;
+            ControlFlow::Continue(())
+        },
+    )
+    .await;
+    assert_quick(started);
+    assert_eq!(outcome, StreamOutcome::Complete);
+    assert_eq!(split(&header).0["status"], 504);
+    assert_eq!(chunks, 0);
 }
