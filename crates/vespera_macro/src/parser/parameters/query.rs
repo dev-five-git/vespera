@@ -12,8 +12,9 @@ use super::shared::{
 };
 use crate::{
     parser::schema::{
-        extract_default, extract_doc_comment, extract_flatten, extract_serde_skip_flags,
-        parse_struct_to_schema, parse_type_to_schema_ref,
+        SerdeSide, extract_default, extract_doc_comment, extract_flatten, extract_serde_skip_flags,
+        parse_struct_to_schema, parse_type_to_schema_ref, schema_attrs::extract_schema_constraints,
+        wire_override::field_schema_ref,
     },
     schema_macro::type_utils::{is_map_type as utils_is_map_type, is_option_type, option_inner},
 };
@@ -171,8 +172,13 @@ fn collect_query_struct_parameters(
         // #[serde(default)] fields are optional in request inputs even
         // when the Rust type is non-Option (B4: request optional).
         let has_default = extract_default(&field.attrs).is_some();
-        let mut field_schema =
-            parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions);
+        let mut field_schema = field_schema_ref(
+            field,
+            &extract_schema_constraints(&field.attrs),
+            SerdeSide::Deserialize,
+            known_schemas,
+            struct_definitions,
+        );
 
         if let SchemaRef::Ref(ref_ref) = &field_schema
             && let Some(type_name) = ref_ref.ref_path.strip_prefix("#/components/schemas/")
@@ -654,5 +660,28 @@ mod tests {
             parse_function_parameter(arg, &[], &HashSet::new(), &HashSet::new(), &HashMap::new())
                 .is_none()
         );
+    }
+
+    #[test]
+    fn query_struct_fields_honour_value_type_and_custom_deserializers() {
+        let struct_definitions = HashMap::from([(
+            "Window",
+            r#"pub struct Window {
+                #[serde(deserialize_with = "parse_unix")]
+                #[schema(value_type = i64)]
+                pub since: DateTime<Utc>,
+                #[serde(deserialize_with = "parse_csv")]
+                pub tags: Vec<String>,
+            }"#,
+        )]);
+        let ty: Type = syn::parse_str("Window").unwrap();
+        let params =
+            parse_query_struct_to_parameters(&ty, &HashSet::<&str>::new(), &struct_definitions)
+                .expect("query should parse");
+        let schemas: Vec<String> = params
+            .iter()
+            .map(|p| serde_json::to_string(&p.schema).unwrap())
+            .collect();
+        insta::assert_snapshot!("query_wire_override_fields", schemas.join("\n"));
     }
 }

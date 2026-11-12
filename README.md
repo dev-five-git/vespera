@@ -216,6 +216,41 @@ fields absent, deserialize names), FastAPI-style, while responses keep
 `#[schema(name = "X")]` yields `XInput`; if that name is already taken the
 first free `XInput2`, `XInput3`, … is used.
 
+#### Custom serde conversions (`#[schema(value_type = T)]`)
+
+serde attributes that hand a value to your own code change its wire shape,
+so vespera never documents the declared Rust type for them:
+
+```rust
+#[derive(Serialize, Deserialize, vespera::Schema)]
+pub struct Event {
+    /// `ts_seconds` writes an integer, not a date-time string.
+    #[serde(with = "vespera::chrono::serde::ts_seconds")]
+    #[schema(value_type = i64)]
+    pub created_at: DateTime<Utc>,
+    #[serde(with = "my_hex")]          // no value_type → `{}` + a note
+    pub checksum: Vec<u8>,
+}
+
+#[derive(Clone, Serialize, Deserialize, vespera::Schema)]
+#[serde(into = "String", try_from = "String")] // documented as `string`
+pub struct Rgb { pub r: u8, pub g: u8, pub b: u8 }
+```
+
+| Attribute | Documented as |
+|---|---|
+| field `#[schema(value_type = T)]` | `T`'s schema (constraints such as `minimum` still apply) |
+| field `#[serde(with / serialize_with / deserialize_with)]` without `value_type` | `{}` (any value) with a description saying the shape is unknown — never the Rust type. One-sided `serialize_with` / `deserialize_with` only affects that direction (`{Name}Input` for requests); an `Option` read by a custom deserializer is `required` in requests, as in serde |
+| container `#[serde(into = "T")]` | responses use `T`; requests keep the fields (`{Name}Input`) |
+| container `#[serde(from = "T")]` / `try_from` | requests use `T` (`{Name}Input`); responses keep the fields |
+| container `#[schema(value_type = T)]` | `T` in both directions (wins over `into` / `from`) |
+
+The derive's `Schema` assertion checks `T` instead of the field type, and
+skips a field whose type is never documented (`with` without `value_type`).
+SeaORM's `Json` / `JsonValue` columns are aliases of `serde_json::Value` and
+are documented as `{}` (any JSON value, not just objects); a `Json<T>` with a
+type argument is axum's wrapper, not a JSON value.
+
 ### Request Validation (`Validated<T>` → `422`)
 
 `Validated<T>` wraps any axum extractor (`Json`, `Form`, `Query`, `Path`) and
@@ -260,6 +295,7 @@ pub async fn create_user(
 | `min_items` / `max_items` | `minItems` / `maxItems` | yes |
 | `dive` | — | validates a nested `Schema` field |
 | `exclusive_minimum` / `exclusive_maximum` / `multiple_of` / `unique_items` / `format = "uuid"` | emitted | no (annotation only) |
+| `value_type = T` | `T`'s schema (see [Custom serde conversions](#custom-serde-conversions-schemavalue_type--t)) | no |
 
 **Alternative — `garde` directly.** If you need garde rules that
 `#[schema(...)]` does not cover (custom validators, contexts), derive

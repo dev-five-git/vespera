@@ -1,0 +1,22 @@
+---
+source: examples/axum-example/tests/integration_codecs.rs
+assertion_line: 86
+expression: "serde_json::to_string_pretty(&spec[\"components\"][\"schemas\"][component]).unwrap()"
+---
+{
+  "description": "An amount: clients SEND `{cents, currency}` (the `MoneyInput` request\ncomponent) but RECEIVE the `into` type's shape (`MoneyWire`).",
+  "properties": {
+    "cents": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "currency": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "cents",
+    "currency"
+  ],
+  "type": "object"
+}

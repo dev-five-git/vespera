@@ -23,6 +23,201 @@
         }
       }
     },
+    "/codecs/color": {
+      "post": {
+        "operationId": "echo_color",
+        "tags": [
+          "codecs"
+        ],
+        "summary": "Echo a colour (`\"#rrggbb\"` both ways).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Rgb"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rgb"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/codecs/document": {
+      "get": {
+        "operationId": "get_document",
+        "tags": [
+          "codecs"
+        ],
+        "summary": "A SeaORM model with `Json` / `Option<JsonValue>` columns.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/codecs/json": {
+      "post": {
+        "operationId": "echo_json",
+        "tags": [
+          "codecs"
+        ],
+        "summary": "Echo free-form JSON payloads.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JsonPayloads"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonPayloads"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/codecs/money": {
+      "post": {
+        "operationId": "echo_money",
+        "tags": [
+          "codecs"
+        ],
+        "summary": "Accept `{cents, currency}`, answer `{amount, currency}`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoneyInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Money"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/codecs/stamp": {
+      "post": {
+        "operationId": "echo_stamp",
+        "tags": [
+          "codecs"
+        ],
+        "summary": "Echo a unix-seconds timestamp.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnixSeconds"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnixSeconds"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/codecs/times": {
+      "get": {
+        "operationId": "get_times",
+        "tags": [
+          "codecs"
+        ],
+        "summary": "Timestamps as unix seconds / milliseconds.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventTimes"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "echo_times",
+        "tags": [
+          "codecs"
+        ],
+        "summary": "Echo timestamps back.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventTimesInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventTimes"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/complex-struct-body": {
       "post": {
         "operationId": "mod_file_with_complex_struct_body",
@@ -3153,6 +3348,27 @@
           "tags"
         ]
       },
+      "DocumentResponse": {
+        "type": "object",
+        "description": "A free-form JSON document. SeaORM's `Json` / `JsonValue` are aliases of\n`serde_json::Value`, so the columns can hold objects, arrays AND scalars —\ndocumented as any value (`{}`), not `{type: object}`.",
+        "properties": {
+          "body": {
+            "description": "Document body."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "default": 0
+          },
+          "meta": {
+            "description": "Optional metadata."
+          }
+        },
+        "required": [
+          "id",
+          "body"
+        ]
+      },
       "Enum": {
         "type": "string",
         "enum": [
@@ -3414,6 +3630,59 @@
           "code"
         ]
       },
+      "EventTimes": {
+        "type": "object",
+        "description": "Timestamps written by custom serde functions.",
+        "properties": {
+          "checksum": {
+            "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds (`chrono::serde::ts_seconds`) — an integer, not a\ndate-time string."
+          },
+          "expiresAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Optional unix milliseconds."
+          }
+        },
+        "required": [
+          "createdAt",
+          "checksum"
+        ]
+      },
+      "EventTimesInput": {
+        "type": "object",
+        "description": "Timestamps written by custom serde functions.",
+        "properties": {
+          "checksum": {
+            "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds (`chrono::serde::ts_seconds`) — an integer, not a\ndate-time string."
+          },
+          "expiresAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Optional unix milliseconds."
+          }
+        },
+        "required": [
+          "createdAt",
+          "expiresAt",
+          "checksum"
+        ]
+      },
       "ExternallyTaggedEvent": {
         "description": "Externally tagged enum (default) - serializes as `{\"VariantName\": ...}`\nExample: `{\"Created\": {\"id\": 1, \"name\": \"test\"}}`\nThis is included for comparison with the other representations.",
         "oneOf": [
@@ -3654,6 +3923,25 @@
         "required": [
           "item_id",
           "slug"
+        ]
+      },
+      "JsonPayloads": {
+        "type": "object",
+        "description": "A free-form JSON payload in every spelling vespera maps to `{}`.",
+        "properties": {
+          "body": {
+            "description": "SeaORM's `Json` (= `serde_json::Value`): any JSON value."
+          },
+          "extra": {
+            "description": "`serde_json::Value` itself."
+          },
+          "meta": {
+            "description": "SeaORM's `JsonValue` alias."
+          }
+        },
+        "required": [
+          "body",
+          "extra"
         ]
       },
       "MapQuery": {
@@ -4078,6 +4366,49 @@
           "name"
         ]
       },
+      "Money": {
+        "description": "An amount: clients SEND `{cents, currency}` (the `MoneyInput` request\ncomponent) but RECEIVE the `into` type's shape (`MoneyWire`).",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/MoneyWire"
+          }
+        ]
+      },
+      "MoneyInput": {
+        "type": "object",
+        "description": "An amount: clients SEND `{cents, currency}` (the `MoneyInput` request\ncomponent) but RECEIVE the `into` type's shape (`MoneyWire`).",
+        "properties": {
+          "cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "currency": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cents",
+          "currency"
+        ]
+      },
+      "MoneyWire": {
+        "type": "object",
+        "description": "The serialized shape of [`Money`].",
+        "properties": {
+          "amount": {
+            "type": "string",
+            "description": "Decimal amount as a string, e.g. `\"12.34\"`."
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217 code."
+          }
+        },
+        "required": [
+          "amount",
+          "currency"
+        ]
+      },
       "NetworkEndpoint": {
         "type": "object",
         "description": "Network endpoint description built from std / `url` types.",
@@ -4337,6 +4668,10 @@
           "total",
           "hasMore"
         ]
+      },
+      "Rgb": {
+        "type": "string",
+        "description": "An RGB colour that travels as `\"#rrggbb\"` in both directions."
       },
       "SearchQuery": {
         "description": "Query string: `tags` repeats (`?tags=a&tags=b`, `style: form, explode:\ntrue`), `internal` is never read, `Paging`'s fields are inlined.",
@@ -4879,6 +5214,11 @@
           "age"
         ]
       },
+      "UnixSeconds": {
+        "type": "integer",
+        "format": "int64",
+        "description": "A Unix-seconds timestamp whose container-level `value_type` documents it\nfor both directions."
+      },
       "UntaggedValue": {
         "description": "Untagged enum - serializes as just the variant data, no tag\nThe deserializer tries each variant in order until one matches.\nExample: `\"hello\"` or `42` or `{\"key\": \"value\"}`",
         "anyOf": [
@@ -5392,6 +5732,9 @@
     }
   },
   "tags": [
+    {
+      "name": "codecs"
+    },
     {
       "name": "config"
     },

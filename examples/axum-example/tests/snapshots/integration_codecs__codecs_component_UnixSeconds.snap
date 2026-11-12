@@ -1,0 +1,10 @@
+---
+source: examples/axum-example/tests/integration_codecs.rs
+assertion_line: 86
+expression: "serde_json::to_string_pretty(&spec[\"components\"][\"schemas\"][component]).unwrap()"
+---
+{
+  "description": "A Unix-seconds timestamp whose container-level `value_type` documents it\nfor both directions.",
+  "format": "int64",
+  "type": "integer"
+}

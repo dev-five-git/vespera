@@ -1,0 +1,7 @@
+---
+source: crates/vespera_macro/src/parser/parameters/path.rs
+assertion_line: 229
+expression: "schemas.join(\"\\n\")"
+---
+{"type":"string"}
+{"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}

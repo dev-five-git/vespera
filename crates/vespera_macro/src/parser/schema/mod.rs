@@ -36,6 +36,7 @@ pub mod schema_attrs;
 mod serde_attrs;
 mod struct_schema;
 mod type_schema;
+pub mod wire_override;
 
 // Re-export public API
 pub use enum_schema::{
@@ -43,7 +44,7 @@ pub use enum_schema::{
 };
 pub use generics::substitute_type;
 pub use serde_attrs::{
-    SerdeSide, extract_default, extract_doc_comment, extract_field_rename,
+    SerdeSide, extract_default, extract_doc_comment, extract_field_codec, extract_field_rename,
     extract_field_rename_for, extract_flatten, extract_rename_all, extract_rename_all_for,
     extract_serde_skip_flags, extract_skip, rename_field, strip_raw_prefix_owned,
 };

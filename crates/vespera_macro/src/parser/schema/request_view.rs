@@ -14,6 +14,12 @@
 //! - a field has `skip_deserializing` or `skip_serializing` (but not both),
 //! - a field's or the container's `rename(deserialize = ..)` /
 //!   `rename_all(deserialize = ..)` differs from the serialize side,
+//! - the container is documented through a different type per direction
+//!   (`#[serde(into = "A")]` and/or `from` / `try_from = "B"`, see
+//!   `wire_override`),
+//! - a field has a one-sided `serialize_with` / `deserialize_with` (without
+//!   `#[schema(value_type)]`), or is an `Option` read through a custom
+//!   deserializer (serde then requires it),
 //!
 //! or (transitively) when it names a type whose request view differs: a
 //! `CreateOrder { items: Vec<LineItem> }` references `LineItemInput` from
@@ -34,10 +40,17 @@ use std::{
     sync::Arc,
 };
 
-use super::serde_attrs::{
-    SerdeSide, extract_default, extract_field_rename_for, extract_rename_all_for,
-    extract_serde_skip_flags,
+use quote::ToTokens;
+
+use super::{
+    schema_attrs::extract_schema_constraints,
+    serde_attrs::{
+        SerdeSide, extract_default, extract_field_codec, extract_field_rename_for,
+        extract_rename_all_for, extract_serde_skip_flags,
+    },
+    wire_override::container_override_type,
 };
+use crate::schema_macro::type_utils::is_option_type;
 
 /// Component name → input component name, for every type whose request view
 /// differs (Rust-ident aliases of renamed schemas included).
@@ -51,6 +64,15 @@ thread_local! {
 /// Whether schemas are currently being built for a request body.
 pub fn in_request_view() -> bool {
     REQUEST_VIEW.with(Cell::get)
+}
+
+/// The serde direction of the view being built.
+pub fn current_side() -> SerdeSide {
+    if in_request_view() {
+        SerdeSide::Deserialize
+    } else {
+        SerdeSide::Serialize
+    }
 }
 
 /// Run `build` producing the request view (restores the previous mode).
@@ -178,8 +200,37 @@ fn free_input_name(name: &str, used: &BTreeSet<String>) -> String {
         .unwrap_or(base)
 }
 
+/// The container is documented through a different type per direction
+/// (`#[serde(into = "A")]` without a matching `from` / `try_from`, …).
+fn container_override_differs(attrs: &[syn::Attribute]) -> bool {
+    let tokens =
+        |side| container_override_type(attrs, side).map(|ty| ty.to_token_stream().to_string());
+    tokens(SerdeSide::Serialize) != tokens(SerdeSide::Deserialize)
+}
+
+/// The field's documented schema or `required`-ness differs per direction
+/// because of a custom serde function: a one-sided `serialize_with` /
+/// `deserialize_with` without `value_type`, or an `Option` read through a
+/// custom function (serde no longer defaults it to `None` when absent).
+fn field_codec_differs(field: &syn::Field) -> bool {
+    let codec = extract_field_codec(&field.attrs);
+    (codec.serialize != codec.deserialize
+        && extract_schema_constraints(&field.attrs)
+            .value_type
+            .is_none())
+        || (codec.deserialize && is_option_type(&field.ty))
+}
+
 /// The type's own attributes make its request view differ.
 fn directly_differs(item: &syn::Item) -> bool {
+    let attrs = match item {
+        syn::Item::Struct(item) => &item.attrs,
+        syn::Item::Enum(item) => &item.attrs,
+        _ => return false,
+    };
+    if container_override_differs(attrs) {
+        return true;
+    }
     let syn::Item::Struct(item) = item else {
         return false;
     };
@@ -200,24 +251,41 @@ fn directly_differs(item: &syn::Item) -> bool {
         !skip.fully_skipped()
             && (skip.skip_deserializing
                 || skip.skip_serializing
+                || field_codec_differs(field)
                 || extract_default(&field.attrs).is_some()
                 || extract_field_rename_for(&field.attrs, SerdeSide::Serialize)
                     != extract_field_rename_for(&field.attrs, SerdeSide::Deserialize))
     })
 }
 
-/// Every type ident named by the item's fields (generic arguments included).
+/// Every type ident named by the item's fields (generic arguments included),
+/// their `#[schema(value_type = ..)]` types, and the container's
+/// `value_type` / `into` / `from` / `try_from` types.
 fn referenced_idents(item: &syn::Item) -> BTreeSet<String> {
     let mut idents = BTreeSet::new();
     let mut add_fields = |fields: &syn::Fields| {
         for field in fields {
             collect_idents(&field.ty, &mut idents);
+            if let Some(value_type) = extract_schema_constraints(&field.attrs).value_type {
+                collect_idents(&value_type.0, &mut idents);
+            }
         }
     };
-    match item {
-        syn::Item::Struct(item) => add_fields(&item.fields),
-        syn::Item::Enum(item) => item.variants.iter().for_each(|v| add_fields(&v.fields)),
-        _ => {}
+    let attrs = match item {
+        syn::Item::Struct(item) => {
+            add_fields(&item.fields);
+            &item.attrs
+        }
+        syn::Item::Enum(item) => {
+            item.variants.iter().for_each(|v| add_fields(&v.fields));
+            &item.attrs
+        }
+        _ => return idents,
+    };
+    for side in [SerdeSide::Serialize, SerdeSide::Deserialize] {
+        if let Some(ty) = container_override_type(attrs, side) {
+            collect_idents(&ty, &mut idents);
+        }
     }
     idents
 }
@@ -281,6 +349,21 @@ mod tests {
     #[case::empty_container_default("#[serde(default)] struct A {}", false)]
     #[case::tuple("struct A(#[serde(default)] u8);", false)]
     #[case::enum_item("enum E { A { #[serde(default)] x: u8 } }", false)]
+    #[case::into_only(r#"#[serde(into = "W")] struct A { x: u8 }"#, true)]
+    #[case::from_only(r#"#[serde(from = "W")] struct A(u8);"#, true)]
+    #[case::into_and_from_same(r#"#[serde(into = "W", from = "W")] struct A { x: u8 }"#, false)]
+    #[case::container_value_type(
+        r#"#[schema(value_type = W)] #[serde(into = "X")] struct A { x: u8 }"#,
+        false
+    )]
+    #[case::enum_into(r#"#[serde(into = "String")] enum E { A }"#, true)]
+    #[case::with_both_sides(r#"struct A { #[serde(with = "m")] x: u8 }"#, false)]
+    #[case::serialize_with(r#"struct A { #[serde(serialize_with = "f")] x: u8 }"#, true)]
+    #[case::deserialize_with_value_type(
+        r#"struct A { #[serde(deserialize_with = "f")] #[schema(value_type = u8)] x: u8 }"#,
+        false
+    )]
+    #[case::option_with(r#"struct A { #[serde(with = "m")] x: Option<u8> }"#, true)]
     fn direct_differences(#[case] src: &str, #[case] expected: bool) {
         assert_eq!(directly_differs(&syn::parse_str(src).unwrap()), expected);
     }
@@ -352,6 +435,64 @@ mod tests {
         assert!(!mentions_input(&types[1..]));
         install(Arc::default());
         assert!(!has_input("A"));
+    }
+
+    #[rstest]
+    #[case::field_value_type(
+        "struct A { #[schema(value_type = Vec<W>)] x: u8 }",
+        &["Vec", "W", "u8"]
+    )]
+    #[case::struct_conversions(
+        r#"#[serde(into = "Out", try_from = "In")] struct A { x: u8 }"#,
+        &["In", "Out", "u8"]
+    )]
+    #[case::enum_conversion(
+        r#"#[serde(from = "Raw")] enum E { V(Payload) }"#,
+        &["Payload", "Raw"]
+    )]
+    fn referenced_idents_cover_overrides(#[case] src: &str, #[case] expected: &[&str]) {
+        let item: syn::Item = syn::parse_str(src).unwrap();
+        let mut expected: Vec<&str> = expected.to_vec();
+        expected.sort_unstable();
+        let found = referenced_idents(&item);
+        assert_eq!(
+            found.iter().map(String::as_str).collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn container_conversion_propagates_input_views() {
+        // `Order` deserializes from `RawOrder`, whose request view differs;
+        // `Order` itself only names `u8` fields.
+        let result = names(
+            &[
+                (
+                    "RawOrder",
+                    None,
+                    "struct RawOrder { #[serde(default)] qty: u32 }",
+                ),
+                (
+                    "Order",
+                    None,
+                    r"#[schema(value_type = RawOrder)] struct Order { qty: u8 }",
+                ),
+            ],
+            &[],
+        );
+        assert_eq!(
+            result,
+            [
+                ("Order".into(), "OrderInput".into()),
+                ("RawOrder".into(), "RawOrderInput".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn current_side_follows_the_view() {
+        assert_eq!(current_side(), SerdeSide::Serialize);
+        assert_eq!(with_request_view(current_side), SerdeSide::Deserialize);
     }
 
     #[test]

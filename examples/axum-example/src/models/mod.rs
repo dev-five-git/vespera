@@ -1,5 +1,6 @@
 pub mod api;
 pub mod config;
+pub mod document;
 pub mod memo;
 pub mod memo_comment;
 pub mod single;
