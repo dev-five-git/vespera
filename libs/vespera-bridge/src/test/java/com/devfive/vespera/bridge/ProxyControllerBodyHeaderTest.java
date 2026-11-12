@@ -3,6 +3,7 @@ package com.devfive.vespera.bridge;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -337,7 +338,7 @@ class ProxyControllerBodyHeaderTest {
         MockHttpServletResponse response = new MockHttpServletResponse();
         ByteBuffer wire = directWire("{\"status\":200,\"headers\":{}}", "hello");
 
-        int bodyLen = VesperaProxyController.applyDirectHeaderAndPositionBody(wire, response);
+        int bodyLen = WireResponseWriter.applyDirectHeaderAndPositionBody(wire, response);
 
         assertEquals(5, bodyLen);
         assertEquals(5, response.getContentLength());
@@ -352,7 +353,7 @@ class ProxyControllerBodyHeaderTest {
                 "{\"status\":200,\"headers\":{\"content-length\":\"123\"}}",
                 "hello");
 
-        int bodyLen = VesperaProxyController.applyDirectHeaderAndPositionBody(wire, response);
+        int bodyLen = WireResponseWriter.applyDirectHeaderAndPositionBody(wire, response);
 
         assertEquals(5, bodyLen);
         assertEquals(5, response.getContentLength());
@@ -366,19 +367,105 @@ class ProxyControllerBodyHeaderTest {
                 "{\"status\":204,\"headers\":{\"content-length\":\"123\"}}",
                 "hello");
 
-        int bodyLen = VesperaProxyController.applyDirectHeaderAndPositionBody(wire, response);
+        int bodyLen = WireResponseWriter.applyDirectHeaderAndPositionBody(wire, response);
 
         assertEquals(0, bodyLen);
         assertEquals(0, response.getContentLength());
         assertEquals("0", response.getHeader("Content-Length"));
     }
 
+    // ── HEAD: axum empties the body but keeps the GET-equivalent length ────
+    //
+    // axum answers HEAD by running the GET handler, setting `content-length`
+    // from the body's exact size hint, then replacing the body with an EMPTY
+    // one. The wire response therefore carries `content-length: N` with a
+    // 0-byte body; every dispatch mode must advertise N, not 0.
+
+    private static final String AXUM_HEAD_HEADER =
+            "{\"status\":200,\"headers\":{\"content-length\":\"17\","
+                    + "\"content-type\":\"application/json\"}}";
+
     @Test
-    void directHeaderSuppressesHeadResponseBody() {
+    void syncHeadAdvertisesRustDeclaredLengthWithEmptyBody() throws IOException {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        WireResponseWriter.writeWireResponse(heapWire(AXUM_HEAD_HEADER, ""), response, "HEAD");
+
+        assertEquals(200, response.getStatus());
+        assertEquals("17", response.getHeader("Content-Length"));
+        assertEquals("application/json", response.getHeader("content-type"));
+        assertEquals(0, response.getContentAsByteArray().length);
+    }
+
+    @Test
+    void directHeadAdvertisesRustDeclaredLengthWithEmptyBody() {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        ByteBuffer wire = directWire(AXUM_HEAD_HEADER, "");
+
+        int bodyLen = WireResponseWriter.applyDirectHeaderAndPositionBody(
+                wire, response, "HEAD");
+
+        assertEquals(0, bodyLen);
+        assertEquals("17", response.getHeader("Content-Length"));
+    }
+
+    @Test
+    void streamingHeadHeaderAdvertisesRustDeclaredLength() {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        boolean permits = WireResponseWriter.applyDecodedHeader(
+                heapWire(AXUM_HEAD_HEADER, ""), response, "HEAD");
+
+        assertFalse(permits);
+        assertEquals("17", response.getHeader("Content-Length"));
+    }
+
+    @Test
+    void streamingGetHeaderStillLetsContainerFrameTheBody() {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        boolean permits = WireResponseWriter.applyDecodedHeader(
+                heapWire(AXUM_HEAD_HEADER, ""), response, "GET");
+
+        assertTrue(permits);
+        assertFalse(response.containsHeader("Content-Length"));
+    }
+
+    @Test
+    void asyncHeadAdvertisesRustDeclaredLengthWithEmptyBody() throws IOException {
+        ResponseEntity<?> entity = WireResponseWriter.buildResponseEntityFromWire(
+                heapWire(AXUM_HEAD_HEADER, ""), "HEAD");
+
+        assertEquals(17, entity.getHeaders().getContentLength());
+        Resource body = (Resource) entity.getBody();
+        assertEquals(0, body.contentLength());
+        try (InputStream in = body.getInputStream()) {
+            assertEquals(-1, in.read());
+        }
+    }
+
+    @Test
+    void headWithoutDeclaredLengthAndEmptyBodyLeavesLengthUnset() throws IOException {
+        // A streaming (size-unknown) Rust body has no content-length; a HEAD
+        // must not invent `Content-Length: 0` for it.
+        MockHttpServletResponse sync = new MockHttpServletResponse();
+        WireResponseWriter.writeWireResponse(
+                heapWire("{\"status\":200,\"headers\":{}}", ""), sync, "HEAD");
+        assertFalse(sync.containsHeader("Content-Length"));
+
+        ResponseEntity<?> entity = WireResponseWriter.buildResponseEntityFromWire(
+                heapWire("{\"status\":200,\"headers\":{}}", ""), "HEAD");
+        assertEquals(-1, entity.getHeaders().getContentLength());
+    }
+
+    @Test
+    void headWithNonAxumBodyAndNoDeclaredLengthFallsBackToBodyLength() {
+        // A non-axum tower service may return a HEAD body without a length;
+        // the body is suppressed but its length is still advertised.
         MockHttpServletResponse response = new MockHttpServletResponse();
         ByteBuffer wire = directWire("{\"status\":200,\"headers\":{}}", "hello");
 
-        int bodyLen = VesperaProxyController.applyDirectHeaderAndPositionBody(
+        int bodyLen = WireResponseWriter.applyDirectHeaderAndPositionBody(
                 wire, response, "HEAD");
 
         assertEquals(0, bodyLen);
@@ -386,19 +473,35 @@ class ProxyControllerBodyHeaderTest {
     }
 
     @Test
-    void asyncResponseEntityAdvertisesHeadRepresentationLengthAndSuppressesHeadBody() throws IOException {
-        byte[] wire = heapWire(
-                "{\"status\":200,\"headers\":{\"content-length\":\"123\"}}",
-                "hello");
-
-        ResponseEntity<?> entity = VesperaProxyController.buildResponseEntityFromWire(wire, "HEAD");
-
-        assertEquals(5, entity.getHeaders().getContentLength());
-        Resource body = (Resource) entity.getBody();
-        assertEquals(0, body.contentLength());
-        try (InputStream in = body.getInputStream()) {
-            assertEquals(-1, in.read());
+    void headWithInvalidOrConflictingDeclaredLengthIsIgnored() {
+        for (String header : new String[] {
+                "{\"status\":200,\"headers\":{\"content-length\":\"-5\"}}",
+                "{\"status\":200,\"headers\":{\"content-length\":\"12abc\"}}",
+                "{\"status\":200,\"headers\":{\"content-length\":[\"5\",\"6\"]}}"}) {
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            WireResponseWriter.applyDecodedHeader(heapWire(header, ""), response, "HEAD");
+            assertFalse(response.containsHeader("Content-Length"), header);
         }
+    }
+
+    @Test
+    void headNoBodyStatusStillAdvertisesZero() throws IOException {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        WireResponseWriter.writeWireResponse(
+                heapWire("{\"status\":304,\"headers\":{\"content-length\":\"17\"}}", ""),
+                response, "HEAD");
+        assertEquals("0", response.getHeader("Content-Length"));
+    }
+
+    @Test
+    void parseContentLengthAcceptsOnlyPlainDigits() {
+        assertEquals(0, HeaderPolicy.parseContentLength("0"));
+        assertEquals(42, HeaderPolicy.parseContentLength(" 42\t"));
+        assertEquals(-1, HeaderPolicy.parseContentLength(null));
+        assertEquals(-1, HeaderPolicy.parseContentLength(""));
+        assertEquals(-1, HeaderPolicy.parseContentLength("+1"));
+        assertEquals(-1, HeaderPolicy.parseContentLength("1,1"));
+        assertEquals(-1, HeaderPolicy.parseContentLength("1234567890123456789"));
     }
 
     @Test
@@ -408,10 +511,10 @@ class ProxyControllerBodyHeaderTest {
                         + "\"x-internal-hop\":\"secret\",\"x-visible\":\"ok\"}}",
                 "hello");
 
-        ResponseEntity<?> entity = VesperaProxyController.buildResponseEntityFromWire(wire, "GET");
+        ResponseEntity<?> entity = WireResponseWriter.buildResponseEntityFromWire(wire, "GET");
 
-        assertFalse(entity.getHeaders().containsHeader("connection"));
-        assertFalse(entity.getHeaders().containsHeader("x-internal-hop"));
+        assertNull(entity.getHeaders().getFirst("connection"));
+        assertNull(entity.getHeaders().getFirst("x-internal-hop"));
         assertEquals("ok", entity.getHeaders().getFirst("x-visible"));
     }
 
@@ -423,15 +526,15 @@ class ProxyControllerBodyHeaderTest {
                 "");
         MockHttpServletResponse response = new MockHttpServletResponse();
 
-        boolean permits = VesperaProxyController.applyDecodedHeader(header, response, "GET");
+        boolean permits = WireResponseWriter.applyDecodedHeader(header, response, "GET");
 
         assertFalse(permits);
         assertFalse(response.containsHeader("content-length"));
         assertEquals("text/plain", response.getHeader("content-type"));
 
         ByteArrayOutputStream sink = new ByteArrayOutputStream();
-        VesperaProxyController.BodyPermittingOutputStream out =
-                new VesperaProxyController.BodyPermittingOutputStream(sink, "GET");
+        WireResponseWriter.BodyPermittingOutputStream out =
+                new WireResponseWriter.BodyPermittingOutputStream(sink, "GET");
         out.applyPermitsBody(permits);
         out.write("hello".getBytes(StandardCharsets.UTF_8));
         assertEquals(0, sink.size());
@@ -447,7 +550,7 @@ class ProxyControllerBodyHeaderTest {
                         + "\"connection\":\"keep-alive\",\"content-type\":\"application/json\"}}",
                 "hi");
 
-        int bodyLen = VesperaProxyController.applyDirectHeaderAndPositionBody(wire, response);
+        int bodyLen = WireResponseWriter.applyDirectHeaderAndPositionBody(wire, response);
 
         // Hop-by-hop headers are owned by the proxy and never forwarded.
         assertFalse(response.containsHeader("transfer-encoding"));

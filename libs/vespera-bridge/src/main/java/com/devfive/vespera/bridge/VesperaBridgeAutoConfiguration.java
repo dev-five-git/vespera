@@ -1,12 +1,13 @@
 package com.devfive.vespera.bridge;
 
+import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
 import org.springframework.beans.factory.annotation.Qualifier;
 
 import jakarta.servlet.Filter;
@@ -68,10 +69,30 @@ import java.util.concurrent.atomic.AtomicInteger;
  * SYNC 3.2 µs vs the old bidirectional 24.1 µs. Restore the old
  * behavior with {@code vespera.bridge.dispatch-mode=bidirectional-streaming}.
  */
-@Configuration(proxyBeanMethods = false)
+// Class-name (not Class-literal) guard: evaluated from bytecode metadata, so this
+// configuration is skipped cleanly when Spring MVC or the servlet API is absent
+// (Spring is a provided dependency since the bridge stopped exporting the
+// starter), instead of failing on a missing class.
+@AutoConfiguration
+@ConditionalOnClass(name = {
+        "jakarta.servlet.Servlet",
+        "org.springframework.web.servlet.DispatcherServlet"})
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @EnableConfigurationProperties(VesperaBridgeProperties.class)
 public class VesperaBridgeAutoConfiguration {
+
+    /**
+     * Forwards {@code vespera.bridge.native.*} to the {@link VesperaBridge}
+     * {@code configure*} methods during context startup, before the proxy
+     * serves its first request (the controller bean depends on it), so the
+     * values land before the first dispatch fixes the native runtime/limits.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public VesperaBridgeNativeSettings vesperaBridgeNativeSettings(VesperaBridgeProperties props) {
+        props.getNative().apply();
+        return new VesperaBridgeNativeSettings();
+    }
 
     @Bean
     @ConditionalOnMissingBean
@@ -215,7 +236,8 @@ public class VesperaBridgeAutoConfiguration {
             AppNameResolver appResolver,
             DispatchModeResolver modeResolver,
             @Qualifier("vesperaBridgeAsyncResponseExecutor") Executor asyncResponseExecutor,
-            VesperaBridgeProperties props) {
+            VesperaBridgeProperties props,
+            VesperaBridgeNativeSettings nativeSettings) {
         return new VesperaProxyController(
                 appResolver,
                 modeResolver,
