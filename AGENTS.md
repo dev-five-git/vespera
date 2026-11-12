@@ -444,7 +444,7 @@ props only.
 - **No direct axum dep in examples**: Use `vespera::axum` re-export
 - **No direct vespera_jni/vespera_inprocess dep**: Use `vespera` features
 - **Java package**: `com.devfive.vespera.bridge` (fixed for JNI symbol stability)
-- **Java build**: Gradle (Kotlin DSL), published to Maven Central (`kr.devfive:vespera-bridge`, `kr.devfive:vespera-bridge-gradle-plugin`) via changepacks → `./gradlew publishToMavenCentral` (vanniktech maven-publish + GPG in-memory signing)
+- **Java build**: Gradle (Kotlin DSL), published to Maven Central (`kr.devfive:vespera-bridge`, `kr.devfive:vespera-bridge-gradle-plugin`) via changepacks → `./gradlew publishToMavenCentral` (vanniktech maven-publish + GPG in-memory signing); both apply `org.cyclonedx.bom` (SBOM, see CI notes)
 - **One version for every package**: the five `vespera*` crates, `vespera-bridge` and the Gradle plugin always share a version. List **all seven** packages in every `.changepacks/changepack_log_*.json` with the **same** level (0.x: breaking = `Minor`); `bun scripts/check-version-alignment.ts` (CI lint job) fails otherwise.
 
 ## ANTI-PATTERNS (THIS PROJECT)
@@ -502,12 +502,23 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 #   msrv     cargo check --all-features on Rust 1.88 (`rust-version` in the root
 #            Cargo.toml) for the 5 published crates — examples need newer Rust
 #   deny     cargo deny check (deny.toml: advisories, licenses, bans, sources)
+#   sbom     scripts/sbom.sh: CycloneDX SBOMs of all 7 packages (5 crates via a
+#            hash-pinned cargo-cyclonedx; both Java libs via org.cyclonedx.bom
+#            `cyclonedxDirectBom`), uploaded as the `sbom` workflow artifact
 #   test-os  cargo test --workspace on windows-latest + macos-latest
 #   semver   (PRs only, not a release gate) cargo-semver-checks per published
 #            crate; release type is read from .changepacks/changepack_log_*.json,
 #            so an intentional break must be declared as a Minor (0.x) / Major bump
 # Third-party actions are pinned to commit SHAs; workflows default to
-# `permissions: contents: read`.
+# `permissions: contents: read`. Only the release job adds `id-token: write` +
+# `attestations: write`: after changepacks publishes, scripts/release-artifacts.sh
+# collects the published .crate files (sha256 checked against crates.io) + JARs
+# and regenerates the SBOMs from the released commit in a temp worktree; then
+# actions/attest-build-provenance (all files) + one actions/attest SBOM
+# attestation per package, SBOMs attached to the GitHub releases (best effort).
+# vespera-bridge also publishes its SBOM to Maven Central (classifier
+# `cyclonedx`); the Gradle plugin's is NOT on its publication (the Plugin Portal
+# rejects JSON artifacts). User-facing verification: SECURITY.md.
 cargo deny check                                   # local equivalent of `deny`
 cargo +1.88 check --all-features -p vespera -p vespera_core -p vespera_macro \
   -p vespera_inprocess -p vespera_jni              # local equivalent of `msrv`
