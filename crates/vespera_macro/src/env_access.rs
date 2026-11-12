@@ -15,7 +15,6 @@ use std::ffi::OsString;
 
 /// [`std::env::var_os`], honouring the per-thread test overrides.
 pub fn var_os(key: &str) -> Option<OsString> {
-    #[cfg(test)]
     if let Some(value) = test_env::lookup(key) {
         return value.into_os_string();
     }
@@ -34,15 +33,20 @@ pub fn var(key: &str) -> Result<String, VarError> {
 /// Each libtest test runs on its own thread, so an override is invisible to
 /// every other test. [`EnvGuard`] restores the previous override on drop
 /// (including on panic), so nested / sequential overrides compose.
-#[cfg(test)]
+// Compiled in every build so callers (`var_os`, the parallel path worker
+// pool) need no statement-level `#[cfg(test)]`; outside tests nothing ever
+// sets an override, so the map stays empty and lookups miss.
 pub mod test_env {
     use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::ffi::{OsStr, OsString};
+    #[cfg(test)]
+    use std::ffi::OsStr;
+    use std::ffi::OsString;
     use std::sync::Arc;
 
     /// One overridden variable.
     #[derive(Clone)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub enum Override {
         /// The variable reads as this value.
         Set(OsString),
@@ -80,6 +84,7 @@ pub mod test_env {
         OVERRIDES.with(|slot| *slot.borrow_mut() = overrides);
     }
 
+    #[cfg(test)]
     fn replace(key: &str, value: Override) -> EnvGuard {
         let previous = OVERRIDES.with(|overrides| {
             let mut overrides = overrides.borrow_mut();
@@ -91,18 +96,21 @@ pub mod test_env {
         }
     }
 
+    #[cfg(test)]
     /// Override `key` with `value` on this thread until the guard drops.
     #[must_use = "the override is removed as soon as the guard drops"]
     pub fn set_var(key: &str, value: impl AsRef<OsStr>) -> EnvGuard {
         replace(key, Override::Set(value.as_ref().to_owned()))
     }
 
+    #[cfg(test)]
     /// Hide `key` on this thread until the guard drops.
     #[must_use = "the override is removed as soon as the guard drops"]
     pub fn remove_var(key: &str) -> EnvGuard {
         replace(key, Override::Unset)
     }
 
+    #[cfg(test)]
     /// Restores the override `key` had before [`set_var`] / [`remove_var`].
     #[must_use = "the override is removed as soon as the guard drops"]
     pub struct EnvGuard {
@@ -110,6 +118,7 @@ pub mod test_env {
         previous: Option<Override>,
     }
 
+    #[cfg(test)]
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             let previous = self.previous.take();
