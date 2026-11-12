@@ -94,6 +94,8 @@ pub async fn reindex() {}
 
 ## Multipart Form Data
 
+Multipart support is the `multipart` feature. It is **on by default**; with `default-features = false`, re-enable it with `features = ["multipart"]`. Without it, `#[derive(Multipart)]` (also emitted by `schema_type!(..., multipart)`) is a compile error that names the feature, and `vespera::multipart` / `vespera::tempfile` do not exist — dropping it removes tempfile and the multer-based multipart parser from the build.
+
 ### Typed Multipart (Recommended)
 
 Use `TypedMultipart` for file uploads with a statically-known schema. Vespera generates `multipart/form-data` content type in OpenAPI and maps `FieldData<NamedTempFile>` to `{ "type": "string", "format": "binary" }`:

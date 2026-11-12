@@ -256,6 +256,11 @@ pub async fn reindex() {}
 | `TypedHeader<T>` | header parameter | |
 | `HeaderMap` | **ignored** | Too dynamic |
 
+`TypedMultipart<T>`, `#[derive(Multipart)]` and `schema_type!(..., multipart)` need
+the `multipart` feature. It is on by default; with `default-features = false`
+add `features = ["multipart"]` (without it `#[derive(Multipart)]` is a compile
+error naming the feature).
+
 ---
 
 ## Route Handler Requirements

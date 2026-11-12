@@ -454,7 +454,10 @@ the security scheme entry name.
 
 #### Typed Multipart (Recommended)
 
-Upload files using vespera's built-in `TypedMultipart` extractor:
+Upload files using vespera's built-in `TypedMultipart` extractor (the
+`multipart` cargo feature — **on by default**; with `default-features = false`
+add `features = ["multipart"]`, otherwise `#[derive(Multipart)]` is a compile
+error naming the feature):
 
 ```rust
 use vespera::multipart::{FieldData, TypedMultipart};
