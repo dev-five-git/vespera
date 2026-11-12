@@ -1,16 +1,14 @@
 package com.devfive.vespera.bridge;
 
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.core.io.AbstractResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.Objects;
 
 /**
@@ -105,17 +103,23 @@ final class WireResponseWriter {
             byte[] wire, int off, int len, HttpServletResponse response) {
         HeaderPolicy.ResponseHeaderAccumulator acc = new HeaderPolicy.ResponseHeaderAccumulator();
         acc.status = WireHeaderReader.apply(wire, off, len, acc);
-        response.setStatus(acc.status);
-        HeaderPolicy.addServletResponseHeaders(response, acc);
-        return acc;
+        return commitHeader(acc, response);
     }
 
     private static HeaderPolicy.ResponseHeaderAccumulator applyWireHeaderToResponse(
             ByteBuffer wire, int off, int len, HttpServletResponse response) {
         HeaderPolicy.ResponseHeaderAccumulator acc = new HeaderPolicy.ResponseHeaderAccumulator();
         acc.status = WireHeaderReader.apply(wire, off, len, acc);
+        return commitHeader(acc, response);
+    }
+
+    private static HeaderPolicy.ResponseHeaderAccumulator commitHeader(
+            HeaderPolicy.ResponseHeaderAccumulator acc, HttpServletResponse response) {
         response.setStatus(acc.status);
         HeaderPolicy.addServletResponseHeaders(response, acc);
+        if (acc.panicked) {
+            ProxyServletResponse.markPanicked(response);
+        }
         return acc;
     }
 
@@ -235,18 +239,31 @@ final class WireResponseWriter {
     // ── Async (ResponseEntity) ────────────────────────────────────────────
 
     /**
-     * Build a {@link ResponseEntity} straight from the wire response with
-     * minimal allocation: status + headers via {@link WireHeaderReader}
-     * (no {@code DecodedResponse} graph) and the body exposed as a
-     * {@link org.springframework.core.io.Resource} view over the wire tail
-     * (no body-sized slice copy). Pure Java — run on the controller's async
-     * response executor, never the native completion thread.
+     * Build a {@link ResponseEntity} straight from the wire response: status
+     * + headers via {@link WireHeaderReader} (no {@code DecodedResponse}
+     * graph) and the body as a {@code byte[]} copy of the wire tail. A plain
+     * {@code byte[]} body (not a {@code Resource}) keeps Spring from adding
+     * {@code Accept-Ranges}, answering {@code Range} requests with {@code 206}
+     * or guessing a {@code Content-Type} from a resource name, so ASYNC
+     * responses match SYNC / DIRECT. Pure Java — run on the controller's
+     * async response executor, never the native completion thread.
      */
-    static ResponseEntity<?> buildResponseEntityFromWire(byte[] wire) {
+    static ResponseEntity<byte[]> buildResponseEntityFromWire(byte[] wire) {
         return buildResponseEntityFromWire(wire, null);
     }
 
-    static ResponseEntity<?> buildResponseEntityFromWire(byte[] wire, String method) {
+    static ResponseEntity<byte[]> buildResponseEntityFromWire(byte[] wire, String method) {
+        return buildResponseEntityFromWire(wire, method, null);
+    }
+
+    /**
+     * As {@link #buildResponseEntityFromWire(byte[], String)}, also flagging a
+     * caught Rust panic on {@code proxied} and echoing its request id unless
+     * the Rust response set that header itself ({@code proxied} may be
+     * {@code null}).
+     */
+    static ResponseEntity<byte[]> buildResponseEntityFromWire(
+            byte[] wire, String method, ProxyServletResponse proxied) {
         int headerLen = VesperaWireCodec.readHeaderLength(wire);
         HttpHeaders httpHeaders = new HttpHeaders();
         HeaderPolicy.ResponseHeaderAccumulator acc =
@@ -260,12 +277,21 @@ final class WireResponseWriter {
         if (contentLength >= 0) {
             httpHeaders.setContentLength(contentLength);
         }
+        if (proxied != null) {
+            if (acc.panicked) {
+                proxied.markPanicked();
+            }
+            String idHeader = proxied.requestIdHeader();
+            if (idHeader != null && httpHeaders.getFirst(idHeader) == null) {
+                httpHeaders.set(idHeader, proxied.requestId());
+            }
+        }
         // Builder, not the (body, HttpHeaders, status) constructor: that
         // overload is new in Spring Framework 7, so linking against it would
         // throw NoSuchMethodError on a Spring Boot 3.x (Framework 6) runtime.
         return ResponseEntity.status(status)
                 .headers(httpHeaders)
-                .body(new WireBodyResource(wire, bodyOff, bytesToExpose));
+                .body(Arrays.copyOfRange(wire, bodyOff, bodyOff + bytesToExpose));
     }
 
     // ── Output adapters ───────────────────────────────────────────────────
@@ -302,34 +328,6 @@ final class WireResponseWriter {
         @Override
         public void flush() throws IOException {
             delegate.flush();
-        }
-    }
-
-    /** Zero-copy {@link org.springframework.core.io.Resource} over a wire body slice. */
-    static final class WireBodyResource extends AbstractResource {
-        private final byte[] wire;
-        private final int offset;
-        private final int length;
-
-        WireBodyResource(byte[] wire, int offset, int length) {
-            this.wire = Objects.requireNonNull(wire, "wire");
-            this.offset = offset;
-            this.length = length;
-        }
-
-        @Override
-        public InputStream getInputStream() {
-            return new ByteArrayInputStream(wire, offset, length);
-        }
-
-        @Override
-        public long contentLength() {
-            return length;
-        }
-
-        @Override
-        public String getDescription() {
-            return "vespera wire response body slice";
         }
     }
 }

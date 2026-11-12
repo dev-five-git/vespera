@@ -106,7 +106,7 @@ pub use streaming::{
     dispatch_bidirectional_streaming_with_header_closing, dispatch_streaming_async,
     dispatch_streaming_with_header_async, dispatch_streaming_with_outcome_async,
 };
-pub use wire::error_wire;
+pub use wire::{error_wire, panic_error_wire};
 
 /// Bench-only surface for the same-run hand-rolled vs `serde_json` A/B in
 /// `benches/dispatch.rs` (the `wire_header_serde` criterion group).

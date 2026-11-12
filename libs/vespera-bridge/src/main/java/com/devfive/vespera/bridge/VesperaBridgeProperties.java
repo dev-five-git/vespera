@@ -28,6 +28,12 @@ import java.util.List;
  *     max-buffered-request-bytes: 10485760 # cap SYNC/ASYNC/DIRECT/STREAMING request buffering
  *     max-buffered-response-bytes: 67108864 # cap SYNC heap-buffered response bodies
  *     clear-threadlocals-after-request: false # clear per-thread buffers after each proxied request
+ *     library-name: my_app        # auto-run VesperaBridge.init("my_app") at startup
+ *     shutdown-on-close: false    # shut the native runtime down on context close (irreversible)
+ *     shutdown-timeout: 10s
+ *     request-id:
+ *       enabled: true             # read / generate, forward, echo and MDC the request id
+ *       header: X-Request-Id
  *     native:                     # Rust-side knobs, applied before the first dispatch
  *       worker-threads: 8
  *       max-blocking-threads: 256
@@ -152,6 +158,29 @@ public class VesperaBridgeProperties {
      */
     private final Native nativeSettings = new Native();
 
+    /**
+     * Native library (Cargo crate) name the autoconfiguration initialises
+     * with {@link VesperaBridge#init(String)} when the application has not
+     * done so itself. {@code null} (default) leaves initialisation to the
+     * application.
+     */
+    private String libraryName;
+
+    /**
+     * Whether closing the Spring context also shuts the native runtime down
+     * ({@link VesperaBridge#shutdown}). Default {@code false}: the shutdown is
+     * irreversible for the JVM (the native library cannot be reloaded), so it
+     * only applies when the autoconfiguration itself initialised the library
+     * via {@link #libraryName}.
+     */
+    private boolean shutdownOnClose = false;
+
+    /** How long {@link #shutdownOnClose} waits for in-flight native tasks. */
+    private Duration shutdownTimeout = Duration.ofSeconds(10);
+
+    /** Request-id handling of the proxy controller. */
+    private final RequestId requestId = new RequestId();
+
     public String getAppHeader() {
         return appHeader;
     }
@@ -226,6 +255,67 @@ public class VesperaBridgeProperties {
 
     public Native getNative() {
         return nativeSettings;
+    }
+
+    public String getLibraryName() {
+        return libraryName;
+    }
+
+    public void setLibraryName(String libraryName) {
+        this.libraryName = libraryName;
+    }
+
+    public boolean isShutdownOnClose() {
+        return shutdownOnClose;
+    }
+
+    public void setShutdownOnClose(boolean shutdownOnClose) {
+        this.shutdownOnClose = shutdownOnClose;
+    }
+
+    public Duration getShutdownTimeout() {
+        return shutdownTimeout;
+    }
+
+    public void setShutdownTimeout(Duration shutdownTimeout) {
+        this.shutdownTimeout = shutdownTimeout == null ? Duration.ZERO : shutdownTimeout;
+    }
+
+    public RequestId getRequestId() {
+        return requestId;
+    }
+
+    /**
+     * {@code vespera.bridge.request-id.*}: when enabled, the proxy uses the
+     * client's request id (a 1–128 character visible-ASCII token) or
+     * generates a UUID, forwards it to Rust under {@link #header}, echoes it
+     * on the response unless Rust set that header, and exposes it as the
+     * SLF4J MDC key {@code requestId} while dispatching.
+     */
+    public static class RequestId {
+        private boolean enabled = true;
+        private String header = "X-Request-Id";
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getHeader() {
+            return header;
+        }
+
+        public void setHeader(String header) {
+            this.header = header;
+        }
+
+        /** The header the controller uses, or {@code null} when disabled. */
+        String effectiveHeader() {
+            return enabled && header != null && !header.isBlank() ? header.trim() : null;
+        }
     }
 
     /**

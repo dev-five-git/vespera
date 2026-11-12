@@ -45,7 +45,10 @@ class VesperaProxyControllerBufferedLimitHttpTest extends AbstractVesperaHttpInt
         assertEquals(HttpStatus.CONTENT_TOO_LARGE, response.getStatusCode());
         assertNotNull(response.getBody());
         String body = new String(response.getBody(), StandardCharsets.UTF_8);
-        assertTrue(body.contains("413"), body);
-        assertTrue(body.contains("/echo"), body);
+        // Written by the proxy itself in the error_wire shape (text/plain),
+        // not by Spring's /error page.
+        assertEquals("text/plain;charset=utf-8",
+                response.getHeaders().getContentType().toString().replace(" ", ""));
+        assertTrue(body.contains("vespera.bridge.max-buffered-request-bytes"), body);
     }
 }

@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 use bytes::Bytes;
 
 use crate::envelope::ResponseMetadata;
-use crate::internal::{HEADER_TOO_LARGE_MSG, ResponseParts};
+use crate::internal::{ConnectionInfo, HEADER_TOO_LARGE_MSG, ResponseParts};
 
 /// Hand-rolled request-header parser (byte-compatible replacement for
 /// the `serde_json` derive path; the serde version is retained as
@@ -92,6 +92,25 @@ pub struct WireRequestHeader<'a> {
         serde(default, borrow, deserialize_with = "de_opt_cow")
     )]
     pub app: Option<Cow<'a, str>>,
+    /// Optional client socket address (`"ip:port"`, IPv6 as `"[ip]:port"`)
+    /// the host saw for this request.  When it parses as a
+    /// [`std::net::SocketAddr`], dispatch inserts an
+    /// `axum::extract::ConnectInfo<SocketAddr>` request extension, so
+    /// `ConnectInfo` handlers work in-process as they do behind
+    /// `into_make_service_with_connect_info`.  Unparseable values are ignored.
+    #[cfg_attr(
+        any(test, feature = "bench-support"),
+        serde(default, borrow, deserialize_with = "de_opt_cow")
+    )]
+    pub remote_addr: Option<Cow<'a, str>>,
+    /// Optional scheme the client used (`"http"` / `"https"`, ASCII
+    /// case-insensitive).  Inserted as an [`http::uri::Scheme`] request
+    /// extension (`Extension<Scheme>`); any other value is ignored.
+    #[cfg_attr(
+        any(test, feature = "bench-support"),
+        serde(default, borrow, deserialize_with = "de_opt_cow")
+    )]
+    pub scheme: Option<Cow<'a, str>>,
 }
 
 impl WireRequestHeader<'_> {
@@ -106,6 +125,13 @@ impl WireRequestHeader<'_> {
     #[inline]
     pub fn iter_str_pairs(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
         self.headers.iter().map(|(k, v)| (k.as_ref(), v.as_ref()))
+    }
+
+    /// The optional `remote_addr` / `scheme` fields, parsed into the
+    /// request extensions dispatch inserts (see [`ConnectionInfo`]).
+    #[must_use]
+    pub fn connection_info(&self) -> ConnectionInfo {
+        ConnectionInfo::parse(self.remote_addr.as_deref(), self.scheme.as_deref())
     }
 }
 
@@ -375,6 +401,24 @@ pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
     let header_cap = WIRE_HEADER_RESERVE;
     let mut out = Vec::with_capacity(4 + header_cap + body.len());
     let _ = write_wire_header_into(&mut out, status, headers, &metadata, None);
+    out.extend_from_slice(body);
+    out
+}
+
+/// Build the `500` wire response a host returns for a **caught panic**
+/// (e.g. the JNI bridge's `catch_unwind` guards): the same plain-text shape
+/// as [`error_wire`], plus `"panicked":"true"` in the response `metadata`, so
+/// the host can tell an engine panic from an ordinary handler `500` (the
+/// Java proxy logs it at WARN and reports it to its `DispatchObserver`s).
+#[must_use]
+pub fn panic_error_wire(msg: &str) -> Vec<u8> {
+    let body = msg.as_bytes();
+    let mut out = Vec::with_capacity(4 + WIRE_HEADER_RESERVE + body.len());
+    out.extend_from_slice(&[0u8; 4]);
+    header_write::write_panicked_response_header(&mut out, 500, &ERROR_WIRE_HEADERS);
+    // A single `content-type` header: the length always fits in `u32`.
+    let header_len = u32::try_from(out.len() - 4).unwrap_or(u32::MAX);
+    finish_wire_header(&mut out, 4, header_len);
     out.extend_from_slice(body);
     out
 }

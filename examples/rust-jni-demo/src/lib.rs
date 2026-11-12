@@ -312,4 +312,32 @@ mod tests {
             "attachment; filename=\"\""
         );
     }
+
+    /// `remote_addr` / `scheme` from the wire header reach the handler as
+    /// `ConnectInfo` and the `Scheme` extension (scheme is optional).
+    #[tokio::test]
+    async fn client_route_reads_the_forwarded_connection() {
+        vespera::inprocess::register_app_named("client-test", create_app);
+        let call = |fields: &str| {
+            let header = format!(
+                r#"{{"v":1,"method":"GET","path":"/headers/client","app":"client-test"{fields}}}"#
+            );
+            let mut wire = u32::try_from(header.len()).unwrap().to_be_bytes().to_vec();
+            wire.extend_from_slice(header.as_bytes());
+            wire
+        };
+        let body = |wire: Vec<u8>| {
+            let len = u32::from_be_bytes(wire[..4].try_into().unwrap()) as usize;
+            String::from_utf8(wire[4 + len..].to_vec()).unwrap()
+        };
+        let https = vespera::inprocess::dispatch_from_bytes_async(call(
+            r#","remote_addr":"[::1]:4321","scheme":"https""#,
+        ))
+        .await;
+        assert_eq!(body(https), "https [::1]:4321");
+        let plain =
+            vespera::inprocess::dispatch_from_bytes_async(call(r#","remote_addr":"10.0.0.1:80""#))
+                .await;
+        assert_eq!(body(plain), "none 10.0.0.1:80");
+    }
 }

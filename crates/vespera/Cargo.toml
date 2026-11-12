@@ -40,7 +40,7 @@ default = [
     "mimalloc",
 ]
 cron = ["tokio/time", "vespera_core/cron-chrono", "vespera_macro/cron"]
-inprocess = ["dep:vespera_inprocess"]
+inprocess = ["dep:vespera_inprocess", "vespera_inprocess/connect-info"]
 jni = ["inprocess", "dep:vespera_jni"]
 # mimalloc as the cdylib's global allocator (see vespera_jni docs).
 # Default-on, but the `vespera_jni?/mimalloc` weak-dep syntax means it
@@ -92,7 +92,7 @@ tower = { version = "0.5", features = ["util"] }
 # Integration tests for the JNI dispatch path call
 # `vespera_inprocess::{register_app, dispatch_from_json}` directly so
 # they don't need the `inprocess` cargo feature to be enabled.
-vespera_inprocess = { workspace = true }
+vespera_inprocess = { workspace = true, features = ["connect-info"] }
 # Byte-snapshot testing for 422 validation envelope contract
 insta = "1.49"
 # `Validated<T>` 422-envelope serialization before/after A/B bench.

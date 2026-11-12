@@ -202,6 +202,8 @@ type OwnedHeader = (
     String,
     Option<String>,
     Vec<(String, String)>,
+    Option<String>,
+    Option<String>,
 );
 
 fn owned(h: &WireRequestHeader<'_>) -> OwnedHeader {
@@ -215,6 +217,8 @@ fn owned(h: &WireRequestHeader<'_>) -> OwnedHeader {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
+        h.remote_addr.as_ref().map(ToString::to_string),
+        h.scheme.as_ref().map(ToString::to_string),
     )
 }
 
@@ -240,6 +244,10 @@ fn hand_parse_matches_serde_parse() {
             // app: null and app: trimmed string
             br#"{"v":1,"method":"GET","path":"/p","app":null}"#,
             br#"{"v":1,"method":"GET","path":"/p","app":"  admin  "}"#,
+            // optional connection fields: strings (escaped too) and null
+            br#"{"v":1,"method":"GET","path":"/p","remote_addr":"[::1]:8080","scheme":"https"}"#,
+            br#"{"scheme":"http","remote_addr":"10.0.0.1:1","v":1,"method":"GET","path":"/p"}"#,
+            br#"{"v":1,"method":"GET","path":"/p","remote_addr":null,"scheme":null}"#,
             // unknown fields (object / array / number / bool / null) ignored
             br#"{"v":1,"method":"GET","path":"/p","extra":{"nested":[1,2,3]},"flag":true,"n":42,"z":null}"#,
             // empty headers object + duplicate header NAMES preserved
@@ -285,6 +293,10 @@ fn hand_parse_rejects_what_serde_rejects() {
         br#"{"v":1,"v":1,"method":"GET","path":"/p"}"#, // duplicate known field
         br#"{"v":1,"method":"GET","path":"/p","headers":{"x":1}}"#, // header value not string
         br#"{"v":1,"method":"GET","path":"/p","app":7}"#, // app not string/null
+        br#"{"v":1,"method":"GET","path":"/p","remote_addr":1}"#, // remote_addr not string/null
+        br#"{"v":1,"method":"GET","path":"/p","scheme":[]}"#, // scheme not string/null
+        br#"{"v":1,"method":"GET","path":"/p","remote_addr":"a","remote_addr":"b"}"#, // duplicate
+        br#"{"v":1,"method":"GET","path":"/p","scheme":"http","scheme":"https"}"#, // duplicate
         br#"{"v":1,"method":"GET","path":"/p","headers":[]}"#, // headers not object
         // Malformed values under UNKNOWN keys must still be rejected
         // (the skip path validates the full JSON grammar, matching
@@ -893,4 +905,43 @@ fn hand_serialize_matches_serde_for_heap_fallback_header_maps() {
             );
         }
     }
+}
+
+// ── optional connection fields + panicked metadata ──
+
+#[test]
+fn connection_info_reads_the_optional_wire_fields() {
+    let header = parse_wire_header(
+        br#"{"v":1,"method":"GET","path":"/p","remote_addr":"192.0.2.7:4321","scheme":"https"}"#,
+    )
+    .expect("valid header");
+    let info = header.connection_info();
+    assert_eq!(info.remote_addr, Some("192.0.2.7:4321".parse().unwrap()));
+    assert_eq!(info.scheme, Some(http::uri::Scheme::HTTPS));
+
+    let bare = parse_wire_header(br#"{"v":1,"method":"GET","path":"/p"}"#).expect("valid");
+    assert_eq!(
+        bare.connection_info(),
+        crate::internal::ConnectionInfo::default()
+    );
+}
+
+#[test]
+fn panic_error_wire_flags_metadata_and_keeps_the_error_wire_shape() {
+    let wire = crate::wire::panic_error_wire("panic in Rust engine");
+    let len = u32::from_be_bytes(wire[..4].try_into().unwrap()) as usize;
+    let header = std::str::from_utf8(&wire[4..4 + len]).unwrap();
+    assert_eq!(
+        header,
+        format!(
+            r#"{{"v":1,"status":500,"headers":{{"content-type":"text/plain; charset=utf-8"}},"metadata":{{"version":"{}","panicked":"true"}}}}"#,
+            env!("CARGO_PKG_VERSION")
+        )
+    );
+    assert_eq!(&wire[4 + len..], b"panic in Rust engine");
+    // Same header + body as a plain error_wire apart from the metadata flag.
+    let plain = crate::wire::error_wire(500, "panic in Rust engine");
+    let plain_len = u32::from_be_bytes(plain[..4].try_into().unwrap()) as usize;
+    let plain_header = std::str::from_utf8(&plain[4..4 + plain_len]).unwrap();
+    assert_eq!(header.replace(r#","panicked":"true""#, ""), plain_header);
 }

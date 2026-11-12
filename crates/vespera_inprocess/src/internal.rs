@@ -2,16 +2,71 @@
 //! request building, router oneshot driving, and response collection.
 
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 
 use axum::body::Body;
+#[cfg(feature = "connect-info")]
+use axum::extract::ConnectInfo;
 use bytes::Bytes;
-use http::{HeaderName, Method, Request, Uri, header::CONTENT_TYPE};
+use http::{HeaderName, Method, Request, Uri, header::CONTENT_TYPE, uri::Scheme};
 use tower::ServiceExt;
 
 use crate::Router;
 use crate::envelope::{HeaderValue, ResponseEnvelope, ResponseMetadata};
 
 // ── Internal Helpers ─────────────────────────────────────────────────
+
+/// Client connection facts a host forwards in the optional `remote_addr` /
+/// `scheme` request wire-header fields, parsed once per request.
+///
+/// Dispatch inserts them as request extensions: `remote_addr` as
+/// [`ConnectInfo<SocketAddr>`] (the type `axum::extract::ConnectInfo`
+/// handlers extract — without it they reject with `500` in-process) and
+/// `scheme` as an [`http::uri::Scheme`] (`Extension<Scheme>`).  The request
+/// URI stays origin-form, exactly as a hyper HTTP/1 server hands it to axum.
+/// Values that do not parse are ignored rather than rejected, so a host
+/// forwarding an exotic address (e.g. an IPv6 zone name) still dispatches.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConnectionInfo {
+    pub remote_addr: Option<SocketAddr>,
+    pub scheme: Option<Scheme>,
+}
+
+impl ConnectionInfo {
+    /// Parse the raw wire values; see the type docs for the accepted forms.
+    #[must_use]
+    pub fn parse(remote_addr: Option<&str>, scheme: Option<&str>) -> Self {
+        Self {
+            remote_addr: remote_addr.and_then(|addr| addr.trim().parse().ok()),
+            scheme: scheme.and_then(parse_scheme),
+        }
+    }
+
+    /// Insert the parsed values as request extensions (`remote_addr` only
+    /// with the `connect-info` feature).
+    fn apply_to(self, extensions: &mut http::Extensions) {
+        #[cfg(feature = "connect-info")]
+        if let Some(addr) = self.remote_addr {
+            extensions.insert(ConnectInfo(addr));
+        }
+        if let Some(scheme) = self.scheme {
+            extensions.insert(scheme);
+        }
+    }
+}
+
+/// `http` / `https` (ASCII case-insensitive) → [`Scheme`]; anything else is
+/// ignored.
+fn parse_scheme(raw: &str) -> Option<Scheme> {
+    let raw = raw.trim();
+    if raw.eq_ignore_ascii_case("https") {
+        Some(Scheme::HTTPS)
+    } else if raw.eq_ignore_ascii_case("http") {
+        Some(Scheme::HTTP)
+    } else {
+        None
+    }
+}
 
 /// Raw response parts on the wire path.  Headers stay as the owned
 /// [`http::HeaderMap`] taken from `Response::into_parts` — zero
@@ -557,9 +612,10 @@ pub fn to_response_envelope_text(parts: ResponseParts) -> ResponseEnvelope {
 /// Callers that know the body is non-empty pass `!body.is_empty()`;
 /// streaming callers whose body emptiness is unknowable up front pass
 /// `true` (default whenever absent).
-// 9 params: the request line (method / path / query / path_bytes /
-// header_bytes_owner), the borrowed header iterator, the body, and the
-// content-type-default flag are each distinct per-request inputs.  Bundling
+// 10 params: the request line (method / path / query / path_bytes /
+// header_bytes_owner), the borrowed header iterator, the body, the
+// content-type-default flag and the connection facts are each distinct
+// per-request inputs.  Bundling
 // them into a struct would add indirection on this hot path without removing
 // any genuinely-needed data.
 #[expect(
@@ -577,6 +633,7 @@ pub async fn dispatch_and_split<'h>(
     header_bytes_owner: Option<&Bytes>,
     body: Body,
     default_json_when_absent: bool,
+    connection: ConnectionInfo,
 ) -> Result<(u16, http::HeaderMap, ResponseMetadata, Body), (u16, String)> {
     let http_method = parse_method_or_405(method_str)?;
     // Same contract as dispatch_parts: a malformed path/header must surface as
@@ -601,7 +658,7 @@ pub async fn dispatch_and_split<'h>(
     // opaque here (already-built `Body`, not a `Bytes` we can probe for
     // emptiness), so content-type defaulting follows the caller's
     // `default_json_when_absent` flag rather than body-emptiness detection.
-    let request = build_axum_request_inner(
+    let mut request = build_axum_request_inner(
         http_method,
         uri,
         body,
@@ -609,6 +666,7 @@ pub async fn dispatch_and_split<'h>(
         header_bytes_owner,
         default_json_when_absent,
     )?;
+    connection.apply_to(request.extensions_mut());
 
     let response = router_oneshot(router, request).await;
 
@@ -699,6 +757,7 @@ mod tests {
                 None,
                 Body::empty(),
                 false,
+                ConnectionInfo::default(),
             )
             .await
         });
@@ -706,6 +765,44 @@ mod tests {
             result.is_err(),
             "dispatch_and_split must reject malformed path"
         );
+    }
+
+    #[rstest::rstest]
+    #[case::ipv4(
+        Some("10.1.2.3:8443"),
+        Some("https"),
+        Some("10.1.2.3:8443"),
+        Some(Scheme::HTTPS)
+    )]
+    #[case::ipv6_upper_scheme(
+        Some(" [::1]:80 "),
+        Some("HTTP"),
+        Some("[::1]:80"),
+        Some(Scheme::HTTP)
+    )]
+    #[case::unparseable(Some("fe80::1%eth0"), Some("ftp"), None, None)]
+    #[case::absent(None, None, None, None)]
+    fn connection_info_parses_or_ignores_wire_values(
+        #[case] remote_addr: Option<&str>,
+        #[case] scheme: Option<&str>,
+        #[case] expected_addr: Option<&str>,
+        #[case] expected_scheme: Option<Scheme>,
+    ) {
+        let info = ConnectionInfo::parse(remote_addr, scheme);
+        assert_eq!(
+            info.remote_addr,
+            expected_addr.map(|a| a.parse().expect("valid test addr"))
+        );
+        assert_eq!(info.scheme, expected_scheme);
+
+        let mut extensions = http::Extensions::new();
+        info.clone().apply_to(&mut extensions);
+        #[cfg(feature = "connect-info")]
+        assert_eq!(
+            extensions.get::<ConnectInfo<SocketAddr>>().map(|c| c.0),
+            info.remote_addr
+        );
+        assert_eq!(extensions.get::<Scheme>(), info.scheme.as_ref());
     }
 
     #[test]

@@ -198,7 +198,8 @@ Both request and response use the same layout:
 bytes 0..4    : u32 BE = header_json byte length N
 bytes 4..4+N  : UTF-8 JSON
                   (request)  { "v":1, "method", "path",
-                               "query"?, "headers"? }
+                               "query"?, "headers"?, "app"?,
+                               "remote_addr"?, "scheme"? }
                   (response) { "v":1, "status", "headers",
                                "metadata", "validation_errors"? }
 bytes 4+N..   : raw body bytes (UTF-8 text or binary —
@@ -209,9 +210,13 @@ bytes 4+N..   : raw body bytes (UTF-8 text or binary —
 - `"v":1` is the protocol version; mismatched versions get a `400` wire response.
 - All failure modes (malformed wire, panic in Rust, no app registered) return a valid length-prefixed wire response, so the Java decoder never has to special-case errors.
 - `validation_errors` is an optional array hoisted from 422 JSON bodies (`{"errors":[...]}`) — original body preserved verbatim alongside.
+- Optional request fields `remote_addr` (`ip:port`) and `scheme` (`http`/`https`) become the `ConnectInfo<SocketAddr>` and `http::uri::Scheme` request extensions (unparseable values are ignored; the URI stays origin-form). The Java proxy fills them from the servlet request.
+- `metadata` stays a string→string map; a Rust panic answers `500` with `"panicked":"true"` in it (`vespera_inprocess::panic_error_wire`), which the bridge uses for WARN logs, `DispatchEvent.panicked` and the Micrometer `outcome=PANIC` tag.
 - **Header values use a Latin-1 mapping** (`vespera_inprocess::header_latin1`, documented on the Java side in `WireHeaderStringSupport`): servlet containers expose header bytes as ISO-8859-1 strings, so each byte travels as the JSON char `U+0000–U+00FF`. Request: a value whose chars are all `≤ U+00FF` maps back to one byte per char; a value with any wider char keeps its UTF-8 bytes (non-servlet producers). Response: every value byte (including `obs-text ≥ 0x80`, formerly rendered as `""`) becomes one char, so `HttpServletResponse.addHeader` restores the raw bytes. ASCII is byte-identical (`wire_contract.rs`); the serde A/B twin applies the same mapping.
 
 ### JNI Dispatch Modes (seven dispatch symbols + `configure*0` hooks)
+
+**Shutdown hook:** `shutdown0(long timeoutMillis)` (Java `VesperaBridge.shutdown(Duration)`, Rust `vespera_jni::shutdown_runtime`) shuts the shared Tokio runtime down once; afterwards every dispatch answers `503` (`RUNTIME_SHUT_DOWN_MSG`) and the runtime is never rebuilt. Spring calls it on context close only with `vespera.bridge.shutdown-on-close=true` and only for a library it loaded itself via `vespera.bridge.library-name`. The native library cannot be unloaded or loaded by a second class loader (redeploys need the shared container lib or a JVM restart).
 
 | Symbol | Java native | Mode | Memory |
 |---|---|---|---|

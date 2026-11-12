@@ -8,6 +8,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
+import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 
 import jakarta.servlet.Filter;
@@ -94,7 +96,41 @@ public class VesperaBridgeAutoConfiguration {
     @ConditionalOnMissingBean
     public VesperaBridgeNativeSettings vesperaBridgeNativeSettings(VesperaBridgeProperties props) {
         props.getNative().apply();
-        return new VesperaBridgeNativeSettings();
+        return new VesperaBridgeNativeSettings(autoInit(props.getLibraryName()));
+    }
+
+    /**
+     * {@code vespera.bridge.library-name}: initialise the native library
+     * unless the application already did. Returns whether this call loaded it.
+     */
+    static boolean autoInit(String libraryName) {
+        if (libraryName == null || libraryName.isBlank()) {
+            return false;
+        }
+        synchronized (VesperaBridge.class) {
+            if (VesperaBridge.isInitialized()) {
+                return false;
+            }
+            VesperaBridge.init(libraryName.trim());
+            return true;
+        }
+    }
+
+    /**
+     * {@code vespera.bridge.shutdown-on-close=true}: shut the native runtime
+     * down when the context closes — only when the autoconfiguration
+     * initialised the library itself (an application-initialised library may
+     * outlive this context). Destroyed after the web server stopped serving.
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "vespera.bridge", name = "shutdown-on-close", havingValue = "true")
+    public DisposableBean vesperaBridgeShutdown(
+            VesperaBridgeNativeSettings nativeSettings, VesperaBridgeProperties props) {
+        return () -> {
+            if (nativeSettings.autoInitialized()) {
+                VesperaBridge.shutdown(props.getShutdownTimeout());
+            }
+        };
     }
 
     @Bean
@@ -240,13 +276,16 @@ public class VesperaBridgeAutoConfiguration {
             DispatchModeResolver modeResolver,
             @Qualifier("vesperaBridgeAsyncResponseExecutor") Executor asyncResponseExecutor,
             VesperaBridgeProperties props,
-            VesperaBridgeNativeSettings nativeSettings) {
+            VesperaBridgeNativeSettings nativeSettings,
+            ObjectProvider<DispatchObserver> observers) {
         return new VesperaProxyController(
                 appResolver,
                 modeResolver,
                 asyncResponseExecutor,
                 props.isDirectRetryOnOverflow(),
                 props.getMaxBufferedRequestBytes(),
-                props.getMaxBufferedResponseBytes());
+                props.getMaxBufferedResponseBytes(),
+                props.getRequestId().effectiveHeader(),
+                observers.orderedStream().toList());
     }
 }

@@ -394,6 +394,25 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_configureAs
     guarded_configure(|| apply_optional(jlong::from(max_in_flight), set_async_max_in_flight))
 }
 
+/// `com.devfive.vespera.bridge.VesperaBridge.shutdown0(long) -> boolean`
+///
+/// Gracefully shuts the shared Tokio runtime down, waiting up to
+/// `timeout_millis` (negative = `0`) for in-flight tasks
+/// ([`super::shutdown_runtime`]).  Irreversible: later dispatches answer
+/// `503`.  Returns `false` when it had already been shut down.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_shutdown0<'local>(
+    _unowned_env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    timeout_millis: jlong,
+) -> jboolean {
+    guarded_configure(|| {
+        super::shutdown_runtime(Duration::from_millis(
+            u64::try_from(timeout_millis).unwrap_or(0),
+        ))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

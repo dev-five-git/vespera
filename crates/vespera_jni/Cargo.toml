@@ -13,7 +13,7 @@ keywords = ["jni", "java", "axum", "spring", "vespera"]
 categories = ["api-bindings", "web-programming::http-server"]
 
 [dependencies]
-vespera_inprocess = { workspace = true }
+vespera_inprocess = { workspace = true, features = ["connect-info"] }
 jni = "0.22"
 # `time`: the shared runtime must run a timer driver — the per-dispatch
 # deadline (`VESPERA_DISPATCH_TIMEOUT_MS`) and the bounded request-producer

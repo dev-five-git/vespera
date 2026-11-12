@@ -45,14 +45,19 @@ val springBootVersion = "4.1.2"
 val springFrameworkVersion = "7.0.10"
 val springBoot3Version = "3.5.16"
 val springFramework3Version = "6.2.19"
+val micrometerVersion = "1.15.12"
 
 dependencies {
     compileOnly("org.springframework.boot:spring-boot-autoconfigure:$springBootVersion")
     compileOnly("org.springframework:spring-webmvc:$springFrameworkVersion")
     compileOnly("jakarta.servlet:jakarta.servlet-api:6.1.0")
     compileOnly("org.slf4j:slf4j-api:2.0.17")
+    // Optional: MicrometerDispatchObserver / VesperaBridgeMetricsAutoConfiguration
+    // only load when the application ships Micrometer (e.g. via Actuator).
+    compileOnly("io.micrometer:micrometer-core:$micrometerVersion")
 
     testImplementation("org.springframework.boot:spring-boot-starter-web:$springBootVersion")
+    testImplementation("io.micrometer:micrometer-core:$micrometerVersion")
     // VesperaWireTest cross-checks the hand-rolled JSON codec against Jackson.
     testImplementation("com.fasterxml.jackson.core:jackson-databind:2.23.0")
     testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
@@ -80,6 +85,7 @@ val testBoot3Runtime: Configuration = configurations.create("testBoot3Runtime") 
 
 dependencies {
     testBoot3Runtime("org.springframework.boot:spring-boot-starter-web:$springBoot3Version")
+    testBoot3Runtime("io.micrometer:micrometer-core:$micrometerVersion")
     testBoot3Runtime("org.springframework.boot:spring-boot-test:$springBoot3Version")
     testBoot3Runtime("org.springframework:spring-test:$springFramework3Version")
     testBoot3Runtime("com.fasterxml.jackson.core:jackson-databind:2.23.0")

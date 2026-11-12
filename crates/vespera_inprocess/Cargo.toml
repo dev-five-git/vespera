@@ -21,6 +21,13 @@ categories = ["web-programming::http-server", "network-programming"]
 # that exists only to benchmark the hand-rolled production path against.
 # Enable with `cargo bench -p vespera_inprocess --features bench-support`.
 bench-support = []
+# Inserts the optional `remote_addr` wire field as an
+# `axum::extract::ConnectInfo<SocketAddr>` request extension.  The type is
+# gated behind axum's `tokio` feature, which also turns on `tokio/net`;
+# `vespera` and `vespera_jni` already enable it, so real builds compile
+# nothing extra.  Kept opt-in so a standalone build (the criterion gate's
+# `cargo bench -p vespera_inprocess`) keeps the runtime it has always measured.
+connect-info = ["axum/tokio"]
 
 [dependencies]
 # Lock-free read snapshot for the multi-app router registry: named-app

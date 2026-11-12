@@ -114,15 +114,18 @@ class HeaderAppNameResolverTest {
     }
 
     @Test
-    void proxyAnswersUnexposedAppWith404BeforeDispatch() {
+    void proxyAnswersUnexposedAppWith404BeforeDispatch() throws Exception {
         VesperaProxyController controller = new VesperaProxyController(
                 new HeaderAppNameResolver("X-Vespera-App", List.of("public")),
                 request -> {
                     throw new AssertionError("mode must not be resolved for a rejected app");
                 });
-        ResponseStatusException rejected = assertThrows(ResponseStatusException.class,
-                () -> controller.proxy(selecting("admin"), new MockHttpServletResponse()));
-        assertEquals(HttpStatus.NOT_FOUND.value(), rejected.getStatusCode().value());
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        assertNull(controller.proxy(selecting("admin"), response));
+        assertEquals(HttpStatus.NOT_FOUND.value(), response.getStatus());
+        assertEquals("text/plain;charset=utf-8", response.getContentType().replace(" ", ""));
+        // The client-controlled app name is never echoed.
+        assertEquals(VesperaProxyController.UNKNOWN_APP_MSG, response.getContentAsString());
     }
 
     @Test

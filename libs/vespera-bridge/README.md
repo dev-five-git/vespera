@@ -46,6 +46,22 @@ vespera {
 
 The plugin auto-wires `bundleNativeLib` (cdylib → `resources/native/<os>-<arch>/`), `processResources` dependency, and the `vespera-bridge` `implementation` dependency.  See [`examples/rust-jni-demo/java/demo-app/build.gradle.kts`](../../examples/rust-jni-demo/java/demo-app/build.gradle.kts) for a real working example (the demo dogfoods the plugin end-to-end with a 1 MiB SHA256-verified bidirectional streaming round-trip).
 
+#### Multi-platform jars
+
+The plugin bundles the host build by default. To ship one jar for several platforms, cross-build extra Rust targets and/or merge libraries built elsewhere (e.g. CI artifacts):
+
+```kotlin
+vespera {
+    // ...
+    autoBuildCargo.set(true)                 // cargoBuild runs one `cargo build --target <triple>` per entry
+    targets.put("linux-aarch64", "aarch64-unknown-linux-gnu")
+    targets.put("macos-aarch64", "aarch64-apple-darwin")
+    extraNativeLibs.set(layout.projectDirectory.dir("prebuilt")) // prebuilt/native/<os>-<arch>/<lib>
+}
+```
+
+Each `targets` key is a bridge platform (`<os>-<arch>`, os `windows` / `macos` / `linux`); its library is read from `<targetDir>/<triple>/<profile>/` and bundled under `native/<os>-<arch>/` with that platform's file name (`.dll` / `lib*.dylib` / `lib*.so`). A key naming the host platform replaces the host build. The cross toolchain/linker must already be installed. Everything under `extraNativeLibs/native/` is merged in; a locally built library wins over a prebuilt one with the same path. `cargoBuild` is never `UP-TO-DATE` (Cargo's own incremental check decides) and does not fingerprint `target/`, `node_modules/` or `.git/`.
+
 ## Two-line integration
 
 ```java
@@ -740,6 +756,43 @@ A Rust handler returning a binary response (e.g. `image/png`) flows the same way
    - **Form bodies consumed by Spring.** Spring's `FormContentFilter` (PUT/PATCH/DELETE) and any earlier `getParameter()` call (e.g. Spring Security's `CsrfFilter`, POST) drain an `application/x-www-form-urlencoded` body into request parameters before the proxy runs. When the stream comes back empty/short, the proxy rebuilds the body from `getParameterMap()` minus the query-string parameters (re-encoded in the charset it was decoded with) and forwards the matching `Content-Length`, so a Rust `Form<T>` extractor still sees every field. Form requests a resolver routes to `BIDIRECTIONAL_STREAMING` are served as `STREAMING` (request buffered, response streamed) for the same reason. `FormContentFilter` itself is left enabled for the host app. Values are grouped per name (`a=1&b=2&a=3` arrives as `a=1&a=3&b=2`).
 4. Sync/async responses are parsed straight from the wire response via the allocation-lean `WireHeaderReader` (status + headers) and returned as `ResponseEntity<byte[]>` for **every** `Content-Type` — the body is sliced once from the wire tail; the `Content-Type` header is carried verbatim, so no text/binary branching is needed.  Streaming and DIRECT modes write status/headers and body straight to the servlet response.
 5. `BIDIRECTIONAL_STREAMING` hands Rust a gated wrapper of the servlet `InputStream`. A handler that returns without draining the request body can leave the Rust request producer parked in `read()` (it is detached after a bounded join); once the native call returns, the gate makes every further read return `-1` without touching the servlet stream, and if a read was still in flight the proxy sets `Connection: close` (when the response is not committed yet; otherwise best effort — the container sees that read finish on its own) so a keep-alive connection is never reused at an unknown stream position.
+
+## Operability
+
+### Client address, scheme and servlet path
+
+The proxy forwards the servlet request's remote address (`ip:port`, IPv6 bracketed) and scheme (`http` / `https`) as the optional wire fields `remote_addr` / `scheme`. Rust handlers read them with `ConnectInfo<SocketAddr>` and `Extension<http::uri::Scheme>` exactly like under `axum::serve` (configure Tomcat `RemoteIpValve` / `server.forward-headers-strategy` so they reflect the real client behind a load balancer). The forwarded path is application-relative: the context path and a prefix servlet mapping (`spring.mvc.servlet.path=/v1` → `/v1/users` arrives as `/users`) are stripped, and `;` path parameters (`;jsessionid=...`) are dropped from every segment.
+
+### Request id
+
+```yaml
+vespera.bridge.request-id:
+  enabled: true          # default
+  header: X-Request-Id   # default
+```
+
+An incoming id (1–128 visible ASCII characters) is reused, otherwise a random UUID is generated. It is forwarded to Rust in the same header, echoed on the response (unless the Rust response already sets that header), put in the SLF4J MDC as `requestId` while the request is dispatched, and included in WARN logs and `DispatchEvent`s.
+
+### Errors written by the proxy
+
+Errors the proxy produces itself (unknown app 404, buffered body too large 413, async backpressure 503, DIRECT overflow, native failures 500) are written directly as `text/plain; charset=utf-8` with the message as body, the same shape as the Rust `error_wire` responses, instead of going through Spring's `/error` page (whose shape depends on `Accept`).
+
+### Panics, 5xx and metrics
+
+A Rust panic answers `500` with `"panicked":"true"` in the response wire `metadata` (`DecodedResponse.metadata().get("panicked")`). Every dispatch that ends in a panic or a `5xx` is logged at WARN with method, path, app, mode, status, latency and request id. For metrics or tracing, register `DispatchObserver` beans; each is called once per request with a `DispatchEvent(app, mode, method, path, status, durationNanos, panicked, requestId)` (observer exceptions are logged and swallowed). When Micrometer is on the classpath and a `MeterRegistry` bean exists (e.g. Spring Boot Actuator), a `MicrometerDispatchObserver` is autoconfigured: timer `vespera.bridge.dispatch` tagged `app`, `mode`, `status` and `outcome` (`SUCCESS`, `CLIENT_ERROR`, `SERVER_ERROR`, `PANIC`, ...). Micrometer stays an optional dependency.
+
+### Redeploy, class loaders and shutdown
+
+```yaml
+vespera.bridge:
+  library-name: my_rust_lib   # VesperaBridge.init(...) during context startup (if not already loaded)
+  shutdown-on-close: false    # default; true = stop the Rust runtime when the context closes
+  shutdown-timeout: 10s
+```
+
+- A JVM can load a native library through **one class loader only**, and it is never unloaded. Loading it again from a redeployed web app fails with `UnsatisfiedLinkError: ... already loaded in another classloader`; the bridge rethrows it with guidance. On servlet containers that redeploy or host several apps, put `vespera-bridge` and the library in the container's shared lib (e.g. Tomcat `$CATALINA_BASE/lib`) or run one deployment per JVM, and restart the JVM to pick up a new native build.
+- `VesperaBridge.shutdown(Duration)` stops the shared Tokio runtime (waiting up to the timeout for running tasks) and returns `false` if it was already shut down (or the library is not loaded). It is one-way: afterwards every dispatch answers `503`, and the runtime cannot be restarted in the same process. Registered apps and the loaded library stay in memory.
+- `shutdown-on-close` only acts when the library was loaded by `library-name` (the autoconfiguration owns it); a library you initialised yourself is never shut down by Spring.
 
 ## Native library loading
 

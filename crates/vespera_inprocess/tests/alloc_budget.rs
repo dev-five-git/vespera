@@ -311,9 +311,9 @@ fn allocation_budgets() {
 // pre-reserved at `TYPICAL_HEADER_CAP` (16), so the 16-header set fills
 // without the capacity-8 growth realloc it previously paid.  An under-reserve
 // regression (a re-introduced realloc, or extra allocs) trips this budget.
-const BUDGET_BODYLESS_BORROWED: usize = 14; // borrowed: no clone / no output Vec / no body copy
-const BUDGET_SMALL_POST: usize = 22; // borrowed: +1 body copy over bodyless
-const BUDGET_HEADERS_POST: usize = 40; // borrowed: 40 alloc + 0 realloc (header Vec pre-reserved at 16)
+const BUDGET_BODYLESS_BORROWED: usize = 14 + DEBUG_BLOCK_ON_BOX; // borrowed: no clone / no output Vec / no body copy
+const BUDGET_SMALL_POST: usize = 22 + DEBUG_BLOCK_ON_BOX; // borrowed: +1 body copy over bodyless
+const BUDGET_HEADERS_POST: usize = 40 + DEBUG_BLOCK_ON_BOX; // borrowed: 40 alloc + 0 realloc (header Vec pre-reserved at 16)
 // MATERIALISE / DISPATCH_INTO dropped by 2 each (was 18 / 17) when the OWNED
 // wire path stopped copying the request path into a fresh `Bytes`: a bodyless
 // GET's borrowed path now SHARES the request's owning header `Bytes` to build
@@ -323,9 +323,10 @@ const BUDGET_HEADERS_POST: usize = 40; // borrowed: 40 alloc + 0 realloc (header
 //
 // DEBUG_BLOCK_ON_BOX: tokio's `block_on` heap-boxes futures larger than
 // `BOX_FUTURE_THRESHOLD` (2 KiB in debug builds, 16 KiB in release).  The
-// deadline / response-cap wrapper put the owned dispatch futures just over
-// 2 KiB, so debug test builds pay one extra (~2.3 KB) allocation that the
-// shipped release artifact does not (release measures 14 / 13, unchanged).
+// deadline / response-cap wrapper (and the `remote_addr` / `scheme` wire
+// fields) put the dispatch futures just over 2 KiB, so debug test builds pay
+// one extra (~2.3 KB) allocation that the shipped release artifact does not
+// (release budgets unchanged).
 const DEBUG_BLOCK_ON_BOX: usize = if cfg!(debug_assertions) { 1 } else { 0 };
 const BUDGET_MATERIALISE: usize = 16 + DEBUG_BLOCK_ON_BOX; // dispatch_from_bytes: +input clone +response Vec, URI shared
 const BUDGET_DISPATCH_INTO: usize = 15 + DEBUG_BLOCK_ON_BOX; // dispatch_into: +input clone, reused out, URI shared

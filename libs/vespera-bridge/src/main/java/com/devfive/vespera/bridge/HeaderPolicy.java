@@ -73,11 +73,19 @@ final class HeaderPolicy {
 
     record HeaderPair(String name, String value) {}
 
-    static final class ResponseHeaderAccumulator implements BiConsumer<String, String> {
+    static final class ResponseHeaderAccumulator
+            implements BiConsumer<String, String>, WireHeaderReader.PanicFlagSink {
         final List<HeaderPair> headers = new ArrayList<>(8);
         Set<String> connectionTokens;
         /** Wire status, filled in by the caller once the header is parsed. */
         int status = 500;
+        /** Whether the wire metadata flagged a caught Rust panic. */
+        boolean panicked;
+
+        @Override
+        public void markPanicked() {
+            panicked = true;
+        }
         /** -1 = absent, -2 = present but invalid/conflicting, else the value. */
         private long declaredContentLength = -1;
 

@@ -2,6 +2,7 @@ package kr.devfive.vespera
 
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.ListProperty
+import org.gradle.api.provider.MapProperty
 import org.gradle.api.provider.Property
 
 /**
@@ -10,11 +11,11 @@ import org.gradle.api.provider.Property
  * ```kotlin
  * vespera {
  *     crateName.set("my_rust_lib")
-     *     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
-     *     cargoSourceRoots.add("apps/native")
-     *     bridgeVersion.set("<bridge-version>")
-     *     autoBuildCargo.set(false) // default: opt-in
-     * }
+ *     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
+ *     cargoSourceRoots.add("apps/native")
+ *     bridgeVersion.set("<bridge-version>")
+ *     autoBuildCargo.set(false) // default: opt-in
+ * }
  * ```
  */
 abstract class VesperaBridgeExtension {
@@ -78,4 +79,26 @@ abstract class VesperaBridgeExtension {
      * at the right place instead of failing on the default `target/`.
      */
     abstract val targetDir: DirectoryProperty
+
+    /**
+     * Optional directory of prebuilt libraries laid out as
+     * `native/<os>-<arch>/<lib>` (for example CI artifacts from other
+     * platforms). Everything under its `native/` folder is merged into the
+     * jar next to the locally built libraries; a locally built library wins
+     * when both provide the same file.
+     */
+    abstract val extraNativeLibs: DirectoryProperty
+
+    /**
+     * Extra platforms to cross-build, keyed by bridge platform
+     * (`<os>-<arch>`, os one of `windows` / `macos` / `linux`) with the Rust
+     * target triple as value, e.g.
+     * `targets.put("linux-aarch64", "aarch64-unknown-linux-gnu")`. Each entry
+     * is built with `cargo build --target <triple>` (when `autoBuildCargo`
+     * is on), read from `<targetDir>/<triple>/<profile>/` and bundled under
+     * `native/<os>-<arch>/` with that platform's library file name. The host
+     * build is skipped when a key names the host platform. The toolchain /
+     * linker for each triple must already be installed.
+     */
+    abstract val targets: MapProperty<String, String>
 }
