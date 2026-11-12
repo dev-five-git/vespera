@@ -55,8 +55,8 @@ public class VesperaBridgeProperties {
 
     /**
      * HTTP request header inspected by the default
-     * {@link HeaderAppNameResolver} to pick the target app for
-     * multi-app routing.  Default: {@code X-Vespera-App}.  When the
+     * {@link HeaderAppNameResolver} (WebFlux: {@link ReactiveHeaderAppNameResolver})
+     * to pick the target app for multi-app routing.  Default: {@code X-Vespera-App}.  When the
      * header is absent on a given request, that request is routed
      * to the default app registered via {@code register_app}.
      */
@@ -70,14 +70,16 @@ public class VesperaBridgeProperties {
      * {@code X-Vespera-App: admin}), bypassing path-based Spring Security
      * rules, and the proxy logs a one-time WARN on the first non-default
      * selection.  When set, any other app name is answered with {@code 404}
-     * without dispatching.  Only the default {@link HeaderAppNameResolver}
-     * honours it; a custom {@link AppNameResolver} enforces its own policy.
+     * without dispatching.  Only the default {@link HeaderAppNameResolver} /
+     * {@link ReactiveHeaderAppNameResolver} honours it; a custom resolver
+     * enforces its own policy.
      */
     private List<String> exposedApps = new ArrayList<>();
 
     /**
      * When {@code true} (default), Spring Boot autoconfigures
-     * {@link VesperaProxyController} as a catch-all proxy.  Set to
+     * {@link VesperaProxyController} (servlet) or
+     * {@link VesperaReactiveProxyHandler} (WebFlux) as a catch-all proxy.  Set to
      * {@code false} when you want to provide your own controller —
      * the {@link VesperaBridge} native methods remain available
      * for direct use either way.
@@ -88,13 +90,15 @@ public class VesperaBridgeProperties {
      * Who answers CORS for proxied requests: {@code rust} (default — CORS
      * preflights are routed to the Rust router, whose
      * {@code Access-Control-*} headers win) or {@code spring} (Spring MVC /
-     * Spring Security answer preflights; Rust's duplicates are dropped). See
+     * Spring Security / a WebFlux {@code CorsWebFilter} answer preflights;
+     * Rust's duplicates are dropped). See
      * {@link CorsHandling}.
      */
     private CorsHandling cors = CorsHandling.RUST;
 
     /**
-     * Dispatch-mode policy for the autoconfigured proxy.
+     * Dispatch-mode policy for the autoconfigured servlet proxy (the WebFlux
+     * proxy always dispatches asynchronously and ignores it).
      *
      * <ul>
      *   <li>{@code smart} (default since 0.2.0) — small bounded safe
@@ -132,7 +136,9 @@ public class VesperaBridgeProperties {
     /**
      * Whether the autoconfigured {@link ServletPrincipalResolver} forwards the
      * authenticated servlet principal ({@code HttpServletRequest#getUserPrincipal()},
-     * plus Spring Security authorities) to Rust in the trusted wire
+     * plus Spring Security authorities; in WebFlux the
+     * {@link ExchangePrincipalResolver} forwards
+     * {@code ServerWebExchange#getPrincipal()}) to Rust in the trusted wire
      * {@code principal} field, where handlers extract
      * {@code vespera::inprocess::Principal}.  Default {@code true}: the value
      * comes from the container's / Spring Security's authentication, never
@@ -144,7 +150,9 @@ public class VesperaBridgeProperties {
 
     /**
      * Maximum request-body bytes the Spring proxy may buffer for
-     * SYNC/ASYNC/DIRECT/STREAMING dispatch modes.  The conservative default is
+     * SYNC/ASYNC/DIRECT/STREAMING dispatch modes, and the WebFlux proxy, which
+     * always aggregates the request body ({@code 413} when exceeded).  The
+     * conservative default is
      * 64 MiB so a custom resolver cannot accidentally route an unknown-length
      * upload into a heap-buffered mode and grow toward the JVM array ceiling.
      * Set {@code 0} explicitly to restore unlimited buffering. Bidirectional

@@ -25,7 +25,8 @@ import jakarta.servlet.http.HttpServletRequest;
  * {@code 404} before it is dispatched.
  *
  * <p>Implementations must be safe to call from multiple servlet
- * threads concurrently.
+ * threads concurrently. WebFlux applications use
+ * {@link ReactiveAppNameResolver} instead.
  */
 @FunctionalInterface
 public interface AppNameResolver {

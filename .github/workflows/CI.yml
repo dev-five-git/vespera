@@ -701,11 +701,18 @@ jobs:
         shell: bash
         working-directory: examples/rust-jni-demo/java
         run: ./gradlew :demo-app:test --console=plain --no-daemon
+      - name: Run demo-reactive-app WebFlux E2E tests
+        # VesperaReactiveProxyHandler on reactor-netty against the same cdylib,
+        # on a classpath with WebFlux but no servlet API / Spring MVC.
+        shell: bash
+        working-directory: examples/rust-jni-demo/java
+        run: ./gradlew :demo-reactive-app:test --console=plain --no-daemon
       - name: Merge Java coverage
         # Regenerates the bridge's JaCoCo report now that demo-app has run, so
         # it also credits the classes only reachable with a loaded cdylib — the
         # JNI wrappers and the Spring proxy, which the unit suite cannot drive.
-        # The report task reads demo-app/build/jacoco/test.exec when present.
+        # The report task reads demo-app/build/jacoco/test.exec
+        # (and demo-reactive-app's) when present.
         shell: bash
         working-directory: libs/vespera-bridge
         run: ./gradlew jacocoTestReport --console=plain --no-daemon
@@ -716,6 +723,7 @@ jobs:
           name: jni-e2e-${{ matrix.os }}-jdk${{ matrix.java }}-test-results
           path: |
             examples/rust-jni-demo/java/demo-app/build/test-results/test/*.xml
+            examples/rust-jni-demo/java/demo-reactive-app/build/test-results/test/*.xml
             libs/vespera-bridge/build/test-results/test/*.xml
             libs/vespera-bridge-gradle-plugin/build/test-results/test/*.xml
             libs/vespera-bridge/build/reports/jacoco/test/jacocoTestReport.xml

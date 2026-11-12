@@ -21,7 +21,7 @@ import jakarta.servlet.http.HttpServletRequest;
  * client-controlled request headers.
  *
  * <p>Implementations must be safe to call from multiple servlet threads
- * concurrently.
+ * concurrently. WebFlux applications use {@link ReactivePrincipalResolver}.
  */
 @FunctionalInterface
 public interface PrincipalResolver {

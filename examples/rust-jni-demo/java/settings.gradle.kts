@@ -46,3 +46,5 @@ dependencyResolutionManagement {
 rootProject.name = "vespera-jni-demo"
 
 include("demo-app")
+// WebFlux (reactor-netty) variant: VesperaReactiveProxyHandler against the same cdylib.
+include("demo-reactive-app")

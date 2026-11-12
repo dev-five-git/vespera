@@ -108,8 +108,7 @@ public class VesperaBridgeAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public VesperaBridgeNativeSettings vesperaBridgeNativeSettings(VesperaBridgeProperties props) {
-        props.getNative().apply(props.getMaxBufferedResponseBytes());
-        return new VesperaBridgeNativeSettings(autoInit(props.getLibraryName()));
+        return VesperaBridgeNativeSettings.apply(props);
     }
 
     /**
@@ -117,16 +116,7 @@ public class VesperaBridgeAutoConfiguration {
      * unless the application already did. Returns whether this call loaded it.
      */
     static boolean autoInit(String libraryName) {
-        if (libraryName == null || libraryName.isBlank()) {
-            return false;
-        }
-        synchronized (VesperaBridge.class) {
-            if (VesperaBridge.isInitialized()) {
-                return false;
-            }
-            VesperaBridge.init(libraryName.trim());
-            return true;
-        }
+        return VesperaBridgeNativeSettings.autoInit(libraryName);
     }
 
     /**
