@@ -339,6 +339,10 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # changepacks diffs against the merge-base with baseBranch (main);
+          # a shallow clone has no merge-base, which breaks stacked PRs.
+          fetch-depth: 0
       - uses: changepacks/action@d83fb1ec3f8844ee2726a7b8b43a8786e9a528a2 # main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
