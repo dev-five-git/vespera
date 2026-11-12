@@ -81,6 +81,14 @@ pub trait Serve {
     ) -> impl Future<Output = io::Result<()>>;
 }
 
+/// Stops `#[vespera::cron]` scheduling once a graceful shutdown begins (no-op
+/// without the `cron` feature). A whole-item `cfg` rather than a
+/// statement-level one keeps coverage attribution on the call line.
+#[cfg(feature = "cron")]
+use crate::cron::shutdown as stop_cron_scheduling;
+#[cfg(not(feature = "cron"))]
+const fn stop_cron_scheduling() {}
+
 impl Serve for axum::Router {
     async fn serve(self, addr: impl ToSocketAddrs) -> io::Result<()> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -104,8 +112,7 @@ impl Serve for axum::Router {
         .with_graceful_shutdown(async move {
             signal.await;
             // No new `#[vespera::cron]` runs once shutdown has begun.
-            #[cfg(feature = "cron")]
-            crate::cron::shutdown();
+            stop_cron_scheduling();
         })
         .await?;
         // In-flight cron runs get a bounded grace period after the server
