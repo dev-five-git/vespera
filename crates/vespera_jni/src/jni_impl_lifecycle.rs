@@ -34,7 +34,7 @@ static RUNTIME: OnceLock<Option<SharedRuntime>> = OnceLock::new();
 /// and [`runtime_unavailable_wire`] answers `503`.
 static RUNTIME_SHUT_DOWN: AtomicBool = AtomicBool::new(false);
 
-/// Number of live [`RuntimeLease`]s (dispatches using the runtime).
+/// Number of live `RuntimeLease`s (dispatches using the runtime).
 /// Incremented BEFORE the shut-down flag is checked, and the flag is set
 /// before [`shutdown_runtime`] reads this counter (both `SeqCst`), so a
 /// dispatch either sees the flag or is counted by the drain — never neither.
@@ -133,7 +133,7 @@ pub fn runtime_unavailable_wire() -> Vec<u8> {
 
 /// Drive a synchronous JNI dispatch to completion on the shared
 /// multi-thread [`RUNTIME`] from the calling (Java) thread, holding a
-/// [`RuntimeLease`] for the duration.
+/// `RuntimeLease` for the duration.
 ///
 /// The request future itself is polled on the calling thread inside
 /// `block_on`, but everything it spawns lives on the shared runtime: a
@@ -154,7 +154,7 @@ where
 }
 
 /// Shut the shared runtime down: refuse new dispatches, wait up to
-/// `timeout` for in-flight ones (every [`RuntimeLease`], including
+/// `timeout` for in-flight ones (every `RuntimeLease`, including
 /// `dispatchAsync` tasks, which complete their `CompletableFuture`), then
 /// shut the runtime down with what is left of `timeout`.  Tasks still
 /// running after that are dropped; a dropped `dispatchAsync` task completes
@@ -206,7 +206,7 @@ fn finish_shutdown(timeout: Duration) {
     drop(HOOKS.lock().map(|mut hooks| std::mem::take(&mut *hooks)));
 }
 
-/// Wait until no [`RuntimeLease`] is alive or `deadline` passes.
+/// Wait until no `RuntimeLease` is alive or `deadline` passes.
 fn drain_in_flight(deadline: Instant) -> bool {
     loop {
         if IN_FLIGHT.load(Ordering::SeqCst) == 0 {
@@ -228,7 +228,7 @@ static HOOKS_PENDING: AtomicBool = AtomicBool::new(false);
 static JNI_LOADED: AtomicBool = AtomicBool::new(false);
 
 /// Run `hook` with the shared runtime's handle once it exists: immediately
-/// when it is already built, otherwise when [`start_runtime_for_hooks`]
+/// when it is already built, otherwise when `start_runtime_for_hooks`
 /// (`VesperaNativeConfig.startRuntime0`, called by `VesperaBridge.init()`
 /// right after the runtime knobs are applied) or the first dispatch builds
 /// it.  Dropped after [`shutdown_runtime`].  Used by `vespera::cron` so jobs

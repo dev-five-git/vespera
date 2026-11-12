@@ -63,7 +63,7 @@ const TYPICAL_HEADER_CAP: usize = 16;
 /// an unbounded `Vec` growth) on every wire entry point.  1024 is an order
 /// of magnitude above any real client — Tomcat's own default
 /// `maxHeaderCount` is 100 — while staying far below the `HeaderMap`
-/// ceiling.  Exceeding it is reported as [`TOO_MANY_HEADERS_MSG`], which
+/// ceiling.  Exceeding it is reported as `TOO_MANY_HEADERS_MSG`, which
 /// the dispatch prelude maps to a `431 Request Header Fields Too Large`
 /// wire response.
 ///
