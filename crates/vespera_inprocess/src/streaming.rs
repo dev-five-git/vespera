@@ -137,83 +137,93 @@ where
 ///   callers that still want one.
 pub async fn dispatch_streaming_with_outcome_async<F>(
     input: Vec<u8>,
-    mut on_chunk: F,
+    on_chunk: F,
 ) -> (Vec<u8>, StreamOutcome)
 where
     F: FnMut(&[u8]) -> ControlFlow<()>,
 {
+    // The bodies of the `traced!` entry points live in plain `async fn`s (not
+    // inside the macro's tokens): code inside macro arguments loses its
+    // match-arm line mapping under LLVM coverage.
     traced!("streaming", {
-        let mut deadline = Deadline::start();
-        // Response streaming still buffers the full REQUEST in memory
-        // (`input` is a complete `Vec`), so it gets the same ingress cap as
-        // the buffered entry points.  Only *bidirectional* streaming, which
-        // pulls the request body chunk-by-chunk, is exempt.
-        let (header_bytes, body_bytes) = match cap_and_split(input) {
-            Ok(parts) => parts,
-            Err(wire) => return (wire, StreamOutcome::Complete),
-        };
-        let (header, router) = match parse_validate_resolve(&header_bytes) {
-            Ok(parts) => parts,
-            Err(wire) => return (wire, StreamOutcome::Complete),
-        };
-        let default_json_when_absent = !body_bytes.is_empty();
-        let dispatched = deadline
-            .run(dispatch_and_split(
-                router,
-                &header.method,
-                &header.path,
-                &header.query,
-                None,
-                header.iter_str_pairs(),
-                // Owned wire path: share `header_bytes` so plain-value
-                // `HeaderValue`s are constructed zero-copy.
-                Some(&header_bytes),
-                Body::from(body_bytes),
-                default_json_when_absent,
-                header.connection_info(),
-            ))
-            .await;
-        let (status, headers, metadata, body) = match dispatched {
-            None => return (timeout_wire(), StreamOutcome::Complete),
-            Some(Err((status, msg))) => return (error_wire(status, &msg), StreamOutcome::Complete),
-            Some(Ok(parts)) => parts,
-        };
-
-        // Reuse the header-first tail with a capturing header sink: the header
-        // (with 422 hoisting) is produced once, and a counting chunk sink tells
-        // a pre-chunk failure (clean error response) from a truncation.
-        let mut captured: Vec<u8> = Vec::new();
-        let mut delivered = false;
-        let outcome = {
-            let mut on_header = |h: &[u8]| captured.extend_from_slice(h);
-            let mut counting = |chunk: &[u8]| {
-                delivered = true;
-                on_chunk(chunk)
-            };
-            emit_header_then_stream_body(
-                status,
-                headers,
-                metadata,
-                body,
-                &mut deadline,
-                &mut on_header,
-                &mut counting,
-                false,
-            )
-            .await
-        };
-        match outcome {
-            StreamOutcome::Complete => (captured, StreamOutcome::Complete),
-            failed => (
-                failed.error_wire(),
-                if delivered {
-                    failed
-                } else {
-                    StreamOutcome::Complete
-                },
-            ),
-        }
+        streaming_with_outcome_body(input, on_chunk).await
     })
+}
+
+async fn streaming_with_outcome_body<F>(input: Vec<u8>, mut on_chunk: F) -> (Vec<u8>, StreamOutcome)
+where
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+{
+    let mut deadline = Deadline::start();
+    // Response streaming still buffers the full REQUEST in memory
+    // (`input` is a complete `Vec`), so it gets the same ingress cap as
+    // the buffered entry points.  Only *bidirectional* streaming, which
+    // pulls the request body chunk-by-chunk, is exempt.
+    let (header_bytes, body_bytes) = match cap_and_split(input) {
+        Ok(parts) => parts,
+        Err(wire) => return (wire, StreamOutcome::Complete),
+    };
+    let (header, router) = match parse_validate_resolve(&header_bytes) {
+        Ok(parts) => parts,
+        Err(wire) => return (wire, StreamOutcome::Complete),
+    };
+    let default_json_when_absent = !body_bytes.is_empty();
+    let dispatched = deadline
+        .run(dispatch_and_split(
+            router,
+            &header.method,
+            &header.path,
+            &header.query,
+            None,
+            header.iter_str_pairs(),
+            // Owned wire path: share `header_bytes` so plain-value
+            // `HeaderValue`s are constructed zero-copy.
+            Some(&header_bytes),
+            Body::from(body_bytes),
+            default_json_when_absent,
+            header.connection_info(),
+        ))
+        .await;
+    let (status, headers, metadata, body) = match dispatched {
+        None => return (timeout_wire(), StreamOutcome::Complete),
+        Some(Err((status, msg))) => return (error_wire(status, &msg), StreamOutcome::Complete),
+        Some(Ok(parts)) => parts,
+    };
+
+    // Reuse the header-first tail with a capturing header sink: the header
+    // (with 422 hoisting) is produced once, and a counting chunk sink tells
+    // a pre-chunk failure (clean error response) from a truncation.
+    let mut captured: Vec<u8> = Vec::new();
+    let mut delivered = false;
+    let outcome = {
+        let mut on_header = |h: &[u8]| captured.extend_from_slice(h);
+        let mut counting = |chunk: &[u8]| {
+            delivered = true;
+            on_chunk(chunk)
+        };
+        emit_header_then_stream_body(
+            status,
+            headers,
+            metadata,
+            body,
+            &mut deadline,
+            &mut on_header,
+            &mut counting,
+            false,
+        )
+        .await
+    };
+    match outcome {
+        StreamOutcome::Complete => (captured, StreamOutcome::Complete),
+        failed => (
+            failed.error_wire(),
+            if delivered {
+                failed
+            } else {
+                StreamOutcome::Complete
+            },
+        ),
+    }
 }
 
 /// Outcome of a **header-first** streaming dispatch
@@ -520,6 +530,20 @@ impl FrameBatch {
 /// immediately.  Sinks that do not buffer can ignore it.
 pub async fn dispatch_streaming_with_header_async<H, F>(
     input: Vec<u8>,
+    on_header: H,
+    on_chunk: F,
+) -> StreamOutcome
+where
+    H: FnMut(&[u8]),
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+{
+    traced!("streaming", {
+        streaming_with_header_body(input, on_header, on_chunk).await
+    })
+}
+
+async fn streaming_with_header_body<H, F>(
+    input: Vec<u8>,
     mut on_header: H,
     mut on_chunk: F,
 ) -> StreamOutcome
@@ -527,81 +551,79 @@ where
     H: FnMut(&[u8]),
     F: FnMut(&[u8]) -> ControlFlow<()>,
 {
-    traced!("streaming", {
-        let mut deadline = Deadline::start();
-        // Response streaming buffers the full request (see
-        // `dispatch_streaming_async`): apply the ingress cap, delivering the
-        // 413 through the header callback so the contract (header fires
-        // exactly once) holds.  Pre-header error paths return `Complete`: the
-        // (error) response was delivered in full via `on_header`, nothing is
-        // truncated.
-        let (header_bytes, body_bytes) = match cap_and_split(input) {
-            Ok(parts) => parts,
-            Err(wire) => {
-                on_header(&wire);
-                return StreamOutcome::Complete;
-            }
-        };
-        let (header, router) = match parse_validate_resolve(&header_bytes) {
-            Ok(parts) => parts,
-            Err(wire) => {
-                on_header(&wire);
-                return StreamOutcome::Complete;
-            }
-        };
+    let mut deadline = Deadline::start();
+    // Response streaming buffers the full request (see
+    // `dispatch_streaming_async`): apply the ingress cap, delivering the
+    // 413 through the header callback so the contract (header fires
+    // exactly once) holds.  Pre-header error paths return `Complete`: the
+    // (error) response was delivered in full via `on_header`, nothing is
+    // truncated.
+    let (header_bytes, body_bytes) = match cap_and_split(input) {
+        Ok(parts) => parts,
+        Err(wire) => {
+            on_header(&wire);
+            return StreamOutcome::Complete;
+        }
+    };
+    let (header, router) = match parse_validate_resolve(&header_bytes) {
+        Ok(parts) => parts,
+        Err(wire) => {
+            on_header(&wire);
+            return StreamOutcome::Complete;
+        }
+    };
 
-        // Content-Type defaulting (INP-03): a non-empty body with no explicit
-        // `Content-Type` defaults to `application/json`.  dispatch_and_split
-        // detects the header during its build pass, so this variant stays
-        // identical to its siblings while skipping the separate pre-scan; we
-        // signal only that a non-empty body should default.  Computed before
-        // `body_bytes` is moved.
-        let default_json_when_absent = !body_bytes.is_empty();
-        // Streaming is dominated by body throughput, so the owned-path URI
-        // zero-copy is not worth threading here — pass `None` (the URI is parsed
-        // from the borrowed path by `build_uri`, exactly as before).  Header
-        // values, however, are still inserted into the request `HeaderMap` per
-        // request — share `header_bytes` so each plain value is constructed
-        // zero-copy via `HeaderValue::from_maybe_shared`.
-        let (status, headers, metadata, body) = match deadline
-            .run(dispatch_and_split(
-                router,
-                &header.method,
-                &header.path,
-                &header.query,
-                None,
-                header.iter_str_pairs(),
-                Some(&header_bytes),
-                Body::from(body_bytes),
-                default_json_when_absent,
-                header.connection_info(),
-            ))
-            .await
-        {
-            Some(Ok(parts)) => parts,
-            Some(Err((status, msg))) => {
-                on_header(&error_wire(status, &msg));
-                return StreamOutcome::Complete;
-            }
-            // Deadline expired before the header was committed: a clean 504.
-            None => {
-                on_header(&timeout_wire());
-                return StreamOutcome::Complete;
-            }
-        };
-
-        emit_header_then_stream_body(
-            status,
-            headers,
-            metadata,
-            body,
-            &mut deadline,
-            &mut on_header,
-            &mut on_chunk,
-            true,
-        )
+    // Content-Type defaulting (INP-03): a non-empty body with no explicit
+    // `Content-Type` defaults to `application/json`.  dispatch_and_split
+    // detects the header during its build pass, so this variant stays
+    // identical to its siblings while skipping the separate pre-scan; we
+    // signal only that a non-empty body should default.  Computed before
+    // `body_bytes` is moved.
+    let default_json_when_absent = !body_bytes.is_empty();
+    // Streaming is dominated by body throughput, so the owned-path URI
+    // zero-copy is not worth threading here — pass `None` (the URI is parsed
+    // from the borrowed path by `build_uri`, exactly as before).  Header
+    // values, however, are still inserted into the request `HeaderMap` per
+    // request — share `header_bytes` so each plain value is constructed
+    // zero-copy via `HeaderValue::from_maybe_shared`.
+    let (status, headers, metadata, body) = match deadline
+        .run(dispatch_and_split(
+            router,
+            &header.method,
+            &header.path,
+            &header.query,
+            None,
+            header.iter_str_pairs(),
+            Some(&header_bytes),
+            Body::from(body_bytes),
+            default_json_when_absent,
+            header.connection_info(),
+        ))
         .await
-    })
+    {
+        Some(Ok(parts)) => parts,
+        Some(Err((status, msg))) => {
+            on_header(&error_wire(status, &msg));
+            return StreamOutcome::Complete;
+        }
+        // Deadline expired before the header was committed: a clean 504.
+        None => {
+            on_header(&timeout_wire());
+            return StreamOutcome::Complete;
+        }
+    };
+
+    emit_header_then_stream_body(
+        status,
+        headers,
+        metadata,
+        body,
+        &mut deadline,
+        &mut on_header,
+        &mut on_chunk,
+        true,
+    )
+    .await
 }
 
 /// **Bidirectional streaming dispatch** — both request and response
@@ -777,6 +799,33 @@ where
 async fn bidirectional_streaming_inner<P, F, H, C>(
     input_header: Vec<u8>,
     pull_chunk: P,
+    on_chunk: F,
+    on_header: H,
+    request_close: C,
+    flush_hints: bool,
+) -> StreamOutcome
+where
+    P: FnMut() -> RequestChunk + Send + 'static,
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+    H: FnMut(&[u8]),
+    C: FnOnce(),
+{
+    traced!("bidirectional", {
+        bidirectional_streaming_body(
+            input_header,
+            pull_chunk,
+            on_chunk,
+            on_header,
+            request_close,
+            flush_hints,
+        )
+        .await
+    })
+}
+
+async fn bidirectional_streaming_body<P, F, H, C>(
+    input_header: Vec<u8>,
+    pull_chunk: P,
     mut on_chunk: F,
     mut on_header: H,
     request_close: C,
@@ -788,132 +837,130 @@ where
     H: FnMut(&[u8]),
     C: FnOnce(),
 {
-    traced!("bidirectional", {
-        let (header_bytes, body_tail) = match split_wire_request(input_header) {
-            Ok(parts) => parts,
-            Err(msg) => {
-                on_header(&error_wire(400, &msg));
-                return StreamOutcome::Complete;
-            }
-        };
-        // `input_header` MUST be header-only on the bidirectional path — the
-        // request body arrives via `pull_chunk`.  A non-empty tail means the
-        // caller mis-built the frame; reject it (400) instead of silently
-        // retaining (then discarding) a full body allocation, which would also
-        // violate the advertised O(chunk) memory contract.
-        if !body_tail.is_empty() {
-            on_header(&error_wire(
-                400,
-                "bidirectional streaming input_header must be header-only \
-                 (no trailing body bytes); send the request body via pull_chunk",
-            ));
+    let (header_bytes, body_tail) = match split_wire_request(input_header) {
+        Ok(parts) => parts,
+        Err(msg) => {
+            on_header(&error_wire(400, &msg));
             return StreamOutcome::Complete;
         }
-        let (header, router) = match parse_validate_resolve(&header_bytes) {
-            Ok(parts) => parts,
-            Err(wire) => {
-                on_header(&wire);
-                return StreamOutcome::Complete;
-            }
-        };
-
-        let mut deadline = Deadline::start();
-        let max_request_body = crate::config::max_streaming_request_bytes();
-        let limit_exceeded = Arc::new(AtomicBool::new(false));
-        let producer_handle: RequestProducerHandle = Arc::new(Mutex::new(None));
-        let body = Body::new(ChannelBody::new(
-            pull_chunk,
-            Arc::clone(&producer_handle),
-            max_request_body,
-            Arc::clone(&limit_exceeded),
+    };
+    // `input_header` MUST be header-only on the bidirectional path — the
+    // request body arrives via `pull_chunk`.  A non-empty tail means the
+    // caller mis-built the frame; reject it (400) instead of silently
+    // retaining (then discarding) a full body allocation, which would also
+    // violate the advertised O(chunk) memory contract.
+    if !body_tail.is_empty() {
+        on_header(&error_wire(
+            400,
+            "bidirectional streaming input_header must be header-only \
+             (no trailing body bytes); send the request body via pull_chunk",
         ));
-        // RAII guard: closes the request source iff the producer was started, on
-        // EVERY exit path — including a panic unwinding out of the handler or out
-        // of the response-body poll below. Without it, a handler that read part of
-        // the body (starting the producer) and then panicked would leave the
-        // producer parked forever in a blocking source read: the JNI boundary's
-        // `catch_unwind` turns the panic into a 500 but skips the explicit close,
-        // so the parked producer never gets unblocked. This is the panic-path
-        // sibling of the M3 hang.
-        let mut closer = RequestSourceCloser::new(Arc::clone(&producer_handle), request_close);
+        return StreamOutcome::Complete;
+    }
+    let (header, router) = match parse_validate_resolve(&header_bytes) {
+        Ok(parts) => parts,
+        Err(wire) => {
+            on_header(&wire);
+            return StreamOutcome::Complete;
+        }
+    };
 
-        // Content-Type parity with the buffered / direct / response-streaming
-        // paths: a request with no explicit Content-Type defaults to
-        // `application/json`.  The streamed body's emptiness is unknowable up
-        // front (unlike the buffered paths, which gate on a non-empty body), so
-        // default whenever the header is absent — matching sibling behaviour for
-        // the bodyful bidirectional requests that are this path's reason to
-        // exist, instead of leaving extractor behaviour mode-dependent.
-        let default_json_when_absent = true;
-        // See the response-streaming sibling: streaming is body-throughput bound,
-        // so pass `None` rather than threading the owned-path URI zero-copy here.
-        // Share `header_bytes` for the per-request `HeaderValue` insertions so
-        // each plain value is constructed zero-copy.
-        let dispatched = deadline
-            .run(dispatch_and_split(
-                router,
-                &header.method,
-                &header.path,
-                &header.query,
-                None,
-                header.iter_str_pairs(),
-                Some(&header_bytes),
-                body,
-                default_json_when_absent,
-                header.connection_info(),
-            ))
-            .await;
-        // Pre-commit failures (bad method/path → 405/400, expired deadline →
-        // 504, request body over `max_streaming_request_bytes` → 413): close the
-        // request source (no-op if the producer never started), join the
-        // producer (bounded), then deliver one complete error header.
-        let (status, headers, metadata, response_body) = match dispatched {
-            Some(Ok(parts)) if !limit_exceeded.load(Ordering::Acquire) => parts,
-            failed => {
-                let wire = match failed {
-                    None => timeout_wire(),
-                    Some(Err((status, msg))) => error_wire(status, &msg),
-                    Some(Ok(_)) => error_wire(
-                        413,
-                        &format!(
-                            "streaming request body exceeds configured maximum of \
-                             {max_request_body} bytes (VESPERA_MAX_STREAMING_REQUEST_BYTES)"
-                        ),
-                    ),
-                };
-                closer.close_if_started();
-                join_request_producer(&producer_handle).await;
-                on_header(&wire);
-                return StreamOutcome::Complete;
-            }
-        };
+    let mut deadline = Deadline::start();
+    let max_request_body = crate::config::max_streaming_request_bytes();
+    let limit_exceeded = Arc::new(AtomicBool::new(false));
+    let producer_handle: RequestProducerHandle = Arc::new(Mutex::new(None));
+    let body = Body::new(ChannelBody::new(
+        pull_chunk,
+        Arc::clone(&producer_handle),
+        max_request_body,
+        Arc::clone(&limit_exceeded),
+    ));
+    // RAII guard: closes the request source iff the producer was started, on
+    // EVERY exit path — including a panic unwinding out of the handler or out
+    // of the response-body poll below. Without it, a handler that read part of
+    // the body (starting the producer) and then panicked would leave the
+    // producer parked forever in a blocking source read: the JNI boundary's
+    // `catch_unwind` turns the panic into a 500 but skips the explicit close,
+    // so the parked producer never gets unblocked. This is the panic-path
+    // sibling of the M3 hang.
+    let mut closer = RequestSourceCloser::new(Arc::clone(&producer_handle), request_close);
 
-        let outcome = emit_header_then_stream_body(
-            status,
-            headers,
-            metadata,
-            response_body,
-            &mut deadline,
-            &mut on_header,
-            &mut on_chunk,
-            flush_hints,
-        )
+    // Content-Type parity with the buffered / direct / response-streaming
+    // paths: a request with no explicit Content-Type defaults to
+    // `application/json`.  The streamed body's emptiness is unknowable up
+    // front (unlike the buffered paths, which gate on a non-empty body), so
+    // default whenever the header is absent — matching sibling behaviour for
+    // the bodyful bidirectional requests that are this path's reason to
+    // exist, instead of leaving extractor behaviour mode-dependent.
+    let default_json_when_absent = true;
+    // See the response-streaming sibling: streaming is body-throughput bound,
+    // so pass `None` rather than threading the owned-path URI zero-copy here.
+    // Share `header_bytes` for the per-request `HeaderValue` insertions so
+    // each plain value is constructed zero-copy.
+    let dispatched = deadline
+        .run(dispatch_and_split(
+            router,
+            &header.method,
+            &header.path,
+            &header.query,
+            None,
+            header.iter_str_pairs(),
+            Some(&header_bytes),
+            body,
+            default_json_when_absent,
+            header.connection_info(),
+        ))
         .await;
+    // Pre-commit failures (bad method/path → 405/400, expired deadline →
+    // 504, request body over `max_streaming_request_bytes` → 413): close the
+    // request source (no-op if the producer never started), join the
+    // producer (bounded), then deliver one complete error header.
+    let (status, headers, metadata, response_body) = match dispatched {
+        Some(Ok(parts)) if !limit_exceeded.load(Ordering::Acquire) => parts,
+        failed => {
+            let wire = match failed {
+                None => timeout_wire(),
+                Some(Err((status, msg))) => error_wire(status, &msg),
+                Some(Ok(_)) => error_wire(
+                    413,
+                    &format!(
+                        "streaming request body exceeds configured maximum of \
+                         {max_request_body} bytes (VESPERA_MAX_STREAMING_REQUEST_BYTES)"
+                    ),
+                ),
+            };
+            closer.close_if_started();
+            join_request_producer(&producer_handle).await;
+            on_header(&wire);
+            return StreamOutcome::Complete;
+        }
+    };
 
-        // The response is fully drained, so the handler has finished and will
-        // not read more of the request body. If the producer was started (the
-        // handler read at least one chunk) it may be parked in a blocking source
-        // read; close the request source to unblock it. The join below is
-        // BOUNDED (`REQUEST_PRODUCER_JOIN_GRACE`): a host source whose close does
-        // not interrupt a read parked on another thread can no longer hang the
-        // completed response — the producer is detached instead.  A full read
-        // already hit EOF (close is a no-op) and a producer that never started
-        // leaves the source untouched. `close_if_started` is idempotent, so the
-        // guard's Drop becomes a no-op on this happy path.
-        closer.close_if_started();
-        join_request_producer(&producer_handle).await;
-        outcome
-    })
+    let outcome = emit_header_then_stream_body(
+        status,
+        headers,
+        metadata,
+        response_body,
+        &mut deadline,
+        &mut on_header,
+        &mut on_chunk,
+        flush_hints,
+    )
+    .await;
+
+    // The response is fully drained, so the handler has finished and will
+    // not read more of the request body. If the producer was started (the
+    // handler read at least one chunk) it may be parked in a blocking source
+    // read; close the request source to unblock it. The join below is
+    // BOUNDED (`REQUEST_PRODUCER_JOIN_GRACE`): a host source whose close does
+    // not interrupt a read parked on another thread can no longer hang the
+    // completed response — the producer is detached instead.  A full read
+    // already hit EOF (close is a no-op) and a producer that never started
+    // leaves the source untouched. `close_if_started` is idempotent, so the
+    // guard's Drop becomes a no-op on this happy path.
+    closer.close_if_started();
+    join_request_producer(&producer_handle).await;
+    outcome
 }
 
 #[cfg(test)]
