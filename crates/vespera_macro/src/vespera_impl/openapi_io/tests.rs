@@ -789,7 +789,10 @@ fn security_references_are_validated_after_merge(#[case] scheme: &str, #[case] o
         error_status: None,
         typed_responses: None,
         tags: None,
-        security: Some(vec![scheme.to_string()]),
+        security: Some(vec![std::collections::BTreeMap::from([(
+            scheme.to_string(),
+            Vec::new(),
+        )])]),
         headers: Vec::new(),
         operation_id: None,
         summary: None,

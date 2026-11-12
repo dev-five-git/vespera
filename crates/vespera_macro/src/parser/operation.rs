@@ -23,7 +23,7 @@ pub struct OperationRouteConfig<'a> {
     /// Declared non-200 success status from `status = <u16>` (validated 2xx).
     pub success_status: Option<u16>,
     pub tags: Option<&'a [String]>,
-    pub security: Option<&'a [String]>,
+    pub security: Option<&'a [vespera_core::schema::SecurityRequirement]>,
     pub headers: Option<&'a [HeaderParam]>,
     pub operation_id: Option<&'a str>,
     pub summary: Option<&'a str>,
@@ -247,7 +247,7 @@ pub fn build_operation_from_function(
         },
         request_body,
         responses,
-        security: config.security.map(security_requirements),
+        security: config.security.map(<[_]>::to_vec),
         deprecated: config.deprecated.then_some(true),
         // OpenAPI 3.1 Operation Object members vespera does not populate from
         // `#[route]` (no DSL for externalDocs / callbacks / operation-level
@@ -384,13 +384,6 @@ fn validation_error_response() -> Response {
         headers: None,
         content: Some(content),
     }
-}
-
-fn security_requirements(security: &[String]) -> Vec<BTreeMap<String, Vec<String>>> {
-    security
-        .iter()
-        .map(|scheme| BTreeMap::from([(scheme.clone(), Vec::new())]))
-        .collect()
 }
 
 #[cfg(test)]

@@ -35,6 +35,13 @@ axum = { version = "0.8", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 rstest = "0.28"
 
+# loom models of the `dispatchAsync` cap (`jni_impl_gates.rs`).  Only
+# under the custom `--cfg vespera_loom` (not `cfg(loom)`, which would switch
+# Tokio and friends into their own loom builds):
+# RUSTFLAGS="--cfg vespera_loom" cargo test --release -p vespera_jni --lib loom_
+[target.'cfg(vespera_loom)'.dev-dependencies]
+loom = "0.7"
+
 [features]
 # Use mimalloc as the global allocator inside the JNI cdylib.  The
 # default OS allocator (Windows HeapAlloc in particular) is measurably

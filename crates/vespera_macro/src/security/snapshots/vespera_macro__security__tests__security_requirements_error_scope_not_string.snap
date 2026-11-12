@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/security/tests.rs
+expression: error.to_string()
+---
+#[route] `security` scopes must be string literals, e.g. `["read:users"]`

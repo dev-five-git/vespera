@@ -12,13 +12,13 @@
 //! surfaces `false` instead of silently dropping the configuration.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use jni::EnvUnowned;
 use jni::objects::JClass;
 use jni::sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong};
 
+use super::gates::{CapPermit, InFlightCap};
 use super::{guard_void_symbol, set_runtime_max_blocking_threads, set_runtime_worker_threads};
 
 /// Default cap on concurrently in-flight `dispatchAsync` calls.
@@ -33,7 +33,14 @@ pub const DEFAULT_ASYNC_MAX_IN_FLIGHT: usize = 4096;
 const MAX_ASYNC_MAX_IN_FLIGHT: usize = 1 << 24;
 
 static ASYNC_MAX_IN_FLIGHT: OnceLock<usize> = OnceLock::new();
-static ASYNC_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+/// The `dispatchAsync` in-flight counter + admission protocol (loom-checked).
+#[cfg(not(vespera_loom))]
+static ASYNC_IN_FLIGHT: InFlightCap = InFlightCap::new();
+/// loom atomics are not `const`-constructible; the loom build only runs the
+/// `loom_*` models, which never touch the static.
+#[cfg(vespera_loom)]
+static ASYNC_IN_FLIGHT: std::sync::LazyLock<InFlightCap> =
+    std::sync::LazyLock::new(InFlightCap::new);
 
 /// Read a `usize` env knob: absent → `default`; present but unparseable →
 /// one-time stderr warning + `default` (callers resolve through a
@@ -83,43 +90,18 @@ pub fn set_async_max_in_flight(max: usize) -> bool {
 /// cancelled dispatch must hand its slot back promptly.
 #[must_use]
 pub fn async_in_flight() -> usize {
-    ASYNC_IN_FLIGHT.load(Ordering::Acquire)
+    ASYNC_IN_FLIGHT.in_flight()
 }
 
 /// One admitted `dispatchAsync` slot; releases it on drop (task completion,
 /// a caught panic, or the runtime dropping the task at shutdown).
-pub struct AsyncPermit {
-    /// The counter this permit holds a slot in; `None` when uncapped.
-    counter: Option<&'static AtomicUsize>,
-}
-
-impl Drop for AsyncPermit {
-    fn drop(&mut self) {
-        if let Some(counter) = self.counter {
-            counter.fetch_sub(1, Ordering::AcqRel);
-        }
-    }
-}
+pub type AsyncPermit = CapPermit;
 
 /// Admit one `dispatchAsync` call, or `None` when the in-flight cap is
 /// reached (the caller completes the future with a `503` immediately).
 #[must_use]
 pub fn try_acquire_async_permit() -> Option<AsyncPermit> {
-    admit(async_max_in_flight(), &ASYNC_IN_FLIGHT)
-}
-
-fn admit(max: usize, in_flight: &'static AtomicUsize) -> Option<AsyncPermit> {
-    if max == 0 {
-        return Some(AsyncPermit { counter: None });
-    }
-    let previous = in_flight.fetch_add(1, Ordering::AcqRel);
-    if previous >= max {
-        in_flight.fetch_sub(1, Ordering::AcqRel);
-        return None;
-    }
-    Some(AsyncPermit {
-        counter: Some(in_flight),
-    })
+    ASYNC_IN_FLIGHT.admit(async_max_in_flight())
 }
 
 /// `503` wire response for an async dispatch rejected by the in-flight cap.
@@ -422,29 +404,6 @@ mod tests {
         assert_eq!(guarded_configure(|| true), JNI_TRUE);
         assert_eq!(guarded_configure(|| false), JNI_FALSE);
         assert_eq!(guarded_configure(|| panic!("boom")), JNI_FALSE);
-    }
-
-    #[test]
-    fn admission_counts_and_releases_slots() {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let first = admit(2, &COUNTER).expect("slot 1");
-        let second = admit(2, &COUNTER).expect("slot 2");
-        assert!(admit(2, &COUNTER).is_none(), "third call is rejected");
-        assert_eq!(
-            COUNTER.load(Ordering::Acquire),
-            2,
-            "a rejection leaks no slot"
-        );
-        drop(first);
-        let third = admit(2, &COUNTER).expect("a released slot is reusable");
-        drop((second, third));
-        assert_eq!(COUNTER.load(Ordering::Acquire), 0);
-        assert!(admit(0, &COUNTER).is_some(), "0 = unlimited");
-        assert_eq!(
-            COUNTER.load(Ordering::Acquire),
-            0,
-            "unlimited is not counted"
-        );
     }
 
     #[test]

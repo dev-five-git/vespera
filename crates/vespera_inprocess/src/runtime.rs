@@ -18,10 +18,15 @@ use std::{
     ops::Deref,
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
+
+// The lease count + shut-down flag protocol, Tokio-free so loom can
+// model-check it.
+mod gate;
+use gate::LeaseGate;
 
 const MIN_RUNTIME_WORKERS: usize = 1;
 const MAX_RUNTIME_WORKERS: usize = 1024;
@@ -114,15 +119,17 @@ pub fn set_runtime_max_blocking_threads(threads: usize) -> bool {
 /// hot path never touches the mutex.
 static RUNTIME: OnceLock<Option<SharedRuntime>> = OnceLock::new();
 
-/// Set once by [`shutdown_runtime`]; from then on [`runtime`] returns `None`
-/// and [`runtime_unavailable_wire`] answers `503`.
-static RUNTIME_SHUT_DOWN: AtomicBool = AtomicBool::new(false);
-
-/// Number of live `RuntimeLease`s (dispatches using the runtime).
-/// Incremented BEFORE the shut-down flag is checked, and the flag is set
-/// before [`shutdown_runtime`] reads this counter (both `SeqCst`), so a
-/// dispatch either sees the flag or is counted by the drain — never neither.
-static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+/// Live `RuntimeLease`s (dispatches using the runtime) and the shut-down
+/// flag, in ONE atomic word: closed once by [`shutdown_runtime`], after which
+/// [`runtime`] returns `None` and [`runtime_unavailable_wire`] answers `503`.
+/// A dispatch either sees the flag or is counted by the drain — never neither
+/// (see [`LeaseGate`]; model-checked with loom).
+#[cfg(not(all(test, vespera_loom)))]
+static GATE: LeaseGate = LeaseGate::new();
+/// loom atomics are not `const`-constructible; this build only runs the
+/// `loom_*` models, which never touch the static.
+#[cfg(all(test, vespera_loom))]
+static GATE: std::sync::LazyLock<LeaseGate> = std::sync::LazyLock::new(LeaseGate::new);
 
 const NO_SHUTDOWN_THREAD_MSG: &str =
     "vespera: could not start the shutdown thread; runtime left running";
@@ -178,16 +185,16 @@ impl Deref for RuntimeLease {
 
 impl Drop for RuntimeLease {
     fn drop(&mut self) {
-        IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+        GATE.exit();
     }
 }
 
-/// Decrements [`IN_FLIGHT`] for a claim that did not turn into a lease.
+/// Releases a counted claim that did not turn into a lease.
 struct Claim;
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+        GATE.exit();
     }
 }
 
@@ -195,11 +202,10 @@ impl Drop for Claim {
 /// could not be built or has been shut down (see
 /// [`runtime_unavailable_wire`] for the matching wire response).
 pub fn runtime() -> Option<RuntimeLease> {
-    IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
-    let claim = Claim;
-    if RUNTIME_SHUT_DOWN.load(Ordering::SeqCst) {
+    if !GATE.try_enter() {
         return None;
     }
+    let claim = Claim;
     let handle = &RUNTIME.get_or_init(build_shared_runtime).as_ref()?.handle;
     if HOOKS_PENDING.load(Ordering::Relaxed) {
         flush_hooks(handle);
@@ -211,7 +217,7 @@ pub fn runtime() -> Option<RuntimeLease> {
 /// Whether [`shutdown_runtime`] has been called.
 #[must_use]
 pub fn runtime_shut_down() -> bool {
-    RUNTIME_SHUT_DOWN.load(Ordering::Acquire)
+    GATE.is_closed()
 }
 
 /// Wire response for a dispatch that found no runtime: `503` after
@@ -268,7 +274,7 @@ pub fn shutdown_runtime(timeout: Duration) -> bool {
 /// drop state that only makes sense while the runtime lives (the JNI DIRECT
 /// overflow stash).
 pub fn shutdown_runtime_then(timeout: Duration, cleanup: fn()) -> bool {
-    if RUNTIME_SHUT_DOWN.swap(true, Ordering::SeqCst) {
+    if !GATE.close() {
         return false;
     }
     if tokio::runtime::Handle::try_current().is_ok() {
@@ -306,7 +312,7 @@ fn finish_shutdown(timeout: Duration, cleanup: fn()) {
 /// Wait until no `RuntimeLease` is alive or `deadline` passes.
 fn drain_in_flight(deadline: Instant) -> bool {
     loop {
-        if IN_FLIGHT.load(Ordering::SeqCst) == 0 {
+        if GATE.in_flight() == 0 {
             return true;
         }
         let now = Instant::now();
@@ -331,7 +337,7 @@ static HOST_LOADED: AtomicBool = AtomicBool::new(false);
 /// (`JNI_OnLoad`, `vespera_init`) run on the configured shared runtime and
 /// stop with it.
 pub fn on_shared_runtime(hook: RuntimeHook) {
-    if RUNTIME_SHUT_DOWN.load(Ordering::SeqCst) {
+    if GATE.is_closed() {
         return;
     }
     if let Ok(mut hooks) = HOOKS.lock() {
@@ -386,7 +392,7 @@ mod tests {
 
     #[test]
     fn drain_reports_timeout_while_a_claim_is_alive() {
-        IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+        GATE.force_enter();
         let claim = Claim;
         assert!(!drain_in_flight(Instant::now() + Duration::from_millis(5)));
         drop(claim);

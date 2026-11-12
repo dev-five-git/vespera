@@ -27,6 +27,18 @@ of an existing 0.5 application.
 - New compile errors: duplicate explicit `operation_id`s, unknown security
   schemes (checked after `merge`), malformed `#[schema(...)]`, and scalar
   payloads in internally tagged newtype variants.
+- OAuth2 / OpenID Connect: `oauth2` security schemes declare `flows`
+  (`implicit` / `password` / `client_credentials` / `authorization_code` with
+  their URLs and `scopes`), and `security = [...]` (route and document level)
+  accepts scoped requirements `("oauth2", ["read:users"])`, AND groups
+  `[["apiKey", ("oauth2", [...])]]` and an optional-auth `[]` alternative.
+  New compile errors: an `oauth2` scheme without `flows` or with a flow
+  missing a required URL, `flows` on another scheme type, and a scope that no
+  flow of the referenced `oauth2` scheme declares. The malformed-`security`
+  diagnostic wording changed. `vespera_core` adds `SecurityRequirement` and
+  `OAuthFlows::{declares_scope, scope_names}`; `vespera_inprocess` adds
+  `Principal::require_scopes` → `InsufficientScope` (`403` +
+  `WWW-Authenticate: Bearer error="insufficient_scope"`).
 - Known `headers::*` `TypedHeader` parameters use the real header name.
 - `Path<Struct>` parameters are typed per field (serde names); `Query<Struct>`
   drops `skip` / `skip_deserializing` fields, expands `flatten`, and array
@@ -419,3 +431,20 @@ Additive.
   under the same names (no API change); `vespera::cron` now routes jobs to the
   shared runtime whenever a host (JVM or C) loaded the library
   (`vespera_inprocess::runtime::host_loaded`).
+
+### Miri and loom checking (`vespera_inprocess`, `vespera_jni`)
+
+No behaviour change for applications.
+
+- The shared-runtime gate (in-flight `RuntimeLease` count + shut-down flag,
+  now in `vespera_inprocess::runtime`) is one atomic word now, entered with a
+  single `fetch_add` instead of a `SeqCst` increment followed by a `SeqCst`
+  flag load. The guarantee is unchanged (a dispatch is either refused with
+  `503` or waited for by the shutdown drain — `shutdown0` / `vespera_shutdown`);
+  it no longer depends on cross-variable `SeqCst` ordering, and the hot path
+  does one atomic RMW instead of an RMW plus a load.
+- New CI jobs: `miri` runs the `vespera_inprocess` unit tests and the JNI-free
+  `unsafe` helpers of `vespera_jni` (direct-buffer copy, uninitialised
+  spare-capacity fill, `u8`→`jbyte` view) under Miri; `loom` model-checks the
+  runtime gate (`vespera_inprocess`) and the `dispatchAsync` in-flight cap
+  (`vespera_jni`) (`RUSTFLAGS="--cfg vespera_loom"`).

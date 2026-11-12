@@ -1628,6 +1628,50 @@
         }
       }
     },
+    "/secured/directory": {
+      "get": {
+        "operationId": "user_directory",
+        "tags": [
+          "secured"
+        ],
+        "summary": "User directory — needs the `read:users` scope, granted either by the OAuth2 server or by the OpenID Connect provider (alternatives, OR).",
+        "description": "A scope missing from every flow of `oauth2` is a compile error.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error response"
+          },
+          "403": {
+            "description": "Error response"
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "read:users"
+            ]
+          },
+          {
+            "oidc": [
+              "openid",
+              "read:users"
+            ]
+          }
+        ]
+      }
+    },
     "/secured/me": {
       "get": {
         "operationId": "getCurrentUser",
@@ -6301,6 +6345,30 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "JWT"
+      },
+      "oauth2": {
+        "type": "oauth2",
+        "description": "Demo authorization server",
+        "flows": {
+          "clientCredentials": {
+            "tokenUrl": "https://auth.example.com/token",
+            "scopes": {
+              "read:users": "Read the user directory"
+            }
+          },
+          "authorizationCode": {
+            "authorizationUrl": "https://auth.example.com/authorize",
+            "tokenUrl": "https://auth.example.com/token",
+            "scopes": {
+              "read:users": "Read the user directory",
+              "write:users": "Modify users"
+            }
+          }
+        }
+      },
+      "oidc": {
+        "type": "openIdConnect",
+        "openIdConnectUrl": "https://auth.example.com/.well-known/openid-configuration"
       }
     }
   },

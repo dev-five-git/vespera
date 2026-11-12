@@ -8,6 +8,7 @@ mod export;
 mod generator;
 mod info;
 mod input;
+mod security_dsl;
 
 pub use export::{
     ExportAppInput, apply_export_prefix, namespace_export_schemas, schema_namespace_from_prefix,

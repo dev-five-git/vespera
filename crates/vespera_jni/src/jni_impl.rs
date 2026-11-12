@@ -32,6 +32,11 @@ pub use config::{
 };
 use config::{async_overloaded_wire, try_acquire_async_permit};
 
+// The `dispatchAsync` in-flight cap protocol, JNI-free so loom can
+// model-check it (the runtime lease gate lives in `vespera_inprocess::runtime`).
+#[path = "jni_impl_gates.rs"]
+mod gates;
+
 // Shared runtime lifecycle (lazy build, in-flight leases, deferred hooks,
 // graceful shutdown) and its worker / blocking-pool knobs live in
 // `vespera_inprocess::runtime`, shared with the C ABI (`vespera_inprocess::ffi`)
