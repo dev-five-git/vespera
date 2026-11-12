@@ -7,8 +7,8 @@
 //! direct-write and streaming finishers.
 
 use std::collections::VecDeque;
-use std::future::Future;
-use std::pin::Pin;
+use std::future::{Future, poll_fn};
+use std::pin::{Pin, pin};
 use std::task::{Context, Poll};
 
 use axum::body::Body;
@@ -139,43 +139,21 @@ impl Deadline {
     /// Drive `fut` until it completes (`Some`) or the deadline elapses
     /// (`None`, with `fut` dropped — Tokio cancellation).  Once elapsed,
     /// every later call returns `None` unless `fut` is immediately ready.
-    ///
-    /// A hand-written [`DeadlineRun`] rather than an `async fn`: an async
-    /// body would hold `fut` twice (the by-value argument plus the pinned or
-    /// awaited copy), doubling every dispatch future that runs under a
-    /// deadline — and pushing them over tokio's debug `block_on` boxing
-    /// threshold.
-    pub fn run<F: Future>(&mut self, fut: F) -> DeadlineRun<'_, F> {
-        DeadlineRun {
-            fut,
-            sleep: self.sleep.as_mut(),
-        }
-    }
-}
-
-pin_project_lite::pin_project! {
-    /// Future returned by [`Deadline::run`].
-    pub struct DeadlineRun<'a, F> {
-        #[pin]
-        fut: F,
-        sleep: Option<&'a mut Pin<Box<tokio::time::Sleep>>>,
-    }
-}
-
-impl<F: Future> Future for DeadlineRun<'_, F> {
-    type Output = Option<F::Output>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-        if let Poll::Ready(out) = this.fut.poll(cx) {
-            return Poll::Ready(Some(out));
-        }
-        if let Some(sleep) = this.sleep
-            && sleep.as_mut().poll(cx).is_ready()
-        {
-            return Poll::Ready(None);
-        }
-        Poll::Pending
+    pub async fn run<F: Future>(&mut self, fut: F) -> Option<F::Output> {
+        let Some(sleep) = self.sleep.as_mut() else {
+            return Some(fut.await);
+        };
+        let mut fut = pin!(fut);
+        poll_fn(|cx| {
+            if let Poll::Ready(out) = fut.as_mut().poll(cx) {
+                return Poll::Ready(Some(out));
+            }
+            if sleep.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(None);
+            }
+            Poll::Pending
+        })
+        .await
     }
 }
 
