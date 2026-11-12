@@ -22,7 +22,7 @@ use vespera_core::route::{HttpMethod, PathItem};
 use crate::{
     file_utils::normalize_path_key,
     metadata::CollectedMetadata,
-    parser::{OperationRouteConfig, build_operation_from_function},
+    parser::{OperationRouteConfig, build_operation_from_function, openapi_path_template},
     route_impl::StoredRouteInfo,
 };
 
@@ -201,7 +201,9 @@ fn assemble_path_items(
                 all_tags.insert(tag.clone());
             }
         }
-        let path_item = paths.entry(route_meta.path.clone()).or_default();
+        let path_item = paths
+            .entry(openapi_path_template(&route_meta.path))
+            .or_default();
         if path_item.try_set_operation(method, operation).is_some() {
             let previous = claimed
                 .get(&(route_meta.path.as_str(), method))

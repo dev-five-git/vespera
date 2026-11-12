@@ -105,7 +105,9 @@ async fn main() -> std::io::Result<()> {
 > `.serve(addr)` is a vespera-provided extension trait on `axum::Router` — it
 > replaces the usual `TcpListener::bind` + `axum::serve(...)` dance with a
 > single chained call. `addr` accepts anything `tokio::net::ToSocketAddrs`
-> takes (strings, tuples, `SocketAddr`).
+> takes (strings, tuples, `SocketAddr`). Handlers can extract
+> `ConnectInfo<SocketAddr>`, and `.serve_with_graceful_shutdown(addr, signal)`
+> stops accepting connections once `signal` resolves.
 
 ### 4. Run
 
@@ -131,6 +133,12 @@ src/routes/
     ├── mod.rs       → /admin
     └── stats.rs     → /admin/stats
 ```
+
+`snake_case` file and folder names become `kebab-case` URL segments
+(`user_groups.rs` → `/user-groups`). An explicit `#[route(path = "...")]`
+suffix is used verbatim — `path = "/my_route"` serves `/my_route`. axum
+catch-all segments (`path = "/files/{*rest}"`) are documented as
+`/files/{rest}` with a `rest` path parameter.
 
 ### Route Handlers
 
@@ -454,7 +462,7 @@ pub async fn delete_item(Path(id): Path<i64>) -> Result<StatusCode, (StatusCode,
 ```rust
 let app = vespera!(
     dir = "routes",                    // Route folder (default: "routes")
-    openapi = "openapi.json",          // Output path (writes file at compile time)
+    openapi = "openapi.json",          // Output path, relative to the crate dir (written at compile time)
     title = "My API",                  // OpenAPI info.title
     version = "1.0.0",                 // OpenAPI info.version (default: CARGO_PKG_VERSION)
     docs_url = "/docs",                // Swagger UI endpoint
@@ -904,6 +912,8 @@ let app = vespera!(
 );
 ```
 
+Relative paths resolve against the crate's `CARGO_MANIFEST_DIR` (the directory holding its `Cargo.toml`), so workspace members write next to their own manifest. vespera's build cache lives under the cargo target directory (`CARGO_TARGET_DIR` is honoured).
+
 ### Custom Route Folder
 
 ```rust
@@ -968,7 +978,28 @@ This automatically:
 | `NaiveTime` | `string` with `format: time` |
 | `DateTime`, `DateTimeWithTimeZone` | `string` with `format: date-time` |
 | `FieldData<NamedTempFile>` | `string` with `format: binary` |
+| `serde_json::Value` | `{}` (any JSON value) |
+| `std::time::Duration` (bare `Duration`, `std::time::` / `core::time::`) | `object` `{secs, nanos}` (serde's std shape) |
+| other qualified `Duration` (`time::`, `chrono::`) | `{}` — no single serde shape; annotate explicitly |
 | Custom struct | `$ref` to components/schemas |
+
+Request / response bodies follow what axum actually sends:
+
+| Handler type | OpenAPI |
+|--------------|---------|
+| `Path<Struct>` | one path parameter per `{name}`, typed by the field with that serde name |
+| `Query<Struct>` | one query parameter per field; `#[serde(skip)]` / `skip_deserializing` fields are omitted, `#[serde(flatten)]` structs are expanded; `Vec<T>` fields use `style: form, explode: true` (repeated keys need `axum_extra::extract::Query`) |
+| `Option<Json<T>>` | `requestBody.required: false` |
+| `Bytes` / `BytesMut` / `Body` argument | `application/octet-stream` binary request body |
+| `impl IntoResponse`, `Response`, `Redirect` | description-only response (no `content`) |
+| `Html<T>` | `text/html` string |
+| `Bytes`, `Vec<u8>`, `&[u8]` return | `application/octet-stream` binary |
+| `String` / `&str` return | `text/plain` |
+
+Serde container attributes are honoured: enum `rename_all` renames variants and
+`rename_all_fields` renames struct-variant fields, `deny_unknown_fields` emits
+`additionalProperties: false` (unless the struct flattens), and a
+`#[serde(flatten)] Option<T>` contributes `T`'s fields as optional.
 
 ---
 

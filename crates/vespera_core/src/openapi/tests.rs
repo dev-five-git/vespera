@@ -425,6 +425,8 @@ fn test_merge_components_responses_and_parameters() {
                 required: None,
                 schema: None,
                 example: None,
+                style: None,
+                explode: None,
             },
         )])),
         examples: None,

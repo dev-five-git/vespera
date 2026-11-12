@@ -142,6 +142,10 @@ async fn main() -> std::io::Result<()> {
 - Works on **any** `axum::Router`, including the output of `Router::merge`,
   `Router::nest`, or `vespera!(...)` itself.
 - Returns `std::io::Result<()>` — propagate with `?` from `main`.
+- Handlers can extract `ConnectInfo<SocketAddr>` (the router is served with
+  `into_make_service_with_connect_info`).
+- `.serve_with_graceful_shutdown(addr, signal)` stops accepting connections
+  once `signal` resolves and waits for in-flight requests.
 
 ---
 
@@ -163,6 +167,8 @@ async fn main() -> std::io::Result<()> {
 | `NaiveTime` | `string` + `format: time` | |
 | `DateTime`, `DateTimeWithTimeZone` | `string` + `format: date-time` | |
 | `FieldData<NamedTempFile>` | `string` + `format: binary` | File upload field |
+| `serde_json::Value` | `{}` | Any JSON value |
+| `std::time::Duration` | `object` `{secs, nanos}` | serde's std shape; other qualified `Duration`s → `{}` |
 | `()` | empty response | 204 No Content |
 | Custom struct | `$ref` | Must derive Schema |
 
@@ -170,12 +176,14 @@ async fn main() -> std::io::Result<()> {
 
 | Axum Extractor | OpenAPI Location | Notes |
 |----------------|------------------|-------|
-| `Path<T>` | path parameter | T can be tuple or struct |
-| `Query<T>` | query parameters | Struct fields become params |
+| `Path<T>` | path parameter | T can be tuple or struct (struct fields matched by serde name); `{*rest}` → `{rest}` |
+| `Query<T>` | query parameters | Struct fields become params; skip/flatten honoured; `Vec<T>` → `style: form, explode: true` |
 | `Json<T>` | requestBody | application/json |
 | `Form<T>` | requestBody | application/x-www-form-urlencoded |
 | `TypedMultipart<T>` | requestBody | multipart/form-data — typed with schema |
 | `Multipart` | requestBody | multipart/form-data — untyped, generic object |
+| `Option<Json<T>>` | requestBody | `required: false` |
+| `Bytes` / `Body` | requestBody | application/octet-stream binary |
 | `State<T>` | **ignored** | Internal, not API |
 | `Extension<T>` | **ignored** | Internal, not API |
 | `TypedHeader<T>` | header parameter | |

@@ -27,4 +27,6 @@ node_modules
 
 # Generated OpenAPI artifacts at workspace root
 /openapi*.json
+# `openapi = "..."` resolves next to the crate (CARGO_MANIFEST_DIR)
+/examples/rust-jni-demo/openapi*.json
 .retry-now/

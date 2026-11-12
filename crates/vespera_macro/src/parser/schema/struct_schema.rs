@@ -10,18 +10,18 @@ use std::{
 };
 
 use syn::Fields;
-use vespera_core::schema::{Schema, SchemaRef, SchemaType};
+use vespera_core::schema::{AdditionalProperties, Schema, SchemaRef, SchemaType};
 
 use super::{
     schema_attrs::{SchemaConstraints, extract_schema_constraints},
     serde_attrs::{
-        extract_doc_comment, extract_field_rename, extract_flatten, extract_rename_all,
-        extract_schema_ref_override, extract_serde_skip_flags, extract_transparent, rename_field,
-        strip_raw_prefix_owned,
+        extract_deny_unknown_fields, extract_doc_comment, extract_field_rename, extract_flatten,
+        extract_rename_all, extract_schema_ref_override, extract_serde_skip_flags,
+        extract_transparent, rename_field, strip_raw_prefix_owned,
     },
     type_schema::{parse_type_to_schema_ref, tuple_array_schema},
 };
-use crate::schema_macro::type_utils::is_option_type;
+use crate::schema_macro::type_utils::{is_option_type, option_inner};
 
 /// Parses a Rust struct into an `OpenAPI` Schema.
 ///
@@ -80,13 +80,21 @@ pub fn parse_struct_to_schema(
     match &struct_item.fields {
         Fields::Named(fields_named) => {
             let rename_all = extract_rename_all(&struct_item.attrs);
-            collect_named_fields(
+            let fields = collect_named_fields(
                 fields_named,
                 rename_all.as_deref(),
                 known_schemas,
                 struct_definitions,
-            )
-            .into_object_schema(struct_description)
+            );
+            // `deny_unknown_fields` → closed object. serde does not support
+            // it together with `flatten`, so a flattening struct stays open.
+            let closed =
+                fields.flattened.is_empty() && extract_deny_unknown_fields(&struct_item.attrs);
+            let mut schema = fields.into_object_schema(struct_description);
+            if closed {
+                schema.additional_properties = Some(AdditionalProperties::Bool(false));
+            }
+            schema
         }
         // `struct Pair(A, B)` → `[A, B]` (fully skipped positions are not
         // serialized, so they are not array items either).
@@ -203,10 +211,9 @@ pub(super) fn collect_named_fields(
         }
 
         if extract_flatten(&field.attrs) {
-            out.flattened.push(parse_type_to_schema_ref(
-                &field.ty,
-                known_schemas,
-                struct_definitions,
+            out.flattened.push(option_inner(&field.ty).map_or_else(
+                || parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions),
+                |inner| optional_flattened_schema(inner, known_schemas, struct_definitions),
             ));
             continue;
         }
@@ -263,6 +270,56 @@ pub(super) fn collect_named_fields(
         out.properties.insert(field_name, schema_ref);
     }
     out
+}
+
+/// Schema of a `#[serde(flatten)] Option<Inner>` field.
+///
+/// serde deserializes the flattened `Inner` only when all of its fields are
+/// present and yields `None` otherwise, so none of `Inner`'s fields may be
+/// `required` in the composed object.
+fn optional_flattened_schema(
+    inner: &syn::Type,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+) -> SchemaRef {
+    without_required(
+        parse_type_to_schema_ref(inner, known_schemas, struct_definitions),
+        known_schemas,
+        struct_definitions,
+    )
+}
+
+/// `schema_ref` with every `required` list dropped, recursively through
+/// `allOf` members. A `$ref` cannot be relaxed in place, so a referenced
+/// known struct is inlined; a `$ref` without a parseable struct definition
+/// (e.g. an enum) is kept as-is.
+fn without_required(
+    schema_ref: SchemaRef,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+) -> SchemaRef {
+    let mut schema = match schema_ref {
+        SchemaRef::Inline(schema) => *schema,
+        SchemaRef::Ref(reference) => {
+            let Some(struct_item) = reference
+                .ref_path
+                .strip_prefix("#/components/schemas/")
+                .and_then(|name| struct_definitions.get(name))
+                .and_then(|def| syn::parse_str::<syn::ItemStruct>(def.as_ref()).ok())
+            else {
+                return SchemaRef::Ref(reference);
+            };
+            parse_struct_to_schema(&struct_item, known_schemas, struct_definitions)
+        }
+    };
+    schema.required = None;
+    schema.all_of = schema.all_of.take().map(|members| {
+        members
+            .into_iter()
+            .map(|member| without_required(member, known_schemas, struct_definitions))
+            .collect()
+    });
+    SchemaRef::Inline(Box::new(schema))
 }
 
 /// Merge field-level `#[schema(...)]` constraints into the field's

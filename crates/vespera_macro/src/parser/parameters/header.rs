@@ -73,6 +73,8 @@ fn parse_header(
             struct_definitions,
         )),
         example: None,
+        style: None,
+        explode: None,
     }])
 }
 
@@ -162,6 +164,8 @@ fn typed_header_parameter(
         required: Some(required),
         schema: Some(SchemaRef::Inline(Box::new(Schema::string()))),
         example: None,
+        style: None,
+        explode: None,
     })
 }
 

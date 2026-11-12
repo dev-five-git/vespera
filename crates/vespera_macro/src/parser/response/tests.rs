@@ -646,10 +646,76 @@ fn response_helpers_cover_non_string_tuple_and_reference_fallbacks() {
 
     let content = content_for_type(
         &syn::parse_quote!(String),
-        "text/plain",
+        Some("text/plain"),
         &HashSet::new(),
         &HashMap::new(),
     )
     .expect("string content");
     assert!(content.contains_key("text/plain"));
+}
+
+/// `(content-type, schema type, schema format)` of a response's single media
+/// entry, or `None` when the response documents no content.
+fn media_shape(
+    responses: &BTreeMap<String, Response>,
+    status: &str,
+) -> Option<(String, Option<SchemaType>, Option<String>)> {
+    let content = responses
+        .get(status)
+        .expect("status present")
+        .content
+        .as_ref()?;
+    let (content_type, media) = content.iter().next().expect("one media entry");
+    let Some(SchemaRef::Inline(schema)) = &media.schema else {
+        panic!("expected inline schema for {content_type}");
+    };
+    Some((
+        content_type.clone(),
+        schema.schema_type,
+        schema.format.clone(),
+    ))
+}
+
+#[rstest]
+#[case::impl_into_response("-> impl IntoResponse", "200", None)]
+#[case::type_erased_response("-> axum::response::Response", "200", None)]
+#[case::generic_response("-> Response<Body>", "200", None)]
+#[case::redirect("-> Redirect", "200", None)]
+#[case::html("-> Html<String>", "200", Some(("text/html", SchemaType::String, None)))]
+#[case::html_static("-> Html<&'static str>", "200", Some(("text/html", SchemaType::String, None)))]
+#[case::sse("-> Sse<Stream>", "200", Some(("text/event-stream", SchemaType::String, None)))]
+#[case::bytes("-> Bytes", "200", Some(("application/octet-stream", SchemaType::String, Some("binary"))))]
+#[case::vec_u8("-> Vec<u8>", "200", Some(("application/octet-stream", SchemaType::String, Some("binary"))))]
+#[case::slice_u8("-> &'static [u8]", "200", Some(("application/octet-stream", SchemaType::String, Some("binary"))))]
+#[case::boxed_u8("-> Box<[u8]>", "200", Some(("application/octet-stream", SchemaType::String, Some("binary"))))]
+#[case::json_vec_u8("-> Json<Vec<u8>>", "200", Some(("application/json", SchemaType::Array, None)))]
+#[case::vec_i32("-> Vec<i32>", "200", Some(("application/json", SchemaType::Array, None)))]
+#[case::box_string("-> Box<String>", "200", Some(("application/json", SchemaType::String, None)))]
+#[case::slice_i32("-> &'static [i32]", "200", Some(("application/json", SchemaType::Array, None)))]
+#[case::header_array_bytes(
+    "-> ([(HeaderName, &'static str); 1], Bytes)",
+    "200",
+    Some(("application/octet-stream", SchemaType::String, Some("binary")))
+)]
+#[case::result_impl_ok("-> Result<impl IntoResponse, String>", "200", None)]
+#[case::result_impl_err_text("-> Result<impl IntoResponse, String>", "400", Some(("text/plain", SchemaType::String, None)))]
+#[case::result_html_err("-> Result<Redirect, Html<String>>", "400", Some(("text/html", SchemaType::String, None)))]
+fn opaque_and_raw_bodies(
+    #[case] return_type: &str,
+    #[case] status: &str,
+    #[case] expected: Option<(&str, SchemaType, Option<&str>)>,
+) {
+    let responses = parse_return_type(
+        &parse_return_type_str(return_type),
+        &HashSet::new(),
+        &HashMap::new(),
+    );
+    let expected = expected.map(|(content_type, schema_type, format)| {
+        (
+            content_type.to_string(),
+            Some(schema_type),
+            format.map(str::to_string),
+        )
+    });
+    assert_eq!(media_shape(&responses, status), expected);
 }

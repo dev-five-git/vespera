@@ -337,6 +337,10 @@ fn parse_type_impl(
             // output is byte-identical: every primitive arm still produces the
             // same `SchemaRef`, and the fallback path consumes the same
             // `resolved_name` string.
+            if is_json_value_path(path, known_schemas) {
+                // `serde_json::Value` accepts any JSON value → `{}`.
+                return SchemaRef::Inline(Box::default());
+            }
             let primitive_result: Option<SchemaRef> = match ident_str.as_str() {
                 // Signed integers: use OpenAPI format registry
                 // https://spec.openapis.org/registry/format/index.html
@@ -378,8 +382,7 @@ fn parse_type_impl(
                 | "PrimitiveDateTime" => Some(string_with_format("date-time")),
                 "NaiveDate" | "Date" => Some(string_with_format("date")),
                 "NaiveTime" | "Time" => Some(string_with_format("time")),
-                // Duration types
-                "Duration" => Some(string_with_format("duration")),
+                "Duration" => Some(duration_schema(path)),
                 // File upload types (vespera::multipart / tempfile)
                 // FieldData<NamedTempFile> → string with binary format
                 "FieldData" | "NamedTempFile" => Some(string_with_format("binary")),
@@ -618,6 +621,68 @@ fn is_unsigned_int_type(ty: &Type) -> bool {
     matches!(ty, Type::Path(type_path)
     if type_path.path.segments.last().is_some_and(|seg| {
         matches!(seg.ident.to_string().as_str(), "u8" | "u16" | "u32" | "u64" | "u128" | "usize")
+    }))
+}
+
+/// `serde_json::Value` — any path ending in `Value` that goes through a
+/// `serde_json` segment, or a bare `Value` that is not a known component
+/// schema (a user `#[derive(Schema)] struct Value` keeps its `$ref`).
+fn is_json_value_path(
+    path: &syn::Path,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+) -> bool {
+    let segments = &path.segments;
+    segments.last().is_some_and(|last| last.ident == "Value")
+        && if segments.len() == 1 {
+            !known_schemas.contains("Value")
+        } else {
+            segments.iter().any(|segment| segment.ident == "serde_json")
+        }
+}
+
+/// Schema of a `Duration`, chosen from how its path is spelled.
+///
+/// - bare `Duration`, `std::time::Duration`, `core::time::Duration`: serde's
+///   std impl serializes `{"secs": u64, "nanos": u32}` (nanos < 1e9). A bare
+///   `Duration` is assumed to be the std type — `chrono::Duration` has no
+///   serde impl at all, so it cannot be a bare serialized field.
+/// - any other qualified `Duration` (`time::Duration`, `chrono::Duration`, …)
+///   has no single wire shape (the `time` crate emits a `"secs.nanos"` string
+///   or a `[secs, nanos]` tuple depending on its features; chrono needs a
+///   `serde_with` adapter), so it is documented as any value (`{}`). Annotate
+///   the field with `#[schema(...)]` / a newtype to document the exact shape.
+fn duration_schema(path: &syn::Path) -> SchemaRef {
+    let segments = &path.segments;
+    let is_std = segments.len() == 1
+        || (segments.len() == 3
+            && (segments[0].ident == "std" || segments[0].ident == "core")
+            && segments[1].ident == "time");
+    if !is_std {
+        return SchemaRef::Inline(Box::default());
+    }
+    let properties = std::collections::BTreeMap::from([
+        (
+            "secs".to_string(),
+            SchemaRef::Inline(Box::new(Schema {
+                format: Some("uint64".to_string()),
+                minimum: Some(0.0),
+                ..Schema::integer()
+            })),
+        ),
+        (
+            "nanos".to_string(),
+            SchemaRef::Inline(Box::new(Schema {
+                format: Some("uint32".to_string()),
+                minimum: Some(0.0),
+                maximum: Some(999_999_999.0),
+                ..Schema::integer()
+            })),
+        ),
+    ]);
+    SchemaRef::Inline(Box::new(Schema {
+        properties: Some(properties),
+        required: Some(vec!["secs".to_string(), "nanos".to_string()]),
+        ..Schema::object()
     }))
 }
 

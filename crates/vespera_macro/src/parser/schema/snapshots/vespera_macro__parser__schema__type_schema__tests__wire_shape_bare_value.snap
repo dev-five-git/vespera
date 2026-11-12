@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/parser/schema/type_schema.rs
+assertion_line: 521
+expression: "format!(\"{ty_src} => {}\", serde_json::to_string(&schema_ref).unwrap())"
+---
+Value => {}

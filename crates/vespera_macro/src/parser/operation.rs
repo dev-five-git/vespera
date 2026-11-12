@@ -1,4 +1,3 @@
-use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashSet};
 
 use syn::{FnArg, PatType, Type};
@@ -9,11 +8,12 @@ use crate::metadata::HeaderParam;
 
 use super::{
     extractors::{is_validated_type, unwrap_validated_type},
-    parameters::parse_function_parameter,
+    parameters::{
+        parse_function_parameter, path_extractor_parameters, path_parameter, string_path_schema,
+    },
     path::extract_path_parameters,
     request_body::parse_request_body,
     response::parse_return_type,
-    schema::parse_type_to_schema_ref,
 };
 
 #[derive(Clone, Copy, Default)]
@@ -46,7 +46,6 @@ pub fn build_operation_from_function(
     let mut request_body = None;
     let mut path_extractor_type: Option<Type> = None;
     let mut has_validated_extractor = false;
-    let string_type: OnceCell<Type> = OnceCell::new();
 
     // First pass: find Path<T> extractor and extract its type
     for input in &sig.inputs {
@@ -68,91 +67,20 @@ pub fn build_operation_from_function(
 
     // Generate path parameters from path string (not from function signature)
     // This is the primary source of truth for path parameters
-    if !path_params.is_empty() {
-        if let Some(ty) = path_extractor_type {
-            // Check if it's a tuple type
-            if let Type::Tuple(tuple) = ty {
-                // For tuple types, match each path parameter with tuple element type
-                for (idx, param_name) in path_params.iter().enumerate() {
-                    if let Some(elem_ty) = tuple.elems.get(idx) {
-                        parameters.push(Parameter {
-                            name: param_name.clone(),
-                            r#in: ParameterLocation::Path,
-                            description: None,
-                            required: Some(true),
-                            schema: Some(parse_type_to_schema_ref(
-                                elem_ty,
-                                known_schemas,
-                                struct_definitions,
-                            )),
-                            example: None,
-                        });
-                    } else {
-                        // If tuple doesn't have enough elements, use String as default
-                        parameters.push(Parameter {
-                            name: param_name.clone(),
-                            r#in: ParameterLocation::Path,
-                            description: None,
-                            required: Some(true),
-                            schema: Some(parse_type_to_schema_ref(
-                                string_type.get_or_init(string_type_ast),
-                                known_schemas,
-                                struct_definitions,
-                            )),
-                            example: None,
-                        });
-                    }
-                }
-            } else {
-                // Single path parameter
-                if path_params.len() == 1 {
-                    parameters.push(Parameter {
-                        name: path_params[0].clone(),
-                        r#in: ParameterLocation::Path,
-                        description: None,
-                        required: Some(true),
-                        schema: Some(parse_type_to_schema_ref(
-                            &ty,
-                            known_schemas,
-                            struct_definitions,
-                        )),
-                        example: None,
-                    });
-                } else {
-                    // Multiple path parameters but single type - use String for all
-                    for param_name in &path_params {
-                        parameters.push(Parameter {
-                            name: param_name.clone(),
-                            r#in: ParameterLocation::Path,
-                            description: None,
-                            required: Some(true),
-                            schema: Some(parse_type_to_schema_ref(
-                                &ty,
-                                known_schemas,
-                                struct_definitions,
-                            )),
-                            example: None,
-                        });
-                    }
-                }
-            }
-        } else {
-            // No Path extractor found, but path has parameters - use String as default
-            for param_name in &path_params {
-                parameters.push(Parameter {
-                    name: param_name.clone(),
-                    r#in: ParameterLocation::Path,
-                    description: None,
-                    required: Some(true),
-                    schema: Some(parse_type_to_schema_ref(
-                        string_type.get_or_init(string_type_ast),
-                        known_schemas,
-                        struct_definitions,
-                    )),
-                    example: None,
-                });
-            }
-        }
+    if let Some(ty) = &path_extractor_type {
+        parameters.extend(path_extractor_parameters(
+            ty,
+            &path_params,
+            known_schemas,
+            struct_definitions,
+        ));
+    } else {
+        // No Path extractor found, but path has parameters - use String as default
+        parameters.extend(
+            path_params
+                .iter()
+                .map(|name| path_parameter(name, string_path_schema())),
+        );
     }
 
     // Build HashSet once for O(1) path-param membership tests in parse_function_parameter
@@ -322,19 +250,6 @@ pub fn build_operation_from_function(
     }
 }
 
-/// `String` as a `syn::Type`, built straight from the identifier.
-///
-/// Replaces `syn::parse_str::<Type>("String").unwrap()`: constructing the AST
-/// node is infallible, so the default path-parameter schema can never panic the
-/// proc macro (and it skips a tokenize+parse round-trip).
-fn string_type_ast() -> Type {
-    Type::Path(syn::TypePath {
-        attrs: Vec::new(),
-        qself: None,
-        path: syn::Path::from(syn::Ident::new("String", proc_macro2::Span::call_site())),
-    })
-}
-
 fn header_parameter(header: &HeaderParam) -> Parameter {
     Parameter {
         name: header.name.clone(),
@@ -346,6 +261,8 @@ fn header_parameter(header: &HeaderParam) -> Parameter {
             ..Schema::default()
         }))),
         example: None,
+        style: None,
+        explode: None,
     }
 }
 

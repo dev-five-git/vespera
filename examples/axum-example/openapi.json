@@ -1295,6 +1295,288 @@
         }
       }
     },
+    "/shapes/bytes": {
+      "get": {
+        "operationId": "raw_bytes",
+        "description": "`application/octet-stream` response behind a header array.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/shapes/files/{rest}": {
+      "get": {
+        "operationId": "file_by_wildcard",
+        "description": "`GET /shapes/files/{*rest}` — documented as `/shapes/files/{rest}`.",
+        "parameters": [
+          {
+            "name": "rest",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/shapes/html": {
+      "get": {
+        "operationId": "html_page",
+        "description": "`text/html` response.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/shapes/items/{item_id}/{slug}": {
+      "get": {
+        "operationId": "item_by_path",
+        "description": "`GET /shapes/items/{item_id}/{slug}` — `item_id` is documented as an\ninteger and `slug` as a string (not the whole struct).",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "uint32"
+            }
+          },
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/shapes/note": {
+      "post": {
+        "operationId": "optional_note",
+        "description": "Optional JSON body (`requestBody.required: false`).",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Note"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/shapes/opaque": {
+      "get": {
+        "operationId": "opaque",
+        "description": "`impl IntoResponse` is opaque: description only.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/shapes/raw_path": {
+      "get": {
+        "operationId": "raw_path",
+        "description": "Explicit paths are served verbatim (no kebab-casing): `/shapes/raw_path`.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/shapes/redirect": {
+      "get": {
+        "operationId": "redirect",
+        "description": "Redirects carry no documented body.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/shapes/search": {
+      "get": {
+        "operationId": "search",
+        "description": "`GET /shapes/search` (axum-extra `Query` deserializes repeated keys).",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/shapes/telemetry": {
+      "post": {
+        "operationId": "telemetry",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StrictInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Telemetry"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/shapes/upload": {
+      "post": {
+        "operationId": "upload_bytes",
+        "description": "`application/octet-stream` request body.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/struct-body": {
       "post": {
         "operationId": "mod_file_with_struct_body",
@@ -1415,7 +1697,7 @@
         }
       }
     },
-    "/test-struct": {
+    "/test_struct": {
       "get": {
         "operationId": "mod_file_with_test_struct",
         "parameters": [
@@ -2142,6 +2424,18 @@
           {
             "$ref": "#/components/schemas/Pagination"
           }
+        ]
+      },
+      "Audit": {
+        "type": "object",
+        "description": "Optional audit block flattened into [`Telemetry`].",
+        "properties": {
+          "actor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "actor"
         ]
       },
       "ComplexStructBody": {
@@ -3079,6 +3373,23 @@
           "propertyName": "type"
         }
       },
+      "ItemPath": {
+        "type": "object",
+        "description": "Path segments typed by field name.",
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "format": "uint32"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "slug"
+        ]
+      },
       "MapQuery": {
         "type": "object",
         "properties": {
@@ -3501,6 +3812,17 @@
           "name"
         ]
       },
+      "Note": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
       "PaginatedResponse": {
         "type": "object",
         "properties": {
@@ -3552,6 +3874,18 @@
           "perPage"
         ]
       },
+      "Paging": {
+        "type": "object",
+        "description": "Paging parameters flattened into a query string (strings only: serde\nbuffers flattened values, so typed numbers would not parse from a query).",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "PatchFileUploadRequest": {
         "type": "object",
         "properties": {
@@ -3601,6 +3935,34 @@
           "hasMore"
         ]
       },
+      "SearchQuery": {
+        "description": "Query string: `tags` repeats (`?tags=a&tags=b`, `style: form, explode:\ntrue`), `internal` is never read, `Paging`'s fields are inlined.",
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "q": {
+                "type": "string"
+              },
+              "tags": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "q"
+            ]
+          },
+          {
+            "$ref": "#/components/schemas/Paging"
+          }
+        ]
+      },
       "SearchResponse": {
         "description": "Response combining multiple flattened structs",
         "allOf": [
@@ -3628,6 +3990,57 @@
             "$ref": "#/components/schemas/ResponseMeta"
           }
         ]
+      },
+      "ShapeEvent": {
+        "description": "An enum whose struct-variant fields are camelCased while the variants\nthemselves are snake_cased.",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "jobId": {
+                "type": "integer",
+                "format": "uint32"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "job_started"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "jobId"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "exitCode": {
+                "type": "integer",
+                "format": "int32"
+              },
+              "jobId": {
+                "type": "integer",
+                "format": "uint32"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "job_finished"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "jobId",
+              "exitCode"
+            ]
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind"
+        }
       },
       "SignupRequest": {
         "type": "object",
@@ -3835,6 +4248,19 @@
           "in_skip3"
         ]
       },
+      "StrictInput": {
+        "type": "object",
+        "description": "A request object that rejects unknown fields (`additionalProperties: false`).",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
       "StructBody": {
         "type": "object",
         "properties": {
@@ -3922,6 +4348,54 @@
           "name",
           "email",
           "isSubscribed"
+        ]
+      },
+      "Telemetry": {
+        "description": "Any-JSON payload, a std `Duration` (`{secs, nanos}`) and an optional\nflattened block (its fields are not required).",
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "elapsed": {
+                "type": "object",
+                "properties": {
+                  "nanos": {
+                    "type": "integer",
+                    "format": "uint32",
+                    "minimum": 0,
+                    "maximum": 999999999
+                  },
+                  "secs": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "secs",
+                  "nanos"
+                ]
+              },
+              "event": {
+                "$ref": "#/components/schemas/ShapeEvent"
+              },
+              "payload": {}
+            },
+            "required": [
+              "payload",
+              "elapsed",
+              "event"
+            ]
+          },
+          {
+            "type": "object",
+            "description": "Optional audit block flattened into [`Telemetry`].",
+            "properties": {
+              "actor": {
+                "type": "string"
+              }
+            }
+          }
         ]
       },
       "TermsQuery": {

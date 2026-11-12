@@ -673,6 +673,21 @@ fn kebab_case_preserves_parameter_underscores() {
     );
 }
 
+/// Only the file-derived base is kebab-cased; an explicit `path = "..."` is
+/// served verbatim.
+#[rstest]
+#[case::file_only("/user_groups", None, "/user-groups")]
+#[case::explicit_kept("/user_groups", Some("/my_route"), "/user-groups/my_route")]
+#[case::explicit_param("/", Some("/{item_id}/sub_path"), "/{item_id}/sub_path")]
+#[case::explicit_without_slash("/a_b/", Some("c_d"), "/a-b/c_d")]
+fn route_path_kebab_cases_only_the_file_base(
+    #[case] base: &str,
+    #[case] custom: Option<&str>,
+    #[case] expected: &str,
+) {
+    assert_eq!(build_route_path(base, custom), expected);
+}
+
 #[test]
 fn collect_metadata_rejects_file_outside_folder() {
     let base = TempDir::new().expect("base temp dir");

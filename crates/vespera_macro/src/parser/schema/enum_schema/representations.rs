@@ -12,6 +12,7 @@ use super::super::{
     type_schema::{parse_type_to_schema_ref, tuple_array_schema},
 };
 use super::{
+    EnumRenames,
     unit::get_variant_key,
     variant::{
         build_struct_variant_fields, build_variant_data_schema, is_other_variant,
@@ -75,18 +76,18 @@ fn non_empty<T>(items: Vec<T>) -> Option<Vec<T>> {
 pub(super) fn parse_externally_tagged_enum(
     enum_item: &syn::ItemEnum,
     description: Option<String>,
-    rename_all: Option<&str>,
+    renames: EnumRenames<'_>,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
     let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
 
     for variant in emitted_variants(enum_item) {
-        let variant_key = get_variant_key(variant, rename_all);
+        let variant_key = get_variant_key(variant, renames.variants);
         let variant_description = extract_doc_comment(&variant.attrs);
 
         let variant_schema = if let Some(data_schema) =
-            build_variant_data_schema(variant, rename_all, known_schemas, struct_definitions)
+            build_variant_data_schema(variant, renames.fields, known_schemas, struct_definitions)
         {
             // Tuple / struct variant: {"VariantName": <data>}
             let mut properties = BTreeMap::new();
@@ -128,14 +129,14 @@ pub(super) fn parse_externally_tagged_enum(
 pub(super) fn parse_internally_tagged_enum(
     enum_item: &syn::ItemEnum,
     description: Option<String>,
-    rename_all: Option<&str>,
+    renames: EnumRenames<'_>,
     tag: &str,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
     let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
     let tag_string = tag.to_string();
-    for (variant, tag_schema) in tagged_variants(enum_item, rename_all) {
+    for (variant, tag_schema) in tagged_variants(enum_item, renames.variants) {
         let variant_description = extract_doc_comment(&variant.attrs);
         let tag_object = |description: Option<String>| Schema {
             description,
@@ -151,7 +152,7 @@ pub(super) fn parse_internally_tagged_enum(
                 // Struct variant: {"tag": "VariantName", field1: type1, ...}
                 let mut fields = build_struct_variant_fields(
                     fields_named,
-                    rename_all,
+                    renames.fields,
                     &variant.attrs,
                     known_schemas,
                     struct_definitions,
@@ -210,7 +211,7 @@ pub(super) fn parse_internally_tagged_enum(
 pub(super) fn parse_adjacently_tagged_enum(
     enum_item: &syn::ItemEnum,
     description: Option<String>,
-    rename_all: Option<&str>,
+    renames: EnumRenames<'_>,
     tag: &str,
     content: &str,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
@@ -219,7 +220,7 @@ pub(super) fn parse_adjacently_tagged_enum(
     let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
     let tag_string = tag.to_string();
     let content_string = content.to_string();
-    for (variant, tag_schema) in tagged_variants(enum_item, rename_all) {
+    for (variant, tag_schema) in tagged_variants(enum_item, renames.variants) {
         let variant_description = extract_doc_comment(&variant.attrs);
 
         let mut properties = BTreeMap::new();
@@ -228,7 +229,7 @@ pub(super) fn parse_adjacently_tagged_enum(
 
         // Add the content field if variant has data
         if let Some(data_schema) =
-            build_variant_data_schema(variant, rename_all, known_schemas, struct_definitions)
+            build_variant_data_schema(variant, renames.fields, known_schemas, struct_definitions)
         {
             properties.insert(content_string.clone(), data_schema);
             required.push(content_string.clone());
@@ -265,7 +266,7 @@ pub(super) fn parse_adjacently_tagged_enum(
 pub(super) fn parse_untagged_enum(
     enum_item: &syn::ItemEnum,
     description: Option<String>,
-    rename_all: Option<&str>,
+    renames: EnumRenames<'_>,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
@@ -308,7 +309,7 @@ pub(super) fn parse_untagged_enum(
             },
             syn::Fields::Named(fields_named) => build_struct_variant_fields(
                 fields_named,
-                rename_all,
+                renames.fields,
                 &variant.attrs,
                 known_schemas,
                 struct_definitions,

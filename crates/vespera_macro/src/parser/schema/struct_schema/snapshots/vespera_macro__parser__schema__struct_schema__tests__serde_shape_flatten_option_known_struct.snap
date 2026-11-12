@@ -1,0 +1,37 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests.rs
+assertion_line: 863
+expression: "serde_json::to_string_pretty(&schema).unwrap()"
+---
+{
+  "allOf": [
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "page": {
+          "type": "integer",
+          "format": "uint32"
+        },
+        "size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32"
+        }
+      }
+    }
+  ]
+}

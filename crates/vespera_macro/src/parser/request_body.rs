@@ -5,6 +5,7 @@ use vespera_core::route::{MediaType, RequestBody};
 use vespera_core::schema::{Schema, SchemaRef, SchemaType};
 
 use super::{extractors::unwrap_validated_type, schema::parse_type_to_schema_ref};
+use crate::schema_macro::type_utils::option_inner;
 
 fn is_string_like(ty: &Type) -> bool {
     match ty {
@@ -57,6 +58,17 @@ fn first_generic_type(segment: &syn::PathSegment) -> Option<&Type> {
     }
 }
 
+/// True for the raw-bytes body extractors (`Bytes`, `BytesMut`, `Body`) —
+/// documented as `application/octet-stream` binary. (`Vec<u8>` is not an
+/// axum extractor.)
+fn is_bytes_extractor(segment: &syn::PathSegment) -> bool {
+    matches!(segment.arguments, syn::PathArguments::None)
+        && matches!(
+            segment.ident.to_string().as_str(),
+            "Bytes" | "BytesMut" | "Body"
+        )
+}
+
 /// Analyze function signature and extract `RequestBody`
 pub fn parse_request_body(
     arg: &FnArg,
@@ -66,39 +78,63 @@ pub fn parse_request_body(
     match arg {
         FnArg::Receiver(_) => None,
         FnArg::Typed(PatType { ty, .. }) => {
-            let ty = unwrap_validated_type(ty.as_ref());
-            if let Type::Path(type_path) = ty {
-                // Check the last segment (handles both Json<T> and vespera::axum::Json<T>)
-                let segment = type_path.path.segments.last()?;
-                let ident = &segment.ident;
-
-                // Json<T> / Form<T> / TypedMultipart<T> → single media-type request body
-                if let Some(media_type) = GENERIC_BODY_EXTRACTORS
-                    .iter()
-                    .find_map(|(name, media_type)| (ident == name).then_some(*media_type))
-                    && let Some(inner_ty) = first_generic_type(segment)
-                {
-                    let schema =
-                        parse_type_to_schema_ref(inner_ty, known_schemas, struct_definitions);
-                    return Some(single_content_body(media_type, schema));
-                }
-
-                // Raw Multipart extractor (untyped) → multipart/form-data with generic object schema
-                if ident == "Multipart" && matches!(segment.arguments, syn::PathArguments::None) {
-                    return Some(single_content_body(
-                        "multipart/form-data",
-                        SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))),
-                    ));
-                }
-            }
-
-            if is_string_like(ty) {
-                let schema = parse_type_to_schema_ref(ty, known_schemas, struct_definitions);
-                return Some(single_content_body("text/plain", schema));
-            }
-            None
+            body_for_type(ty.as_ref(), known_schemas, struct_definitions)
         }
     }
+}
+
+fn body_for_type(
+    ty: &Type,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &std::collections::HashMap<&str, &str>,
+) -> Option<RequestBody> {
+    let ty = unwrap_validated_type(ty);
+    // `Option<Json<T>>` (and any optional body extractor) accepts a missing
+    // body, so the request body is documented as not required.
+    if let Some(inner) = option_inner(ty) {
+        let mut body = body_for_type(inner, known_schemas, struct_definitions)?;
+        body.required = Some(false);
+        return Some(body);
+    }
+    if let Type::Path(type_path) = ty {
+        // Check the last segment (handles both Json<T> and vespera::axum::Json<T>)
+        let segment = type_path.path.segments.last()?;
+        let ident = &segment.ident;
+
+        // Json<T> / Form<T> / TypedMultipart<T> → single media-type request body
+        if let Some(media_type) = GENERIC_BODY_EXTRACTORS
+            .iter()
+            .find_map(|(name, media_type)| (ident == name).then_some(*media_type))
+            && let Some(inner_ty) = first_generic_type(segment)
+        {
+            let schema = parse_type_to_schema_ref(inner_ty, known_schemas, struct_definitions);
+            return Some(single_content_body(media_type, schema));
+        }
+
+        // Raw Multipart extractor (untyped) → multipart/form-data with generic object schema
+        if ident == "Multipart" && matches!(segment.arguments, syn::PathArguments::None) {
+            return Some(single_content_body(
+                "multipart/form-data",
+                SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))),
+            ));
+        }
+
+        if is_bytes_extractor(segment) {
+            return Some(single_content_body(
+                "application/octet-stream",
+                SchemaRef::Inline(Box::new(Schema {
+                    format: Some("binary".to_string()),
+                    ..Schema::string()
+                })),
+            ));
+        }
+    }
+
+    if is_string_like(ty) {
+        let schema = parse_type_to_schema_ref(ty, known_schemas, struct_definitions);
+        return Some(single_content_body("text/plain", schema));
+    }
+    None
 }
 
 #[cfg(test)]
@@ -147,6 +183,12 @@ mod tests {
     )]
     #[case::multipart_raw("fn test(multipart: Multipart) {}", true, "multipart_raw")]
     #[case::self_ref("fn test(&self) {}", false, "self_ref")]
+    #[case::option_json("fn test(body: Option<Json<User>>) {}", true, "option_json")]
+    #[case::option_query("fn test(q: Option<Query<User>>) {}", false, "option_query")]
+    #[case::bytes("fn test(body: Bytes) {}", true, "bytes")]
+    #[case::bytes_mut("fn test(body: axum::body::BytesMut) {}", true, "bytes_mut")]
+    #[case::raw_body("fn test(body: Body) {}", true, "raw_body")]
+    #[case::generic_bytes("fn test(body: Bytes<u8>) {}", false, "generic_bytes")]
     fn test_parse_request_body_cases(
         #[case] func_src: &str,
         #[case] has_body: bool,

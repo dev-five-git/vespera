@@ -25,7 +25,29 @@
 //! axum::serve(listener, app).await?;
 //! ```
 
-use std::io;
+//!
+//! Handlers can extract the peer address with
+//! [`ConnectInfo<SocketAddr>`](axum::extract::ConnectInfo): the router is
+//! served via `into_make_service_with_connect_info::<SocketAddr>()`.
+//!
+//! [`Serve::serve_with_graceful_shutdown`] stops accepting connections when
+//! a signal future resolves and waits for in-flight requests:
+//!
+//! ```no_run
+//! use vespera::Serve;
+//!
+//! #[tokio::main]
+//! async fn main() -> std::io::Result<()> {
+//!     vespera::axum::Router::new()
+//!         .serve_with_graceful_shutdown("0.0.0.0:3000", async {
+//!             // e.g. `let _ = tokio::signal::ctrl_c().await;` (tokio `signal` feature)
+//!             std::future::pending::<()>().await;
+//!         })
+//!         .await
+//! }
+//! ```
+
+use std::{future::Future, io, net::SocketAddr};
 
 use tokio::net::ToSocketAddrs;
 
@@ -38,13 +60,42 @@ pub trait Serve {
     /// `addr` accepts anything that implements
     /// [`tokio::net::ToSocketAddrs`] — strings (`"0.0.0.0:3000"`),
     /// tuples (`("127.0.0.1", 8080)`), [`std::net::SocketAddr`], …
-    fn serve(self, addr: impl ToSocketAddrs) -> impl std::future::Future<Output = io::Result<()>>;
+    ///
+    /// The peer address is available to handlers through
+    /// [`axum::extract::ConnectInfo<SocketAddr>`].
+    fn serve(self, addr: impl ToSocketAddrs) -> impl Future<Output = io::Result<()>>;
+
+    /// Like [`Serve::serve`], but stops accepting new connections once
+    /// `signal` resolves and returns after in-flight requests finish.
+    fn serve_with_graceful_shutdown(
+        self,
+        addr: impl ToSocketAddrs,
+        signal: impl Future<Output = ()> + Send + 'static,
+    ) -> impl Future<Output = io::Result<()>>;
 }
 
 impl Serve for axum::Router {
     async fn serve(self, addr: impl ToSocketAddrs) -> io::Result<()> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        axum::serve(listener, self).await
+        axum::serve(
+            listener,
+            self.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+    }
+
+    async fn serve_with_graceful_shutdown(
+        self,
+        addr: impl ToSocketAddrs,
+        signal: impl Future<Output = ()> + Send + 'static,
+    ) -> io::Result<()> {
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        axum::serve(
+            listener,
+            self.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(signal)
+        .await
     }
 }
 
@@ -63,5 +114,15 @@ impl Serve for axum::Router {
 impl Serve for crate::VesperaRouter<()> {
     async fn serve(self, addr: impl ToSocketAddrs) -> io::Result<()> {
         self.with_state(()).serve(addr).await
+    }
+
+    async fn serve_with_graceful_shutdown(
+        self,
+        addr: impl ToSocketAddrs,
+        signal: impl Future<Output = ()> + Send + 'static,
+    ) -> io::Result<()> {
+        self.with_state(())
+            .serve_with_graceful_shutdown(addr, signal)
+            .await
     }
 }
