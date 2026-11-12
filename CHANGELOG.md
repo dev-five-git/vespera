@@ -408,3 +408,19 @@ Additive.
   new unchecked `VesperaClientException`.
 - The Spring autoconfiguration registers a `VesperaClient` bean
   (`@ConditionalOnMissingBean`), also with `controller-enabled=false`.
+
+### Miri and loom checking (`vespera_inprocess`, `vespera_jni`)
+
+No behaviour change for applications.
+
+- The JNI shared-runtime gate (in-flight `RuntimeLease` count + shut-down
+  flag) is one atomic word now, entered with a single `fetch_add` instead of
+  a `SeqCst` increment followed by a `SeqCst` flag load. The guarantee is
+  unchanged (a dispatch is either refused with `503` or waited for by
+  `shutdown0`'s drain); it no longer depends on cross-variable `SeqCst`
+  ordering, and the hot path does one atomic RMW instead of an RMW plus a load.
+- New CI jobs: `miri` runs the `vespera_inprocess` unit tests and the JNI-free
+  `unsafe` helpers of `vespera_jni` (direct-buffer copy, uninitialised
+  spare-capacity fill, `u8`→`jbyte` view) under Miri; `loom` model-checks the
+  runtime gate and the `dispatchAsync` in-flight cap
+  (`RUSTFLAGS="--cfg vespera_loom"`).

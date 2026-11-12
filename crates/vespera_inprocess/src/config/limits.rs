@@ -198,6 +198,7 @@ mod tests {
     /// Process-global `OnceLock`s: run in a child process so the setter
     /// assertions cannot race other unit tests that read the defaults.
     #[test]
+    #[cfg_attr(miri, ignore = "re-executes the test binary as a child process")]
     fn limit_setters_are_first_wins_and_feed_getters() {
         const CHILD_ENV: &str = "VESPERA_LIMITS_SETTER_TEST_CHILD";
         if std::env::var_os(CHILD_ENV).is_none() {

@@ -108,12 +108,13 @@ vespera/
 | `crates/vespera_jni/src/jni_impl_direct.rs` | ~330 | `dispatchDirect0` symbol + its `jint` overflow/unrepresentable sentinel protocol; `run_direct_symbol` shared buffer validation |
 | `crates/vespera_jni/src/jni_impl_park.rs` | ~135 | `AsyncDispatch.dispatchPollFirst0` (virtual-thread `ParkingDispatch`): poll the dispatch once on the caller under the runtime context (no-op waker); ready → inline wire, pending → spawn the half-polled future, a worker completes the `CompletableFuture`; holds the async in-flight permit + `RuntimeLease` throughout
 | `crates/vespera_jni/src/jni_impl_direct_stash.rs` | ~290 | DIRECT overflow stash (`BTreeMap`, at most 1024 entries, 30 s TTL) + `DirectStash.{dispatchResumable0,fetch0,discard0}`; handle = 8-byte BE token + flags byte (`FLAG_EXACT`, `FLAG_STREAM`) in `out[0..9]` |
-| `crates/vespera_jni/src/jni_impl_lifecycle.rs` | ~300 | Shared runtime: lazy build, `RuntimeLease` in-flight counting (SeqCst against the shut-down flag), graceful `shutdown_runtime` (drain, then `shutdown_timeout`; background thread when called inside a runtime), `on_shared_runtime` hooks (cron) |
+| `crates/vespera_jni/src/jni_impl_lifecycle.rs` | ~300 | Shared runtime: lazy build, `RuntimeLease` in-flight counting through `LeaseGate` (count + shut-down flag in one atomic word), graceful `shutdown_runtime` (drain, then `shutdown_timeout`; background thread when called inside a runtime), `on_shared_runtime` hooks (cron) |
+| `crates/vespera_jni/src/jni_impl_gates.rs` | ~300 | JNI-free atomic admission protocols: `LeaseGate` (runtime lease count + shut-down bit, one `fetch_add` to enter, `fetch_or` to close) and `InFlightCap` (`dispatchAsync` cap); atomics swap to loom under `--cfg vespera_loom` and the `loom_*` models live here |
 | `crates/vespera_jni/src/jni_impl_streaming_header.rs` | ~489 | The two `*WithHeader` streaming symbols (response-only and bidirectional) |
 | `crates/vespera_jni/src/jni_impl_support.rs` | ~243 | Per-symbol setup routines + abort/panic-policy helpers shared by the streaming symbols |
 | `crates/vespera_jni/src/jni_impl_streaming_buffer.rs` | ~199 | Per-thread reusable Java chunk `byte[]` pool + lease (a panicking dispatch keeps the lease checked out); the TLS destructor makes no JNI call — it parks the `Global` array in a graveyard freed on the next attached checkout (deliberately leaked if even that fails) |
 | `crates/vespera_jni/src/jni_impl_config.rs` | ~140 | `configure*0` JNI hooks (runtime workers + max blocking threads, streaming chunk/channel, request / streaming-request / buffered-response limits, dispatch timeout, async in-flight cap) applied before the first dispatch; each returns `jboolean` (false = too late / not applied) |
-| `crates/vespera_jni/src/jni_buf.rs` | ~95 | Zero-fill-free `GetByteArrayRegion` read into a `Vec<u8>`'s uninitialised spare capacity |
+| `crates/vespera_jni/src/jni_buf.rs` | ~215 | Zero-fill-free `GetByteArrayRegion` read into a `Vec<u8>`'s uninitialised spare capacity; the JNI-free `fill_spare` (reserve → raw fill → `set_len`) and `as_jbytes` (`u8`→`jbyte` view) halves are Miri-tested |
 | `crates/vespera_jni/src/streaming_closures.rs` | ~762 | Streaming closure factories (`make_pull_closure`, `make_push_closure`, `call_header_consumer`, `complete_future`) + `OnceLock<MethodCache>` caching `JMethodID`+`GlobalRef<JClass>` for `InputStream.read`, `OutputStream.write`, `Consumer.accept`, `CompletableFuture.complete` — `call_method_unchecked` on the hot path. Pull/push/header closures attach via [`daemon_env::with_cached_daemon_env`] (TLS-cached daemon attach), not `attach_current_thread` per chunk |
 | `crates/vespera_jni/src/daemon_env.rs` | ~261 | `with_cached_daemon_env(jvm, cb)` — resolves the current OS thread's `JNIEnv` via `GetEnv` on **every** call (a borrowed env is never cached — a host thread may detach/reattach) and only remembers its **own** daemon attachment in a `thread_local!`: unattached Tokio/`spawn_blocking` threads are attached once via `AttachCurrentThreadAsDaemon` and detached in the TLS `Drop` on thread exit; already-attached JVM threads are borrowed and never detached. Used for every JNI callback (streaming chunk pull/push, header callbacks, async `CompletableFuture.complete`); per-call local frame + exception scrub preserved |
 | `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/WireHeaderReader.java` | ~984 | Zero-copy absolute-index reader applying wire-header status/headers straight from a pooled direct `ByteBuffer` |
@@ -529,6 +530,14 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 #   semver   (PRs only, not a release gate) cargo-semver-checks per published
 #            crate; release type is read from .changepacks/changepack_log_*.json,
 #            so an intentional break must be declared as a Minor (0.x) / Major bump
+#   miri     cargo miri nextest run (pinned nightly) over every vespera_inprocess
+#            unit test + the JNI-free unsafe helpers / gates of vespera_jni;
+#            `#[cfg_attr(miri, ignore = "...")]` only for child-process or
+#            pathologically slow tests (`.config/nextest.toml` default-miri)
+#   loom     RUSTFLAGS="--cfg vespera_loom" cargo test --release -p vespera_jni
+#            --lib loom_ (LOOM_MAX_PREEMPTIONS=3): runtime lease gate vs
+#            shutdown drain + dispatchAsync cap (`jni_impl_gates.rs`). Custom
+#            cfg, NOT `cfg(loom)` — that flips tokio into its own loom build
 #   bench           (bench.yml, PRs touching crates/**) criterion gate on the
 #                   in-process hot path: merge base vs head, 5 interleaved
 #                   paired rounds, FAIL iff median > +30% AND every round > +20%
@@ -560,6 +569,11 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 # `cyclonedx`); the Gradle plugin's is NOT on its publication (the Plugin Portal
 # rejects JSON artifacts). User-facing verification: SECURITY.md.
 cargo deny check                                   # local equivalent of `deny`
+cargo +nightly-2026-08-29 miri nextest run -p vespera_inprocess --lib \
+  --target x86_64-unknown-linux-gnu                # local `miri` (Linux target: tokio's
+                                                   # Windows IOCP driver is unsupported)
+RUSTFLAGS="--cfg vespera_loom" CARGO_TARGET_DIR=target/loom \
+  cargo test --release -p vespera_jni --lib loom_  # local `loom`
 cargo +1.88 check --all-features -p vespera -p vespera_core -p vespera_macro \
   -p vespera_inprocess -p vespera_jni              # local equivalent of `msrv`
 
