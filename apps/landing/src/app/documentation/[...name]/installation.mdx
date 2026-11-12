@@ -6,13 +6,14 @@ Get Vespera running in your Axum project in under five minutes.
 
 ```toml
 [dependencies]
-vespera = "0.1"
-axum = "0.8"
+vespera = "0.5"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 ```
 
 > Vespera re-exports `axum` — use `vespera::axum` in your code instead of depending on `axum` directly. This keeps the version in sync automatically.
+>
+> **MSRV:** Rust 1.88 (edition 2024).
 
 ## 2. Create Your First Route
 
@@ -22,15 +23,22 @@ Create the routes folder and add a handler:
 src/
 ├── main.rs
 └── routes/
+    ├── mod.rs
     └── users.rs
+```
+
+**`src/routes/mod.rs`** — declare every route file as a module:
+
+```rust
+pub mod users;
 ```
 
 **`src/routes/users.rs`**:
 
 ```rust
-use vespera::axum::{Json, extract::Path};
 use serde::{Deserialize, Serialize};
 use vespera::Schema;
+use vespera::axum::{Json, extract::Path};
 
 #[derive(Serialize, Deserialize, Schema)]
 pub struct User {
@@ -54,7 +62,9 @@ pub async fn create_user(Json(user): Json<User>) -> Json<User> {
 ## 3. Set Up `main.rs`
 
 ```rust
-use vespera::{vespera, Serve};
+mod routes;
+
+use vespera::{Serve, vespera};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -97,7 +107,7 @@ To embed Vespera inside a Java/Spring application, enable the `jni` feature:
 
 ```toml
 [dependencies]
-vespera = { version = "0.1", features = ["jni"] }
+vespera = { version = "0.5", features = ["jni"] }
 ```
 
 Then add two lines to your Rust lib:
@@ -118,7 +128,7 @@ Enable the `cron` feature to schedule background tasks:
 
 ```toml
 [dependencies]
-vespera = { version = "0.1", features = ["cron"] }
+vespera = { version = "0.5", features = ["cron"] }
 ```
 
 See [Features](/documentation/features) for usage details.

@@ -1,0 +1,106 @@
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeaderCell,
+  TableRow,
+} from '@/components/mdx/components/Table'
+
+# Migrating to 0.6
+
+The 0.6 release (unreleased) is a hardening pass: OpenAPI output becomes more faithful to what serde actually serializes, `Validated<T>` reports deserialization errors through the `422` envelope, and the in-process / JNI transport gets default resource limits. This page lists every change that can affect an existing 0.5 application.
+
+## OpenAPI Output
+
+- **Untagged enums** emit `anyOf` (previously `oneOf`).
+- **Tuple / newtype structs, fixed-size arrays and tuples** get real `array` / inner schemas instead of a generic object.
+- **`skip_serializing` / `skip_serializing_if` fields** are no longer `required`.
+- **Tagged newtype variants**, variant-level `skip` / `other`, and `Arc` / `Rc` / `Cow` / `NonZero*` wrappers are supported.
+- **Plain tuple returns** (e.g. `(StatusCode, Json<T>)`) and body-less `error_status` codes are documented.
+- **Colliding default `operationId`s** are module-qualified. Two explicit, identical `operation_id = "..."` values are now a compile error.
+- **Known `headers::*` `TypedHeader` parameters** use the real HTTP header name.
+
+### New compile errors
+
+Code that previously compiled with a silently wrong spec now fails at compile time:
+
+- an unknown security scheme referenced by `security = [...]` (checked after `merge`),
+- a malformed `#[schema(...)]` attribute,
+- an internally tagged enum (`#[serde(tag = "...")]`) with a scalar newtype payload,
+- duplicate explicit `operation_id`s.
+
+## `Validated<T>` Deserialization Errors
+
+`Validated<Json<T>>`, `Validated<Form<T>>`, `Validated<Query<T>>` and `Validated<Path<T>>` now turn **deserialization failures** (wrong type, missing field, unparsable value) into `422 Unprocessable Entity` with the same `{"errors":[{"path","message"}]}` envelope as rule violations. Previously these returned axum's plain-text rejections (`422` / `400`). Malformed JSON syntax (`400`) and `415` content-type errors are unchanged. See [Validated & 422](/documentation/concept/concept-3).
+
+## In-Process / JNI Limits
+
+`SYNC` and `DIRECT` dispatch now run on the **shared** multi-threaded Tokio runtime instead of a per-Java-thread runtime, so connection pools and spawned tasks work across requests. New defaults bound resource use:
+
+<Table>
+  <TableHead>
+    <TableRow>
+      <TableHeaderCell>Limit</TableHeaderCell>
+      <TableHeaderCell>Default</TableHeaderCell>
+      <TableHeaderCell>On violation</TableHeaderCell>
+      <TableHeaderCell>Spring property (`vespera.bridge.native.*`)</TableHeaderCell>
+    </TableRow>
+  </TableHead>
+  <TableBody>
+    <TableRow>
+      <TableCell>Buffered request body</TableCell>
+      <TableCell>64 MiB</TableCell>
+      <TableCell>`413`</TableCell>
+      <TableCell>`max-request-bytes`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>Buffered response body</TableCell>
+      <TableCell>256 MiB</TableCell>
+      <TableCell>`500`</TableCell>
+      <TableCell>`max-buffered-response-bytes`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`dispatchAsync` in-flight calls</TableCell>
+      <TableCell>4096</TableCell>
+      <TableCell>`503`</TableCell>
+      <TableCell>`async-max-in-flight`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>Streamed request body</TableCell>
+      <TableCell>unlimited</TableCell>
+      <TableCell>`413`</TableCell>
+      <TableCell>`max-streaming-request-bytes`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>Dispatch deadline (streaming: until the header is committed)</TableCell>
+      <TableCell>disabled</TableCell>
+      <TableCell>`504`</TableCell>
+      <TableCell>`dispatch-timeout`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>Shared runtime blocking threads</TableCell>
+      <TableCell>512</TableCell>
+      <TableCell>work queues</TableCell>
+      <TableCell>`max-blocking-threads`</TableCell>
+    </TableRow>
+  </TableBody>
+</Table>
+
+Set a limit to `0` to disable it. Outside Spring, use the `vespera.limits.*` / `vespera.async.*` / `vespera.runtime.*` system properties, the matching `VESPERA_*` environment variables, or the Rust-side setters in `vespera::inprocess` (for example `set_max_request_bytes`).
+
+Streaming dispatch also changed:
+
+- `dispatchStreaming` / `dispatchFullStreaming` throw `IOException` when the response fails **after** body bytes were written (previously a synthetic `500` header after a partial body).
+- `dispatchStreaming` hoists `422` `validation_errors` into the wire header like the buffered modes.
+
+## Java Bridge (`vespera-bridge`)
+
+1. **Spring is a provided dependency.** The bridge no longer exports `spring-boot-starter-web` / `jackson-databind`; declare them in your app if you relied on them transitively. Spring Boot 3.5 and 4 are supported.
+2. **`HEAD` keeps the real `Content-Length`** of the matching `GET` instead of `Content-Length: 0`.
+3. **Native library extraction** is per-user, permission-checked and content-addressed (`vespera-native-<sha256-prefix>/` under `vespera.native.dir` / `VESPERA_NATIVE_DIR` / `<java.io.tmpdir>/vespera-<user.name>`) and reused across restarts.
+4. **Autoconfiguration** is an `@AutoConfiguration` that also requires Spring MVC and the servlet API on the classpath.
+5. **The new `configure*` methods return `boolean`** (`false` when the native side already fixed the value). `configureStreaming(int, int)` keeps its `void` signature.
+6. **Upgrade the JAR and the native library together.** A new bridge JAR paired with a cdylib built against an older `vespera` crate binds the `configure*0` JNI hooks to the wrong signatures — rebuild the Rust library whenever you upgrade `vespera-bridge`.
+
+The Gradle plugin's `publishPlugins` task now fails without Plugin Portal credentials.

@@ -1,3 +1,13 @@
+/**
+ * Versions quoted in the documentation code samples. MDX code fences cannot
+ * interpolate values, so the samples spell them out literally;
+ * `src/__tests__/docs-versions.test.ts` fails when any sample drifts from
+ * these constants. Bump them together with a release.
+ */
+export const VESPERA_VERSION = '0.5'
+export const VESPERA_BRIDGE_VERSION = '0.5.0'
+export const VESPERA_BRIDGE_PLUGIN_VERSION = '0.4.1'
+
 export interface SideMenuItem {
   label: string
   value: string
@@ -21,6 +31,7 @@ export const SIDE_MENU_ITEMS: Record<string, SideMenuItem[]> = {
       ],
     },
     { label: 'Features', value: 'features' },
+    { label: 'Migrating to 0.6', value: 'migration' },
     {
       label: 'API Reference',
       value: 'api',

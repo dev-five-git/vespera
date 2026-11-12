@@ -9,31 +9,28 @@ import {
 
 # `Validated<T>` and 422
 
-`Validated<T>` is a Vespera extractor wrapper that runs [`garde`](https://crates.io/crates/garde) validation **before** your handler is called. Invalid requests are rejected with `422 Unprocessable Entity` and a canonical JSON error envelope — no per-handler error mapping, no boilerplate.
+`Validated<T>` is a Vespera extractor wrapper that validates the extracted value **before** your handler is called. Invalid requests are rejected with `422 Unprocessable Entity` and a canonical JSON error envelope — no per-handler error mapping, no boilerplate.
 
 ## Basic Usage
 
-Add `garde` to your dependencies:
+Declare constraints with `#[schema(...)]` on a `#[derive(Schema)]` type. The derive generates the validator itself — **no extra dependency** — and the same constraints are written into the OpenAPI schema (`minLength`, `pattern`, `format`, `minimum`, …):
 
 ```toml
 [dependencies]
-vespera = "0.1"
-garde = { version = "0.20", features = ["derive"] }
+vespera = "0.5"
 ```
 
-Annotate your request type with `garde` constraints and derive `Validate`:
-
 ```rust
-use vespera::{Validated, Schema, axum::Json};
-use garde::Validate;
+use serde::Deserialize;
+use vespera::{Schema, Validated, axum::Json};
 
-#[derive(serde::Deserialize, Schema, Validate)]
+#[derive(Deserialize, Schema)]
 pub struct CreateUser {
-    #[garde(length(min = 3, max = 32))]
+    #[schema(min_length = 3, max_length = 32, pattern = "^[a-z0-9_]+$")]
     pub username: String,
-    #[garde(email)]
+    #[schema(format = "email")]
     pub email: String,
-    #[garde(range(min = 18, max = 120))]
+    #[schema(minimum = 18, maximum = 120)]
     pub age: u8,
 }
 
@@ -41,10 +38,61 @@ pub struct CreateUser {
 pub async fn create_user(
     Validated(Json(req)): Validated<Json<CreateUser>>,
 ) -> Json<&'static str> {
-    // `req` has already passed garde validation — no manual checks needed.
+    // `req` has already passed validation — no manual checks needed.
     Json("ok")
 }
 ```
+
+Validation is part of the default `validation` feature. With `default-features = false`, re-enable it with `features = ["validation"]`.
+
+## Supported `#[schema(...)]` Constraints
+
+<Table>
+  <TableHead>
+    <TableRow>
+      <TableHeaderCell>Key</TableHeaderCell>
+      <TableHeaderCell>OpenAPI</TableHeaderCell>
+      <TableHeaderCell>Checked at runtime</TableHeaderCell>
+    </TableRow>
+  </TableHead>
+  <TableBody>
+    <TableRow>
+      <TableCell>`min_length` / `max_length`</TableCell>
+      <TableCell>`minLength` / `maxLength`</TableCell>
+      <TableCell>Yes</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`pattern = "..."`</TableCell>
+      <TableCell>`pattern` (regex is checked at compile time)</TableCell>
+      <TableCell>Yes</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`format = "email"` / `"url"` / `"uri"` / `"ipv4"` / `"ipv6"` / `"ip"`</TableCell>
+      <TableCell>`format`</TableCell>
+      <TableCell>Yes</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`minimum` / `maximum`</TableCell>
+      <TableCell>`minimum` / `maximum`</TableCell>
+      <TableCell>Yes (inclusive)</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`min_items` / `max_items`</TableCell>
+      <TableCell>`minItems` / `maxItems`</TableCell>
+      <TableCell>Yes</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`dive`</TableCell>
+      <TableCell>—</TableCell>
+      <TableCell>Validates a nested `Schema` field (errors are prefixed, e.g. `address.city`)</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`exclusive_minimum` / `exclusive_maximum` / `multiple_of` / `unique_items` / `format = "uuid"`</TableCell>
+      <TableCell>Emitted</TableCell>
+      <TableCell>No (annotation only)</TableCell>
+    </TableRow>
+  </TableBody>
+</Table>
 
 ## 422 Response Envelope
 
@@ -60,6 +108,10 @@ When validation fails, Vespera returns `HTTP 422 Unprocessable Entity` with this
 ```
 
 The envelope is identical regardless of which extractor failed — your API clients only need to handle one error shape.
+
+### Deserialization failures use the same envelope
+
+Input that is well-formed but does not deserialize into the target type — a wrong JSON type, a missing field, an unparsable query, form or path value — is also reported as `422` with this envelope, and `path` points at the offending field (for example `"age"` or `"tags[1]"`). Malformed JSON syntax (`400`), a missing or unsupported `Content-Type` (`415`) and body-limit errors keep axum's default rejection.
 
 ## Supported Extractors
 
@@ -107,9 +159,21 @@ Under JNI, the same `422` body is **hoisted** into the binary wire header as `"v
 }
 ```
 
-## Common garde Constraints
+## Alternative: Using `garde` Directly
+
+For rules `#[schema(...)]` does not cover (custom validators, validation contexts, `inner(...)` rules), derive [`garde`](https://docs.rs/garde)'s `Validate` yourself. `Validated<T>` is built against **garde 0.23**, so add exactly that version:
+
+```toml
+[dependencies]
+vespera = "0.5"
+garde = { version = "0.23", features = ["derive", "email", "url"] }
+```
 
 ```rust
+use garde::Validate;
+use serde::Deserialize;
+use vespera::Schema;
+
 #[derive(Deserialize, Schema, Validate)]
 pub struct UpdateProfile {
     #[garde(length(min = 1, max = 100))]
@@ -128,5 +192,7 @@ pub struct UpdateProfile {
     pub tags: Vec<String>,
 }
 ```
+
+Use one approach per type: runtime `#[schema(...)]` constraints and `#[derive(garde::Validate)]` on the same struct both implement `garde::Validate` and fail to compile (`E0119`). `#[garde(...)]` rules are not reflected in the OpenAPI document.
 
 See the [garde documentation](https://docs.rs/garde) for the full list of available constraints.
