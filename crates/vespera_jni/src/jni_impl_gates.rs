@@ -248,8 +248,8 @@ mod loom_tests {
         });
     }
 
-    /// Two dispatchers racing two closers: exactly one close wins, every
-    /// refusal backs out its count, and the word ends at closed + 0.
+    /// A dispatcher racing two closers: exactly one close wins, a
+    /// refused entry backs out its count, and the word ends at closed + 0.
     #[test]
     fn loom_racing_enters_and_closes_leave_no_count() {
         loom::model(|| {
