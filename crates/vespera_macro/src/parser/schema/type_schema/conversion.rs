@@ -527,15 +527,21 @@ fn parse_type_impl(
                             parsed.generics.params.clear();
                             parsed.generics.where_clause = None;
 
-                            // Parse the substituted struct to schema (inline)
-                            let schema =
-                                parse_struct_to_schema(&parsed, known_schemas, struct_definitions);
-                            return SchemaRef::Inline(Box::new(schema));
+                            // Inline the substituted struct, unless it
+                            // contains itself — then it becomes the named
+                            // component `Base_Arg..` (see `generic_instances`).
+                            let name = super::generic_instances::instance_name(
+                                &component_name(resolved_name, def_str),
+                                concrete_types.iter().copied(),
+                            );
+                            return super::generic_instances::inline_or_reference(&name, || {
+                                parse_struct_to_schema(&parsed, known_schemas, struct_definitions)
+                            });
                         }
                     }
                 }
                 // Non-generic type or generic without parameters - use reference
-                SchemaRef::Ref(Reference::schema(&resolved_name))
+                SchemaRef::Ref(Reference::schema(&component_name(resolved_name, def_str)))
             } else {
                 // For unknown custom types, return object schema instead of reference
                 // This prevents creating invalid references to non-existent schemas
@@ -586,6 +592,17 @@ fn parse_type_impl(
         }
         _ => SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))),
     }
+}
+
+/// The component name a reference to the known type `ident` must use: the
+/// `#[schema(name = "...")]` of its definition when it carries one (the Rust
+/// ident is only an alias then), otherwise `ident` itself.
+fn component_name(ident: String, definition: Option<&str>) -> String {
+    definition
+        .filter(|def| def.contains("[schema") && def.contains("name"))
+        .and_then(|def| syn::parse_str::<syn::DeriveInput>(def).ok())
+        .and_then(|input| crate::schema_impl::extract_schema_name_attr(&input.attrs))
+        .unwrap_or(ident)
 }
 
 /// Fixed-length JSON array for a Rust tuple / tuple struct / tuple variant:

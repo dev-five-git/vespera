@@ -173,6 +173,14 @@ fn explicit_schema_name_is_retained_in_metadata() {
     let metadata = metadata.expect("derive metadata");
     assert_eq!(metadata.name, "SharedThing");
     assert!(metadata.explicit_schema_name);
+    assert_eq!(metadata.rust_ident.as_deref(), Some("Item"));
+
+    let same: syn::DeriveInput = syn::parse_quote!(
+        #[schema(name = "Item")]
+        struct Item;
+    );
+    let metadata = process_derive_schema(&same).0.expect("derive metadata");
+    assert_eq!(metadata.rust_ident, None);
 }
 
 #[test]

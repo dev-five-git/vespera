@@ -25,6 +25,19 @@ pub(super) fn build_schema_lookups(
         struct_definitions.insert(struct_meta.name.as_str(), struct_meta.definition.as_str());
         known_schema_names.insert(struct_meta.name.as_str());
     }
+    // `#[schema(name = "X")] struct Foo` is registered as `X`, but Rust code
+    // names it `Foo`: alias the Rust ident onto the same definition so every
+    // use resolves (the type conversion then emits `$ref: X`, see
+    // `component_name` in `parser::schema::type_schema`). A real schema of
+    // the same name always wins over an alias.
+    for struct_meta in &metadata.structs {
+        if let Some(ident) = struct_meta.rust_ident.as_deref()
+            && !struct_definitions.contains_key(ident)
+        {
+            struct_definitions.insert(ident, struct_meta.definition.as_str());
+            known_schema_names.insert(ident);
+        }
+    }
 
     (known_schema_names, struct_definitions)
 }
@@ -135,6 +148,12 @@ pub(super) fn parse_component_schemas(
         // apply) rather than risking an incorrect value.
         let file_ast = struct_file_index
             .get(&struct_meta.name)
+            .or_else(|| {
+                struct_meta
+                    .rust_ident
+                    .as_ref()
+                    .and_then(|ident| struct_file_index.get(ident))
+            })
             .and_then(|path| file_cache.get(*path));
         match file_ast {
             Some(ast) => ast_backed.push((struct_meta, ast)),
@@ -301,6 +320,7 @@ mod tests {
             explicit_schema_name: false,
             field_defaults: BTreeMap::new(),
             source_identity: None,
+            rust_ident: None,
         });
 
         let (known_schema_names, struct_definitions) = build_schema_lookups(&metadata);
@@ -433,6 +453,7 @@ mod tests {
             explicit_schema_name: false,
             field_defaults: BTreeMap::new(),
             source_identity: None,
+            rust_ident: None,
         });
 
         let err =
@@ -613,6 +634,7 @@ pub fn get_config() -> Config { Config { count: 0, name: String::new() } }
                 ("name".to_string(), json!("default_name")),
             ]),
             source_identity: None,
+            rust_ident: None,
         });
         metadata.routes.push(route_meta(
             "/config",

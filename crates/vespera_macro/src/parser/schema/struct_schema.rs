@@ -44,6 +44,32 @@ pub fn parse_struct_to_schema(
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
+    let params: Vec<syn::Type> = struct_item
+        .generics
+        .type_params()
+        .map(|param| {
+            let ident = &param.ident;
+            syn::parse_quote!(#ident)
+        })
+        .collect();
+    if params.is_empty() {
+        return parse_struct_body(struct_item, known_schemas, struct_definitions);
+    }
+    // The generic definition's own component: `Tree<T>` inside `Tree<T>`
+    // refers back to `Tree` instead of materialising `Tree_T`.
+    let component = crate::schema_impl::extract_schema_name_attr(&struct_item.attrs)
+        .unwrap_or_else(|| struct_item.ident.to_string());
+    let instance = super::generic_instances::instance_name(&component, &params);
+    super::generic_instances::with_self_instance(instance, component, || {
+        parse_struct_body(struct_item, known_schemas, struct_definitions)
+    })
+}
+
+fn parse_struct_body(
+    struct_item: &syn::ItemStruct,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+) -> Schema {
     // Extract struct-level doc comment for schema description
     let struct_description = extract_doc_comment(&struct_item.attrs);
 
@@ -237,19 +263,33 @@ pub(super) fn collect_named_fields(
             parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions)
         };
 
-        // Doc comment → description (a `$ref` is wrapped in `allOf`).
-        if let Some(doc) = extract_doc_comment(&field.attrs) {
-            schema_ref = match schema_ref {
-                SchemaRef::Inline(mut schema) => {
-                    schema.description = Some(doc);
-                    SchemaRef::Inline(schema)
-                }
-                SchemaRef::Ref(reference) => SchemaRef::Inline(Box::new(Schema {
-                    description: Some(doc),
+        // Doc comment → description; Rust `#[deprecated]` → `deprecated`;
+        // `skip_deserializing` (output only) → `readOnly`, `skip_serializing`
+        // (input only) → `writeOnly`. A `$ref` is wrapped in `allOf` so the
+        // annotations can sit beside it; explicit `#[schema(read_only, ..)]`
+        // constraints applied below still win.
+        let doc = extract_doc_comment(&field.attrs);
+        let deprecated = field
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("deprecated"));
+        let read_only = skip_flags.skip_deserializing;
+        let write_only = skip_flags.skip_serializing;
+        if doc.is_some() || deprecated || read_only || write_only {
+            let mut schema = match schema_ref {
+                SchemaRef::Inline(schema) => schema,
+                SchemaRef::Ref(reference) => Box::new(Schema {
                     all_of: Some(vec![SchemaRef::Ref(reference)]),
                     ..Default::default()
-                })),
+                }),
             };
+            if doc.is_some() {
+                schema.description = doc;
+            }
+            schema.deprecated = deprecated.then_some(true).or(schema.deprecated);
+            schema.read_only = read_only.then_some(true).or(schema.read_only);
+            schema.write_only = write_only.then_some(true).or(schema.write_only);
+            schema_ref = SchemaRef::Inline(schema);
         }
 
         // Field-level `#[schema(min_length=..., pattern=..., ...)]` constraints.
