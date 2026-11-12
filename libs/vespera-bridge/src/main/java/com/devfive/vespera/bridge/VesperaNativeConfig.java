@@ -50,6 +50,8 @@ final class VesperaNativeConfig {
         final long unset;
         private final LongConfigurator hook;
         private volatile Long pending;
+        /** Last value the native side confirmed applying, or {@link Long#MIN_VALUE}. */
+        private volatile long applied = Long.MIN_VALUE;
 
         Knob(String label, String property, long unset, LongConfigurator hook) {
             this.label = label;
@@ -92,11 +94,13 @@ final class VesperaNativeConfig {
 
         boolean apply(long value, LongConfigurator configurator) {
             try {
-                boolean applied = configurator.configure(value);
-                if (!applied) {
+                boolean ok = configurator.configure(value);
+                if (!ok) {
                     warnNotApplied(label + "=" + value);
+                } else if (!isUnset(value)) {
+                    applied = value;
                 }
-                return applied;
+                return ok;
             } catch (UnsatisfiedLinkError olderNativeLibrary) {
                 if (value != unset) {
                     warnUnsupported(label + "=" + value);
@@ -109,8 +113,23 @@ final class VesperaNativeConfig {
             apply(resolve(), hook);
         }
 
+        /** Whether a programmatic value is pending or the system property is set. */
+        boolean explicitlyConfigured() {
+            return pending != null || System.getProperty(property) != null;
+        }
+
+        /**
+         * Whether the native side is known to enforce a positive limit no
+         * larger than {@code cap} (a confirmed applied value).
+         */
+        boolean enforcesAtMost(long cap) {
+            long value = applied;
+            return cap > 0 && value > 0 && value <= cap;
+        }
+
         void clearPendingForTest() {
             pending = null;
+            applied = Long.MIN_VALUE;
         }
     }
 

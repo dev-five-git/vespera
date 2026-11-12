@@ -65,6 +65,7 @@ public class VesperaBridge {
     }
 
     private static volatile boolean loaded = false;
+    private static volatile boolean shutDown = false;
     /** Name passed to the first successful {@link #init(String)} — used to
      *  reject a later re-init with a <em>different</em> library name. */
     private static String loadedLibraryName;
@@ -142,35 +143,19 @@ public class VesperaBridge {
      * Initialize the Rust engine.  Tries bundled (JAR-embedded) first,
      * falls back to {@code java.library.path}.
      *
-     * <p>Streaming configuration is seeded from system properties
-     * <strong>before the first dispatch</strong> (values fixed for
-     * the process lifetime once read):
-     * <ul>
-     *   <li>{@code vespera.streaming.chunkBytes} — per-chunk buffer
-     *       size for streaming dispatches (default 256 KiB, clamped to
-     *       4 KiB – 8 MiB on the Rust side)</li>
-     *   <li>{@code vespera.streaming.channelCapacity} — bound of the
-     *       bidirectional request-body channel in slots (default 16,
-     *       clamped to 1 – 1024)</li>
-     *   <li>{@code vespera.runtime.workerThreads} — worker threads of
-     *       the shared Tokio runtime (default: number of logical
-     *       CPUs, clamped to 1 – 1024)</li>
-     *   <li>{@code vespera.runtime.maxBlockingThreads} — blocking-pool cap
-     *       of the shared runtime (default 512, clamped to 1 – 8192)</li>
-     *   <li>{@code vespera.limits.maxRequestBytes} — buffered-request cap
-     *       (default 64 MiB, {@code 0} = unlimited)</li>
-     *   <li>{@code vespera.limits.maxStreamingRequestBytes} — bidirectional
-     *       streaming request-body cap (default {@code 0} = unlimited)</li>
-     *   <li>{@code vespera.limits.maxBufferedResponseBytes} — buffered
-     *       response cap (default 256 MiB, {@code 0} = unlimited)</li>
-     *   <li>{@code vespera.dispatch.timeoutMillis} — per-dispatch deadline
-     *       (default {@code 0} = disabled)</li>
-     *   <li>{@code vespera.async.maxInFlight} — {@link #dispatchAsync}
-     *       in-flight cap (default 4096, {@code 0} = unlimited)</li>
-     * </ul>
-     * The matching {@code VESPERA_*} environment variables apply when no
-     * system property is set.  A value the Rust side could not apply
-     * (already fixed) is logged as a warning.
+     * <p>Engine configuration ({@code vespera.streaming.*},
+     * {@code vespera.runtime.*}, {@code vespera.limits.*},
+     * {@code vespera.dispatch.timeoutMillis}, {@code vespera.async.maxInFlight}
+     * system properties, the matching {@code VESPERA_*} environment variables,
+     * or the {@code configure*} methods) is seeded <strong>before the first
+     * dispatch</strong> and fixed for the process lifetime afterwards; see the
+     * README "Streaming tuning" / limits tables.  A value the Rust side could
+     * not apply (already fixed) is logged as a warning.
+     *
+     * <p>The native library must come from the same {@code major.minor}
+     * release as this JAR: a mismatch fails here with an
+     * {@link IllegalStateException} unless
+     * {@code -Dvespera.native.versionCheck=warn} (log only) or {@code off}.
      *
      * @param libraryName Cargo crate name (e.g. {@code "rust_jni_demo"})
      */
@@ -191,10 +176,12 @@ public class VesperaBridge {
             return;
         }
         loadNativeLibrary(libraryName, VesperaNativeLoader::loadBundled, System::loadLibrary);
-        // Mark the native library as loaded immediately after System.load /
-        // System.loadLibrary succeeds. Optional post-load configuration hooks
-        // below may still throw (for example, a native-side panic surfaced as an
-        // Error), but a later init() must not try to load the same cdylib again.
+        // Bridge JAR <-> native library release check (VesperaVersions); a
+        // major.minor mismatch throws before the library is marked loaded.
+        VesperaVersions.verify(VesperaBridge::nativeVersion0);
+        // Mark the native library as loaded once System.load succeeded and the
+        // versions match: the post-load configuration hooks below may still
+        // throw, but a later init() must not load the same cdylib again.
         loaded = true;
         loadedLibraryName = libraryName;
         // Apply pending config (set via configure* before init); pending
@@ -222,6 +209,11 @@ public class VesperaBridge {
         return loaded;
     }
 
+    /** Whether {@link #shutdown(Duration)} stopped the native runtime (dispatches answer 503). */
+    public static boolean isShutdown() {
+        return shutDown;
+    }
+
     /**
      * Gracefully shut the Rust runtime down, waiting up to {@code timeout} for
      * in-flight tasks. <strong>Irreversible for the JVM</strong> (a native
@@ -236,13 +228,18 @@ public class VesperaBridge {
         }
         long millis = timeout.isNegative() ? 0 : timeout.toMillis();
         try {
-            return shutdown0(millis);
+            boolean stopped = shutdown0(millis);
+            shutDown |= stopped;
+            return stopped;
         } catch (UnsatisfiedLinkError olderNativeLibrary) {
             return false;
         }
     }
 
     static native boolean shutdown0(long timeoutMillis);
+
+    /** UTF-8 {@code CARGO_PKG_VERSION} of the native library (see {@link VesperaVersions}). */
+    static native byte[] nativeVersion0();
 
     /**
      * Configure streaming tuning parameters for the Rust-side dispatch

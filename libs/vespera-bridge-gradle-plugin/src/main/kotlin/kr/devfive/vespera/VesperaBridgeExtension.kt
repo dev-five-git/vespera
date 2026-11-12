@@ -12,19 +12,37 @@ import org.gradle.api.provider.Property
  * vespera {
  *     crateName.set("my_rust_lib")
  *     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
- *     cargoSourceRoots.add("apps/native")
- *     bridgeVersion.set("<bridge-version>")
+ *     // bridgeVersion defaults to the bridge release matching this plugin
  *     autoBuildCargo.set(false) // default: opt-in
  * }
  * ```
  */
 abstract class VesperaBridgeExtension {
     /**
-     * Cargo crate name of the Rust cdylib — used to derive the
-     * platform-specific library filename
-     * (`{name}.dll` / `lib{name}.so` / `lib{name}.dylib`).
+     * Cargo crate of the Rust cdylib: either the package name
+     * (`rust-jni-demo`) or its underscore library form (`rust_jni_demo`).
+     * The library file name is derived Cargo-style with every `-` turned
+     * into `_` (`{lib}.dll` / `lib{lib}.so` / `lib{lib}.dylib`), unless
+     * [libName] is set. `cargoBuild` passes the package name to
+     * `cargo build -p` — see [packageName].
      */
     abstract val crateName: Property<String>
+
+    /**
+     * Optional Cargo package name for `cargo build -p` (only used by
+     * `cargoBuild`). When unset: a hyphenated [crateName] is the package
+     * name; an underscore [crateName] is matched against
+     * `cargo metadata --no-deps` at execution time (`rust_jni_demo` →
+     * package `rust-jni-demo`), falling back to [crateName] itself.
+     */
+    abstract val packageName: Property<String>
+
+    /**
+     * Optional library file stem when the crate sets a custom
+     * `[lib] name = "..."` in `Cargo.toml`. Defaults to
+     * `crateName.replace('-', '_')`.
+     */
+    abstract val libName: Property<String>
 
     /**
      * Workspace root containing the `target/release/` directory with
@@ -34,25 +52,25 @@ abstract class VesperaBridgeExtension {
     abstract val cargoRoot: DirectoryProperty
 
     /**
-     * Cargo source roots, relative to {@link #cargoRoot}, watched by the
-     * optional {@code cargoBuild} task. Each root contributes
-     * {@code <root>/**/*.rs}; the plugin also always watches every
-     * {@code Cargo.toml} and {@code Cargo.lock}. Defaults cover a single
-     * crate ({@code src}) plus this repository's workspace layout
-     * ({@code crates}, {@code examples}).
+     * **Deprecated, ignored.** Formerly the Rust source roots fingerprinted
+     * as `cargoBuild` inputs. `cargoBuild` is never UP-TO-DATE (Cargo's own
+     * incremental check decides), so fingerprinting the sources was pure
+     * cost; it is no longer done. Kept so existing build scripts compile.
      */
+    @Deprecated("Ignored: cargoBuild no longer fingerprints Rust sources; remove this setting.")
     abstract val cargoSourceRoots: ListProperty<String>
 
     /**
      * Version of `kr.devfive:vespera-bridge` to add as an
-     * `implementation` dependency.  Must be set explicitly — the
-     * plugin does not guess a default to avoid silent upgrades.
+     * `implementation` dependency. Defaults to the bridge version this
+     * plugin release was built with (the matching bridge release); set it
+     * explicitly to pin a different one.
      */
     abstract val bridgeVersion: Property<String>
 
     /**
      * When `true`, registers a `cargoBuild` task that runs
-     * `cargo build --release -p <crateName>` and wires it as a
+     * `cargo build --release -p <package>` and wires it as a
      * dependency of `bundleNativeLib`.  Defaults to `false` (opt-in)
      * — most CI pipelines build Rust separately and don't want the
      * Java build to invoke cargo implicitly.

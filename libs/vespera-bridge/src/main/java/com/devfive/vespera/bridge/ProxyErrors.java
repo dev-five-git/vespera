@@ -24,16 +24,30 @@ final class ProxyErrors {
 
     private ProxyErrors() {}
 
+    /** Body of a proxy {@code 500} for an unexpected failure; details go to the WARN log only. */
+    static final String GENERIC_FAILURE = "vespera dispatch failed";
+
+    /** Body of the proxy {@code 503} when the native library was never loaded. */
+    static final String NOT_INITIALIZED = "vespera native library is not initialized";
+
     /**
-     * Replace whatever the uncommitted {@code response} holds with the error.
-     * Returns {@code false} (writing nothing) once the response is committed.
+     * Replace what the proxy wrote into the uncommitted {@code response} with
+     * the error: the buffered body is discarded ({@code resetBuffer()}) and,
+     * for a {@link ProxyServletResponse}, only the headers the proxy itself
+     * set (Rust's) are dropped — headers set by servlet filters before the
+     * proxy ran (CORS, security headers, cookies) are kept.  Returns
+     * {@code false} (writing nothing) once the response is committed.
      */
     static boolean write(HttpServletResponse response, int status, String message)
             throws IOException {
         if (response.isCommitted()) {
             return false;
         }
-        response.reset();
+        if (response instanceof ProxyServletResponse proxied) {
+            proxied.resetProxyOutput();
+        } else {
+            response.resetBuffer();
+        }
         byte[] body = bytes(message);
         response.setStatus(status);
         response.setContentType(CONTENT_TYPE);
@@ -50,11 +64,13 @@ final class ProxyErrors {
                 .body(bytes(message));
     }
 
-    /** Message for an unexpected failure: the exception message, or its type. */
+    /**
+     * Client-facing message for an unexpected failure: always
+     * {@link #GENERIC_FAILURE} — exception messages can carry internals
+     * (paths, hosts, SQL) and are logged at WARN with the request id instead.
+     */
     static String describe(Throwable failure) {
-        String message = failure.getMessage();
-        return "vespera dispatch failed: "
-                + (message == null || message.isBlank() ? failure.getClass().getName() : message);
+        return GENERIC_FAILURE;
     }
 
     private static byte[] bytes(String message) {

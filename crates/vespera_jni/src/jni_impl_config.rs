@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use jni::EnvUnowned;
 use jni::objects::JClass;
-use jni::sys::{JNI_FALSE, JNI_TRUE, jboolean, jint, jlong};
+use jni::sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong};
 
 use super::guard_void_symbol;
 
@@ -453,6 +453,24 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_shutdown0<'
     })
 }
 
+/// Version of this crate (`CARGO_PKG_VERSION`) as reported to the Java
+/// bridge by [`Java_com_devfive_vespera_bridge_VesperaBridge_nativeVersion0`].
+pub const NATIVE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// `com.devfive.vespera.bridge.VesperaBridge.nativeVersion0() -> byte[]`
+///
+/// UTF-8 bytes of [`NATIVE_VERSION`]; `VesperaBridge.init()` compares it with
+/// the bridge JAR's own version (a `major.minor` mismatch fails the init).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_nativeVersion0<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+) -> jbyteArray {
+    super::guard_byte_array_symbol(&mut unowned_env, |env| {
+        super::byte_array_or_empty(env, NATIVE_VERSION.as_bytes())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,5 +536,11 @@ mod tests {
         let len = u32::from_be_bytes(wire[..4].try_into().unwrap()) as usize;
         let header = std::str::from_utf8(&wire[4..4 + len]).unwrap();
         assert!(header.contains("\"status\":503"), "{header}");
+    }
+
+    #[test]
+    fn native_version_is_the_crate_version() {
+        assert_eq!(NATIVE_VERSION, env!("CARGO_PKG_VERSION"));
+        assert_eq!(NATIVE_VERSION.split('.').count(), 3, "{NATIVE_VERSION}");
     }
 }

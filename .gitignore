@@ -12,6 +12,7 @@ coverage-report
 # Java build artifacts
 *.class
 .gradle/
+.kotlin/
 build/
 bin/
 

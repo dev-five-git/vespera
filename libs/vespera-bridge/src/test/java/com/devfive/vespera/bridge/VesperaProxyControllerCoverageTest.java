@@ -264,7 +264,7 @@ class VesperaProxyControllerCoverageTest {
         ResponseEntity<?> bare = VesperaProxyController.asyncFailureToResponse(
                 new IllegalStateException());
         assertEquals(500, bare.getStatusCode().value());
-        assertEquals("vespera dispatch failed: java.lang.IllegalStateException",
+        assertEquals("vespera dispatch failed",
                 new String((byte[]) bare.getBody(), StandardCharsets.UTF_8));
         ResponseEntity<?> emptyCompletion = VesperaProxyController.asyncFailureToResponse(
                 new CompletionException(null));
