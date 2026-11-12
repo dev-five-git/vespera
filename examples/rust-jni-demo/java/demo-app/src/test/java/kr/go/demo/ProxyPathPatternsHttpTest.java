@@ -48,7 +48,7 @@ class ProxyPathPatternsHttpTest extends AbstractVesperaHttpIntegrationTest {
     void excludedPathIsServedBySpringStaticResources() {
         ResponseEntity<byte[]> response = get("/assets/hello.txt");
         assertEquals(200, response.getStatusCode().value());
-        assertEquals("served by Spring static resources\n", body(response));
+        assertEquals("served by Spring static resources", body(response));
         assertNull(response.getHeaders().getFirst("X-Request-Id"), "the proxy never ran");
     }
 
