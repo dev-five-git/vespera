@@ -263,8 +263,35 @@ fn stored_signature(sig: &syn::Signature, source_file: Option<&std::path::Path>)
     sig
 }
 
+/// A `#[route]` handler parsed only as far as route registration needs it:
+/// outer attributes, visibility and signature.
+///
+/// The body is checked to be a single `{ ... }` group but its tokens are
+/// **not** parsed into a `syn::Block` — nothing reads it (the item is
+/// re-emitted verbatim), and building the statement/expression tree of every
+/// handler body was the bulk of `#[route]`'s expansion time. A syntax error
+/// inside the body is still reported by rustc when it parses the re-emitted
+/// item.
+pub struct RouteFnHead {
+    pub attrs: Vec<syn::Attribute>,
+    pub vis: syn::Visibility,
+    pub sig: syn::Signature,
+}
+
+impl syn::parse::Parse for RouteFnHead {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let attrs = input.call(syn::Attribute::parse_outer)?;
+        let vis = input.parse()?;
+        let sig = input.parse()?;
+        let body;
+        syn::braced!(body in input);
+        body.parse::<proc_macro2::TokenStream>()?;
+        Ok(Self { attrs, vis, sig })
+    }
+}
+
 /// Validate route function - must be pub and async
-pub fn validate_route_fn(item_fn: &syn::ItemFn) -> Result<(), syn::Error> {
+pub fn validate_route_fn(item_fn: &RouteFnHead) -> Result<(), syn::Error> {
     if !matches!(item_fn.vis, syn::Visibility::Public(_)) {
         return Err(syn::Error::new_spanned(
             item_fn.sig.fn_token,
@@ -286,7 +313,7 @@ pub fn process_route_attribute(
     item: proc_macro2::TokenStream,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let route_args = syn::parse2::<args::RouteArgs>(attr)?;
-    let item_fn: syn::ItemFn = syn::parse2(item.clone()).map_err(|e| syn::Error::new(e.span(), "#[route] attribute: can only be applied to functions, not other items. Move or remove the attribute."))?;
+    let item_fn: RouteFnHead = syn::parse2(item.clone()).map_err(|e| syn::Error::new(e.span(), "#[route] attribute: can only be applied to functions, not other items. Move or remove the attribute."))?;
     validate_route_fn(&item_fn)?;
     let source_file = proc_macro2::Span::call_site().local_file();
     let fn_sig = &stored_signature(&item_fn.sig, source_file.as_deref());
@@ -419,7 +446,7 @@ mod tests {
 
     #[test]
     fn test_validate_route_fn_not_public() {
-        let item: syn::ItemFn = syn::parse_quote! {
+        let item: RouteFnHead = syn::parse_quote! {
             async fn private_handler() -> String {
                 "test".to_string()
             }
@@ -436,7 +463,7 @@ mod tests {
 
     #[test]
     fn test_validate_route_fn_not_async() {
-        let item: syn::ItemFn = syn::parse_quote! {
+        let item: RouteFnHead = syn::parse_quote! {
             pub fn sync_handler() -> String {
                 "test".to_string()
             }
@@ -453,7 +480,7 @@ mod tests {
 
     #[test]
     fn test_validate_route_fn_valid() {
-        let item: syn::ItemFn = syn::parse_quote! {
+        let item: RouteFnHead = syn::parse_quote! {
             pub async fn valid_handler() -> String {
                 "test".to_string()
             }
@@ -520,6 +547,31 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("can only be applied to functions"));
+    }
+
+    /// The handler body is only delimited, never parsed: the item is
+    /// re-emitted verbatim (so even tokens that are no valid block reach
+    /// rustc, which reports them precisely), while a missing body or trailing
+    /// tokens are still rejected like a non-function item.
+    #[rstest]
+    #[case::bodyless(quote!(pub async fn h();), false)]
+    #[case::trailing_tokens(quote!(pub async fn h() {} extra), false)]
+    #[case::unparsed_body(quote!(pub async fn h() { let = ; }), true)]
+    #[case::attributed(quote!(#[doc = "x"] pub async fn h() -> u8 { 1 }), true)]
+    fn route_body_is_delimited_but_not_parsed(
+        #[case] item: proc_macro2::TokenStream,
+        #[case] accepted: bool,
+    ) {
+        match process_route_attribute(quote!(get), item.clone()) {
+            Ok(output) => {
+                assert!(accepted, "must be rejected: {item}");
+                assert_eq!(output.to_string(), item.to_string(), "re-emitted verbatim");
+            }
+            Err(err) => {
+                assert!(!accepted, "must be accepted: {item}: {err}");
+                assert!(err.to_string().contains("can only be applied to functions"));
+            }
+        }
     }
 
     #[test]

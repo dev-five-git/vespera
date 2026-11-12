@@ -6,6 +6,7 @@
 //! Split out of `dispatch.rs` to keep that file within the 1000-line cap.
 
 use std::ops::ControlFlow;
+use std::pin::pin;
 
 use axum::body::Body;
 use bytes::Bytes;
@@ -146,7 +147,7 @@ impl PendingDirectResponse {
     /// body error yields a `500` wire response.
     pub async fn write_into(self, out: &mut [u8]) -> ResumableDirectWrite {
         let done = Deadline::start()
-            .run(self.write_into_inner(&mut *out))
+            .run(pin!(self.write_into_inner(&mut *out)))
             .await;
         done.unwrap_or_else(|| Self::materialized(timeout_wire()).copy_into(out))
     }

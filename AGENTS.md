@@ -363,7 +363,7 @@ Vespera is a **hybrid monorepo** with two workspaces co-located at the repo root
 | Workspace | Manager | Members | Purpose |
 |---|---|---|---|
 | Cargo (`Cargo.toml`) | cargo | `crates/*`, `examples/*`, `benches/*` — `default-members` = `crates/*` + `examples/*` (the compile-time benches build only with `--workspace` / `-p`) | OpenAPI engine, proc-macros, JNI bridge |
-| Bun (`package.json`) | bun | `apps/*` (currently only `apps/landing`) | Marketing/docs site (Next.js) |
+| Bun (`package.json`) | bun | `apps/*` (currently only `apps/landing`), `e2e/*` (currently only `e2e/devup-api`) | Marketing/docs site (Next.js); generated-client E2E checks |
 
 `bun run ...` operates on the Node side; `cargo ...` on the Rust side. Many root
 scripts deliberately cross the boundary — e.g., `prelint` runs `cargo
@@ -384,7 +384,7 @@ bun run lint                          # oxlint (after `cargo clippy + fmt --chec
 bun run lint:fix                      # oxlint --fix (after `cargo clippy --fix && cargo fmt`)
 
 # --- Front-end workspace ---
-bun run dev                           # `dev` in every apps/*
+bun run dev                           # `dev` in every workspace that has one (--if-present)
 bun run build                         # `bun run -F ./apps/landing build`
 cd apps/landing && bun dev            # Single-app dev (preferred per devfive-frontend)
 
@@ -429,6 +429,7 @@ props only.
 | Core unit tests | `crates/vespera_core/src/**` inline `#[cfg(test)]` |
 | JNI end-to-end | `examples/rust-jni-demo` (Rust + Java + Gradle) |
 | Front tests | `apps/landing/src/__tests__/` (`bun test` + `bun-test-env-dom`) |
+| OpenAPI → TS client E2E | `e2e/devup-api/` (`bun test`): `examples/axum-example/openapi.json` → `@devup-api/generator` (pinned) → `df/api.d.ts` (gitignored) → `tsc --noEmit` over `src/calls.ts` (positive calls + `@ts-expect-error` precision probes), plus `@devup-api/fetch` requests against a stubbed `fetch`. Known generator gaps are listed at the top of `src/calls.ts` |
 
 > **Front tests need the bun preloads.** `bunfig.toml` preloads
 > `@devup-ui/bun-plugin` (without it every `@devup-ui/react` component throws

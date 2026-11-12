@@ -76,6 +76,15 @@ of an existing 0.5 application.
 - `#[cron]` jobs start once per process (repeated `create_app()` calls no
   longer duplicate schedulers) and run on a dedicated thread when no Tokio
   runtime is present.
+- `#[route]` no longer parses handler bodies (it reads only the attributes,
+  visibility and signature, and re-emits the item unchanged), which makes it
+  faster to expand. A syntax error inside a handler body is now reported by
+  rustc at the exact token, instead of as `#[route] attribute: can only be
+  applied to functions`.
+- The `target/vespera/*.cache` route cache is invalidated when the macro's own
+  sources or `vespera_core` change, including for git and `path`
+  dependencies on vespera. Before, a same-version build could serve a stale
+  spec.
 
 ### Cargo features (`vespera`, `vespera_macro`)
 
