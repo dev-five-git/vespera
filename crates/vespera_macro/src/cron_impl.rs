@@ -63,7 +63,7 @@ pub fn register_cron(info: StoredCronInfo) {
     crate::macro_storage::register(&CRON_STORAGE, info);
 }
 
-/// Snapshot of the current crate's registered cron jobs ??a cheap `Arc` clone.
+/// Snapshot of the current crate's registered cron jobs — a cheap `Arc` clone.
 #[must_use]
 pub fn current_crate_crons() -> Arc<Vec<StoredCronInfo>> {
     crate::macro_storage::current_crate_items(&CRON_STORAGE)
