@@ -19,8 +19,10 @@
 //! `openapi.json`.
 
 use serde::{Deserialize, Serialize};
-use vespera::axum::Json;
-use vespera::{Schema, Validated};
+use vespera::axum::{Json, extract::Path};
+use vespera::{Schema, Validated, ValidatedWith};
+
+use crate::TagPolicy;
 
 /// Validated request body for `POST /validated/users`.
 #[derive(Debug, Deserialize, Serialize, Schema)]
@@ -50,4 +52,55 @@ pub async fn create_validated_user(
     Validated(Json(req)): Validated<Json<ValidatedUserRequest>>,
 ) -> Json<ValidatedUserRequest> {
     Json(req)
+}
+
+/// Replace a validated user.
+///
+/// A `Path` extractor may come BEFORE the validated body — the `422`
+/// response is still documented.
+#[vespera::route(put, path = "/users/{id}", tags = ["validated"])]
+pub async fn update_validated_user(
+    Path(id): Path<u64>,
+    Validated(Json(req)): Validated<Json<ValidatedUserRequest>>,
+) -> Json<ValidatedUserRequest> {
+    let _ = id;
+    Json(req)
+}
+
+/// Tagged post, validated against the runtime tag policy.
+//
+// Context-aware rules are garde's own: derive `garde::Validate` with
+// `#[garde(context(..))]` and keep `#[schema(...)]` rules off the type (a
+// `#[schema]` rule would make `Schema` emit a second, context-free impl).
+#[derive(Debug, Deserialize, Serialize, Schema, garde::Validate)]
+#[garde(context(TagPolicy as policy))]
+pub struct TaggedPost {
+    /// Post title.
+    #[garde(length(min = 1))]
+    pub title: String,
+
+    /// Tags — each must start with the policy's `required_prefix`.
+    #[garde(custom(|tags: &Vec<String>, policy: &TagPolicy| {
+        if tags.iter().all(|tag| tag.starts_with(&policy.required_prefix)) {
+            Ok(())
+        } else {
+            Err(garde::Error::new(format!(
+                "every tag must start with `{}`",
+                policy.required_prefix
+            )))
+        }
+    }))]
+    pub tags: Vec<String>,
+}
+
+/// Create a tagged post.
+///
+/// `ValidatedWith<C, T>` validates with a context `C` borrowed from the
+/// router state (`impl ValidationContext<TagPolicy> for Arc<AppState>`); a
+/// rule violation answers the same `422` envelope.
+#[vespera::route(post, path = "/tags", tags = ["validated"])]
+pub async fn create_tagged_post(
+    post: ValidatedWith<TagPolicy, Json<TaggedPost>>,
+) -> Json<TaggedPost> {
+    post.into_inner()
 }

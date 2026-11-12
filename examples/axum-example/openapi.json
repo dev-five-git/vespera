@@ -1210,6 +1210,56 @@
         }
       }
     },
+    "/network": {
+      "get": {
+        "operationId": "get_network_endpoint",
+        "tags": [
+          "network"
+        ],
+        "summary": "Sample endpoint.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkEndpoint"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "echo_network_endpoint",
+        "tags": [
+          "network"
+        ],
+        "summary": "Echo an endpoint back.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NetworkEndpoint"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkEndpoint"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/path/multi-path/{arg}/{var1}/{var2}": {
       "get": {
         "operationId": "mod_file_with_multi_path",
@@ -2309,6 +2359,71 @@
         }
       }
     },
+    "/validated/tags": {
+      "post": {
+        "operationId": "create_tagged_post",
+        "tags": [
+          "validated"
+        ],
+        "summary": "Create a tagged post.",
+        "description": "`ValidatedWith<C, T>` validates with a context `C` borrowed from the\nrouter state (`impl ValidationContext<TagPolicy> for Arc<AppState>`); a\nrule violation answers the same `422` envelope.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaggedPost"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaggedPost"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "message": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "message"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "errors"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/validated/users": {
       "post": {
         "operationId": "create_validated_user",
@@ -2316,6 +2431,82 @@
           "validated"
         ],
         "summary": "Echo back the validated input.  If the request body fails validation, this handler never runs — the `Validated` extractor returns a `422` before it is reached.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidatedUserRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidatedUserRequest"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "message": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "message"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "errors"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/validated/users/{id}": {
+      "put": {
+        "operationId": "update_validated_user",
+        "tags": [
+          "validated"
+        ],
+        "summary": "Replace a validated user.",
+        "description": "A `Path` extractor may come BEFORE the validated body — the `422`\nresponse is still documented.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "uint64"
+            }
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -3887,6 +4078,77 @@
           "name"
         ]
       },
+      "NetworkEndpoint": {
+        "type": "object",
+        "description": "Network endpoint description built from std / `url` types.",
+        "properties": {
+          "bind": {
+            "type": "string",
+            "description": "`ip:port` — `string`."
+          },
+          "callback": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Optional callback URL."
+          },
+          "data_dir": {
+            "type": "string",
+            "description": "Filesystem path — `string`."
+          },
+          "homepage": {
+            "type": "string",
+            "format": "uri",
+            "description": "`string` / `uri`."
+          },
+          "ip": {
+            "type": "string",
+            "description": "Either address family — `string`."
+          },
+          "ipv4": {
+            "type": "string",
+            "format": "ipv4",
+            "description": "`string` / `ipv4`."
+          },
+          "ipv6": {
+            "type": "string",
+            "format": "ipv6",
+            "description": "`string` / `ipv6`."
+          },
+          "timeout": {
+            "type": "object",
+            "description": "`{\"secs\", \"nanos\"}` object (serde's std `Duration` shape).",
+            "properties": {
+              "nanos": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0,
+                "maximum": 999999999
+              },
+              "secs": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "secs",
+              "nanos"
+            ]
+          }
+        },
+        "required": [
+          "ip",
+          "ipv4",
+          "ipv6",
+          "bind",
+          "data_dir",
+          "homepage",
+          "timeout"
+        ]
+      },
       "Note": {
         "type": "object",
         "properties": {
@@ -4489,6 +4751,27 @@
           "name",
           "email",
           "isSubscribed"
+        ]
+      },
+      "TaggedPost": {
+        "type": "object",
+        "description": "Tagged post, validated against the runtime tag policy.",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "description": "Tags — each must start with the policy's `required_prefix`.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "title": {
+            "type": "string",
+            "description": "Post title."
+          }
+        },
+        "required": [
+          "title",
+          "tags"
         ]
       },
       "Telemetry": {
@@ -5123,6 +5406,9 @@
     },
     {
       "name": "hello"
+    },
+    {
+      "name": "network"
     },
     {
       "name": "terms"
