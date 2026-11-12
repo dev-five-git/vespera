@@ -412,6 +412,15 @@ mod tests {
     #[case::non_zero_generic("NonZero<u64>")]
     #[case::cow_str("Cow<'a, str>")]
     #[case::arc_string("Arc<String>")]
+    #[case::ip_addr("std::net::IpAddr")]
+    #[case::ipv4("Ipv4Addr")]
+    #[case::ipv6("Option<Ipv6Addr>")]
+    #[case::socket_addr("Vec<SocketAddr>")]
+    #[case::socket_addr_v4("SocketAddrV4")]
+    #[case::socket_addr_v6("SocketAddrV6")]
+    #[case::path_buf("std::path::PathBuf")]
+    #[case::url("Option<url::Url>")]
+    #[case::duration("std::time::Duration")]
     fn builtin_wrapped_leaves_need_no_assertion(#[case] src: &str) {
         for (_, ident) in collect_leaf_custom_types(&parse_ty(src)) {
             assert!(is_builtin_openapi_type(&ident), "{src}: {ident}");

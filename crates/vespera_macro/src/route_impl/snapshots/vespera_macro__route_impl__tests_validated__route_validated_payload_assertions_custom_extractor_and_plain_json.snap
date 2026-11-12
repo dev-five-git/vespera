@@ -1,0 +1,10 @@
+---
+source: crates/vespera_macro/src/route_impl/tests_validated.rs
+expression: "prettyplease::unparse(&file)"
+---
+pub async fn create(
+    Validated(custom): Validated<MyExtractor>,
+    Json(body): Json<CreateUser>,
+) -> String {
+    String::new()
+}

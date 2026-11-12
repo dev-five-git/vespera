@@ -1,0 +1,16 @@
+---
+source: crates/vespera_macro/src/route_impl/tests_validated.rs
+expression: "prettyplease::unparse(&file)"
+---
+pub async fn update(
+    Path(id): Path<i64>,
+    Validated(Json(body)): Validated<Json<UpdateUser>>,
+) -> String {
+    String::new()
+}
+const _: () = {
+    const fn __vespera_assert_validate<
+        T: ::vespera::__validation::AssertValidate + ?Sized,
+    >() {}
+    let _ = __vespera_assert_validate::<UpdateUser>;
+};
