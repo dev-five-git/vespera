@@ -185,6 +185,23 @@ pub fn derive_multipart(input: TokenStream) -> TokenStream {
     TokenStream::from(multipart_impl::process_derive(&input))
 }
 
+/// Stand-in for the `Multipart` derive, re-exported by `vespera` as
+/// `vespera::Multipart` when its `multipart` feature is **off**: it accepts the
+/// same helper attributes and expands to a single `compile_error!` naming the
+/// feature, so `#[derive(Multipart)]` — also emitted by
+/// `schema_type!(..., multipart)` — fails with an actionable message instead of
+/// an unresolved `vespera::multipart::...` path inside generated code.
+#[doc(hidden)]
+#[cfg(not(tarpaulin_include))]
+#[proc_macro_derive(
+    MultipartFeatureDisabled,
+    attributes(serde, form_data, try_from_multipart)
+)]
+pub fn derive_multipart_feature_disabled(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    TokenStream::from(multipart_impl::feature_disabled_error(&input))
+}
+
 /// Generate an `OpenAPI` Schema from a type with optional field filtering.
 ///
 /// This macro creates a `vespera::schema::Schema` struct at compile time

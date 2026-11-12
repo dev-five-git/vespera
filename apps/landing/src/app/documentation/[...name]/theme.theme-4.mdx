@@ -1,0 +1,160 @@
+# Spring Configuration
+
+Every behaviour of the autoconfigured proxy can be tuned from `application.yml`. The JAR ships `META-INF/spring-configuration-metadata.json`, so IntelliJ IDEA and the Spring Tools for VS Code / Eclipse complete and document every `vespera.bridge.*` key (plus `management.health.vespera.enabled`) and offer the values of `dispatch-mode` and `cors`.
+
+## Property Reference
+
+```yaml
+vespera:
+  bridge:
+    app-header: X-Vespera-App            # header the default AppNameResolver reads
+    exposed-apps: [admin]                # apps that header may select (_default always)
+    controller-enabled: true             # false = no proxy controller (BYO)
+    include-patterns: ["/**"]            # paths the proxy serves
+    exclude-patterns: []                 # paths left to Spring MVC
+    dispatch-mode: smart                 # smart | bidirectional-streaming
+    cors: rust                           # rust | spring
+    direct-retry-on-overflow: true
+    max-buffered-request-bytes: 67108864 # 64 MiB, 0 = unlimited
+    max-buffered-response-bytes: 67108864 # 64 MiB, 0 = unlimited
+    async-pool-size: 0                   # 0 = max(2, min(4, CPUs))
+    clear-threadlocals-after-request: false
+    request-id:
+      enabled: true
+      header: X-Request-Id
+    library-name: my_rust_lib            # VesperaBridge.init(...) during startup
+    shutdown-on-close: false
+    shutdown-timeout: 10s
+    native:                              # Rust-side knobs, see below
+      max-request-bytes: 67108864
+      max-streaming-request-bytes: 0
+      max-buffered-response-bytes: 268435456
+      dispatch-timeout: 30s
+      async-max-in-flight: 4096
+      worker-threads: 8
+      max-blocking-threads: 512
+```
+
+| Property | Default | Effect |
+|----------|---------|--------|
+| `app-header` | `X-Vespera-App` | Header the default `HeaderAppNameResolver` reads to pick the app; absent → default app. Never forwarded to Rust |
+| `exposed-apps` | empty | Apps the header may select. Any other name gets `404` without dispatch. While empty, any registered app is selectable and a one-time WARN is logged on the first non-default selection |
+| `controller-enabled` | `true` | `false` disables `VesperaProxyController`; the `VesperaBridge` methods stay available |
+| `include-patterns` | `["/**"]` | Spring `PathPattern`s the proxy serves |
+| `exclude-patterns` | none | Patterns the proxy never serves, even inside `include-patterns` |
+| `dispatch-mode` | `smart` | `smart` = `SmartDispatchModeResolver`; `bidirectional-streaming` restores the pre-0.2.0 default |
+| `cors` | `rust` | Who answers CORS preflights and owns `Access-Control-*` headers |
+| `direct-retry-on-overflow` | `true` | Only matters when a `DIRECT` overflow cannot use the native stash; `false` answers `500` instead of re-dispatching |
+| `max-buffered-request-bytes` | 64 MiB | Request body cap for the buffered modes (`SYNC` / `ASYNC` / `DIRECT` / `STREAMING`) → `413`. Bidirectional streaming is exempt |
+| `max-buffered-response-bytes` | 64 MiB | Response cap for `SYNC` / `ASYNC` → `500`. Forwarded to the native buffered-response cap unless that is set explicitly |
+| `async-pool-size` | `0` | Threads of the executor that parses `ASYNC` responses; `0` keeps `max(2, min(4, CPUs))` |
+| `clear-threadlocals-after-request` | `false` | `true` clears the per-thread direct/header buffers after every request (redeploy-heavy containers) |
+| `request-id.enabled` / `.header` | `true` / `X-Request-Id` | Request-id propagation, see below |
+| `library-name` | none | Crate name the autoconfiguration loads with `VesperaBridge.init(...)` when the application has not done it |
+| `shutdown-on-close` / `shutdown-timeout` | `false` / `10s` | Stop the Rust runtime when the context closes, see below |
+| `management.health.vespera.enabled` | `true` | Actuator health indicator |
+
+## Proxied Paths
+
+By default the proxy is a `/**` catch-all: more specific Spring MVC handlers (your `@RestController`s, `/error`, Actuator) still win, but everything else — including what Spring Boot would otherwise serve from `classpath:/static/` — goes to Rust. Narrow it with patterns matched against the path within the application (context path and a prefix `DispatcherServlet` mapping removed):
+
+```yaml
+vespera:
+  bridge:
+    include-patterns: ["/api/**", "/health"]
+    exclude-patterns: ["/api/internal/**"]
+```
+
+A path outside `include-patterns`, or matching an `exclude-patterns` entry, is not mapped to the proxy at all: Spring MVC carries on with other controllers, static resources and finally its own `404`. With `cors: rust`, preflights for those paths are left to Spring too. An invalid pattern fails startup.
+
+## App Selection
+
+The app-selection header is sent by the client, so any caller can ask for any registered app on a path your Spring Security rules treat as public. List the apps clients may reach:
+
+```yaml
+vespera:
+  bridge:
+    exposed-apps: [admin, public]
+```
+
+Or replace `AppNameResolver` with a bean that derives the app from something the client cannot forge (see [Streaming & Multi-App](/documentation/theme/theme-3)). `DispatchEvent.app()`, the `app` metric tag and WARN logs report `UNKNOWN` for client-selected names not known to be registered, so random header values cannot create unbounded metric series.
+
+## CORS
+
+| `cors` | Preflights | `Access-Control-*` on responses |
+|--------|-----------|----------------------------------|
+| `rust` (default) | Routed to the Rust router — configure a `tower_http` `CorsLayer` there | A Rust header replaces one Spring or a filter already set |
+| `spring` | Answered by Spring MVC (`addCorsMappings`, `@CrossOrigin`) or Spring Security `http.cors()` | A Rust header is dropped when Spring already set it |
+
+With `rust`, do not also configure Spring CORS for proxied paths, and permit unauthenticated `OPTIONS` requests in Spring Security so preflights reach Rust.
+
+## Native Limits, Timeouts and Runtime
+
+`vespera.bridge.native.*` is forwarded to the `VesperaBridge.configure*` methods during context startup, before the proxy serves a request. A value that arrives after the first native dispatch is logged and ignored. Precedence for every knob (first hit wins, then fixed for the process): `vespera.bridge.native.*` / programmatic `configure*` → system property → environment variable → default.
+
+| Spring property | System property / env var | Default | On violation |
+|-----------------|---------------------------|---------|--------------|
+| `max-request-bytes` | `vespera.limits.maxRequestBytes` / `VESPERA_MAX_REQUEST_BYTES` | 64 MiB | `413` |
+| `max-streaming-request-bytes` | `vespera.limits.maxStreamingRequestBytes` / `VESPERA_MAX_STREAMING_REQUEST_BYTES` | unlimited | `413` |
+| `max-buffered-response-bytes` | `vespera.limits.maxBufferedResponseBytes` / `VESPERA_MAX_BUFFERED_RESPONSE_BYTES` | 256 MiB | `500` |
+| `dispatch-timeout` | `vespera.dispatch.timeoutMillis` / `VESPERA_DISPATCH_TIMEOUT_MS` | disabled | `504` |
+| `async-max-in-flight` | `vespera.async.maxInFlight` / `VESPERA_ASYNC_MAX_IN_FLIGHT` | 4096 | `503` |
+| `worker-threads` | `vespera.runtime.workerThreads` / `VESPERA_RUNTIME_WORKERS` | logical CPUs | — |
+| `max-blocking-threads` | `vespera.runtime.maxBlockingThreads` / `VESPERA_RUNTIME_MAX_BLOCKING_THREADS` | 512 | work queues |
+
+Set a limit to `0` to disable it. `dispatch-timeout` bounds the whole dispatch for `SYNC`, `ASYNC` and `DIRECT`; for the streaming modes it bounds only the time to the response header, so a long download that keeps making progress is never cut off.
+
+Outside Spring, call the Java API before the first dispatch. Each method returns `false` (and logs a warning) when the native side already fixed the value:
+
+```java
+VesperaBridge.configureRuntime(8, 512);          // workers, max blocking threads
+VesperaBridge.configureDispatchTimeout(30_000);  // milliseconds
+VesperaBridge.configureAsyncMaxInFlight(4096);
+VesperaBridge.init("my_rust_lib");
+```
+
+`configureLimits(...)` sets the body caps the same way, and `configureStreaming(chunkBytes, channelCapacity)` tunes streaming (see [Streaming & Multi-App](/documentation/theme/theme-3)).
+
+## Request IDs
+
+```yaml
+vespera.bridge.request-id:
+  enabled: true          # default
+  header: X-Request-Id   # default
+```
+
+An incoming id (1–128 visible ASCII characters) is reused, otherwise a random UUID is generated. It is forwarded to Rust in the same header, echoed on the response (unless the Rust response sets it), put in the SLF4J MDC as `requestId` during dispatch, and included in WARN logs and `DispatchEvent`s.
+
+## Health, Metrics and Errors
+
+- **Health:** with Spring Boot Actuator on the classpath the `vespera` health indicator reports `UP` once the native library is loaded, `DOWN` before that and `OUT_OF_SERVICE` after `VesperaBridge.shutdown(...)`; details carry `bridgeVersion` and `nativeVersion`. Disable it with `management.health.vespera.enabled=false`.
+- **Metrics:** register `DispatchObserver` beans to receive a `DispatchEvent(app, mode, method, path, status, durationNanos, panicked, requestId)` per request. With Micrometer and a `MeterRegistry` bean, a timer `vespera.bridge.dispatch` tagged `app`, `mode`, `status` and `outcome` (`SUCCESS`, `CLIENT_ERROR`, `SERVER_ERROR`, `PANIC`, …) is autoconfigured.
+- **Panics:** a Rust panic answers `500` with `"panicked":"true"` in the wire metadata and is logged at WARN together with every other `5xx`.
+- **Proxy errors** are `text/plain` (the same shape as Rust's `error_wire`). Unexpected failures answer the fixed body `vespera dispatch failed`, with the details only in the WARN log; a native library that was never loaded answers `503`.
+
+## Shutdown and Redeploys
+
+```yaml
+vespera.bridge:
+  library-name: my_rust_lib
+  shutdown-on-close: true
+  shutdown-timeout: 10s
+```
+
+`VesperaBridge.shutdown(Duration)` stops the shared Tokio runtime once: new dispatches answer `503` at once, in-flight dispatches of every mode are drained for up to the timeout, a pending `ASYNC` dispatch completes with `503`, and cron jobs stop. It cannot be undone in the same process. `shutdown-on-close` only acts when the autoconfiguration loaded the library itself through `library-name`; a library you initialised yourself is never shut down by Spring.
+
+A JVM loads a native library through one class loader only and never unloads it, so a redeployed web app cannot load it again. On servlet containers that redeploy or host several apps, put `vespera-bridge` and the library in the container's shared lib (e.g. Tomcat `$CATALINA_BASE/lib`) or run one deployment per JVM.
+
+## Native Library Loading
+
+`VesperaBridge.init("crateName")` first looks for `native/{os}-{arch}/{libname}` on the classpath and extracts it content-addressed to `<dir>/vespera-native-<sha256-prefix>/`, then falls back to `System.loadLibrary`.
+
+| Setting | Default | Effect |
+|---------|---------|--------|
+| `-Dvespera.native.dir` / `VESPERA_NATIVE_DIR` | `<java.io.tmpdir>/vespera-<user.name>` | Extraction directory (use an exec-permitted, persistent directory when `/tmp` is `noexec`). Must be owned by the current user and not writable by others, otherwise a private temp directory is used |
+| `-Dvespera.native.libc=musl\|glibc` | detected from `/proc/self/maps` | On a musl (Alpine) JVM `native/linux-{arch}-musl/` is tried first; the glibc library is only a fallback with a WARN |
+| `-Dvespera.native.versionCheck=warn\|off` | fail | `init` fails when the native library's `major.minor` differs from the bridge's |
+| `-Dvespera.native.cleanupLegacy=false` | `true` | Keep the `vespera-<random>` copies older bridges left in `java.io.tmpdir` |
+| `-Dvespera.direct.maxBufferBytes` | 4 MiB | Cap of the per-thread pooled `DIRECT` buffers |
+
+Build a musl library with a `*-linux-musl` Rust target (a cdylib needs `RUSTFLAGS="-C target-feature=-crt-static"`); the Gradle plugin bundles such targets under `native/linux-{arch}-musl/`. Upgrade the bridge JAR and the native library together — both must come from the same release.

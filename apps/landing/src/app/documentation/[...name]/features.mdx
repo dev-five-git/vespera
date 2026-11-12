@@ -34,7 +34,7 @@ No extra config in `vespera!()` — jobs are discovered and started automaticall
 
 ```rust
 let app = vespera!(docs_url = "/docs");
-// Background scheduler starts when the app starts
+// The jobs are scheduled when vespera!() builds the router
 ```
 
 ### Cron Expression Format
@@ -49,7 +49,7 @@ Uses 6-field cron expressions (`sec min hour day month weekday`):
 | `1/10 * * * * *` | Every 10 seconds |
 | `0 30 9 * * Mon-Fri` | Weekdays at 9:30 AM |
 
-Expressions are validated at compile time by the same parser the scheduler uses, so an accepted expression never fails at startup.
+Expressions are validated at compile time by the same parser the runtime scheduler uses ([croner](https://crates.io/crates/croner) 4: `L`, `W`, `#`, `?`, names and an optional trailing year are supported), so an accepted expression can never fail at startup. When both day-of-month and day-of-week are restricted, **both** must match (AND, not the classic cron OR).
 
 ### Time Zones (default: UTC)
 
@@ -82,7 +82,11 @@ pub async fn reindex() {}
 - A panicking job is logged to stderr and its schedule keeps going.
 - `vespera::cron::shutdown()` stops scheduling new runs; `vespera::cron::shutdown_and_wait(timeout).await` also waits up to `timeout` for runs in progress.
 - `serve_with_graceful_shutdown(addr, signal)` does both: no new runs once `signal` resolves, and runs in progress get up to 10 seconds after the server has drained.
-- In a JNI library, jobs run on the shared JNI runtime and stop with `VesperaBridge.shutdown(...)`.
+
+### Where Jobs Run
+
+- **Started once per process.** Each `vespera!` invocation starts its jobs once, no matter how many times its router factory runs (tests, `jni_app!`, several `serve` calls).
+- **Where jobs run:** on the current Tokio runtime when there is one; in a JNI library loaded by the JVM, on the shared JNI runtime (they honour `configureRuntime` and stop when `VesperaBridge.shutdown(...)` shuts it down); otherwise on a dedicated `vespera-cron` background thread, such as in a plain `#[test]`.
 
 ### Requirements
 
@@ -93,6 +97,8 @@ pub async fn reindex() {}
 ---
 
 ## Multipart Form Data
+
+Multipart support is the `multipart` feature. It is **on by default**; with `default-features = false`, re-enable it with `features = ["multipart"]`. Without it, `#[derive(Multipart)]` (also emitted by `schema_type!(..., multipart)`) is a compile error that names the feature, and `vespera::multipart` / `vespera::tempfile` do not exist — dropping it removes tempfile and the multer-based multipart parser from the build.
 
 ### Typed Multipart (Recommended)
 

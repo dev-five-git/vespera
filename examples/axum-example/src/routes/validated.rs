@@ -104,3 +104,58 @@ pub async fn create_tagged_post(
 ) -> Json<TaggedPost> {
     post.into_inner()
 }
+
+/// Profile validated by garde's own derive — `#[derive(Schema)]` documents
+/// every `#[garde(...)]` rule with a JSON Schema equivalent, so the
+/// constraints in `openapi.json` match the `422` this route answers.
+#[derive(Debug, Deserialize, Serialize, Schema, garde::Validate)]
+pub struct GardeProfile {
+    /// 2–20 characters (`chars` mode → `minLength` / `maxLength`).
+    #[garde(length(chars, min = 2, max = 20))]
+    pub display_name: String,
+
+    /// `email` → `format: email`.
+    #[garde(email)]
+    pub email: String,
+
+    /// Optional homepage — `url` → `format: uri` on the non-null value.
+    #[garde(url)]
+    pub homepage: Option<String>,
+
+    /// `range` → `minimum` / `maximum` (inclusive).
+    #[garde(range(min = 18, max = 120))]
+    pub age: u8,
+
+    /// 1–3 hashtags, each a `#`-prefixed ASCII word of at most 16 chars
+    /// (`inner(...)` → `items`).
+    #[garde(
+        length(min = 1, max = 3),
+        inner(length(chars, max = 16), prefix("#"), ascii)
+    )]
+    pub hashtags: Vec<String>,
+
+    /// `ip` → `anyOf: [{format: ipv4}, {format: ipv6}]`.
+    #[garde(ip)]
+    pub last_ip: String,
+
+    /// ISO 3166-1 alpha-2 code (`pattern`).
+    #[garde(pattern(r"^[A-Z]{2}$"))]
+    pub country: String,
+
+    /// Avatar file name ending in `.png` (`suffix` → escaped `pattern`).
+    #[garde(suffix(".png"))]
+    pub avatar: String,
+
+    /// Unicode-aware `alphanumeric` has no portable regex — enforced at
+    /// runtime, not documented.
+    #[garde(alphanumeric)]
+    pub nickname: String,
+}
+
+/// Create a profile validated by `#[derive(garde::Validate)]`.
+#[vespera::route(post, path = "/profiles", tags = ["validated"])]
+pub async fn create_garde_profile(
+    Validated(Json(profile)): Validated<Json<GardeProfile>>,
+) -> Json<GardeProfile> {
+    Json(profile)
+}

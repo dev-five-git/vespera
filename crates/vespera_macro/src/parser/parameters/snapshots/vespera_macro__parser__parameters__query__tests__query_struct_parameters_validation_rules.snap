@@ -1,0 +1,29 @@
+---
+source: crates/vespera_macro/src/parser/parameters/query.rs
+expression: "serde_json::to_string_pretty(&params).unwrap()"
+---
+[
+  {
+    "name": "q",
+    "in": "query",
+    "required": true,
+    "schema": {
+      "type": "string",
+      "minLength": 2
+    }
+  },
+  {
+    "name": "limit",
+    "in": "query",
+    "required": false,
+    "schema": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 1,
+      "maximum": 100
+    }
+  }
+]

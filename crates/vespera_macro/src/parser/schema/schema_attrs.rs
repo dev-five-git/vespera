@@ -299,6 +299,13 @@ fn parse_usize(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<usize> {
 fn parse_f64(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<f64> {
     let value = meta.value()?;
     let expr: Expr = value.parse()?;
+    expr_to_f64(expr)
+}
+
+/// A numeric literal expression (`5`, `0.5`, `-10`, `-0.5`) as `f64`.
+///
+/// Shared with the `#[garde(range(...))]` reader in [`super::garde_rules`].
+pub(super) fn expr_to_f64(expr: Expr) -> syn::Result<f64> {
     match expr {
         Expr::Lit(ExprLit {
             lit: Lit::Float(f), ..
