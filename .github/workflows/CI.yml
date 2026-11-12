@@ -75,7 +75,8 @@ jobs:
 
   # The libFuzzer targets under fuzz/ are their own cargo workspace, so no
   # other job compiles them. Building (not running) them on every PR keeps
-  # the fuzz harness in sync with the vespera_inprocess API it drives.
+  # the fuzz harness in sync with the vespera_inprocess API it drives; the
+  # weekly `fuzz.yml` workflow is what actually runs them.
   fuzz-build:
     name: Fuzz targets build (nightly)
     runs-on: ubuntu-latest
@@ -527,6 +528,18 @@ jobs:
           chmod +x libs/vespera-bridge/gradlew
           chmod +x libs/vespera-bridge-gradle-plugin/gradlew
           chmod +x examples/rust-jni-demo/java/gradlew
+      - name: Run vespera-bridge Gradle plugin tests
+        # The plugin's own suite: NativePlatform OS/arch → cdylib-name
+        # detection plus Gradle TestKit functional tests of the applied
+        # plugin (extension defaults, bundleNativeLib wiring, bridge
+        # dependency). Previously only PUBLISHED, never tested, in CI. Runs on
+        # every host OS/arch (native detection is platform-specific) but only
+        # on the JDK 17 legs: the plugin compiles for a JDK 17 toolchain, so
+        # the 21/25 legs would repeat the same run.
+        if: matrix.java == '17'
+        shell: bash
+        working-directory: libs/vespera-bridge-gradle-plugin
+        run: ./gradlew test --console=plain --no-daemon
       - name: Publish vespera-bridge Gradle plugin to mavenLocal
         # demo-app's plugins block resolves kr.devfive.vespera-bridge from
         # mavenLocal first (settings.gradle.kts pluginManagement), pinned to
@@ -581,4 +594,5 @@ jobs:
           path: |
             examples/rust-jni-demo/java/demo-app/build/test-results/test/*.xml
             libs/vespera-bridge/build/test-results/test/*.xml
+            libs/vespera-bridge-gradle-plugin/build/test-results/test/*.xml
             libs/vespera-bridge/build/reports/jacoco/test/jacocoTestReport.xml

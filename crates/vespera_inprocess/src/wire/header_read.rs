@@ -18,6 +18,13 @@
 //! * duplicate known keys, lone/invalid surrogates, bad escapes,
 //!   unescaped control characters, invalid UTF-8, and trailing content
 //!   are **parse errors** (never a panic).
+//!
+//! One deliberate difference: inside the value of an **unknown** key,
+//! `serde_json`'s `IgnoredAny` skip does not validate UTF-8 or `\u`
+//! surrogate pairing, while this parser does — so e.g.
+//! `{..,"x":"\udc00"}` is rejected here but accepted by the serde twin.
+//! The hand parser is therefore never *more* permissive than serde; the
+//! `wire_header_parse` fuzz target pins exactly that relation.
 
 use std::borrow::Cow;
 

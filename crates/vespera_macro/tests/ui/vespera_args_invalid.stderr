@@ -1,0 +1,23 @@
+error: unknown field: `titel`. Expected `dir`, `openapi`, `title`, `version`, `docs_url`, `redoc_url`, `spec_url`, `servers`, `security_schemes`, `security`, `tags`, `merge`, `description`, `summary`, `terms_of_service`, `contact_name`, `contact_url`, `contact_email`, `license`, `license_name`, or `license_url`
+ --> tests/ui/vespera_args_invalid.rs:6:22
+  |
+6 |     let _ = vespera!(titel = "My API");
+  |                      ^^^^^
+
+error: duplicate field `title` in vespera! macro
+  --> tests/ui/vespera_args_invalid.rs:10:35
+   |
+10 |     let _ = vespera!(title = "A", title = "B");
+   |                                   ^^^^^
+
+error: vespera! macro: `docs_url` must start with `/`, got "docs"
+  --> tests/ui/vespera_args_invalid.rs:14:33
+   |
+14 |     let _ = vespera!(docs_url = "docs");
+   |                                 ^^^^^^
+
+error: vespera! macro: `redoc_url` and `docs_url` both use "/docs"; each documentation route needs its own path
+  --> tests/ui/vespera_args_invalid.rs:18:54
+   |
+18 |     let _ = vespera!(docs_url = "/docs", redoc_url = "/docs");
+   |                                                      ^^^^^^^
