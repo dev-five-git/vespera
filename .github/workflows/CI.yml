@@ -83,7 +83,9 @@ jobs:
         with:
           tool: cargo-fuzz
       - name: cargo fuzz build
-        run: cargo fuzz build
+        # The prebuilt cargo-fuzz is a static musl binary and defaults to its
+        # own target, where ASan cannot link; build for the gnu host instead.
+        run: cargo fuzz build --target x86_64-unknown-linux-gnu
 
   # Minimum supported Rust version of the PUBLISHED crates
   # ([workspace.package] rust-version). Examples are deliberately not held to
