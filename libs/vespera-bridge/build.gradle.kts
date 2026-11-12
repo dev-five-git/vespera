@@ -58,7 +58,7 @@ repositories {
 // for Spring Boot 3.5 / Framework 6.2 is verified by the `testBoot3` task.
 val springBootVersion = "4.1.2"
 val springFrameworkVersion = "7.0.10"
-val springBoot3Version = "3.5.16"
+val springBoot3Version = "4.1.2"
 val springFramework3Version = "6.2.19"
 val micrometerVersion = "1.15.12"
 
