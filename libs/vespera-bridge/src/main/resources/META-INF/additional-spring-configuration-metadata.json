@@ -6,6 +6,13 @@
       "sourceType": "com.devfive.vespera.bridge.VesperaBridgeProperties",
       "sourceMethod": "getNative()",
       "description": "Rust-side runtime knobs forwarded to the VesperaBridge configure* methods during context startup, before the first native dispatch. Unset values keep the native default (or the vespera.limits.* / vespera.dispatch.* / vespera.async.* / vespera.runtime.* system properties and their VESPERA_* environment variables)."
+    },
+    {
+      "name": "vespera.bridge.springdoc",
+      "type": "com.devfive.vespera.bridge.VesperaSpringdocProperties",
+      "sourceType": "com.devfive.vespera.bridge.VesperaBridgeProperties",
+      "sourceMethod": "getSpringdoc()",
+      "description": "springdoc-openapi integration: shows the Rust app's OpenAPI document (served by vespera!(spec_url = ...), fetched in-process) in the application's Swagger UI. Only active when springdoc-openapi is on the classpath."
     }
   ],
   "properties": [
@@ -65,6 +72,19 @@
         {
           "value": "/**",
           "description": "Default: the whole URL space (more specific Spring MVC handlers still win)."
+        }
+      ]
+    },
+    {
+      "name": "vespera.bridge.springdoc.mode",
+      "values": [
+        {
+          "value": "group",
+          "description": "Default: one Swagger UI definition per documented Rust app, served verbatim at <docs-path>/<app>; the Java controllers keep springdoc's document."
+        },
+        {
+          "value": "merge",
+          "description": "Merge the Rust paths, components and tags into springdoc's default document (Java paths win on a clash; clashing component names are prefixed with the app label)."
         }
       ]
     }

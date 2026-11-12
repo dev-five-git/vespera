@@ -77,6 +77,18 @@ public final class ProxyPathPatterns {
         return anyMatch(includePatterns, path) && !anyMatch(excludePatterns, path);
     }
 
+    /**
+     * Whether the proxy owns {@code path} (a path within the application,
+     * e.g. an OpenAPI path template such as {@code /users/{id}}).
+     */
+    public boolean matchesPath(String path) {
+        if (isDefault()) {
+            return true;
+        }
+        PathContainer container = PathContainer.parsePath(path);
+        return anyMatch(includePatterns, container) && !anyMatch(excludePatterns, container);
+    }
+
     /** Whether {@code request}'s path matches an exclude pattern. */
     boolean excluded(HttpServletRequest request) {
         return !excludePatterns.isEmpty() && anyMatch(excludePatterns, lookupPath(request));
