@@ -105,6 +105,11 @@ public final class HeaderAppNameResolver implements AppNameResolver {
         return app;
     }
 
+    /** The allowlist (including {@code _default}), or {@code null} when unrestricted. */
+    Set<String> exposedApps() {
+        return exposedApps;
+    }
+
     /** Whether an allowlist ({@code vespera.bridge.exposed-apps}) is active. */
     boolean isRestricted() {
         return exposedApps != null;

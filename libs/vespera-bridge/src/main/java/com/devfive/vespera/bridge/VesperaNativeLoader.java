@@ -10,6 +10,12 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.AclEntry;
+import java.nio.file.attribute.AclEntryFlag;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.AclFileAttributeView;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
@@ -17,8 +23,12 @@ import java.nio.file.attribute.UserPrincipal;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
 
@@ -47,8 +57,9 @@ import java.util.regex.Pattern;
  * library is extracted into a fresh private
  * {@code Files.createTempDirectory("vespera-native-")} for this JVM only,
  * with no reuse, and a warning is logged.  On file systems without POSIX
- * attributes (Windows) the directories are used as-is; the default base
- * there lives under the already per-user {@code java.io.tmpdir}.
+ * attributes (Windows) the same guarantee comes from the owner and the ACL
+ * (see {@link #prepareAclDir}); a directory that fails it — or a file system
+ * without ACLs — falls back to a fresh, randomly named temp directory.
  *
  * <p>A fresh extraction writes a temp file inside the target directory and
  * publishes it with an atomic rename, so concurrent JVMs either see no file
@@ -235,9 +246,7 @@ final class VesperaNativeLoader {
      */
     static ExtractionDir prepareDir(Path baseDir, String hashDirName) throws IOException {
         if (!posixSupported(baseDir)) {
-            Path dir = baseDir.resolve(hashDirName);
-            Files.createDirectories(dir);
-            return new ExtractionDir(dir, true);
+            return prepareAclDir(baseDir, hashDirName);
         }
         try {
             createPrivateDirectories(baseDir);
@@ -261,6 +270,125 @@ final class VesperaNativeLoader {
                     + " at a directory owned by this user with mode 0700.");
             return new ExtractionDir(fresh, false);
         }
+    }
+
+    /**
+     * Non-POSIX (Windows) counterpart of the POSIX checks: the base and hash
+     * directories must be real directories (no symbolic link / junction),
+     * owned by the current user, and their ACL must not grant write-like
+     * rights to anyone but the owner, {@code SYSTEM} or
+     * {@code Administrators}.  Otherwise — e.g. a directory another user
+     * created first under a shared {@code java.io.tmpdir} to plant a DLL — the
+     * library goes into a fresh, randomly named temp directory for this JVM
+     * only.
+     */
+    static ExtractionDir prepareAclDir(Path baseDir, String hashDirName) throws IOException {
+        Path dir = baseDir.resolve(hashDirName);
+        try {
+            Files.createDirectories(baseDir);
+            requireOwnedAclDirectory(baseDir);
+            try {
+                Files.createDirectory(dir);
+            } catch (FileAlreadyExistsException exists) {
+                // Verified below.
+            }
+            requireOwnedAclDirectory(dir);
+            return new ExtractionDir(dir, true);
+        } catch (IOException | SecurityException | UnsupportedOperationException notPrivate) {
+            Path fresh = Files.createTempDirectory("vespera-native-");
+            fresh.toFile().deleteOnExit();
+            LOG.log(System.Logger.Level.WARNING, "vespera: native extraction directory " + dir
+                    + " is not private to this user (" + notPrivate.getMessage()
+                    + "); extracting into " + fresh + " for this JVM only (no reuse). Point -D"
+                    + NATIVE_DIR_PROPERTY + " at a directory only this user can write to.");
+            return new ExtractionDir(fresh, false);
+        }
+    }
+
+    /** ACL rights that let a principal add, replace or re-permission files in a directory. */
+    private static final Set<AclEntryPermission> WRITE_LIKE = EnumSet.of(
+            AclEntryPermission.WRITE_DATA, AclEntryPermission.APPEND_DATA,
+            AclEntryPermission.DELETE_CHILD, AclEntryPermission.DELETE,
+            AclEntryPermission.WRITE_ACL, AclEntryPermission.WRITE_OWNER);
+
+    static void requireOwnedAclDirectory(Path dir) throws IOException {
+        BasicFileAttributes attrs =
+                Files.readAttributes(dir, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (attrs.isSymbolicLink() || attrs.isOther() || !attrs.isDirectory()) {
+            throw new UnsafeDirectoryException(dir + " is a link/junction or not a directory");
+        }
+        UserPrincipal owner = Files.getOwner(dir, LinkOption.NOFOLLOW_LINKS);
+        UserPrincipal me = currentUser();
+        if (!owner.equals(me)) {
+            throw new UnsafeDirectoryException(
+                    dir + " is owned by " + owner.getName() + ", not " + me.getName());
+        }
+        AclFileAttributeView acl =
+                Files.getFileAttributeView(dir, AclFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+        if (acl == null) {
+            throw new UnsafeDirectoryException(dir + " has no ACL to verify");
+        }
+        Set<UserPrincipal> trusted = trustedPrincipals(dir, owner, me);
+        String problem = aclProblem(acl.getAcl(), p -> trusted.contains(p) || isWellKnownAdmin(p));
+        if (problem != null) {
+            throw new UnsafeDirectoryException(dir + ": " + problem);
+        }
+    }
+
+    /**
+     * Why {@code acl} lets an untrusted principal write into the directory,
+     * or {@code null}.  Inherit-only entries (which only apply to new
+     * children, e.g. {@code CREATOR OWNER}), {@code DENY} entries and
+     * principals Windows cannot resolve to an account (reported as a raw
+     * {@code S-1-...} SID: deleted accounts, sandbox / capability SIDs — no
+     * user can log on as them) are ignored.
+     */
+    static String aclProblem(List<AclEntry> acl, Predicate<UserPrincipal> trusted) {
+        for (AclEntry entry : acl) {
+            if (entry.type() != AclEntryType.ALLOW
+                    || entry.flags().contains(AclEntryFlag.INHERIT_ONLY)
+                    || isUnresolvedSid(entry.principal())
+                    || trusted.test(entry.principal())) {
+                continue;
+            }
+            for (AclEntryPermission permission : entry.permissions()) {
+                if (WRITE_LIKE.contains(permission)) {
+                    return entry.principal().getName() + " is granted " + permission;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static Set<UserPrincipal> trustedPrincipals(Path dir, UserPrincipal owner, UserPrincipal me) {
+        Set<UserPrincipal> trusted = new HashSet<>();
+        trusted.add(owner);
+        trusted.add(me);
+        for (String name : WELL_KNOWN_ADMINS) {
+            try {
+                trusted.add(dir.getFileSystem().getUserPrincipalLookupService().lookupPrincipalByName(name));
+            } catch (IOException | UnsupportedOperationException unknown) {
+                // Localised or unavailable: isWellKnownAdmin's name check still applies.
+            }
+        }
+        return trusted;
+    }
+
+    private static final String[] WELL_KNOWN_ADMINS = {"NT AUTHORITY\\SYSTEM", "BUILTIN\\Administrators"};
+
+    static boolean isUnresolvedSid(UserPrincipal principal) {
+        return principal.getName().startsWith("S-1-");
+    }
+
+    /** {@code SYSTEM} / {@code Administrators} by (English) account name. */
+    static boolean isWellKnownAdmin(UserPrincipal principal) {
+        String name = principal.getName();
+        for (String admin : WELL_KNOWN_ADMINS) {
+            if (admin.equalsIgnoreCase(name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void createPrivateDirectories(Path dir) throws IOException {

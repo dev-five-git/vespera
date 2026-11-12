@@ -1,10 +1,12 @@
 package com.devfive.vespera.bridge;
 
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
@@ -264,6 +266,39 @@ final class WireResponseWriter {
      */
     static ResponseEntity<byte[]> buildResponseEntityFromWire(
             byte[] wire, String method, ProxyServletResponse proxied) {
+        EntityHead head = entityHead(wire, method, proxied);
+        // Builder, not the (body, HttpHeaders, status) constructor: that
+        // overload is new in Spring Framework 7, so linking against it would
+        // throw NoSuchMethodError on a Spring Boot 3.x (Framework 6) runtime.
+        return ResponseEntity.status(head.status)
+                .headers(head.headers)
+                .body(Arrays.copyOfRange(wire, head.bodyOff, head.bodyOff + head.bodyLen));
+    }
+
+    /**
+     * The ASYNC response entity without copying the body out of the wire
+     * array: a non-empty body is an {@link InputStreamResource} over a
+     * {@link ByteArrayInputStream} window of {@code wire}, which Spring's
+     * {@code ResourceHttpMessageConverter} writes with one
+     * {@code transferTo} call.  Exactly {@code InputStreamResource} (not a
+     * subclass): Spring skips {@code Range} / {@code Accept-Ranges} handling
+     * for that type, so the response matches SYNC / DIRECT like the
+     * {@code byte[]} variant ({@link #buildResponseEntityFromWire}).
+     */
+    static ResponseEntity<?> buildAsyncResponseEntityFromWire(
+            byte[] wire, String method, ProxyServletResponse proxied) {
+        EntityHead head = entityHead(wire, method, proxied);
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(head.status).headers(head.headers);
+        if (head.bodyLen == 0) {
+            return builder.body(VesperaWireCodec.EMPTY_BODY);
+        }
+        return builder.body(new InputStreamResource(
+                new ByteArrayInputStream(wire, head.bodyOff, head.bodyLen)));
+    }
+
+    private record EntityHead(HttpStatusCode status, HttpHeaders headers, int bodyOff, int bodyLen) {}
+
+    private static EntityHead entityHead(byte[] wire, String method, ProxyServletResponse proxied) {
         int headerLen = VesperaWireCodec.readHeaderLength(wire);
         HttpHeaders httpHeaders = new HttpHeaders();
         HeaderPolicy.ResponseHeaderAccumulator acc =
@@ -285,13 +320,9 @@ final class WireResponseWriter {
             if (idHeader != null && httpHeaders.getFirst(idHeader) == null) {
                 httpHeaders.set(idHeader, proxied.requestId());
             }
+            httpHeaders = proxied.dedupeCorsHeaders(httpHeaders);
         }
-        // Builder, not the (body, HttpHeaders, status) constructor: that
-        // overload is new in Spring Framework 7, so linking against it would
-        // throw NoSuchMethodError on a Spring Boot 3.x (Framework 6) runtime.
-        return ResponseEntity.status(status)
-                .headers(httpHeaders)
-                .body(Arrays.copyOfRange(wire, bodyOff, bodyOff + bytesToExpose));
+        return new EntityHead(status, httpHeaders, bodyOff, bytesToExpose);
     }
 
     // ── Output adapters ───────────────────────────────────────────────────

@@ -60,6 +60,37 @@ tasks.test {
     useJUnitPlatform()
 }
 
+// Default `vespera.bridgeVersion`: the kr.devfive:vespera-bridge version of
+// this same repository commit, read from the sibling bridge build script and
+// embedded as a classpath resource next to VesperaBridgePlugin. A plugin
+// release therefore defaults to the bridge release it was built (and tested)
+// with; consumers can still pin another one explicitly.
+val embeddedBridgeVersion: Provider<String> = providers
+    .fileContents(layout.projectDirectory.file("../vespera-bridge/build.gradle.kts"))
+    .asText
+    .map { script ->
+        Regex("(?m)^version\\s*=\\s*\"([^\"]+)\"").find(script)?.groupValues?.get(1)
+            ?: throw GradleException("No `version = \"...\"` in ../vespera-bridge/build.gradle.kts")
+    }
+
+val generateBridgeVersionResource = tasks.register("generateBridgeVersionResource") {
+    description = "Embeds the matching vespera-bridge version as the plugin's default bridgeVersion."
+    val version = embeddedBridgeVersion
+    val outputDir = layout.buildDirectory.dir("generated/bridgeVersionResource")
+    inputs.property("bridgeVersion", version)
+    outputs.dir(outputDir)
+    doLast {
+        val file = outputDir.get()
+            .file("kr/devfive/vespera/vespera-bridge-plugin.properties").asFile
+        file.parentFile.mkdirs()
+        file.writeText("bridgeVersion=${version.get()}\n")
+    }
+}
+
+sourceSets.main {
+    resources.srcDir(generateBridgeVersionResource)
+}
+
 gradlePlugin {
     // Required by the Plugin Portal (`com.gradle.plugin-publish`).
     website.set("https://github.com/dev-five-git/vespera")

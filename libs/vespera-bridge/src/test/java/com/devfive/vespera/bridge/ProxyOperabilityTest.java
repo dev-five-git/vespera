@@ -173,12 +173,14 @@ class ProxyOperabilityTest {
     @Test
     void proxyErrorsReplaceTheResponseWithPlainText() throws IOException {
         MockHttpServletResponse response = new MockHttpServletResponse();
-        response.setHeader("X-Stale", "1");
+        // Set before the proxy (a filter): kept, unlike a full reset().
+        response.setHeader("Access-Control-Allow-Origin", "https://app.example");
+        response.getOutputStream().write("partial".getBytes(StandardCharsets.UTF_8));
         assertTrue(ProxyErrors.write(response, 413, "too big"));
         assertEquals(413, response.getStatus());
         assertEquals("too big", response.getContentAsString());
         assertEquals(7, response.getContentLength());
-        assertFalse(response.containsHeader("X-Stale"));
+        assertEquals("https://app.example", response.getHeader("Access-Control-Allow-Origin"));
         assertTrue(response.getContentType().startsWith("text/plain"));
 
         response.setCommitted(true);
@@ -188,9 +190,159 @@ class ProxyOperabilityTest {
         ResponseEntity<byte[]> entity = ProxyErrors.entity(503, null);
         assertEquals(503, entity.getStatusCode().value());
         assertArrayEquals(new byte[0], entity.getBody());
-        assertEquals("vespera dispatch failed: x", ProxyErrors.describe(new RuntimeException("x")));
-        assertEquals("vespera dispatch failed: java.lang.RuntimeException",
-                ProxyErrors.describe(new RuntimeException(" ")));
+        // Exception messages never reach the client (they go to the WARN log).
+        assertEquals("vespera dispatch failed",
+                ProxyErrors.describe(new RuntimeException("jdbc:postgresql://db:5432 secret")));
+    }
+
+    @Test
+    void proxyErrorsDropOnlyTheHeadersTheProxyWrote() throws IOException {
+        MockHttpServletResponse raw = new MockHttpServletResponse();
+        raw.setHeader("Access-Control-Allow-Origin", "https://app.example");
+        raw.addHeader("Set-Cookie", "f=1");
+        ProxyServletResponse response = new ProxyServletResponse(raw, "X-Request-Id", "id-1");
+        response.applyDefaultRequestId();
+        // Rust headers applied, then the proxy fails before committing.
+        response.addHeader("set-cookie", "rust=1");
+        response.addHeader("content-disposition", "attachment");
+        response.setHeader("x-rust", "1");
+
+        assertTrue(ProxyErrors.write(response, 500, ProxyErrors.GENERIC_FAILURE));
+
+        assertEquals(500, raw.getStatus());
+        assertEquals("vespera dispatch failed", raw.getContentAsString());
+        assertEquals("https://app.example", raw.getHeader("Access-Control-Allow-Origin"));
+        assertEquals(List.of("f=1"), raw.getHeaders("Set-Cookie"), "the filter cookie stays, the Rust one goes");
+        assertFalse(raw.containsHeader("content-disposition"));
+        assertFalse(raw.containsHeader("x-rust"));
+        assertEquals("id-1", raw.getHeader("X-Request-Id"));
+    }
+
+    @Test
+    void corsHeadersAreDeduplicatedPerOwner() {
+        MockHttpServletResponse springSet = new MockHttpServletResponse();
+        springSet.setHeader("Access-Control-Allow-Origin", "https://spring.example");
+        ProxyServletResponse rustOwned =
+                new ProxyServletResponse(springSet, null, null, CorsHandling.RUST);
+        rustOwned.addHeader("access-control-allow-origin", "https://rust.example");
+        rustOwned.addHeader("access-control-expose-headers", "a");
+        rustOwned.addHeader("access-control-expose-headers", "b");
+        assertEquals(List.of("https://rust.example"), springSet.getHeaders("Access-Control-Allow-Origin"));
+        assertEquals(List.of("a", "b"), springSet.getHeaders("Access-Control-Expose-Headers"));
+
+        MockHttpServletResponse springSet2 = new MockHttpServletResponse();
+        springSet2.setHeader("Access-Control-Allow-Origin", "https://spring.example");
+        ProxyServletResponse springOwned =
+                new ProxyServletResponse(springSet2, null, null, CorsHandling.SPRING);
+        springOwned.addHeader("access-control-allow-origin", "https://rust.example");
+        springOwned.setHeader("Access-Control-Allow-Origin", "https://rust2.example");
+        springOwned.addHeader("access-control-max-age", "60");
+        assertEquals(List.of("https://spring.example"), springSet2.getHeaders("Access-Control-Allow-Origin"));
+        assertEquals("60", springSet2.getHeader("Access-Control-Max-Age"), "Rust-only CORS headers pass");
+
+        MockHttpServletResponse plain = new MockHttpServletResponse();
+        plain.setHeader("Access-Control-Allow-Origin", "https://spring.example");
+        new ProxyServletResponse(plain, null, null).addHeader("Access-Control-Allow-Origin", "x");
+        assertEquals(2, plain.getHeaders("Access-Control-Allow-Origin").size(), "no mode: untouched");
+    }
+
+    @Test
+    void asyncEntityCorsHeadersAreDeduplicatedToo() {
+        org.springframework.http.HttpHeaders entity = new org.springframework.http.HttpHeaders();
+        entity.add("access-control-allow-origin", "https://rust.example");
+        entity.add("content-type", "text/plain");
+
+        MockHttpServletResponse spring = new MockHttpServletResponse();
+        spring.setHeader("Access-Control-Allow-Origin", "https://spring.example");
+        org.springframework.http.HttpHeaders kept = new ProxyServletResponse(
+                spring, null, null, CorsHandling.SPRING).dedupeCorsHeaders(entity);
+        assertNull(kept.getFirst("access-control-allow-origin"));
+        assertEquals("text/plain", kept.getFirst("content-type"));
+
+        MockHttpServletResponse rust = new MockHttpServletResponse();
+        rust.setHeader("Access-Control-Allow-Origin", "https://spring.example");
+        org.springframework.http.HttpHeaders moved = new ProxyServletResponse(
+                rust, null, null, CorsHandling.RUST).dedupeCorsHeaders(entity);
+        assertNull(moved.getFirst("access-control-allow-origin"));
+        assertEquals(List.of("https://rust.example"), rust.getHeaders("Access-Control-Allow-Origin"));
+
+        assertSame(entity, new ProxyServletResponse(new MockHttpServletResponse(), null, null,
+                CorsHandling.RUST).dedupeCorsHeaders(entity), "no clash: unchanged");
+        assertSame(entity, new ProxyServletResponse(rust, null, null).dedupeCorsHeaders(entity));
+    }
+
+    @Test
+    void appTagsNeverReportUnknownClientSelectedNames() {
+        AppTags tags = new AppTags(java.util.Set.of("public"));
+        assertEquals("_default", tags.tag(null, 200, false, true));
+        assertEquals("public", tags.tag("public", 404, false, false), "allowlisted");
+        // Answers of the Rust app resolution itself never teach a name.
+        assertEquals(AppTags.UNKNOWN, tags.tag("random-1", 404, false, true));
+        assertEquals(AppTags.UNKNOWN, tags.tag("bad name!", 400, false, true));
+        assertEquals(AppTags.UNKNOWN, tags.tag("x", 503, false, true));
+        // Not dispatched (rejected / failed before Rust): never learned.
+        assertEquals(AppTags.UNKNOWN, tags.tag("admin", 200, false, false));
+        // A handler answer proves the app is registered.
+        assertEquals("admin", tags.tag("admin", 401, false, true));
+        assertEquals("admin", tags.tag("admin", 404, false, false), "learned");
+        assertEquals("panicky", tags.tag("panicky", 500, true, true));
+        for (int i = 0; i < AppTags.MAX_LEARNED + 10; i++) {
+            tags.tag("app-" + i, 200, false, true);
+        }
+        assertEquals(AppTags.UNKNOWN, tags.tag("one-too-many", 200, false, true), "learned set is capped");
+        assertTrue(AppTags.answeredByHandler(204, false));
+        assertFalse(AppTags.answeredByHandler(413, false));
+        assertFalse(AppTags.answeredByHandler(431, false));
+        assertFalse(AppTags.answeredByHandler(408, false));
+        assertTrue(AppTags.answeredByHandler(422, false));
+        assertFalse(AppTags.answeredByHandler(99, false));
+    }
+
+    @Test
+    void randomAppHeadersDoNotGrowTheMeterRegistry() throws Exception {
+        io.micrometer.core.instrument.simple.SimpleMeterRegistry registry =
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        VesperaProxyController unrestricted = new VesperaProxyController(
+                new HeaderAppNameResolver("X-Vespera-App"),
+                request -> DispatchMode.SYNC, Runnable::run, true, 0, 0, "X-Request-Id",
+                List.of(new MicrometerDispatchObserver(registry)));
+        for (int i = 0; i < 50; i++) {
+            MockHttpServletRequest request = new MockHttpServletRequest("GET", "/x");
+            request.addHeader("X-Vespera-App", "attacker-" + i);
+            // No native library in the unit suite: answered 503 before dispatch.
+            unrestricted.proxy(request, new MockHttpServletResponse());
+        }
+        assertEquals(1, registry.getMeters().size(), registry.getMeters().toString());
+        assertEquals(50, registry.get(MicrometerDispatchObserver.METER_NAME)
+                .tags("app", AppTags.UNKNOWN, "status", "503").timer().count());
+    }
+
+    @Test
+    void uninitializedNativeLibraryIsACleanServiceUnavailable() throws Exception {
+        RecordingObserver observer = new RecordingObserver();
+        VesperaProxyController controller = controller(request -> DispatchMode.SYNC, observer);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertNull(controller.proxy(new MockHttpServletRequest("GET", "/x"), response));
+
+        assertFalse(VesperaBridge.isInitialized());
+        assertEquals(503, response.getStatus());
+        assertEquals(ProxyErrors.NOT_INITIALIZED, response.getContentAsString());
+        assertEquals(503, observer.events.get(0).status());
+    }
+
+    @Test
+    void timerCacheIsReusedAndStatusTagIsBounded() {
+        io.micrometer.core.instrument.simple.SimpleMeterRegistry registry =
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        MicrometerDispatchObserver observer = new MicrometerDispatchObserver(registry);
+        for (int i = 0; i < 3; i++) {
+            observer.onComplete(new DispatchEvent("_default", DispatchMode.SYNC, "GET", "/", 200, 1, false, null));
+        }
+        observer.onComplete(new DispatchEvent("_default", DispatchMode.SYNC, "GET", "/", 999, 1, false, null));
+        assertEquals(3, registry.get(MicrometerDispatchObserver.METER_NAME).tags("status", "200").timer().count());
+        assertEquals(1, registry.get(MicrometerDispatchObserver.METER_NAME).tags("status", "OTHER").timer().count());
+        assertEquals("OTHER", MicrometerDispatchObserver.statusTag(42));
     }
 
     private static final class RecordingObserver implements DispatchObserver {
@@ -230,7 +382,7 @@ class ProxyOperabilityTest {
         assertEquals(VesperaProxyController.UNKNOWN_APP_MSG, response.getContentAsString());
         assertEquals(1, observer.events.size(), "a failing observer does not stop the others");
         DispatchEvent event = observer.events.get(0);
-        assertEquals(AppNameResolver.DEFAULT_APP, event.app());
+        assertEquals(AppTags.UNKNOWN, event.app(), "the rejected name is never reported");
         assertNull(event.mode());
         assertEquals("GET", event.method());
         assertEquals(404, event.status());
@@ -253,7 +405,8 @@ class ProxyOperabilityTest {
         assertNull(controller.proxy(new MockHttpServletRequest("GET", "/x"), response));
 
         assertEquals(500, response.getStatus());
-        assertEquals("vespera dispatch failed: resolver exploded", response.getContentAsString());
+        assertEquals("vespera dispatch failed", response.getContentAsString(),
+                "the exception message stays in the log");
         String generated = response.getHeader("X-Request-Id");
         assertEquals(generated, mdcSeen.get(), "the id is in the MDC while dispatching");
         assertEquals(500, observer.events.get(0).status());
@@ -277,6 +430,7 @@ class ProxyOperabilityTest {
         exchange.app = "public";
         exchange.mode = DispatchMode.SYNC;
         exchange.path = "/p";
+        exchange.reachedRust = true;
         exchange.complete(500, true);
         exchange.complete(200, false);
         assertEquals(1, observer.events.size());
@@ -291,6 +445,24 @@ class ProxyOperabilityTest {
                 LoggerFactory.getLogger(ProxyOperabilityTest.class), List.of(), "GET", "r");
         silent.complete(503, false);
         silent.complete(200, false);
+        assertTrue(silent.isCompleted());
+    }
+
+    @Test
+    void exchangeCompletionRunsWithTheRequestIdInTheMdc() {
+        AtomicReference<String> seen = new AtomicReference<>();
+        ProxyExchange exchange = new ProxyExchange(LoggerFactory.getLogger(ProxyOperabilityTest.class),
+                List.of(event -> seen.set(MDC.get(VesperaProxyController.MDC_REQUEST_ID))), "GET", "req-9");
+        MDC.put(VesperaProxyController.MDC_REQUEST_ID, "outer");
+        try {
+            exchange.complete(200, false);
+            assertEquals("req-9", seen.get());
+            assertEquals("outer", MDC.get(VesperaProxyController.MDC_REQUEST_ID), "previous value restored");
+        } finally {
+            MDC.remove(VesperaProxyController.MDC_REQUEST_ID);
+        }
+        assertEquals("x", ProxyExchange.withMdc(null, () -> "x"));
+        assertNull(MDC.get(VesperaProxyController.MDC_REQUEST_ID));
     }
 
     @Test

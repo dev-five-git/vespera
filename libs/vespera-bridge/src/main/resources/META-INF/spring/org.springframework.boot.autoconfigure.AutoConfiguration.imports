@@ -1,2 +1,3 @@
 com.devfive.vespera.bridge.VesperaBridgeAutoConfiguration
 com.devfive.vespera.bridge.VesperaBridgeMetricsAutoConfiguration
+com.devfive.vespera.bridge.VesperaBridgeHealthAutoConfiguration

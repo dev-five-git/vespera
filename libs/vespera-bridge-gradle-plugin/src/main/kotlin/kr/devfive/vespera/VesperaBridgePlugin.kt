@@ -7,6 +7,7 @@ import org.gradle.api.Task
 import org.gradle.api.tasks.Copy
 import org.gradle.language.jvm.tasks.ProcessResources
 import java.io.File
+import java.util.Properties
 
 /**
  * Gradle plugin that wires a Vespera Rust cdylib into a Java
@@ -18,9 +19,10 @@ import java.io.File
  * 2. Wires those generated resources into `processResources` under
  *    `native/<os>-<arch>/` so `VesperaBridge.init(...)` can extract it.
  * 3. Adds `kr.devfive:vespera-bridge:<bridgeVersion>` as an
- *    `implementation` dependency.
+ *    `implementation` dependency (default: the bridge release this plugin
+ *    was built with).
  * 4. Optionally (`autoBuildCargo = true`) registers a `cargoBuild`
- *    task that invokes `cargo build -p <crateName>` (plus one
+ *    task that invokes `cargo build -p <package>` (plus one
  *    `--target <triple>` build per `vespera.targets` entry) before
  *    `bundleNativeLib`.
  *
@@ -32,9 +34,8 @@ import java.io.File
  * }
  *
  * vespera {
- *     crateName.set("my_rust_lib")
+ *     crateName.set("my-rust-lib") // or "my_rust_lib"
  *     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
- *     bridgeVersion.set("<bridge-version>")
  * }
  * ```
  */
@@ -43,9 +44,11 @@ class VesperaBridgePlugin : Plugin<Project> {
         val ext = project.extensions
             .create("vespera", VesperaBridgeExtension::class.java)
         ext.autoBuildCargo.convention(false)
+        @Suppress("DEPRECATION")
         ext.cargoSourceRoots.convention(listOf("src", "crates", "examples"))
         ext.cargoProfile.convention("release")
         ext.targets.convention(emptyMap())
+        embeddedBridgeVersion()?.let { ext.bridgeVersion.convention(it) }
 
         // Compute platform-derived values eagerly (host machine info).
         val hostPlatform = NativePlatform.detectOs(System.getProperty("os.name", "")) +
@@ -54,15 +57,13 @@ class VesperaBridgePlugin : Plugin<Project> {
 
         // Lazy references, evaluated when the tasks are realised. Every
         // cdylib lives under `<targetDir|cargoRoot/target>/[<triple>/]<profileDir>/`.
-        val targetBase = project.provider {
-            if (ext.targetDir.isPresent) ext.targetDir.get().asFile
-            else File(ext.cargoRoot.get().asFile, "target")
-        }
-        val plannedBuilds = project.provider {
+        val targetBase = ext.targetDir.map { it.asFile }
+            .orElse(ext.cargoRoot.map { File(it.asFile, "target") })
+        val plannedBuilds = ext.crateName.zip(ext.cargoProfile) { crate, profile ->
             NativePlatform.plannedBuilds(
                 hostPlatform,
-                ext.crateName.get(),
-                ext.cargoProfile.get(),
+                NativePlatform.libraryStem(crate, ext.libName.orNull),
+                profile,
                 ext.targets.get(),
             )
         }
@@ -75,31 +76,16 @@ class VesperaBridgePlugin : Plugin<Project> {
                     t.group = "vespera"
                     t.description = "Build the Rust cdylib (host + vespera.targets) via `cargo build`."
                     t.workingDirectory.set(ext.cargoRoot)
-                    t.commands.set(plannedBuilds.map { builds ->
-                        builds.map { b ->
-                            NativePlatform.cargoCommand(ext.crateName.get(), ext.cargoProfile.get(), b.triple)
-                        }
-                    })
+                    t.crateName.set(ext.crateName)
+                    t.packageName.set(ext.packageName)
+                    t.profile.set(ext.cargoProfile)
+                    t.triples.set(plannedBuilds.map { builds -> builds.map { it.triple ?: "" } })
                     // Honour a redirected target dir so cargo writes where
                     // `bundleNativeLib` later looks for the cdylib.
                     t.cargoTargetDir.set(ext.targetDir.map { it.asFile.absolutePath })
-                    // Inputs: manifests, Cargo.lock and Rust sources in the
-                    // configured roots, never build output, node_modules or
-                    // .git (fingerprinting those is slow and meaningless).
-                    // The task is never UP-TO-DATE anyway (see CargoBuildTask).
-                    val cargoRoot = ext.cargoRoot.get().asFile
-                    val cargoInputs = project.fileTree(cargoRoot)
-                    cargoInputs.include("Cargo.toml")
-                    cargoInputs.include("**/Cargo.toml")
-                    ext.cargoSourceRoots.get().forEach { root ->
-                        cargoInputs.include("${root.trimEnd('/', '\\')}/**/*.rs")
-                    }
-                    cargoInputs.exclude(NativePlatform.CARGO_INPUT_EXCLUDES)
-                    // Cargo.lock goes through the tree: a missing lock file
-                    // (fresh library crate) must not fail input validation,
-                    // which `inputs.file(...).optional()` still does.
-                    cargoInputs.include("Cargo.lock")
-                    t.inputs.files(cargoInputs)
+                    // No file inputs: the task is never UP-TO-DATE (see
+                    // CargoBuildTask), so fingerprinting every Rust source on
+                    // each run would be pure cost.
                 }
             }
         )
@@ -115,30 +101,23 @@ class VesperaBridgePlugin : Plugin<Project> {
                     t.into(generatedResourcesDir)
                     // Locally built libraries win over extraNativeLibs.
                     t.duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-                    val builds = plannedBuilds.get()
-                    builds.forEach { build ->
-                        t.from(targetBase.map { File(it, build.relativePath) }) {
-                            into("native/${build.platform}")
-                        }
+                    // Resolved during task configuration so the doFirst action
+                    // below captures only plain values (no extension / project
+                    // reference at execution time — configuration-cache safe).
+                    val base = targetBase.get()
+                    val crate = ext.crateName.get()
+                    val profile = ext.cargoProfile.get()
+                    val expected = plannedBuilds.get().map { build ->
+                        val src = File(base, build.relativePath)
+                        t.from(src) { into("native/${build.platform}") }
+                        ExpectedLibrary(src, build.triple)
                     }
                     if (ext.extraNativeLibs.isPresent) {
                         t.from(ext.extraNativeLibs) { include("native/**") }
                     }
                     t.doFirst(object : org.gradle.api.Action<Task> {
                         override fun execute(@Suppress("UNUSED_PARAMETER") task: Task) {
-                            builds.forEach { build ->
-                                val src = File(targetBase.get(), build.relativePath)
-                                require(src.exists()) {
-                                    "Native library not found: $src\n" +
-                                        "Build the '${ext.crateName.get()}' cdylib for the " +
-                                        "'${ext.cargoProfile.get()}' profile" +
-                                        (build.triple?.let { " and target '$it'" } ?: "") +
-                                        " (or set vespera.autoBuildCargo = true). If the " +
-                                        "workspace redirects Cargo output (CARGO_TARGET_DIR / " +
-                                        ".cargo/config.toml build.target-dir), set " +
-                                        "vespera.targetDir to that directory."
-                                }
-                            }
+                            expected.forEach { lib -> lib.requireExists(crate, profile) }
                         }
                     })
                 }
@@ -149,8 +128,8 @@ class VesperaBridgePlugin : Plugin<Project> {
         bundleTask.configure(object : org.gradle.api.Action<Copy> {
             override fun execute(t: Copy) {
                 t.dependsOn(
-                    project.provider {
-                        if (ext.autoBuildCargo.get()) listOf(cargoBuildTask) else emptyList<Any>()
+                    ext.autoBuildCargo.map { auto ->
+                        if (auto) listOf(cargoBuildTask) else emptyList<Any>()
                     }
                 )
             }
@@ -176,11 +155,38 @@ class VesperaBridgePlugin : Plugin<Project> {
                 .map { version -> "kr.devfive:vespera-bridge:$version" }
                 .orElse(project.provider {
                     error(
-                        "vespera.bridgeVersion must be set explicitly. " +
-                            "Example: vespera { bridgeVersion.set(\"<bridge-version>\") }"
+                        "vespera.bridgeVersion is not set and this plugin build embeds no " +
+                            "default. Example: vespera { bridgeVersion.set(\"<bridge-version>\") }"
                     )
                 })
             project.dependencies.addProvider("implementation", bridgeDependency)
         }
+    }
+
+    /** One library `bundleNativeLib` expects; plain data, configuration-cache serializable. */
+    private data class ExpectedLibrary(val file: File, val triple: String?) : java.io.Serializable {
+        fun requireExists(crate: String, profile: String) {
+            require(file.exists()) {
+                "Native library not found: $file\n" +
+                    "Build the '$crate' cdylib for the '$profile' profile" +
+                    (triple?.let { " and target '$it'" } ?: "") +
+                    " (or set vespera.autoBuildCargo = true). If the " +
+                    "workspace redirects Cargo output (CARGO_TARGET_DIR / " +
+                    ".cargo/config.toml build.target-dir), set " +
+                    "vespera.targetDir to that directory."
+            }
+        }
+    }
+
+    internal companion object {
+        /** Classpath resource (next to this class) holding the bridge version this plugin was built with. */
+        const val VERSION_RESOURCE = "vespera-bridge-plugin.properties"
+
+        /** The embedded default `bridgeVersion`, or `null` when the resource is missing. */
+        fun embeddedBridgeVersion(): String? =
+            VesperaBridgePlugin::class.java.getResourceAsStream(VERSION_RESOURCE)?.use { input ->
+                Properties().apply { load(input) }.getProperty("bridgeVersion")
+                    ?.trim()?.takeIf { it.isNotEmpty() }
+            }
     }
 }
