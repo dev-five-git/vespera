@@ -1,0 +1,17 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_wire_override.rs
+assertion_line: 83
+expression: "format!(\"{src}\\n\\n--- response ---\\n{}\\n--- request ---\\n{}\",\nrender(src, false), render(src, true))"
+---
+struct Stamp(#[serde(with = "ts_seconds")] #[schema(value_type = i64)] DateTime<Utc>);
+
+--- response ---
+{
+  "type": "integer",
+  "format": "int64"
+}
+--- request ---
+{
+  "type": "integer",
+  "format": "int64"
+}

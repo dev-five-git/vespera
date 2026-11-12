@@ -9,6 +9,7 @@ use vespera::{
 
 use crate::TestStruct;
 
+pub mod codecs;
 pub mod config;
 pub mod enums;
 pub mod error;

@@ -41,7 +41,10 @@ use quote::{quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{GenericArgument, PathArguments, Type};
 
-use crate::parser::schema::{is_builtin_openapi_type, schema_attrs::SchemaConstraints};
+use crate::parser::schema::{
+    SerdeSide, extract_field_codec, is_builtin_openapi_type, schema_attrs::SchemaConstraints,
+    wire_override::container_override_type,
+};
 
 /// Emit BOTH the marker-trait impl AND the per-field leaf-type
 /// assertions for `input` — the single entry point called from
@@ -83,22 +86,31 @@ fn emit_marker_impl(input: &syn::DeriveInput) -> TokenStream {
     }
 }
 
-/// Walk the struct's named fields and emit a `const _: () = { ... };`
-/// block per non-exempt leaf type.  Exemptions:
+/// Emit a `const _: () = { ... };` block per non-exempt leaf type of every
+/// type the schema documents.  Exemptions:
 ///
 /// - Field is marked `#[schema(any)]` (entire field is skipped).
+/// - Field has `#[schema(value_type = T)]`: `T`'s leaves are asserted
+///   instead of the field type's.
+/// - Field is converted by serde `with` (or both `serialize_with` and
+///   `deserialize_with`) without a `value_type`: documented as any value, so
+///   its Rust type is never consulted.
 /// - Leaf path's last segment is a builtin OpenAPI ident
 ///   (per [`is_builtin_openapi_type`]).
-/// - Leaf is `serde_json::Value` (bare `Value` OR any path containing
-///   a `serde_json` segment ending in `Value`).
+/// - Leaf is `serde_json::Value` (bare `Value`, SeaORM's `JsonValue`, OR
+///   any path containing a `serde_json` segment ending in `Value`).
 /// - Leaf type's path references any generic parameter of the parent
 ///   struct — those can only be checked at the use site where the
 ///   generic is instantiated (the parent's marker impl is unconditional
 ///   so an unbound generic does not break the trait bound here).
 ///
-/// Returns an empty stream for non-structs, non-named-field structs,
-/// and structs where every leaf is exempt — keeping the existing
-/// emitted bytes for those cases byte-identical.
+/// Container-level `#[schema(value_type = T)]` / serde `into` / `from` /
+/// `try_from` types are asserted too (structs and enums); when they cover
+/// both directions the fields are never documented and are not asserted.
+///
+/// Returns an empty stream for non-named-field structs and enums without a
+/// container override, and structs where every leaf is exempt — keeping the
+/// existing emitted bytes for those cases byte-identical.
 ///
 /// `field_constraints` is the pre-parsed `#[schema(...)]` slice (one
 /// entry per named field, in declaration order). `process_derive_schema`
@@ -109,13 +121,6 @@ fn emit_field_assertions(
     input: &syn::DeriveInput,
     field_constraints: &[SchemaConstraints],
 ) -> TokenStream {
-    let syn::Data::Struct(data_struct) = &input.data else {
-        return TokenStream::new();
-    };
-    let syn::Fields::Named(fields_named) = &data_struct.fields else {
-        return TokenStream::new();
-    };
-
     let generic_idents: HashSet<String> = input
         .generics
         .params
@@ -130,49 +135,67 @@ fn emit_field_assertions(
         .collect();
 
     let mut blocks: Vec<TokenStream> = Vec::new();
-    // `process_derive_schema` constructs `field_constraints` with exactly one
-    // entry per named field, in declaration order. `zip` therefore yields the
-    // full pairing here; when the caller forwards an empty slice (e.g. unit /
-    // tuple structs short-circuit above never reach this loop) we degenerate
-    // to zero iterations like the previous code.
-    for (field, constraints) in fields_named.named.iter().zip(field_constraints) {
-        // `#[schema(any)]` is the documented escape hatch — the field
-        // explicitly opted out of type-driven schema generation, so
-        // there's no leaf to assert.  Parse errors on `#[schema(...)]`
-        // are surfaced upstream by `process_derive_schema`, so a field
-        // that would have produced an `Err` here never makes it into
-        // `field_constraints` (the early `to_compile_error` return
-        // upstream supersedes the `continue` the previous code took).
-        if constraints.is_any() {
-            continue;
-        }
-
-        for (leaf, last_ident) in collect_leaf_custom_types(&field.ty) {
-            if type_contains_generic(&leaf, &generic_idents) {
+    let overrides = [SerdeSide::Serialize, SerdeSide::Deserialize]
+        .map(|side| container_override_type(&input.attrs, side));
+    for ty in overrides.iter().flatten() {
+        push_leaf_assertions(ty, ty.span(), &generic_idents, &mut blocks);
+    }
+    let fields_documented = overrides.iter().any(Option::is_none);
+    if fields_documented
+        && let syn::Data::Struct(data_struct) = &input.data
+        && let syn::Fields::Named(fields_named) = &data_struct.fields
+    {
+        // `process_derive_schema` constructs `field_constraints` with exactly
+        // one entry per named field, in declaration order, so `zip` yields
+        // the full pairing.
+        for (field, constraints) in fields_named.named.iter().zip(field_constraints) {
+            // `#[schema(any)]` is the documented escape hatch — the field
+            // explicitly opted out of type-driven schema generation, so
+            // there's no leaf to assert.  Parse errors on `#[schema(...)]`
+            // are surfaced upstream by `process_derive_schema`.
+            if constraints.is_any() {
                 continue;
             }
-            if is_builtin_openapi_type(&last_ident) {
-                continue;
-            }
-            if is_serde_json_value_leaf(&leaf) {
-                continue;
-            }
+            let codec = extract_field_codec(&field.attrs);
+            let documented = match &constraints.value_type {
+                Some(value_type) => &value_type.0,
+                None if codec.serialize && codec.deserialize => continue,
+                None => &field.ty,
+            };
             // Span the entire `const _ : () = { ... };` block to the
-            // field's span (the design pins the diagnostic to the
-            // field, not just its type, so `field.span()` covers the
-            // whole `name: Type` declaration).  The const item name is
-            // `_` so multiple assertions per struct never collide.
-            let field_span = field.span();
-            blocks.push(quote_spanned! { field_span =>
-                const _: () = {
-                    const fn __vespera_assert_schema<T: ::vespera::Schema>() {}
-                    let _ = __vespera_assert_schema::<#leaf>;
-                };
-            });
+            // field's span (the design pins the diagnostic to the field,
+            // not just its type, so `field.span()` covers the whole
+            // `name: Type` declaration).
+            push_leaf_assertions(documented, field.span(), &generic_idents, &mut blocks);
         }
     }
 
     quote! { #(#blocks)* }
+}
+
+/// Push one `T: ::vespera::Schema` assertion per non-exempt leaf of `ty`.
+fn push_leaf_assertions(
+    ty: &Type,
+    span: proc_macro2::Span,
+    generic_idents: &HashSet<String>,
+    blocks: &mut Vec<TokenStream>,
+) {
+    for (leaf, last_ident) in collect_leaf_custom_types(ty) {
+        if type_contains_generic(&leaf, generic_idents)
+            || is_builtin_openapi_type(&last_ident)
+            || is_serde_json_value_leaf(&leaf)
+        {
+            continue;
+        }
+        // The const item name is `_` so multiple assertions per struct
+        // never collide.
+        blocks.push(quote_spanned! { span =>
+            const _: () = {
+                const fn __vespera_assert_schema<T: ::vespera::Schema>() {}
+                let _ = __vespera_assert_schema::<#leaf>;
+            };
+        });
+    }
 }
 
 /// Recursively unwrap the "transparent for schema" containers
@@ -301,6 +324,11 @@ fn is_serde_json_value_leaf(ty: &Type) -> bool {
     let Some(last) = segments.last() else {
         return false;
     };
+    // SeaORM's `JsonValue` alias of `serde_json::Value` (bare or
+    // `sea_orm::JsonValue`); its `Json` alias is already a builtin ident.
+    if last.ident == "JsonValue" {
+        return true;
+    }
     if last.ident != "Value" {
         return false;
     }
@@ -769,5 +797,53 @@ mod tests {
             emit_field_assertions(&input, &constraints_for(&input)).to_string(),
             ""
         );
+    }
+
+    /// The leaf types asserted by `emit_field_assertions`, in emission order.
+    fn asserted_leaves(src: &str) -> Vec<String> {
+        let input: syn::DeriveInput = syn::parse_str(src).unwrap();
+        let out = emit_field_assertions(&input, &constraints_for(&input)).to_string();
+        out.split("let _ = __vespera_assert_schema :: < ")
+            .skip(1)
+            .map(|rest| rest.split(" > ;").next().unwrap().replace(' ', ""))
+            .collect()
+    }
+
+    #[rstest::rstest]
+    #[case::json_value_aliases(
+        "struct S { a: JsonValue, b: sea_orm::JsonValue, c: Option<Json>, d: sea_orm::prelude::Json }",
+        &[]
+    )]
+    #[case::field_value_type_replaces_field_type(
+        "struct S { #[schema(value_type = Vec<Wire>)] a: Opaque, #[schema(value_type = i64)] b: Opaque }",
+        &["Wire"]
+    )]
+    #[case::with_without_value_type_is_skipped(
+        r#"struct S { #[serde(with = "m")] a: Opaque, #[serde(serialize_with = "f", deserialize_with = "g")] b: Opaque }"#,
+        &[]
+    )]
+    #[case::one_sided_codec_keeps_the_field_type(
+        r#"struct S { #[serde(serialize_with = "f")] a: Opaque }"#,
+        &["Opaque"]
+    )]
+    #[case::container_into_keeps_fields(
+        r#"#[serde(into = "Wire")] struct S { a: Opaque }"#,
+        &["Wire", "Opaque"]
+    )]
+    #[case::container_both_sides_skip_fields(
+        r#"#[serde(into = "Wire", try_from = "Raw")] struct S { a: Opaque }"#,
+        &["Wire", "Raw"]
+    )]
+    #[case::container_value_type_skips_fields(
+        "#[schema(value_type = Vec<Wire>)] struct S { a: Opaque }",
+        &["Wire", "Wire"]
+    )]
+    #[case::enum_conversion(
+        r#"#[serde(into = "String", from = "Raw")] enum E { A(Opaque) }"#,
+        &["Raw"]
+    )]
+    #[case::generic_conversion_is_skipped(r#"#[serde(into = "Vec<T>")] struct S<T> { a: T }"#, &[])]
+    fn wire_override_assertions(#[case] src: &str, #[case] expected: &[&str]) {
+        assert_eq!(asserted_leaves(src), expected);
     }
 }

@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/parser/schema/wire_override.rs
+assertion_line: 119
+expression: "format!(\"{src} ({side:?}) => {}\", serde_json::to_string(&schema).unwrap())"
+---
+#[schema(value_type = i64)] #[serde(with = "ts_seconds")] x: DateTime<Utc> (Serialize) => {"type":"integer","format":"int64"}

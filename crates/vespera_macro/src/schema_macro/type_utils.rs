@@ -213,12 +213,13 @@ pub fn is_primitive_or_known_type(name: &str) -> bool {
     )
 }
 
-fn resolve_public_type_path(name: &str) -> Option<TokenStream> {
-    match name {
-        // SeaORM re-exports `serde_json::Value` as `Json`; emit a stable public path.
-        "Json" | "Value" => Some(quote! { vespera::serde_json::Value }),
-        _ => None,
-    }
+/// `serde_json::Value` under its SeaORM aliases (`Json`, `JsonValue`) or its
+/// own bare name → a stable public path. Only without generic arguments:
+/// `Json<T>` is axum's body wrapper, not a JSON value.
+fn resolve_public_type_path(segment: &syn::PathSegment) -> Option<TokenStream> {
+    let json_value = segment.arguments.is_none()
+        && (segment.ident == "Json" || segment.ident == "JsonValue" || segment.ident == "Value");
+    json_value.then(|| quote! { vespera::serde_json::Value })
 }
 
 fn normalize_known_type_in_generic(ty: &Type, source_module_path: &[String]) -> TokenStream {
@@ -232,7 +233,7 @@ fn normalize_known_type_in_generic(ty: &Type, source_module_path: &[String]) -> 
 
     let ident_str = segment.ident.to_string();
 
-    if let Some(public_path) = resolve_public_type_path(&ident_str) {
+    if let Some(public_path) = resolve_public_type_path(segment) {
         return quote! { #public_path };
     }
 
@@ -334,7 +335,7 @@ pub fn resolve_type_to_absolute_path(ty: &Type, source_module_path: &[String]) -
     let ident_str = segment.ident.to_string();
     let args = render_path_arguments(&segment.arguments, source_module_path);
 
-    if let Some(public_path) = resolve_public_type_path(&ident_str) {
+    if let Some(public_path) = resolve_public_type_path(segment) {
         return quote! { #public_path };
     }
 

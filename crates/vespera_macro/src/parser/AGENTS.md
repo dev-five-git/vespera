@@ -31,9 +31,11 @@ parser/schema/
 ├── enum_schema.rs + enum_schema/   # Enum → JSON Schema
 │                                   #   enum_schema/{representations.rs,unit.rs,variant.rs}
 ├── serde_attrs.rs + serde_attrs/   # Serde attribute extraction
-│                                   #   serde_attrs/{common,enum_repr,extract,fallback,rename_case}.rs
+│                                   #   serde_attrs/{codec,common,enum_repr,extract,fallback,rename_case}.rs
 ├── generics.rs                     # Generic type parameter substitution
-├── schema_attrs.rs                 # #[schema(...)] constraint extraction
+├── schema_attrs.rs                 # #[schema(...)] constraint extraction (incl. value_type)
+├── wire_override.rs                # value_type / serde with / into / from schema overrides
+├── request_view.rs                 # {Name}Input request views
 └── snapshots/                      # insta test snapshots
 ```
 

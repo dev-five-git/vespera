@@ -119,7 +119,11 @@ pub use vespera_macro::{Multipart, Schema, cron, export_app, route, schema, sche
 /// is the entire user surface.  If you intentionally want a field to
 /// stay as opaque `{type:object}` (arbitrary JSON), mark it with
 /// `#[schema(any)]` to skip the assertion AND lock the schema to
-/// `object`.  `serde_json::Value` fields are allowlisted automatically.
+/// `object`.  `serde_json::Value` fields (and SeaORM's `Json` /
+/// `JsonValue` aliases) are allowlisted automatically.  A field with
+/// `#[schema(value_type = T)]` asserts `T` instead of its own type, and a
+/// field converted by `#[serde(with = "..")]` without `value_type` is
+/// documented as any value and not asserted.
 ///
 /// The trait and the `vespera::Schema` derive macro share the same
 /// name but live in different namespaces (trait vs. derive-macro), so

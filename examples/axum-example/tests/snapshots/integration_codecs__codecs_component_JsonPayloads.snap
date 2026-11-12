@@ -1,0 +1,24 @@
+---
+source: examples/axum-example/tests/integration_codecs.rs
+assertion_line: 86
+expression: "serde_json::to_string_pretty(&spec[\"components\"][\"schemas\"][component]).unwrap()"
+---
+{
+  "description": "A free-form JSON payload in every spelling vespera maps to `{}`.",
+  "properties": {
+    "body": {
+      "description": "SeaORM's `Json` (= `serde_json::Value`): any JSON value."
+    },
+    "extra": {
+      "description": "`serde_json::Value` itself."
+    },
+    "meta": {
+      "description": "SeaORM's `JsonValue` alias."
+    }
+  },
+  "required": [
+    "body",
+    "extra"
+  ],
+  "type": "object"
+}

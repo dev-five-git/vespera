@@ -1,0 +1,32 @@
+---
+source: examples/axum-example/tests/integration_codecs.rs
+assertion_line: 86
+expression: "serde_json::to_string_pretty(&spec[\"components\"][\"schemas\"][component]).unwrap()"
+---
+{
+  "description": "Timestamps written by custom serde functions.",
+  "properties": {
+    "checksum": {
+      "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+    },
+    "createdAt": {
+      "description": "Unix seconds (`chrono::serde::ts_seconds`) — an integer, not a\ndate-time string.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "expiresAt": {
+      "description": "Optional unix milliseconds.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "createdAt",
+    "expiresAt",
+    "checksum"
+  ],
+  "type": "object"
+}
