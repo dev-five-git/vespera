@@ -137,8 +137,20 @@ where
 ///   callers that still want one.
 pub async fn dispatch_streaming_with_outcome_async<F>(
     input: Vec<u8>,
-    mut on_chunk: F,
+    on_chunk: F,
 ) -> (Vec<u8>, StreamOutcome)
+where
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+{
+    // The bodies of the `traced!` entry points live in plain `async fn`s (not
+    // inside the macro's tokens): code inside macro arguments loses its
+    // match-arm line mapping under LLVM coverage.
+    traced!("streaming", {
+        streaming_with_outcome_body(input, on_chunk).await
+    })
+}
+
+async fn streaming_with_outcome_body<F>(input: Vec<u8>, mut on_chunk: F) -> (Vec<u8>, StreamOutcome)
 where
     F: FnMut(&[u8]) -> ControlFlow<()>,
 {
@@ -518,6 +530,20 @@ impl FrameBatch {
 /// immediately.  Sinks that do not buffer can ignore it.
 pub async fn dispatch_streaming_with_header_async<H, F>(
     input: Vec<u8>,
+    on_header: H,
+    on_chunk: F,
+) -> StreamOutcome
+where
+    H: FnMut(&[u8]),
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+{
+    traced!("streaming", {
+        streaming_with_header_body(input, on_header, on_chunk).await
+    })
+}
+
+async fn streaming_with_header_body<H, F>(
+    input: Vec<u8>,
     mut on_header: H,
     mut on_chunk: F,
 ) -> StreamOutcome
@@ -771,6 +797,33 @@ where
 }
 
 async fn bidirectional_streaming_inner<P, F, H, C>(
+    input_header: Vec<u8>,
+    pull_chunk: P,
+    on_chunk: F,
+    on_header: H,
+    request_close: C,
+    flush_hints: bool,
+) -> StreamOutcome
+where
+    P: FnMut() -> RequestChunk + Send + 'static,
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+    H: FnMut(&[u8]),
+    C: FnOnce(),
+{
+    traced!("bidirectional", {
+        bidirectional_streaming_body(
+            input_header,
+            pull_chunk,
+            on_chunk,
+            on_header,
+            request_close,
+            flush_hints,
+        )
+        .await
+    })
+}
+
+async fn bidirectional_streaming_body<P, F, H, C>(
     input_header: Vec<u8>,
     pull_chunk: P,
     mut on_chunk: F,

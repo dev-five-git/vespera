@@ -206,6 +206,16 @@ items below are additions, plus one behaviour change to graceful shutdown.
   `shutdown0` / `VesperaBridge.shutdown(Duration)` every dispatch answers
   `503`.
 
+### Observability (`vespera`, `vespera_inprocess`)
+
+- New opt-in `tracing` feature (`vespera/tracing` forwards to
+  `vespera_inprocess/tracing`): a `vespera.dispatch` span per in-process / JNI
+  dispatch (`mode`, `method`, `path` without query, `app`, `status`,
+  `duration_ms`, `panicked`), WARN / ERROR events for synthesised error
+  responses (`400` / `413` / `431` / `503` / `504` / engine `5xx`) and
+  panics, and cron diagnostics as `tracing` events (target `vespera::cron`)
+  instead of `eprintln!`. Off by default; default builds are unchanged.
+
 ### Java bridge (`kr.devfive:vespera-bridge`)
 
 - Spring is a provided dependency (Spring Boot 3.5 and 4 supported); declare

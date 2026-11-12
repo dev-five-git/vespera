@@ -65,6 +65,14 @@ cron = ["tokio/rt", "tokio/time", "tokio/sync", "vespera_core/cron-chrono", "ves
 cron-tz = ["cron", "vespera_core/cron-tz", "vespera_macro/cron-tz"]
 inprocess = ["dep:vespera_inprocess", "vespera_inprocess/connect-info"]
 jni = ["inprocess", "dep:vespera_jni"]
+# Structured `tracing` diagnostics (off by default): the in-process / JNI
+# dispatch `vespera.dispatch` span + error/panic events (forwarded to
+# `vespera_inprocess/tracing` when `inprocess` / `jni` is on — the `?` keeps
+# it from pulling vespera_inprocess into a plain axum build) and the cron
+# scheduler's diagnostics (job panic, overlap skip, …) as `tracing` events on
+# target `vespera::cron` instead of `eprintln!`.  Install any `tracing`
+# subscriber to see them.
+tracing = ["dep:tracing", "vespera_inprocess?/tracing"]
 # mimalloc as the cdylib's global allocator (see vespera_jni docs).
 # Default-on, but the `vespera_jni?/mimalloc` weak-dep syntax means it
 # only does anything when the `jni` feature has pulled in vespera_jni —
@@ -104,6 +112,8 @@ garde = { workspace = true, optional = true }
 # rejections so `Validated<T>` can report them in the 422 envelope (already in
 # the graph via axum's json/form/query features).
 serde_path_to_error = { version = "0.1", optional = true }
+# `tracing` feature: cron diagnostics as `tracing` events (see the feature).
+tracing = { version = "0.1.41", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
 # Used by integration tests under `tests/` that exercise the

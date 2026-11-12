@@ -68,6 +68,23 @@
 //! [`Router::clone`], which is cheap because axum's router is
 //! internally `Arc`-shared.
 
+/// Run `$body` (an `async` block body) inside a `vespera.dispatch` span with
+/// the given `mode` when the `tracing` feature is on; expands to the bare
+/// `$body` — byte-identical to the uninstrumented code, `$mode` never
+/// evaluated — when it is off.
+#[cfg(feature = "tracing")]
+macro_rules! traced {
+    ($mode:expr, $body:block) => {
+        $crate::obs::instrument($mode, async move $body).await
+    };
+}
+#[cfg(not(feature = "tracing"))]
+macro_rules! traced {
+    ($mode:expr, $body:block) => {
+        $body
+    };
+}
+
 mod bounded;
 mod config;
 mod direct;
@@ -75,6 +92,8 @@ mod dispatch;
 mod envelope;
 mod header_latin1;
 mod internal;
+#[cfg(feature = "tracing")]
+mod obs;
 mod registry;
 mod streaming;
 mod wire;

@@ -97,6 +97,7 @@ vespera/
 | `crates/vespera_inprocess/src/dispatch.rs` | ~866 | Public dispatch entry points: text envelope API, binary wire API, direct-write (`dispatch_into`) API |
 | `crates/vespera_inprocess/src/internal.rs` | ~828 | Request building + router oneshot + response collection (malformed path/header → 400) |
 | `crates/vespera_inprocess/src/streaming.rs` | ~912 | Response / header-callback / bidirectional streaming; `RequestChunk`/`StreamAbort` error-aware request body; bounded `ChannelBody` |
+| `crates/vespera_inprocess/src/obs.rs` | ~150 | Feature `tracing` only: `instrument` (span + per-poll panic guard + duration), `record_request` / `record_status` (current `vespera.dispatch` span only), `error_response` (event per synthesised error status, hooked into `error_wire`) |
 | `crates/vespera_inprocess/src/registry.rs` | ~298 | App registration + lock-free default-app `OnceLock` + lock-free named-app `ArcSwap<HashMap<String, Router>>` (copy-on-write `rcu` on register) |
 | `crates/vespera_inprocess/benches/dispatch/serde_ab.rs` | ~271 | Criterion A/B helpers comparing serde_json vs hand-rolled wire-header paths |
 | `crates/vespera_jni/src/lib.rs` | ~147 | Crate root: module wiring, `jni` / `vespera_inprocess` re-exports, optional mimalloc `#[global_allocator]` |
@@ -184,6 +185,7 @@ Feature flags:
 | `multipart` (default) | `vespera::multipart` (`TypedMultipart`, `FieldData`), `vespera::tempfile` | `#[derive(Multipart)]` / `schema_type!(..., multipart)` runtime + deps (tempfile, axum/axum-extra multer multipart, tokio fs/io-util); without it `vespera::Multipart` is a stand-in derive (`vespera_macro::MultipartFeatureDisabled`) whose `compile_error!` names the feature (trybuild `tests/ui/multipart_needs_feature.rs`, run under `--no-default-features`) |
 | `validation` (default) | `vespera::Validated` | `#[derive(Schema)]` also emits `garde::Validate`; `Validated<T>` extractor + 422 envelope |
 | `cron` | `vespera::cron` | `#[vespera::cron("...")]` jobs (UTC), started once per process by `vespera!` |
+| `tracing` | (no API) forwards to `vespera_inprocess/tracing` | `vespera.dispatch` span per wire dispatch (`mode`/`method`/`path` sans query/`app`/`status`/`duration_ms`/`panicked`) + WARN/ERROR events from `error_wire` (400/413/431/503/504/5xx) and on panic unwinding out of a dispatch poll; cron diagnostics via `tracing` (target `vespera::cron`) instead of `eprintln!`. Off: no dep, `traced!` expands to the bare body. On in workspace test builds via `examples/testkit` (dev-dep) so tarpaulin covers it |
 | `cron-tz` | (with `cron`) `tz = "Area/City"` support | chrono-tz IANA database (opt-in: ~7 MB generated source) |
 
 ## JNI ARCHITECTURE

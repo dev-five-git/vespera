@@ -107,6 +107,8 @@ pub fn parse_validate_resolve(
 ) -> Result<(WireRequestHeader<'_>, Router), Vec<u8>> {
     let header = parse_wire_header(header_bytes)
         .map_err(|msg| error_wire(parse_error_status(&msg), &msg))?;
+    #[cfg(feature = "tracing")]
+    crate::obs::record_request(&header.method, &header.path, header.app.as_deref());
     if header.v != WIRE_VERSION {
         return Err(error_wire(
             400,
@@ -413,10 +415,12 @@ pub fn dispatch_from_bytes(input: Vec<u8>, runtime: &tokio::runtime::Runtime) ->
 /// wire response.  A body larger than [`crate::max_buffered_response_bytes`]
 /// yields a `500` wire response naming the limit.
 pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
-    Deadline::start()
-        .run(dispatch_from_bytes_inner(input))
-        .await
-        .unwrap_or_else(timeout_wire)
+    traced!(crate::obs::buffered_mode(), {
+        Deadline::start()
+            .run(dispatch_from_bytes_inner(input))
+            .await
+            .unwrap_or_else(timeout_wire)
+    })
 }
 
 async fn dispatch_from_bytes_inner(input: Vec<u8>) -> Vec<u8> {
@@ -579,10 +583,12 @@ pub fn dispatch_into(
 /// A configured [`crate::dispatch_timeout`] that expires writes a `504`
 /// wire response into `out` instead.
 pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResult {
-    Deadline::start()
-        .run(dispatch_into_inner(input, &mut *out))
-        .await
-        .unwrap_or_else(|| write_wire_into(out, &timeout_wire()))
+    traced!("direct", {
+        Deadline::start()
+            .run(dispatch_into_inner(input, &mut *out))
+            .await
+            .unwrap_or_else(|| write_wire_into(out, &timeout_wire()))
+    })
 }
 
 async fn dispatch_into_inner(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResult {
@@ -622,10 +628,12 @@ async fn dispatch_into_inner(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResul
 /// Byte-identical to [`dispatch_into_async`] for the same wire bytes; all
 /// the same error / `422` / overflow semantics apply.
 pub async fn dispatch_into_async_borrowed(input: &[u8], out: &mut [u8]) -> DirectWriteResult {
-    Deadline::start()
-        .run(dispatch_into_borrowed_inner(input, &mut *out))
-        .await
-        .unwrap_or_else(|| write_wire_into(out, &timeout_wire()))
+    traced!("direct", {
+        Deadline::start()
+            .run(dispatch_into_borrowed_inner(input, &mut *out))
+            .await
+            .unwrap_or_else(|| write_wire_into(out, &timeout_wire()))
+    })
 }
 
 async fn dispatch_into_borrowed_inner(input: &[u8], out: &mut [u8]) -> DirectWriteResult {
@@ -657,10 +665,12 @@ pub async fn dispatch_into_async_borrowed_resumable(
     input: &[u8],
     out: &mut [u8],
 ) -> ResumableDirectWrite {
-    let done = Deadline::start()
-        .run(dispatch_into_borrowed_resumable_inner(input, &mut *out))
-        .await;
-    done.unwrap_or_else(|| resumable_from_wire(out, timeout_wire()))
+    traced!("direct", {
+        let done = Deadline::start()
+            .run(dispatch_into_borrowed_resumable_inner(input, &mut *out))
+            .await;
+        done.unwrap_or_else(|| resumable_from_wire(out, timeout_wire()))
+    })
 }
 
 async fn dispatch_into_borrowed_resumable_inner(
