@@ -39,7 +39,12 @@ default = [
     "validation",
     "mimalloc",
 ]
-cron = ["tokio/time", "vespera_core/cron-chrono", "vespera_macro/cron"]
+cron = ["tokio/time", "tokio/sync", "vespera_core/cron-chrono", "vespera_macro/cron"]
+# `#[vespera::cron("...", tz = "Asia/Seoul")]`: evaluate a job in an IANA time
+# zone instead of UTC (the default). Pulls in chrono-tz and its embedded tz
+# database (~7 MB of generated source, compiled for the proc-macro too), so it
+# is opt-in; without it `tz = ...` is a compile error.
+cron-tz = ["cron", "vespera_core/cron-tz", "vespera_macro/cron-tz"]
 inprocess = ["dep:vespera_inprocess", "vespera_inprocess/connect-info"]
 jni = ["inprocess", "dep:vespera_jni"]
 # mimalloc as the cdylib's global allocator (see vespera_jni docs).

@@ -145,7 +145,38 @@ async fn main() -> std::io::Result<()> {
 - Handlers can extract `ConnectInfo<SocketAddr>` (the router is served with
   `into_make_service_with_connect_info`).
 - `.serve_with_graceful_shutdown(addr, signal)` stops accepting connections
-  once `signal` resolves and waits for in-flight requests.
+  once `signal` resolves and waits for in-flight requests (with the `cron`
+  feature it also stops the cron scheduler; see below).
+
+---
+
+## Cron Jobs (`#[vespera::cron]`)
+
+Feature `cron`. Put the attribute on any `pub async fn` with **no
+parameters**, anywhere in the crate; `vespera!()` discovers and starts it once
+per process. Expressions have 6 fields (`sec min hour day month weekday`,
+optional trailing year) and are validated at compile time.
+
+```rust
+#[vespera::cron("0 */5 * * * *")]                       // UTC (default)
+pub async fn cleanup() {}
+
+#[vespera::cron("0 0 9 * * Mon-Fri", tz = "Asia/Seoul")] // needs feature `cron-tz`
+pub async fn morning_report() {}
+
+#[vespera::cron("0 * * * * *", overlap = "skip")]       // no self-overlap
+pub async fn reindex() {}
+```
+
+- **Time zone:** UTC unless `tz = "Area/City"` (IANA, case-sensitive, checked
+  at compile time). `tz` requires `features = ["cron", "cron-tz"]`; without
+  `cron-tz` it is a compile error.
+- **Overlap:** default `"allow"` (a slow run may overlap the next one);
+  `"skip"` skips and logs a tick while the previous run is still going.
+- **Panics:** logged to stderr; the schedule keeps going.
+- **Shutdown:** `vespera::cron::shutdown()` stops new runs (process-wide,
+  permanent); `vespera::cron::shutdown_and_wait(timeout).await` also waits for
+  in-flight runs. `serve_with_graceful_shutdown` calls both (10 s grace).
 
 ---
 

@@ -31,7 +31,9 @@
 //! served via `into_make_service_with_connect_info::<SocketAddr>()`.
 //!
 //! [`Serve::serve_with_graceful_shutdown`] stops accepting connections when
-//! a signal future resolves and waits for in-flight requests:
+//! a signal future resolves and waits for in-flight requests (and, with the
+//! `cron` feature, stops the cron scheduler and waits a bounded time for
+//! in-flight cron runs):
 //!
 //! ```no_run
 //! use vespera::Serve;
@@ -67,6 +69,11 @@ pub trait Serve {
 
     /// Like [`Serve::serve`], but stops accepting new connections once
     /// `signal` resolves and returns after in-flight requests finish.
+    ///
+    /// With the `cron` feature it also shuts the `#[vespera::cron]`
+    /// scheduler down (process-wide): no new runs start once `signal`
+    /// resolves, and after the server drained, in-flight runs get up to
+    /// `cron::DEFAULT_SHUTDOWN_GRACE` (10 s) to finish.
     fn serve_with_graceful_shutdown(
         self,
         addr: impl ToSocketAddrs,
@@ -94,8 +101,19 @@ impl Serve for axum::Router {
             listener,
             self.into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .with_graceful_shutdown(signal)
-        .await
+        .with_graceful_shutdown(async move {
+            signal.await;
+            // No new `#[vespera::cron]` runs once shutdown has begun.
+            #[cfg(feature = "cron")]
+            crate::cron::shutdown();
+        })
+        .await?;
+        // In-flight cron runs get a bounded grace period after the server
+        // drained; runs still going afterwards stop with the runtime.
+        #[cfg(feature = "cron")]
+        let _all_finished =
+            crate::cron::shutdown_and_wait(crate::cron::DEFAULT_SHUTDOWN_GRACE).await;
+        Ok(())
     }
 }
 

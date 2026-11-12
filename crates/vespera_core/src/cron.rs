@@ -19,6 +19,22 @@ pub fn parse(expression: &str) -> Result<Cron, CronError> {
         .parse(expression)
 }
 
+/// An IANA time zone (`Asia/Seoul`, `Europe/Berlin`, `UTC`, …) a cron job can
+/// be evaluated in.
+#[cfg(feature = "cron-tz")]
+#[cfg_attr(docsrs, doc(cfg(feature = "cron-tz")))]
+pub use chrono_tz::{ParseError as TimeZoneError, Tz};
+
+/// Look up an IANA time-zone name (exact and case-sensitive: `"Asia/Seoul"`).
+///
+/// Shared by the compile-time `#[cron(..., tz = "...")]` check and the
+/// runtime scheduler, so a name accepted at compile time always resolves.
+#[cfg(feature = "cron-tz")]
+#[cfg_attr(docsrs, doc(cfg(feature = "cron-tz")))]
+pub fn parse_timezone(name: &str) -> Result<Tz, TimeZoneError> {
+    name.parse()
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -45,5 +61,17 @@ mod tests {
     #[case("not a cron at all")]
     fn rejects_malformed_expressions(#[case] expression: &str) {
         assert!(parse(expression).is_err(), "{expression}");
+    }
+
+    #[cfg(feature = "cron-tz")]
+    #[rstest]
+    #[case("Asia/Seoul", true)]
+    #[case("America/New_York", true)]
+    #[case("UTC", true)]
+    #[case("asia/seoul", false)]
+    #[case("Mars/Olympus_Mons", false)]
+    #[case("", false)]
+    fn resolves_iana_time_zone_names(#[case] name: &str, #[case] known: bool) {
+        assert_eq!(parse_timezone(name).is_ok(), known, "{name}");
     }
 }

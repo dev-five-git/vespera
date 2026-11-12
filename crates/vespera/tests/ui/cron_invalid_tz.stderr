@@ -1,0 +1,5 @@
+error: #[cron] unknown time zone `Asia/Seol`. Expected an IANA name such as "Asia/Seoul", "America/New_York" or "UTC" (case-sensitive).
+ --> tests/ui/cron_invalid_tz.rs:6:37
+  |
+6 | #[vespera::cron("0 0 9 * * *", tz = "Asia/Seol")]
+  |                                     ^^^^^^^^^^^

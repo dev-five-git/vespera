@@ -5,6 +5,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::collector::collect_metadata;
+use crate::metadata::CronOptions;
 
 fn create_temp_file(dir: &TempDir, filename: &str, content: &str) -> std::path::PathBuf {
     let file_path = dir.path().join(filename);
@@ -749,6 +750,7 @@ fn test_generate_router_code_with_merge_and_cron() {
         function_name: "cleanup".to_string(),
         module_path: "tasks".to_string(),
         file_path: "src/tasks.rs".to_string(),
+        options: CronOptions::default(),
     }];
 
     let result = generate_router_code(&metadata, None, None, None, &merge_apps, &cron_jobs);
@@ -776,6 +778,7 @@ fn test_generate_router_code_with_cron_no_merge() {
         function_name: "heartbeat".to_string(),
         module_path: "cron::health".to_string(),
         file_path: "src/cron/health.rs".to_string(),
+        options: CronOptions::default(),
     }];
 
     let result = generate_router_code(&metadata, None, None, None, &[], &cron_jobs);
@@ -805,18 +808,54 @@ fn cron_scheduler_code_starts_jobs_once_per_invocation() {
             function_name: "cleanup".to_string(),
             module_path: "tasks".to_string(),
             file_path: "src/tasks.rs".to_string(),
+            options: CronOptions::default(),
         },
         CronMetadata {
             expression: "1/10 * * * * *".to_string(),
             function_name: "heartbeat".to_string(),
             module_path: "cron::health".to_string(),
             file_path: "src/cron/health.rs".to_string(),
+            options: CronOptions::default(),
         },
     ];
     let body = generate_cron_scheduler_code(&cron_jobs);
     let file: syn::File = syn::parse2(quote!(fn create_app() { #body })).expect("valid fn");
     insta::assert_snapshot!(
         "cron_scheduler_code_starts_jobs_once_per_invocation",
+        prettyplease::unparse(&file)
+    );
+}
+
+/// `tz` / `overlap = "skip"` become builder calls; a root-module job is named
+/// by its bare function name.
+#[test]
+fn cron_scheduler_code_applies_job_options() {
+    let cron_jobs = vec![
+        CronMetadata {
+            expression: "0 0 9 * * *".to_string(),
+            function_name: "morning_report".to_string(),
+            module_path: String::new(),
+            file_path: "src/lib.rs".to_string(),
+            options: CronOptions {
+                timezone: Some("Asia/Seoul".to_string()),
+                skip_overlap: true,
+            },
+        },
+        CronMetadata {
+            expression: "0 */5 * * * *".to_string(),
+            function_name: "reindex".to_string(),
+            module_path: "tasks".to_string(),
+            file_path: "src/tasks.rs".to_string(),
+            options: CronOptions {
+                timezone: None,
+                skip_overlap: true,
+            },
+        },
+    ];
+    let body = generate_cron_scheduler_code(&cron_jobs);
+    let file: syn::File = syn::parse2(quote!(fn create_app() { #body })).expect("valid fn");
+    insta::assert_snapshot!(
+        "cron_scheduler_code_applies_job_options",
         prettyplease::unparse(&file)
     );
 }
