@@ -165,6 +165,18 @@ pub struct CronMetadata {
     pub module_path: String,
     /// File path
     pub file_path: String,
+    /// Optional `tz = "..."` / `overlap = "..."` attribute arguments
+    #[serde(default)]
+    pub options: CronOptions,
+}
+
+/// Optional `#[cron("...", tz = "...", overlap = "...")]` arguments.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CronOptions {
+    /// IANA time zone the expression is evaluated in (`None` = UTC)
+    pub timezone: Option<String>,
+    /// `overlap = "skip"`: a tick is skipped while the previous run is still going
+    pub skip_overlap: bool,
 }
 
 /// Collected metadata

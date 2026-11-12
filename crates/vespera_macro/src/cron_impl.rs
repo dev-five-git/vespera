@@ -8,7 +8,9 @@
 //! The `#[cron]` attribute is applied to functions to:
 //! - Validate that the function is `pub async fn`
 //! - Validate that the function takes no parameters
-//! - Parse the cron expression string
+//! - Parse the cron expression string and the optional `tz` / `overlap`
+//!   arguments (a `tz` name is checked against the IANA database under the
+//!   `cron-tz` feature, and rejected without it)
 //! - Mark the function for cron discovery by the `vespera!` macro
 //!
 //! # Example
@@ -18,12 +20,16 @@
 //! pub async fn cleanup_sessions() {
 //!     println!("Running cleanup");
 //! }
+//!
+//! #[vespera::cron("0 0 9 * * *", tz = "Asia/Seoul", overlap = "skip")]
+//! pub async fn morning_report() {}
 //! ```
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::macro_storage::{CrateStorage, SourceIdentified};
+use crate::metadata::CronOptions;
 
 /// Metadata stored by `#[cron]` for later consumption by `vespera!()`.
 ///
@@ -37,6 +43,92 @@ pub struct StoredCronInfo {
     pub expression: String,
     /// Source file path from `Span::call_site().local_file()`
     pub file_path: Option<String>,
+    /// Optional `tz` / `overlap` arguments
+    pub options: CronOptions,
+}
+
+/// Parsed `#[cron("expr", tz = "Area/City", overlap = "allow" | "skip")]`
+/// arguments.  Only the expression literal is required; `tz` and `overlap`
+/// may appear once each, in any order.
+pub struct CronArgs {
+    /// The cron expression literal
+    pub expression: syn::LitStr,
+    /// The `tz = "..."` literal, if any
+    pub timezone: Option<syn::LitStr>,
+    /// `overlap = "skip"`
+    pub skip_overlap: bool,
+}
+
+impl CronArgs {
+    /// The options to store for `vespera!` code generation.
+    pub fn options(&self) -> CronOptions {
+        CronOptions {
+            timezone: self.timezone.as_ref().map(syn::LitStr::value),
+            skip_overlap: self.skip_overlap,
+        }
+    }
+}
+
+impl syn::parse::Parse for CronArgs {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let expression: syn::LitStr = input.parse().map_err(|_| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "#[cron] attribute: expected a cron expression string. Example: #[cron(\"0 */5 * * * *\")]",
+            )
+        })?;
+        let mut args = Self {
+            expression,
+            timezone: None,
+            skip_overlap: false,
+        };
+        let mut overlap_seen = false;
+        while !input.is_empty() {
+            input.parse::<syn::Token![,]>()?;
+            if input.is_empty() {
+                break;
+            }
+            let key: syn::Ident = input.parse()?;
+            input.parse::<syn::Token![=]>()?;
+            let value: syn::LitStr = input.parse()?;
+            match key.to_string().as_str() {
+                "tz" if args.timezone.is_none() => args.timezone = Some(value),
+                "overlap" if !overlap_seen => {
+                    overlap_seen = true;
+                    args.skip_overlap = parse_overlap(&value)?;
+                }
+                "tz" | "overlap" => {
+                    return Err(syn::Error::new_spanned(
+                        &key,
+                        format!("#[cron] attribute: duplicate `{key}` argument."),
+                    ));
+                }
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        &key,
+                        format!(
+                            "#[cron] attribute: unknown argument `{key}`. Expected `tz = \"Area/City\"` or `overlap = \"allow\" | \"skip\"`."
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(args)
+    }
+}
+
+/// `"skip"` → `true`, `"allow"` → `false`, anything else is an error.
+fn parse_overlap(value: &syn::LitStr) -> syn::Result<bool> {
+    match value.value().as_str() {
+        "skip" => Ok(true),
+        "allow" => Ok(false),
+        other => Err(syn::Error::new_spanned(
+            value,
+            format!(
+                "#[cron] attribute: unknown overlap policy `{other}`. Expected \"allow\" (default) or \"skip\"."
+            ),
+        )),
+    }
 }
 
 /// Per-crate storage for cron metadata collected by `#[cron]` attribute
@@ -97,21 +189,25 @@ pub fn process_cron_attribute(
     attr: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    let expression: syn::LitStr = syn::parse2(attr).map_err(|_| syn::Error::new(proc_macro2::Span::call_site(), "#[cron] attribute: expected a cron expression string. Example: #[cron(\"0 */5 * * * *\")]"))?;
+    let args: CronArgs = syn::parse2(attr)?;
     // Compile-time cron-syntax validation (gated by the `cron` feature, enabled
     // transitively by `vespera`'s `cron` feature). A malformed expression is a
     // span-attached compile error here instead of a failure at app startup.
     #[cfg(feature = "cron")]
-    validate_cron_expression(&expression)?;
+    validate_cron_expression(&args.expression)?;
+    if let Some(timezone) = &args.timezone {
+        validate_timezone(timezone)?;
+    }
     let item_fn: syn::ItemFn = syn::parse2(item.clone()).map_err(|e| syn::Error::new(e.span(), "#[cron] attribute: can only be applied to functions, not other items. Move or remove the attribute."))?;
     validate_cron_fn(&item_fn)?;
 
     let stored = StoredCronInfo {
         fn_name: item_fn.sig.ident.to_string(),
-        expression: expression.value(),
+        expression: args.expression.value(),
         file_path: proc_macro2::Span::call_site()
             .local_file()
             .map(|p| p.display().to_string()),
+        options: args.options(),
     };
     register_cron(stored);
 
@@ -133,6 +229,35 @@ fn validate_cron_expression(expression: &syn::LitStr) -> syn::Result<()> {
             ),
         )
     })
+}
+
+/// Check a `tz = "..."` name at **compile time** against the IANA database the
+/// runtime scheduler resolves it with (`vespera_core::cron::parse_timezone`).
+#[cfg(feature = "cron-tz")]
+fn validate_timezone(timezone: &syn::LitStr) -> syn::Result<()> {
+    let name = timezone.value();
+    vespera_core::cron::parse_timezone(&name)
+        .map(drop)
+        .map_err(|_| {
+            syn::Error::new_spanned(
+                timezone,
+                format!(
+                    "#[cron] unknown time zone `{name}`. Expected an IANA name such as \
+                 \"Asia/Seoul\", \"America/New_York\" or \"UTC\" (case-sensitive)."
+                ),
+            )
+        })
+}
+
+/// Without the `cron-tz` feature there is no time-zone database to evaluate
+/// `tz` with, so the argument is rejected instead of silently running in UTC.
+#[cfg(not(feature = "cron-tz"))]
+fn validate_timezone(timezone: &syn::LitStr) -> syn::Result<()> {
+    Err(syn::Error::new_spanned(
+        timezone,
+        "#[cron] `tz = \"...\"` requires the `cron-tz` feature: \
+         vespera = { features = [\"cron\", \"cron-tz\"] }. Without `tz`, jobs run in UTC.",
+    ))
 }
 
 #[cfg(test)]
@@ -296,11 +421,13 @@ mod tests {
             fn_name: fn_name.clone(),
             expression: "0 */5 * * * *".to_string(),
             file_path: file_path.clone(),
+            options: CronOptions::default(),
         });
         register_cron(StoredCronInfo {
             fn_name: fn_name.clone(),
             expression: "0 */10 * * * *".to_string(),
             file_path,
+            options: CronOptions::default(),
         });
 
         let matches: Vec<_> = current_crate_crons()
@@ -357,5 +484,103 @@ mod tests {
                 "expected `invalid cron expression` message for `{bad}`"
             );
         }
+    }
+
+    // ===== `tz` / `overlap` arguments =====
+
+    /// The optional arguments parse in any order, with a trailing comma.
+    #[rstest::rstest]
+    #[case::expression_only(quote!("0 * * * * *"), CronOptions::default())]
+    #[case::trailing_comma(quote!("0 * * * * *",), CronOptions::default())]
+    #[case::overlap_allow(quote!("0 * * * * *", overlap = "allow"), CronOptions::default())]
+    #[case::overlap_skip(
+        quote!("0 * * * * *", overlap = "skip"),
+        CronOptions { timezone: None, skip_overlap: true }
+    )]
+    #[case::tz_and_overlap(
+        quote!("0 * * * * *", overlap = "skip", tz = "Asia/Seoul",),
+        CronOptions { timezone: Some("Asia/Seoul".to_owned()), skip_overlap: true }
+    )]
+    fn cron_args_parse_optional_arguments(
+        #[case] attr: proc_macro2::TokenStream,
+        #[case] expected: CronOptions,
+    ) {
+        let args: CronArgs = syn::parse2(attr).expect("valid arguments");
+        assert_eq!(args.expression.value(), "0 * * * * *");
+        assert_eq!(args.options(), expected);
+    }
+
+    /// Malformed optional arguments are span-attached compile errors.
+    #[rstest::rstest]
+    #[case::unknown_key(quote!("0 * * * * *", zone = "UTC"), "unknown argument `zone`")]
+    #[case::duplicate_tz(quote!("0 * * * * *", tz = "UTC", tz = "UTC"), "duplicate `tz` argument")]
+    #[case::duplicate_overlap(
+        quote!("0 * * * * *", overlap = "skip", overlap = "skip"),
+        "duplicate `overlap` argument"
+    )]
+    #[case::unknown_overlap(quote!("0 * * * * *", overlap = "queue"), "unknown overlap policy `queue`")]
+    #[case::missing_comma(quote!("0 * * * * *" tz = "UTC"), "expected `,`")]
+    #[case::missing_equals(quote!("0 * * * * *", tz "UTC"), "expected `=`")]
+    #[case::non_literal_value(quote!("0 * * * * *", tz = UTC), "expected string literal")]
+    fn cron_args_reject_malformed_arguments(
+        #[case] attr: proc_macro2::TokenStream,
+        #[case] message: &str,
+    ) {
+        let error = syn::parse2::<CronArgs>(attr)
+            .err()
+            .expect("malformed arguments must fail")
+            .to_string();
+        assert!(error.contains(message), "{error}");
+    }
+
+    /// `process_cron_attribute` stores the parsed options for `vespera!`.
+    #[test]
+    fn process_cron_attribute_stores_overlap_policy() {
+        let item = quote!(
+            pub async fn __test_overlap_skip_job() {}
+        );
+        process_cron_attribute(quote!("0 * * * * *", overlap = "skip"), item).expect("valid");
+        let stored = current_crate_crons()
+            .iter()
+            .find(|entry| entry.fn_name == "__test_overlap_skip_job")
+            .cloned()
+            .expect("registered");
+        assert!(stored.options.skip_overlap);
+        assert_eq!(stored.options.timezone, None);
+    }
+
+    #[cfg(feature = "cron-tz")]
+    #[rstest::rstest]
+    #[case::known("Asia/Seoul", None)]
+    #[case::utc("UTC", None)]
+    #[case::wrong_case("asia/seoul", Some("unknown time zone `asia/seoul`"))]
+    #[case::unknown("Mars/Olympus_Mons", Some("unknown time zone `Mars/Olympus_Mons`"))]
+    fn process_cron_attribute_validates_time_zones(
+        #[case] timezone: &str,
+        #[case] error: Option<&str>,
+    ) {
+        let item = quote!(
+            pub async fn my_job() {}
+        );
+        let result = process_cron_attribute(quote!("0 0 9 * * *", tz = #timezone), item);
+        match error {
+            None => assert!(result.is_ok(), "{timezone}"),
+            Some(message) => {
+                let error = result.expect_err("unknown zone must fail").to_string();
+                assert!(error.contains(message), "{error}");
+            }
+        }
+    }
+
+    #[cfg(not(feature = "cron-tz"))]
+    #[test]
+    fn tz_without_cron_tz_feature_is_a_compile_error() {
+        let item = quote!(
+            pub async fn my_job() {}
+        );
+        let error = process_cron_attribute(quote!("0 0 9 * * *", tz = "Asia/Seoul"), item)
+            .expect_err("tz needs the cron-tz feature")
+            .to_string();
+        assert!(error.contains("requires the `cron-tz` feature"), "{error}");
     }
 }
