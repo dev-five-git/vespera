@@ -10,7 +10,9 @@ name: JNI Bench (nightly)
 # (printed to the job summary + uploaded as artifacts) so a human can spot
 # drift over time. It never fails on a slow number — see
 # libs/vespera-bridge/docs/jni-before-after-2026-06-11.md for the
-# locally-measured baselines.
+# locally-measured baselines. The PR-time regression GATE (paired,
+# interleaved merge-base vs head rounds, which cancel runner drift) is
+# jni-bench-gate.yml.
 
 on:
   schedule:
