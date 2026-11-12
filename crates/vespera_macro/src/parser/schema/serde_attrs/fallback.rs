@@ -6,11 +6,12 @@ pub(super) fn quoted_value_after_key(tokens: &str, key: &str) -> Option<String> 
         if !is_standalone_word_at(tokens, start, key) && !is_qualified_key(tokens, start) {
             continue;
         }
-        let remaining = &tokens[start + key.len()..];
-        let Some(equals_pos) = remaining.find('=') else {
+        // Only the `key = "value"` form: a side list `key(serialize = "a",
+        // deserialize = "b")` must never yield one side's value for both.
+        let Some(value_part) = tokens[start + key.len()..].trim_start().strip_prefix('=') else {
             continue;
         };
-        let value_part = remaining[equals_pos + 1..].trim();
+        let value_part = value_part.trim();
         let Some(quote_start) = value_part.find('"') else {
             continue;
         };

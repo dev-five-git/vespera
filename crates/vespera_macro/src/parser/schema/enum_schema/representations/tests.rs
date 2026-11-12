@@ -812,3 +812,36 @@ fn rename_all_fields_applies_to_struct_variant_fields(#[case] name: &str, #[case
         );
     });
 }
+
+/// Per-variant `#[serde(untagged)]`: serde tries the tagged variants first and
+/// falls back to the untagged ones, written without a tag — `anyOf` of the
+/// tagged schema and each untagged payload.
+#[rstest::rstest]
+#[case::string_enum_with_custom(
+    "string_enum_with_custom",
+    r#"/// A color
+    #[serde(rename_all = "lowercase")] enum Color { Red, Green, #[serde(untagged)] Custom(String) }"#
+)]
+#[case::internal_with_raw(
+    "internal_with_raw",
+    r#"#[serde(tag = "type")] enum Event { Click { x: i32 }, #[serde(untagged)] Raw(String) }"#
+)]
+#[case::only_untagged(
+    "only_untagged",
+    r"enum E { #[serde(untagged)] Num(i32), #[serde(skip)] Gone, #[serde(untagged)] Nothing }"
+)]
+fn per_variant_untagged_snapshot(#[case] name: &str, #[case] src: &str) {
+    let enum_item: syn::ItemEnum = syn::parse_str(src).unwrap();
+    crate::parser::schema::validate_enum_for_schema(&enum_item).unwrap();
+    let schema = parse_enum_to_schema(
+        &enum_item,
+        &HashSet::<String>::new(),
+        &HashMap::<String, String>::new(),
+    );
+    with_settings!({ snapshot_path => "../../snapshots" }, {
+        insta::assert_snapshot!(
+            format!("enum_per_variant_untagged_{name}"),
+            serde_json::to_string_pretty(&schema).unwrap()
+        );
+    });
+}

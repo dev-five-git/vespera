@@ -7,23 +7,44 @@ use vespera_core::{
 };
 
 use super::shared::{
-    convert_to_inline_schema, is_known_type, is_primitive_or_like, named_struct_fields,
-    serde_field_name,
+    convert_to_inline_schema, input_rename_all, is_known_type, is_primitive_or_like,
+    named_struct_fields, serde_field_name,
 };
 use crate::{
     parser::schema::{
-        extract_default, extract_flatten, extract_rename_all, extract_serde_skip_flags,
+        extract_default, extract_doc_comment, extract_flatten, extract_serde_skip_flags,
         parse_struct_to_schema, parse_type_to_schema_ref,
     },
     schema_macro::type_utils::{is_map_type as utils_is_map_type, is_option_type, option_inner},
 };
 
-pub(super) fn parse_query_extractor(
-    param_name: &str,
+/// `Query<Struct>` / `Option<Query<Struct>>` → one parameter per field.
+///
+/// axum 0.8 implements `OptionalFromRequestParts` for `Query`, so an
+/// `Option<Query<T>>` handler accepts a request without (valid) query
+/// parameters: every documented parameter is then optional.
+pub(super) fn parse_query_struct_extractor(
     ty: &Type,
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) -> Option<Vec<Parameter>> {
+    let (query_ty, optional) = option_inner(ty).map_or((ty, false), |inner| (inner, true));
+    let inner_ty = query_inner(query_ty)?;
+    if utils_is_map_type(inner_ty) {
+        return None;
+    }
+    let mut parameters =
+        parse_query_struct_to_parameters(inner_ty, known_schemas, struct_definitions)?;
+    if optional {
+        for parameter in &mut parameters {
+            parameter.required = Some(false);
+        }
+    }
+    Some(parameters)
+}
+
+/// `T` of a `Query<T>` type.
+fn query_inner(ty: &Type) -> Option<&Type> {
     let Type::Path(type_path) = ty else {
         return None;
     };
@@ -34,19 +55,25 @@ pub(super) fn parse_query_extractor(
     let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
         return None;
     };
-    let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() else {
-        return None;
-    };
+    match args.args.first() {
+        Some(syn::GenericArgument::Type(inner_ty)) => Some(inner_ty),
+        _ => None,
+    }
+}
 
-    if utils_is_map_type(inner_ty) {
-        return None;
-    }
-    if let Some(struct_params) =
-        parse_query_struct_to_parameters(inner_ty, known_schemas, struct_definitions)
-    {
-        return Some(struct_params);
-    }
-    if is_primitive_or_like(inner_ty) || !is_known_type(inner_ty, known_schemas, struct_definitions)
+/// `Query<T>` for a non-struct known `T` (struct `T`s are handled by
+/// [`parse_query_struct_extractor`] first): one parameter named after the
+/// binding.
+pub(super) fn parse_query_extractor(
+    param_name: &str,
+    ty: &Type,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
+) -> Option<Vec<Parameter>> {
+    let inner_ty = query_inner(ty)?;
+    if utils_is_map_type(inner_ty)
+        || is_primitive_or_like(inner_ty)
+        || !is_known_type(inner_ty, known_schemas, struct_definitions)
     {
         return None;
     }
@@ -116,7 +143,10 @@ fn collect_query_struct_parameters(
         return;
     }
     visiting.push(struct_name);
-    let rename_all = extract_rename_all(&struct_item.attrs);
+    let rename_all = input_rename_all(&struct_item.attrs);
+    // Container `#[serde(default)]` fills every missing field from
+    // `Default`, so no field of this struct is required in the query string.
+    let container_default = extract_default(&struct_item.attrs).is_some();
 
     for field in &struct_item.fields {
         let skip_flags = extract_serde_skip_flags(&field.attrs);
@@ -161,8 +191,9 @@ fn collect_query_struct_parameters(
         parameters.push(Parameter {
             name: serde_field_name(field, rename_all.as_deref()),
             r#in: ParameterLocation::Query,
-            description: None,
-            required: Some(!(force_optional || is_optional || has_default)),
+            // The field's doc comment documents the parameter.
+            description: extract_doc_comment(&field.attrs),
+            required: Some(!(force_optional || is_optional || has_default || container_default)),
             schema: Some(convert_to_inline_schema(field_schema, is_optional)),
             example: None,
             style: is_array.then_some(ParameterStyle::Form),
@@ -261,6 +292,23 @@ mod tests {
             r"pub struct Q { pub tags: Vec<String>, pub ids: Option<HashSet<u32>>, pub one: u32 }",
         )],
         vec![array_shape("tags", true), array_shape("ids", false), shape("one", true)]
+    )]
+    #[case::container_default_makes_fields_optional(
+        "Q",
+        vec![("Q", r"#[serde(default)] pub struct Q { pub page: u32, pub q: String }")],
+        vec![shape("page", false), shape("q", false)]
+    )]
+    #[case::deserialize_side_names(
+        "Q",
+        vec![(
+            "Q",
+            r#"#[serde(rename_all(serialize = "camelCase", deserialize = "kebab-case"))]
+            pub struct Q {
+                pub page_size: u32,
+                #[serde(rename(serialize = "out", deserialize = "in"))] pub x: u8,
+            }"#,
+        )],
+        vec![shape("page-size", true), shape("in", true)]
     )]
     fn query_struct_shapes(
         #[case] ty: &str,
@@ -551,6 +599,60 @@ mod tests {
         let tuple: Type = syn::parse_quote!((String,));
         assert!(
             parse_query_struct_to_parameters(&tuple, &HashSet::new(), &HashMap::new()).is_none()
+        );
+    }
+
+    /// `Query<Struct>` needs no binding name: destructured and `_` patterns
+    /// document the fields too. `Option<Query<T>>` (axum 0.8
+    /// `OptionalFromRequestParts`) makes every parameter optional. Field doc
+    /// comments become parameter descriptions.
+    #[rstest::rstest]
+    #[case::destructured(
+        "fn h(Query(Pagination { page, per_page }): Query<Pagination>) {}",
+        true
+    )]
+    #[case::wildcard("fn h(_: Query<Pagination>) {}", true)]
+    #[case::inner_wildcard("fn h(Query(_): Query<Pagination>) {}", true)]
+    #[case::optional("fn h(q: Option<Query<Pagination>>) {}", false)]
+    fn query_struct_patterns(#[case] src: &str, #[case] required: bool) {
+        let struct_definitions: HashMap<&str, &str> = HashMap::from([(
+            "Pagination",
+            "pub struct Pagination {
+ /// Page number
+ pub page: u32, pub per_page: u32 }",
+        )]);
+        let func: syn::ItemFn = syn::parse_str(src).unwrap();
+        let arg = func.sig.inputs.first().unwrap();
+        let params = parse_function_parameter(
+            arg,
+            &[],
+            &HashSet::new(),
+            &HashSet::new(),
+            &struct_definitions,
+        )
+        .expect("query parameters");
+        let shapes: Vec<(&str, Option<bool>, Option<&str>)> = params
+            .iter()
+            .map(|p| (p.name.as_str(), p.required, p.description.as_deref()))
+            .collect();
+        assert_eq!(
+            shapes,
+            vec![
+                ("page", Some(required), Some("Page number")),
+                ("per_page", Some(required), None),
+            ]
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::optional_map("fn h(q: Option<Query<HashMap<String, String>>>) {}")]
+    #[case::wildcard_scalar("fn h(_: Query<String>) {}")]
+    fn query_without_struct_fields_yields_nothing(#[case] src: &str) {
+        let func: syn::ItemFn = syn::parse_str(src).unwrap();
+        let arg = func.sig.inputs.first().unwrap();
+        assert!(
+            parse_function_parameter(arg, &[], &HashSet::new(), &HashSet::new(), &HashMap::new())
+                .is_none()
         );
     }
 }

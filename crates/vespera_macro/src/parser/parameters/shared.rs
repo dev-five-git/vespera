@@ -5,7 +5,8 @@ use vespera_core::schema::{Schema, SchemaRef};
 
 use crate::{
     parser::schema::{
-        extract_field_rename, is_primitive_type, rename_field, strip_raw_prefix_owned,
+        SerdeSide, extract_field_rename_for, extract_rename_all_for, is_primitive_type,
+        rename_field, strip_raw_prefix_owned,
     },
     schema_macro::type_utils::is_primitive_like as utils_is_primitive_like,
 };
@@ -83,10 +84,17 @@ pub(super) fn named_struct_fields(
     matches!(struct_item.fields, syn::Fields::Named(_)).then_some(struct_item)
 }
 
-/// The wire name serde uses for a named field: `#[serde(rename)]` wins over
-/// the container's `rename_all`; a raw identifier loses its `r#` prefix.
+/// The container `rename_all` rule serde applies when DESERIALIZING — path
+/// and query parameters are input only.
+pub(super) fn input_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
+    extract_rename_all_for(attrs, SerdeSide::Deserialize)
+}
+
+/// The wire name serde reads a named field from (the deserialize side, since
+/// parameters are input only): `#[serde(rename)]` wins over the container's
+/// `rename_all`; a raw identifier loses its `r#` prefix.
 pub(super) fn serde_field_name(field: &syn::Field, rename_all: Option<&str>) -> String {
-    extract_field_rename(&field.attrs).unwrap_or_else(|| {
+    extract_field_rename_for(&field.attrs, SerdeSide::Deserialize).unwrap_or_else(|| {
         let rust_name = field.ident.as_ref().map_or_else(String::new, |ident| {
             strip_raw_prefix_owned(ident.to_string())
         });

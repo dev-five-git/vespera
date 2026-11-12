@@ -4,9 +4,14 @@
 //! to properly generate `OpenAPI` schemas that respect serialization rules.
 
 /// Extract doc comments from attributes.
-/// Returns concatenated doc comment string or None if no doc comments.
+/// Returns the doc comment text or `None` if there are no doc comments.
+///
+/// rustdoc semantics: `/// text` is stored as `" text"`, so ONE leading space
+/// is removed from every line when all non-blank lines start with one —
+/// deeper indentation (indented code blocks, nested Markdown lists) is kept.
+/// Trailing whitespace and leading / trailing blank lines are dropped.
 pub fn extract_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
-    let mut doc_lines = Vec::new();
+    let mut doc_lines: Vec<String> = Vec::new();
 
     for attr in attrs {
         if attr.path().is_ident("doc")
@@ -16,24 +21,38 @@ pub fn extract_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
                 ..
             }) = &meta_nv.value
         {
-            let line = lit_str.value();
+            let value = lit_str.value();
             // Strip `" / "` or `"/ "` prefixes that can appear when doc-comment
-            // markers leak through TokenStream → string → parse roundtrips,
-            // then trim any remaining whitespace.
-            let trimmed = line
+            // markers leak through TokenStream → string → parse roundtrips.
+            let value = value
                 .strip_prefix(" / ")
-                .or_else(|| line.strip_prefix("/ "))
-                .unwrap_or(&line)
-                .trim();
-            doc_lines.push(trimmed.to_string());
+                .or_else(|| value.strip_prefix("/ "))
+                .map_or_else(|| value.clone(), |rest| format!(" {rest}"));
+            // A `/** ... */` block arrives as ONE multi-line attribute.
+            doc_lines.extend(value.split('\n').map(|line| line.trim_end().to_string()));
         }
     }
 
-    if doc_lines.is_empty() {
-        None
-    } else {
-        Some(doc_lines.join("\n"))
-    }
+    let strip_one = doc_lines
+        .iter()
+        .filter(|line| !line.is_empty())
+        .all(|line| line.starts_with(' '));
+    let lines: Vec<&str> = doc_lines
+        .iter()
+        .map(|line| {
+            if strip_one {
+                line.strip_prefix(' ').unwrap_or(line)
+            } else {
+                line.as_str()
+            }
+        })
+        .collect();
+    let first = lines.iter().position(|line| !line.is_empty())?;
+    let last = lines.iter().rposition(|line| !line.is_empty())?;
+    Some(lines[first..=last].join(
+        "
+",
+    ))
 }
 
 /// Strips the `r#` prefix from raw identifiers, returning an owned `String`.
@@ -163,6 +182,39 @@ mod tests {
         };
         let result = extract_doc_comment(&attrs);
         assert_eq!(result, Some("No leading space".to_string()));
+    }
+
+    /// Only the single space rustdoc inserts after `///` is removed, so
+    /// indented Markdown (code blocks, nested lists) survives; blank edges
+    /// and trailing whitespace are dropped; `/** */` blocks split into lines.
+    #[rstest::rstest]
+    #[case::indented_code(
+        &[" Example:", "", "     let x = 1;", " - item", "   - nested  "],
+        Some("Example:
+
+    let x = 1;
+- item
+  - nested")
+    )]
+    #[case::mixed_indentation_keeps_spaces(&["no space", "  two"], Some("no space
+  two"))]
+    #[case::blank_edges(&["", " body", ""], Some("body"))]
+    #[case::only_blank(&["", "   "], None)]
+    #[case::block_doc(&["
+ Line one
+     code
+"], Some("Line one
+    code"))]
+    #[case::leaked_marker(&[" / Leaked"], Some("Leaked"))]
+    fn doc_comment_keeps_markdown_indentation(
+        #[case] lines: &[&str],
+        #[case] expected: Option<&str>,
+    ) {
+        let attrs: Vec<syn::Attribute> = lines
+            .iter()
+            .map(|line| syn::parse_quote!(#[doc = #line]))
+            .collect();
+        assert_eq!(extract_doc_comment(&attrs).as_deref(), expected);
     }
 
     #[test]

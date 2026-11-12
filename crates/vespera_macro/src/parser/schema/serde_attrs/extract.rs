@@ -2,50 +2,84 @@ use super::fallback::{
     contains_standalone_word, quoted_value_after_key, scan_default_from_raw_tokens,
 };
 
-pub fn extract_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
-    // First check serde attrs (higher priority)
-    for attr in attrs {
-        if attr.path().is_ident("serde") {
-            // Try using parse_nested_meta for robust parsing
-            let mut found_rename_all = None;
-            let parsed = attr.parse_nested_meta(|meta| {
-                if meta
-                    .path
-                    .segments
-                    .last()
-                    .is_some_and(|seg| seg.ident == "rename_all")
-                    && let Ok(value) = meta.value()
-                    && let Ok(syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(s),
-                        ..
-                    })) = value.parse::<syn::Expr>()
-                {
-                    found_rename_all = Some(s.value());
-                }
-                Ok(())
-            });
-            if found_rename_all.is_some() {
-                return found_rename_all;
-            }
+/// Which half of serde a (possibly side-specific) name is read for:
+/// `rename(serialize = "a", deserialize = "b")` / `rename_all(serialize = ..,
+/// deserialize = ..)` name a member differently per direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SerdeSide {
+    /// Output (response bodies, and schemas shared by both directions).
+    Serialize,
+    /// Input only (query / path parameters).
+    Deserialize,
+}
 
-            // Fallback ONLY when structured parsing FAILED: a successful
-            // parse_nested_meta visited every nested meta, so it cannot have
-            // missed a present `rename_all` — skip the throwaway token-string
-            // allocation + scan in that (common) case.  An `Err` means an
-            // unhandled key/value aborted the walk early (e.g.
-            // `skip_serializing_if = "..."` before `rename_all`), which is
-            // exactly when the manual scan is still needed.
-            if parsed.is_err() {
-                let Ok(tokens) = attr.meta.require_list() else {
-                    continue;
-                };
-                let token_str = tokens.tokens.to_string();
-
-                if let Some(value) = quoted_value_after_key(&token_str, "rename_all") {
-                    return Some(value);
-                }
-            }
+impl SerdeSide {
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Serialize => "serialize",
+            Self::Deserialize => "deserialize",
         }
+    }
+}
+
+/// The value of a `key = "x"` / `key(serialize = "a", deserialize = "b")`
+/// serde key for `side`. A side the list does not name yields `None` (serde
+/// then keeps the default name for that side — the other side's value never
+/// leaks in).
+fn sided_value(
+    meta: &syn::meta::ParseNestedMeta<'_>,
+    side: SerdeSide,
+) -> syn::Result<Option<String>> {
+    if meta.input.peek(syn::Token![=]) {
+        return Ok(Some(meta.value()?.parse::<syn::LitStr>()?.value()));
+    }
+    let mut found = None;
+    if meta.input.peek(syn::token::Paren) {
+        meta.parse_nested_meta(|inner| {
+            let value = inner.value()?.parse::<syn::LitStr>()?;
+            if inner.path.is_ident(side.key()) {
+                found = Some(value.value());
+            }
+            Ok(())
+        })?;
+    }
+    Ok(found)
+}
+
+/// First value of the serde key whose last path segment is `key`, for
+/// `side`; the raw-token scan runs only when a `#[serde]` list failed to
+/// parse (see [`quoted_value_after_key`], which never reads a side list).
+fn extract_sided_key(attrs: &[syn::Attribute], key: &str, side: SerdeSide) -> Option<String> {
+    let mut found = None;
+    let parsed = walk_serde_keys(attrs, |meta| {
+        if meta.path.segments.last().is_none_or(|seg| seg.ident != key) {
+            return Ok(false);
+        }
+        if let Some(value) = sided_value(meta, side)? {
+            found.get_or_insert(value);
+        }
+        Ok(true)
+    });
+    if found.is_some() || parsed {
+        return found;
+    }
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("serde"))
+        .filter_map(|attr| attr.meta.require_list().ok())
+        .find_map(|list| quoted_value_after_key(&list.tokens.to_string(), key))
+}
+
+/// Container `rename_all` rule (the serialize side).
+pub fn extract_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
+    extract_rename_all_for(attrs, SerdeSide::Serialize)
+}
+
+/// Container `rename_all` rule for `side`, falling back to
+/// `#[try_from_multipart(rename_all = "...")]`.
+pub fn extract_rename_all_for(attrs: &[syn::Attribute], side: SerdeSide) -> Option<String> {
+    if let Some(rule) = extract_sided_key(attrs, "rename_all", side) {
+        return Some(rule);
     }
 
     // Fallback: check for #[try_from_multipart(rename_all = "...")]
@@ -73,44 +107,18 @@ pub fn extract_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
     None
 }
 
+/// Field / variant `rename` (the serialize side). Schemas are shared by
+/// request and response bodies, so they use the serialized name; an input-only
+/// `rename(deserialize = "..")` leaves it at the default.
 pub fn extract_field_rename(attrs: &[syn::Attribute]) -> Option<String> {
-    // First check serde attrs (higher priority)
-    for attr in attrs {
-        if attr.path().is_ident("serde")
-            && let syn::Meta::List(meta_list) = &attr.meta
-        {
-            // Use parse_nested_meta to parse nested attributes
-            let mut found_rename = None;
-            let parsed = attr.parse_nested_meta(|meta| {
-                if meta
-                    .path
-                    .segments
-                    .last()
-                    .is_some_and(|seg| seg.ident == "rename")
-                    && let Ok(value) = meta.value()
-                    && let Ok(syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(s),
-                        ..
-                    })) = value.parse::<syn::Expr>()
-                {
-                    found_rename = Some(s.value());
-                }
-                Ok(())
-            });
-            if let Some(rename_value) = found_rename {
-                return Some(rename_value);
-            }
+    extract_field_rename_for(attrs, SerdeSide::Serialize)
+}
 
-            // Fallback ONLY when structured parsing FAILED (see extract_rename_all):
-            // a successful walk cannot have missed a present `rename`, so skip the
-            // throwaway token-string allocation + scan in the common case.
-            if parsed.is_err() {
-                let tokens = meta_list.tokens.to_string();
-                if let Some(value) = quoted_value_after_key(&tokens, "rename") {
-                    return Some(value);
-                }
-            }
-        }
+/// Field / variant `rename` for `side`, falling back to
+/// `#[form_data(field_name = "...")]`.
+pub fn extract_field_rename_for(attrs: &[syn::Attribute], side: SerdeSide) -> Option<String> {
+    if let Some(name) = extract_sided_key(attrs, "rename", side) {
+        return Some(name);
     }
 
     // Fallback: check for #[form_data(field_name = "...")]
@@ -266,22 +274,28 @@ pub fn extract_serde_skip_flags(attrs: &[syn::Attribute]) -> SerdeSkipFlags {
 /// Walk every `#[serde(...)]` key, calling `on_key(meta)` for each one and
 /// consuming any `= value` / `(...)` payload the callback left unread (it
 /// returns `false`), so an unrelated key never aborts the walk.
+///
+/// Returns `false` when any `#[serde(...)]` list failed to parse.
 fn walk_serde_keys(
     attrs: &[syn::Attribute],
     mut on_key: impl FnMut(&syn::meta::ParseNestedMeta<'_>) -> syn::Result<bool>,
-) {
+) -> bool {
+    let mut all_parsed = true;
     for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
-        let _ = attr.parse_nested_meta(|meta| {
-            if !on_key(&meta)? {
-                if meta.input.peek(syn::Token![=]) {
-                    meta.value()?.parse::<syn::Expr>()?;
-                } else if meta.input.peek(syn::token::Paren) {
-                    meta.input.parse::<proc_macro2::Group>()?;
+        all_parsed &= attr
+            .parse_nested_meta(|meta| {
+                if !on_key(&meta)? {
+                    if meta.input.peek(syn::Token![=]) {
+                        meta.value()?.parse::<syn::Expr>()?;
+                    } else if meta.input.peek(syn::token::Paren) {
+                        meta.input.parse::<proc_macro2::Group>()?;
+                    }
                 }
-            }
-            Ok(())
-        });
+                Ok(())
+            })
+            .is_ok();
     }
+    all_parsed
 }
 
 /// `#[serde(rename_all_fields = "...")]` on an enum: the `rename_all` rule
@@ -640,6 +654,48 @@ mod tests {
         };
 
         assert_eq!(extract_rename_all(&attrs).as_deref(), Some("camelCase"));
+    }
+
+    /// `rename(serialize = .., deserialize = ..)` names each direction
+    /// separately; a side the list does not name keeps the default, and the
+    /// raw-token fallback never reads a side list for both directions.
+    #[rstest]
+    #[case::plain(r#"#[serde(rename = "both")]"#, Some("both"), Some("both"))]
+    #[case::both_sides(
+        r#"#[serde(rename(serialize = "out", deserialize = "in"))]"#,
+        Some("out"),
+        Some("in")
+    )]
+    #[case::deserialize_only(r#"#[serde(rename(deserialize = "in"))]"#, None, Some("in"))]
+    #[case::serialize_only(r#"#[serde(rename(serialize = "out"), default)]"#, Some("out"), None)]
+    #[case::broken_list_never_mixes(r#"#[serde(@broken, rename(serialize = "out"))]"#, None, None)]
+    #[case::non_literal_side(r"#[serde(rename(serialize = 1))]", None, None)]
+    fn sided_field_rename(
+        #[case] attr_src: &str,
+        #[case] serialize: Option<&str>,
+        #[case] deserialize: Option<&str>,
+    ) {
+        let item: syn::ItemStruct = syn::parse_str(&format!("{attr_src} struct Foo;")).unwrap();
+        assert_eq!(
+            extract_field_rename_for(&item.attrs, SerdeSide::Serialize).as_deref(),
+            serialize
+        );
+        assert_eq!(
+            extract_field_rename_for(&item.attrs, SerdeSide::Deserialize).as_deref(),
+            deserialize
+        );
+    }
+
+    #[test]
+    fn sided_rename_all() {
+        let attrs: Vec<syn::Attribute> = syn::parse_quote! {
+            #[serde(rename_all(serialize = "camelCase", deserialize = "kebab-case"))]
+        };
+        assert_eq!(extract_rename_all(&attrs).as_deref(), Some("camelCase"));
+        assert_eq!(
+            extract_rename_all_for(&attrs, SerdeSide::Deserialize).as_deref(),
+            Some("kebab-case")
+        );
     }
 
     #[test]

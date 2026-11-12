@@ -1,0 +1,37 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests.rs
+expression: "serde_json::to_string_pretty(&schema).unwrap()"
+---
+{
+  "anyOf": [
+    {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "Click"
+              ]
+            },
+            "x": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          "required": [
+            "type",
+            "x"
+          ]
+        }
+      ],
+      "discriminator": {
+        "propertyName": "type"
+      }
+    },
+    {
+      "type": "string"
+    }
+  ]
+}

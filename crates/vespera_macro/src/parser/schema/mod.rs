@@ -40,12 +40,14 @@ mod type_schema;
 pub use enum_schema::{
     internally_tagged_non_object_message, parse_enum_to_schema, validate_enum_for_schema,
 };
+pub use generics::substitute_type;
 pub use serde_attrs::{
-    extract_default, extract_doc_comment, extract_field_rename, extract_flatten,
-    extract_rename_all, extract_serde_skip_flags, extract_skip, rename_field,
-    strip_raw_prefix_owned,
+    SerdeSide, extract_default, extract_doc_comment, extract_field_rename,
+    extract_field_rename_for, extract_flatten, extract_rename_all, extract_rename_all_for,
+    extract_serde_skip_flags, extract_skip, rename_field, strip_raw_prefix_owned,
 };
 pub use struct_schema::parse_struct_to_schema;
 // Re-export for internal use within the parser module. `parse_type_to_schema_ref`
 // is reached directly via the `type_schema` submodule path where needed.
+pub use type_schema::generic_instances;
 pub use type_schema::{is_builtin_openapi_type, is_primitive_type, parse_type_to_schema_ref};

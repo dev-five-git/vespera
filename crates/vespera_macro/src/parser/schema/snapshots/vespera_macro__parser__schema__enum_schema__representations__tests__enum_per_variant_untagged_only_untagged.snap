@@ -1,0 +1,15 @@
+---
+source: crates/vespera_macro/src/parser/schema/enum_schema/representations/tests.rs
+expression: "serde_json::to_string_pretty(&schema).unwrap()"
+---
+{
+  "anyOf": [
+    {
+      "type": "integer",
+      "format": "int32"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}

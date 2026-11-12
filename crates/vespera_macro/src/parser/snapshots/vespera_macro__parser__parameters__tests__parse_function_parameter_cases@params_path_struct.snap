@@ -7,7 +7,9 @@ expression: parameters
     Parameter {
         name: "userId",
         in: Path,
-        description: None,
+        description: Some(
+            "The user",
+        ),
         required: Some(
             true,
         ),
@@ -53,6 +55,7 @@ expression: parameters
                     nullable: None,
                     read_only: None,
                     write_only: None,
+                    deprecated: None,
                     external_docs: None,
                     defs: None,
                     dynamic_anchor: None,
@@ -113,6 +116,7 @@ expression: parameters
                     nullable: None,
                     read_only: None,
                     write_only: None,
+                    deprecated: None,
                     external_docs: None,
                     defs: None,
                     dynamic_anchor: None,
@@ -171,6 +175,7 @@ expression: parameters
                     nullable: None,
                     read_only: None,
                     write_only: None,
+                    deprecated: None,
                     external_docs: None,
                     defs: None,
                     dynamic_anchor: None,

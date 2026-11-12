@@ -23,8 +23,17 @@ pub fn parse_function_parameter(
     match arg {
         FnArg::Receiver(_) => None,
         FnArg::Typed(PatType { pat, ty, .. }) => {
-            let param_name = extract_param_name(pat.as_ref())?;
             let ty = unwrap_validated_type(ty.as_ref());
+            // `Query<Struct>` documents the struct's fields, so it never needs
+            // the binding name: `Query(Pagination { page, per_page })`, `_`
+            // and `Query(_)` patterns all resolve here.
+            if let Some(parameters) =
+                query::parse_query_struct_extractor(ty, known_schemas, struct_definitions)
+            {
+                return Some(parameters);
+            }
+            // The name is only needed for the scalar / header fallbacks below.
+            let param_name = extract_param_name(pat.as_ref())?;
 
             if let Some(parameters) = header::parse_option_typed_header(&param_name, ty) {
                 return Some(parameters);
@@ -99,6 +108,7 @@ mod tests {
             struct_definitions.insert(
                 "PathIds",
                 r#"#[serde(rename_all = "camelCase")] pub struct PathIds {
+                    /// The user
                     pub user_id: u64,
                     #[serde(rename = "post_id")] pub post: Uuid,
                 }"#,
