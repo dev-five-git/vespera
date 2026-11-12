@@ -243,6 +243,20 @@ pub struct UpdateProfile {
 }
 ```
 
-Use one approach per type: runtime `#[schema(...)]` constraints and `#[derive(garde::Validate)]` on the same struct both implement `garde::Validate` and fail to compile (`E0119`). `#[garde(...)]` rules are not reflected in the OpenAPI document.
+Use one approach per type: runtime `#[schema(...)]` constraints and `#[derive(garde::Validate)]` on the same struct both implement `garde::Validate` and fail to compile (`E0119`).
+
+`#[derive(Schema)]` documents every `#[garde(...)]` rule that has an exact JSON Schema equivalent, on object properties and on `Query<T>` / `Path<T>` struct parameters, so the spec states what the `422` enforces:
+
+| `#[garde(...)]` rule | OpenAPI |
+|---|---|
+| `length(chars, min, max)` on a string | `minLength` / `maxLength` |
+| `length(min, max)` on a string in the default `simple` (byte) mode, or `bytes` / `graphemes` / `utf16` | only `min = 1` becomes `minLength: 1`. JSON Schema counts code points, so other bounds are skipped |
+| `length(min, max)` on a `Vec` / set / map | `minItems` / `maxItems`, `minProperties` / `maxProperties` |
+| `range(min, max)` / `range(equal)` with numeric literals | `minimum` / `maximum` |
+| `email` / `url` / `ipv4` / `ipv6` / `ip` | `format: email` / `uri` / `ipv4` / `ipv6`, `ip` as an `anyOf` of both |
+| `pattern("...")` / `prefix("x")` / `suffix("x")` / `contains("x")` / `ascii` | `pattern` (literals escaped, extra patterns in `allOf`) |
+| `inner(...)` on `Vec<T>` / `[T; N]` (on `Option<T>`: the value) | the rules on `items` |
+
+Rules on an `Option<T>` field constrain the non-null value. A keyword set by the field's `#[schema(...)]` wins, and bounds implied by the type (`u32` gives `minimum: 0`) are only tightened. These rules are not documented because they have no exact equivalent: `alphanumeric` (Unicode classes), `required` (the same component documents responses), `credit_card`, `phone_number`, `matches`, `custom`, `dive`, `if`, non-literal arguments (consts, static regexes), and byte / grapheme / UTF-16 length bounds above 1. Use `length(chars, ...)` when the bound should appear in the spec.
 
 See the [garde documentation](https://docs.rs/garde) for the full list of available constraints.

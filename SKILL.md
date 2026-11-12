@@ -109,7 +109,16 @@ pub async fn create(
 - Derive `garde::Validate` and annotate fields with `#[garde(...)]` rules
   (`length`, `email`, `range`, `pattern`, custom, …).
 - Vespera's `#[derive(Schema)]` continues to drive the OpenAPI spec — the two
-  derives compose cleanly on the same struct.
+  derives compose cleanly on the same struct, and `#[derive(Schema)]`
+  documents every `#[garde(...)]` rule with an exact JSON Schema equivalent:
+  `length(chars, ..)` → `minLength`/`maxLength` (default byte-mode string
+  `length` only maps `min = 1`), `length` on `Vec`/maps → `minItems`/
+  `minProperties`…, `range` → `minimum`/`maximum`, `email`/`url`/`ipv4`/
+  `ipv6`/`ip` → `format` (`ip` = `anyOf`), `pattern`/`prefix`/`suffix`/
+  `contains`/`ascii` → `pattern` (+`allOf`), `inner(..)` → `items`. Explicit
+  `#[schema(...)]` keywords win. Not documented: `alphanumeric`, `required`,
+  `custom`, `matches`, `credit_card`, `phone_number`, `dive`, `if`, consts.
+  `Query<T>` / `Path<T>` struct parameters carry the same constraints.
 - Or skip garde entirely: a runtime `#[schema(...)]` rule (`min_length`,
   `format = "email"`, …) makes `#[derive(Schema)]` generate the impl. A
   rule-less struct or an enum has none, so `Validated<Json<T>>` with it fails at

@@ -12,8 +12,9 @@ use super::shared::{
 };
 use crate::{
     parser::schema::{
-        extract_default, extract_doc_comment, extract_flatten, extract_serde_skip_flags,
-        parse_struct_to_schema, parse_type_to_schema_ref,
+        apply_field_rules, extract_default, extract_doc_comment, extract_flatten,
+        extract_serde_skip_flags, parse_struct_to_schema, parse_type_to_schema_ref,
+        schema_attrs::extract_schema_constraints,
     },
     schema_macro::type_utils::{is_map_type as utils_is_map_type, is_option_type, option_inner},
 };
@@ -183,6 +184,12 @@ fn collect_query_struct_parameters(
                 parse_struct_to_schema(&nested_struct_item, known_schemas, struct_definitions);
             field_schema = SchemaRef::Inline(Box::new(nested_schema));
         }
+        // `#[schema(..)]` / `#[garde(..)]` rules a `Validated<Query<T>>` enforces.
+        apply_field_rules(
+            &mut field_schema,
+            field,
+            &extract_schema_constraints(&field.attrs),
+        );
 
         let is_array = matches!(
             &field_schema,
@@ -653,6 +660,27 @@ mod tests {
         assert!(
             parse_function_parameter(arg, &[], &HashSet::new(), &HashSet::new(), &HashMap::new())
                 .is_none()
+        );
+    }
+
+    /// `#[schema(..)]` and `#[garde(..)]` rules a `Validated<Query<T>>`
+    /// enforces are documented on each query parameter's schema.
+    #[test]
+    fn query_struct_parameters_document_validation_rules() {
+        let struct_definitions: HashMap<&str, &str> = std::iter::once((
+            "Search",
+            r"pub struct Search {
+                #[schema(min_length = 2)] pub q: String,
+                #[garde(range(min = 1, max = 100))] pub limit: Option<u32>,
+            }",
+        ))
+        .collect();
+        let ty: Type = syn::parse_str("Search").unwrap();
+        let params = parse_query_struct_to_parameters(&ty, &HashSet::new(), &struct_definitions)
+            .expect("query parameters");
+        insta::assert_snapshot!(
+            "query_struct_parameters_validation_rules",
+            serde_json::to_string_pretty(&params).unwrap()
         );
     }
 }

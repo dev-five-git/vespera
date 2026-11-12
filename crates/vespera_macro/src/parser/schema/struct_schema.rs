@@ -13,6 +13,7 @@ use syn::Fields;
 use vespera_core::schema::{AdditionalProperties, Schema, SchemaRef, SchemaType};
 
 use super::{
+    garde_rules::{apply_garde_rules, extract_garde_rules},
     schema_attrs::{SchemaConstraints, extract_schema_constraints},
     serde_attrs::{
         SerdeSide, extract_default, extract_deny_unknown_fields, extract_doc_comment,
@@ -313,10 +314,7 @@ pub(super) fn collect_named_fields(
             schema_ref = SchemaRef::Inline(schema);
         }
 
-        // Field-level `#[schema(min_length=..., pattern=..., ...)]` constraints.
-        if !constraints.is_empty() {
-            apply_constraints_to_schema_ref(&mut schema_ref, &constraints);
-        }
+        apply_field_rules(&mut schema_ref, field, &constraints);
 
         // Required is determined by nullability (Option<T>) and, in the
         // response view, by whether the field can be omitted from serialized
@@ -385,6 +383,20 @@ fn without_required(
             .collect()
     });
     SchemaRef::Inline(Box::new(schema))
+}
+
+/// Document a field's validation rules on its schema: the `#[garde(...)]`
+/// rules a `garde::Validate` derive enforces (see [`super::garde_rules`]),
+/// then the field-level `#[schema(min_length=..., pattern=..., ...)]`
+/// constraints `c` (explicit — they win). Shared by object properties and
+/// query / path struct parameters.
+pub fn apply_field_rules(schema_ref: &mut SchemaRef, field: &syn::Field, c: &SchemaConstraints) {
+    if !c.is_any() {
+        apply_garde_rules(schema_ref, &field.ty, &extract_garde_rules(&field.attrs), c);
+    }
+    if !c.is_empty() {
+        apply_constraints_to_schema_ref(schema_ref, c);
+    }
 }
 
 /// Merge field-level `#[schema(...)]` constraints into the field's
