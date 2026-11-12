@@ -507,3 +507,49 @@ fn shapeless_types_fall_back_to_object(#[case] ty_src: &str) {
     };
     assert_eq!(schema.schema_type, Some(SchemaType::Object), "{ty_src}");
 }
+
+// ========== String-serialized std::net / std::path / url types ==========
+
+/// serde writes every one of these as a JSON string; the IP families and
+/// `Url` carry their registered OpenAPI formats.
+#[rstest::rstest]
+#[case::ipv4("ipv4", "Ipv4Addr")]
+#[case::ipv6("ipv6", "std::net::Ipv6Addr")]
+#[case::ip_addr("ip_addr", "IpAddr")]
+#[case::socket_addr("socket_addr", "std::net::SocketAddr")]
+#[case::socket_addr_v4("socket_addr_v4", "SocketAddrV4")]
+#[case::socket_addr_v6("socket_addr_v6", "SocketAddrV6")]
+#[case::path_buf("path_buf", "std::path::PathBuf")]
+#[case::url("url", "url::Url")]
+#[case::option_url("option_url", "Option<Url>")]
+#[case::vec_ip("vec_ip", "Vec<IpAddr>")]
+fn string_serialized_std_types(#[case] name: &str, #[case] ty_src: &str) {
+    let ty: Type = syn::parse_str(ty_src).unwrap();
+    let last = match &ty {
+        Type::Path(type_path) => type_path.path.segments.last().unwrap().ident.to_string(),
+        _ => unreachable!("every case is a path type"),
+    };
+    assert!(is_builtin_openapi_type(&last));
+    let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
+    let json = serde_json::to_string(&schema_ref).unwrap();
+    insta::assert_snapshot!(
+        format!("string_serialized_std_type_{name}"),
+        format!("{ty_src} => {json}")
+    );
+}
+
+/// A user `Schema` type that happens to share a std/url name (`Url`,
+/// `IpAddr`, …) keeps its own `$ref` instead of the string mapping.
+#[rstest::rstest]
+#[case("Url")]
+#[case("IpAddr")]
+#[case("PathBuf")]
+fn user_schema_named_like_std_type_keeps_ref(#[case] ident: &str) {
+    let known: HashSet<String> = HashSet::from([ident.to_string()]);
+    let ty: Type = syn::parse_str(ident).unwrap();
+    let schema_ref = parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions());
+    let SchemaRef::Ref(reference) = schema_ref else {
+        panic!("expected $ref for a known `{ident}` schema");
+    };
+    assert_eq!(reference.ref_path, format!("#/components/schemas/{ident}"));
+}

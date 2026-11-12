@@ -1,0 +1,7 @@
+---
+source: crates/vespera_macro/src/route_impl/tests_validated.rs
+expression: "prettyplease::unparse(&file)"
+---
+pub async fn generic<T>(Validated(Json(body)): Validated<Json<T>>) -> String {
+    String::new()
+}

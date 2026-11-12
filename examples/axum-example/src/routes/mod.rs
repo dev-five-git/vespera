@@ -18,6 +18,7 @@ pub mod form;
 pub mod generic;
 pub mod health;
 pub mod memos;
+pub mod network;
 pub mod path;
 pub mod shapes;
 pub mod typed_form;
