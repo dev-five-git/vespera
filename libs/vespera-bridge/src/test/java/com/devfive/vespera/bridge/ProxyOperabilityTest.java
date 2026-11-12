@@ -227,7 +227,7 @@ class ProxyOperabilityTest {
 
         assertEquals(404, response.getStatus());
         assertEquals("req-42", response.getHeader("X-Request-Id"));
-        assertTrue(response.getContentAsString().contains("admin"));
+        assertEquals(VesperaProxyController.UNKNOWN_APP_MSG, response.getContentAsString());
         assertEquals(1, observer.events.size(), "a failing observer does not stop the others");
         DispatchEvent event = observer.events.get(0);
         assertEquals(AppNameResolver.DEFAULT_APP, event.app());

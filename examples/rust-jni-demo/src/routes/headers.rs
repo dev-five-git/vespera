@@ -2,9 +2,12 @@
 //! reach Rust (the app-selection header must not), and the raw-byte
 //! (Latin-1 contract) round trip of non-ASCII header values.
 
+use std::net::SocketAddr;
+
 use vespera::axum::{
-    Json,
-    http::{HeaderMap, HeaderValue, header},
+    Extension, Json,
+    extract::ConnectInfo,
+    http::{HeaderMap, HeaderValue, header, uri::Scheme},
     response::{IntoResponse, Response},
 };
 
@@ -33,4 +36,16 @@ pub async fn raw(headers: HeaderMap) -> Response {
     let disposition =
         HeaderValue::from_bytes(&disposition).unwrap_or(HeaderValue::from_static("attachment"));
     ([(header::CONTENT_DISPOSITION, disposition)], name).into_response()
+}
+
+/// The client address and scheme the Java proxy forwarded on the wire
+/// (`remote_addr` / `scheme`), as `"<scheme> <ip:port>"`.
+#[allow(clippy::unused_async)]
+#[vespera::route(get, path = "/client", tags = ["headers"])]
+pub async fn client(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    scheme: Option<Extension<Scheme>>,
+) -> String {
+    let scheme = scheme.map_or_else(|| "none".to_owned(), |Extension(s)| s.to_string());
+    format!("{scheme} {addr}")
 }

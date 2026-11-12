@@ -124,7 +124,8 @@ class HeaderAppNameResolverTest {
         assertNull(controller.proxy(selecting("admin"), response));
         assertEquals(HttpStatus.NOT_FOUND.value(), response.getStatus());
         assertEquals("text/plain;charset=utf-8", response.getContentType().replace(" ", ""));
-        assertTrue(response.getContentAsString().contains("admin"), response.getContentAsString());
+        // The client-controlled app name is never echoed.
+        assertEquals(VesperaProxyController.UNKNOWN_APP_MSG, response.getContentAsString());
     }
 
     @Test

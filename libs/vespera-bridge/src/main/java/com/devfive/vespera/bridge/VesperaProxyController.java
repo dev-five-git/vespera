@@ -81,6 +81,9 @@ public class VesperaProxyController {
     private final String requestIdHeaderLower;
     private final List<DispatchObserver> observers;
 
+    /** Body of the proxy's own {@code 404} for an app outside {@code exposed-apps}. */
+    static final String UNKNOWN_APP_MSG = "vespera app is not exposed by this proxy";
+
     /** SLF4J MDC key holding the request id while a request is dispatched. */
     public static final String MDC_REQUEST_ID = "requestId";
 
@@ -346,7 +349,9 @@ public class VesperaProxyController {
         try {
             return appResolver.resolveAppName(request);
         } catch (UnknownAppException unknown) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, unknown.getMessage());
+            // Fixed body: the app name is client-controlled, so the 404 neither
+            // echoes it nor tells exposed and unexposed-but-registered apps apart.
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, UNKNOWN_APP_MSG);
         }
     }
 
