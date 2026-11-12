@@ -1,0 +1,22 @@
+---
+source: crates/vespera_macro/src/router_codegen/generator/tests.rs
+expression: "prettyplease::unparse(&file)"
+---
+fn create_app() {
+    {
+        static __VESPERA_CRON_ONCE: ::std::sync::Once = ::std::sync::Once::new();
+        vespera::cron::start_once(
+            &__VESPERA_CRON_ONCE,
+            [
+                vespera::cron::CronJob::new(
+                    "0 */5 * * * *",
+                    || ::std::boxed::Box::pin(crate::tasks::cleanup()),
+                ),
+                vespera::cron::CronJob::new(
+                    "1/10 * * * * *",
+                    || ::std::boxed::Box::pin(crate::cron::health::heartbeat()),
+                ),
+            ],
+        );
+    }
+}

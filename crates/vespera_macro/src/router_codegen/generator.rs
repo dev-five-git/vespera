@@ -39,7 +39,7 @@ fn crate_path_to(module_path: &str, function_name: &str) -> syn::Path {
     }
 }
 
-/// Generate cron scheduler spawn code from collected cron metadata.
+/// Generate the once-per-process cron scheduler start from collected cron metadata.
 fn generate_cron_scheduler_code(cron_jobs: &[CronMetadata]) -> proc_macro2::TokenStream {
     if cron_jobs.is_empty() {
         return quote!();
@@ -53,8 +53,14 @@ fn generate_cron_scheduler_code(cron_jobs: &[CronMetadata]) -> proc_macro2::Toke
         }
     });
 
+    // One guard per `vespera!` invocation: re-building the router (tests,
+    // `jni_app!`, repeated `create_app()` calls) never stacks a second set of
+    // schedulers, and `start_once` copes with "no Tokio runtime yet".
     quote! {
-        vespera::cron::start([#(#jobs),*]);
+        {
+            static __VESPERA_CRON_ONCE: ::std::sync::Once = ::std::sync::Once::new();
+            vespera::cron::start_once(&__VESPERA_CRON_ONCE, [#(#jobs),*]);
+        }
     }
 }
 
