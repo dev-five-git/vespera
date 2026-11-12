@@ -24,6 +24,7 @@ Also provides in-process dispatch (`vespera_inprocess` crate) and JNI integratio
 | **Binary wire format (JNI)** | `vespera_inprocess` | `[u32 BE len | UTF-8 JSON header | raw body]` — multipart / PDFs / images travel as raw bytes; **`422` validation errors hoisted** into the wire header as `"validation_errors": [...]` so Java decoders never special-case error shapes |
 | **Multi-app routing (JNI/FFI)** | `vespera::jni_apps! { "_default" => app, "admin" => admin_app }` | Wire header carries optional `"app"` field; Java side picks per request via `X-Vespera-App` header (configurable via `AppNameResolver`) |
 | **Zero-config Spring autoconfigure** | `libs/vespera-bridge/.../VesperaBridgeAutoConfiguration` | `VesperaProxyController` + `AppNameResolver` + `DispatchModeResolver` beans auto-registered; replace any of them via `@ConditionalOnMissingBean` |
+| **Programmatic Java client** | `libs/vespera-bridge/.../VesperaClient` | `VesperaClient.create().get("/users/42").send()` → `VesperaResponse` (status / headers / raw body / hoisted `422` errors) in-process, no HTTP; SYNC / ASYNC / streamed-upload paths; autoconfigured bean independent of `controller-enabled` |
 | **Cron jobs** | `#[vespera::cron("...")]` | Auto-discovered like routes (`CRON_STORAGE` + a module-tree scan fallback in `vespera_impl/cron_discovery.rs` for modules expanded after `vespera!`); started once per `vespera!` invocation via `vespera::cron::start_once` — on the current Tokio runtime; in a JVM-loaded JNI library (`JNI_OnLoad`) on the shared JNI runtime via `vespera_jni::on_shared_runtime` (honours `configureRuntime`, stops on `shutdown0`; `VesperaBridge.init()` starts the runtime when jobs wait); otherwise a dedicated `vespera-cron` thread (plain `#[test]`); jobs sleep until the wall clock reaches the occurrence; croner 4, shared parser in `vespera_core::cron`. **UTC by default**; `tz = "Asia/Seoul"` needs the opt-in `cron-tz` feature (chrono-tz; name checked at compile time, `tz` without the feature is a compile error); `overlap = "allow"` (default) / `"skip"`; every run is supervised (panics logged via `eprintln!`, schedule continues); `cron::shutdown()` / `shutdown_and_wait(timeout)` stop scheduling process-wide and for good, and `serve_with_graceful_shutdown` calls both (10 s grace) |
 
 ## STRUCTURE
@@ -118,6 +119,9 @@ vespera/
 | `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaDirectBufferPool.java` | ~558 | Per-thread direct `ByteBuffer` pool, adaptive retention, overflow-retry policy behind `dispatchDirectPooled` |
 | `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/HeaderPolicy.java` | ~392 | Hop-by-hop / proxy-owned header filtering for request and response forwarding |
 | `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaBridgeAutoConfiguration.java` | ~235 | Spring Boot autoconfigure: controller + `AppNameResolver` + `DispatchModeResolver` beans, all `@ConditionalOnMissingBean` |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaClient.java` | ~215 | Programmatic in-process client facade (`create()` / `forApp(name)` / `get`/`post`/...): no HTTP, no proxy; package-private `Transport` seam (native impl checks `isInitialized`; unit tests fake it) |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaRequest.java` | ~445 | Client request builder: percent-encoded query, lower-cased headers, raw json/text/form/bytes/`InputStream` bodies, app, `remote_addr`/`scheme`; `send()` SYNC (`ParkingDispatch`), `sendAsync()` ASYNC, `InputStream` body → `dispatchFullStreaming`; encodes via `VesperaWireCodec` |
+| `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaResponse.java` | ~180 | Client response: status, headers (case-insensitive), body bytes/string (content-type charset), hoisted `validationErrors()`, `panicked()`; never parses domain JSON. Transport failures → `VesperaClientException` (statuses are responses) |
 | `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/VesperaBridgeProperties.java` | ~185 | `vespera.bridge.*` configuration properties backing the autoconfigured defaults |
 | `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/SmartDispatchModeResolver.java` | ~161 | Autoconfigured default `DispatchModeResolver` choosing DIRECT / SYNC / streaming per request |
 | `libs/vespera-bridge/src/main/java/com/devfive/vespera/bridge/WireHeaderStringSupport.java` | ~114 | Shared Java helpers for wire-header UTF-8 strings and JSON escaping |
@@ -412,6 +416,8 @@ props only.
 | Concern | Location |
 |---|---|
 | Macro integration tests | `crates/vespera_macro/tests/` (+ `insta` snapshots) |
+| Macro compile-fail diagnostics | `crates/vespera_macro/tests/ui/` + `crates/vespera/tests/ui/` (trybuild, `trybuild_diagnostics.rs`; regenerate `.stderr` with `TRYBUILD=overwrite`, then review) |
+| Wire parser fuzzing | `fuzz/` (cargo-fuzz, own workspace: `wire_dispatch`, differential `wire_header_parse` vs the serde twin); Java: `WireHeaderReaderFuzzTest` (seeded) |
 | Validated/422 contract | `crates/vespera/tests/validated_extractor.rs`, `crates/vespera/tests/jni_validation.rs` | Envelope built via `#[derive(Serialize)]` structs (not `serde_json::json!`); exact bytes locked by `insta::assert_snapshot!` in `validated_extractor.rs` |
 | Core unit tests | `crates/vespera_core/src/**` inline `#[cfg(test)]` |
 | JNI end-to-end | `examples/rust-jni-demo` (Rust + Java + Gradle) |
@@ -445,7 +451,7 @@ props only.
 - **No direct axum dep in examples**: Use `vespera::axum` re-export
 - **No direct vespera_jni/vespera_inprocess dep**: Use `vespera` features
 - **Java package**: `com.devfive.vespera.bridge` (fixed for JNI symbol stability)
-- **Java build**: Gradle (Kotlin DSL), published to Maven Central (`kr.devfive:vespera-bridge`, `kr.devfive:vespera-bridge-gradle-plugin`) via changepacks → `./gradlew publishToMavenCentral` (vanniktech maven-publish + GPG in-memory signing)
+- **Java build**: Gradle (Kotlin DSL), published to Maven Central (`kr.devfive:vespera-bridge`, `kr.devfive:vespera-bridge-gradle-plugin`) via changepacks → `./gradlew publishToMavenCentral` (vanniktech maven-publish + GPG in-memory signing); both apply `org.cyclonedx.bom` (SBOM, see CI notes)
 - **One version for every package**: the five `vespera*` crates, `vespera-bridge` and the Gradle plugin always share a version. List **all seven** packages in every `.changepacks/changepack_log_*.json` with the **same** level (0.x: breaking = `Minor`); `bun scripts/check-version-alignment.ts` (CI lint job) fails otherwise.
 
 ## ANTI-PATTERNS (THIS PROJECT)
@@ -485,13 +491,15 @@ java -jar demo-app/build/libs/demo-app-0.1.0.jar
 # Check generated OpenAPI
 cat examples/axum-example/openapi.json
 
-# Java side (both suites the jni-e2e CI job runs)
+# Java side (the suites the jni-e2e CI job runs)
 cd libs/vespera-bridge && ./gradlew test          # bridge unit suite
+cd libs/vespera-bridge-gradle-plugin && ./gradlew test  # Gradle plugin suite
 cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 
 # CI: jni-e2e job (JDK 17 on ubuntu/windows/macos + ubuntu-24.04-arm +
 # macos-15-intel; JDK 21/25 on ubuntu) runs the vespera-bridge
-# unit suite AND the demo-app E2E tests (incl. StreamingClosureStressTest).
+# unit suite AND the demo-app E2E tests (incl. StreamingClosureStressTest);
+# the JDK 17 legs also run the vespera-bridge-gradle-plugin test suite.
 # It is also the coverage for `crates/vespera_jni`, which tarpaulin excludes
 # (`#![cfg(not(tarpaulin_include))]`) because its symbols need a live JVM.
 # See .github/workflows/CI.yml
@@ -503,12 +511,29 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 #   msrv     cargo check --all-features on Rust 1.88 (`rust-version` in the root
 #            Cargo.toml) for the 5 published crates — examples need newer Rust
 #   deny     cargo deny check (deny.toml: advisories, licenses, bans, sources)
+#   sbom     scripts/sbom.sh: CycloneDX SBOMs of all 7 packages (5 crates via a
+#            hash-pinned cargo-cyclonedx; both Java libs via org.cyclonedx.bom
+#            `cyclonedxDirectBom`), uploaded as the `sbom` workflow artifact
 #   test-os  cargo test --workspace on windows-latest + macos-latest
 #   semver   (PRs only, not a release gate) cargo-semver-checks per published
 #            crate; release type is read from .changepacks/changepack_log_*.json,
 #            so an intentional break must be declared as a Minor (0.x) / Major bump
+#   fuzz-build (not a release gate) `cargo fuzz build` of fuzz/ on pinned nightly
+# Fuzz workflow (.github/workflows/fuzz.yml, weekly + workflow_dispatch, never a
+# gate): runs every fuzz/ target for a bounded time (default 600 s each) and
+# uploads crash reproducers. Dependabot (.github/dependabot.yml): weekly grouped
+# minor/patch PRs for cargo, the three Gradle builds, bun and github-actions
+# (dtolnay/rust-toolchain + changepacks/action are branch-pinned → ignored).
 # Third-party actions are pinned to commit SHAs; workflows default to
-# `permissions: contents: read`.
+# `permissions: contents: read`. Only the release job adds `id-token: write` +
+# `attestations: write`: after changepacks publishes, scripts/release-artifacts.sh
+# collects the published .crate files (sha256 checked against crates.io) + JARs
+# and regenerates the SBOMs from the released commit in a temp worktree; then
+# actions/attest-build-provenance (all files) + one actions/attest SBOM
+# attestation per package, SBOMs attached to the GitHub releases (best effort).
+# vespera-bridge also publishes its SBOM to Maven Central (classifier
+# `cyclonedx`); the Gradle plugin's is NOT on its publication (the Plugin Portal
+# rejects JSON artifacts). User-facing verification: SECURITY.md.
 cargo deny check                                   # local equivalent of `deny`
 cargo +1.88 check --all-features -p vespera -p vespera_core -p vespera_macro \
   -p vespera_inprocess -p vespera_jni              # local equivalent of `msrv`

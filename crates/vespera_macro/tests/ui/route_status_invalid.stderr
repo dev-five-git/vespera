@@ -1,0 +1,17 @@
+error: #[route] `status` must be a 2xx success status code (200-299).
+ --> tests/ui/route_status_invalid.rs:5:24
+  |
+5 | #[route(post, status = 404)]
+  |                        ^^^
+
+error: #[route] `error_status` entries must be integer status codes, e.g. `error_status = [400, 404]`.
+ --> tests/ui/route_status_invalid.rs:8:30
+  |
+8 | #[route(get, error_status = ["404"])]
+  |                              ^^^^^
+
+error: #[route] `error_status` code must be in the u16 range (0-65535).
+  --> tests/ui/route_status_invalid.rs:11:30
+   |
+11 | #[route(get, error_status = [70000])]
+   |                              ^^^^^
