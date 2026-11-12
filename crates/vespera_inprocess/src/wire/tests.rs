@@ -495,12 +495,15 @@ fn hand_serialize_matches_serde_serialize() {
     headers.insert("content-length", HeaderValue::from_static("42"));
     headers.insert("x-quote", HeaderValue::from_bytes(b"a\"b").unwrap());
     headers.insert("x-backslash", HeaderValue::from_bytes(b"a\\b").unwrap());
-    // Valid UTF-8 obs-text passes through verbatim (no `/` escaping).
+    // obs-text bytes render under the Latin-1 contract on BOTH paths: the
+    // serde twin shares `header_latin1::header_value_latin1`, so this is a
+    // deliberate divergence from plain `serde_json` (which used to render
+    // `""`) that the twins still agree on byte-for-byte.
     headers.insert(
         "x-utf8",
         HeaderValue::from_bytes("ré sumé/path".as_bytes()).unwrap(),
     );
-    // Invalid UTF-8 value -> rendered as "" by both paths.
+    // Invalid UTF-8 value -> one Latin-1 char per byte on both paths.
     headers.insert("x-binary", HeaderValue::from_bytes(&[0xFF, 0xFE]).unwrap());
     let cookie = HeaderName::from_static("set-cookie");
     headers.append(cookie.clone(), HeaderValue::from_static("a=1"));
@@ -582,6 +585,49 @@ fn hand_serialize_matches_serde_serialize() {
             );
         }
     }
+}
+
+/// Header values with `obs-text` bytes used to render as `""` (silently
+/// dropping e.g. a UTF-8 `Content-Disposition` filename).  Under the Latin-1
+/// contract every byte becomes the `char` with the same code point, so the
+/// Java side's ISO-8859-1 `addHeader` restores the exact raw bytes.  ASCII
+/// values stay byte-identical.
+#[test]
+fn non_ascii_header_values_render_as_latin1_chars() {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::CONTENT_DISPOSITION,
+        http::HeaderValue::from_bytes("attachment; filename=\"résumé.pdf\"".as_bytes()).unwrap(),
+    );
+    headers.append("x-raw", http::HeaderValue::from_bytes(b"\xe9\x80").unwrap());
+    headers.append("x-raw", http::HeaderValue::from_static("ascii"));
+    let mut out = Vec::new();
+    assert!(write_wire_header_into(
+        &mut out,
+        200,
+        &headers,
+        &ResponseMetadata::current(),
+        None,
+    ));
+    let parsed: serde_json::Value = serde_json::from_slice(&out[4..]).unwrap();
+    let disposition = parsed["headers"]["content-disposition"].as_str().unwrap();
+    assert_eq!(
+        disposition,
+        "attachment; filename=\"r\u{c3}\u{a9}sum\u{c3}\u{a9}.pdf\""
+    );
+    let latin1: Vec<u8> = disposition
+        .chars()
+        .map(|c| u8::try_from(c).unwrap())
+        .collect();
+    assert_eq!(latin1, "attachment; filename=\"résumé.pdf\"".as_bytes());
+    assert_eq!(
+        parsed["headers"]["x-raw"],
+        serde_json::json!(["\u{e9}\u{80}", "ascii"])
+    );
+
+    let mut slice = vec![0u8; 512];
+    let n = write_wire_header_into_slice(&mut slice, 200, &headers, &ResponseMetadata::current());
+    assert_eq!(&slice[4..n], &out[4..]);
 }
 
 /// INP-01 regression: the 422 validation-error hoist is genuinely

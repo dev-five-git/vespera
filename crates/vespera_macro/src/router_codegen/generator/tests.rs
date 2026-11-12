@@ -794,3 +794,29 @@ fn test_generate_router_code_with_cron_no_merge() {
         "Should reference cron function, got: {code}"
     );
 }
+
+/// Cron jobs start through a per-invocation `static Once` guard, so building
+/// the router repeatedly never stacks schedulers.
+#[test]
+fn cron_scheduler_code_starts_jobs_once_per_invocation() {
+    let cron_jobs = vec![
+        CronMetadata {
+            expression: "0 */5 * * * *".to_string(),
+            function_name: "cleanup".to_string(),
+            module_path: "tasks".to_string(),
+            file_path: "src/tasks.rs".to_string(),
+        },
+        CronMetadata {
+            expression: "1/10 * * * * *".to_string(),
+            function_name: "heartbeat".to_string(),
+            module_path: "cron::health".to_string(),
+            file_path: "src/cron/health.rs".to_string(),
+        },
+    ];
+    let body = generate_cron_scheduler_code(&cron_jobs);
+    let file: syn::File = syn::parse2(quote!(fn create_app() { #body })).expect("valid fn");
+    insta::assert_snapshot!(
+        "cron_scheduler_code_starts_jobs_once_per_invocation",
+        prettyplease::unparse(&file)
+    );
+}

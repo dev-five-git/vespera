@@ -341,6 +341,18 @@ pub fn get_parsed_file(path: &Path) -> Option<syn::File> {
     })
 }
 
+/// Every `.rs` file under `dir` (sorted), served from the epoch-validated
+/// directory cache shared with the struct lookups.
+pub fn list_rs_files(dir: &Path) -> Arc<[PathBuf]> {
+    FILE_CACHE.with(|cache| ensure_file_list(&mut cache.borrow_mut(), dir))
+}
+
+/// File content through the fingerprint-validated content cache (`None` when
+/// the file cannot be read).
+pub fn get_file_content(path: &Path) -> Option<Arc<String>> {
+    FILE_CACHE.with(|cache| get_file_content_inner(&mut cache.borrow_mut(), path))
+}
+
 /// **Single call site for `syn::parse_file`.**
 ///
 /// Reads file content from the mtime-validated content cache (avoids redundant

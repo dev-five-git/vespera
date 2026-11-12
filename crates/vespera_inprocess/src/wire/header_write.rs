@@ -14,8 +14,11 @@
 //! The string escaper reproduces exactly the set `serde_json` (and the
 //! Java `VesperaBridge.writeJsonString`) emit: only `"`, `\`, and the
 //! C0 controls (`\b \t \n \f \r`, else `\u00XX` in lowercase hex) are
-//! escaped; `/` and 0x7F pass through, and every byte `>= 0x80` is
-//! copied through verbatim (raw UTF-8).
+//! escaped; `/` and 0x7F pass through, and every byte `>= 0x80` of a UTF-8
+//! string is copied through verbatim (raw UTF-8).  Header **values** are the
+//! one deliberate exception: they are byte strings rendered under the
+//! Latin-1 contract (each byte `>= 0x80` becomes the `char` `U+0080..=U+00FF`,
+//! see [`crate::header_latin1`]) — identical to `serde_json` for ASCII.
 
 use crate::envelope::ResponseMetadata;
 
@@ -166,13 +169,39 @@ const METADATA_SEGMENT_CURRENT: &[u8] = concat!(
 /// the byte-for-byte analogue of `serde_json`'s `format_escaped_str`.
 /// Runs of non-escaped bytes are copied in bulk; only the escape set
 /// above is rewritten.
+#[inline]
 fn write_json_string<S: JsonSink>(sink: &mut S, s: &str) {
+    write_json_bytes::<S, false>(sink, s.as_bytes());
+}
+
+/// Append a header **value** as a quoted JSON string under the wire's
+/// Latin-1 contract (see [`crate::header_latin1`]): every value byte
+/// becomes the `char` with the same code point, so a byte `>= 0x80` is
+/// emitted as its two-byte UTF-8 encoding (`U+0080..=U+00FF`) instead of
+/// the whole value being dropped.  Visible-ASCII values — the only ones
+/// `to_str()` accepted before — produce byte-identical output.
+#[inline]
+fn write_header_value_string<S: JsonSink>(sink: &mut S, value: &http::HeaderValue) {
+    write_json_bytes::<S, true>(sink, value.as_bytes());
+}
+
+/// Shared escaper behind [`write_json_string`] (`LATIN1 = false`: input is
+/// UTF-8, bytes `>= 0x80` pass through verbatim) and
+/// [`write_header_value_string`] (`LATIN1 = true`: each byte `>= 0x80` is
+/// one Latin-1 `char`, re-encoded as two UTF-8 bytes).
+fn write_json_bytes<S: JsonSink, const LATIN1: bool>(sink: &mut S, bytes: &[u8]) {
     sink.put(b"\"");
-    let bytes = s.as_bytes();
     let mut start = 0;
     for (i, &byte) in bytes.iter().enumerate() {
         let escape = ESCAPE[byte as usize];
         if escape == XX {
+            if LATIN1 && byte >= 0x80 {
+                if start < i {
+                    sink.put(&bytes[start..i]);
+                }
+                sink.put(&[0xC0 | (byte >> 6), 0x80 | (byte & 0x3F)]);
+                start = i + 1;
+            }
             continue;
         }
         if start < i {
@@ -239,7 +268,9 @@ fn write_status_code<S: JsonSink>(sink: &mut S, status: u16) {
 ///   `sort_unstable` equals the prior `BTreeMap` ordering);
 /// - single-valued headers render as a JSON string, repeated names as a
 ///   JSON array in insertion order;
-/// - non-UTF-8 values render as `""` (same `to_str().unwrap_or("")`).
+/// - values render through the Latin-1 contract
+///   ([`write_header_value_string`]): visible ASCII verbatim, each
+///   `obs-text` byte `>= 0x80` as the `char` with the same code point.
 fn write_headers<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap) {
     // `STACK_CAP` is `use`d from the parent `wire` module so the bench
     // A/B twin and this production path stay locked to the same cap.
@@ -351,7 +382,7 @@ fn write_header_entry<S: JsonSink>(
     write_header_name_json_string(sink, name);
     sink.put(b":");
     match value {
-        Some(v) => write_json_string(sink, header_value_as_str(v)),
+        Some(v) => write_header_value_string(sink, v),
         None => write_header_value(sink, headers, name),
     }
 }
@@ -366,16 +397,6 @@ fn write_header_name_json_string<S: JsonSink>(sink: &mut S, name: &str) {
     sink.put(b"\"");
     sink.put(name.as_bytes());
     sink.put(b"\"");
-}
-
-/// Decode a `HeaderValue` for JSON serialization.  Non-UTF-8 values render as
-/// the empty string `""` — the same discipline the module doc calls out at the
-/// top of this file (`"non-UTF-8 values render as `""` (same
-/// to_str().unwrap_or(""))"`).  `#[inline]` keeps the call-site codegen
-/// byte-identical to the previous inline `.to_str().unwrap_or("")` sites.
-#[inline]
-fn header_value_as_str(v: &http::HeaderValue) -> &str {
-    v.to_str().unwrap_or("")
 }
 
 /// Write the JSON value for header `name`: a scalar string for a single value,
@@ -395,16 +416,16 @@ fn write_header_value<S: JsonSink>(sink: &mut S, headers: &http::HeaderMap, name
     };
     match values.next() {
         // Single value: emit the scalar string.
-        None => write_json_string(sink, header_value_as_str(first)),
+        None => write_header_value_string(sink, first),
         // Multiple values: emit a JSON array.
         Some(second) => {
             sink.put(b"[");
-            write_json_string(sink, header_value_as_str(first));
+            write_header_value_string(sink, first);
             sink.put(b",");
-            write_json_string(sink, header_value_as_str(second));
+            write_header_value_string(sink, second);
             for value in values {
                 sink.put(b",");
-                write_json_string(sink, header_value_as_str(value));
+                write_header_value_string(sink, value);
             }
             sink.put(b"]");
         }

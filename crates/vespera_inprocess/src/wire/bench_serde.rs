@@ -157,8 +157,9 @@ pub(super) struct WireResponseHeader<'a, H: Serialize> {
 /// - single-valued headers render as a JSON string, repeated names as
 ///   a JSON array in insertion order (the untagged `HeaderValue`
 ///   shape)
-/// - non-UTF-8 header values render as `""` (same `unwrap_or("")`
-///   behaviour as the old owned conversion)
+/// - header values render through the Latin-1 contract
+///   ([`crate::header_latin1::header_value_latin1`]) — the same mapping the
+///   hand-rolled writer applies, so the A/B twins stay byte-identical
 pub(super) struct WireHeaders<'a>(pub(super) &'a http::HeaderMap);
 
 impl Serialize for WireHeaders<'_> {
@@ -194,7 +195,7 @@ impl Serialize for WireHeaders<'_> {
                 .next()
                 .expect("HeaderMap::keys yields only present names");
             if values.next().is_none() {
-                map.serialize_entry(name, first.to_str().unwrap_or(""))?;
+                map.serialize_entry(name, &crate::header_latin1::header_value_latin1(first))?;
             } else {
                 map.serialize_entry(name, &WireHeaderValues(self.0, name))?;
             }
@@ -212,7 +213,7 @@ impl Serialize for WireHeaderValues<'_> {
             self.0
                 .get_all(self.1)
                 .iter()
-                .map(|v| v.to_str().unwrap_or("")),
+                .map(crate::header_latin1::header_value_latin1),
         )
     }
 }

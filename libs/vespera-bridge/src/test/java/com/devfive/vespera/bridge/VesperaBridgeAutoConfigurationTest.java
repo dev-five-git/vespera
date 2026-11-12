@@ -44,6 +44,21 @@ class VesperaBridgeAutoConfigurationTest {
                     .withConfiguration(AutoConfigurations.of(VesperaBridgeAutoConfiguration.class));
 
     @Test
+    void exposedAppsPropertyRestrictsTheDefaultAppResolver() {
+        runner.run(ctx -> assertFalse(
+                ((HeaderAppNameResolver) ctx.getBean(AppNameResolver.class)).isRestricted()));
+        runner.withPropertyValues("vespera.bridge.exposed-apps=public,reports")
+                .run(ctx -> {
+                    HeaderAppNameResolver resolver =
+                            (HeaderAppNameResolver) ctx.getBean(AppNameResolver.class);
+                    assertTrue(resolver.isRestricted());
+                    MockHttpServletRequest req = new MockHttpServletRequest("GET", "/users");
+                    req.addHeader("X-Vespera-App", "admin");
+                    assertThrows(UnknownAppException.class, () -> resolver.resolveAppName(req));
+                });
+    }
+
+    @Test
     void defaultResolverIsSmart() {
         runner.run(
                 ctx ->

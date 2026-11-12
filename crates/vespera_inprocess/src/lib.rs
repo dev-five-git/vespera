@@ -72,6 +72,7 @@ mod bounded;
 mod config;
 mod dispatch;
 mod envelope;
+mod header_latin1;
 mod internal;
 mod registry;
 mod streaming;

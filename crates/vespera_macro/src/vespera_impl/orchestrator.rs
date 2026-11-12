@@ -21,6 +21,7 @@ use super::{
         compute_export_config_hash, compute_macro_dev_fingerprint, compute_schema_hash,
         get_cache_path, get_export_cache_path, hash_str, read_cache, sidecar_matches, write_cache,
     },
+    cron_discovery::discover_cron_jobs,
     openapi_io::{
         ensure_openapi_files_from_cache, generate_and_write_openapi, load_validated_sidecar_specs,
         write_pretty_sidecar, write_spec_for_embedding,
@@ -202,58 +203,18 @@ pub fn process_vespera_macro(
         (metadata, spec_tokens)
     };
 
-    // --- Cron job discovery from CRON_STORAGE ---
-    // #[cron("...")] attribute already registers metadata at expansion time.
-    // No folder scanning needed — just read the storage.
-    let cron_jobs: Vec<crate::metadata::CronMetadata> = {
-        // Per-crate snapshot (see `cron_impl::current_crate_crons`): in a
-        // shared rust-analyzer proc-macro server this never picks up another
-        // crate's `#[cron]` jobs.
+    // --- Cron job discovery: CRON_STORAGE + module-tree scan fallback ---
+    // `#[cron]` attributes expanded before this macro registered themselves;
+    // jobs in modules rustc expands later are recovered by walking the crate's
+    // module tree (see `cron_discovery`). Per-crate snapshot, so a shared
+    // rust-analyzer proc-macro server never picks up another crate's jobs.
+    let cron_jobs = {
         let storage = crate::cron_impl::current_crate_crons();
-        // Fast path: most projects declare no `#[vespera::cron]` jobs, so the
-        // final `collect()` would just produce `Vec::new()` anyway. Skip the
-        // `fs::canonicalize` syscall on `<manifest>/src` and the
-        // `HashMap`/`PathBuf` allocations entirely when there is nothing to
-        // discover. Mirrors the early-return pattern in
-        // `process_default_functions`.
-        if storage.is_empty() {
-            Vec::new()
-        } else {
-            let src_dir = std::env::var("CARGO_MANIFEST_DIR")
-                .map(|d| {
-                    let p = std::path::PathBuf::from(d).join("src");
-                    // Canonicalize for reliable prefix stripping
-                    let canonical = p.canonicalize().unwrap_or(p);
-                    crate::file_utils::normalize_display_path(canonical)
-                })
-                .unwrap_or_default();
-            let mut canonical_paths = HashMap::new();
-            storage
-                .iter()
-                .map(|s| {
-                    // Derive module path from file_path relative to src/
-                    let module_path = s
-                        .file_path
-                        .as_ref()
-                        .map(|fp| {
-                            let normalized = canonicalized_cron_path(fp, &mut canonical_paths);
-                            let relative = normalized
-                                .strip_prefix(&src_dir)
-                                .map_or(&*normalized, |rest| rest.trim_start_matches('/'));
-                            // Convert path to module path: strip .rs, replace / with ::, strip mod
-                            // Replace hyphens with underscores (Rust module convention)
-                            cron_module_path(relative)
-                        })
-                        .unwrap_or_default();
-                    crate::metadata::CronMetadata {
-                        expression: s.expression.clone(),
-                        function_name: s.fn_name.clone(),
-                        module_path,
-                        file_path: s.file_path.clone().unwrap_or_default(),
-                    }
-                })
-                .collect()
-        }
+        let src_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .ok()
+            .map(|dir| PathBuf::from(dir).join("src"));
+        let call_site = Span::call_site().local_file();
+        discover_cron_jobs(&storage, src_dir.as_deref(), call_site.as_deref())
     };
 
     let result = Ok(generate_router_code(
@@ -275,34 +236,6 @@ pub fn process_vespera_macro(
     }
 
     result
-}
-
-fn canonicalized_cron_path(fp: &str, cache: &mut HashMap<PathBuf, String>) -> String {
-    let path = PathBuf::from(fp);
-    cache
-        .entry(path)
-        .or_insert_with_key(|path| {
-            path.canonicalize()
-                .map_or_else(|_| fp.to_string(), |path| path.display().to_string())
-                .replace('\\', "/")
-        })
-        .clone()
-}
-
-fn cron_module_path(relative: &str) -> String {
-    let stem = relative.strip_suffix(".rs").unwrap_or(relative);
-    let mut module_path = String::with_capacity(stem.len());
-    for ch in stem.chars() {
-        match ch {
-            '/' => module_path.push_str("::"),
-            '-' => module_path.push('_'),
-            _ => module_path.push(ch),
-        }
-    }
-    if module_path.ends_with("::mod") {
-        module_path.truncate(module_path.len() - "::mod".len());
-    }
-    module_path
 }
 
 fn namespace_and_serialize_export_openapi(

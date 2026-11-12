@@ -22,6 +22,7 @@ class VesperaBridgePropertiesTest {
                 properties.getMaxBufferedResponseBytes());
         assertEquals(0, properties.getAsyncPoolSize());
         assertFalse(properties.isClearThreadlocalsAfterRequest());
+        assertTrue(properties.getExposedApps().isEmpty());
     }
 
     @Test
@@ -36,6 +37,7 @@ class VesperaBridgePropertiesTest {
         properties.setMaxBufferedResponseBytes(5678L);
         properties.setAsyncPoolSize(7);
         properties.setClearThreadlocalsAfterRequest(true);
+        properties.setExposedApps(java.util.List.of("public"));
 
         assertEquals("X-Target-App", properties.getAppHeader());
         assertFalse(properties.isControllerEnabled());
@@ -45,5 +47,8 @@ class VesperaBridgePropertiesTest {
         assertEquals(5678L, properties.getMaxBufferedResponseBytes());
         assertEquals(7, properties.getAsyncPoolSize());
         assertTrue(properties.isClearThreadlocalsAfterRequest());
+        assertEquals(java.util.List.of("public"), properties.getExposedApps());
+        properties.setExposedApps(null);
+        assertTrue(properties.getExposedApps().isEmpty());
     }
 }

@@ -74,7 +74,7 @@ Out of the box the autoconfigure module wires up:
 
 | Concern | Default | Override |
 |---|---|---|
-| **App selection** | Read `X-Vespera-App` request header; absent → default app | Property `vespera.bridge.app-header`, or custom [`AppNameResolver`](src/main/java/com/devfive/vespera/bridge/AppNameResolver.java) bean |
+| **App selection** | Read `X-Vespera-App` request header; absent → default app. **Client-controlled — restrict it with `vespera.bridge.exposed-apps`** (see [Multi-app routing → Security](#security-the-app-header-is-client-controlled)) | Properties `vespera.bridge.app-header` / `vespera.bridge.exposed-apps`, or custom [`AppNameResolver`](src/main/java/com/devfive/vespera/bridge/AppNameResolver.java) bean |
 | **Dispatch mode** | [`SmartDispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/SmartDispatchModeResolver.java) since 0.2.0 — picks per request: [`DIRECT`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) (pooled direct buffers, no JNI array copies) for small/bodyless safe requests (GET/HEAD/OPTIONS, Content-Length absent or ≤ 1 MiB) ~2.2 µs; `SYNC` (heap-buffered) for small unsafe requests (POST/PUT/PATCH/DELETE ≤ 256 KiB) ~3.2 µs; `BIDIRECTIONAL_STREAMING` for the rest ~24.1 µs | Property `vespera.bridge.dispatch-mode: bidirectional-streaming` (opt out, restore pre-0.2.0 default), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
 | **URL pattern** | Single `@RequestMapping("/**")` catch-all — every vespera router URL exactly mirrors the published OpenAPI path | Set `vespera.bridge.controller-enabled: false` and supply your own controller |
 | **Body handling** | Servlet `InputStream` straight through to Rust (no buffering) for streaming modes; full read for sync/async | (encoded by the chosen `DispatchMode`) |
@@ -113,6 +113,7 @@ All defaults are individually replaceable.  Start with properties for minor twea
 vespera:
   bridge:
     app-header: X-My-App        # change the header that selects the app
+    exposed-apps: [admin]       # apps the (client-controlled) app header may select
     controller-enabled: true     # set false to disable our controller
     direct-retry-on-overflow: true # set false to avoid DIRECT retry double-execution
     max-buffered-request-bytes: 67108864 # default 64 MiB; 0 = unlimited
@@ -276,6 +277,25 @@ curl -H "X-Vespera-App: public" http://localhost:8080/info
 
 Each app's URLs are independent — the same `/users` path can mean different things in `admin` vs `public` apps.  Unknown app names return `404`; invalid app names (special characters, > 64 bytes) return `400`.
 
+### Security: the app header is client-controlled
+
+> **Set `vespera.bridge.exposed-apps`.** `X-Vespera-App` comes from the client.
+> Without an allowlist **any client can route any URL into any registered app**:
+> `GET /users` with `X-Vespera-App: admin` reaches the `admin` app's `/users`,
+> sailing past a Spring Security rule that only protects `/admin/**` (path-based
+> rules never see which app the request lands in).
+
+```yaml
+vespera:
+  bridge:
+    exposed-apps: [public]   # only these (+ the default app) are selectable
+```
+
+- With `exposed-apps` set, any other app name is answered with **`404` by the proxy itself — the request is never dispatched to Rust**. The default app (`_default`, or no header) is always selectable.
+- Without it the old behaviour is kept, but the first request that selects a non-default app logs a one-time `WARN`.
+- Apps that must not be reachable from the public internet should not be selectable at all: either leave them out of `exposed-apps` and reach them through a separate deployment, or let a **trusted gateway** set the header (and strip any client-supplied copy), or replace the resolver with one that derives the app from something the client cannot forge (path, host, authenticated principal) — a custom `AppNameResolver` bean may throw `UnknownAppException` to produce the same pre-dispatch `404`.
+- The selection header is **not forwarded** to Rust (`AppNameResolver.selectionHeaderName()`), so handlers never see — or trust — it.
+
 See [`examples/rust-jni-demo/`](../../examples/rust-jni-demo/) for a complete working example with two registered apps, including an admin dashboard route reachable only via the `admin` app.
 
 ## Binary wire format
@@ -296,6 +316,7 @@ bytes 4+N..   : raw body bytes (UTF-8 text or binary —
 - `"v":1` is the protocol version. Mismatched versions return a `400` wire response with an explanatory plain-text body.
 - Multi-valued response headers (e.g. `set-cookie`) render as JSON arrays so semantics are preserved — they're never comma-joined.
 - All failure paths (malformed wire, Rust panic, no app registered) return a valid length-prefixed response with status `4xx` / `5xx`, so the decoder never has to special-case errors.
+- **Header values use a Latin-1 mapping.** Servlet containers expose header bytes as ISO-8859-1 strings and write response header chars back the same way, so each byte travels as the JSON char `U+0000–U+00FF`. Rust maps a request value whose chars are all `≤ U+00FF` back to those bytes (a value with a wider char keeps its UTF-8 encoding), and renders every response value byte as one char — so a UTF-8 `Content-Disposition: attachment; filename="résumé.pdf"` reaches the client byte-for-byte (previously the whole value was dropped). ASCII values are unchanged.
 
 ## Dispatch modes
 
@@ -713,9 +734,10 @@ A Rust handler returning a binary response (e.g. `image/png`) flows the same way
 
 `@RequestMapping("/**")` catches every HTTP request, regardless of method or content type, and:
 
-1. Collects all incoming headers (lowercased keys).
+1. Collects all incoming headers (lowercased keys), minus hop-by-hop headers and the app-selection header.
 2. Asks the configured `DispatchModeResolver` which mode serves this request (default since 0.2.0: `SmartDispatchModeResolver` — DIRECT for small/bodyless safe requests, SYNC for small unsafe requests, BIDIRECTIONAL_STREAMING for everything else; opt out with `vespera.bridge.dispatch-mode=bidirectional-streaming`).
 3. For `SYNC` / `ASYNC` / `STREAMING` / `DIRECT` modes the body is read into `byte[]` first (bodyless requests — explicit `Content-Length: 0`, e.g. the small safe GETs the SmartDispatch resolver routes through DIRECT — skip the read and reuse a shared empty array), then encoded via `VesperaBridge.encodeRequest(...)` and dispatched through the matching native method.
+   - **Form bodies consumed by Spring.** Spring's `FormContentFilter` (PUT/PATCH/DELETE) and any earlier `getParameter()` call (e.g. Spring Security's `CsrfFilter`, POST) drain an `application/x-www-form-urlencoded` body into request parameters before the proxy runs. When the stream comes back empty/short, the proxy rebuilds the body from `getParameterMap()` minus the query-string parameters (re-encoded in the charset it was decoded with) and forwards the matching `Content-Length`, so a Rust `Form<T>` extractor still sees every field. Form requests a resolver routes to `BIDIRECTIONAL_STREAMING` are served as `STREAMING` (request buffered, response streamed) for the same reason. `FormContentFilter` itself is left enabled for the host app. Values are grouped per name (`a=1&b=2&a=3` arrives as `a=1&a=3&b=2`).
 4. Sync/async responses are parsed straight from the wire response via the allocation-lean `WireHeaderReader` (status + headers) and returned as `ResponseEntity<byte[]>` for **every** `Content-Type` — the body is sliced once from the wire tail; the `Content-Type` header is carried verbatim, so no text/binary branching is needed.  Streaming and DIRECT modes write status/headers and body straight to the servlet response.
 5. `BIDIRECTIONAL_STREAMING` hands Rust a gated wrapper of the servlet `InputStream`. A handler that returns without draining the request body can leave the Rust request producer parked in `read()` (it is detached after a bounded join); once the native call returns, the gate makes every further read return `-1` without touching the servlet stream, and if a read was still in flight the proxy sets `Connection: close` (when the response is not committed yet; otherwise best effort — the container sees that read finish on its own) so a keep-alive connection is never reused at an unknown stream position.
 
@@ -745,6 +767,9 @@ See [`examples/rust-jni-demo`](../../examples/rust-jni-demo/) for a complete Rus
 7. **`dispatchStreaming` / `dispatchFullStreaming` throw `IOException`** when the response fails after body bytes were written (previously a synthetic 500 header after a partial body), and `dispatchStreaming` now hoists 422 `validation_errors`.
 8. **The new `configure*` methods return `boolean`** (`false` + a logged warning when the native side already fixed the value). `configureStreaming(int, int)` keeps its 0.5.x `void` signature for binary compatibility (a not-applied value is logged).
 9. **The bridge JAR and the native library must come from the same release.** The `configure*0` JNI hooks now return `boolean`; a new JAR paired with an older native library would bind them to `void` symbols. Rebuild the cdylib against the matching `vespera` crate version whenever you upgrade `vespera-bridge`.
+10. **App selection is restrictable and the app header is no longer forwarded.** New `vespera.bridge.exposed-apps`; the `X-Vespera-App` header (or whatever `app-header` names) is stripped before dispatch — Rust handlers no longer see it (each app is its own router, so a handler already knows which app serves it). See [Security](#security-the-app-header-is-client-controlled).
+11. **Non-ASCII header values** now cross the wire under the Latin-1 mapping (see [Binary wire format](#binary-wire-format)) instead of being dropped (responses) or double-encoded (requests).
+12. **Consumed form-urlencoded bodies are rebuilt** from the request parameters (see [VesperaProxyController behaviour](#vesperaproxycontroller-behaviour)); a resolver's `BIDIRECTIONAL_STREAMING` choice for a form request becomes `STREAMING`.
 
 ## 0.2.0 breaking changes
 

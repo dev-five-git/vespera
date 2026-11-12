@@ -69,6 +69,8 @@ public class VesperaProxyController {
     private final boolean directRetryOnOverflow;
     private final long maxBufferedRequestBytes;
     private final long maxBufferedResponseBytes;
+    /** Lower-case app-selection header stripped before forwarding, or {@code null}. */
+    private final String appSelectionHeader;
 
     // Adaptive DIRECT-overflow avoidance: routes that overflowed the pooled
     // direct buffer once are streamed up front thereafter, removing the
@@ -126,6 +128,7 @@ public class VesperaProxyController {
         this.directRetryOnOverflow = directRetryOnOverflow;
         this.maxBufferedRequestBytes = Math.max(0, maxBufferedRequestBytes);
         this.maxBufferedResponseBytes = Math.max(0, maxBufferedResponseBytes);
+        this.appSelectionHeader = appResolver.selectionHeaderName();
     }
 
     @RequestMapping(value = "/**", consumes = MediaType.ALL_VALUE)
@@ -133,7 +136,7 @@ public class VesperaProxyController {
                         HttpServletResponse response) throws IOException {
 
         final RequestShape shape = RequestShape.capture(request);
-        final String appName = appResolver.resolveAppName(request);
+        final String appName = resolveAppName(request);
         final Boolean currentThreadIsVirtual;
         final DispatchMode mode;
         if (modeResolver instanceof SmartDispatchModeResolver smartResolver) {
@@ -151,17 +154,16 @@ public class VesperaProxyController {
         // sees exactly the URL published in the generated openapi.json.
         final String path = pathWithinApplication(request);
         final String query = Objects.toString(request.getQueryString(), "");
-        final VesperaBridge.HeaderSource headers = sink -> HeaderPolicy.forEachRequestHeader(request, sink);
-
         // Adaptive DIRECT-overflow avoidance: a route that overflowed the
         // pooled direct buffer before is streamed up front, so it dispatches
         // ONCE instead of paying the DIRECT-overflow-then-stream double
         // dispatch again. `shouldAvoidDirect` is a single volatile read until
         // the first overflow is recorded, so non-overflowing apps pay nothing.
-        final DispatchMode effectiveMode = effectiveMode(
+        final DispatchMode effectiveMode = formSafeMode(effectiveMode(
                 mode,
                 mode == DispatchMode.DIRECT
-                        && directOverflowMemory.shouldAvoidDirect(appName, method, path, query));
+                        && directOverflowMemory.shouldAvoidDirect(appName, method, path, query)),
+                request);
 
         if (log.isDebugEnabled()) {
             log.debug("-> Rust  {} {} app={} mode={}", method, path, appName, effectiveMode);
@@ -172,33 +174,89 @@ public class VesperaProxyController {
         // mode, materialise the body bytes here (replaces Spring's
         // @RequestBody, which we cannot use because it would consume
         // the InputStream and leave the bidirectional path empty).
+        if (effectiveMode == DispatchMode.BIDIRECTIONAL_STREAMING) {
+            dispatchBidirectional(request, response, appName, method, path, query,
+                    requestHeaders(request, appSelectionHeader, null));
+            return null;
+        }
+        // Every other mode materialises the REQUEST body (STREAMING only
+        // streams the response), so all of them honour the same
+        // vespera.bridge.max-buffered-request-bytes cap.
+        final byte[] body = readBody(request, shape, maxBufferedRequestBytes);
+        final VesperaBridge.HeaderSource headers = requestHeaders(
+                request, appSelectionHeader, forwardedContentLength(shape, body));
         switch (effectiveMode) {
             case SYNC:
-                dispatchSync(response, appName, method, path, query, headers,
-                        readBody(request, shape, maxBufferedRequestBytes),
+                dispatchSync(response, appName, method, path, query, headers, body,
                         maxBufferedResponseBytes);
                 return null;
             case ASYNC:
-                return dispatchAsyncFlow(appName, method, path, query, headers,
-                        readBody(request, shape, maxBufferedRequestBytes));
+                return dispatchAsyncFlow(appName, method, path, query, headers, body);
             case STREAMING:
-                // STREAMING materialises the REQUEST body (only the response
-                // streams), so it must honour the same buffered-request cap
-                // as SYNC/ASYNC/DIRECT — otherwise a custom resolver routing
-                // a bodyful request here would bypass
-                // vespera.bridge.max-buffered-request-bytes.
-                dispatchStreaming(response, appName, method, path, query,
-                        headers, readBody(request, shape, maxBufferedRequestBytes));
+                dispatchStreaming(response, appName, method, path, query, headers, body);
                 return null;
             case DIRECT:
-                dispatchDirectMode(response, appName, method, path, query, headers,
-                        readBody(request, shape, maxBufferedRequestBytes), currentThreadIsVirtual);
-                return null;
-            case BIDIRECTIONAL_STREAMING:
             default:
-                dispatchBidirectional(request, response, appName, method, path, query, headers);
+                dispatchDirectMode(response, appName, method, path, query, headers, body,
+                        currentThreadIsVirtual);
                 return null;
         }
+    }
+
+    /**
+     * Resolve the target app; an {@link UnknownAppException} (an app outside
+     * {@code vespera.bridge.exposed-apps}) becomes {@code 404} before anything
+     * is dispatched.
+     */
+    private String resolveAppName(HttpServletRequest request) {
+        try {
+            return appResolver.resolveAppName(request);
+        } catch (UnknownAppException unknown) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, unknown.getMessage());
+        }
+    }
+
+    /**
+     * A form-urlencoded body may already have been consumed into request
+     * parameters by the servlet stack (see {@link FormBodySupport}); the
+     * bidirectional path would forward that drained stream as an empty body,
+     * so such requests buffer the (small) request body and stream only the
+     * response.
+     */
+    static DispatchMode formSafeMode(DispatchMode mode, HttpServletRequest request) {
+        return mode == DispatchMode.BIDIRECTIONAL_STREAMING && FormBodySupport.isFormUrlEncoded(request)
+                ? DispatchMode.STREAMING
+                : mode;
+    }
+
+    /**
+     * The {@code content-length} to forward when the buffered body differs
+     * from the declared length (a consumed form body rebuilt from parameters),
+     * else {@code null} to forward the client's header unchanged.
+     */
+    static String forwardedContentLength(RequestShape shape, byte[] body) {
+        return shape.contentLength >= 0 && body.length != shape.contentLength
+                ? Integer.toString(body.length)
+                : null;
+    }
+
+    /**
+     * Request headers forwarded to Rust: the {@link HeaderPolicy} filter,
+     * minus the app-selection header ({@code excludedHeader}, lower-case, may be
+     * {@code null}), with {@code content-length} replaced when
+     * {@code contentLength} is non-null.
+     */
+    static VesperaBridge.HeaderSource requestHeaders(
+            HttpServletRequest request, String excludedHeader, String contentLength) {
+        if (excludedHeader == null && contentLength == null) {
+            return sink -> HeaderPolicy.forEachRequestHeader(request, sink);
+        }
+        return sink -> HeaderPolicy.forEachRequestHeader(request, (name, value) -> {
+            if (name.equals(excludedHeader)) {
+                return;
+            }
+            sink.put(name, contentLength != null && name.equals("content-length") ? contentLength : value);
+        });
     }
 
     /**
@@ -291,12 +349,13 @@ public class VesperaProxyController {
         if (contentLength > MAX_BUFFERED_BODY) {
             throw payloadTooLarge(contentLength, MAX_BUFFERED_BODY);
         }
-        // Single exit: javac duplicates the resource-close sequence once per
-        // normal return, so keeping exactly one return here keeps the
-        // try-with-resources bytecode in its canonical shape.
+        byte[] body;
         try (InputStream in = request.getInputStream()) {
-            return readBufferedBody(in, contentLength, cap);
+            body = readBufferedBody(in, contentLength, cap);
         }
+        // Spring's FormContentFilter / an earlier getParameter() call may have
+        // consumed a form-urlencoded body into request parameters already.
+        return FormBodySupport.recoverConsumedBody(request, body, contentLength);
     }
 
     static byte[] readBufferedBody(InputStream in, long contentLength, long cap)

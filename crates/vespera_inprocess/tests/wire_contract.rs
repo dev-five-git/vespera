@@ -38,6 +38,25 @@ async fn echo_body(body: axum::body::Bytes) -> axum::body::Bytes {
     body
 }
 
+/// Echo the raw bytes of the request's `x-name` header back as a
+/// `content-disposition` filename AND as the body, so one dispatch locks both
+/// directions of the Latin-1 header contract.
+async fn echo_header_bytes(headers: HeaderMap) -> Response {
+    let raw = headers
+        .get("x-name")
+        .map(|v| v.as_bytes().to_vec())
+        .unwrap_or_default();
+    let mut disposition = b"attachment; filename=\"".to_vec();
+    disposition.extend_from_slice(&raw);
+    disposition.push(b'"');
+    let mut out = HeaderMap::new();
+    out.insert(
+        HeaderName::from_static("content-disposition"),
+        axum::http::HeaderValue::from_bytes(&disposition).unwrap(),
+    );
+    (out, raw).into_response()
+}
+
 fn install_router() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
@@ -45,6 +64,7 @@ fn install_router() {
             Router::new()
                 .route("/contract", get(contract_headers))
                 .route("/users", post(echo_body))
+                .route("/latin1", get(echo_header_bytes))
         });
     });
 }
@@ -251,4 +271,43 @@ fn validation_hoist_wire_bytes_are_locked() {
         header, expected,
         "422 hoisting wire bytes drifted — this is a WIRE FORMAT BREAK"
     );
+}
+
+/// Header VALUES cross the wire under the Latin-1 contract: a servlet hands
+/// Java the raw request bytes `r\xC3\xA9sum\xC3\xA9` as the ISO-8859-1 string
+/// `"rÃ©sumÃ©"`, which Rust maps back to exactly those bytes; on the way out
+/// each response value byte becomes one `char` so Java's `addHeader` (also
+/// ISO-8859-1) restores the raw bytes.  A value with a char above `U+00FF`
+/// keeps its UTF-8 encoding.
+#[test]
+fn non_ascii_header_values_round_trip_raw_bytes() {
+    install_router();
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let cases: [(&str, &[u8]); 2] = [
+        ("r\u{c3}\u{a9}sum\u{c3}\u{a9}.pdf", "résumé.pdf".as_bytes()),
+        ("\u{d55c}.pdf", "한.pdf".as_bytes()),
+    ];
+    for (sent, raw) in cases {
+        let resp = dispatch_from_bytes(
+            encode_wire("GET", "/latin1", HashMap::from([("x-name", sent)]), &[]),
+            &runtime,
+        );
+        let (header, body) = split_wire(&resp);
+        assert_eq!(body, raw, "request header bytes for {sent:?}");
+        let parsed: Value = serde_json::from_str(&header).expect("header JSON");
+        let disposition = parsed["headers"]["content-disposition"]
+            .as_str()
+            .expect("non-ASCII value must not be dropped");
+        let latin1: Vec<u8> = disposition
+            .chars()
+            .map(|c| u8::try_from(c).expect("response chars are Latin-1"))
+            .collect();
+        let mut expected = b"attachment; filename=\"".to_vec();
+        expected.extend_from_slice(raw);
+        expected.push(b'"');
+        assert_eq!(latin1, expected, "response header bytes for {sent:?}");
+    }
 }

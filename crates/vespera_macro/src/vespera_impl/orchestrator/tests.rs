@@ -542,13 +542,6 @@ fn test_process_vespera_macro_cache_hit() {
     };
 }
 
-#[rstest::rstest]
-#[case::slashes_and_hyphens("admin-tools/daily-job.rs", "admin_tools::daily_job")]
-#[case::module_file("admin-tools/mod.rs", "admin_tools")]
-fn cron_module_path_normalizes_rust_module_syntax(#[case] input: &str, #[case] expected: &str) {
-    assert_eq!(cron_module_path(input), expected);
-}
-
 #[test]
 #[serial_test::serial]
 fn process_export_app_reuses_fresh_cache_and_sidecar() {
