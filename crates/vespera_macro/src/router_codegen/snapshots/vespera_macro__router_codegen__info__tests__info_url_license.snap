@@ -1,0 +1,12 @@
+---
+source: crates/vespera_macro/src/router_codegen/info.rs
+expression: info_json(pairs)
+---
+{
+  "title": "",
+  "version": "",
+  "license": {
+    "name": "Proprietary",
+    "url": "https://example.com/license"
+  }
+}

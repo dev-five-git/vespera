@@ -48,8 +48,28 @@ fn generate_cron_scheduler_code(cron_jobs: &[CronMetadata]) -> proc_macro2::Toke
     let jobs = cron_jobs.iter().map(|cron| {
         let expression = &cron.expression;
         let call_path = crate_path_to(&cron.module_path, &cron.function_name);
+        // `module::function` names the job in scheduler logs (panics, skips).
+        let name = if cron.module_path.is_empty() {
+            cron.function_name.clone()
+        } else {
+            format!("{}::{}", cron.module_path, cron.function_name)
+        };
+        // Non-default options only: a plain UTC / overlap-allowed job keeps
+        // the pre-option expansion.
+        let timezone = cron
+            .options
+            .timezone
+            .as_ref()
+            .map(|tz| quote!(.with_timezone(#tz)));
+        let overlap = cron
+            .options
+            .skip_overlap
+            .then(|| quote!(.with_overlap(vespera::cron::Overlap::Skip)));
         quote! {
             vespera::cron::CronJob::new(#expression, || ::std::boxed::Box::pin(#call_path()))
+                .with_name(#name)
+                #timezone
+                #overlap
         }
     });
 

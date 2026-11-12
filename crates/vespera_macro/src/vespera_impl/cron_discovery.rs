@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use syn::ext::IdentExt;
 
-use crate::cron_impl::{StoredCronInfo, validate_cron_fn};
+use crate::cron_impl::{CronArgs, StoredCronInfo, validate_cron_fn};
 use crate::metadata::CronMetadata;
 use crate::schema_macro::file_cache;
 
@@ -91,6 +91,7 @@ fn stored_jobs(
                 function_name: s.fn_name.clone(),
                 module_path,
                 file_path: s.file_path.clone().unwrap_or_default(),
+                options: s.options.clone(),
             }
         })
         .collect()
@@ -188,12 +189,13 @@ impl ModuleTree {
                     }
                 }
                 syn::Item::Fn(function) if collect_jobs => {
-                    if let Some(expression) = cron_expression(function) {
+                    if let Some(args) = cron_args(function) {
                         self.jobs.push(CronMetadata {
-                            expression,
+                            expression: args.expression.value(),
                             function_name: function.sig.ident.unraw().to_string(),
                             module_path: module_path.to_owned(),
                             file_path: file.to_owned(),
+                            options: args.options(),
                         });
                     }
                 }
@@ -203,9 +205,10 @@ impl ModuleTree {
     }
 }
 
-/// The expression of a schedulable `#[cron("…")]` function, or `None` when
-/// the function is not one (the attribute macro reports those itself).
-fn cron_expression(function: &syn::ItemFn) -> Option<String> {
+/// The arguments of a schedulable `#[cron("…", tz = "…", overlap = "…")]`
+/// function, or `None` when the function is not one (the attribute macro
+/// reports malformed ones itself).
+fn cron_args(function: &syn::ItemFn) -> Option<CronArgs> {
     if validate_cron_fn(function).is_err() || is_cfg_gated(&function.attrs) {
         return None;
     }
@@ -213,8 +216,7 @@ fn cron_expression(function: &syn::ItemFn) -> Option<String> {
         .attrs
         .iter()
         .find(|attr| is_cron_path(attr.path()))
-        .and_then(|attr| attr.parse_args::<syn::LitStr>().ok())
-        .map(|literal| literal.value())
+        .and_then(|attr| attr.parse_args::<CronArgs>().ok())
 }
 
 /// `cron` or `vespera::cron`.
@@ -285,6 +287,8 @@ mod tests {
     use rstest::rstest;
     use tempfile::TempDir;
 
+    use crate::metadata::CronOptions;
+
     use super::*;
 
     /// Write `files` (relative to `src/`) into a fresh temp crate and return it.
@@ -303,6 +307,7 @@ mod tests {
             fn_name: fn_name.to_owned(),
             expression: "0 0 0 * * *".to_owned(),
             file_path,
+            options: CronOptions::default(),
         }
     }
 
@@ -387,7 +392,8 @@ mod tests {
                 "late/mod.rs",
                 r#"
                 mod deeper;
-                #[cron("2 * * * * *")] pub async fn late_job() {}
+                #[cron("2 * * * * *", overlap = "skip", tz = "Asia/Seoul")] pub async fn late_job() {}
+                #[cron("3 * * * * *", bogus = "x")] pub async fn bad_args() {}
                 #[cron("3 * * * * *")] fn private_job() {}
                 #[cfg(feature = "x")] #[cron("4 * * * * *")] pub async fn gated_job() {}
                 #[cron(EXPR)] pub async fn non_literal() {}
@@ -439,6 +445,18 @@ mod tests {
                     "5 * * * * *".to_owned()
                 ),
             ]
+        );
+        // Scanned jobs keep their `tz` / `overlap` arguments.
+        let late = jobs
+            .iter()
+            .find(|job| job.function_name == "late_job")
+            .unwrap();
+        assert_eq!(
+            late.options,
+            CronOptions {
+                timezone: Some("Asia/Seoul".to_owned()),
+                skip_overlap: true,
+            }
         );
     }
 

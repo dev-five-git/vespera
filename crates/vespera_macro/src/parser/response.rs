@@ -308,6 +308,7 @@ fn content_for_type(
             schema: Some(schema),
             example: None,
             examples: None,
+            encoding: None,
         },
     );
     Some(content)

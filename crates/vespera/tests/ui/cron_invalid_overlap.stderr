@@ -1,0 +1,5 @@
+error: #[cron] attribute: unknown overlap policy `queue`. Expected "allow" (default) or "skip".
+ --> tests/ui/cron_invalid_overlap.rs:3:42
+  |
+3 | #[vespera::cron("0 * * * * *", overlap = "queue")]
+  |                                          ^^^^^^^

@@ -74,7 +74,8 @@
 //! |---|---|---|
 //! | `validation` | yes | [`Validated`] / [`ValidatedWith`] and the `#[derive(Schema)]`-generated validator |
 //! | `mimalloc` | yes | mimalloc as the JNI cdylib's global allocator (no-op unless `jni` is enabled) |
-//! | `cron` | no | `#[vespera::cron("...")]` jobs and the `cron` scheduler module |
+//! | `cron` | no | `#[vespera::cron("...")]` jobs (evaluated in UTC) and the `cron` scheduler module |
+//! | `cron-tz` | no | `#[vespera::cron("...", tz = "Asia/Seoul")]` — IANA time zones for cron jobs (implies `cron`, adds chrono-tz) |
 //! | `inprocess` | no | `inprocess` — drive a `Router` in-process without a TCP socket |
 //! | `jni` | no | `jni`, `jni_app!` / `jni_apps!` — embed the app in a Java/Spring host |
 //!

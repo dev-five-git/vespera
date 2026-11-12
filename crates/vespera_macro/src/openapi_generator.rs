@@ -140,6 +140,7 @@ pub fn try_generate_openapi_doc_with_metadata(
         // deployment that did not run on that exact address.
         servers,
         paths,
+        webhooks: None,
         components: Some(Components {
             schemas: if schemas.is_empty() {
                 None

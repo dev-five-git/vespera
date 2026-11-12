@@ -8,6 +8,8 @@ use syn::{
 use vespera_core::openapi::Server;
 use vespera_core::schema::{SecurityScheme, SecuritySchemeType};
 
+use super::info::{InfoArgs, is_info_field, validate_info};
+
 /// Server configuration for `OpenAPI`
 #[derive(Clone)]
 pub struct ServerConfig {
@@ -45,6 +47,8 @@ pub struct AutoRouterInput {
     pub tags: Option<Vec<TagConfig>>,
     /// Apps to merge (e.g., [`third::ThirdApp`, `another::AnotherApp`])
     pub merge: Option<Vec<syn::Path>>,
+    /// `info` object fields (`description`, `summary`, `license`, ...).
+    pub info: InfoArgs,
 }
 
 impl Parse for AutoRouterInput {
@@ -62,6 +66,7 @@ impl Parse for AutoRouterInput {
         let mut security = None;
         let mut tags = None;
         let mut merge = None;
+        let mut info_fields = BTreeMap::<String, LitStr>::new();
         // Reject a repeated named argument (e.g. `title = ..., title = ...`)
         // with a spanned error instead of silently letting the later value
         // overwrite the earlier one — a typo would otherwise build a spec that
@@ -124,11 +129,15 @@ impl Parse for AutoRouterInput {
                     "merge" => {
                         merge = Some(parse_merge_values(input)?);
                     }
+                    field if is_info_field(field) => {
+                        input.parse::<syn::Token![=]>()?;
+                        info_fields.insert(ident_str.clone(), input.parse()?);
+                    }
                     _ => {
                         return Err(syn::Error::new(
                             ident.span(),
                             format!(
-                                "unknown field: `{ident_str}`. Expected `dir`, `openapi`, `title`, `version`, `docs_url`, `redoc_url`, `spec_url`, `servers`, `security_schemes`, `security`, `tags`, or `merge`"
+                                "unknown field: `{ident_str}`. Expected `dir`, `openapi`, `title`, `version`, `docs_url`, `redoc_url`, `spec_url`, `servers`, `security_schemes`, `security`, `tags`, `merge`, `description`, `summary`, `terms_of_service`, `contact_name`, `contact_url`, `contact_email`, `license`, `license_name`, or `license_url`"
                             ),
                         ));
                     }
@@ -155,6 +164,7 @@ impl Parse for AutoRouterInput {
             ("redoc_url", redoc_url.as_ref()),
             ("spec_url", spec_url.as_ref()),
         ])?;
+        let info = validate_info(&info_fields)?;
 
         Ok(Self {
             dir: dir.or_else(|| {
@@ -201,6 +211,7 @@ impl Parse for AutoRouterInput {
             security,
             tags,
             merge,
+            info,
         })
     }
 }
@@ -717,6 +728,7 @@ fn parse_server_struct(input: ParseStream) -> syn::Result<ServerConfig> {
 }
 
 /// Processed vespera input with extracted values
+#[derive(Default)]
 pub struct ProcessedVesperaInput {
     pub folder_name: String,
     pub openapi_file_names: Vec<String>,
@@ -731,6 +743,8 @@ pub struct ProcessedVesperaInput {
     pub tag_descriptions: Option<HashMap<String, String>>,
     /// Apps to merge (`syn::Path` for code generation)
     pub merge: Vec<syn::Path>,
+    /// `info` object fields beyond `title` / `version`.
+    pub info: InfoArgs,
 }
 
 /// Process `AutoRouterInput` into extracted values
@@ -779,6 +793,7 @@ pub fn process_vespera_input(input: AutoRouterInput) -> ProcessedVesperaInput {
             if tags.is_empty() { None } else { Some(tags) }
         }),
         merge: input.merge.unwrap_or_default(),
+        info: input.info,
     }
 }
 

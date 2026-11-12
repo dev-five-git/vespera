@@ -51,10 +51,40 @@ Uses 6-field cron expressions (`sec min hour day month weekday`):
 
 Expressions are validated at compile time by the same parser the runtime scheduler uses ([croner](https://crates.io/crates/croner) 4: `L`, `W`, `#`, `?`, names and an optional trailing year are supported), so an accepted expression can never fail at startup. When both day-of-month and day-of-week are restricted, **both** must match (AND, not the classic cron OR).
 
-### Scheduling Semantics
+### Time Zones (default: UTC)
 
-- **Times are UTC.** There is no per-job time zone option; write the expression in UTC.
-- **Runs may overlap.** One Tokio task per job sleeps until the next occurrence and spawns the job function, so a run that takes longer than the interval overlaps the next one. Guard long jobs yourself (for example with a `tokio::sync::Mutex` and `try_lock`) if they must not run concurrently.
+All times are **UTC** unless a job names an IANA time zone with `tz`. Time zones need the opt-in `cron-tz` feature, which adds [chrono-tz](https://crates.io/crates/chrono-tz) and its embedded tz database:
+
+```toml
+[dependencies]
+vespera = { version = "0.6", features = ["cron", "cron-tz"] }
+```
+
+```rust
+// 09:00 in Seoul every day (00:00 UTC)
+#[vespera::cron("0 0 9 * * *", tz = "Asia/Seoul")]
+pub async fn morning_report() {}
+```
+
+Zone names are checked at compile time (exact, case-sensitive: `"Asia/Seoul"`, `"America/New_York"`, `"UTC"`). Using `tz` without the `cron-tz` feature is a compile error. Daylight-saving changes follow croner: a fixed-time job whose time falls into a spring-forward gap runs right after the gap, and runs once in a fall-back overlap.
+
+### Overlapping Runs
+
+By default every tick starts a run, so a job slower than its interval overlaps itself. With `overlap = "skip"`, a tick is skipped (and logged) while the previous run of the same job is still going:
+
+```rust
+#[vespera::cron("0 */5 * * * *", overlap = "skip")]
+pub async fn reindex() {}
+```
+
+### Panics and Shutdown
+
+- A panicking job is logged to stderr and its schedule keeps going.
+- `vespera::cron::shutdown()` stops scheduling new runs; `vespera::cron::shutdown_and_wait(timeout).await` also waits up to `timeout` for runs in progress.
+- `serve_with_graceful_shutdown(addr, signal)` does both: no new runs once `signal` resolves, and runs in progress get up to 10 seconds after the server has drained.
+
+### Where Jobs Run
+
 - **Started once per process.** Each `vespera!` invocation starts its jobs once, no matter how many times its router factory runs (tests, `jni_app!`, several `serve` calls).
 - **Where jobs run:** on the current Tokio runtime when there is one; in a JNI library loaded by the JVM, on the shared JNI runtime (they honour `configureRuntime` and stop when `VesperaBridge.shutdown(...)` shuts it down); otherwise on a dedicated `vespera-cron` background thread, such as in a plain `#[test]`.
 
@@ -62,7 +92,7 @@ Expressions are validated at compile time by the same parser the runtime schedul
 
 - Functions must be `pub async fn`
 - Functions must take **no parameters** (no `State`, no extractors)
-- The `cron` feature must be enabled in `Cargo.toml`
+- The `cron` feature must be enabled in `Cargo.toml` (and `cron-tz` for `tz = "..."`)
 
 ---
 
