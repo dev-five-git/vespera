@@ -1,14 +1,9 @@
 use axum_example::create_app;
-use vespera::axum;
+use vespera::Serve;
 
 #[tokio::main]
-async fn main() {
-    let app = create_app().await;
-
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-
+async fn main() -> std::io::Result<()> {
     println!("🚀 Server running on http://localhost:3000");
 
-    axum::serve(listener, app).await.unwrap();
+    create_app().await.serve("0.0.0.0:3000").await
 }
