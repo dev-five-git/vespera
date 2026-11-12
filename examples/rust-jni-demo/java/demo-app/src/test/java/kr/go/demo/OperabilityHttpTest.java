@@ -76,9 +76,27 @@ class OperabilityHttpTest {
         return response.getBody() == null ? "" : new String(response.getBody(), StandardCharsets.UTF_8);
     }
 
-    private DispatchEvent lastEvent() {
-        assertFalse(observer.events.isEmpty(), "no DispatchEvent recorded");
-        return observer.events.get(observer.events.size() - 1);
+    /**
+     * The event for {@code requestId}. The observer fires on the server thread
+     * after the response is written, so the client can see the response first:
+     * wait for the event instead of reading the list immediately.
+     */
+    private DispatchEvent eventFor(String requestId) {
+        assertNotNull(requestId, "response has no request id");
+        long deadline = System.nanoTime() + 5_000_000_000L;
+        do {
+            for (DispatchEvent event : observer.events) {
+                if (requestId.equals(event.requestId())) {
+                    return event;
+                }
+            }
+            Thread.onSpinWait();
+        } while (System.nanoTime() < deadline);
+        throw new AssertionError("no DispatchEvent recorded for request id " + requestId);
+    }
+
+    private static String requestIdOf(ResponseEntity<byte[]> response) {
+        return response.getHeaders().getFirst("X-Request-Id");
     }
 
     @Test
@@ -104,8 +122,7 @@ class OperabilityHttpTest {
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals("e2e-req-1", response.getHeaders().getFirst("X-Request-Id"));
         assertTrue(text(response).contains("\"x-request-id\""), text(response));
-        DispatchEvent event = lastEvent();
-        assertEquals("e2e-req-1", event.requestId());
+        DispatchEvent event = eventFor("e2e-req-1");
         assertEquals(200, event.status());
         assertEquals("/headers", event.path());
         assertFalse(event.panicked());
@@ -118,7 +135,7 @@ class OperabilityHttpTest {
         String id = response.getHeaders().getFirst("X-Request-Id");
         assertNotNull(id);
         assertEquals(36, id.length(), id);
-        assertEquals(id, lastEvent().requestId());
+        assertEquals(id, eventFor(id).requestId());
     }
 
     @Test
@@ -128,7 +145,7 @@ class OperabilityHttpTest {
         ResponseEntity<byte[]> response = send(HttpMethod.POST, "/echo/panic", headers, new byte[] {1});
 
         assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getStatusCode());
-        DispatchEvent event = lastEvent();
+        DispatchEvent event = eventFor(requestIdOf(response));
         assertTrue(event.panicked(), event.toString());
         assertEquals(500, event.status());
         assertEquals("POST", event.method());
