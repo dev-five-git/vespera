@@ -59,7 +59,7 @@ repositories {
 val springBootVersion = "4.1.2"
 val springFrameworkVersion = "7.0.10"
 val springBoot3Version = "3.5.16"
-val springFramework3Version = "6.2.19"
+val springFramework3Version = "7.0.10"
 val micrometerVersion = "1.15.12"
 
 dependencies {
