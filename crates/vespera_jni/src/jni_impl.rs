@@ -46,26 +46,88 @@ use config::{async_overloaded_wire, try_acquire_async_permit};
 /// [`runtime_max_blocking_threads`] (default
 /// [`DEFAULT_RUNTIME_MAX_BLOCKING_THREADS`]), which now bounds the whole
 /// process: there is no per-Java-thread runtime any more.
-static RUNTIME: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
+///
+/// Dispatch only ever uses the cloned [`Handle`](tokio::runtime::Handle);
+/// the owning [`Runtime`](tokio::runtime::Runtime) sits behind a `Mutex` so
+/// [`shutdown_runtime`] (the `shutdown0` JNI hook) can take it out and shut
+/// it down gracefully.  The hot path never touches the mutex.
+static RUNTIME: OnceLock<Option<SharedRuntime>> = OnceLock::new();
 
-pub fn runtime() -> Option<&'static tokio::runtime::Runtime> {
-    RUNTIME
-        .get_or_init(|| {
-            let mut builder = tokio::runtime::Builder::new_multi_thread();
-            if let Some(workers) = runtime_worker_threads() {
-                builder.worker_threads(workers);
-            }
-            builder
-                .max_blocking_threads(runtime_max_blocking_threads())
-                .enable_all()
-                .build()
-                .ok()
-        })
-        .as_ref()
+/// Set once by [`shutdown_runtime`]; from then on [`runtime`] returns `None`
+/// and [`runtime_unavailable_wire`] answers `503`.
+static RUNTIME_SHUT_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// Wire `503` body once the shared runtime has been shut down.
+pub const RUNTIME_SHUT_DOWN_MSG: &str = "vespera runtime has been shut down";
+
+struct SharedRuntime {
+    handle: tokio::runtime::Handle,
+    runtime: std::sync::Mutex<Option<tokio::runtime::Runtime>>,
 }
 
+fn build_shared_runtime() -> Option<SharedRuntime> {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    if let Some(workers) = runtime_worker_threads() {
+        builder.worker_threads(workers);
+    }
+    let runtime = builder
+        .max_blocking_threads(runtime_max_blocking_threads())
+        .enable_all()
+        .build()
+        .ok()?;
+    Some(SharedRuntime {
+        handle: runtime.handle().clone(),
+        runtime: std::sync::Mutex::new(Some(runtime)),
+    })
+}
+
+/// Handle of the shared runtime (built on first use), or `None` when it
+/// could not be built or has been shut down (see
+/// [`runtime_unavailable_wire`] for the matching wire response).
+pub fn runtime() -> Option<&'static tokio::runtime::Handle> {
+    if RUNTIME_SHUT_DOWN.load(Ordering::Acquire) {
+        return None;
+    }
+    RUNTIME
+        .get_or_init(build_shared_runtime)
+        .as_ref()
+        .map(|shared| &shared.handle)
+}
+
+/// Wire response for a dispatch that found no runtime: `503` after
+/// [`shutdown_runtime`], `500` when the runtime could not be built.
 pub fn runtime_unavailable_wire() -> Vec<u8> {
-    vespera_inprocess::error_wire(500, "failed to create Tokio runtime")
+    if RUNTIME_SHUT_DOWN.load(Ordering::Acquire) {
+        vespera_inprocess::error_wire(503, RUNTIME_SHUT_DOWN_MSG)
+    } else {
+        vespera_inprocess::error_wire(500, "failed to create Tokio runtime")
+    }
+}
+
+/// Shut the shared runtime down, waiting up to `timeout` for its tasks.
+///
+/// Irreversible for the process: every later dispatch answers `503`
+/// ([`RUNTIME_SHUT_DOWN_MSG`]); a runtime that was never started is simply
+/// never built.  In-flight dispatches that already hold the handle finish
+/// or fail (their tasks are cancelled once the timeout elapses; the symbol
+/// guards turn any resulting panic into a `500`).  Returns `false` when the
+/// runtime had already been shut down.  Must be called from a thread that
+/// is not a runtime worker (a plain Java thread).
+pub fn shutdown_runtime(timeout: std::time::Duration) -> bool {
+    if RUNTIME_SHUT_DOWN.swap(true, Ordering::AcqRel) {
+        return false;
+    }
+    // A never-started runtime stays unbuilt (a concurrent first dispatch
+    // that is mid-build completes first and is shut down below).
+    let _ = RUNTIME.set(None);
+    let owned = RUNTIME
+        .get()
+        .and_then(Option::as_ref)
+        .and_then(|shared| shared.runtime.lock().ok()?.take());
+    if let Some(runtime) = owned {
+        runtime.shutdown_timeout(timeout);
+    }
+    true
 }
 
 /// Drive a synchronous JNI dispatch to completion on the shared
@@ -267,8 +329,10 @@ pub fn guard_void_symbol(body: impl FnOnce()) -> bool {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).is_err()
 }
 
+/// `500` wire response for a caught panic; its metadata carries
+/// `"panicked":"true"` so the host can tell it from a handler `500`.
 pub fn panic_wire() -> Vec<u8> {
-    vespera_inprocess::error_wire(500, "panic in Rust engine")
+    vespera_inprocess::panic_error_wire("panic in Rust engine")
 }
 
 pub fn byte_array_or_empty<'local>(
@@ -834,3 +898,7 @@ mod streaming_abort_tests;
 #[cfg(test)]
 #[path = "jni_impl_shared_runtime_tests.rs"]
 mod shared_runtime_tests;
+
+#[cfg(test)]
+#[path = "jni_impl_shutdown_tests.rs"]
+mod shutdown_tests;

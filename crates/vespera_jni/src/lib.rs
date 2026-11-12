@@ -235,9 +235,10 @@ pub(crate) mod jni_impl;
 /// `configure*0` JNI hooks (which call them), they are first-wins and must
 /// run before the first dispatch; each returns `false` once fixed.
 pub use jni_impl::{
-    DEFAULT_ASYNC_MAX_IN_FLIGHT, DEFAULT_RUNTIME_MAX_BLOCKING_THREADS, async_max_in_flight,
-    runtime_max_blocking_threads, runtime_worker_threads, set_async_max_in_flight,
-    set_runtime_max_blocking_threads, set_runtime_worker_threads,
+    DEFAULT_ASYNC_MAX_IN_FLIGHT, DEFAULT_RUNTIME_MAX_BLOCKING_THREADS, RUNTIME_SHUT_DOWN_MSG,
+    async_max_in_flight, runtime_max_blocking_threads, runtime_worker_threads,
+    set_async_max_in_flight, set_runtime_max_blocking_threads, set_runtime_worker_threads,
+    shutdown_runtime,
 };
 // SAFETY SCOPE: streaming-with-header JNI exports contain FFI entry points.
 #[allow(unsafe_code)]
