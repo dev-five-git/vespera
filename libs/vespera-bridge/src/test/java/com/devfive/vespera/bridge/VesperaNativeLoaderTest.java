@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -439,18 +440,93 @@ class VesperaNativeLoaderTest {
         Path base = Files.createTempDirectory("vespera-native-unusable-");
         try {
             Path file = Files.writeString(base.resolve("not-a-dir"), "x");
-            if (posix()) {
-                // POSIX: anything short of a verified-private dir (here: not
-                // a directory at all) degrades to a fresh private temp dir.
-                Path lib = VesperaNativeLoader.extract("native/x/demo.dll", "demo.dll", file,
-                        () -> new ByteArrayInputStream(new byte[] {1}));
-                assertFalse(lib.startsWith(base));
-                deleteFallback(lib, base);
-            } else {
-                assertThrows(IOException.class, () -> VesperaNativeLoader.extract(
-                        "native/x/demo.dll", "demo.dll", file,
-                        () -> new ByteArrayInputStream(new byte[] {1})));
+            // POSIX and Windows alike: anything short of a verified-private
+            // dir (here: not a directory at all) degrades to a fresh temp dir.
+            Path lib = VesperaNativeLoader.extract("native/x/demo.dll", "demo.dll", file,
+                    () -> new ByteArrayInputStream(new byte[] {1}));
+            assertFalse(lib.startsWith(base));
+            deleteFallback(lib, base);
+        } finally {
+            deleteTree(base);
+        }
+    }
+
+    // ── Windows (ACL) directory checks ────────────────────────────────────
+
+    private record Principal(String getName) implements java.nio.file.attribute.UserPrincipal {}
+
+    private static java.nio.file.attribute.AclEntry allow(
+            java.nio.file.attribute.UserPrincipal who,
+            java.util.Set<java.nio.file.attribute.AclEntryFlag> flags,
+            java.nio.file.attribute.AclEntryPermission... perms) {
+        return java.nio.file.attribute.AclEntry.newBuilder()
+                .setType(java.nio.file.attribute.AclEntryType.ALLOW)
+                .setPrincipal(who)
+                .setFlags(flags)
+                .setPermissions(perms)
+                .build();
+    }
+
+    @Test
+    void aclProblemFlagsWriteAccessForUntrustedPrincipalsOnly() {
+        var me = new Principal("HOST\\me");
+        var users = new Principal("BUILTIN\\Users");
+        var read = java.nio.file.attribute.AclEntryPermission.READ_DATA;
+        var write = java.nio.file.attribute.AclEntryPermission.WRITE_DATA;
+        var append = java.nio.file.attribute.AclEntryPermission.APPEND_DATA;
+        java.util.Set<java.nio.file.attribute.AclEntryFlag> none = java.util.Set.of();
+        java.util.function.Predicate<java.nio.file.attribute.UserPrincipal> trusted =
+                p -> p.equals(me) || VesperaNativeLoader.isWellKnownAdmin(p);
+
+        assertNull(VesperaNativeLoader.aclProblem(List.of(
+                allow(me, none, write),
+                allow(new Principal("NT AUTHORITY\\SYSTEM"), none, write),
+                allow(new Principal("BUILTIN\\Administrators"), none, write),
+                allow(users, none, read),
+                // Inherit-only (applies to children only, e.g. CREATOR OWNER).
+                allow(new Principal("CREATOR OWNER"), java.util.Set.of(
+                        java.nio.file.attribute.AclEntryFlag.INHERIT_ONLY), write),
+                // An unresolvable SID (deleted / sandbox account).
+                allow(new Principal("S-1-5-21-1-2-3-1001"), none, write)), trusted));
+        String problem = VesperaNativeLoader.aclProblem(List.of(
+                allow(me, none, write), allow(users, none, read, append)), trusted);
+        assertTrue(problem != null && problem.contains("BUILTIN\\Users"), problem);
+        assertTrue(VesperaNativeLoader.aclProblem(List.of(java.nio.file.attribute.AclEntry.newBuilder()
+                .setType(java.nio.file.attribute.AclEntryType.DENY).setPrincipal(users)
+                .setPermissions(write).build()), trusted) == null, "DENY entries are ignored");
+    }
+
+    @Test
+    @org.junit.jupiter.api.condition.EnabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
+    void windowsReusesAnOwnedPrivateDirAndFallsBackWhenOthersMayWrite() throws Exception {
+        Path base = Files.createTempDirectory("vespera-native-acl-");
+        try {
+            VesperaNativeLoader.ExtractionDir owned = VesperaNativeLoader.prepareDir(base, "vespera-native-abc");
+            assertTrue(owned.reusable(), "a fresh per-user temp dir is private");
+            assertEquals(base.resolve("vespera-native-abc"), owned.dir());
+
+            // Plant: grant Everyone write on the predictable hash directory.
+            var view = Files.getFileAttributeView(owned.dir(),
+                    java.nio.file.attribute.AclFileAttributeView.class);
+            java.nio.file.attribute.UserPrincipal everyone;
+            try {
+                everyone = base.getFileSystem().getUserPrincipalLookupService()
+                        .lookupPrincipalByGroupName("Everyone");
+            } catch (IOException localised) {
+                org.junit.jupiter.api.Assumptions.abort("no 'Everyone' group on this Windows locale");
+                return;
             }
+            List<java.nio.file.attribute.AclEntry> acl = new ArrayList<>(view.getAcl());
+            acl.add(0, allow(everyone, java.util.Set.of(),
+                    java.nio.file.attribute.AclEntryPermission.WRITE_DATA,
+                    java.nio.file.attribute.AclEntryPermission.APPEND_DATA));
+            view.setAcl(acl);
+
+            VesperaNativeLoader.ExtractionDir fallback =
+                    VesperaNativeLoader.prepareDir(base, "vespera-native-abc");
+            assertFalse(fallback.reusable());
+            assertFalse(fallback.dir().startsWith(base), "a fresh, randomly named directory");
+            Files.deleteIfExists(fallback.dir());
         } finally {
             deleteTree(base);
         }

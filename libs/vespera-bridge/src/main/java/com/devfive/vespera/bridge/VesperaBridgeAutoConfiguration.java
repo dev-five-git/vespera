@@ -1,6 +1,7 @@
 package com.devfive.vespera.bridge;
 
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -95,7 +96,7 @@ public class VesperaBridgeAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public VesperaBridgeNativeSettings vesperaBridgeNativeSettings(VesperaBridgeProperties props) {
-        props.getNative().apply();
+        props.getNative().apply(props.getMaxBufferedResponseBytes());
         return new VesperaBridgeNativeSettings(autoInit(props.getLibraryName()));
     }
 
@@ -286,6 +287,39 @@ public class VesperaBridgeAutoConfiguration {
                 props.getMaxBufferedRequestBytes(),
                 props.getMaxBufferedResponseBytes(),
                 props.getRequestId().effectiveHeader(),
-                observers.orderedStream().toList());
+                observers.orderedStream().toList(),
+                props.getCors());
+    }
+
+    /**
+     * {@code vespera.bridge.cors=rust} (default): route CORS preflights to
+     * the proxy controller instead of Spring's built-in preflight handling,
+     * so the Rust router (e.g. a {@code CorsLayer}) answers them.
+     */
+    @Bean
+    @ConditionalOnBean(VesperaProxyController.class)
+    @ConditionalOnProperty(prefix = "vespera.bridge", name = "cors", havingValue = "rust",
+            matchIfMissing = true)
+    @ConditionalOnMissingBean
+    public VesperaPreflightHandlerMapping vesperaPreflightHandlerMapping(
+            VesperaProxyController controller) {
+        return new VesperaPreflightHandlerMapping(controller);
+    }
+
+    /**
+     * Log once at startup when no native library is loaded yet: until it is,
+     * the proxy answers every request {@code 503} (see the
+     * {@code vespera} health indicator with Spring Boot Actuator).
+     */
+    @Bean
+    public org.springframework.boot.CommandLineRunner vesperaBridgeStartupCheck() {
+        return args -> {
+            if (!VesperaBridge.isInitialized()) {
+                org.slf4j.LoggerFactory.getLogger(VesperaBridgeAutoConfiguration.class).warn(
+                        "vespera native library is not initialized: the proxy answers 503 until "
+                                + "VesperaBridge.init(...) runs. Call it before SpringApplication.run "
+                                + "or set vespera.bridge.library-name.");
+            }
+        };
     }
 }

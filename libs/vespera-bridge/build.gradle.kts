@@ -23,6 +23,15 @@ tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
 }
 
+// Embed the bridge version for VesperaVersions (bridge <-> native release check).
+val bridgeVersion = project.version.toString()
+tasks.named<ProcessResources>("processResources") {
+    inputs.property("bridgeVersion", bridgeVersion)
+    filesMatching("**/vespera-bridge.properties") {
+        expand("version" to bridgeVersion)
+    }
+}
+
 repositories {
     mavenCentral()
 }
@@ -55,9 +64,20 @@ dependencies {
     // Optional: MicrometerDispatchObserver / VesperaBridgeMetricsAutoConfiguration
     // only load when the application ships Micrometer (e.g. via Actuator).
     compileOnly("io.micrometer:micrometer-core:$micrometerVersion")
+    // Optional: the `vespera` Actuator health indicator. Boot 4 moved the health
+    // API to spring-boot-health (org.springframework.boot.health.contributor);
+    // Boot 3.5 keeps it in spring-boot-actuator (org.springframework.boot.actuate
+    // .health). Both are compiled against (non-transitively, so the Boot 3 jar
+    // does not drag Boot 3 core onto the compile classpath) and each indicator
+    // is only loaded behind a class-name guard.
+    compileOnly("org.springframework.boot:spring-boot-health:$springBootVersion")
+    compileOnly("org.springframework.boot:spring-boot-actuator:$springBoot3Version") {
+        isTransitive = false
+    }
 
     testImplementation("org.springframework.boot:spring-boot-starter-web:$springBootVersion")
     testImplementation("io.micrometer:micrometer-core:$micrometerVersion")
+    testImplementation("org.springframework.boot:spring-boot-health:$springBootVersion")
     // VesperaWireTest cross-checks the hand-rolled JSON codec against Jackson.
     testImplementation("com.fasterxml.jackson.core:jackson-databind:2.23.0")
     testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
@@ -86,6 +106,7 @@ val testBoot3Runtime: Configuration = configurations.create("testBoot3Runtime") 
 dependencies {
     testBoot3Runtime("org.springframework.boot:spring-boot-starter-web:$springBoot3Version")
     testBoot3Runtime("io.micrometer:micrometer-core:$micrometerVersion")
+    testBoot3Runtime("org.springframework.boot:spring-boot-actuator:$springBoot3Version")
     testBoot3Runtime("org.springframework.boot:spring-boot-test:$springBoot3Version")
     testBoot3Runtime("org.springframework:spring-test:$springFramework3Version")
     testBoot3Runtime("com.fasterxml.jackson.core:jackson-databind:2.23.0")

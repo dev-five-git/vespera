@@ -60,7 +60,7 @@ class ProxyControllerBodyHeaderTest {
         ResponseEntity<?> boom = VesperaProxyController.asyncFailureToResponse(
                 new java.util.concurrent.CompletionException(new RuntimeException("boom")));
         assertEquals(500, boom.getStatusCode().value());
-        assertEquals("vespera dispatch failed: boom",
+        assertEquals("vespera dispatch failed",
                 new String((byte[]) boom.getBody(), StandardCharsets.UTF_8));
 
         ResponseEntity<?> tooLarge = VesperaProxyController.asyncFailureToResponse(
@@ -91,13 +91,17 @@ class ProxyControllerBodyHeaderTest {
         // A custom DispatchModeResolver returning ASYNC must honour the same
         // max-buffered-response cap as SYNC (dispatchSync), or it heap-buffers
         // an unbounded Rust response. The capped builder the async flow now
-        // uses rejects an oversized body with 413, lets a within-cap body
+        // uses rejects an oversized body with 500 (a server-side limit, not
+        // the request-size 413), lets a within-cap body
         // through, and treats cap = 0 as unlimited (never rejects).
         byte[] oversized = wireResponseWithBody(100);
         ResponseStatusException tooLarge = assertThrows(
                 ResponseStatusException.class,
                 () -> VesperaProxyController.buildCappedResponseEntityFromWire(oversized, "GET", 10));
-        assertEquals(413, tooLarge.getStatusCode().value());
+        assertEquals(500, tooLarge.getStatusCode().value());
+        assertEquals(500, assertThrows(ResponseStatusException.class,
+                () -> VesperaProxyController.buildCappedAsyncResponseEntity(oversized, "GET", 10, null))
+                .getStatusCode().value());
 
         byte[] small = wireResponseWithBody(5);
         ResponseEntity<?> ok =

@@ -4,7 +4,12 @@ package com.devfive.vespera.bridge;
  * One request proxied by {@link VesperaProxyController}, reported to every
  * {@link DispatchObserver} bean after the response was produced.
  *
- * @param app           target app ({@code "_default"} for the default app)
+ * @param app           target app ({@code "_default"} for the default app);
+ *                      bounded, never the raw client-selected name: an app
+ *                      from {@code vespera.bridge.exposed-apps}, one Rust
+ *                      answered from a handler before, or {@code "UNKNOWN"}
+ *                      (rejected, invalid or unregistered names) — safe to use
+ *                      as a metric tag
  * @param mode          dispatch mode used, or {@code null} when the request
  *                      failed before a mode was chosen (e.g. an unknown app)
  * @param method        HTTP method

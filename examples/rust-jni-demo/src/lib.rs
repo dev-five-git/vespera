@@ -141,6 +141,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn diag_routes_count_finished_runs() {
+        let app = create_app();
+        let body = |path: &str| {
+            let app = app.clone();
+            let path = path.to_owned();
+            async move {
+                let v = parse(&dispatch(app, &req("GET", &path, "")).await);
+                assert_eq!(v["status"], 200, "{path}: {v}");
+                v["body"].as_str().unwrap().to_owned()
+            }
+        };
+        assert_eq!(body("/diag/runs/rust-test").await, "0");
+        assert_eq!(body("/diag/blob/rust-test/5").await, "xxxxx");
+        assert_eq!(body("/diag/sleep/rust-test/1").await, "slept");
+        assert_eq!(body("/diag/runs/rust-test").await, "2");
+        // Sizes are clamped.
+        let big = body(&format!("/diag/blob/rust-big/{}", usize::MAX)).await;
+        assert_eq!(big.len(), routes::diag::MAX_BLOB_BYTES);
+    }
+
+    #[tokio::test]
     async fn not_found_returns_404() {
         let json = dispatch(create_app(), &req("GET", "/nope", "")).await;
         let v = parse(&json);

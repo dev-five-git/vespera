@@ -4,10 +4,13 @@ import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /** TestKit: bundling of host + cross-built + extra libraries into the jar resources. */
 class VesperaBridgePluginFunctionalTest {
@@ -16,6 +19,7 @@ class VesperaBridgePluginFunctionalTest {
 
     private val host = NativePlatform.detectOs(System.getProperty("os.name", "")) +
         "-" + NativePlatform.detectArch(System.getProperty("os.arch", ""))
+    private val hostOs = host.substringBefore('-')
 
     private fun write(path: String, text: String = path) {
         val f = File(dir, path)
@@ -23,8 +27,14 @@ class VesperaBridgePluginFunctionalTest {
         f.writeText(text)
     }
 
-    private fun setUp(vesperaBlock: String) {
+    private fun setUp(
+        vesperaBlock: String,
+        crateName: String = "demo",
+        bridgeVersion: String? = "0.0.0-test",
+        extra: String = "",
+    ) {
         write("settings.gradle.kts", "rootProject.name = \"consumer\"\n")
+        val bridgeLine = bridgeVersion?.let { "bridgeVersion.set(\"$it\")" } ?: ""
         write(
             "build.gradle.kts",
             """
@@ -33,11 +43,12 @@ class VesperaBridgePluginFunctionalTest {
                 id("kr.devfive.vespera-bridge")
             }
             vespera {
-                crateName.set("demo")
+                crateName.set("$crateName")
                 cargoRoot.set(layout.projectDirectory.dir("rust"))
-                bridgeVersion.set("0.0.0-test")
+                $bridgeLine
             $vesperaBlock
             }
+            $extra
             """.trimIndent(),
         )
     }
@@ -49,9 +60,16 @@ class VesperaBridgePluginFunctionalTest {
 
     private fun resource(path: String) = File(dir, "build/resources/main/native/$path")
 
+    /** Stub the cargo invocation: print the planned commands instead of running them. */
+    private val printCommands = """
+                tasks.named<kr.devfive.vespera.CargoBuildTask>("cargoBuild") {
+                    doFirst { println("CMDS=" + plannedCommands()); throw StopExecutionException() }
+                }
+    """
+
     @Test
     fun bundlesHostTargetsAndExtraLibraries() {
-        val hostLib = NativePlatform.mapLibraryName(host.substringBefore('-'), "demo")
+        val hostLib = NativePlatform.mapLibraryName(hostOs, "demo")
         write("rust/target/release/$hostLib", "host")
         write("rust/target/aarch64-unknown-linux-gnu/release/libdemo.so", "cross")
         write("prebuilt/native/macos-aarch64/libdemo.dylib", "extra")
@@ -75,8 +93,42 @@ class VesperaBridgePluginFunctionalTest {
     }
 
     @Test
+    fun hyphenatedCrateNameBundlesTheUnderscoreLibraryFile() {
+        val hostLib = NativePlatform.mapLibraryName(hostOs, "rust_jni_demo")
+        write("rust/target/release/$hostLib", "hyphen")
+        setUp("", crateName = "rust-jni-demo")
+
+        val result = run("processResources").build()
+
+        assertEquals(TaskOutcome.SUCCESS, result.task(":bundleNativeLib")?.outcome)
+        assertEquals("hyphen", resource("$host/$hostLib").readText())
+    }
+
+    @Test
+    fun underscoreCrateNameStillBundles() {
+        val hostLib = NativePlatform.mapLibraryName(hostOs, "rust_jni_demo")
+        write("rust/target/release/$hostLib", "underscore")
+        setUp("", crateName = "rust_jni_demo")
+
+        run("processResources").build()
+
+        assertEquals("underscore", resource("$host/$hostLib").readText())
+    }
+
+    @Test
+    fun libNameOverridesTheLibraryFile() {
+        val hostLib = NativePlatform.mapLibraryName(hostOs, "custom")
+        write("rust/target/release/$hostLib", "custom")
+        setUp("""    libName.set("custom")""", crateName = "rust-jni-demo")
+
+        run("processResources").build()
+
+        assertEquals("custom", resource("$host/$hostLib").readText())
+    }
+
+    @Test
     fun missingCrossBuildNamesTheTarget() {
-        val hostLib = NativePlatform.mapLibraryName(host.substringBefore('-'), "demo")
+        val hostLib = NativePlatform.mapLibraryName(hostOs, "demo")
         write("rust/target/release/$hostLib")
         setUp("""    targets.put("linux-aarch64", "aarch64-unknown-linux-gnu")""")
 
@@ -87,15 +139,12 @@ class VesperaBridgePluginFunctionalTest {
 
     @Test
     fun cargoBuildIsNeverUpToDate() {
-        // A fake `cargo` is not portable; inspect the task's planned commands instead.
         write("rust/Cargo.toml", "[workspace]\n")
         setUp(
             """
+                packageName.set("demo")
                 targets.put("linux-aarch64", "aarch64-unknown-linux-gnu")
-                tasks.named<kr.devfive.vespera.CargoBuildTask>("cargoBuild") {
-                    doFirst { println("CMDS=" + commands.get()); throw StopExecutionException() }
-                }
-            """,
+            """ + printCommands,
         )
 
         val first = run("cargoBuild").build()
@@ -103,5 +152,96 @@ class VesperaBridgePluginFunctionalTest {
 
         assertTrue(first.output.contains("--target, aarch64-unknown-linux-gnu"), first.output)
         assertEquals(TaskOutcome.SUCCESS, second.task(":cargoBuild")?.outcome)
+    }
+
+    @Test
+    fun hyphenatedCrateNameIsThePackageSpec() {
+        setUp(printCommands, crateName = "rust-jni-demo")
+
+        val result = run("cargoBuild").build()
+
+        assertTrue(result.output.contains("CMDS=[[cargo, build, -p, rust-jni-demo, --release]]"), result.output)
+    }
+
+    @Test
+    fun underscoreCrateNameResolvesTheHyphenatedPackageViaCargoMetadata() {
+        assumeTrue(cargoAvailable(), "cargo is not on PATH")
+        write(
+            "rust/Cargo.toml",
+            "[package]\nname = \"rust-jni-demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n" +
+                "[lib]\ncrate-type = [\"cdylib\"]\n",
+        )
+        write("rust/src/lib.rs", "")
+        setUp(printCommands, crateName = "rust_jni_demo")
+
+        val result = run("cargoBuild").build()
+
+        assertTrue(result.output.contains("CMDS=[[cargo, build, -p, rust-jni-demo, --release]]"), result.output)
+    }
+
+    @Test
+    fun configurationCacheIsStoredAndReused() {
+        val hostLib = NativePlatform.mapLibraryName(hostOs, "rust_jni_demo")
+        write("rust/target/release/$hostLib", "cc")
+        write("rust/target/aarch64-unknown-linux-gnu/release/librust_jni_demo.so", "cross")
+        write("prebuilt/native/macos-aarch64/librust_jni_demo.dylib", "extra")
+        setUp(
+            """
+                packageName.set("rust-jni-demo")
+                autoBuildCargo.set(true)
+                extraNativeLibs.set(layout.projectDirectory.dir("prebuilt"))
+                targets.put("linux-aarch64", "aarch64-unknown-linux-gnu")
+            """,
+            crateName = "rust_jni_demo",
+            // Untyped stub (no cargo run): a build-script lambda typed against
+            // the plugin's CargoBuildTask is not loadable by TestKit's
+            // injected-classpath CC serializer.
+            extra = """
+                tasks.named("cargoBuild") {
+                    doFirst { println("CARGO-STUB"); throw StopExecutionException() }
+                }
+            """,
+        )
+
+        val first = run("processResources", "--configuration-cache").build()
+        File(dir, "build").deleteRecursively()
+        val second = run("processResources", "--configuration-cache").build()
+
+        assertTrue(first.output.contains("Configuration cache entry stored"), first.output)
+        assertTrue(second.output.contains("Reusing configuration cache"), second.output)
+        assertFalse(second.output.contains("problems were found"), second.output)
+        assertTrue(second.output.contains("CARGO-STUB"), second.output)
+        assertEquals(TaskOutcome.SUCCESS, second.task(":cargoBuild")?.outcome)
+        assertEquals(TaskOutcome.SUCCESS, second.task(":bundleNativeLib")?.outcome)
+        assertEquals("cc", resource("$host/$hostLib").readText())
+        assertEquals("extra", resource("macos-aarch64/librust_jni_demo.dylib").readText())
+    }
+
+    @Test
+    fun bridgeVersionDefaultsToTheEmbeddedBridgeRelease() {
+        val embedded = VesperaBridgePlugin.embeddedBridgeVersion()
+        assertNotNull(embedded, "plugin build must embed the bridge version")
+        setUp("", bridgeVersion = null)
+
+        val result = run("dependencies", "--configuration", "compileClasspath").build()
+
+        assertTrue(result.output.contains("kr.devfive:vespera-bridge:$embedded"), result.output)
+    }
+
+    @Test
+    fun explicitBridgeVersionWins() {
+        setUp("", bridgeVersion = "9.9.9-pinned")
+
+        val result = run("dependencies", "--configuration", "compileClasspath").build()
+
+        assertTrue(result.output.contains("kr.devfive:vespera-bridge:9.9.9-pinned"), result.output)
+    }
+
+    private fun cargoAvailable(): Boolean = try {
+        val p = ProcessBuilder("cargo", "--version").redirectErrorStream(true).start()
+        p.inputStream.readAllBytes()
+        p.waitFor(30, TimeUnit.SECONDS) && p.exitValue() == 0
+    } catch (e: Exception) {
+        false
     }
 }

@@ -119,10 +119,16 @@ Streaming dispatch also changed:
 9. **Consumed form bodies are rebuilt.** `application/x-www-form-urlencoded` bodies already read by Spring (`FormContentFilter`, `CsrfFilter`) are reconstructed from the request parameters.
 10. **Forwarded path:** the servlet context path, a prefix servlet mapping and `;` path parameters (e.g. `;jsessionid`) are stripped.
 11. **Request ids:** responses carry `X-Request-Id` by default (`vespera.bridge.request-id.enabled` / `.header`).
-12. **Proxy-generated errors** are `text/plain` (like Rust's `error_wire`) instead of Spring error pages; the unknown-app `404` no longer echoes the app name. `ASYNC` mode returns `ResponseEntity<byte[]>`.
+12. **Proxy-generated errors** are `text/plain` (like Rust's `error_wire`) instead of Spring error pages; the unknown-app `404` no longer echoes the app name. `ASYNC` responses get no `Range` handling.
+13. **Oversized buffered responses answer `500`, not `413`.** `vespera.bridge.max-buffered-response-bytes` (default 64 MiB) is forwarded to the native buffered-response cap unless `vespera.bridge.native.max-buffered-response-bytes` (or its sysprop/env) sets it.
+14. **CORS preflights reach Rust by default.** `vespera.bridge.cors=rust` routes `OPTIONS` preflights to the Rust router (configure a `tower_http` `CorsLayer` there); set `vespera.bridge.cors=spring` to keep Spring MVC's CORS handling.
+15. **Proxy errors are generic.** Unexpected failures answer `vespera dispatch failed` (details in the WARN log with the request id); a missing native library answers `503`.
+16. **Bounded app names.** `DispatchEvent.app()` and the `app` metric tag report `UNKNOWN` for client-selected app names not known to be registered.
+17. **Version check.** `VesperaBridge.init` fails when the native library's `major.minor` differs from the bridge's; `-Dvespera.native.versionCheck=warn` or `off` relaxes it.
 
 ### Gradle Plugin
 
 - `publishPlugins` fails without Plugin Portal credentials.
 - `cargoBuild` is now a `CargoBuildTask` instead of an `Exec`; build scripts that configure it as `Exec` must be updated.
 - A missing `Cargo.lock` no longer fails the build; `extraNativeLibs` and `targets` add multi-platform jars.
+- A hyphenated `crateName` now works (new optional `packageName` / `libName`), `bridgeVersion` defaults to the matching bridge release, and `cargoSourceRoots` is ignored.
