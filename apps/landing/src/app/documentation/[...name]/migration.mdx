@@ -34,6 +34,7 @@ The 0.6 release (unreleased) is a hardening pass: OpenAPI output becomes more fa
 - **`openapi = "..."` output location:** a relative path resolves against the crate's `CARGO_MANIFEST_DIR`, so workspace members write `openapi.json` next to their own `Cargo.toml`. The cache directory honours `CARGO_TARGET_DIR`.
 - **`Serve`:** `serve()` provides `ConnectInfo<SocketAddr>`, and the trait gained `serve_with_graceful_shutdown(addr, signal)` — custom implementors must add it.
 - **Cron:** jobs start once per process even if `create_app()` runs several times, and run on a dedicated `vespera-cron` thread when no Tokio runtime is present.
+- **`multipart` cargo feature:** multipart support (`vespera::multipart`, `vespera::tempfile`, `#[derive(Multipart)]`, `schema_type!(..., multipart)`) moved behind the new `multipart` feature. It is in the default features, so nothing changes unless you build with `default-features = false` — then add `features = ["multipart"]` if you use multipart (otherwise `#[derive(Multipart)]` is a compile error that names the feature). `axum-extra/multipart` moved from the default list into this feature too.
 
 ### New compile errors
 

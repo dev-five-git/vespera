@@ -77,6 +77,17 @@ of an existing 0.5 application.
   longer duplicate schedulers) and run on a dedicated thread when no Tokio
   runtime is present.
 
+### Cargo features (`vespera`, `vespera_macro`)
+
+- Multipart support (`vespera::multipart`, `vespera::tempfile`,
+  `#[derive(Multipart)]`, `schema_type!(..., multipart)`) is behind the new
+  `multipart` feature. It is **default-on**, so default builds are unaffected;
+  **breaking only for `default-features = false` builds that use multipart** —
+  add `features = ["multipart"]` (without it `#[derive(Multipart)]` is a
+  compile error naming the feature). Dropping it removes tempfile, multer,
+  encoding_rs and their dependencies; `axum-extra/multipart` moved from the
+  default list into the feature.
+
 ### Documentation UI (`vespera`, `vespera_macro`, `vespera_core`)
 
 - `docs_url` / `redoc_url` pages load `swagger-ui-dist` 5.34.0 and `redoc`

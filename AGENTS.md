@@ -177,6 +177,7 @@ Feature flags:
 | `inprocess` | `vespera::inprocess` (= `vespera_inprocess`) | dispatch, register_app, envelopes; enables `vespera_inprocess/connect-info` (`remote_addr` wire field → `ConnectInfo<SocketAddr>`, which needs `axum/tokio`) |
 | `jni` | `vespera::jni` (= `vespera_jni`) + implies `inprocess` | RUNTIME, jni_app!, JNI symbol |
 | `mimalloc` (default) | (with `jni`) mimalloc as the cdylib's `#[global_allocator]` | measured -15~19% on sync/direct dispatch vs Windows HeapAlloc; weak no-op without `jni` |
+| `multipart` (default) | `vespera::multipart` (`TypedMultipart`, `FieldData`), `vespera::tempfile` | `#[derive(Multipart)]` / `schema_type!(..., multipart)` runtime + deps (tempfile, axum/axum-extra multer multipart, tokio fs/io-util); without it `vespera::Multipart` is a stand-in derive (`vespera_macro::MultipartFeatureDisabled`) whose `compile_error!` names the feature (trybuild `tests/ui/multipart_needs_feature.rs`, run under `--no-default-features`) |
 | `validation` (default) | `vespera::Validated` | `#[derive(Schema)]` also emits `garde::Validate`; `Validated<T>` extractor + 422 envelope |
 | `cron` | `vespera::cron` | `#[vespera::cron("...")]` jobs (UTC), started once per process by `vespera!` |
 | `cron-tz` | (with `cron`) `tz = "Area/City"` support | chrono-tz IANA database (opt-in: ~7 MB generated source) |

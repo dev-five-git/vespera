@@ -1,0 +1,5 @@
+error: `#[derive(Multipart)]` (also emitted by `schema_type!(..., multipart)`) requires vespera's `multipart` feature: it is on by default, so re-enable it after `default-features = false` with vespera = { features = ["multipart"] }
+ --> tests/ui/multipart_needs_feature.rs:9:12
+  |
+9 | pub struct Upload {
+  |            ^^^^^^
