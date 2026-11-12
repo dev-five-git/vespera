@@ -236,4 +236,80 @@ mod tests {
         // Invalid method parses → fallback GET, unknown route → 404
         assert_eq!(parse(&json)["status"], 404);
     }
+
+    // ── Form-urlencoded + header-inspection routes ────────────────
+    fn with_headers(
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> RequestEnvelope {
+        RequestEnvelope {
+            method: method.into(),
+            path: path.into(),
+            query: String::new(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect(),
+            body: body.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn form_routes_echo_urlencoded_fields() {
+        let form = [("content-type", "application/x-www-form-urlencoded")];
+        for method in ["PATCH", "POST"] {
+            let json = dispatch(
+                create_app(),
+                &with_headers(method, "/form", &form, "name=Jane+Doe&count=3"),
+            )
+            .await;
+            let v = parse(&json);
+            assert_eq!(v["status"], 200, "{method}: {json}");
+            let inner = parse(v["body"].as_str().unwrap());
+            assert_eq!(
+                inner,
+                serde_json::json!({"name": "Jane Doe", "count": 3, "note": null})
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn headers_route_lists_received_header_names() {
+        let json = dispatch(
+            create_app(),
+            &with_headers("GET", "/headers", &[("x-b", "1"), ("x-a", "2")], ""),
+        )
+        .await;
+        let v = parse(&json);
+        assert_eq!(
+            parse(v["body"].as_str().unwrap()),
+            serde_json::json!(["x-a", "x-b"])
+        );
+    }
+
+    /// The servlet's Latin-1 view of the UTF-8 bytes `résumé` maps back to
+    /// those bytes in Rust and out again as Latin-1 chars.
+    #[tokio::test]
+    async fn raw_header_route_round_trips_latin1_bytes() {
+        let servlet_view = "r\u{c3}\u{a9}sum\u{c3}\u{a9}.pdf";
+        let json = dispatch(
+            create_app(),
+            &with_headers("GET", "/headers/raw", &[("x-name", servlet_view)], ""),
+        )
+        .await;
+        let v = parse(&json);
+        assert_eq!(v["body"], "résumé.pdf");
+        assert_eq!(
+            v["headers"]["content-disposition"],
+            format!("attachment; filename=\"{servlet_view}\"")
+        );
+
+        let missing = parse(&dispatch(create_app(), &req("GET", "/headers/raw", "")).await);
+        assert_eq!(
+            missing["headers"]["content-disposition"],
+            "attachment; filename=\"\""
+        );
+    }
 }
