@@ -1,0 +1,77 @@
+# Dependency update automation (weekly). No Renovate config exists in this
+# repository, so Dependabot is the single source of update PRs.
+#
+# Every update still has to pass the full CI gate set (lint, msrv, deny,
+# test, test-os, jni-e2e): `cargo deny` vets new crates against deny.toml and
+# the MSRV job rejects a bump that needs a newer Rust than `rust-version`.
+# Minor/patch bumps are grouped per ecosystem to keep the PR count low;
+# semver-major bumps arrive as individual PRs so each breaking change is
+# reviewed on its own.
+version: 2
+
+updates:
+  # Root Cargo workspace: crates/*, examples/*, benches/* (one Cargo.lock).
+  # fuzz/ is its own unpublished workspace with no committed lockfile and
+  # is deliberately not tracked here.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+
+  # Java: the bridge library, the Gradle plugin and the JNI demo app are three
+  # independent Gradle builds (each with its own wrapper).
+  - package-ecosystem: gradle
+    directories:
+      - /libs/vespera-bridge
+      - /libs/vespera-bridge-gradle-plugin
+      - /examples/rust-jni-demo/java
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      gradle-minor-patch:
+        update-types: [minor, patch]
+
+  # Bun workspace (root package.json + apps/*, single bun.lock).
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      bun-minor-patch:
+        update-types: [minor, patch]
+
+  # GitHub Actions — every action is pinned to a full commit SHA with the
+  # tag in a trailing comment; Dependabot bumps both together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: 'chore(ci)'
+    groups:
+      github-actions:
+        patterns: ['*']
+    ignore:
+      # Pinned to commits of the `stable` / `nightly` BRANCHES (the toolchain
+      # is selected by ref), not to release tags; Dependabot would "upgrade"
+      # them to a tag with different semantics. Bump by hand with
+      # `git ls-remote https://github.com/dtolnay/rust-toolchain refs/heads/<branch>`.
+      - dependency-name: dtolnay/rust-toolchain
+      # Pinned to a `main` commit (no release tags); bumped by hand.
+      - dependency-name: changepacks/action

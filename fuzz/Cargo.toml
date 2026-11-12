@@ -10,6 +10,10 @@
 # Run (Linux/macOS, requires `cargo install cargo-fuzz` + a nightly
 # toolchain):
 #   cargo +nightly fuzz run wire_dispatch
+#   cargo +nightly fuzz run wire_header_parse
+#
+# CI: the `fuzz-build` job (CI.yml) builds every target on each PR; the
+# weekly `.github/workflows/fuzz.yml` RUNS each one for a bounded time.
 [package]
 name = "vespera-fuzz"
 version = "0.0.0"
@@ -21,13 +25,22 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-vespera_inprocess = { path = "../crates/vespera_inprocess" }
+# `bench-support` exposes the private serde_json twins (`bench_support::*`)
+# that `wire_header_parse` uses as its differential oracle.
+vespera_inprocess = { path = "../crates/vespera_inprocess", features = ["bench-support"] }
 tokio = { version = "1", features = ["rt"] }
 serde_json = "1"
 
 [[bin]]
 name = "wire_dispatch"
 path = "fuzz_targets/wire_dispatch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_header_parse"
+path = "fuzz_targets/wire_header_parse.rs"
 test = false
 doc = false
 bench = false
