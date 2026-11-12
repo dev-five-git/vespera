@@ -1,0 +1,71 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_wire_override.rs
+assertion_line: 83
+expression: "format!(\"{src}\\n\\n--- response ---\\n{}\\n--- request ---\\n{}\",\nrender(src, false), render(src, true))"
+---
+struct Event {
+        #[serde(with = "hex")]
+        raw: Vec<u8>,
+        /// Documented by hand.
+        #[serde(serialize_with = "f")]
+        out_only: u8,
+        #[serde(deserialize_with = "g")]
+        in_only: u8,
+        #[serde(deserialize_with = "g")]
+        maybe: Option<u8>,
+    }
+
+--- response ---
+{
+  "type": "object",
+  "properties": {
+    "in_only": {
+      "type": "integer",
+      "format": "uint8"
+    },
+    "maybe": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint8"
+    },
+    "out_only": {
+      "description": "Documented by hand."
+    },
+    "raw": {
+      "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+    }
+  },
+  "required": [
+    "raw",
+    "out_only",
+    "in_only"
+  ]
+}
+--- request ---
+{
+  "type": "object",
+  "properties": {
+    "in_only": {
+      "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+    },
+    "maybe": {
+      "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+    },
+    "out_only": {
+      "type": "integer",
+      "format": "uint8",
+      "description": "Documented by hand."
+    },
+    "raw": {
+      "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+    }
+  },
+  "required": [
+    "raw",
+    "out_only",
+    "in_only",
+    "maybe"
+  ]
+}

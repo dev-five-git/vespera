@@ -74,7 +74,8 @@
 //! |---|---|---|
 //! | `validation` | yes | [`Validated`] / [`ValidatedWith`] and the `#[derive(Schema)]`-generated validator |
 //! | `mimalloc` | yes | mimalloc as the JNI cdylib's global allocator (no-op unless `jni` is enabled) |
-//! | `cron` | no | `#[vespera::cron("...")]` jobs and the `cron` scheduler module |
+//! | `cron` | no | `#[vespera::cron("...")]` jobs (evaluated in UTC) and the `cron` scheduler module |
+//! | `cron-tz` | no | `#[vespera::cron("...", tz = "Asia/Seoul")]` — IANA time zones for cron jobs (implies `cron`, adds chrono-tz) |
 //! | `inprocess` | no | `inprocess` — drive a `Router` in-process without a TCP socket |
 //! | `jni` | no | `jni`, `jni_app!` / `jni_apps!` — embed the app in a Java/Spring host |
 //!
@@ -94,6 +95,12 @@ pub mod route {
 
 pub mod openapi {
     pub use vespera_core::openapi::*;
+}
+
+/// Swagger UI / ReDoc pages served by `vespera!(docs_url = ..., redoc_url = ...)`
+/// (pinned, SRI-checked assets; spec escaped for the inline `<script>`).
+pub mod docs {
+    pub use vespera_core::docs::*;
 }
 
 // Re-export OpenApi directly for convenience (used by merge feature)
@@ -119,7 +126,11 @@ pub use vespera_macro::{Multipart, Schema, cron, export_app, route, schema, sche
 /// is the entire user surface.  If you intentionally want a field to
 /// stay as opaque `{type:object}` (arbitrary JSON), mark it with
 /// `#[schema(any)]` to skip the assertion AND lock the schema to
-/// `object`.  `serde_json::Value` fields are allowlisted automatically.
+/// `object`.  `serde_json::Value` fields (and SeaORM's `Json` /
+/// `JsonValue` aliases) are allowlisted automatically.  A field with
+/// `#[schema(value_type = T)]` asserts `T` instead of its own type, and a
+/// field converted by `#[serde(with = "..")]` without `value_type` is
+/// documented as any value and not asserted.
 ///
 /// The trait and the `vespera::Schema` derive macro share the same
 /// name but live in different namespaces (trait vs. derive-macro), so

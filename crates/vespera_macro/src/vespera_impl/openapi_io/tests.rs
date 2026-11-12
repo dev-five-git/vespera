@@ -6,10 +6,22 @@ use std::fs;
 use tempfile::TempDir;
 
 use super::*;
+use crate::env_access::test_env::{self, EnvGuard};
+use crate::router_codegen::InfoArgs;
 use crate::vespera_impl::cache::hash_str;
+
+/// A fresh tempdir posing as `CARGO_MANIFEST_DIR` for this test thread only,
+/// so the `target/vespera/` spec sidecars `generate_and_write_openapi` writes
+/// never collide with another concurrently running test's.
+fn isolated_target() -> (TempDir, EnvGuard) {
+    let dir = TempDir::new().expect("Failed to create temp dir");
+    let guard = test_env::set_var("CARGO_MANIFEST_DIR", dir.path());
+    (dir, guard)
+}
 
 #[test]
 fn test_generate_and_write_openapi_no_output() {
+    let (_target, _manifest) = isolated_target();
     let processed = ProcessedVesperaInput {
         folder_name: "routes".to_string(),
         openapi_file_names: vec![],
@@ -17,11 +29,13 @@ fn test_generate_and_write_openapi_no_output() {
         version: None,
         docs_url: None,
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -39,6 +53,7 @@ fn test_generate_and_write_openapi_no_output() {
 
 #[test]
 fn test_generate_and_write_openapi_docs_only() {
+    let (_target, _manifest) = isolated_target();
     let processed = ProcessedVesperaInput {
         folder_name: "routes".to_string(),
         openapi_file_names: vec![],
@@ -46,11 +61,13 @@ fn test_generate_and_write_openapi_docs_only() {
         version: Some("1.0.0".to_string()),
         docs_url: Some("/docs".to_string()),
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -71,6 +88,7 @@ fn test_generate_and_write_openapi_docs_only() {
 
 #[test]
 fn test_generate_and_write_openapi_redoc_only() {
+    let (_target, _manifest) = isolated_target();
     let processed = ProcessedVesperaInput {
         folder_name: "routes".to_string(),
         openapi_file_names: vec![],
@@ -78,11 +96,13 @@ fn test_generate_and_write_openapi_redoc_only() {
         version: None,
         docs_url: None,
         redoc_url: Some("/redoc".to_string()),
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -100,6 +120,7 @@ fn test_generate_and_write_openapi_redoc_only() {
 
 #[test]
 fn test_generate_and_write_openapi_both_docs() {
+    let (_target, _manifest) = isolated_target();
     let processed = ProcessedVesperaInput {
         folder_name: "routes".to_string(),
         openapi_file_names: vec![],
@@ -107,11 +128,13 @@ fn test_generate_and_write_openapi_both_docs() {
         version: None,
         docs_url: Some("/docs".to_string()),
         redoc_url: Some("/redoc".to_string()),
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -127,8 +150,53 @@ fn test_generate_and_write_openapi_both_docs() {
     assert!(result.spec_pretty.is_none());
 }
 
+/// `spec_url` alone (no docs pages, no openapi file) still embeds the spec.
+#[test]
+fn test_generate_and_write_openapi_spec_url_only() {
+    let processed = processed_with_spec_url();
+    let result = generate_and_write_openapi(
+        &processed,
+        &CollectedMetadata::new(),
+        HashMap::new(),
+        &[],
+        &mut MergeSpecCache::new(),
+    )
+    .unwrap();
+    assert!(result.spec_json.is_some());
+    assert!(result.spec_pretty.is_none());
+
+    // Toggling `spec_url` changes the macro cache key (the router differs).
+    let without = ProcessedVesperaInput {
+        spec_url: None,
+        ..processed
+    };
+    assert_ne!(
+        super::super::cache::compute_config_hash(&processed_with_spec_url()),
+        super::super::cache::compute_config_hash(&without)
+    );
+}
+
+fn processed_with_spec_url() -> ProcessedVesperaInput {
+    ProcessedVesperaInput {
+        folder_name: "routes".to_string(),
+        openapi_file_names: vec![],
+        title: None,
+        version: None,
+        docs_url: None,
+        redoc_url: None,
+        spec_url: Some("/openapi.json".to_string()),
+        servers: None,
+        security_schemes: None,
+        security: None,
+        tag_descriptions: None,
+        merge: vec![],
+        info: InfoArgs::default(),
+    }
+}
+
 #[test]
 fn test_generate_and_write_openapi_file_output() {
+    let (_target, _manifest) = isolated_target();
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let output_path = temp_dir.path().join("test-openapi.json");
 
@@ -139,11 +207,13 @@ fn test_generate_and_write_openapi_file_output() {
         version: Some("2.0.0".to_string()),
         docs_url: None,
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -165,6 +235,7 @@ fn test_generate_and_write_openapi_file_output() {
 
 #[test]
 fn test_generate_and_write_openapi_creates_directories() {
+    let (_target, _manifest) = isolated_target();
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let output_path = temp_dir.path().join("nested/dir/openapi.json");
 
@@ -175,11 +246,13 @@ fn test_generate_and_write_openapi_creates_directories() {
         version: None,
         docs_url: None,
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -195,14 +268,10 @@ fn test_generate_and_write_openapi_creates_directories() {
     assert!(output_path.exists());
 }
 
-#[serial_test::serial]
 #[test]
 fn test_generate_and_write_openapi_with_merge_no_manifest_dir() {
     // When CARGO_MANIFEST_DIR is not set or merge is empty, it should work normally
-    let old_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-    // SAFETY: This serial test temporarily removes process environment to
-    // exercise the no-manifest fallback branch.
-    unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") };
+    let _env_guard = test_env::remove_var("CARGO_MANIFEST_DIR");
 
     let processed = ProcessedVesperaInput {
         folder_name: "routes".to_string(),
@@ -211,11 +280,13 @@ fn test_generate_and_write_openapi_with_merge_no_manifest_dir() {
         version: None,
         docs_url: Some("/docs".to_string()),
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
         tag_descriptions: None,
         merge: vec![syn::parse_quote!(app::TestApp)], // Has merge but no valid manifest dir
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
     // This should still work - merge logic is skipped when CARGO_MANIFEST_DIR lookup fails
@@ -226,14 +297,9 @@ fn test_generate_and_write_openapi_with_merge_no_manifest_dir() {
         &[],
         &mut MergeSpecCache::new(),
     );
-    if let Some(value) = old_manifest_dir {
-        // SAFETY: This serial test restores the process environment it changed.
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", value) };
-    }
     assert!(result.is_ok());
 }
 
-#[serial_test::serial]
 #[test]
 fn test_generate_and_write_openapi_with_merge_and_valid_spec() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -248,10 +314,8 @@ fn test_generate_and_write_openapi_with_merge_and_valid_spec() {
     fs::write(target_dir.join("ChildApp.openapi.json"), spec_content)
         .expect("Failed to write spec file");
 
-    // Save and set CARGO_MANIFEST_DIR
-    let old_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-    // SAFETY: We're in a single-threaded test context
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+    // Point CARGO_MANIFEST_DIR (thread-locally) at the temp project
+    let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
     let processed = ProcessedVesperaInput {
         folder_name: "routes".to_string(),
@@ -260,11 +324,13 @@ fn test_generate_and_write_openapi_with_merge_and_valid_spec() {
         version: Some("2.0.0".to_string()),
         docs_url: Some("/docs".to_string()),
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
         tag_descriptions: None,
         merge: vec![syn::parse_quote!(child::ChildApp)],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
 
@@ -276,16 +342,9 @@ fn test_generate_and_write_openapi_with_merge_and_valid_spec() {
         &mut MergeSpecCache::new(),
     );
 
-    // Restore CARGO_MANIFEST_DIR
-    if let Some(old_value) = old_manifest_dir {
-        // SAFETY: We're in a single-threaded test context
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", old_value) };
-    }
-
     assert!(result.is_ok());
 }
 
-#[serial_test::serial]
 #[test]
 fn merged_child_schema_conflict_is_a_spanned_compile_error() {
     let temp_dir = TempDir::new().unwrap();
@@ -318,9 +377,7 @@ fn merged_child_schema_conflict_is_a_spanned_compile_error() {
     )
     .unwrap();
 
-    let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
-    // SAFETY: this serialized test restores the process environment through RAII.
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+    let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
     let mut processed = merge_input(syn::parse_quote!(plugin_a::PluginA));
     processed.merge.push(syn::parse_quote!(plugin_b::PluginB));
     let error = generate_and_write_openapi(
@@ -350,7 +407,6 @@ fn merged_child_schema_conflict_is_a_spanned_compile_error() {
 /// lookup must work when `CARGO_MANIFEST_DIR` is reached through a symlink
 /// (no canonical-vs-literal path comparison anywhere in the merge path).
 #[cfg(unix)]
-#[serial_test::serial]
 #[test]
 fn merge_resolves_child_specs_through_a_symlinked_manifest_dir() {
     let temp_dir = TempDir::new().unwrap();
@@ -366,9 +422,7 @@ fn merge_resolves_child_specs_through_a_symlinked_manifest_dir() {
     let link = temp_dir.path().join("link");
     std::os::unix::fs::symlink(&real, &link).unwrap();
 
-    let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
-    // SAFETY: this serialized test restores the process environment through RAII.
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", &link) };
+    let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", &link);
     let result = generate_and_write_openapi(
         &merge_input(syn::parse_quote!(child::ChildApp)),
         &CollectedMetadata::new(),
@@ -386,6 +440,7 @@ fn merge_resolves_child_specs_through_a_symlinked_manifest_dir() {
 
 #[test]
 fn test_generate_and_write_openapi_file_write_error() {
+    let (_target, _manifest) = isolated_target();
     // Line 95: fs::write failure when output path is a directory
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
@@ -400,11 +455,13 @@ fn test_generate_and_write_openapi_file_write_error() {
         version: Some("1.0.0".to_string()),
         docs_url: None,
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
 
@@ -505,20 +562,6 @@ fn test_ensure_openapi_files_from_cache_multiple_files() {
     assert_eq!(fs::read_to_string(&path2).unwrap(), spec);
 }
 
-struct RestoreManifest(Option<String>);
-
-impl Drop for RestoreManifest {
-    fn drop(&mut self) {
-        // SAFETY: environment-mutating tests are serialized and restore their prior value.
-        unsafe {
-            match self.0.take() {
-                Some(value) => std::env::set_var("CARGO_MANIFEST_DIR", value),
-                None => std::env::remove_var("CARGO_MANIFEST_DIR"),
-            }
-        }
-    }
-}
-
 fn merge_input(path: syn::Path) -> ProcessedVesperaInput {
     ProcessedVesperaInput {
         folder_name: "routes".to_string(),
@@ -527,23 +570,22 @@ fn merge_input(path: syn::Path) -> ProcessedVesperaInput {
         version: None,
         docs_url: Some("/docs".to_string()),
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
         tag_descriptions: None,
         merge: vec![path],
+        info: InfoArgs::default(),
     }
 }
 
 #[test]
-#[serial_test::serial]
 fn merge_reports_missing_and_malformed_child_specs() {
     let temp = TempDir::new().unwrap();
     let vespera_dir = temp.path().join("target/vespera");
     fs::create_dir_all(&vespera_dir).unwrap();
-    let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
-    // SAFETY: this serialized test restores the process environment through RAII.
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp.path()) };
+    let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
 
     let missing = generate_and_write_openapi(
         &merge_input(syn::parse_quote!(child::MissingChild)),
@@ -581,12 +623,9 @@ fn ensure_cached_openapi_reports_parent_creation_error() {
 }
 
 #[test]
-#[serial_test::serial]
 fn sidecar_validation_covers_missing_fingerprints_corruption_and_success() {
     let temp = TempDir::new().unwrap();
-    let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
-    // SAFETY: this serialized test restores the process environment through RAII.
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp.path()) };
+    let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
     let vespera_dir = temp.path().join("target/vespera");
     fs::create_dir_all(&vespera_dir).unwrap();
     let compact = embed_spec_path();
@@ -638,12 +677,9 @@ fn sidecar_validation_accepts_cache_without_generated_specs() {
 }
 
 #[test]
-#[serial_test::serial]
 fn embedding_reports_directory_creation_and_spec_write_errors() {
     let create_temp = TempDir::new().unwrap();
-    let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
-    // SAFETY: this serialized test restores the process environment through RAII.
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", create_temp.path()) };
+    let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", create_temp.path());
     fs::create_dir_all(create_temp.path().join("target")).unwrap();
     fs::write(create_temp.path().join("target/vespera"), "blocking file").unwrap();
     let Err(create_error) = write_spec_for_embedding(Some("{}".to_string())) else {
@@ -656,8 +692,7 @@ fn embedding_reports_directory_creation_and_spec_write_errors() {
     );
 
     let write_temp = TempDir::new().unwrap();
-    // SAFETY: this serialized test restores the process environment through RAII.
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", write_temp.path()) };
+    let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", write_temp.path());
     let spec_path = embed_spec_path();
     fs::create_dir_all(&spec_path).unwrap();
     let Err(write_error) = write_spec_for_embedding(Some("{}".to_string())) else {
@@ -670,7 +705,6 @@ fn embedding_reports_directory_creation_and_spec_write_errors() {
     );
 }
 
-#[serial_test::serial]
 #[test]
 fn merged_children_with_same_operation_id_is_a_compile_error() {
     let temp_dir = TempDir::new().unwrap();
@@ -689,9 +723,7 @@ fn merged_children_with_same_operation_id_is_a_compile_error() {
     fs::write(target_dir.join("PluginA.openapi.json"), spec("/a/health")).unwrap();
     fs::write(target_dir.join("PluginB.openapi.json"), spec("/b/health")).unwrap();
 
-    let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
-    // SAFETY: this serialized test restores the process environment through RAII.
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+    let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
     let mut processed = merge_input(syn::parse_quote!(plugin_a::PluginA));
     processed.merge.push(syn::parse_quote!(plugin_b::PluginB));
     let message = generate_and_write_openapi(
@@ -719,7 +751,6 @@ fn merged_children_with_same_operation_id_is_a_compile_error() {
 #[rstest::rstest]
 #[case::declared_by_child("childAuth", true)]
 #[case::declared_nowhere("ghostAuth", false)]
-#[serial_test::serial]
 fn security_references_are_validated_after_merge(#[case] scheme: &str, #[case] ok: bool) {
     let temp_dir = TempDir::new().unwrap();
     let target_dir = temp_dir.path().join("target/vespera");
@@ -734,9 +765,7 @@ fn security_references_are_validated_after_merge(#[case] scheme: &str, #[case] o
     });
     fs::write(target_dir.join("PluginA.openapi.json"), child.to_string()).unwrap();
 
-    let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
-    // SAFETY: this serialized test restores the process environment through RAII.
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+    let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
     let mut processed = merge_input(syn::parse_quote!(plugin_a::PluginA));
     processed.security_schemes = Some(std::collections::BTreeMap::from([(
         "parentAuth".to_string(),
@@ -776,4 +805,31 @@ fn security_references_are_validated_after_merge(#[case] scheme: &str, #[case] o
             insta::assert_snapshot!("merged_security_reference_unknown_error", error.to_string());
         }
     }
+}
+
+#[test]
+fn test_generate_and_write_openapi_applies_info_args() {
+    let processed = ProcessedVesperaInput {
+        folder_name: "routes".to_string(),
+        spec_url: Some("/openapi.json".to_string()),
+        info: InfoArgs {
+            description: Some("Configured description".to_string()),
+            license: Some("MIT".to_string()),
+            contact_email: Some("api@example.com".to_string()),
+            ..Default::default()
+        },
+        ..ProcessedVesperaInput::default()
+    };
+    let result = generate_and_write_openapi(
+        &processed,
+        &CollectedMetadata::new(),
+        HashMap::new(),
+        &[],
+        &mut MergeSpecCache::new(),
+    )
+    .unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&result.spec_json.unwrap()).unwrap();
+    assert_eq!(doc["info"]["description"], "Configured description");
+    assert_eq!(doc["info"]["license"]["identifier"], "MIT");
+    assert_eq!(doc["info"]["contact"]["email"], "api@example.com");
 }

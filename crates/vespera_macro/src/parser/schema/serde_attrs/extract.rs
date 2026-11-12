@@ -276,7 +276,7 @@ pub fn extract_serde_skip_flags(attrs: &[syn::Attribute]) -> SerdeSkipFlags {
 /// returns `false`), so an unrelated key never aborts the walk.
 ///
 /// Returns `false` when any `#[serde(...)]` list failed to parse.
-fn walk_serde_keys(
+pub(super) fn walk_serde_keys(
     attrs: &[syn::Attribute],
     mut on_key: impl FnMut(&syn::meta::ParseNestedMeta<'_>) -> syn::Result<bool>,
 ) -> bool {

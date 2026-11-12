@@ -1,0 +1,38 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_wire_override.rs
+assertion_line: 83
+expression: "format!(\"{src}\\n\\n--- response ---\\n{}\\n--- request ---\\n{}\",\nrender(src, false), render(src, true))"
+---
+/// A colour.
+    #[serde(into = "String")]
+    struct Rgb { r: u8, g: u8, b: u8 }
+
+--- response ---
+{
+  "type": "string",
+  "description": "A colour."
+}
+--- request ---
+{
+  "type": "object",
+  "description": "A colour.",
+  "properties": {
+    "b": {
+      "type": "integer",
+      "format": "uint8"
+    },
+    "g": {
+      "type": "integer",
+      "format": "uint8"
+    },
+    "r": {
+      "type": "integer",
+      "format": "uint8"
+    }
+  },
+  "required": [
+    "r",
+    "g",
+    "b"
+  ]
+}

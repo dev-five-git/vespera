@@ -1,12 +1,25 @@
 ---
 source: examples/axum-example/tests/integration_test.rs
+assertion_line: 434
 expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
 ---
 {
   "openapi": "3.1.0",
   "info": {
     "title": "API",
-    "version": "0.1.0"
+    "version": "0.1.0",
+    "summary": "Example routes exercising every vespera feature",
+    "description": "Vespera axum example API",
+    "termsOfService": "https://example.com/terms",
+    "contact": {
+      "name": "Vespera Team",
+      "url": "https://github.com/dev-five-git/vespera",
+      "email": "vespera@example.com"
+    },
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    }
   },
   "paths": {
     "/": {
@@ -20,6 +33,201 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "text/plain": {
                 "schema": {
                   "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/codecs/color": {
+      "post": {
+        "operationId": "echo_color",
+        "tags": [
+          "codecs"
+        ],
+        "summary": "Echo a colour (`\"#rrggbb\"` both ways).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Rgb"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rgb"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/codecs/document": {
+      "get": {
+        "operationId": "get_document",
+        "tags": [
+          "codecs"
+        ],
+        "summary": "A SeaORM model with `Json` / `Option<JsonValue>` columns.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/codecs/json": {
+      "post": {
+        "operationId": "echo_json",
+        "tags": [
+          "codecs"
+        ],
+        "summary": "Echo free-form JSON payloads.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JsonPayloads"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonPayloads"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/codecs/money": {
+      "post": {
+        "operationId": "echo_money",
+        "tags": [
+          "codecs"
+        ],
+        "summary": "Accept `{cents, currency}`, answer `{amount, currency}`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoneyInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Money"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/codecs/stamp": {
+      "post": {
+        "operationId": "echo_stamp",
+        "tags": [
+          "codecs"
+        ],
+        "summary": "Echo a unix-seconds timestamp.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnixSeconds"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnixSeconds"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/codecs/times": {
+      "get": {
+        "operationId": "get_times",
+        "tags": [
+          "codecs"
+        ],
+        "summary": "Timestamps as unix seconds / milliseconds.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventTimes"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "echo_times",
+        "tags": [
+          "codecs"
+        ],
+        "summary": "Echo timestamps back.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventTimesInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventTimes"
                 }
               }
             }
@@ -1214,6 +1422,56 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         }
       }
     },
+    "/network": {
+      "get": {
+        "operationId": "get_network_endpoint",
+        "tags": [
+          "network"
+        ],
+        "summary": "Sample endpoint.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkEndpoint"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "echo_network_endpoint",
+        "tags": [
+          "network"
+        ],
+        "summary": "Echo an endpoint back.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NetworkEndpoint"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkEndpoint"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/path/multi-path/{arg}/{var1}/{var2}": {
       "get": {
         "operationId": "mod_file_with_multi_path",
@@ -2313,6 +2571,71 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         }
       }
     },
+    "/validated/tags": {
+      "post": {
+        "operationId": "create_tagged_post",
+        "tags": [
+          "validated"
+        ],
+        "summary": "Create a tagged post.",
+        "description": "`ValidatedWith<C, T>` validates with a context `C` borrowed from the\nrouter state (`impl ValidationContext<TagPolicy> for Arc<AppState>`); a\nrule violation answers the same `422` envelope.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaggedPost"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaggedPost"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "message": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "message"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "errors"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/validated/users": {
       "post": {
         "operationId": "create_validated_user",
@@ -2320,6 +2643,82 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "validated"
         ],
         "summary": "Echo back the validated input.  If the request body fails validation, this handler never runs — the `Validated` extractor returns a `422` before it is reached.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidatedUserRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidatedUserRequest"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "message": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "message"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "errors"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/validated/users/{id}": {
+      "put": {
+        "operationId": "update_validated_user",
+        "tags": [
+          "validated"
+        ],
+        "summary": "Replace a validated user.",
+        "description": "A `Path` extractor may come BEFORE the validated body — the `422`\nresponse is still documented.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "uint64"
+            }
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -2966,6 +3365,27 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "tags"
         ]
       },
+      "DocumentResponse": {
+        "type": "object",
+        "description": "A free-form JSON document. SeaORM's `Json` / `JsonValue` are aliases of\n`serde_json::Value`, so the columns can hold objects, arrays AND scalars —\ndocumented as any value (`{}`), not `{type: object}`.",
+        "properties": {
+          "body": {
+            "description": "Document body."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "default": 0
+          },
+          "meta": {
+            "description": "Optional metadata."
+          }
+        },
+        "required": [
+          "id",
+          "body"
+        ]
+      },
       "Enum": {
         "type": "string",
         "enum": [
@@ -3227,6 +3647,59 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "code"
         ]
       },
+      "EventTimes": {
+        "type": "object",
+        "description": "Timestamps written by custom serde functions.",
+        "properties": {
+          "checksum": {
+            "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds (`chrono::serde::ts_seconds`) — an integer, not a\ndate-time string."
+          },
+          "expiresAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Optional unix milliseconds."
+          }
+        },
+        "required": [
+          "createdAt",
+          "checksum"
+        ]
+      },
+      "EventTimesInput": {
+        "type": "object",
+        "description": "Timestamps written by custom serde functions.",
+        "properties": {
+          "checksum": {
+            "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds (`chrono::serde::ts_seconds`) — an integer, not a\ndate-time string."
+          },
+          "expiresAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Optional unix milliseconds."
+          }
+        },
+        "required": [
+          "createdAt",
+          "expiresAt",
+          "checksum"
+        ]
+      },
       "ExternallyTaggedEvent": {
         "description": "Externally tagged enum (default) - serializes as `{\"VariantName\": ...}`\nExample: `{\"Created\": {\"id\": 1, \"name\": \"test\"}}`\nThis is included for comparison with the other representations.",
         "oneOf": [
@@ -3467,6 +3940,25 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "item_id",
           "slug"
+        ]
+      },
+      "JsonPayloads": {
+        "type": "object",
+        "description": "A free-form JSON payload in every spelling vespera maps to `{}`.",
+        "properties": {
+          "body": {
+            "description": "SeaORM's `Json` (= `serde_json::Value`): any JSON value."
+          },
+          "extra": {
+            "description": "`serde_json::Value` itself."
+          },
+          "meta": {
+            "description": "SeaORM's `JsonValue` alias."
+          }
+        },
+        "required": [
+          "body",
+          "extra"
         ]
       },
       "MapQuery": {
@@ -3891,6 +4383,120 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "name"
         ]
       },
+      "Money": {
+        "description": "An amount: clients SEND `{cents, currency}` (the `MoneyInput` request\ncomponent) but RECEIVE the `into` type's shape (`MoneyWire`).",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/MoneyWire"
+          }
+        ]
+      },
+      "MoneyInput": {
+        "type": "object",
+        "description": "An amount: clients SEND `{cents, currency}` (the `MoneyInput` request\ncomponent) but RECEIVE the `into` type's shape (`MoneyWire`).",
+        "properties": {
+          "cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "currency": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cents",
+          "currency"
+        ]
+      },
+      "MoneyWire": {
+        "type": "object",
+        "description": "The serialized shape of [`Money`].",
+        "properties": {
+          "amount": {
+            "type": "string",
+            "description": "Decimal amount as a string, e.g. `\"12.34\"`."
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217 code."
+          }
+        },
+        "required": [
+          "amount",
+          "currency"
+        ]
+      },
+      "NetworkEndpoint": {
+        "type": "object",
+        "description": "Network endpoint description built from std / `url` types.",
+        "properties": {
+          "bind": {
+            "type": "string",
+            "description": "`ip:port` — `string`."
+          },
+          "callback": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Optional callback URL."
+          },
+          "data_dir": {
+            "type": "string",
+            "description": "Filesystem path — `string`."
+          },
+          "homepage": {
+            "type": "string",
+            "format": "uri",
+            "description": "`string` / `uri`."
+          },
+          "ip": {
+            "type": "string",
+            "description": "Either address family — `string`."
+          },
+          "ipv4": {
+            "type": "string",
+            "format": "ipv4",
+            "description": "`string` / `ipv4`."
+          },
+          "ipv6": {
+            "type": "string",
+            "format": "ipv6",
+            "description": "`string` / `ipv6`."
+          },
+          "timeout": {
+            "type": "object",
+            "description": "`{\"secs\", \"nanos\"}` object (serde's std `Duration` shape).",
+            "properties": {
+              "nanos": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0,
+                "maximum": 999999999
+              },
+              "secs": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "secs",
+              "nanos"
+            ]
+          }
+        },
+        "required": [
+          "ip",
+          "ipv4",
+          "ipv6",
+          "bind",
+          "data_dir",
+          "homepage",
+          "timeout"
+        ]
+      },
       "Note": {
         "type": "object",
         "properties": {
@@ -4079,6 +4685,10 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "total",
           "hasMore"
         ]
+      },
+      "Rgb": {
+        "type": "string",
+        "description": "An RGB colour that travels as `\"#rrggbb\"` in both directions."
       },
       "SearchQuery": {
         "description": "Query string: `tags` repeats (`?tags=a&tags=b`, `style: form, explode:\ntrue`), `internal` is never read, `Paging`'s fields are inlined.",
@@ -4495,6 +5105,27 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "isSubscribed"
         ]
       },
+      "TaggedPost": {
+        "type": "object",
+        "description": "Tagged post, validated against the runtime tag policy.",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "description": "Tags — each must start with the policy's `required_prefix`.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "title": {
+            "type": "string",
+            "description": "Post title."
+          }
+        },
+        "required": [
+          "title",
+          "tags"
+        ]
+      },
       "Telemetry": {
         "description": "Any-JSON payload, a std `Duration` (`{secs, nanos}`) and an optional\nflattened block (its fields are not required).",
         "allOf": [
@@ -4599,6 +5230,11 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "name",
           "age"
         ]
+      },
+      "UnixSeconds": {
+        "type": "integer",
+        "format": "int64",
+        "description": "A Unix-seconds timestamp whose container-level `value_type` documents it\nfor both directions."
       },
       "UntaggedValue": {
         "description": "Untagged enum - serializes as just the variant data, no tag\nThe deserializer tries each variant in order until one matches.\nExample: `\"hello\"` or `42` or `{\"key\": \"value\"}`",
@@ -5114,6 +5750,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
   },
   "tags": [
     {
+      "name": "codecs"
+    },
+    {
       "name": "config"
     },
     {
@@ -5127,6 +5766,9 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
     },
     {
       "name": "hello"
+    },
+    {
+      "name": "network"
     },
     {
       "name": "terms"

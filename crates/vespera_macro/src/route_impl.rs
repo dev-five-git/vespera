@@ -343,7 +343,44 @@ pub fn process_route_attribute(
         .unwrap_or_default();
     let mut output = item;
     output.extend(assertions);
+    #[cfg(feature = "validation")]
+    output.extend(validated_payload_assertions(&item_fn.sig));
     Ok(output)
+}
+
+/// `U: garde::Validate` assertions for the payload of every
+/// `Validated<E<U>>` / `ValidatedWith<C, E<U>>` argument (`E` one of
+/// `Json` / `Form` / `Query` / `Path` / `TypedMultipart`), spanned at `U`.
+///
+/// `#[derive(Schema)]` only generates `garde::Validate` for a named-field
+/// struct with at least one runtime `#[schema(...)]` rule, so a rule-less
+/// payload would otherwise surface as an opaque `Handler` trait-bound error at
+/// the router. The bound goes through `vespera`'s own `AssertValidate`, whose
+/// `#[diagnostic::on_unimplemented]` explains the fix at the argument.
+///
+/// Generic handlers are skipped: their payload may name a type parameter that
+/// is out of scope for an item emitted next to the function.
+#[cfg(feature = "validation")]
+fn validated_payload_assertions(sig: &syn::Signature) -> proc_macro2::TokenStream {
+    if !sig.generics.params.is_empty() {
+        return proc_macro2::TokenStream::new();
+    }
+    let assertions = sig
+        .inputs
+        .iter()
+        .filter_map(|input| match input {
+            syn::FnArg::Typed(pat_type) => crate::parser::validated_payload_type(&pat_type.ty),
+            syn::FnArg::Receiver(_) => None,
+        })
+        .map(|payload| {
+            quote::quote_spanned! { syn::spanned::Spanned::span(payload) =>
+                const _: () = {
+                    const fn __vespera_assert_validate<T: ::vespera::__validation::AssertValidate + ?Sized>() {}
+                    let _ = __vespera_assert_validate::<#payload>;
+                };
+            }
+        });
+    quote::quote! { #(#assertions)* }
 }
 
 /// `T: ::vespera::Schema` assertions for every type in
@@ -801,3 +838,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "validation"))]
+mod tests_validated;

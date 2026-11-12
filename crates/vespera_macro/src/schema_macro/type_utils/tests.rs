@@ -549,3 +549,22 @@ fn type_default_returns_temporal_and_uuid_sentinels(
     let ty: syn::Type = syn::parse_str(input).unwrap();
     assert_eq!(get_type_default(&ty), Some(expected));
 }
+
+/// SeaORM's `Json` / `JsonValue` aliases and a bare `Value` all become the
+/// public `serde_json::Value` path — but a `Json<T>` (axum's body wrapper)
+/// is a different type and is resolved like any other user type.
+#[rstest]
+#[case::json("Json", "vespera :: serde_json :: Value")]
+#[case::json_value("JsonValue", "vespera :: serde_json :: Value")]
+#[case::value("Value", "vespera :: serde_json :: Value")]
+#[case::option_json_value("Option<JsonValue>", "Option < vespera :: serde_json :: Value >")]
+#[case::vec_in_generic("Vec<JsonValue>", "Vec < vespera :: serde_json :: Value >")]
+#[case::json_wrapper("Json<Payload>", "crate :: models :: doc :: Json < Payload >")]
+fn json_aliases_resolve_to_public_value_path(#[case] src: &str, #[case] expected: &str) {
+    let ty: syn::Type = syn::parse_str(src).unwrap();
+    let module_path = vec!["crate".to_string(), "models".to_string(), "doc".to_string()];
+    assert_eq!(
+        resolve_type_to_absolute_path(&ty, &module_path).to_string(),
+        expected
+    );
+}

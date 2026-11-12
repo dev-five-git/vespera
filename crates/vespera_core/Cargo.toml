@@ -24,13 +24,19 @@ rustdoc-args = ["--cfg", "docsrs"]
 # search), which only the runtime scheduler needs.
 cron = ["dep:croner"]
 cron-chrono = ["cron", "croner/chrono"]
+# IANA time-zone lookup (`parse_timezone`) for `#[cron(..., tz = "...")]`.
+# chrono-tz embeds the whole tz database (~7 MB of generated source), so it
+# is opt-in: only crates that schedule jobs outside UTC pay for it.
+cron-tz = ["cron", "dep:chrono-tz"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 croner = { version = "4", default-features = false, optional = true }
+chrono-tz = { version = "0.10", optional = true }
 
 [dev-dependencies]
+insta = "1.49"
 rstest = "0.28"
 
 [lints]

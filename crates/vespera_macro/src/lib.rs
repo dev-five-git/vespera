@@ -44,6 +44,7 @@
 mod args;
 mod collector;
 mod cron_impl;
+mod env_access;
 mod error;
 mod file_utils;
 mod garde_emit;
@@ -84,12 +85,20 @@ pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Mark a function as a cron job with the given cron expression.
 ///
+/// The expression is evaluated in **UTC** unless `tz = "Area/City"` names an
+/// IANA time zone (needs the `cron-tz` feature; unknown names are compile
+/// errors).  `overlap = "skip"` skips a tick while the previous run of the
+/// same job is still going (default `"allow"`: runs may overlap).
+///
 /// # Example
 /// ```ignore
 /// #[vespera::cron("0 */5 * * * *")]
 /// pub async fn cleanup_sessions() {
 ///     println!("Running cleanup");
 /// }
+///
+/// #[vespera::cron("0 0 9 * * Mon-Fri", tz = "Asia/Seoul", overlap = "skip")]
+/// pub async fn morning_report() {}
 /// ```
 #[cfg(not(tarpaulin_include))]
 #[proc_macro_attribute]
@@ -395,11 +404,11 @@ pub fn export_app(input: TokenStream) -> TokenStream {
         .map_or_else(proc_macro2::Span::call_site, syn::LitStr::span);
     let folder_name = dir
         .map(|d| d.value())
-        .or_else(|| std::env::var("VESPERA_DIR").ok())
+        .or_else(|| crate::env_access::var("VESPERA_DIR").ok())
         .unwrap_or_else(|| "routes".to_string());
     let prefix = prefix.map_or_else(String::new, |value| value.value());
     let schema_storage = schema_impl::current_crate_schemas();
-    let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") else {
+    let Ok(manifest_dir) = crate::env_access::var("CARGO_MANIFEST_DIR") else {
         return syn::Error::new(proc_macro2::Span::call_site(), "export_app! macro: CARGO_MANIFEST_DIR is not set. This macro must be used within a cargo build.").to_compile_error().into();
     };
 

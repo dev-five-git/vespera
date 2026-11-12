@@ -58,6 +58,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       register a {@code @Bean DispatchModeResolver} —
  *       the default {@link SmartDispatchModeResolver} is
  *       automatically disabled.</li>
+ *   <li><strong>Proxied URL space</strong>:
+ *       set {@code vespera.bridge.include-patterns} /
+ *       {@code vespera.bridge.exclude-patterns} — excluded paths fall
+ *       through to other controllers and static resources.</li>
  *   <li><strong>Completely BYO controller</strong>:
  *       set {@code vespera.bridge.controller-enabled=false} and
  *       provide your own {@code @RestController} that calls the
@@ -302,8 +306,24 @@ public class VesperaBridgeAutoConfiguration {
             matchIfMissing = true)
     @ConditionalOnMissingBean
     public VesperaPreflightHandlerMapping vesperaPreflightHandlerMapping(
-            VesperaProxyController controller) {
-        return new VesperaPreflightHandlerMapping(controller);
+            VesperaProxyController controller, VesperaBridgeProperties props) {
+        return new VesperaPreflightHandlerMapping(controller, props.proxyPathPatterns());
+    }
+
+    /**
+     * {@code vespera.bridge.include-patterns} / {@code exclude-patterns}:
+     * narrows the proxy's {@code /**} request mapping so excluded paths fall
+     * through to the rest of Spring MVC (other handlers, static resources,
+     * {@code 404}). A no-op with the defaults. Invalid patterns fail startup.
+     */
+    @Bean
+    @ConditionalOnBean(VesperaProxyController.class)
+    @ConditionalOnMissingBean
+    public VesperaProxyPathMappings vesperaProxyPathMappings(
+            VesperaBridgeProperties props,
+            ObjectProvider<org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping>
+                    handlerMappings) {
+        return new VesperaProxyPathMappings(props.proxyPathPatterns(), handlerMappings);
     }
 
     /**

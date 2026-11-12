@@ -24,6 +24,8 @@ import java.util.List;
  *     app-header: X-My-App        # override the default header name
  *     exposed-apps: [admin]       # apps the client-controlled app header may select
  *     controller-enabled: false   # disable our controller (BYO controller)
+ *     include-patterns: [/api/**] # paths the proxy owns (default /**)
+ *     exclude-patterns: [/api/internal/**] # left to Spring MVC (handlers, static resources, 404)
  *     direct-retry-on-overflow: false # surface DIRECT overflow instead of retrying
  *     max-buffered-request-bytes: 10485760 # cap SYNC/ASYNC/DIRECT/STREAMING request buffering
  *     max-buffered-response-bytes: 67108864 # cap SYNC heap-buffered response bodies
@@ -195,6 +197,26 @@ public class VesperaBridgeProperties {
     /** Request-id handling of the proxy controller. */
     private final RequestId requestId = new RequestId();
 
+    /**
+     * Path patterns (Spring {@code PathPattern} syntax, matched against the
+     * path within the application) the proxy controller serves.  Default
+     * {@code /**}: every path no more specific Spring MVC handler claims.
+     * Paths outside the list are not mapped to the proxy and fall through to
+     * the rest of Spring MVC (other handler mappings, static resources, then
+     * {@code 404}).  Also limits which CORS preflights {@code cors=rust}
+     * routes to Rust.
+     */
+    private List<String> includePatterns = new ArrayList<>(ProxyPathPatterns.DEFAULT_INCLUDE);
+
+    /**
+     * Path patterns (Spring {@code PathPattern} syntax) the proxy controller
+     * never serves, even when they match {@link #includePatterns} (e.g.
+     * {@code /static/**}).  Excluded requests fall through to the rest of
+     * Spring MVC (other handler mappings, static resources, then
+     * {@code 404}).  Default: none.
+     */
+    private List<String> excludePatterns = new ArrayList<>();
+
     public String getAppHeader() {
         return appHeader;
     }
@@ -307,6 +329,32 @@ public class VesperaBridgeProperties {
         return requestId;
     }
 
+    public List<String> getIncludePatterns() {
+        return includePatterns;
+    }
+
+    public void setIncludePatterns(List<String> includePatterns) {
+        this.includePatterns = includePatterns == null ? new ArrayList<>() : new ArrayList<>(includePatterns);
+    }
+
+    public List<String> getExcludePatterns() {
+        return excludePatterns;
+    }
+
+    public void setExcludePatterns(List<String> excludePatterns) {
+        this.excludePatterns = excludePatterns == null ? new ArrayList<>() : new ArrayList<>(excludePatterns);
+    }
+
+    /**
+     * {@link #includePatterns} / {@link #excludePatterns}, validated (an empty
+     * include list means {@code /**}).
+     *
+     * @throws IllegalArgumentException for an invalid pattern
+     */
+    ProxyPathPatterns proxyPathPatterns() {
+        return new ProxyPathPatterns(includePatterns, excludePatterns);
+    }
+
     /**
      * {@code vespera.bridge.request-id.*}: when enabled, the proxy uses the
      * client's request id (a 1–128 character visible-ASCII token) or
@@ -315,7 +363,16 @@ public class VesperaBridgeProperties {
      * SLF4J MDC key {@code requestId} while dispatching.
      */
     public static class RequestId {
+        /**
+         * Whether the proxy reads (or generates), forwards, echoes and
+         * MDC-logs a request id.  Default {@code true}.
+         */
         private boolean enabled = true;
+
+        /**
+         * Request-id header: read from the client, forwarded to Rust and
+         * echoed on the response.  Default {@code X-Request-Id}.
+         */
         private String header = "X-Request-Id";
 
         public boolean isEnabled() {

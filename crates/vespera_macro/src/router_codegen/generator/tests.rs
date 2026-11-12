@@ -5,6 +5,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::collector::collect_metadata;
+use crate::metadata::CronOptions;
 
 fn create_temp_file(dir: &TempDir, filename: &str, content: &str) -> std::path::PathBuf {
     let file_path = dir.path().join(filename);
@@ -24,6 +25,7 @@ fn test_generate_router_code_empty() {
         &collect_metadata(temp_dir.path(), folder_name, &[])
             .unwrap()
             .0,
+        None,
         None,
         None,
         None,
@@ -187,6 +189,7 @@ fn test_generate_router_code_single_route(
         None,
         None,
         None,
+        None,
         &[],
         &[],
     );
@@ -270,6 +273,7 @@ pub fn update_user() -> String {
         None,
         None,
         None,
+        None,
         &[],
         &[],
     );
@@ -328,6 +332,7 @@ pub fn create_users() -> String {
         None,
         None,
         None,
+        None,
         &[],
         &[],
     );
@@ -378,6 +383,7 @@ pub fn index() -> String {
         None,
         None,
         None,
+        None,
         &[],
         &[],
     );
@@ -419,6 +425,7 @@ pub fn get_users() -> String {
         None,
         None,
         None,
+        None,
         &[],
         &[],
     );
@@ -445,6 +452,7 @@ fn test_generate_router_code_with_docs() {
         &metadata,
         Some("/docs"),
         None,
+        None,
         Some(quote::quote!(#spec)),
         &[],
         &[],
@@ -452,7 +460,7 @@ fn test_generate_router_code_with_docs() {
     let code = result.to_string();
 
     assert!(code.contains("/docs"));
-    assert!(code.contains("swagger-ui"));
+    assert!(code.contains("swagger_ui_html"));
     assert!(code.contains("__VESPERA_SPEC"));
     assert!(code.contains("OnceLock"));
 }
@@ -466,6 +474,7 @@ fn test_generate_router_code_with_redoc() {
         &metadata,
         None,
         Some("/redoc"),
+        None,
         Some(quote::quote!(#spec)),
         &[],
         &[],
@@ -487,6 +496,7 @@ fn test_generate_router_code_with_both_docs() {
         &metadata,
         Some("/docs"),
         Some("/redoc"),
+        None,
         Some(quote::quote!(#spec)),
         &[],
         &[],
@@ -526,7 +536,7 @@ fn test_generate_router_code_unknown_http_method() {
         description: None,
     });
 
-    let result = generate_router_code(&metadata, None, None, None, &[], &[]);
+    let result = generate_router_code(&metadata, None, None, None, None, &[], &[]);
     let code = result.to_string();
 
     assert!(
@@ -588,7 +598,7 @@ pub fn get_users() -> String {
         description: None,
     });
 
-    let result = generate_router_code(&metadata, None, None, None, &[], &[]);
+    let result = generate_router_code(&metadata, None, None, None, None, &[], &[]);
     let code = result.to_string();
 
     // Valid route should be present
@@ -614,7 +624,7 @@ fn test_generate_router_code_with_merge_apps() {
     let metadata = CollectedMetadata::new();
     let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(third::ThirdApp)];
 
-    let result = generate_router_code(&metadata, None, None, None, &merge_apps, &[]);
+    let result = generate_router_code(&metadata, None, None, None, None, &merge_apps, &[]);
     let code = result.to_string();
 
     // Should use VesperaRouter instead of plain Router
@@ -637,6 +647,7 @@ fn test_generate_router_code_with_docs_and_merge() {
     let result = generate_router_code(
         &metadata,
         Some("/docs"),
+        None,
         None,
         Some(quote::quote!(#spec)),
         &merge_apps,
@@ -670,6 +681,7 @@ fn test_generate_router_code_with_redoc_and_merge() {
         &metadata,
         None,
         Some("/redoc"),
+        None,
         Some(quote::quote!(#spec)),
         &merge_apps,
         &[],
@@ -694,6 +706,7 @@ fn test_generate_router_code_with_both_docs_and_merge() {
         &metadata,
         Some("/docs"),
         Some("/redoc"),
+        None,
         Some(quote::quote!(#spec)),
         &merge_apps,
         &[],
@@ -728,7 +741,7 @@ fn test_generate_router_code_with_multiple_merge_apps() {
         syn::parse_quote!(second::App),
     ];
 
-    let result = generate_router_code(&metadata, None, None, None, &merge_apps, &[]);
+    let result = generate_router_code(&metadata, None, None, None, None, &merge_apps, &[]);
     let code = result.to_string();
 
     // Should reference both apps
@@ -749,9 +762,10 @@ fn test_generate_router_code_with_merge_and_cron() {
         function_name: "cleanup".to_string(),
         module_path: "tasks".to_string(),
         file_path: "src/tasks.rs".to_string(),
+        options: CronOptions::default(),
     }];
 
-    let result = generate_router_code(&metadata, None, None, None, &merge_apps, &cron_jobs);
+    let result = generate_router_code(&metadata, None, None, None, None, &merge_apps, &cron_jobs);
     let code = result.to_string();
 
     assert!(
@@ -776,9 +790,10 @@ fn test_generate_router_code_with_cron_no_merge() {
         function_name: "heartbeat".to_string(),
         module_path: "cron::health".to_string(),
         file_path: "src/cron/health.rs".to_string(),
+        options: CronOptions::default(),
     }];
 
-    let result = generate_router_code(&metadata, None, None, None, &[], &cron_jobs);
+    let result = generate_router_code(&metadata, None, None, None, None, &[], &cron_jobs);
     let code = result.to_string();
 
     assert!(
@@ -805,18 +820,54 @@ fn cron_scheduler_code_starts_jobs_once_per_invocation() {
             function_name: "cleanup".to_string(),
             module_path: "tasks".to_string(),
             file_path: "src/tasks.rs".to_string(),
+            options: CronOptions::default(),
         },
         CronMetadata {
             expression: "1/10 * * * * *".to_string(),
             function_name: "heartbeat".to_string(),
             module_path: "cron::health".to_string(),
             file_path: "src/cron/health.rs".to_string(),
+            options: CronOptions::default(),
         },
     ];
     let body = generate_cron_scheduler_code(&cron_jobs);
     let file: syn::File = syn::parse2(quote!(fn create_app() { #body })).expect("valid fn");
     insta::assert_snapshot!(
         "cron_scheduler_code_starts_jobs_once_per_invocation",
+        prettyplease::unparse(&file)
+    );
+}
+
+/// `tz` / `overlap = "skip"` become builder calls; a root-module job is named
+/// by its bare function name.
+#[test]
+fn cron_scheduler_code_applies_job_options() {
+    let cron_jobs = vec![
+        CronMetadata {
+            expression: "0 0 9 * * *".to_string(),
+            function_name: "morning_report".to_string(),
+            module_path: String::new(),
+            file_path: "src/lib.rs".to_string(),
+            options: CronOptions {
+                timezone: Some("Asia/Seoul".to_string()),
+                skip_overlap: true,
+            },
+        },
+        CronMetadata {
+            expression: "0 */5 * * * *".to_string(),
+            function_name: "reindex".to_string(),
+            module_path: "tasks".to_string(),
+            file_path: "src/tasks.rs".to_string(),
+            options: CronOptions {
+                timezone: None,
+                skip_overlap: true,
+            },
+        },
+    ];
+    let body = generate_cron_scheduler_code(&cron_jobs);
+    let file: syn::File = syn::parse2(quote!(fn create_app() { #body })).expect("valid fn");
+    insta::assert_snapshot!(
+        "cron_scheduler_code_applies_job_options",
         prettyplease::unparse(&file)
     );
 }

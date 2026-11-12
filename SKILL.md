@@ -54,8 +54,12 @@ async fn main() -> std::io::Result<()> {
         openapi  = "openapi.json", // writes file at compile time
         title    = "My API",
         version  = "1.0.0",
-        docs_url = "/docs",        // Swagger UI
-        redoc_url = "/redoc"       // ReDoc alternative
+        license  = "MIT",          // info.license (SPDX); also description, summary,
+                                   // terms_of_service, contact_{name,url,email},
+                                   // license_name + license_url
+        docs_url = "/docs",        // Swagger UI (pinned + SRI-checked assets)
+        redoc_url = "/redoc",      // ReDoc alternative
+        spec_url = "/openapi.json" // raw spec as application/json
     )
     .serve("0.0.0.0:3000")
     .await
@@ -109,6 +113,32 @@ pub async fn create(
   (`length`, `email`, `range`, `pattern`, custom, …).
 - Vespera's `#[derive(Schema)]` continues to drive the OpenAPI spec — the two
   derives compose cleanly on the same struct.
+- Or skip garde entirely: a runtime `#[schema(...)]` rule (`min_length`,
+  `format = "email"`, …) makes `#[derive(Schema)]` generate the impl. A
+  rule-less struct or an enum has none, so `Validated<Json<T>>` with it fails at
+  the argument with `` `T` cannot be validated by `Validated` / `ValidatedWith` ``.
+- Any `Validated` / `ValidatedWith` argument documents the `422` response,
+  even after a plain `Path<T>` argument.
+
+### Context-aware validation (`ValidatedWith<C, T>`)
+
+For `#[garde(context(C))]` rules, use `ValidatedWith<C, T>`. The context is
+borrowed from the router state via `vespera::ValidationContext<C>`. A state of
+type `C` implements this automatically; otherwise implement it for your state:
+
+```rust
+impl vespera::ValidationContext<TagPolicy> for Arc<AppState> {
+    fn validation_context(&self) -> &TagPolicy { &self.tag_policy }
+}
+
+#[vespera::route(post)]
+pub async fn create(post: ValidatedWith<TagPolicy, Json<TaggedPost>>) -> &'static str {
+    let Json(_post) = post.into_inner(); // tuple pattern is private — use into_inner / Deref
+    "ok"
+}
+```
+
+The spec documents the same body, parameters and `422` as for `Validated`.
 
 ### JNI / Binary wire integration
 
@@ -145,7 +175,38 @@ async fn main() -> std::io::Result<()> {
 - Handlers can extract `ConnectInfo<SocketAddr>` (the router is served with
   `into_make_service_with_connect_info`).
 - `.serve_with_graceful_shutdown(addr, signal)` stops accepting connections
-  once `signal` resolves and waits for in-flight requests.
+  once `signal` resolves and waits for in-flight requests (with the `cron`
+  feature it also stops the cron scheduler; see below).
+
+---
+
+## Cron Jobs (`#[vespera::cron]`)
+
+Feature `cron`. Put the attribute on any `pub async fn` with **no
+parameters**, anywhere in the crate; `vespera!()` discovers and starts it once
+per process. Expressions have 6 fields (`sec min hour day month weekday`,
+optional trailing year) and are validated at compile time.
+
+```rust
+#[vespera::cron("0 */5 * * * *")]                       // UTC (default)
+pub async fn cleanup() {}
+
+#[vespera::cron("0 0 9 * * Mon-Fri", tz = "Asia/Seoul")] // needs feature `cron-tz`
+pub async fn morning_report() {}
+
+#[vespera::cron("0 * * * * *", overlap = "skip")]       // no self-overlap
+pub async fn reindex() {}
+```
+
+- **Time zone:** UTC unless `tz = "Area/City"` (IANA, case-sensitive, checked
+  at compile time). `tz` requires `features = ["cron", "cron-tz"]`; without
+  `cron-tz` it is a compile error.
+- **Overlap:** default `"allow"` (a slow run may overlap the next one);
+  `"skip"` skips and logs a tick while the previous run is still going.
+- **Panics:** logged to stderr; the schedule keeps going.
+- **Shutdown:** `vespera::cron::shutdown()` stops new runs (process-wide,
+  permanent); `vespera::cron::shutdown_and_wait(timeout).await` also waits for
+  in-flight runs. `serve_with_graceful_shutdown` calls both (10 s grace).
 
 ---
 
@@ -167,7 +228,13 @@ async fn main() -> std::io::Result<()> {
 | `NaiveTime` | `string` + `format: time` | |
 | `DateTime`, `DateTimeWithTimeZone` | `string` + `format: date-time` | |
 | `FieldData<NamedTempFile>` | `string` + `format: binary` | File upload field |
-| `serde_json::Value` | `{}` | Any JSON value |
+| `Ipv4Addr` / `Ipv6Addr` | `string` + `format: ipv4` / `ipv6` | |
+| `IpAddr`, `SocketAddr` (+`V4`/`V6`), `PathBuf` | `string` | serde writes them as strings |
+| `url::Url` | `string` + `format: uri` | |
+| `serde_json::Value`, SeaORM `Json` / `JsonValue` | `{}` | Any JSON value (a `Json<T>` with a type argument is axum's wrapper) |
+| field `#[schema(value_type = T)]` | `T`'s schema | Use with `#[serde(with = ..)]` etc. |
+| field `#[serde(with / serialize_with / deserialize_with)]` without `value_type` | `{}` + description note | Shape unknown; per direction for one-sided keys |
+| container `#[serde(into = "T")]` / `from` / `try_from` | `T` for responses / requests | Other direction keeps the fields (`{Name}Input`); container `#[schema(value_type = T)]` = both |
 | `std::time::Duration` | `object` `{secs, nanos}` | serde's std shape; other qualified `Duration`s → `{}` |
 | `()` | empty response | 204 No Content |
 | Custom struct | `$ref` | Must derive Schema |
@@ -290,6 +357,7 @@ npx @apidevtools/swagger-cli validate openapi.json
 | `VESPERA_VERSION` | API version | `CARGO_PKG_VERSION` |
 | `VESPERA_DOCS_URL` | Swagger UI path | none |
 | `VESPERA_REDOC_URL` | ReDoc path | none |
+| `VESPERA_SPEC_URL` | Raw OpenAPI JSON path (`application/json`) | none |
 | `VESPERA_SERVER_URL` | Server URL | none (`servers` omitted → same origin) |
 
 ---
@@ -520,7 +588,7 @@ vespera::schema_type!(Schema from Model, name = "MemoSchema");
 
 **Required Logic:** `required` follows nullability (`Option<T>`) and what serde writes: `skip_serializing` / `skip_serializing_if` fields are not required in the response view.
 
-**Request views (`{Name}Input`):** when serde reads a type differently than it writes it (`#[serde(default)]` on a field or the container, one-sided `skip_deserializing` / `skip_serializing`, `rename(deserialize = ..)` / `rename_all(deserialize = ..)` differing from the serialize side, or a field type that itself has an input view), request bodies (`Json` / `Form` / `TypedMultipart`) reference an extra `{Name}Input` component: defaulted fields are optional, `skip_deserializing` fields are absent, keys use the deserialize name. `{Name}` stays the response view. Nothing extra is emitted when both views are identical or no request body uses the type. `#[schema(name = "X")]` gives `XInput`; if that name is taken, `XInput2`, `XInput3`, ….
+**Request views (`{Name}Input`):** when serde reads a type differently than it writes it (`#[serde(default)]` on a field or the container, one-sided `skip_deserializing` / `skip_serializing`, `rename(deserialize = ..)` / `rename_all(deserialize = ..)` differing from the serialize side, a container `into` / `from` / `try_from` documented through a different type per direction, a one-sided `serialize_with` / `deserialize_with`, an `Option` read by a custom deserializer (required in requests), or a field type that itself has an input view), request bodies (`Json` / `Form` / `TypedMultipart`) reference an extra `{Name}Input` component: defaulted fields are optional, `skip_deserializing` fields are absent, keys use the deserialize name. `{Name}` stays the response view. Nothing extra is emitted when both views are identical or no request body uses the type. `#[schema(name = "X")]` gives `XInput`; if that name is taken, `XInput2`, `XInput3`, ….
 
 ### Same-File Relation Adapters
 
@@ -731,7 +799,7 @@ let app = vespera!(
 **What happens:**
 1. Child routers merged into parent router
 2. OpenAPI specs merged (paths, schemas, tags)
-3. Swagger UI shows all routes
+3. Swagger UI shows all routes (and `spec_url`, if set, serves the merged spec)
 
 ### How It Works (Compile-Time)
 

@@ -69,7 +69,7 @@ pub fn try_generate_openapi_doc_with_metadata(
     file_cache: Option<HashMap<String, syn::File>>,
     route_storage: &[StoredRouteInfo],
 ) -> syn::Result<OpenApi> {
-    let profiling = std::env::var("VESPERA_PROFILE").is_ok();
+    let profiling = crate::env_access::var("VESPERA_PROFILE").is_ok();
     let mut stage_start = std::time::Instant::now();
     let mut stage = |name: &str| {
         if profiling {
@@ -140,6 +140,7 @@ pub fn try_generate_openapi_doc_with_metadata(
         // deployment that did not run on that exact address.
         servers,
         paths,
+        webhooks: None,
         components: Some(Components {
             schemas: if schemas.is_empty() {
                 None

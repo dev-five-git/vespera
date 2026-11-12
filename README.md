@@ -216,6 +216,41 @@ fields absent, deserialize names), FastAPI-style, while responses keep
 `#[schema(name = "X")]` yields `XInput`; if that name is already taken the
 first free `XInput2`, `XInput3`, … is used.
 
+#### Custom serde conversions (`#[schema(value_type = T)]`)
+
+serde attributes that hand a value to your own code change its wire shape,
+so vespera never documents the declared Rust type for them:
+
+```rust
+#[derive(Serialize, Deserialize, vespera::Schema)]
+pub struct Event {
+    /// `ts_seconds` writes an integer, not a date-time string.
+    #[serde(with = "vespera::chrono::serde::ts_seconds")]
+    #[schema(value_type = i64)]
+    pub created_at: DateTime<Utc>,
+    #[serde(with = "my_hex")]          // no value_type → `{}` + a note
+    pub checksum: Vec<u8>,
+}
+
+#[derive(Clone, Serialize, Deserialize, vespera::Schema)]
+#[serde(into = "String", try_from = "String")] // documented as `string`
+pub struct Rgb { pub r: u8, pub g: u8, pub b: u8 }
+```
+
+| Attribute | Documented as |
+|---|---|
+| field `#[schema(value_type = T)]` | `T`'s schema (constraints such as `minimum` still apply) |
+| field `#[serde(with / serialize_with / deserialize_with)]` without `value_type` | `{}` (any value) with a description saying the shape is unknown — never the Rust type. One-sided `serialize_with` / `deserialize_with` only affects that direction (`{Name}Input` for requests); an `Option` read by a custom deserializer is `required` in requests, as in serde |
+| container `#[serde(into = "T")]` | responses use `T`; requests keep the fields (`{Name}Input`) |
+| container `#[serde(from = "T")]` / `try_from` | requests use `T` (`{Name}Input`); responses keep the fields |
+| container `#[schema(value_type = T)]` | `T` in both directions (wins over `into` / `from`) |
+
+The derive's `Schema` assertion checks `T` instead of the field type, and
+skips a field whose type is never documented (`with` without `value_type`).
+SeaORM's `Json` / `JsonValue` columns are aliases of `serde_json::Value` and
+are documented as `{}` (any JSON value, not just objects); a `Json<T>` with a
+type argument is axum's wrapper, not a JSON value.
+
 ### Request Validation (`Validated<T>` → `422`)
 
 `Validated<T>` wraps any axum extractor (`Json`, `Form`, `Query`, `Path`) and
@@ -260,6 +295,7 @@ pub async fn create_user(
 | `min_items` / `max_items` | `minItems` / `maxItems` | yes |
 | `dive` | — | validates a nested `Schema` field |
 | `exclusive_minimum` / `exclusive_maximum` / `multiple_of` / `unique_items` / `format = "uuid"` | emitted | no (annotation only) |
+| `value_type = T` | `T`'s schema (see [Custom serde conversions](#custom-serde-conversions-schemavalue_type--t)) | no |
 
 **Alternative — `garde` directly.** If you need garde rules that
 `#[schema(...)]` does not cover (custom validators, contexts), derive
@@ -308,12 +344,63 @@ Works with every common extractor — same `422` envelope on the wire:
 | `Validated<Query<T>>` | URL query parameters |
 | `Validated<Path<T>>` | Path parameters |
 
+Every route with a `Validated<...>` / `ValidatedWith<...>` argument documents the
+`422` response in the OpenAPI spec, wherever the argument sits in the signature
+(e.g. after a plain `Path<T>`).
+
+`T` must implement `garde::Validate`. `#[derive(Schema)]` generates that impl
+only for a struct with named fields and at least one runtime `#[schema(...)]`
+rule. A rule-less struct or an enum inside `Validated` is a compile error at the
+argument (`` `T` cannot be validated by `Validated` / `ValidatedWith` ``): add a
+rule, derive `garde::Validate` yourself, or take the plain extractor.
+
 Input that is well-formed but does not deserialize into `T` — a wrong JSON
 type, a missing field, an unparsable query/form/path value — is reported
 through the **same `422` envelope**, with `path` pointing at the offending
 field (e.g. `"age"`, `"tags[1]"`). Malformed JSON syntax (`400`), a missing
 or unsupported `Content-Type` (`415`) and body-limit errors keep axum's
 default rejection.
+
+#### Context-aware validation (`ValidatedWith<C, T>`)
+
+`ValidatedWith<C, T>` works like `Validated<T>`, but validates with a context
+`C` borrowed from the router state. Use it for garde rules declared with
+`#[garde(context(C))]`. The state provides the context through
+`vespera::ValidationContext<C>`: state that *is* `C` gets this for free,
+and app state can expose a field without cloning it per request:
+
+```rust
+use std::sync::Arc;
+use vespera::{Schema, ValidatedWith, ValidationContext, axum::Json};
+
+pub struct TagPolicy { pub required_prefix: String }
+pub struct AppState { pub tag_policy: TagPolicy }
+
+impl ValidationContext<TagPolicy> for Arc<AppState> {
+    fn validation_context(&self) -> &TagPolicy { &self.tag_policy }
+}
+
+#[derive(serde::Deserialize, Schema, garde::Validate)]
+#[garde(context(TagPolicy as policy))]
+pub struct TaggedPost {
+    #[garde(custom(|tags: &Vec<String>, policy: &TagPolicy| {
+        if tags.iter().all(|t| t.starts_with(&policy.required_prefix)) { Ok(()) }
+        else { Err(garde::Error::new("bad tag prefix")) }
+    }))]
+    pub tags: Vec<String>,
+}
+
+#[vespera::route(post)]
+pub async fn create_post(post: ValidatedWith<TagPolicy, Json<TaggedPost>>) -> &'static str {
+    let Json(_post) = post.into_inner();
+    "ok"
+}
+```
+
+`ValidatedWith` wraps the same extractors as `Validated` and answers the same
+`422` envelope. The spec documents the wrapped body or query parameters plus the
+`422` response. The context never appears in the spec. Keep `#[schema(...)]` rules off a type that
+derives `garde::Validate` itself (`E0119`).
 
 Under JNI, the same `422` body is **hoisted** into the binary wire header as
 `"validation_errors": [...]` — Java decoders consume validation errors
@@ -474,8 +561,19 @@ let app = vespera!(
     openapi = "openapi.json",          // Output path, relative to the crate dir (written at compile time)
     title = "My API",                  // OpenAPI info.title
     version = "1.0.0",                 // OpenAPI info.version (default: CARGO_PKG_VERSION)
+    description = "Pet store API",     // OpenAPI info.description (default: Cargo.toml description)
+    summary = "Pets",                  // OpenAPI info.summary
+    terms_of_service = "https://example.com/terms",  // info.termsOfService (http(s) URL)
+    contact_name = "API Team",         // info.contact.name
+    contact_url = "https://example.com/support",     // info.contact.url (http(s) URL)
+    contact_email = "api@example.com", // info.contact.email
+    license = "MIT OR Apache-2.0",     // info.license.identifier (SPDX); also the name
+                                       //   unless license_name is set
+    // license_name = "Proprietary", license_url = "https://example.com/license",
+                                       //   non-SPDX license: name + url (excludes `license`)
     docs_url = "/docs",                // Swagger UI endpoint
     redoc_url = "/redoc",              // ReDoc endpoint
+    spec_url = "/openapi.json",        // Raw OpenAPI JSON endpoint (application/json)
     servers = [                        // OpenAPI servers
         { url = "https://api.example.com", description = "Production" },
         { url = "http://localhost:3000", description = "Development" }
@@ -492,6 +590,41 @@ let app = vespera!(
     merge = [crate1::App1, crate2::App2]  // Merge child vespera apps
 );
 ```
+
+### API info
+
+`description`, `summary`, `terms_of_service`, `contact_name`, `contact_url`,
+`contact_email`, `license`, `license_name` and `license_url` fill the OpenAPI
+3.1 `info` object. They have no environment-variable fallback.
+
+- `license` is an SPDX expression and becomes `info.license.identifier` (and the
+  `name`, unless `license_name` overrides it).
+- A non-SPDX license uses `license_name` + `license_url`. OpenAPI 3.1 makes
+  `identifier` and `url` mutually exclusive, so `license` together with
+  `license_url`, or `license_url` without `license_name`, is a compile error.
+- `terms_of_service`, `contact_url` and `license_url` must be `http(s)://` URLs
+  and `contact_email` must look like an address (compile errors otherwise).
+- Without `description`, `info.description` is the crate's `description` from
+  `Cargo.toml`.
+
+### Documentation endpoints
+
+`docs_url`, `redoc_url` and `spec_url` are opt-in `GET` routes; each must start
+with `/` and they must not share a path (both are compile errors).
+
+- `docs_url` serves Swagger UI and `redoc_url` serves ReDoc. The pages load
+  `swagger-ui-dist` / `redoc` from unpkg at **exact pinned versions with
+  Subresource Integrity** (`integrity` + `crossorigin="anonymous"`), so a
+  tampered CDN file is refused by the browser. The spec is embedded in the page
+  and escaped for the `<script>` context, so `</script>` or `<!--` in a
+  description or example cannot break the page. The renderers are public as
+  `vespera::docs::{swagger_ui_html, redoc_html}` if you want to serve a page
+  yourself (pinned versions: `vespera::docs::SWAGGER_UI_VERSION` /
+  `REDOC_VERSION`).
+- `spec_url` serves the generated OpenAPI document (including `merge`d apps)
+  as `application/json` for client generators and API gateways. The docs pages
+  keep embedding the spec rather than fetching `spec_url`, so they also work
+  when the router is nested under a prefix.
 
 ## `#[vespera::route]` Macro Reference
 
@@ -540,6 +673,7 @@ All parameters support environment variable fallbacks:
 | `version` | `VESPERA_VERSION` |
 | `docs_url` | `VESPERA_DOCS_URL` |
 | `redoc_url` | `VESPERA_REDOC_URL` |
+| `spec_url` | `VESPERA_SPEC_URL` |
 | `servers` | `VESPERA_SERVER_URL` + `VESPERA_SERVER_DESCRIPTION` |
 
 **Priority**: Macro parameter > Environment variable > Default
@@ -865,7 +999,8 @@ pub async fn hourly_report() {
 
 1. `#[cron("...")]` registers the job at compile time (like `#[route]`)
 2. `vespera!()` auto-discovers all registered cron jobs — no extra parameters needed
-3. A background scheduler spawns via `tokio::spawn` when the app starts
+3. A background scheduler spawns via `tokio::spawn` when the app starts (once
+   per process, however often the router is built)
 
 ```rust
 // No cron-specific config — just works
@@ -887,14 +1022,63 @@ Uses 6-field cron expressions (`sec min hour day month weekday`):
 Expressions are validated at compile time by the very parser the runtime
 scheduler uses ([croner](https://crates.io/crates/croner) 4: `L`, `W`, `#`,
 `?`, names and an optional trailing year are supported), so an accepted
-expression can never fail at startup. Times are UTC. When both day-of-month and
+expression can never fail at startup. When both day-of-month and
 day-of-week are restricted, **both** must match (AND, not the classic cron OR).
+
+### Time Zones (default: UTC)
+
+Expressions are evaluated in **UTC** unless the job names an IANA time zone
+with `tz`. Time zones need the opt-in `cron-tz` feature (it adds
+[chrono-tz](https://crates.io/crates/chrono-tz) and its embedded tz database,
+~7 MB of generated source, which is why it is not part of `cron`):
+
+```toml
+vespera = { version = "0.6", features = ["cron", "cron-tz"] }
+```
+
+```rust
+// 09:00 in Seoul every day (00:00 UTC)
+#[vespera::cron("0 0 9 * * *", tz = "Asia/Seoul")]
+pub async fn morning_report() {}
+```
+
+The name is checked at compile time (exact, case-sensitive IANA names such as
+`"Asia/Seoul"`, `"America/New_York"`, `"UTC"`); using `tz` without the
+`cron-tz` feature is a compile error. Daylight-saving transitions follow
+croner: a fixed-time job whose time falls into a spring-forward gap runs right
+after the gap, and runs once in a fall-back overlap.
+
+### Overlapping Runs
+
+By default every tick starts a run, so a job that takes longer than its
+interval overlaps itself (`overlap = "allow"`). With `overlap = "skip"`, a tick
+is skipped — and logged to stderr — while the previous run of the same job is
+still going:
+
+```rust
+#[vespera::cron("0 */5 * * * *", overlap = "skip")]
+pub async fn reindex() {}
+```
+
+### Panics and Shutdown
+
+- Every run is supervised: a panicking job is logged to stderr
+  (`vespera: cron job `module::function` panicked: …`) and its schedule keeps
+  going.
+- `vespera::cron::shutdown()` stops scheduling new runs (process-wide, for
+  good); `vespera::cron::shutdown_and_wait(timeout).await` additionally waits
+  up to `timeout` for in-flight runs and returns whether they all finished.
+- `serve_with_graceful_shutdown(addr, signal)` does this for you: no new runs
+  start once `signal` resolves, and after the server drained, in-flight runs
+  get up to `vespera::cron::DEFAULT_SHUTDOWN_GRACE` (10 s).
+- In a JNI library the jobs run on the shared JNI runtime and stop (in-flight
+  runs are cancelled) with `VesperaBridge.shutdown(...)` / `shutdown0`.
 
 ### Requirements
 
 - Functions must be `pub async fn`
 - Functions must take **no parameters** (no `State`, no extractors)
-- The `cron` feature must be enabled
+- The `cron` feature must be enabled (`cron-tz` too for `tz = "..."`)
 
 ---
 
@@ -989,6 +1173,9 @@ This automatically:
 | `NaiveTime` | `string` with `format: time` |
 | `DateTime`, `DateTimeWithTimeZone` | `string` with `format: date-time` |
 | `FieldData<NamedTempFile>` | `string` with `format: binary` |
+| `Ipv4Addr` / `Ipv6Addr` | `string` with `format: ipv4` / `ipv6` |
+| `IpAddr`, `SocketAddr` (`V4` / `V6`), `PathBuf` | `string` |
+| `url::Url` | `string` with `format: uri` |
 | `serde_json::Value` | `{}` (any JSON value) |
 | `std::time::Duration` (bare `Duration`, `std::time::` / `core::time::`) | `object` `{secs, nanos}` (serde's std shape) |
 | other qualified `Duration` (`time::`, `chrono::`) | `{}` — no single serde shape; annotate explicitly |

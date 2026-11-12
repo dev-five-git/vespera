@@ -30,6 +30,11 @@ proc-macro = true
     # malformed cron string becomes a compile error. Enabled transitively by
     # `vespera`'s `cron` feature, so croner only compiles when a crate uses cron.
     cron = ["vespera_core/cron"]
+    # Compile-time check of `#[vespera::cron("...", tz = "Asia/Seoul")]` time-zone
+    # names against the same IANA database the runtime uses. Enabled
+    # transitively by `vespera`'s `cron-tz` feature; without it, `tz = ...` is
+    # a compile error that names the feature.
+    cron-tz = ["cron", "vespera_core/cron-tz"]
 
 [dependencies]
 quote = "1"
@@ -54,7 +59,6 @@ rstest = "0.28"
 insta = "1.49"
 prettyplease = "0.3"
 tempfile = "3"
-serial_test = "4"
 trybuild = "1"
 
 [lints]

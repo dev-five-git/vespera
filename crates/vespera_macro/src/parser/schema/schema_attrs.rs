@@ -34,6 +34,8 @@
 //!
 //! Keys that have no garde counterpart (`example`, `read_only`, `write_only`,
 //! `unique_items`) are still parsed — they only affect OpenAPI output.
+//! `value_type = T` swaps the documented schema for `T`'s (see
+//! [`SchemaConstraints::value_type`] and `super::wire_override`).
 
 use syn::{Attribute, Expr, ExprLit, Lit};
 
@@ -91,6 +93,40 @@ pub struct SchemaConstraints {
     /// `#[schema(any)]` sets it to `true`; an explicit
     /// `#[schema(any = false)]` is also accepted.
     pub any: Option<bool>,
+
+    /// `#[schema(value_type = T)]`: document the field (or, on a container,
+    /// the whole type) with `T`'s schema instead of the Rust type's. Needed
+    /// whenever serde writes something other than the declared type —
+    /// `#[serde(with = "..")]`, `serialize_with`, `into`, … — e.g.
+    /// `#[serde(with = "chrono::serde::ts_seconds")] DateTime<Utc>` is an
+    /// integer on the wire: `#[schema(value_type = i64)]`.
+    pub value_type: Option<SchemaValueType>,
+}
+
+/// The `T` of `#[schema(value_type = T)]`.
+///
+/// A newtype so [`SchemaConstraints`] keeps its `Debug` / `PartialEq`
+/// derives (syn only implements them on `syn::Type` with `extra-traits`);
+/// both compare / print the type's tokens.
+#[derive(Clone)]
+pub struct SchemaValueType(pub syn::Type);
+
+impl SchemaValueType {
+    fn tokens(&self) -> String {
+        quote::ToTokens::to_token_stream(&self.0).to_string()
+    }
+}
+
+impl PartialEq for SchemaValueType {
+    fn eq(&self, other: &Self) -> bool {
+        self.tokens() == other.tokens()
+    }
+}
+
+impl std::fmt::Debug for SchemaValueType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SchemaValueType({})", self.tokens())
+    }
 }
 
 impl SchemaConstraints {
@@ -114,6 +150,7 @@ impl SchemaConstraints {
             && self.write_only.is_none()
             && self.dive.is_none()
             && self.any.is_none()
+            && self.value_type.is_none()
     }
 
     /// `true` when the field is marked `#[schema(any)]` (intentionally
@@ -232,6 +269,10 @@ pub fn try_extract_schema_constraints(attrs: &[Attribute]) -> syn::Result<Schema
                 // custom shape the OpenAPI document is meant to leave
                 // unspecified.
                 out.any = Some(parse_bool_or_default_true(&meta)?);
+            } else if meta.path.is_ident("value_type") {
+                // A type, not an expression: `Vec<String>` would not parse
+                // as an `Expr` in the unknown-key branch below.
+                out.value_type = Some(SchemaValueType(meta.value()?.parse()?));
             } else {
                 // Unknown key — could be a struct-level key like `name`,
                 // `ref`, `nullable`, `default` that lives on the same
@@ -687,5 +728,40 @@ mod tests {
         let item: syn::ItemStruct =
             syn::parse_str(&format!(r#"#[schema(format = "{format}")] struct Value;"#)).unwrap();
         assert!(parse(&item.attrs).has_runtime_rule());
+    }
+
+    // ── `value_type` ────────────────────────────────────────────────
+
+    #[rstest::rstest]
+    #[case::primitive("#[schema(value_type = i64)]", "SchemaValueType(i64)")]
+    #[case::generic(
+        "#[schema(value_type = Vec<String>, unique_items)]",
+        "SchemaValueType(Vec < String >)"
+    )]
+    #[case::path(
+        "#[schema(name = \"X\", value_type = crate::Wire)]",
+        "SchemaValueType(crate :: Wire)"
+    )]
+    fn value_type_is_parsed_as_a_type(#[case] src: &str, #[case] expected: &str) {
+        let item: syn::ItemStruct = syn::parse_str(&format!("{src} struct S;")).unwrap();
+        let c = parse(&item.attrs);
+        assert_eq!(format!("{:?}", c.value_type.as_ref().unwrap()), expected);
+        assert!(!c.is_empty());
+        assert!(!c.has_runtime_rule());
+    }
+
+    #[test]
+    fn value_type_equality_compares_tokens() {
+        let a = parse(&[parse_quote!(#[schema(value_type = Vec<i64>)])]);
+        let b = parse(&[parse_quote!(#[schema(value_type = Vec < i64 >)])]);
+        let c = parse(&[parse_quote!(#[schema(value_type = i64)])]);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn value_type_without_a_type_is_rejected() {
+        let err = parse_err(&[parse_quote!(#[schema(value_type = 1)])]);
+        assert!(err.to_string().contains("expected"), "{err}");
     }
 }

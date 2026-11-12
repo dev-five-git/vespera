@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/parser/schema/wire_override.rs
+assertion_line: 119
+expression: "format!(\"{src} ({side:?}) => {}\", serde_json::to_string(&schema).unwrap())"
+---
+#[serde(with = "m")] x: DateTime<Utc> (Serialize) => {"description":"Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."}

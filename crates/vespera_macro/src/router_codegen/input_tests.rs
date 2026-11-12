@@ -472,87 +472,33 @@ fn test_parse_merge_values_with_trailing_comma() {
 }
 
 #[test]
-#[serial_test::serial]
 fn test_auto_router_input_server_env_var_fallback() {
-    // Test lines 181-183: VESPERA_SERVER_URL env var fallback
-    // `#[serial]` serializes this with every other env-mutating test so
-    // the process-global VESPERA_SERVER_* vars cannot race across the
-    // parallel test threads.
+    // VESPERA_SERVER_URL / VESPERA_SERVER_DESCRIPTION env var fallback.
     let test_url = "https://vespera-test-unique-12345.example.com";
     let test_desc = "Vespera Test Server 12345";
+    let _url = crate::env_access::test_env::set_var("VESPERA_SERVER_URL", test_url);
+    let _desc = crate::env_access::test_env::set_var("VESPERA_SERVER_DESCRIPTION", test_desc);
 
-    // Save current state
-    let old_server_url = std::env::var("VESPERA_SERVER_URL").ok();
-    let old_server_desc = std::env::var("VESPERA_SERVER_DESCRIPTION").ok();
+    let input: AutoRouterInput = syn::parse2(quote::quote!()).unwrap();
 
-    // SAFETY: Single-threaded test context
-    unsafe {
-        std::env::set_var("VESPERA_SERVER_URL", test_url);
-        std::env::set_var("VESPERA_SERVER_DESCRIPTION", test_desc);
-    }
-
-    // Parse empty input - should pick up env vars
-    let tokens = quote::quote!();
-    let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-
-    // Restore env vars immediately after parsing
-    unsafe {
-        if let Some(url) = old_server_url {
-            std::env::set_var("VESPERA_SERVER_URL", url);
-        } else {
-            std::env::remove_var("VESPERA_SERVER_URL");
-        }
-        if let Some(desc) = old_server_desc {
-            std::env::set_var("VESPERA_SERVER_DESCRIPTION", desc);
-        } else {
-            std::env::remove_var("VESPERA_SERVER_DESCRIPTION");
-        }
-    }
-
-    // Check if servers was set - may not be if another test interfered
-    if let Some(servers) = input.servers {
-        // If we got servers, verify they match our test values
-        if servers.len() == 1 && servers[0].url == test_url {
-            assert_eq!(servers[0].description, Some(test_desc.to_string()));
-        }
-        // Otherwise another test's values were picked up, which is fine
-    }
-    // If servers is None, another test may have cleared the env var - acceptable
+    let servers = input.servers.expect("env server fallback");
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0].url, test_url);
+    assert_eq!(servers[0].description.as_deref(), Some(test_desc));
 }
 
 #[test]
-#[serial_test::serial]
 fn test_auto_router_input_server_env_var_invalid_url_filtered() {
-    // Test that invalid URLs (not http/https) are filtered out by the .filter() call
-    // This exercises the filter branch, not lines 181-183 directly
-    let old_server_url = std::env::var("VESPERA_SERVER_URL").ok();
+    // Non-http(s) URLs are dropped by the `.filter()` call.
+    let _url =
+        crate::env_access::test_env::set_var("VESPERA_SERVER_URL", "ftp://invalid-url-test.com");
 
-    // SAFETY: Single-threaded test context
-    unsafe {
-        std::env::set_var("VESPERA_SERVER_URL", "ftp://invalid-url-test.com");
-    }
+    let input: AutoRouterInput = syn::parse2(quote::quote!()).unwrap();
 
-    let tokens = quote::quote!();
-    let input: AutoRouterInput = syn::parse2(tokens).unwrap();
-
-    // Restore env var
-    unsafe {
-        if let Some(url) = old_server_url {
-            std::env::set_var("VESPERA_SERVER_URL", url);
-        } else {
-            std::env::remove_var("VESPERA_SERVER_URL");
-        }
-    }
-
-    // If servers is Some, it means another test set a valid URL - acceptable
-    // If servers is None, our invalid URL was correctly filtered
-    if let Some(servers) = &input.servers {
-        // Another test set a valid URL, check it's not our invalid one
-        assert!(
-            servers.is_empty() || servers[0].url != "ftp://invalid-url-test.com",
-            "Invalid ftp:// URL should have been filtered"
-        );
-    }
+    assert!(
+        input.servers.is_none(),
+        "invalid ftp:// URL must be filtered"
+    );
 }
 
 #[test]
@@ -763,4 +709,111 @@ fn security_scheme_type_labels_match_openapi_wire_names(
     #[case] expected: &str,
 ) {
     assert_eq!(scheme_type_label(scheme_type), expected);
+}
+
+#[test]
+fn spec_url_is_parsed_and_processed() {
+    let input: AutoRouterInput = syn::parse2(quote::quote!(
+        docs_url = "/docs",
+        redoc_url = "/redoc",
+        spec_url = "/openapi.json"
+    ))
+    .unwrap();
+    assert_eq!(input.spec_url.as_ref().unwrap().value(), "/openapi.json");
+
+    let processed = process_vespera_input(input);
+    assert_eq!(processed.spec_url.as_deref(), Some("/openapi.json"));
+    assert_eq!(processed.docs_url.as_deref(), Some("/docs"));
+    assert_eq!(processed.redoc_url.as_deref(), Some("/redoc"));
+}
+
+#[rstest]
+#[case::spec_url_not_a_string(
+    quote::quote!(spec_url = 42),
+    "expected string literal"
+)]
+#[case::spec_url_missing_eq(
+    quote::quote!(spec_url "/openapi.json"),
+    "expected `=`"
+)]
+#[case::spec_url_duplicate(
+    quote::quote!(spec_url = "/a.json", spec_url = "/b.json"),
+    "duplicate field `spec_url` in vespera! macro"
+)]
+#[case::spec_url_relative(
+    quote::quote!(spec_url = "openapi.json"),
+    "vespera! macro: `spec_url` must start with `/`, got \"openapi.json\""
+)]
+#[case::docs_url_relative(
+    quote::quote!(docs_url = "docs"),
+    "vespera! macro: `docs_url` must start with `/`, got \"docs\""
+)]
+#[case::redoc_url_empty(
+    quote::quote!(redoc_url = ""),
+    "vespera! macro: `redoc_url` must start with `/`, got \"\""
+)]
+#[case::spec_url_collides_with_docs_url(
+    quote::quote!(docs_url = "/docs", spec_url = "/docs"),
+    "vespera! macro: `spec_url` and `docs_url` both use \"/docs\"; each documentation route needs its own path"
+)]
+#[case::redoc_url_collides_with_docs_url(
+    quote::quote!(docs_url = "/docs", redoc_url = "/docs"),
+    "vespera! macro: `redoc_url` and `docs_url` both use \"/docs\"; each documentation route needs its own path"
+)]
+fn invalid_doc_url_arguments_are_rejected(
+    #[case] tokens: proc_macro2::TokenStream,
+    #[case] expected: &str,
+) {
+    let error = syn::parse2::<AutoRouterInput>(tokens)
+        .err()
+        .expect("fixture must be rejected");
+
+    assert_eq!(error.to_string(), expected);
+}
+
+#[test]
+fn unknown_field_error_lists_spec_url() {
+    let error = syn::parse2::<AutoRouterInput>(quote::quote!(spec = "/openapi.json"))
+        .err()
+        .expect("unknown field must be rejected");
+    assert!(error.to_string().contains("`spec_url`"), "{error}");
+}
+
+#[test]
+fn test_auto_router_input_parses_info_fields() {
+    let tokens = quote::quote!(
+        title = "Pets",
+        description = "Pet store",
+        summary = "Pets API",
+        terms_of_service = "https://example.com/terms",
+        contact_name = "API Team",
+        contact_url = "https://example.com/support",
+        contact_email = "api@example.com",
+        license = "MIT"
+    );
+    let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+    let processed = process_vespera_input(input);
+    assert_eq!(processed.info.description.as_deref(), Some("Pet store"));
+    assert_eq!(processed.info.summary.as_deref(), Some("Pets API"));
+    assert_eq!(
+        processed.info.contact_email.as_deref(),
+        Some("api@example.com")
+    );
+    assert_eq!(processed.info.license.as_deref(), Some("MIT"));
+    assert!(processed.info.license_url.is_none());
+}
+
+#[rstest]
+#[case::bad_email(quote::quote!(contact_email = "nobody"), "`contact_email` must be an email")]
+#[case::duplicate(quote::quote!(summary = "a", summary = "b"), "duplicate field `summary`")]
+#[case::missing_eq(quote::quote!(license "MIT"), "expected `=`")]
+fn test_auto_router_input_rejects_bad_info(
+    #[case] tokens: proc_macro2::TokenStream,
+    #[case] message: &str,
+) {
+    let err = syn::parse2::<AutoRouterInput>(tokens)
+        .err()
+        .expect("must fail")
+        .to_string();
+    assert!(err.contains(message), "{err}");
 }

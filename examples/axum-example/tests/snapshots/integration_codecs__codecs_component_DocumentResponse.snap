@@ -1,0 +1,26 @@
+---
+source: examples/axum-example/tests/integration_codecs.rs
+assertion_line: 86
+expression: "serde_json::to_string_pretty(&spec[\"components\"][\"schemas\"][component]).unwrap()"
+---
+{
+  "description": "A free-form JSON document. SeaORM's `Json` / `JsonValue` are aliases of\n`serde_json::Value`, so the columns can hold objects, arrays AND scalars —\ndocumented as any value (`{}`), not `{type: object}`.",
+  "properties": {
+    "body": {
+      "description": "Document body."
+    },
+    "id": {
+      "default": 0,
+      "format": "int64",
+      "type": "integer"
+    },
+    "meta": {
+      "description": "Optional metadata."
+    }
+  },
+  "required": [
+    "id",
+    "body"
+  ],
+  "type": "object"
+}

@@ -45,23 +45,25 @@ pub fn build_operation_from_function(
     let mut parameters = Vec::new();
     let mut request_body = None;
     let mut path_extractor_type: Option<Type> = None;
-    let mut has_validated_extractor = false;
+    // Any `Validated<_>` / `ValidatedWith<_, _>` argument — wherever it sits in
+    // the signature — documents the `422` validation-error response.
+    let has_validated_extractor = sig
+        .inputs
+        .iter()
+        .any(|input| matches!(input, FnArg::Typed(PatType { ty, .. }) if is_validated_type(ty)));
 
-    // First pass: find Path<T> extractor and extract its type
+    // First pass: find the first Path<T> extractor and extract its type
     for input in &sig.inputs {
         if let FnArg::Typed(PatType { ty, .. }) = input
             && let Type::Path(type_path) = unwrap_validated_type(ty.as_ref())
-        {
-            has_validated_extractor |= is_validated_type(ty.as_ref());
             // A segment-less path names no extractor: skip it instead of panicking.
-            if let Some(segment) = type_path.path.segments.last()
-                && segment.ident == "Path"
-                && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-                && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
-            {
-                path_extractor_type = Some(inner_ty.clone());
-                break;
-            }
+            && let Some(segment) = type_path.path.segments.last()
+            && segment.ident == "Path"
+            && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+            && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+        {
+            path_extractor_type = Some(inner_ty.clone());
+            break;
         }
     }
 
@@ -159,6 +161,7 @@ pub fn build_operation_from_function(
                                 schema: schema.clone(),
                                 example: None,
                                 examples: None,
+                                encoding: None,
                             },
                         )])
                     }),
@@ -321,6 +324,7 @@ fn typed_response(
             schema: Some(schema),
             example: None,
             examples: None,
+            encoding: None,
         },
     );
 
@@ -371,6 +375,7 @@ fn validation_error_response() -> Response {
             }))),
             example: None,
             examples: None,
+            encoding: None,
         },
     );
 
@@ -390,3 +395,5 @@ fn security_requirements(security: &[String]) -> Vec<BTreeMap<String, Vec<String
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_validated;

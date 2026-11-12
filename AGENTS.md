@@ -24,7 +24,7 @@ Also provides in-process dispatch (`vespera_inprocess` crate) and JNI integratio
 | **Binary wire format (JNI)** | `vespera_inprocess` | `[u32 BE len | UTF-8 JSON header | raw body]` — multipart / PDFs / images travel as raw bytes; **`422` validation errors hoisted** into the wire header as `"validation_errors": [...]` so Java decoders never special-case error shapes |
 | **Multi-app routing (JNI/FFI)** | `vespera::jni_apps! { "_default" => app, "admin" => admin_app }` | Wire header carries optional `"app"` field; Java side picks per request via `X-Vespera-App` header (configurable via `AppNameResolver`) |
 | **Zero-config Spring autoconfigure** | `libs/vespera-bridge/.../VesperaBridgeAutoConfiguration` | `VesperaProxyController` + `AppNameResolver` + `DispatchModeResolver` beans auto-registered; replace any of them via `@ConditionalOnMissingBean` |
-| **Cron jobs** | `#[vespera::cron("...")]` | Auto-discovered like routes (`CRON_STORAGE` + a module-tree scan fallback in `vespera_impl/cron_discovery.rs` for modules expanded after `vespera!`); started once per `vespera!` invocation via `vespera::cron::start_once` — on the current Tokio runtime; in a JVM-loaded JNI library (`JNI_OnLoad`) on the shared JNI runtime via `vespera_jni::on_shared_runtime` (honours `configureRuntime`, stops on `shutdown0`; `VesperaBridge.init()` starts the runtime when jobs wait); otherwise a dedicated `vespera-cron` thread (plain `#[test]`); jobs sleep until the wall clock reaches the occurrence; croner 4, shared parser in `vespera_core::cron` |
+| **Cron jobs** | `#[vespera::cron("...")]` | Auto-discovered like routes (`CRON_STORAGE` + a module-tree scan fallback in `vespera_impl/cron_discovery.rs` for modules expanded after `vespera!`); started once per `vespera!` invocation via `vespera::cron::start_once` — on the current Tokio runtime; in a JVM-loaded JNI library (`JNI_OnLoad`) on the shared JNI runtime via `vespera_jni::on_shared_runtime` (honours `configureRuntime`, stops on `shutdown0`; `VesperaBridge.init()` starts the runtime when jobs wait); otherwise a dedicated `vespera-cron` thread (plain `#[test]`); jobs sleep until the wall clock reaches the occurrence; croner 4, shared parser in `vespera_core::cron`. **UTC by default**; `tz = "Asia/Seoul"` needs the opt-in `cron-tz` feature (chrono-tz; name checked at compile time, `tz` without the feature is a compile error); `overlap = "allow"` (default) / `"skip"`; every run is supervised (panics logged via `eprintln!`, schedule continues); `cron::shutdown()` / `shutdown_and_wait(timeout)` stop scheduling process-wide and for good, and `serve_with_graceful_shutdown` calls both (10 s grace) |
 
 ## STRUCTURE
 
@@ -178,7 +178,8 @@ Feature flags:
 | `jni` | `vespera::jni` (= `vespera_jni`) + implies `inprocess` | RUNTIME, jni_app!, JNI symbol |
 | `mimalloc` (default) | (with `jni`) mimalloc as the cdylib's `#[global_allocator]` | measured -15~19% on sync/direct dispatch vs Windows HeapAlloc; weak no-op without `jni` |
 | `validation` (default) | `vespera::Validated` | `#[derive(Schema)]` also emits `garde::Validate`; `Validated<T>` extractor + 422 envelope |
-| `cron` | `vespera::cron` | `#[vespera::cron("...")]` jobs, started once per process by `vespera!` |
+| `cron` | `vespera::cron` | `#[vespera::cron("...")]` jobs (UTC), started once per process by `vespera!` |
+| `cron-tz` | (with `cron`) `tz = "Area/City"` support | chrono-tz IANA database (opt-in: ~7 MB generated source) |
 
 ## JNI ARCHITECTURE
 
@@ -304,7 +305,7 @@ vespera::jni_apps! {                                  // multi-app primary API
 - `AppNameResolver` (default: `HeaderAppNameResolver("X-Vespera-App", vespera.bridge.exposed-apps)`) — picks app per request. The header is client-controlled: `vespera.bridge.exposed-apps` allowlists selectable apps (others → proxy `404`, no dispatch; unset → one-time WARN on first non-default selection); the selection header is never forwarded to Rust
 - `DispatchModeResolver` (default since vespera-bridge 0.2.0: `SmartDispatchModeResolver` — small/bodyless idempotent → `DIRECT` ~2.2µs, small non-idempotent → `SYNC` ~3.2µs, else `BIDIRECTIONAL_STREAMING` ~24µs; `vespera.bridge.dispatch-mode=bidirectional-streaming` restores pre-0.2.0 `BidirectionalStreamingDispatchModeResolver` — bodyless requests take response-only `STREAMING`, everything else bidirectional) — picks `DispatchMode`
 
-Property `vespera.bridge.controller-enabled=false` disables the whole controller for BYO scenarios.  See [`libs/vespera-bridge/README.md`](libs/vespera-bridge/README.md#customization) for the customization recipes.
+Property `vespera.bridge.controller-enabled=false` disables the whole controller for BYO scenarios; `vespera.bridge.include-patterns` (default `/**`) / `exclude-patterns` (PathPattern) narrow the proxy's mapping instead — `VesperaProxyPathMappings` re-registers the `/**` `RequestMappingInfo` with the includes + an exclusion `RequestCondition` (no-op with the defaults), so excluded paths fall through to other handler mappings / static resources / `404`. The JAR ships `spring-configuration-metadata.json` (configuration processor + `additional-spring-configuration-metadata.json`; `ConfigurationMetadataTest` asserts every bound and `@ConditionalOnProperty` key is documented).  See [`libs/vespera-bridge/README.md`](libs/vespera-bridge/README.md#customization) for the customization recipes.
 
 ### Rust side (example app — 2 lines of JNI code):
 ```rust

@@ -1,0 +1,5 @@
+---
+source: crates/vespera_core/src/docs.rs
+expression: redoc_html(HOSTILE_SPEC)
+---
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>ReDoc</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body { margin: 0; padding: 0; }</style></head><body><div id="redoc-container"></div><script src="https://unpkg.com/redoc@2.5.4/bundles/redoc.standalone.js" integrity="sha384-w447zOpYfw/1Tv/5AK9NfHTlQIqE3RVR6KY62jCyy9zNDgO64cMwGGP1Fj0zJVf5" crossorigin="anonymous"></script><script>const openapiSpec = {"info":{"description":"\u003c/script\u003e\u003cscript\u003ealert(1)\u003c/script\u003e\u003c!-- a\u0026b \u2028\u2029"}};Redoc.init(openapiSpec, {}, document.getElementById("redoc-container"));</script></body></html>

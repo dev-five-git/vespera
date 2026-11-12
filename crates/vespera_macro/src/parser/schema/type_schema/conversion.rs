@@ -46,7 +46,8 @@ fn parse_struct_def(def: &str) -> Option<Rc<syn::ItemStruct>> {
 /// Whether `ident` names a type that this crate already knows how to map to
 /// an OpenAPI schema — Rust primitives, `String`/`str`, the chrono/time
 /// date-time set, `Uuid`/`Decimal`/`StatusCode`, `FieldData`/`NamedTempFile`
-/// (multipart binary), and the framework wrapper idents (`Vec`, `Option`,
+/// (multipart binary), the string-serialized `std::net` addresses / `PathBuf` /
+/// `url::Url`, and the framework wrapper idents (`Vec`, `Option`,
 /// `Box`, `HashSet`, `BTreeSet`, `HashMap`, `BTreeMap`, `HasOne`, `HasMany`,
 /// `BelongsTo`, `Result`, `Json`, `Path`, `Query`, `Header`).
 ///
@@ -92,6 +93,10 @@ pub const fn is_builtin_openapi_type(ident: &str) -> bool {
         | b"Duration"
         // File upload (vespera::multipart / tempfile)
         | b"FieldData" | b"NamedTempFile"
+        // std::net / std::path / url — serde writes them as JSON strings
+        | b"IpAddr" | b"Ipv4Addr" | b"Ipv6Addr"
+        | b"SocketAddr" | b"SocketAddrV4" | b"SocketAddrV6"
+        | b"PathBuf" | b"Url"
         // Wrappers / std container types handled BEFORE the leaf match
         // (transparent for schema OR mapped to array/object via generic args).
         | b"Vec" | b"VecDeque" | b"LinkedList" | b"HashSet" | b"BTreeSet" | b"Option"
@@ -338,7 +343,7 @@ fn parse_type_impl(
             // output is byte-identical: every primitive arm still produces the
             // same `SchemaRef`, and the fallback path consumes the same
             // `resolved_name` string.
-            if is_json_value_path(path, known_schemas) {
+            if is_json_value_path(path, segment, known_schemas) {
                 // `serde_json::Value` accepts any JSON value → `{}`.
                 return SchemaRef::Inline(Box::default());
             }
@@ -387,6 +392,16 @@ fn parse_type_impl(
                 // File upload types (vespera::multipart / tempfile)
                 // FieldData<NamedTempFile> → string with binary format
                 "FieldData" | "NamedTempFile" => Some(string_with_format("binary")),
+                // std::net / std::path / url: serde's human-readable impls
+                // write each as a JSON string (`"127.0.0.1"`, `"[::1]:80"`,
+                // `"/tmp/x"`, `"https://a.b/"`). A same-named `Schema` type of
+                // the user's own wins over the std/url mapping.
+                "Ipv4Addr" | "Ipv6Addr" | "Url" | "IpAddr" | "SocketAddr" | "SocketAddrV4"
+                | "SocketAddrV6" | "PathBuf"
+                    if !known_schemas.contains(ident_str.as_str()) =>
+                {
+                    Some(string_like_std_schema(&ident_str))
+                }
                 // std::num::NonZeroU* can never be 0, so they carry `minimum: 1`
                 // (signed NonZeroI* share the base integer arms above).
                 "NonZeroU8" => Some(non_zero_unsigned(Some("uint8"))),
@@ -653,20 +668,30 @@ fn is_unsigned_int_type(ty: &Type) -> bool {
     }))
 }
 
-/// `serde_json::Value` — any path ending in `Value` that goes through a
-/// `serde_json` segment, or a bare `Value` that is not a known component
-/// schema (a user `#[derive(Schema)] struct Value` keeps its `$ref`).
+/// `serde_json::Value` under any of its names:
+///
+/// - `Value` through a `serde_json` segment (`serde_json::Value`,
+///   `vespera::serde_json::Value`);
+/// - SeaORM's aliases `Json` (`sea_orm::prelude::Json`) and `JsonValue`
+///   (`sea_orm::JsonValue`), qualified or not — but only WITHOUT generic
+///   arguments: `Json<T>` is axum's body wrapper, not a JSON value;
+/// - a bare `Value` / `Json` / `JsonValue` that is not a known component
+///   schema (a user `#[derive(Schema)] struct Value` keeps its `$ref`).
 fn is_json_value_path(
     path: &syn::Path,
+    last: &syn::PathSegment,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
 ) -> bool {
     let segments = &path.segments;
-    segments.last().is_some_and(|last| last.ident == "Value")
-        && if segments.len() == 1 {
-            !known_schemas.contains("Value")
-        } else {
-            segments.iter().any(|segment| segment.ident == "serde_json")
-        }
+    let alias = last.ident == "Json" || last.ident == "JsonValue";
+    if !(alias || last.ident == "Value") || !last.arguments.is_none() {
+        return false;
+    }
+    if segments.len() == 1 {
+        !known_schemas.contains(last.ident.to_string().as_str())
+    } else {
+        alias || segments.iter().any(|segment| segment.ident == "serde_json")
+    }
 }
 
 /// Schema of a `Duration`, chosen from how its path is spelled.
@@ -713,6 +738,19 @@ fn duration_schema(path: &syn::Path) -> SchemaRef {
         required: Some(vec!["secs".to_string(), "nanos".to_string()]),
         ..Schema::object()
     }))
+}
+
+/// String schema of a std / `url` type whose serde impl writes a JSON string:
+/// `Ipv4Addr` / `Ipv6Addr` carry the `ipv4` / `ipv6` formats and `Url` the
+/// `uri` format. `IpAddr` (either family), the `SocketAddr` set
+/// (`ip:port` — no registered format) and `PathBuf` stay plain strings.
+fn string_like_std_schema(ident: &str) -> SchemaRef {
+    match ident {
+        "Ipv4Addr" => string_with_format("ipv4"),
+        "Ipv6Addr" => string_with_format("ipv6"),
+        "Url" => string_with_format("uri"),
+        _ => SchemaRef::Inline(Box::new(Schema::string())),
+    }
 }
 
 /// Integer schema (with optional OpenAPI format) constrained to `minimum: 1`.
