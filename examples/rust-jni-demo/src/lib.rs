@@ -25,10 +25,12 @@ use vespera::{axum, vespera};
 
 /// Default app router (registered under `"_default"`).  Generates
 /// `openapi.json` with the document-validation routes (`/health`,
-/// `/echo`, `/documents/validate`).
+/// `/echo`, `/documents/validate`) and serves it at `GET /openapi.json`
+/// (`spec_url`) — the bridge's springdoc integration fetches it in-process.
 pub fn create_app() -> axum::Router {
     vespera!(
         openapi = "openapi.json",
+        spec_url = "/openapi.json",
         title = "Document Validation API",
         version = "0.1.0"
     )
@@ -37,11 +39,12 @@ pub fn create_app() -> axum::Router {
 /// Admin app router (registered under `"admin"`).  Generates a
 /// separate `openapi-admin.json` so the admin surface has its own
 /// OpenAPI document — multi-app callers fetch the spec for whichever
-/// app they target.
+/// app they target (also served at `GET /openapi.json` of that app).
 pub fn admin_app() -> axum::Router {
     vespera!(
         dir = "admin_routes",
         openapi = "openapi-admin.json",
+        spec_url = "/openapi.json",
         title = "Admin Dashboard API",
         version = "0.1.0"
     )
