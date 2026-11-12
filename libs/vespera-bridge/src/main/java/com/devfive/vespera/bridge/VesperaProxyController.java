@@ -11,6 +11,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.context.request.async.DeferredResult;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
@@ -20,7 +21,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
@@ -80,6 +80,10 @@ public class VesperaProxyController {
     /** {@link #requestIdHeader} lower-cased, as forwarded to Rust. */
     private final String requestIdHeaderLower;
     private final List<DispatchObserver> observers;
+    /** Bounded app names for logs / metrics / {@link DispatchEvent}s. */
+    private final AppTags appTags;
+    /** {@code Access-Control-*} de-duplication mode, or {@code null} (none). */
+    private final CorsHandling cors;
 
     /** Body of the proxy's own {@code 404} for an app outside {@code exposed-apps}. */
     static final String UNKNOWN_APP_MSG = "vespera app is not exposed by this proxy";
@@ -142,7 +146,7 @@ public class VesperaProxyController {
     }
 
     /**
-     * Full constructor (used by the autoconfiguration).
+     * Constructor with request ids and observers.
      *
      * @param requestIdHeader request-id header to read / generate / forward /
      *                        echo ({@code vespera.bridge.request-id.header}),
@@ -158,6 +162,28 @@ public class VesperaProxyController {
                                   long maxBufferedResponseBytes,
                                   String requestIdHeader,
                                   List<DispatchObserver> observers) {
+        this(appResolver, modeResolver, asyncResponseExecutor, directRetryOnOverflow,
+                maxBufferedRequestBytes, maxBufferedResponseBytes, requestIdHeader, observers, null);
+    }
+
+    /**
+     * Full constructor (used by the autoconfiguration).
+     *
+     * @param cors who owns CORS ({@code vespera.bridge.cors}); decides how
+     *             Rust {@code Access-Control-*} response headers are merged
+     *             with ones Spring already set, or {@code null} to pass them
+     *             through unchanged
+     */
+    public VesperaProxyController(AppNameResolver appResolver,
+                                  DispatchModeResolver modeResolver,
+                                  Executor asyncResponseExecutor,
+                                  boolean directRetryOnOverflow,
+                                  long maxBufferedRequestBytes,
+                                  long maxBufferedResponseBytes,
+                                  String requestIdHeader,
+                                  List<DispatchObserver> observers,
+                                  CorsHandling cors) {
+        this.cors = cors;
         this.requestIdHeader = requestIdHeader == null || requestIdHeader.isBlank()
                 ? null : requestIdHeader.trim();
         this.requestIdHeaderLower = this.requestIdHeader == null
@@ -170,6 +196,7 @@ public class VesperaProxyController {
         this.maxBufferedRequestBytes = Math.max(0, maxBufferedRequestBytes);
         this.maxBufferedResponseBytes = Math.max(0, maxBufferedResponseBytes);
         this.appSelectionHeader = appResolver.selectionHeaderName();
+        this.appTags = AppTags.forResolver(appResolver);
     }
 
     @RequestMapping(value = "/**", consumes = MediaType.ALL_VALUE)
@@ -178,9 +205,9 @@ public class VesperaProxyController {
         final String requestId = requestIdHeader == null
                 ? null : resolveRequestId(request.getHeader(requestIdHeader));
         final ProxyServletResponse response =
-                new ProxyServletResponse(servletResponse, requestIdHeader, requestId);
+                new ProxyServletResponse(servletResponse, requestIdHeader, requestId, cors);
         final ProxyExchange exchange =
-                new ProxyExchange(log, observers, request.getMethod(), requestId);
+                new ProxyExchange(log, observers, appTags, request.getMethod(), requestId);
         if (requestId != null) {
             MDC.put(MDC_REQUEST_ID, requestId);
         }
@@ -192,6 +219,14 @@ public class VesperaProxyController {
             return result;
         } catch (RuntimeException failure) {
             failWith(response, exchange, failure);
+            return null;
+        } catch (UnsatisfiedLinkError unlinked) {
+            // A native symbol is missing: the library was never loaded (or
+            // predates this bridge). Answer 503 instead of escaping as an Error.
+            log.warn("vespera native call failed for {} {} requestId={}",
+                    exchange.method, exchange.path, requestId, unlinked);
+            failWith(response, exchange, new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, ProxyErrors.NOT_INITIALIZED));
             return null;
         } catch (IOException failure) {
             exchange.complete(response.isCommitted() ? response.getStatus() : 500,
@@ -219,7 +254,10 @@ public class VesperaProxyController {
             status = rejected.getStatusCode().value();
             message = rejected.getReason();
         } else {
-            log.warn("vespera dispatch of {} {} failed", exchange.method, exchange.path, failure);
+            // Details (message, stack) stay in the log; the client gets a
+            // generic body plus the request id header to correlate.
+            log.warn("vespera dispatch of {} {} failed requestId={}",
+                    exchange.method, exchange.path, exchange.requestId, failure);
             status = 500;
             message = ProxyErrors.describe(failure);
         }
@@ -265,7 +303,7 @@ public class VesperaProxyController {
     private Object dispatch(HttpServletRequest request, ProxyServletResponse response,
             ProxyExchange exchange) throws IOException {
         final RequestShape shape = RequestShape.capture(request);
-        final String appName = resolveAppName(request);
+        final String appName = resolveAppName(request, exchange);
         final Boolean currentThreadIsVirtual;
         final DispatchMode mode;
         if (modeResolver instanceof SmartDispatchModeResolver smartResolver) {
@@ -297,6 +335,12 @@ public class VesperaProxyController {
                 request);
 
         exchange.mode = effectiveMode;
+        if (!VesperaBridge.isInitialized()) {
+            // No native library: every native call would throw
+            // UnsatisfiedLinkError. Fail cleanly before touching the body.
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, ProxyErrors.NOT_INITIALIZED);
+        }
         if (log.isDebugEnabled()) {
             log.debug("-> Rust  {} {} app={} mode={}", method, path, appName, effectiveMode);
         }
@@ -311,6 +355,7 @@ public class VesperaProxyController {
         // @RequestBody, which we cannot use because it would consume
         // the InputStream and leave the bidirectional path empty).
         if (effectiveMode == DispatchMode.BIDIRECTIONAL_STREAMING) {
+            exchange.reachedRust = true;
             dispatchBidirectional(request, response, appName, method, path, query,
                     forwardedHeaders(request, null, exchange));
             return null;
@@ -321,6 +366,7 @@ public class VesperaProxyController {
         final byte[] body = readBody(request, shape, maxBufferedRequestBytes);
         final VesperaBridge.HeaderSource headers = forwardedHeaders(
                 request, forwardedContentLength(shape, body), exchange);
+        exchange.reachedRust = true;
         switch (effectiveMode) {
             case SYNC:
                 dispatchSync(response, appName, method, path, query, headers, body,
@@ -345,10 +391,12 @@ public class VesperaProxyController {
      * {@code vespera.bridge.exposed-apps}) becomes {@code 404} before anything
      * is dispatched.
      */
-    private String resolveAppName(HttpServletRequest request) {
+    private String resolveAppName(HttpServletRequest request, ProxyExchange exchange) {
         try {
             return appResolver.resolveAppName(request);
         } catch (UnknownAppException unknown) {
+            // Reported as AppTags.UNKNOWN (never verbatim: client-controlled).
+            exchange.app = unknown.appName();
             // Fixed body: the app name is client-controlled, so the 404 neither
             // echoes it nor tells exposed and unexposed-but-registered apps apart.
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, UNKNOWN_APP_MSG);
@@ -582,10 +630,28 @@ public class VesperaProxyController {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
         byte[] wireResp = VesperaBridge.dispatchBytes(wireReq);
-        rejectOversizedBufferedResponse(wireResp, maxBufferedResponseBytes);
+        rejectOversizedBufferedResponse(wireResp, javaResponseCap(maxBufferedResponseBytes));
         WireResponseWriter.writeWireResponse(wireResp, response, method);
     }
 
+    /**
+     * The cap the Java side must still enforce after a buffered dispatch:
+     * {@code 0} (none) when the native buffered-response cap is known to be
+     * at least as strict — the autoconfiguration forwards
+     * {@code vespera.bridge.max-buffered-response-bytes} to the native side,
+     * which then stops collecting the body before it is allocated and answers
+     * {@code 500} itself — else {@code cap} as a fallback check (a controller
+     * built by hand, or a native cap that could not be aligned).
+     */
+    static long javaResponseCap(long cap) {
+        return VesperaNativeConfig.MAX_BUFFERED_RESPONSE_BYTES.enforcesAtMost(cap) ? 0 : cap;
+    }
+
+    /**
+     * Fallback buffered-response cap: {@code 500} (a server-side limit on
+     * what the handler produced — the same status the native cap answers),
+     * never the request-size status {@code 413}.
+     */
     private static void rejectOversizedBufferedResponse(byte[] wireResp, long maxBufferedResponseBytes) {
         long cap = Math.max(0, maxBufferedResponseBytes);
         if (cap <= 0) {
@@ -595,23 +661,37 @@ public class VesperaProxyController {
         long bodyLen = (long) wireResp.length - 4L - headerLen;
         if (bodyLen > cap) {
             throw new ResponseStatusException(
-                    CONTENT_TOO_LARGE,
+                    HttpStatus.INTERNAL_SERVER_ERROR,
                     "buffered response body exceeds vespera.bridge.max-buffered-response-bytes="
                             + cap + " (actual " + bodyLen + " bytes); use streaming dispatch");
         }
     }
 
 
-    private CompletableFuture<ResponseEntity<?>> dispatchAsyncFlow(
+    /**
+     * ASYNC dispatch: the native future completes on a Tokio worker, the
+     * response entity is built on {@link #asyncResponseExecutor} (with the
+     * request id in the MDC), and the outcome is reported once — by the
+     * entity, or by Spring's async timeout ({@code 503}) when the request
+     * timed out first (a late native result is then discarded unreported).
+     */
+    private DeferredResult<ResponseEntity<?>> dispatchAsyncFlow(
             String appName, String method, String path, String query,
             VesperaBridge.HeaderSource headers, byte[] body,
             ProxyServletResponse response, ProxyExchange exchange) {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
-        return VesperaBridge.dispatch(wireReq)
+        DeferredResult<ResponseEntity<?>> result = new DeferredResult<>();
+        // Spring answers an async timeout with 503 (AsyncRequestTimeoutException).
+        result.onTimeout(() -> exchange.complete(
+                HttpStatus.SERVICE_UNAVAILABLE.value(), response.panicked()));
+        result.onError(failure -> exchange.complete(500, response.panicked()));
+        final String requestId = exchange.requestId;
+        final long cap = javaResponseCap(maxBufferedResponseBytes);
+        VesperaBridge.dispatch(wireReq)
                 .thenApplyAsync(
-                        wireResp -> buildCappedResponseEntityFromWire(
-                                wireResp, method, maxBufferedResponseBytes, response),
+                        wireResp -> ProxyExchange.withMdc(requestId,
+                                () -> buildCappedAsyncResponseEntity(wireResp, method, cap, response)),
                         asyncResponseExecutor)
                 // The async executor uses AbortPolicy (NOT CallerRunsPolicy):
                 // under saturation the heavy wire response build must NOT run on
@@ -620,14 +700,15 @@ public class VesperaProxyController {
                 // throughput (the documented "no heavy continuations on Tokio
                 // workers" contract). A rejected submission surfaces here as a
                 // RejectedExecutionException; translate it to a clean 503
-                // backpressure signal instead of an opaque 500.  `handle` (not
-                // `exceptionally`) so the wildcard `ResponseEntity<?>` result
-                // type infers cleanly across the success / failure arms.
-                .handle((resp, ex) -> ex == null ? resp : asyncFailureToResponse(ex))
-                .thenApply(entity -> {
-                    exchange.complete(entity.getStatusCode().value(), response.panicked());
-                    return entity;
+                // backpressure signal instead of an opaque 500.
+                .handle((resp, ex) -> ex == null ? resp
+                        : ProxyExchange.withMdc(requestId, () -> asyncFailureToResponse(ex)))
+                .thenAccept(entity -> {
+                    if (result.setResult(entity)) {
+                        exchange.complete(entity.getStatusCode().value(), response.panicked());
+                    }
                 });
+        return result;
     }
 
     /**
@@ -894,6 +975,14 @@ public class VesperaProxyController {
             ProxyServletResponse response) {
         rejectOversizedBufferedResponse(wire, maxBufferedResponseBytes);
         return WireResponseWriter.buildResponseEntityFromWire(wire, method, response);
+    }
+
+    /** As {@link #buildCappedResponseEntityFromWire}, with a zero-copy body view. */
+    static ResponseEntity<?> buildCappedAsyncResponseEntity(
+            byte[] wire, String method, long maxBufferedResponseBytes,
+            ProxyServletResponse response) {
+        rejectOversizedBufferedResponse(wire, maxBufferedResponseBytes);
+        return WireResponseWriter.buildAsyncResponseEntityFromWire(wire, method, response);
     }
 
 }

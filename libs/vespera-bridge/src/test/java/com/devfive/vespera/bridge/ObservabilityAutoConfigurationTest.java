@@ -66,7 +66,8 @@ class ObservabilityAutoConfigurationTest {
             assertEquals(404, response.getStatus());
             assertTrue(response.containsHeader("X-Request-Id"));
             Timer timer = ctx.getBean(MeterRegistry.class).get(MicrometerDispatchObserver.METER_NAME)
-                    .tags("app", "_default", "mode", "NONE", "status", "404",
+                    // The client-selected app is never a tag value verbatim.
+                    .tags("app", "UNKNOWN", "mode", "NONE", "status", "404",
                             "outcome", "CLIENT_ERROR")
                     .timer();
             assertEquals(1, timer.count());

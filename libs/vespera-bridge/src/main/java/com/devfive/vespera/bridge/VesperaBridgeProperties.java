@@ -79,6 +79,15 @@ public class VesperaBridgeProperties {
     private boolean controllerEnabled = true;
 
     /**
+     * Who answers CORS for proxied requests: {@code rust} (default — CORS
+     * preflights are routed to the Rust router, whose
+     * {@code Access-Control-*} headers win) or {@code spring} (Spring MVC /
+     * Spring Security answer preflights; Rust's duplicates are dropped). See
+     * {@link CorsHandling}.
+     */
+    private CorsHandling cors = CorsHandling.RUST;
+
+    /**
      * Dispatch-mode policy for the autoconfigured proxy.
      *
      * <ul>
@@ -126,9 +135,14 @@ public class VesperaBridgeProperties {
 
     /**
      * Maximum response-body bytes the Spring proxy will serve from the
-     * heap-buffered SYNC path. Default 64 MiB keeps SmartDispatch's small
-     * unsafe fast path bounded; set {@code 0} to restore unlimited SYNC
-     * response buffering. Large/unknown downloads should use streaming modes.
+     * heap-buffered SYNC / ASYNC paths. Default 64 MiB keeps SmartDispatch's
+     * small unsafe fast path bounded; set {@code 0} to restore unlimited
+     * buffering. Forwarded to the native buffered-response cap (unless
+     * {@code vespera.bridge.native.max-buffered-response-bytes} or the
+     * {@code vespera.limits.maxBufferedResponseBytes} system property /
+     * {@code VESPERA_MAX_BUFFERED_RESPONSE_BYTES} variable sets it), so Rust
+     * rejects an oversized response with {@code 500} before buffering it.
+     * Large/unknown downloads should use streaming modes.
      */
     private long maxBufferedResponseBytes = VesperaProxyController.DEFAULT_MAX_BUFFERED_RESPONSE_BYTES;
 
@@ -203,6 +217,14 @@ public class VesperaBridgeProperties {
 
     public void setControllerEnabled(boolean controllerEnabled) {
         this.controllerEnabled = controllerEnabled;
+    }
+
+    public CorsHandling getCors() {
+        return cors;
+    }
+
+    public void setCors(CorsHandling cors) {
+        this.cors = cors == null ? CorsHandling.RUST : cors;
     }
 
     public String getDispatchMode() {
@@ -409,6 +431,25 @@ public class VesperaBridgeProperties {
          * ({@code 0} for the runtime pair, {@code -1} otherwise).
          */
         void apply() {
+            apply(-1);
+        }
+
+        /**
+         * As {@link #apply()}, also aligning the native buffered-response cap
+         * with the bridge's {@code bridgeResponseCap}
+         * ({@code vespera.bridge.max-buffered-response-bytes}, {@code < 0} =
+         * don't) when no native value was configured explicitly (this
+         * property, {@code -Dvespera.limits.maxBufferedResponseBytes},
+         * {@code VESPERA_MAX_BUFFERED_RESPONSE_BYTES} or a programmatic
+         * {@code configureLimits}): Rust then stops collecting an oversized
+         * SYNC / ASYNC response before it is allocated on either heap.
+         */
+        void apply(long bridgeResponseCap) {
+            if (maxBufferedResponseBytes == null && bridgeResponseCap >= 0
+                    && !VesperaNativeConfig.MAX_BUFFERED_RESPONSE_BYTES.explicitlyConfigured()
+                    && System.getenv("VESPERA_MAX_BUFFERED_RESPONSE_BYTES") == null) {
+                VesperaBridge.configureLimits(-1, -1, bridgeResponseCap);
+            }
             if (workerThreads != null || maxBlockingThreads != null) {
                 VesperaBridge.configureRuntime(
                         workerThreads == null ? 0 : workerThreads,

@@ -6,7 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.web.servlet.MockMvc;
@@ -35,12 +36,20 @@ class AsyncResponseEntityRangeTest {
                     "{\"status\":200,\"headers\":{\"content-type\":\"text/csv\"}}", "a,b,c\n1,2,3\n"),
                     "GET");
         }
+
+        @GetMapping("/streamed")
+        ResponseEntity<?> streamed() {
+            return WireResponseWriter.buildAsyncResponseEntityFromWire(wire(
+                    "{\"status\":200,\"headers\":{\"content-type\":\"text/csv\"}}", "a,b,c\n1,2,3\n"),
+                    "GET", null);
+        }
     }
 
-    @Test
-    void rangeRequestsGetTheFullBodyWithTheRustContentType() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"/file", "/streamed"})
+    void rangeRequestsGetTheFullBodyWithTheRustContentType(String path) throws Exception {
         MockMvc mvc = MockMvcBuilders.standaloneSetup(new WireController()).build();
-        MockHttpServletResponse response = mvc.perform(get("/file").header("Range", "bytes=0-1"))
+        MockHttpServletResponse response = mvc.perform(get(path).header("Range", "bytes=0-1"))
                 .andReturn().getResponse();
         assertEquals(200, response.getStatus());
         assertNull(response.getHeader("Accept-Ranges"));
