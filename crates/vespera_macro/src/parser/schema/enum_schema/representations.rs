@@ -6,11 +6,66 @@ use std::{
 
 use vespera_core::schema::{Discriminator, Schema, SchemaRef, SchemaType};
 
-use super::super::{serde_attrs::extract_doc_comment, type_schema::parse_type_to_schema_ref};
+use super::super::{
+    serde_attrs::extract_doc_comment,
+    struct_schema::{emitted_unnamed_types, with_description},
+    type_schema::{parse_type_to_schema_ref, tuple_array_schema},
+};
 use super::{
     unit::get_variant_key,
-    variant::{build_struct_variant_properties, build_variant_data_schema},
+    variant::{
+        build_struct_variant_fields, build_variant_data_schema, is_other_variant,
+        is_variant_omitted,
+    },
 };
+
+/// Variants that take part in the wire contract (not `skip` /
+/// `skip_serializing`).
+fn emitted_variants(enum_item: &syn::ItemEnum) -> impl Iterator<Item = &syn::Variant> {
+    enum_item
+        .variants
+        .iter()
+        .filter(|variant| !is_variant_omitted(variant))
+}
+
+/// `{type: string, enum: [key]}` — the tag value of one variant.
+fn tag_value_schema(variant_key: String) -> SchemaRef {
+    SchemaRef::Inline(Box::new(Schema {
+        r#enum: Some(vec![serde_json::Value::String(variant_key)]),
+        ..Schema::string()
+    }))
+}
+
+/// Tag-value schema for every emitted variant of a tagged enum, keyed by
+/// variant ident. The `#[serde(other)]` catch-all accepts any string that is
+/// NOT one of the other variants' tags (`{type: string, not: {enum: [...]}}`),
+/// which keeps the `oneOf` branches mutually exclusive.
+fn tag_schemas(enum_item: &syn::ItemEnum, rename_all: Option<&str>) -> HashMap<String, SchemaRef> {
+    let known_tags: Vec<serde_json::Value> = emitted_variants(enum_item)
+        .filter(|variant| !is_other_variant(variant))
+        .map(|variant| serde_json::Value::String(get_variant_key(variant, rename_all)))
+        .collect();
+    emitted_variants(enum_item)
+        .map(|variant| {
+            let schema = if is_other_variant(variant) {
+                SchemaRef::Inline(Box::new(Schema {
+                    not: Some(SchemaRef::Inline(Box::new(Schema {
+                        r#enum: Some(known_tags.clone()),
+                        ..Schema::default()
+                    }))),
+                    ..Schema::string()
+                }))
+            } else {
+                tag_value_schema(get_variant_key(variant, rename_all))
+            };
+            (variant.ident.to_string(), schema)
+        })
+        .collect()
+}
+
+fn non_empty<T>(items: Vec<T>) -> Option<Vec<T>> {
+    (!items.is_empty()).then_some(items)
+}
 
 /// Parse externally tagged enum: `{"VariantName": {...}}`
 /// This is serde's default representation.
@@ -23,88 +78,28 @@ pub(super) fn parse_externally_tagged_enum(
 ) -> Schema {
     let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
 
-    for variant in &enum_item.variants {
+    for variant in emitted_variants(enum_item) {
         let variant_key = get_variant_key(variant, rename_all);
         let variant_description = extract_doc_comment(&variant.attrs);
 
-        let variant_schema = match &variant.fields {
-            syn::Fields::Unit => {
-                // Unit variant in mixed enum: string with const value
-                Schema {
-                    description: variant_description,
-                    r#enum: Some(vec![serde_json::Value::String(variant_key)]),
-                    ..Schema::string()
-                }
+        let variant_schema = if let Some(data_schema) =
+            build_variant_data_schema(variant, rename_all, known_schemas, struct_definitions)
+        {
+            // Tuple / struct variant: {"VariantName": <data>}
+            let mut properties = BTreeMap::new();
+            properties.insert(variant_key.clone(), data_schema);
+            Schema {
+                description: variant_description,
+                properties: Some(properties),
+                required: Some(vec![variant_key]),
+                ..Schema::object()
             }
-            syn::Fields::Unnamed(fields_unnamed) => {
-                // Tuple variant: {"VariantName": <data>}
-                let data_schema = if fields_unnamed.unnamed.len() == 1 {
-                    let inner_type = &fields_unnamed.unnamed[0].ty;
-                    parse_type_to_schema_ref(inner_type, known_schemas, struct_definitions)
-                } else {
-                    // Multiple fields - array with prefixItems
-                    let mut tuple_item_schemas = Vec::with_capacity(fields_unnamed.unnamed.len());
-                    for field in &fields_unnamed.unnamed {
-                        let field_schema =
-                            parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions);
-                        tuple_item_schemas.push(field_schema);
-                    }
-                    let tuple_len = tuple_item_schemas.len();
-                    SchemaRef::Inline(Box::new(Schema {
-                        prefix_items: Some(tuple_item_schemas),
-                        min_items: Some(tuple_len),
-                        max_items: Some(tuple_len),
-                        items: None,
-                        ..Schema::new(SchemaType::Array)
-                    }))
-                };
-
-                let mut properties = BTreeMap::new();
-                properties.insert(variant_key.clone(), data_schema);
-
-                Schema {
-                    description: variant_description,
-                    properties: Some(properties),
-                    required: Some(vec![variant_key]),
-                    ..Schema::object()
-                }
-            }
-            syn::Fields::Named(fields_named) => {
-                // Struct variant: {"VariantName": {field1: type1, ...}}
-                let (inner_properties, inner_required) = build_struct_variant_properties(
-                    fields_named,
-                    rename_all,
-                    &variant.attrs,
-                    known_schemas,
-                    struct_definitions,
-                );
-
-                let inner_struct_schema = Schema {
-                    properties: if inner_properties.is_empty() {
-                        None
-                    } else {
-                        Some(inner_properties)
-                    },
-                    required: if inner_required.is_empty() {
-                        None
-                    } else {
-                        Some(inner_required)
-                    },
-                    ..Schema::object()
-                };
-
-                let mut properties = BTreeMap::new();
-                properties.insert(
-                    variant_key.clone(),
-                    SchemaRef::Inline(Box::new(inner_struct_schema)),
-                );
-
-                Schema {
-                    description: variant_description,
-                    properties: Some(properties),
-                    required: Some(vec![variant_key]),
-                    ..Schema::object()
-                }
+        } else {
+            // Unit variant in mixed enum: string with const value
+            Schema {
+                description: variant_description,
+                r#enum: Some(vec![serde_json::Value::String(variant_key)]),
+                ..Schema::string()
             }
         };
 
@@ -114,18 +109,19 @@ pub(super) fn parse_externally_tagged_enum(
     Schema {
         schema_type: None,
         description,
-        one_of: if one_of_schemas.is_empty() {
-            None
-        } else {
-            Some(one_of_schemas)
-        },
+        one_of: non_empty(one_of_schemas),
         ..Schema::new(SchemaType::Object)
     }
 }
 
 /// Parse internally tagged enum: `{"tag": "VariantName", ...fields...}`
 /// Uses `OpenAPI` discriminator for the tag field.
-/// Note: serde only allows struct and unit variants for internally tagged enums.
+///
+/// serde allows unit, struct and newtype variants here (multi-field tuple
+/// variants are a serde compile error). A newtype variant's inner value must
+/// serialize as a map, so it is emitted as
+/// `allOf: [{tag object}, <inner schema>]`; non-object inner types are
+/// rejected at `#[derive(Schema)]` time (see `validate_enum_for_schema`).
 pub(super) fn parse_internally_tagged_enum(
     enum_item: &syn::ItemEnum,
     description: Option<String>,
@@ -135,64 +131,65 @@ pub(super) fn parse_internally_tagged_enum(
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
     let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
-
     let tag_string = tag.to_string();
+    let mut tags = tag_schemas(enum_item, rename_all);
 
-    for variant in &enum_item.variants {
-        let variant_key = get_variant_key(variant, rename_all);
+    for variant in emitted_variants(enum_item) {
         let variant_description = extract_doc_comment(&variant.attrs);
+        let Some(tag_schema) = tags.remove(&variant.ident.to_string()) else {
+            continue;
+        };
+        let tag_object = |description: Option<String>| Schema {
+            description,
+            properties: Some(BTreeMap::from([(tag_string.clone(), tag_schema.clone())])),
+            required: Some(vec![tag_string.clone()]),
+            ..Schema::object()
+        };
 
         let variant_schema = match &variant.fields {
-            syn::Fields::Unit => {
-                // Unit variant: {"tag": "VariantName"}
-                let mut properties = BTreeMap::new();
-                properties.insert(
-                    tag_string.clone(),
-                    SchemaRef::Inline(Box::new(Schema {
-                        r#enum: Some(vec![serde_json::Value::String(variant_key.clone())]),
-                        ..Schema::string()
-                    })),
-                );
-
-                Schema {
-                    description: variant_description,
-                    properties: Some(properties),
-                    required: Some(vec![tag_string.clone()]),
-                    ..Schema::object()
-                }
-            }
+            // Unit variant: {"tag": "VariantName"}
+            syn::Fields::Unit => tag_object(variant_description),
             syn::Fields::Named(fields_named) => {
                 // Struct variant: {"tag": "VariantName", field1: type1, ...}
-                let (mut properties, mut required) = build_struct_variant_properties(
+                let mut fields = build_struct_variant_fields(
                     fields_named,
                     rename_all,
                     &variant.attrs,
                     known_schemas,
                     struct_definitions,
                 );
-
-                // Add the tag field
-                properties.insert(
-                    tag_string.clone(),
-                    SchemaRef::Inline(Box::new(Schema {
-                        r#enum: Some(vec![serde_json::Value::String(variant_key.clone())]),
-                        ..Schema::string()
-                    })),
+                fields
+                    .properties
+                    .insert(tag_string.clone(), tag_schema.clone());
+                fields.required.insert(0, tag_string.clone());
+                fields.into_object_schema(variant_description)
+            }
+            syn::Fields::Unnamed(fields_unnamed) if fields_unnamed.unnamed.len() == 1 => {
+                let inner = parse_type_to_schema_ref(
+                    &fields_unnamed.unnamed[0].ty,
+                    known_schemas,
+                    struct_definitions,
                 );
-                required.insert(0, tag_string.clone());
-
-                Schema {
-                    description: variant_description,
-                    properties: Some(properties),
-                    required: Some(required),
-                    ..Schema::object()
+                let inner_type = match &inner {
+                    SchemaRef::Inline(schema) => schema.schema_type,
+                    SchemaRef::Ref(_) => None,
+                };
+                match inner_type {
+                    // Newtype of `()` serializes as just the tag.
+                    Some(SchemaType::Null) => tag_object(variant_description),
+                    // A map-like (or referenced struct) inner value carries the tag.
+                    None | Some(SchemaType::Object) => Schema {
+                        description: variant_description,
+                        all_of: Some(vec![SchemaRef::Inline(Box::new(tag_object(None))), inner]),
+                        ..Schema::default()
+                    },
+                    // Newtype of a non-map value cannot carry the tag in serde;
+                    // rejected at derive time, skipped here defensively.
+                    Some(_) => continue,
                 }
             }
-            syn::Fields::Unnamed(_) => {
-                // Tuple/newtype variants are not supported with internally tagged enums in serde
-                // Generate a warning schema or skip
-                continue;
-            }
+            // Multi-field tuple variants are a serde compile error here.
+            syn::Fields::Unnamed(_) => continue,
         };
 
         one_of_schemas.push(SchemaRef::Inline(Box::new(variant_schema)));
@@ -201,11 +198,7 @@ pub(super) fn parse_internally_tagged_enum(
     Schema {
         schema_type: None,
         description,
-        one_of: if one_of_schemas.is_empty() {
-            None
-        } else {
-            Some(one_of_schemas)
-        },
+        one_of: non_empty(one_of_schemas),
         discriminator: Some(Discriminator {
             property_name: tag_string,
             mapping: None, // Mapping not needed for inline schemas
@@ -226,25 +219,19 @@ pub(super) fn parse_adjacently_tagged_enum(
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
     let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
-
     let tag_string = tag.to_string();
     let content_string = content.to_string();
+    let mut tags = tag_schemas(enum_item, rename_all);
 
-    for variant in &enum_item.variants {
-        let variant_key = get_variant_key(variant, rename_all);
+    for variant in emitted_variants(enum_item) {
         let variant_description = extract_doc_comment(&variant.attrs);
+        let Some(tag_schema) = tags.remove(&variant.ident.to_string()) else {
+            continue;
+        };
 
         let mut properties = BTreeMap::new();
         let mut required = vec![tag_string.clone()];
-
-        // Add the tag field
-        properties.insert(
-            tag_string.clone(),
-            SchemaRef::Inline(Box::new(Schema {
-                r#enum: Some(vec![serde_json::Value::String(variant_key.clone())]),
-                ..Schema::string()
-            })),
-        );
+        properties.insert(tag_string.clone(), tag_schema);
 
         // Add the content field if variant has data
         if let Some(data_schema) =
@@ -267,11 +254,7 @@ pub(super) fn parse_adjacently_tagged_enum(
     Schema {
         schema_type: None,
         description,
-        one_of: if one_of_schemas.is_empty() {
-            None
-        } else {
-            Some(one_of_schemas)
-        },
+        one_of: non_empty(one_of_schemas),
         discriminator: Some(Discriminator {
             property_name: tag_string,
             mapping: None,
@@ -281,7 +264,11 @@ pub(super) fn parse_adjacently_tagged_enum(
 }
 
 /// Parse untagged enum: variant data only, no tag.
-/// Uses oneOf without discriminator - validation relies on schema structure matching.
+///
+/// Uses `anyOf` (not `oneOf`): serde picks the FIRST variant that
+/// deserializes, so overlapping variants (e.g. `Int(i64)` / `Float(f64)`, or
+/// a struct variant whose fields are a subset of another) are legal — `oneOf`
+/// would make such values fail validation for matching more than one branch.
 pub(super) fn parse_untagged_enum(
     enum_item: &syn::ItemEnum,
     description: Option<String>,
@@ -289,9 +276,9 @@ pub(super) fn parse_untagged_enum(
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
-    let mut one_of_schemas = Vec::with_capacity(enum_item.variants.len());
+    let mut any_of_schemas = Vec::with_capacity(enum_item.variants.len());
 
-    for variant in &enum_item.variants {
+    for variant in emitted_variants(enum_item) {
         let variant_description = extract_doc_comment(&variant.attrs);
 
         let variant_schema = match &variant.fields {
@@ -303,80 +290,46 @@ pub(super) fn parse_untagged_enum(
                     ..Default::default()
                 }
             }
-            syn::Fields::Unnamed(fields_unnamed) => {
-                if fields_unnamed.unnamed.len() == 1 {
-                    // Single field tuple variant - just the inner type
-                    let inner_type = &fields_unnamed.unnamed[0].ty;
-                    let mut schema = match parse_type_to_schema_ref(
-                        inner_type,
-                        known_schemas,
-                        struct_definitions,
-                    ) {
-                        SchemaRef::Inline(s) => *s,
-                        SchemaRef::Ref(r) => Schema {
-                            all_of: Some(vec![SchemaRef::Ref(r)]),
-                            ..Default::default()
-                        },
-                    };
-                    schema.description = variant_description.or(schema.description);
-                    schema
-                } else {
-                    // Multiple fields - array with prefixItems
-                    let mut tuple_item_schemas = Vec::with_capacity(fields_unnamed.unnamed.len());
-                    for field in &fields_unnamed.unnamed {
-                        let field_schema =
-                            parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions);
-                        tuple_item_schemas.push(field_schema);
-                    }
-                    let tuple_len = tuple_item_schemas.len();
-                    Schema {
-                        description: variant_description,
-                        prefix_items: Some(tuple_item_schemas),
-                        min_items: Some(tuple_len),
-                        max_items: Some(tuple_len),
-                        items: None,
-                        ..Schema::new(SchemaType::Array)
-                    }
+            syn::Fields::Unnamed(fields_unnamed) if fields_unnamed.unnamed.len() == 1 => {
+                // Single field tuple variant - just the inner type; a variant
+                // doc comment overrides the inner schema's own description.
+                let inner_type = &fields_unnamed.unnamed[0].ty;
+                let inner = parse_type_to_schema_ref(inner_type, known_schemas, struct_definitions);
+                // A bare `$ref` needs no `allOf` wrapper unless a variant doc
+                // comment has to sit beside it.
+                if variant_description.is_none() && matches!(inner, SchemaRef::Ref(_)) {
+                    any_of_schemas.push(inner);
+                    continue;
                 }
+                let mut schema = with_description(inner, None);
+                schema.description = variant_description.or(schema.description);
+                schema
             }
-            syn::Fields::Named(fields_named) => {
-                // Struct variant - just the object with fields
-                let (properties, required) = build_struct_variant_properties(
-                    fields_named,
-                    rename_all,
-                    &variant.attrs,
+            syn::Fields::Unnamed(fields_unnamed) => Schema {
+                description: variant_description,
+                ..tuple_array_schema(
+                    emitted_unnamed_types(fields_unnamed).into_iter(),
                     known_schemas,
                     struct_definitions,
-                );
-
-                Schema {
-                    description: variant_description,
-                    properties: if properties.is_empty() {
-                        None
-                    } else {
-                        Some(properties)
-                    },
-                    required: if required.is_empty() {
-                        None
-                    } else {
-                        Some(required)
-                    },
-                    ..Schema::object()
-                }
-            }
+                )
+            },
+            syn::Fields::Named(fields_named) => build_struct_variant_fields(
+                fields_named,
+                rename_all,
+                &variant.attrs,
+                known_schemas,
+                struct_definitions,
+            )
+            .into_object_schema(variant_description),
         };
 
-        one_of_schemas.push(SchemaRef::Inline(Box::new(variant_schema)));
+        any_of_schemas.push(SchemaRef::Inline(Box::new(variant_schema)));
     }
 
     Schema {
         schema_type: None,
         description,
-        one_of: if one_of_schemas.is_empty() {
-            None
-        } else {
-            Some(one_of_schemas)
-        },
+        any_of: non_empty(any_of_schemas),
         ..Default::default()
     }
 }

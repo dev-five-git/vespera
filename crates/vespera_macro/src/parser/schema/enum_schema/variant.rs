@@ -1,83 +1,47 @@
 use std::{
     borrow::Borrow,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     hash::Hash,
 };
 
-use vespera_core::schema::{Schema, SchemaRef, SchemaType};
+use vespera_core::schema::SchemaRef;
 
 use super::super::{
-    serde_attrs::{
-        extract_doc_comment, extract_field_rename, extract_rename_all, rename_field,
-        strip_raw_prefix_owned,
-    },
-    type_schema::parse_type_to_schema_ref,
+    serde_attrs::{extract_rename_all, extract_serde_skip_flags},
+    struct_schema::{NamedFields, collect_named_fields, emitted_unnamed_types},
+    type_schema::{parse_type_to_schema_ref, tuple_array_schema},
 };
-use crate::schema_macro::type_utils::is_option_type;
 
-/// Build properties for a struct variant's fields
-pub(super) fn build_struct_variant_properties(
+/// Build the fields of a struct variant through the SAME field walker structs
+/// use, so `skip`, `flatten`, `rename`, `skip_serializing_if`, doc comments and
+/// `#[schema(...)]` constraints behave identically on enum variants.
+pub(super) fn build_struct_variant_fields(
     fields_named: &syn::FieldsNamed,
     enum_rename_all: Option<&str>,
     variant_attrs: &[syn::Attribute],
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
-) -> (BTreeMap<String, SchemaRef>, Vec<String>) {
-    let mut variant_properties = BTreeMap::new();
-    let mut variant_required = Vec::with_capacity(fields_named.named.len());
+) -> NamedFields {
     let variant_rename_all = extract_rename_all(variant_attrs);
+    collect_named_fields(
+        fields_named,
+        variant_rename_all.as_deref().or(enum_rename_all),
+        known_schemas,
+        struct_definitions,
+    )
+}
 
-    for field in &fields_named.named {
-        let rust_field_name = field.ident.as_ref().map_or_else(
-            || "unknown".to_string(),
-            |i| strip_raw_prefix_owned(i.to_string()),
-        );
+/// `true` when a variant never appears in serialized output
+/// (`#[serde(skip)]`, `#[serde(skip_serializing)]`), so it is left out of the
+/// schema entirely.
+pub(super) fn is_variant_omitted(variant: &syn::Variant) -> bool {
+    let flags = extract_serde_skip_flags(&variant.attrs);
+    flags.skip || flags.skip_serializing
+}
 
-        // Check for field-level rename attribute first (takes precedence)
-        let field_name = extract_field_rename(&field.attrs).unwrap_or_else(|| {
-            rename_field(
-                &rust_field_name,
-                variant_rename_all.as_deref().or(enum_rename_all),
-            )
-        });
-
-        let field_type = &field.ty;
-        let mut schema_ref =
-            parse_type_to_schema_ref(field_type, known_schemas, struct_definitions);
-
-        // Extract doc comment from field and set as description
-        if let Some(doc) = extract_doc_comment(&field.attrs) {
-            match &mut schema_ref {
-                SchemaRef::Inline(schema) => {
-                    schema.description = Some(doc);
-                }
-                SchemaRef::Ref(_) => {
-                    let ref_schema = std::mem::replace(
-                        &mut schema_ref,
-                        SchemaRef::Inline(Box::new(Schema::object())),
-                    );
-                    if let SchemaRef::Ref(reference) = ref_schema {
-                        schema_ref = SchemaRef::Inline(Box::new(Schema {
-                            description: Some(doc),
-                            all_of: Some(vec![SchemaRef::Ref(reference)]),
-                            ..Default::default()
-                        }));
-                    }
-                }
-            }
-        }
-
-        variant_properties.insert(field_name.clone(), schema_ref);
-
-        // Check if field is Option<T>
-        let is_optional = is_option_type(field_type);
-
-        if !is_optional {
-            variant_required.push(field_name);
-        }
-    }
-
-    (variant_properties, variant_required)
+/// `true` for the `#[serde(other)]` catch-all unit variant.
+pub(super) fn is_other_variant(variant: &syn::Variant) -> bool {
+    extract_serde_skip_flags(&variant.attrs).other
 }
 
 /// Build a schema for a variant's data (tuple or struct fields)
@@ -99,47 +63,25 @@ pub(super) fn build_variant_data_schema(
                     struct_definitions,
                 ))
             } else {
-                // Multiple fields tuple variant - array with prefixItems
-                let mut tuple_item_schemas = Vec::with_capacity(fields_unnamed.unnamed.len());
-                for field in &fields_unnamed.unnamed {
-                    let field_schema =
-                        parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions);
-                    tuple_item_schemas.push(field_schema);
-                }
-
-                let tuple_len = tuple_item_schemas.len();
-                Some(SchemaRef::Inline(Box::new(Schema {
-                    prefix_items: Some(tuple_item_schemas),
-                    min_items: Some(tuple_len),
-                    max_items: Some(tuple_len),
-                    items: None,
-                    ..Schema::new(SchemaType::Array)
-                })))
+                // Multiple fields tuple variant - array with prefixItems over
+                // the non-skipped fields
+                Some(SchemaRef::Inline(Box::new(tuple_array_schema(
+                    emitted_unnamed_types(fields_unnamed).into_iter(),
+                    known_schemas,
+                    struct_definitions,
+                ))))
             }
         }
-        syn::Fields::Named(fields_named) => {
-            let (properties, required) = build_struct_variant_properties(
+        syn::Fields::Named(fields_named) => Some(SchemaRef::Inline(Box::new(
+            build_struct_variant_fields(
                 fields_named,
                 enum_rename_all,
                 &variant.attrs,
                 known_schemas,
                 struct_definitions,
-            );
-
-            Some(SchemaRef::Inline(Box::new(Schema {
-                properties: if properties.is_empty() {
-                    None
-                } else {
-                    Some(properties)
-                },
-                required: if required.is_empty() {
-                    None
-                } else {
-                    Some(required)
-                },
-                ..Schema::object()
-            })))
-        }
+            )
+            .into_object_schema(None),
+        ))),
     }
 }
 
@@ -155,7 +97,7 @@ mod tests {
         };
         fields.named.first_mut().expect("field").ident = None;
 
-        let (properties, required) = build_struct_variant_properties(
+        let fields = build_struct_variant_fields(
             fields,
             None,
             &[],
@@ -163,8 +105,8 @@ mod tests {
             &HashMap::<String, String>::new(),
         );
 
-        assert!(properties.contains_key("unknown"));
-        assert_eq!(required, ["unknown"]);
+        assert!(fields.properties.contains_key("unknown"));
+        assert_eq!(fields.required, ["unknown"]);
     }
 
     #[test]
@@ -182,5 +124,20 @@ mod tests {
         };
         assert!(schema.properties.is_none());
         assert!(schema.required.is_none());
+    }
+
+    #[rstest::rstest]
+    #[case::plain(syn::parse_quote!(A), false, false)]
+    #[case::skip(syn::parse_quote!(#[serde(skip)] A), true, false)]
+    #[case::skip_serializing(syn::parse_quote!(#[serde(skip_serializing)] A), true, false)]
+    #[case::skip_deserializing(syn::parse_quote!(#[serde(skip_deserializing)] A), false, false)]
+    #[case::other(syn::parse_quote!(#[serde(other)] Unknown), false, true)]
+    fn variant_level_flags(
+        #[case] variant: syn::Variant,
+        #[case] omitted: bool,
+        #[case] other: bool,
+    ) {
+        assert_eq!(is_variant_omitted(&variant), omitted);
+        assert_eq!(is_other_variant(&variant), other);
     }
 }

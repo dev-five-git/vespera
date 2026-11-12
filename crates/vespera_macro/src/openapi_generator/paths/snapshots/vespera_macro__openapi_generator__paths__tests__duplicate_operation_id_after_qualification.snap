@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/openapi_generator/paths/tests.rs
+expression: err.to_string()
+---
+duplicate operationId `users_list`: used by both `routes::users::list` (`GET /users`) and `routes::users::list` (`GET /posts`) — operationIds must be unique; set one explicitly with `#[vespera::route(..., operation_id = "...")]`

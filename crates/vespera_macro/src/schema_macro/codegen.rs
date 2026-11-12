@@ -167,7 +167,7 @@ mod tests {
     /// Regression for the schema!↔OpenAPI drift: a `#[serde(default)]`
     /// non-`Option` field must be REQUIRED (required is nullability-only,
     /// identical to the OpenAPI component schema).  The prior `schema!`
-    /// path wrongly excluded defaulted / `skip_serializing_if` fields.
+    /// path wrongly excluded defaulted fields.
     #[test]
     fn default_field_is_required_matching_openapi() {
         let item = parse(r"pub struct WithDefault { #[serde(default)] pub field: String }");
@@ -180,21 +180,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn skip_serializing_if_field_is_required() {
-        let item = parse(
-            r#"pub struct WithSkip { #[serde(skip_serializing_if = "Option::is_none")] pub field: String }"#,
-        );
+    /// A `skip_serializing_if` / `skip_serializing` field may be absent from
+    /// serialized output, so it is NOT required (shared struct-field walker).
+    #[rstest::rstest]
+    #[case::skip_serializing_if(r#"#[serde(skip_serializing_if = "String::is_empty")]"#)]
+    #[case::skip_serializing("#[serde(skip_serializing)]")]
+    fn output_omittable_field_is_not_required(#[case] attr: &str) {
+        let item = parse(&format!(
+            "pub struct WithSkip {{ {attr} pub field: String, pub id: i32 }}"
+        ));
         let schema =
             build_filtered_schema(&item, &HashSet::new(), &HashSet::new(), &empty_storage());
-        assert!(
-            schema
-                .required
-                .expect("required present")
-                .iter()
-                .any(|f| f == "field"),
-            "skip_serializing_if must not affect required (nullability-only)"
-        );
+        let required = schema.required.expect("required present");
+        assert_eq!(required, ["id"], "{attr}");
+        assert!(schema.properties.expect("props").contains_key("field"));
     }
 
     #[test]

@@ -16,10 +16,10 @@ use super::{
     schema_attrs::{SchemaConstraints, extract_schema_constraints},
     serde_attrs::{
         extract_doc_comment, extract_field_rename, extract_flatten, extract_rename_all,
-        extract_schema_ref_override, extract_skip, extract_transparent, rename_field,
+        extract_schema_ref_override, extract_serde_skip_flags, extract_transparent, rename_field,
         strip_raw_prefix_owned,
     },
-    type_schema::parse_type_to_schema_ref,
+    type_schema::{parse_type_to_schema_ref, tuple_array_schema},
 };
 use crate::schema_macro::type_utils::is_option_type;
 
@@ -32,20 +32,18 @@ use crate::schema_macro::type_utils::is_option_type;
 /// - Doc comments as descriptions
 /// - Serde attributes (rename, `rename_all`, skip, default)
 ///
+/// Tuple structs follow serde's wire shape: a newtype `struct Id(u64)` is its
+/// inner schema, a multi-field `struct Pair(A, B)` is a fixed-length array.
+///
 /// # Arguments
 /// * `struct_item` - The parsed struct from syn
 /// * `known_schemas` - Map of known schema names for reference resolution
 /// * `struct_definitions` - Map of struct names to their source code (for generics)
-#[allow(clippy::too_many_lines)]
 pub fn parse_struct_to_schema(
     struct_item: &syn::ItemStruct,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
-    let mut properties = BTreeMap::new();
-    let mut required = Vec::with_capacity(8);
-    let mut flattened_refs: Vec<SchemaRef> = Vec::new();
-
     // Extract struct-level doc comment for schema description
     let struct_description = extract_doc_comment(&struct_item.attrs);
 
@@ -58,185 +56,213 @@ pub fn parse_struct_to_schema(
         };
     }
 
-    // Transparent single-field wrappers should use the inner field schema directly.
-    if extract_transparent(&struct_item.attrs) {
-        let inner_field_ty = match &struct_item.fields {
-            Fields::Named(fields_named) if fields_named.named.len() == 1 => {
-                fields_named.named.first().map(|field| &field.ty)
-            }
-            Fields::Unnamed(fields_unnamed) if fields_unnamed.unnamed.len() == 1 => {
-                fields_unnamed.unnamed.first().map(|field| &field.ty)
-            }
-            _ => None,
-        };
-
-        if let Some(field_ty) = inner_field_ty {
-            let schema_ref = parse_type_to_schema_ref(field_ty, known_schemas, struct_definitions);
-            return match schema_ref {
-                SchemaRef::Inline(mut schema) => {
-                    if schema.description.is_none() {
-                        schema.description = struct_description;
-                    }
-                    *schema
-                }
-                SchemaRef::Ref(reference) => Schema {
-                    description: struct_description,
-                    all_of: Some(vec![SchemaRef::Ref(reference)]),
-                    ..Default::default()
-                },
-            };
+    // Transparent wrappers (serde requires exactly one non-skipped field) and
+    // newtype tuple structs (serde decides "newtype" by the DECLARED field
+    // count) serialize as their inner value, so they use the inner schema.
+    let transparent = extract_transparent(&struct_item.attrs);
+    let inner_field_ty = match &struct_item.fields {
+        Fields::Named(fields_named) if transparent => {
+            single_emitted_type(fields_named.named.iter())
         }
+        Fields::Unnamed(fields_unnamed) if transparent => {
+            single_emitted_type(fields_unnamed.unnamed.iter())
+        }
+        Fields::Unnamed(fields_unnamed) if fields_unnamed.unnamed.len() == 1 => {
+            fields_unnamed.unnamed.first().map(|field| &field.ty)
+        }
+        _ => None,
+    };
+    if let Some(field_ty) = inner_field_ty {
+        let schema_ref = parse_type_to_schema_ref(field_ty, known_schemas, struct_definitions);
+        return with_description(schema_ref, struct_description);
     }
-
-    // Extract rename_all attribute from struct
-    let rename_all = extract_rename_all(&struct_item.attrs);
 
     match &struct_item.fields {
         Fields::Named(fields_named) => {
-            for field in &fields_named.named {
-                // Check if field should be skipped
-                if extract_skip(&field.attrs) {
-                    continue;
-                }
-
-                // Check if field should be flattened
-                if extract_flatten(&field.attrs) {
-                    // Get the schema ref for the flattened field type
-                    let field_type = &field.ty;
-                    let schema_ref =
-                        parse_type_to_schema_ref(field_type, known_schemas, struct_definitions);
-
-                    // Add to flattened refs for allOf composition
-                    flattened_refs.push(schema_ref);
-                    continue;
-                }
-
-                let rust_field_name = field.ident.as_ref().map_or_else(
-                    || "unknown".to_string(),
-                    |i| strip_raw_prefix_owned(i.to_string()),
-                );
-
-                // Check for field-level rename attribute first (takes precedence)
-                let field_name = extract_field_rename(&field.attrs)
-                    .unwrap_or_else(|| rename_field(&rust_field_name, rename_all.as_deref()));
-
-                let field_type = &field.ty;
-
-                // Extract field-level `#[schema(...)]` constraints ONCE up-front.
-                // A field marked `#[schema(any)]` SHORT-CIRCUITS type conversion:
-                // the emitted schema is forced to the generic `{type: "object"}`
-                // regardless of the field's Rust type (matching the derive-Schema
-                // leaf-type assertion that also exempts `any` fields), so we never
-                // even consult `parse_type_to_schema_ref` for them.
-                let constraints = extract_schema_constraints(&field.attrs);
-                let mut schema_ref = if constraints.is_any() {
-                    SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)))
-                } else {
-                    parse_type_to_schema_ref(field_type, known_schemas, struct_definitions)
-                };
-
-                // Extract doc comment from field and set as description
-                if let Some(doc) = extract_doc_comment(&field.attrs) {
-                    match &mut schema_ref {
-                        SchemaRef::Inline(schema) => {
-                            schema.description = Some(doc);
-                        }
-                        SchemaRef::Ref(_) => {
-                            // For $ref schemas, we need to wrap in an allOf to add description
-                            // OpenAPI 3.1 allows siblings to $ref, so we can add description directly
-                            // by converting to inline schema with description + allOf[$ref]
-                            let ref_schema = std::mem::replace(
-                                &mut schema_ref,
-                                SchemaRef::Inline(Box::new(Schema::object_empty())),
-                            );
-                            if let SchemaRef::Ref(reference) = ref_schema {
-                                schema_ref = SchemaRef::Inline(Box::new(Schema {
-                                    description: Some(doc),
-                                    all_of: Some(vec![SchemaRef::Ref(reference)]),
-                                    ..Default::default()
-                                }));
-                            }
-                        }
-                    }
-                }
-
-                // Extract field-level `#[schema(min_length=..., pattern=...,
-                // minimum=..., format=..., example=..., read_only, ...)]`
-                // constraints and merge them into the field schema.  When
-                // the field references a component schema via `$ref`, we
-                // promote it to an `allOf` wrapper (mirroring the
-                // description-on-ref pattern above) so the constraints can
-                // sit alongside the reference.
-                if !constraints.is_empty() {
-                    apply_constraints_to_schema_ref(&mut schema_ref, &constraints);
-                }
-
-                // Required is determined solely by nullability (Option<T>).
-                // Fields with #[serde(default)] still have defaults applied in
-                // openapi_generator, but that does NOT affect required status:
-                // this schema is shared by request AND response bodies, and a
-                // defaulted field is always present on output, so it stays
-                // required (deliberate, documented in README; the query
-                // extractor differs because query params are input-only).
-                let is_optional = is_option_type(field_type);
-
-                if !is_optional {
-                    required.push(field_name.clone());
-                }
-
-                properties.insert(field_name, schema_ref);
-            }
+            let rename_all = extract_rename_all(&struct_item.attrs);
+            collect_named_fields(
+                fields_named,
+                rename_all.as_deref(),
+                known_schemas,
+                struct_definitions,
+            )
+            .into_object_schema(struct_description)
         }
-        Fields::Unnamed(_) | Fields::Unit => {
-            // Tuple structs and unit structs have no named fields
-        }
-    }
-
-    // If there are flattened fields, use allOf composition
-    if flattened_refs.is_empty() {
-        // No flattened fields - return normal schema
-        Schema {
-            schema_type: Some(SchemaType::Object),
+        // `struct Pair(A, B)` → `[A, B]` (fully skipped positions are not
+        // serialized, so they are not array items either).
+        Fields::Unnamed(fields_unnamed) => Schema {
             description: struct_description,
-            properties: if properties.is_empty() {
-                None
-            } else {
-                Some(properties)
-            },
-            required: if required.is_empty() {
-                None
-            } else {
-                Some(required)
-            },
+            ..tuple_array_schema(
+                emitted_unnamed_types(fields_unnamed).into_iter(),
+                known_schemas,
+                struct_definitions,
+            )
+        },
+        Fields::Unit => Schema {
+            description: struct_description,
             ..Schema::object_empty()
+        },
+    }
+}
+
+/// Types of the tuple fields that appear on the wire: fully skipped fields
+/// (`#[serde(skip)]`, or `skip_serializing` + `skip_deserializing`) are
+/// dropped, matching serde's tuple-struct / tuple-variant length.
+pub(super) fn emitted_unnamed_types(fields: &syn::FieldsUnnamed) -> Vec<&syn::Type> {
+    fields
+        .unnamed
+        .iter()
+        .filter(|field| !extract_serde_skip_flags(&field.attrs).fully_skipped())
+        .map(|field| &field.ty)
+        .collect()
+}
+
+/// The type of the ONLY non-skipped field, if exactly one remains.
+fn single_emitted_type<'a>(fields: impl Iterator<Item = &'a syn::Field>) -> Option<&'a syn::Type> {
+    let mut emitted =
+        fields.filter(|field| !extract_serde_skip_flags(&field.attrs).fully_skipped());
+    let first = emitted.next()?;
+    emitted.next().is_none().then_some(&first.ty)
+}
+
+/// Turn a `SchemaRef` into a `Schema`, attaching `description` (a `$ref` is
+/// wrapped in `allOf` so the description can sit beside it). An inline
+/// schema's own description wins.
+pub(super) fn with_description(schema_ref: SchemaRef, description: Option<String>) -> Schema {
+    match schema_ref {
+        SchemaRef::Inline(mut schema) => {
+            if schema.description.is_none() {
+                schema.description = description;
+            }
+            *schema
         }
-    } else {
-        // Create the inline schema for non-flattened properties
+        SchemaRef::Ref(reference) => Schema {
+            description,
+            all_of: Some(vec![SchemaRef::Ref(reference)]),
+            ..Default::default()
+        },
+    }
+}
+
+/// Properties collected from a set of named fields — shared by structs and
+/// enum struct-variants so both honour the same field attributes.
+#[derive(Default)]
+pub(super) struct NamedFields {
+    pub properties: BTreeMap<String, SchemaRef>,
+    pub required: Vec<String>,
+    /// `#[serde(flatten)]` field schemas, composed via `allOf`.
+    pub flattened: Vec<SchemaRef>,
+}
+
+impl NamedFields {
+    /// Object schema for these fields; flattened fields turn the result into
+    /// `allOf: [<own properties>, ...flattened]`.
+    pub(super) fn into_object_schema(self, description: Option<String>) -> Schema {
         let inline_schema = Schema {
             schema_type: Some(SchemaType::Object),
-            properties: if properties.is_empty() {
-                None
-            } else {
-                Some(properties)
-            },
-            required: if required.is_empty() {
-                None
-            } else {
-                Some(required)
-            },
+            properties: (!self.properties.is_empty()).then_some(self.properties),
+            required: (!self.required.is_empty()).then_some(self.required),
             ..Schema::object_empty()
         };
-
-        // Build allOf: [inline_schema, ...flattened_refs]
+        if self.flattened.is_empty() {
+            return Schema {
+                description,
+                ..inline_schema
+            };
+        }
         let mut all_of = vec![SchemaRef::Inline(Box::new(inline_schema))];
-        all_of.extend(flattened_refs);
-
+        all_of.extend(self.flattened);
         Schema {
-            description: struct_description,
+            description,
             all_of: Some(all_of),
             ..Default::default()
         }
     }
+}
+
+/// Walk named fields applying every field-level attribute vespera understands:
+/// `#[serde(skip)]` (and `skip_serializing` + `skip_deserializing`),
+/// `#[serde(flatten)]`, `#[serde(rename)]` / `rename_all`, doc comments,
+/// `#[schema(...)]` constraints (incl. `any`), and `required` inference
+/// (`Option<T>`, `skip_serializing`, and `skip_serializing_if` fields are not
+/// required).
+pub(super) fn collect_named_fields(
+    fields_named: &syn::FieldsNamed,
+    rename_all: Option<&str>,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+) -> NamedFields {
+    let mut out = NamedFields {
+        required: Vec::with_capacity(fields_named.named.len()),
+        ..NamedFields::default()
+    };
+    for field in &fields_named.named {
+        let skip_flags = extract_serde_skip_flags(&field.attrs);
+        if skip_flags.fully_skipped() {
+            continue;
+        }
+
+        if extract_flatten(&field.attrs) {
+            out.flattened.push(parse_type_to_schema_ref(
+                &field.ty,
+                known_schemas,
+                struct_definitions,
+            ));
+            continue;
+        }
+
+        let rust_field_name = field.ident.as_ref().map_or_else(
+            || "unknown".to_string(),
+            |i| strip_raw_prefix_owned(i.to_string()),
+        );
+        // Field-level rename takes precedence over rename_all.
+        let field_name = extract_field_rename(&field.attrs)
+            .unwrap_or_else(|| rename_field(&rust_field_name, rename_all));
+
+        // A field marked `#[schema(any)]` SHORT-CIRCUITS type conversion: the
+        // emitted schema is the generic `{type: "object"}` regardless of the
+        // Rust type (matching the derive-Schema leaf-type assertion that also
+        // exempts `any` fields).
+        let constraints = extract_schema_constraints(&field.attrs);
+        let mut schema_ref = if constraints.is_any() {
+            SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)))
+        } else {
+            parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions)
+        };
+
+        // Doc comment → description (a `$ref` is wrapped in `allOf`).
+        if let Some(doc) = extract_doc_comment(&field.attrs) {
+            schema_ref = match schema_ref {
+                SchemaRef::Inline(mut schema) => {
+                    schema.description = Some(doc);
+                    SchemaRef::Inline(schema)
+                }
+                SchemaRef::Ref(reference) => SchemaRef::Inline(Box::new(Schema {
+                    description: Some(doc),
+                    all_of: Some(vec![SchemaRef::Ref(reference)]),
+                    ..Default::default()
+                })),
+            };
+        }
+
+        // Field-level `#[schema(min_length=..., pattern=..., ...)]` constraints.
+        if !constraints.is_empty() {
+            apply_constraints_to_schema_ref(&mut schema_ref, &constraints);
+        }
+
+        // Required is determined by nullability (Option<T>) and by whether the
+        // field can be omitted from serialized output (`skip_serializing`,
+        // `skip_serializing_if`). `#[serde(default)]` does NOT relax required:
+        // this schema is shared by request AND response bodies, and a
+        // defaulted field is always present on output (documented in README;
+        // the query extractor differs because query params are input-only).
+        if !is_option_type(&field.ty) && !skip_flags.maybe_omitted_on_output() {
+            out.required.push(field_name.clone());
+        }
+
+        out.properties.insert(field_name, schema_ref);
+    }
+    out
 }
 
 /// Merge field-level `#[schema(...)]` constraints into the field's

@@ -64,18 +64,78 @@ fn test_parse_struct_to_schema_rename_all_and_field_rename() {
     assert!(!required.contains(&"displayName".to_string())); // Option makes it optional
 }
 
+/// Tuple structs follow serde's wire shape: newtype → inner schema,
+/// multi-field → fixed-length `prefixItems` array; unit structs stay an
+/// empty object.
 #[rstest]
-#[case("struct Wrapper(i32);")]
-#[case("struct Empty;")]
-fn test_parse_struct_to_schema_tuple_and_unit_structs(#[case] struct_src: &str) {
+#[case::newtype_int("newtype_int", "struct Wrapper(i32);")]
+#[case::newtype_doc("newtype_doc", "/// An id\nstruct UserId(u64);")]
+#[case::newtype_ref("newtype_ref", "struct Holder(User);")]
+#[case::pair("pair", "struct Pair(String, Option<i64>);")]
+#[case::generic_free_array("array_field", "struct Rgb([u8; 3]);")]
+#[case::unit("unit", "struct Empty;")]
+#[case::skipped_position("skipped_position", "struct Tagged(String, #[serde(skip)] i64, bool);")]
+#[case::skip_ser_and_de(
+    "skip_ser_and_de",
+    "struct Tagged(String, #[serde(skip_serializing, skip_deserializing)] i64, bool);"
+)]
+#[case::one_left_is_still_tuple(
+    "one_left_is_still_tuple",
+    "struct Tagged(String, #[serde(skip)] i64);"
+)]
+#[case::transparent_tuple_skipped(
+    "transparent_tuple_skipped",
+    "#[serde(transparent)] struct Wrapper(String, #[serde(skip)] PhantomData<u8>);"
+)]
+#[case::transparent_named_skipped(
+    "transparent_named_skipped",
+    "#[serde(transparent)] struct Wrapper { value: u32, #[serde(skip)] marker: PhantomData<u8> }"
+)]
+fn test_parse_struct_to_schema_tuple_and_unit_structs(
+    #[case] name: &str,
+    #[case] struct_src: &str,
+) {
     let struct_item: syn::ItemStruct = syn::parse_str(struct_src).unwrap();
+    let schema = parse_struct_to_schema(
+        &struct_item,
+        &HashSet::from(["User".to_string()]),
+        &HashMap::<String, String>::new(),
+    );
+    assert!(schema.properties.is_none());
+    assert!(schema.required.is_none());
+    insta::assert_debug_snapshot!(format!("tuple_struct_{name}"), schema);
+}
+
+/// `skip_serializing_if` / `skip_serializing` fields are not `required`;
+/// `skip_deserializing` alone and `default` keep the field required; the
+/// pair `skip_serializing` + `skip_deserializing` drops the field.
+#[rstest]
+#[case::skip_serializing_if(r#"#[serde(skip_serializing_if = "Vec::is_empty")]"#, Some(false))]
+#[case::skip_serializing("#[serde(skip_serializing)]", Some(false))]
+#[case::skip_deserializing("#[serde(skip_deserializing)]", Some(true))]
+#[case::default("#[serde(default)]", Some(true))]
+#[case::both_skips("#[serde(skip_serializing, skip_deserializing)]", None)]
+fn serde_skip_attrs_drive_required(#[case] attr: &str, #[case] expected: Option<bool>) {
+    let struct_item: syn::ItemStruct =
+        syn::parse_str(&format!("struct S {{ {attr} tags: Vec<String>, id: i32 }}")).unwrap();
     let schema = parse_struct_to_schema(
         &struct_item,
         &HashSet::<String>::new(),
         &HashMap::<String, String>::new(),
     );
-    assert!(schema.properties.is_none());
-    assert!(schema.required.is_none());
+    let present = schema.properties.as_ref().unwrap().contains_key("tags");
+    let required = schema
+        .required
+        .as_ref()
+        .unwrap()
+        .contains(&"tags".to_string());
+    match expected {
+        None => assert!(!present, "{attr}: field must be dropped"),
+        Some(req) => {
+            assert!(present, "{attr}");
+            assert_eq!(required, req, "{attr}");
+        }
+    }
 }
 
 #[test]
@@ -445,7 +505,7 @@ fn test_parse_struct_to_schema_transparent_tuple_wrapper_uses_ref_schema() {
 }
 
 #[test]
-fn test_parse_struct_to_schema_transparent_multi_field_tuple_falls_back() {
+fn test_parse_struct_to_schema_multi_field_tuple_is_fixed_array() {
     let struct_item: syn::ItemStruct = syn::parse_str(
         r"
             #[serde(transparent)]
@@ -459,9 +519,10 @@ fn test_parse_struct_to_schema_transparent_multi_field_tuple_falls_back() {
         &HashSet::<String>::new(),
         &HashMap::<String, String>::new(),
     );
-    assert_eq!(schema.schema_type, Some(SchemaType::Object));
+    assert_eq!(schema.schema_type, Some(SchemaType::Array));
+    assert_eq!(schema.prefix_items.as_ref().map(Vec::len), Some(2));
+    assert_eq!((schema.min_items, schema.max_items), (Some(2), Some(2)));
     assert!(schema.properties.is_none());
-    assert!(schema.all_of.is_none());
 }
 
 // ── field-level `#[schema(...)]` constraint propagation ─────────

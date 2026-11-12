@@ -1709,16 +1709,6 @@
     "/typed-header": {
       "get": {
         "operationId": "typed_header_jwt",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1736,17 +1726,9 @@
         "operationId": "typed_header",
         "parameters": [
           {
-            "name": "user-agent",
+            "name": "User-Agent",
             "in": "header",
             "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "content-type",
-            "in": "header",
-            "required": false,
             "schema": {
               "type": "string"
             }
@@ -4001,7 +3983,7 @@
       },
       "UntaggedValue": {
         "description": "Untagged enum - serializes as just the variant data, no tag\nThe deserializer tries each variant in order until one matches.\nExample: `\"hello\"` or `42` or `{\"key\": \"value\"}`",
-        "oneOf": [
+        "anyOf": [
           {
             "type": "string",
             "description": "A string value"

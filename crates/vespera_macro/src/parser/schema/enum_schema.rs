@@ -28,6 +28,7 @@ pub fn parse_enum_to_schema(
     let all_unit = enum_item
         .variants
         .iter()
+        .filter(|v| !variant::is_variant_omitted(v))
         .all(|v| matches!(v.fields, syn::Fields::Unit));
 
     if all_unit && matches!(repr, SerdeEnumRepr::ExternallyTagged) {
@@ -71,6 +72,142 @@ pub fn parse_enum_to_schema(
     }
 }
 
+/// Reject enum shapes whose serde representation cannot be described.
+///
+/// An internally tagged (`#[serde(tag = "..")]`) newtype variant must wrap a
+/// map-like value (a struct / map) so serde can inject the tag.  Only inner
+/// types that are UNAMBIGUOUSLY non-objects from syntax alone are rejected
+/// here (see [`is_unambiguous_non_object`]); a path type such as `Uuid`,
+/// `Date` or `Duration` may be a user struct (or, like `std::time::Duration`,
+/// serialize as a map), so it is accepted.  Newtypes over a `$ref` to a known
+/// non-object component are caught later, once every component is known.
+pub fn validate_enum_for_schema(enum_item: &syn::ItemEnum) -> syn::Result<()> {
+    let SerdeEnumRepr::InternallyTagged { tag } = extract_enum_repr(&enum_item.attrs) else {
+        return Ok(());
+    };
+    for variant in &enum_item.variants {
+        if variant::is_variant_omitted(variant) {
+            continue;
+        }
+        let syn::Fields::Unnamed(fields) = &variant.fields else {
+            continue;
+        };
+        if fields.unnamed.len() != 1 {
+            continue;
+        }
+        let inner = &fields.unnamed[0].ty;
+        if is_unambiguous_non_object(inner) {
+            return Err(syn::Error::new_spanned(
+                inner,
+                internally_tagged_non_object_message(
+                    &tag,
+                    &variant.ident.to_string(),
+                    &quote::quote!(#inner).to_string(),
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Diagnostic for an internally tagged newtype variant whose payload
+/// serializes as a non-object value (serde cannot add the tag field to it).
+pub fn internally_tagged_non_object_message(tag: &str, variant: &str, inner: &str) -> String {
+    format!(
+        "internally tagged enum (`#[serde(tag = \"{tag}\")]`): newtype variant `{variant}` \
+         must wrap a struct or map so serde can add the `{tag}` field; \
+         `{inner}` serializes as a non-object value. Use a struct variant \
+         (`{variant} {{ value: ... }}`) or an adjacently tagged enum \
+         (`#[serde(tag = \"{tag}\", content = \"...\")]`)"
+    )
+}
+
+/// `true` only when `ty` serializes as a non-object value no matter what any
+/// user type is called: Rust primitives / `str` / `String`, arrays, slices,
+/// non-empty tuples, std sequences and sets, `Option<primitive>`, and those
+/// behind `&`, `Box`, `Rc` or `Arc`.
+fn is_unambiguous_non_object(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Array(_) | syn::Type::Slice(_) => true,
+        syn::Type::Tuple(tuple) => !tuple.elems.is_empty(),
+        syn::Type::Reference(reference) => is_unambiguous_non_object(&reference.elem),
+        syn::Type::Paren(paren) => is_unambiguous_non_object(&paren.elem),
+        syn::Type::Group(group) => is_unambiguous_non_object(&group.elem),
+        syn::Type::Path(type_path) if type_path.qself.is_none() => {
+            let Some((ident, arg)) = std_path_ident(&type_path.path) else {
+                return false;
+            };
+            match ident.as_str() {
+                "Vec" | "VecDeque" | "LinkedList" | "BinaryHeap" | "HashSet" | "BTreeSet" => true,
+                "Option" => arg.is_some_and(is_primitive_type),
+                "Box" | "Rc" | "Arc" => arg.is_some_and(is_unambiguous_non_object),
+                _ => is_primitive_ident(&ident),
+            }
+        }
+        _ => false,
+    }
+}
+
+/// `true` for a primitive (`bool`, integers, floats, `char`, `str`,
+/// `String`), possibly behind `&`.
+fn is_primitive_type(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Reference(reference) => is_primitive_type(&reference.elem),
+        syn::Type::Paren(paren) => is_primitive_type(&paren.elem),
+        syn::Type::Group(group) => is_primitive_type(&group.elem),
+        syn::Type::Path(type_path) if type_path.qself.is_none() => {
+            std_path_ident(&type_path.path).is_some_and(|(ident, _)| is_primitive_ident(&ident))
+        }
+        _ => false,
+    }
+}
+
+fn is_primitive_ident(ident: &str) -> bool {
+    matches!(
+        ident,
+        "bool"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+            | "char"
+            | "str"
+            | "String"
+    )
+}
+
+/// Last segment ident + its first generic type argument, but only for a bare
+/// single-segment path (`Vec<T>`) or one rooted in `std` / `core` / `alloc`
+/// (`std::collections::HashSet<T>`) — `my::Vec` is a user type.
+fn std_path_ident(path: &syn::Path) -> Option<(String, Option<&syn::Type>)> {
+    let rooted_in_std = path.segments.len() == 1
+        || path.segments.first().is_some_and(|first| {
+            matches!(first.ident.to_string().as_str(), "std" | "core" | "alloc")
+        });
+    if !rooted_in_std {
+        return None;
+    }
+    let last = path.segments.last()?;
+    let arg = match &last.arguments {
+        syn::PathArguments::AngleBracketed(args) => args.args.iter().find_map(|arg| match arg {
+            syn::GenericArgument::Type(ty) => Some(ty),
+            _ => None,
+        }),
+        _ => None,
+    };
+    Some((last.ident.to_string(), arg))
+}
+
 #[cfg(test)]
 mod tests {
     use insta::{assert_debug_snapshot, with_settings};
@@ -78,6 +215,47 @@ mod tests {
 
     use super::*;
     use vespera_core::schema::{SchemaRef, SchemaType};
+
+    /// Only syntactically unambiguous non-object payloads are rejected for an
+    /// internally tagged newtype variant; path types that may be user structs
+    /// (or map-serialized std types like `Duration`) are accepted.
+    #[rstest]
+    #[case::string("String", true)]
+    #[case::integer("u64", true)]
+    #[case::str_ref("&'static str", true)]
+    #[case::std_string("std::string::String", true)]
+    #[case::vec("Vec<i32>", true)]
+    #[case::set("std::collections::BTreeSet<u8>", true)]
+    #[case::array("[u8; 4]", true)]
+    #[case::tuple("(i32, i32)", true)]
+    #[case::option_primitive("Option<bool>", true)]
+    #[case::boxed_string("Box<String>", true)]
+    #[case::unit("()", false)]
+    #[case::user_struct("Payload", false)]
+    #[case::uuid("Uuid", false)]
+    #[case::date("Date", false)]
+    #[case::time("chrono::NaiveTime", false)]
+    #[case::std_duration("std::time::Duration", false)]
+    #[case::decimal("rust_decimal::Decimal", false)]
+    #[case::user_vec("my::Vec<i32>", false)]
+    #[case::option_struct("Option<Payload>", false)]
+    #[case::map("std::collections::HashMap<String, i32>", false)]
+    fn internally_tagged_newtype_payload_classification(
+        #[case] inner: &str,
+        #[case] is_error: bool,
+    ) {
+        let inner: syn::Type = syn::parse_str(inner).unwrap();
+        let enum_item: syn::ItemEnum = syn::parse_quote! {
+            #[serde(tag = "type")]
+            enum Event { Ping, Data(#inner) }
+        };
+        assert_eq!(
+            validate_enum_for_schema(&enum_item).is_err(),
+            is_error,
+            "{}",
+            quote::quote!(#inner)
+        );
+    }
 
     #[rstest]
     #[case(

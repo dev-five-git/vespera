@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/schema_impl/tests.rs
+assertion_line: 831
+expression: tokens.to_string()
+---
+:: core :: compile_error ! { "internally tagged enum (`#[serde(tag = \"type\")]`): newtype variant `Text` must wrap a struct or map so serde can add the `type` field; `String` serializes as a non-object value. Use a struct variant (`Text { value: ... }`) or an adjacently tagged enum (`#[serde(tag = \"type\", content = \"...\")]`)" }

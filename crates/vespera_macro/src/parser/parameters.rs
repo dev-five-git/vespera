@@ -101,7 +101,7 @@ mod tests {
     #[case("fn show(Path(id): Path<i32>) {}", vec!["item_id".to_string()], vec![vec![ParameterLocation::Path]], "path_single")]
     #[case("fn test(Query(params): Query<HashMap<String, String>>) {}", vec![], vec![vec![]], "query_hashmap")]
     #[case("fn test(TypedHeader(user_agent): TypedHeader<UserAgent>, count: i32) {}", vec![], vec![vec![ParameterLocation::Header], vec![]], "typed_header_and_arg")]
-    #[case("fn test(TypedHeader(user_agent): TypedHeader<UserAgent>, content_type: Option<TypedHeader<ContentType>>, authorization: Option<TypedHeader<Authorization<Bearer>>>) {}", vec![], vec![vec![ParameterLocation::Header], vec![ParameterLocation::Header], vec![ParameterLocation::Header]], "typed_header_multi")]
+    #[case("fn test(TypedHeader(user_agent): TypedHeader<UserAgent>, content_type: Option<TypedHeader<ContentType>>, authorization: Option<TypedHeader<Authorization<Bearer>>>) {}", vec![], vec![vec![ParameterLocation::Header], vec![], vec![]], "typed_header_multi")]
     #[case("fn test(user_agent: TypedHeader<UserAgent>, count: i32) {}", vec![], vec![vec![ParameterLocation::Header], vec![]], "header_value_and_arg")]
     #[case("fn test(&self, id: i32) {}", vec![], vec![vec![], vec![]], "method_receiver")]
     #[case("fn test(Path((a, b)): Path<(i32, String)>) {}", vec![], vec![vec![]], "path_tuple_destructure")]

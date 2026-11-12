@@ -86,10 +86,16 @@ fn is_non_body_type(ty: &Type) -> bool {
 
 /// Extract payload type from an Ok tuple and track if headers exist.
 /// Non-body types (`StatusCode`, `HeaderMap`, `CookieJar`) are filtered out.
-/// The last remaining element is treated as the response body.
-/// Any presence of `HeaderMap` in the tuple marks headers as present.
-fn extract_ok_payload_and_headers(ok_ty: &Type) -> (Type, Option<BTreeMap<String, Header>>) {
-    if let Type::Tuple(tuple) = ok_ty {
+/// The last remaining element is treated as the response body (`Json<T>` is
+/// unwrapped). A tuple made only of metadata (`(StatusCode, CookieJar)`) has
+/// no body, so the payload is `None`. Any presence of `HeaderMap` in the
+/// tuple marks headers as present. A non-tuple type is its own payload.
+fn extract_ok_payload_and_headers(
+    ok_ty: &Type,
+) -> (Option<Type>, Option<BTreeMap<String, Header>>) {
+    if let Type::Tuple(tuple) = ok_ty
+        && !tuple.elems.is_empty()
+    {
         // Find the body type: last element that is NOT a non-body type
         let payload_ty = tuple
             .elems
@@ -97,22 +103,15 @@ fn extract_ok_payload_and_headers(ok_ty: &Type) -> (Type, Option<BTreeMap<String
             .rev()
             .find(|ty| !is_non_body_type(ty))
             .map(|ty| unwrap_json(ty).clone());
-
-        if let Some(payload_ty) = payload_ty {
-            let headers = if tuple
-                .elems
-                .iter()
-                .any(|ty| is_keyword_type(ty, &KeywordType::HeaderMap))
-            {
-                Some(BTreeMap::new())
-            } else {
-                None
-            };
-            return (payload_ty, headers);
-        }
+        let headers = tuple
+            .elems
+            .iter()
+            .any(|ty| is_keyword_type(ty, &KeywordType::HeaderMap))
+            .then(BTreeMap::new);
+        return (payload_ty, headers);
     }
 
-    (ok_ty.clone(), None)
+    (Some(unwrap_json(ok_ty).clone()), None)
 }
 
 /// True if `ty` is a bare `String` / `str` / `&str` (NOT wrapped in `Json`).
@@ -245,12 +244,9 @@ fn insert_result_responses(
     struct_definitions: &HashMap<&str, &str>,
 ) {
     let (ok_payload_ty, ok_headers) = extract_ok_payload_and_headers(ok_ty);
-    let ok_content = content_for_type(
-        &ok_payload_ty,
-        ok_content_type,
-        known_schemas,
-        struct_definitions,
-    );
+    let ok_content = ok_payload_ty.and_then(|payload| {
+        content_for_type(&payload, ok_content_type, known_schemas, struct_definitions)
+    });
     responses.insert(
         "200".to_string(),
         successful_response(ok_content, ok_headers),
@@ -283,14 +279,13 @@ fn insert_plain_response(
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) {
-    let unwrapped_ty = unwrap_json(ty);
-    let content = content_for_type(
-        unwrapped_ty,
-        content_type,
-        known_schemas,
-        struct_definitions,
-    );
-    responses.insert("200".to_string(), successful_response(content, None));
+    // Same tuple handling as the `Result` Ok side: `(StatusCode, Json<T>)` and
+    // `(StatusCode, HeaderMap, Json<T>)` document `T`, never the tuple itself.
+    let (payload_ty, headers) = extract_ok_payload_and_headers(ty);
+    let content = payload_ty.and_then(|payload| {
+        content_for_type(&payload, content_type, known_schemas, struct_definitions)
+    });
+    responses.insert("200".to_string(), successful_response(content, headers));
 }
 
 /// Analyze return type and convert to Responses map

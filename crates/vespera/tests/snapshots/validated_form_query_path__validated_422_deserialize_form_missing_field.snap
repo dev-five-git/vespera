@@ -1,0 +1,6 @@
+---
+source: crates/vespera/tests/validated_form_query_path.rs
+assertion_line: 398
+expression: body
+---
+{"errors":[{"message":"missing field `password`","path":"password"}]}

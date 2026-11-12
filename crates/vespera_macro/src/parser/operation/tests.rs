@@ -486,6 +486,27 @@ fn no_declaration_keeps_inferred_400_backward_compatible() {
     );
 }
 
+/// `error_status` codes are documented even when the error type has no body
+/// (`StatusCode`) or the handler does not return a `Result` at all — as
+/// description-only responses instead of being silently dropped.
+#[rstest]
+#[case::bodyless_status_code_error("fn get() -> Result<String, StatusCode>")]
+#[case::non_result_return("fn get() -> String")]
+#[case::unit_return("fn get()")]
+fn error_status_without_error_body_is_description_only(#[case] sig: &str) {
+    let op = build(sig, "/items", Some(&[404u16, 409u16]));
+    for code in ["404", "409"] {
+        let resp = op
+            .responses
+            .get(code)
+            .unwrap_or_else(|| panic!("{code} must be documented"));
+        assert_eq!(resp.description, "Error response");
+        assert!(resp.content.is_none(), "{code} has no body schema");
+    }
+    assert!(!op.responses.contains_key("400"), "auto-400 suppressed");
+    assert!(op.responses.contains_key("200"));
+}
+
 // ======== Feature 2: `status = <u16>` re-keys the success response ========
 
 #[test]
@@ -611,7 +632,10 @@ fn duplicate_header_parameters_are_deduplicated_case_insensitively() {
         .filter(|parameter| parameter.r#in == ParameterLocation::Header)
         .collect();
     assert_eq!(headers.len(), 1);
+    // Custom header type → named after the binding (first occurrence wins over
+    // the route-site dup, compared case-insensitively).
     assert_eq!(headers[0].name, "x-trace-id");
+    assert_eq!(headers[0].description, None);
 }
 
 #[test]

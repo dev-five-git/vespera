@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/schema_impl/tests.rs
+assertion_line: 788
+expression: tokens.to_string()
+---
+:: core :: compile_error ! { "expected `=`" }

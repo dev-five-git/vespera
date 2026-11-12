@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/vespera_impl/openapi_io/tests.rs
+assertion_line: 669
+expression: message
+---
+OpenAPI merge: merged app `plugin_b::PluginB` introduces duplicate operationId `health` (used by both `GET /a/health` and `GET /b/health`) — operationIds must be unique; rename one with `#[vespera::route(..., operation_id = "...")]`

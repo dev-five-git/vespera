@@ -93,8 +93,15 @@ pub const fn is_builtin_openapi_type(ident: &str) -> bool {
         | b"FieldData" | b"NamedTempFile"
         // Wrappers / std container types handled BEFORE the leaf match
         // (transparent for schema OR mapped to array/object via generic args).
-        | b"Vec" | b"HashSet" | b"BTreeSet" | b"Option" | b"Box"
+        | b"Vec" | b"VecDeque" | b"LinkedList" | b"HashSet" | b"BTreeSet" | b"Option"
+        | b"Box" | b"Arc" | b"Rc" | b"Cow"
         | b"HashMap" | b"BTreeMap"
+        // std::num::NonZero integers (generic + per-width aliases)
+        | b"NonZero"
+        | b"NonZeroI8" | b"NonZeroI16" | b"NonZeroI32" | b"NonZeroI64" | b"NonZeroI128"
+        | b"NonZeroIsize"
+        | b"NonZeroU8" | b"NonZeroU16" | b"NonZeroU32" | b"NonZeroU64" | b"NonZeroU128"
+        | b"NonZeroUsize"
         // SeaORM relation wrappers
         | b"HasOne" | b"HasMany" | b"BelongsTo"
         // Result + axum extractor wrappers that have no schema themselves
@@ -200,9 +207,11 @@ fn parse_type_impl(
             // Handle generic types
             if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                 match ident_str.as_str() {
-                    // Box<T> -> T's schema (Box is just heap allocation, transparent for schema)
-                    "Box" => {
-                        if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
+                    // Box<T> / Arc<T> / Rc<T> / Cow<'a, T> -> T's schema: smart
+                    // pointers are transparent for serde (and so for the schema).
+                    // `first_type_arg` skips `Cow`'s leading lifetime argument.
+                    "Box" | "Arc" | "Rc" | "Cow" => {
+                        if let Some(inner_ty) = first_type_arg(args) {
                             return parse_type_to_schema_ref(
                                 inner_ty,
                                 known_schemas,
@@ -210,14 +219,31 @@ fn parse_type_impl(
                             );
                         }
                     }
-                    "Vec" | "HashSet" | "BTreeSet" | "Option" => {
+                    // std::num::NonZero<T> -> T's integer schema; unsigned
+                    // widths additionally get `minimum: 1`.
+                    "NonZero" => {
+                        if let Some(inner_ty) = first_type_arg(args) {
+                            let mut inner_schema = parse_type_to_schema_ref(
+                                inner_ty,
+                                known_schemas,
+                                struct_definitions,
+                            );
+                            if let SchemaRef::Inline(schema) = &mut inner_schema
+                                && is_unsigned_int_type(inner_ty)
+                            {
+                                schema.minimum = Some(1.0);
+                            }
+                            return inner_schema;
+                        }
+                    }
+                    "Vec" | "VecDeque" | "LinkedList" | "HashSet" | "BTreeSet" | "Option" => {
                         if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
                             let inner_schema = parse_type_to_schema_ref(
                                 inner_ty,
                                 known_schemas,
                                 struct_definitions,
                             );
-                            if ident_str == "Vec" {
+                            if matches!(ident_str.as_str(), "Vec" | "VecDeque" | "LinkedList") {
                                 return SchemaRef::Inline(Box::new(Schema::array(inner_schema)));
                             }
                             if ident_str == "HashSet" || ident_str == "BTreeSet" {
@@ -314,17 +340,18 @@ fn parse_type_impl(
             let primitive_result: Option<SchemaRef> = match ident_str.as_str() {
                 // Signed integers: use OpenAPI format registry
                 // https://spec.openapis.org/registry/format/index.html
-                "i8" => Some(integer_with_format("int8")),
-                "i16" => Some(integer_with_format("int16")),
-                "i32" => Some(integer_with_format("int32")),
-                "i64" => Some(integer_with_format("int64")),
+                // (std::num::NonZeroI* share the base wire type.)
+                "i8" | "NonZeroI8" => Some(integer_with_format("int8")),
+                "i16" | "NonZeroI16" => Some(integer_with_format("int16")),
+                "i32" | "NonZeroI32" => Some(integer_with_format("int32")),
+                "i64" | "NonZeroI64" => Some(integer_with_format("int64")),
                 // Unsigned integers: use OpenAPI format registry
                 "u8" => Some(integer_with_format("uint8")),
                 "u16" => Some(integer_with_format("uint16")),
                 "u32" => Some(integer_with_format("uint32")),
                 "u64" => Some(integer_with_format("uint64")),
                 // i128, isize, StatusCode: no standard format in the registry
-                "i128" | "isize" | "StatusCode" => {
+                "i128" | "isize" | "StatusCode" | "NonZeroI128" | "NonZeroIsize" => {
                     Some(SchemaRef::Inline(Box::new(Schema::integer())))
                 }
                 // u128, usize: unsigned with no standard format — use minimum: 0
@@ -356,10 +383,18 @@ fn parse_type_impl(
                 // File upload types (vespera::multipart / tempfile)
                 // FieldData<NamedTempFile> → string with binary format
                 "FieldData" | "NamedTempFile" => Some(string_with_format("binary")),
+                // std::num::NonZeroU* can never be 0, so they carry `minimum: 1`
+                // (signed NonZeroI* share the base integer arms above).
+                "NonZeroU8" => Some(non_zero_unsigned(Some("uint8"))),
+                "NonZeroU16" => Some(non_zero_unsigned(Some("uint16"))),
+                "NonZeroU32" => Some(non_zero_unsigned(Some("uint32"))),
+                "NonZeroU64" => Some(non_zero_unsigned(Some("uint64"))),
+                "NonZeroU128" | "NonZeroUsize" => Some(non_zero_unsigned(None)),
                 // Standard library types that should not be referenced
                 // Note: HashMap and BTreeMap are handled above in generic types
-                "Vec" | "HashSet" | "BTreeSet" | "Option" | "Result" | "Json" | "Path"
-                | "Query" | "Header" => {
+                "Vec" | "VecDeque" | "LinkedList" | "HashSet" | "BTreeSet" | "Option" | "Box"
+                | "Arc" | "Rc" | "Cow" | "NonZero" | "Result" | "Json" | "Path" | "Query"
+                | "Header" => {
                     // These are not schema types, return object schema
                     Some(SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))))
                 }
@@ -478,14 +513,11 @@ fn parse_type_impl(
 
                         // Substitute generic parameters with concrete types in all fields
                         if generic_params.len() == concrete_types.len() {
-                            if let syn::Fields::Named(fields_named) = &mut parsed.fields {
-                                for field in &mut fields_named.named {
-                                    field.ty = substitute_type(
-                                        &field.ty,
-                                        &generic_params,
-                                        &concrete_types,
-                                    );
-                                }
+                            // (named AND tuple fields — tuple structs now map
+                            // to their inner / prefixItems schema).
+                            for field in &mut parsed.fields {
+                                field.ty =
+                                    substitute_type(&field.ty, &generic_params, &concrete_types);
                             }
 
                             // Remove generics from the struct (it's now concrete)
@@ -515,391 +547,88 @@ fn parse_type_impl(
         Type::Tuple(tuple) if tuple.elems.is_empty() => {
             SchemaRef::Inline(Box::new(Schema::new(SchemaType::Null)))
         }
+        // (A, B, ...) → fixed-length array (serde serializes tuples as arrays)
+        Type::Tuple(tuple) => SchemaRef::Inline(Box::new(tuple_array_schema(
+            tuple.elems.iter(),
+            known_schemas,
+            struct_definitions,
+        ))),
+        // [T; N] → array of T; a literal N pins minItems/maxItems.
+        Type::Array(array) => {
+            let items = parse_type_to_schema_ref(&array.elem, known_schemas, struct_definitions);
+            let len = match &array.len {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Int(int),
+                    ..
+                }) => int.base10_parse::<usize>().ok(),
+                _ => None,
+            };
+            SchemaRef::Inline(Box::new(Schema {
+                min_items: len,
+                max_items: len,
+                ..Schema::array(items)
+            }))
+        }
+        // [T] (reached through `&[T]`) → array of T
+        Type::Slice(slice) => SchemaRef::Inline(Box::new(Schema::array(parse_type_to_schema_ref(
+            &slice.elem,
+            known_schemas,
+            struct_definitions,
+        )))),
+        Type::Paren(paren) => {
+            parse_type_to_schema_ref(&paren.elem, known_schemas, struct_definitions)
+        }
+        Type::Group(group) => {
+            parse_type_to_schema_ref(&group.elem, known_schemas, struct_definitions)
+        }
         _ => SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))),
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn empty_known() -> HashSet<String> {
-        HashSet::new()
-    }
-
-    fn empty_struct_definitions() -> HashMap<String, String> {
-        HashMap::new()
-    }
-
-    // ========== Coverage: generic known schema edge cases ==========
-
-    #[test]
-    fn test_generic_known_schema_no_struct_definition() {
-        // Known schema with angle brackets but NO struct_definitions entry → falls through to Ref
-        let mut known = HashSet::new();
-        known.insert("Wrapper".to_string());
-        // Do NOT insert into struct_definitions
-        let ty: Type = syn::parse_str("Wrapper<String>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions());
-        // Should fall through to non-generic ref path
-        assert!(
-            matches!(schema_ref, SchemaRef::Ref(_)),
-            "Should be a $ref when no struct definition found"
-        );
-    }
-
-    #[test]
-    fn test_generic_known_schema_param_count_mismatch() {
-        // Struct has 1 generic param but 2 concrete types provided → falls through to Ref
-        let mut known = HashSet::new();
-        known.insert("Single".to_string());
-        let mut defs = HashMap::new();
-        defs.insert(
-            "Single".to_string(),
-            "struct Single<T> { value: T }".to_string(),
-        );
-
-        let ty: Type = syn::parse_str("Single<String, i32>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known, &defs);
-        assert!(
-            matches!(schema_ref, SchemaRef::Ref(_)),
-            "Mismatched param count should fall through to $ref"
-        );
-    }
-
-    #[test]
-    fn test_generic_known_schema_invalid_definition() {
-        // struct_definitions has invalid Rust code → parse fails → falls through to Ref
-        let mut known = HashSet::new();
-        known.insert("Bad".to_string());
-        let mut defs = HashMap::new();
-        defs.insert("Bad".to_string(), "not valid rust code!!!".to_string());
-
-        let ty: Type = syn::parse_str("Bad<String>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known, &defs);
-        assert!(
-            matches!(schema_ref, SchemaRef::Ref(_)),
-            "Invalid definition should fall through to $ref"
-        );
-    }
-
-    #[test]
-    fn test_generic_known_schema_tuple_struct() {
-        // Tuple struct fields are NOT Named → skips field substitution but still inlines
-        let mut known = HashSet::new();
-        known.insert("Pair".to_string());
-        let mut defs = HashMap::new();
-        defs.insert("Pair".to_string(), "struct Pair<T>(T, T);".to_string());
-
-        let ty: Type = syn::parse_str("Pair<String>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known, &defs);
-        // Tuple struct still gets inlined (generics cleared, parse_struct_to_schema called)
-        // but field types are NOT substituted (no Named fields to iterate)
-        assert!(
-            matches!(schema_ref, SchemaRef::Inline(_)),
-            "Tuple struct should still inline"
-        );
-    }
-
-    #[test]
-    fn test_generic_known_schema_no_generic_params_in_def() {
-        // Struct definition has no generics but concrete type has angle brackets → mismatch
-        let mut known = HashSet::new();
-        known.insert("Plain".to_string());
-        let mut defs = HashMap::new();
-        defs.insert("Plain".to_string(), "struct Plain { x: i32 }".to_string());
-
-        let ty: Type = syn::parse_str("Plain<String>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known, &defs);
-        // 0 generic params != 1 concrete type → falls through to Ref
-        assert!(matches!(schema_ref, SchemaRef::Ref(_)));
-    }
-
-    // ========== Coverage: nested generic types ==========
-
-    #[test]
-    fn test_nested_vec_vec_string() {
-        let ty: Type = syn::parse_str("Vec<Vec<String>>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
-        if let SchemaRef::Inline(schema) = &schema_ref {
-            assert_eq!(schema.schema_type, Some(SchemaType::Array));
-            if let Some(SchemaRef::Inline(inner)) = schema.items.as_ref() {
-                assert_eq!(inner.schema_type, Some(SchemaType::Array));
-                if let Some(SchemaRef::Inline(innermost)) = inner.items.as_ref() {
-                    assert_eq!(innermost.schema_type, Some(SchemaType::String));
-                } else {
-                    panic!("Expected innermost inline schema");
-                }
-            } else {
-                panic!("Expected inner inline schema");
-            }
-        } else {
-            panic!("Expected inline schema for nested Vec");
-        }
-    }
-
-    #[test]
-    fn test_option_vec_i32() {
-        let ty: Type = syn::parse_str("Option<Vec<i32>>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
-        if let SchemaRef::Inline(schema) = &schema_ref {
-            assert_eq!(schema.schema_type, Some(SchemaType::Array));
-            assert_eq!(schema.nullable, Some(true));
-            if let Some(SchemaRef::Inline(items)) = schema.items.as_ref() {
-                assert_eq!(items.schema_type, Some(SchemaType::Integer));
-            } else {
-                panic!("Expected inline items");
-            }
-        } else {
-            panic!("Expected inline schema for Option<Vec<i32>>");
-        }
-    }
-
-    #[test]
-    fn test_box_box_i32() {
-        // Box<Box<i32>> → transparent twice → integer
-        let ty: Type = syn::parse_str("Box<Box<i32>>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
-        if let SchemaRef::Inline(schema) = &schema_ref {
-            assert_eq!(schema.schema_type, Some(SchemaType::Integer));
-        } else {
-            panic!("Expected inline integer schema for Box<Box<i32>>");
-        }
-    }
-
-    // ========== Coverage: HashMap/BTreeMap with known ref value ==========
-
-    #[test]
-    fn test_hashmap_with_known_ref_value() {
-        let mut known = HashSet::new();
-        known.insert("User".to_string());
-        let ty: Type = syn::parse_str("HashMap<String, User>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions());
-        if let SchemaRef::Inline(schema) = &schema_ref {
-            assert_eq!(schema.schema_type, Some(SchemaType::Object));
-            let additional = schema.additional_properties.as_ref().unwrap();
-            let AdditionalProperties::Schema(SchemaRef::Ref(reference)) = additional else {
-                panic!("expected a schema-ref additionalProperties, got {additional:?}");
-            };
-            assert_eq!(reference.ref_path, "#/components/schemas/User");
-        } else {
-            panic!("Expected inline schema for HashMap<String, User>");
-        }
-    }
-
-    #[test]
-    fn test_btreemap_with_inline_value() {
-        let ty: Type = syn::parse_str("BTreeMap<String, Vec<i32>>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
-        if let SchemaRef::Inline(schema) = &schema_ref {
-            assert_eq!(schema.schema_type, Some(SchemaType::Object));
-            let additional = schema.additional_properties.as_ref().unwrap();
-            // Value should be an inline array schema.
-            let AdditionalProperties::Schema(SchemaRef::Inline(value_schema)) = additional else {
-                panic!("expected an inline-schema additionalProperties, got {additional:?}");
-            };
-            assert_eq!(value_schema.schema_type, Some(SchemaType::Array));
-        } else {
-            panic!("Expected inline schema for BTreeMap with Vec value");
-        }
-    }
-
-    // ========== Coverage: HashMap/BTreeMap with insufficient args ==========
-
-    #[test]
-    fn test_hashmap_single_arg_falls_through() {
-        // HashMap<String> — only 1 type arg, need 2 → falls through to unknown type
-        let ty: Type = syn::parse_str("HashMap<String>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
-        if let SchemaRef::Inline(schema) = &schema_ref {
-            assert_eq!(schema.schema_type, Some(SchemaType::Object));
-            // Should NOT have additional_properties since it fell through
-            assert!(schema.additional_properties.is_none());
-        } else {
-            panic!("Expected inline schema");
-        }
-    }
-
-    // ========== Coverage: &mut T reference ==========
-
-    #[test]
-    fn test_mutable_reference_delegates_to_inner() {
-        let ty: Type = syn::parse_str("&mut String").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
-        if let SchemaRef::Inline(schema) = &schema_ref {
-            assert_eq!(schema.schema_type, Some(SchemaType::String));
-        } else {
-            panic!("Expected inline string schema for &mut String");
-        }
-    }
-
-    // ========== Coverage: HashSet/BTreeSet → uniqueItems ==========
-
-    #[test]
-    fn test_hashset_string_produces_unique_items_array() {
-        let ty: Type = syn::parse_str("HashSet<String>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
-        if let SchemaRef::Inline(schema) = &schema_ref {
-            assert_eq!(schema.schema_type, Some(SchemaType::Array));
-            assert_eq!(schema.unique_items, Some(true));
-            if let Some(SchemaRef::Inline(items)) = schema.items.as_ref() {
-                assert_eq!(items.schema_type, Some(SchemaType::String));
-            } else {
-                panic!("Expected inline string items for HashSet<String>");
-            }
-        } else {
-            panic!("Expected inline schema for HashSet<String>");
-        }
-    }
-
-    #[test]
-    fn test_btreeset_i32_produces_unique_items_array() {
-        let ty: Type = syn::parse_str("BTreeSet<i32>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
-        if let SchemaRef::Inline(schema) = &schema_ref {
-            assert_eq!(schema.schema_type, Some(SchemaType::Array));
-            assert_eq!(schema.unique_items, Some(true));
-            if let Some(SchemaRef::Inline(items)) = schema.items.as_ref() {
-                assert_eq!(items.schema_type, Some(SchemaType::Integer));
-            } else {
-                panic!("Expected inline integer items for BTreeSet<i32>");
-            }
-        } else {
-            panic!("Expected inline schema for BTreeSet<i32>");
-        }
-    }
-
-    #[test]
-    fn test_option_hashset_is_nullable_unique_array() {
-        let ty: Type = syn::parse_str("Option<HashSet<i64>>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
-        if let SchemaRef::Inline(schema) = &schema_ref {
-            assert_eq!(schema.schema_type, Some(SchemaType::Array));
-            assert_eq!(schema.unique_items, Some(true));
-            assert_eq!(schema.nullable, Some(true));
-            if let Some(SchemaRef::Inline(items)) = schema.items.as_ref() {
-                assert_eq!(items.schema_type, Some(SchemaType::Integer));
-            } else {
-                panic!("Expected inline integer items for Option<HashSet<i64>>");
-            }
-        } else {
-            panic!("Expected inline schema for Option<HashSet<i64>>");
-        }
-    }
-
-    #[test]
-    fn test_vec_does_not_have_unique_items() {
-        let ty: Type = syn::parse_str("Vec<String>").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
-        if let SchemaRef::Inline(schema) = &schema_ref {
-            assert_eq!(schema.schema_type, Some(SchemaType::Array));
-            assert!(schema.unique_items.is_none());
-        } else {
-            panic!("Expected inline schema for Vec<String>");
-        }
-    }
-
-    #[test]
-    fn test_bare_hashset_without_generics() {
-        // HashSet without angle brackets → falls through to bare-name match
-        let ty: Type = syn::parse_str("HashSet").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
-        assert!(matches!(schema_ref, SchemaRef::Inline(_)));
-    }
-
-    #[test]
-    fn test_bare_btreeset_without_generics() {
-        let ty: Type = syn::parse_str("BTreeSet").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
-        assert!(matches!(schema_ref, SchemaRef::Inline(_)));
-    }
-
-    #[test]
-    fn test_known_schema_ref_override_returns_inline_ref_schema() {
-        let mut known = HashSet::new();
-        known.insert("UserSchema".to_string());
-
-        let mut defs = HashMap::new();
-        defs.insert(
-            "UserSchema".to_string(),
-            r#"
-            #[schema(ref = "ExternalUser", nullable)]
-            struct UserSchema {
-                id: i32,
-            }
-            "#
-            .to_string(),
-        );
-
-        let ty: Type = syn::parse_str("UserSchema").unwrap();
-        let schema_ref = parse_type_to_schema_ref(&ty, &known, &defs);
-
-        match schema_ref {
-            SchemaRef::Inline(schema) => {
-                assert_eq!(
-                    schema.ref_path.as_deref(),
-                    Some("#/components/schemas/ExternalUser")
-                );
-                assert_eq!(schema.nullable, Some(true));
-            }
-            SchemaRef::Ref(_) => panic!("expected inline schema ref override"),
-        }
-    }
-
-    #[rstest::rstest]
-    #[case::u128("u128")]
-    #[case::usize("usize")]
-    fn unsigned_wide_integer_has_zero_minimum(#[case] source: &str) {
-        let ty: Type = syn::parse_str(source).expect("type");
-        let SchemaRef::Inline(schema) =
-            parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions())
-        else {
-            panic!("inline schema");
-        };
-        assert_eq!(schema.schema_type, Some(SchemaType::Integer));
-        assert_eq!(schema.minimum, Some(0.0));
-    }
-
-    #[test]
-    fn generic_definition_ignores_lifetime_parameters() {
-        let known = HashSet::from(["Borrowed".to_string()]);
-        let defs = HashMap::from([(
-            "Borrowed".to_string(),
-            "struct Borrowed<'a, T> { value: T, marker: &'a str }".to_string(),
-        )]);
-        let ty: Type = syn::parse_str("Borrowed<'static, String>").expect("type");
-
-        let schema = parse_type_to_schema_ref(&ty, &known, &defs);
-
-        let SchemaRef::Inline(schema) = schema else {
-            panic!("matching type arguments should inline");
-        };
-        assert_eq!(schema.schema_type, Some(SchemaType::Object));
-    }
-
-    #[test]
-    fn lifetime_only_concrete_argument_falls_back_to_reference() {
-        let known = HashSet::from(["Borrowed".to_string()]);
-        let defs = HashMap::from([(
-            "Borrowed".to_string(),
-            "struct Borrowed<T> { value: T }".to_string(),
-        )]);
-        let ty: Type = syn::parse_str("Borrowed<'static>").expect("type");
-
-        assert!(matches!(
-            parse_type_to_schema_ref(&ty, &known, &defs),
-            SchemaRef::Ref(_)
-        ));
-    }
-
-    #[test]
-    fn unit_type_maps_to_null_schema() {
-        let ty: Type = syn::parse_quote!(());
-        let SchemaRef::Inline(schema) =
-            parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions())
-        else {
-            panic!("inline schema");
-        };
-        assert_eq!(schema.schema_type, Some(SchemaType::Null));
+/// Fixed-length JSON array for a Rust tuple / tuple struct / tuple variant:
+/// `prefixItems` (one schema per position) with `minItems == maxItems == len`.
+pub fn tuple_array_schema<'t>(
+    elems: impl ExactSizeIterator<Item = &'t Type>,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+) -> Schema {
+    let len = elems.len();
+    let prefix_items: Vec<SchemaRef> = elems
+        .map(|ty| parse_type_to_schema_ref(ty, known_schemas, struct_definitions))
+        .collect();
+    Schema {
+        prefix_items: Some(prefix_items),
+        min_items: Some(len),
+        max_items: Some(len),
+        items: None,
+        ..Schema::new(SchemaType::Array)
     }
 }
+
+/// First *type* argument of `<...>` (skips lifetimes, e.g. `Cow<'a, str>`).
+fn first_type_arg(args: &syn::AngleBracketedGenericArguments) -> Option<&Type> {
+    args.args.iter().find_map(|arg| match arg {
+        syn::GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    })
+}
+
+/// `true` for the bare unsigned primitive integer idents (`u8`..`u128`, `usize`).
+fn is_unsigned_int_type(ty: &Type) -> bool {
+    matches!(ty, Type::Path(type_path)
+    if type_path.path.segments.last().is_some_and(|seg| {
+        matches!(seg.ident.to_string().as_str(), "u8" | "u16" | "u32" | "u64" | "u128" | "usize")
+    }))
+}
+
+/// Integer schema (with optional OpenAPI format) constrained to `minimum: 1`.
+fn non_zero_unsigned(format: Option<&str>) -> SchemaRef {
+    SchemaRef::Inline(Box::new(Schema {
+        format: format.map(str::to_string),
+        minimum: Some(1.0),
+        ..Schema::integer()
+    }))
+}
+
+#[cfg(test)]
+mod tests;

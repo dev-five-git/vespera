@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/openapi_generator/component_schemas.rs
+expression: error.to_string()
+---
+`Event`: internally tagged enum (`#[serde(tag = "type")]`): newtype variant `Data` must wrap a struct or map so serde can add the `type` field; `Inner` serializes as a non-object value. Use a struct variant (`Data { value: ... }`) or an adjacently tagged enum (`#[serde(tag = "type", content = "...")]`)

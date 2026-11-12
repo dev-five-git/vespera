@@ -471,3 +471,64 @@ async fn byte_snapshot_422_envelope_multi_error() {
 
     insta::assert_snapshot!("validated_422_envelope_multi_error", body_str);
 }
+
+// ── inner-extractor DATA errors share the 422 envelope ──────────────────
+//
+// axum's `Json` reports a well-formed body that does not deserialize into the
+// target type (`JsonDataError`) as `422 text/plain`. `Validated<Json<T>>`
+// re-emits it in the documented `{"errors":[{"message","path"}]}` envelope so
+// clients (and the JNI `validation_errors` hoist) see ONE 422 shape. Syntax
+// errors (400) and a missing content-type (415) keep their own status.
+
+#[tokio::test]
+async fn json_data_errors_use_the_422_envelope() {
+    let cases = [
+        ("wrong_type", r#"{"title":1,"content":"body"}"#, "title"),
+        ("missing_field", r#"{"title":"Hello"}"#, "content"),
+        ("root_type", r#""just a string""#, ""),
+    ];
+    for (name, payload, expected_path) in cases {
+        let res = router()
+            .oneshot(post_json_request("/posts", payload))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 422, "{name}");
+        assert_json_content_type(res.headers());
+        let body = body_to_string(res.into_body()).await;
+        let parsed: ::serde_json::Value = ::serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["errors"][0]["path"], expected_path, "{name}: {body}");
+        insta::assert_snapshot!(format!("validated_422_json_data_error_{name}"), body);
+    }
+}
+
+#[tokio::test]
+async fn json_syntax_and_content_type_errors_keep_their_status() {
+    let syntax = router()
+        .oneshot(post_json_request("/posts", r#"{"title":"#))
+        .await
+        .unwrap();
+    assert_eq!(syntax.status(), 400);
+
+    let no_content_type = Request::builder()
+        .method("POST")
+        .uri("/posts")
+        .body(Body::from(r#"{"title":"Hello","content":"x"}"#))
+        .unwrap();
+    let res = router().oneshot(no_content_type).await.unwrap();
+    assert_eq!(res.status(), 415);
+}
+
+#[tokio::test]
+async fn context_validated_json_data_error_uses_the_422_envelope() {
+    let app = context_router().with_state(SlugContext {
+        required_prefix: "vespera-".to_owned(),
+    });
+    let res = app
+        .oneshot(post_json_request("/context-posts", r#"{"slug":false}"#))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 422);
+    let body: ::serde_json::Value =
+        ::serde_json::from_str(&body_to_string(res.into_body()).await).unwrap();
+    assert_eq!(body["errors"][0]["path"], "slug");
+}

@@ -1,0 +1,6 @@
+---
+source: crates/vespera/tests/validated_extractor.rs
+assertion_line: 500
+expression: body
+---
+{"errors":[{"message":"invalid type: string \"just a string\", expected struct CreatePost at line 1 column 15","path":""}]}

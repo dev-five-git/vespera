@@ -428,6 +428,7 @@ fn test_extract_ok_payload_and_headers_tuple_without_headermap() {
     // Test line 95: tuple without HeaderMap returns None for headers
     let ty: syn::Type = syn::parse_str("(StatusCode, String)").unwrap();
     let (payload, headers) = extract_ok_payload_and_headers(&ty);
+    let payload = payload.expect("body payload");
 
     // Payload should be String (last element unwrapped)
     if let syn::Type::Path(type_path) = &payload {
@@ -463,6 +464,7 @@ fn test_extract_ok_payload_and_headers_cookie_jar_tuple() {
     // (CookieJar, Json<String>) → payload should be String, CookieJar filtered
     let ty: syn::Type = syn::parse_str("(CookieJar, Json<String>)").unwrap();
     let (payload, headers) = extract_ok_payload_and_headers(&ty);
+    let payload = payload.expect("body payload");
 
     if let syn::Type::Path(type_path) = &payload {
         assert_eq!(
@@ -480,6 +482,7 @@ fn test_extract_ok_payload_and_headers_cookie_jar_with_status_code() {
     // (StatusCode, CookieJar, Json<i32>) → payload should be i32
     let ty: syn::Type = syn::parse_str("(StatusCode, CookieJar, Json<i32>)").unwrap();
     let (payload, headers) = extract_ok_payload_and_headers(&ty);
+    let payload = payload.expect("body payload");
 
     if let syn::Type::Path(type_path) = &payload {
         assert_eq!(
@@ -494,12 +497,71 @@ fn test_extract_ok_payload_and_headers_cookie_jar_with_status_code() {
 
 #[test]
 fn test_extract_ok_payload_and_headers_all_non_body_types() {
-    // (StatusCode, CookieJar) → no body element found, returns original tuple
+    // (StatusCode, CookieJar) → no body element found → no payload at all
     let ty: syn::Type = syn::parse_str("(StatusCode, CookieJar)").unwrap();
     let (payload, headers) = extract_ok_payload_and_headers(&ty);
-    // No body element found → falls through to return original type
-    assert!(matches!(payload, syn::Type::Tuple(_)));
+    assert!(payload.is_none());
     assert!(headers.is_none());
+}
+
+/// Non-`Result` tuple returns document the body element (not the tuple),
+/// exactly like the `Result` Ok side does.
+#[rstest]
+#[case::status_json("-> (StatusCode, Json<String>)", Some(SchemaType::String), false)]
+#[case::status_headers_json(
+    "-> (StatusCode, HeaderMap, Json<i32>)",
+    Some(SchemaType::Integer),
+    true
+)]
+#[case::status_only_tuple("-> (StatusCode, HeaderMap)", None, true)]
+#[case::cookie_jar_only("-> (StatusCode, CookieJar)", None, false)]
+fn plain_tuple_return_documents_body_element(
+    #[case] return_type: &str,
+    #[case] expected_type: Option<SchemaType>,
+    #[case] has_headers: bool,
+) {
+    let responses = parse_return_type(
+        &parse_return_type_str(return_type),
+        &HashSet::new(),
+        &HashMap::new(),
+    );
+    assert_eq!(responses.len(), 1);
+    let ok = responses.get("200").expect("200 response");
+    assert_eq!(ok.headers.is_some(), has_headers);
+    match expected_type {
+        None => assert!(ok.content.is_none()),
+        Some(expected) => {
+            let media = ok
+                .content
+                .as_ref()
+                .and_then(|c| c.get("application/json"))
+                .expect("json body");
+            match media.schema.as_ref().expect("schema") {
+                SchemaRef::Inline(schema) => assert_eq!(schema.schema_type, Some(expected)),
+                SchemaRef::Ref(_) => panic!("expected inline schema"),
+            }
+        }
+    }
+}
+
+#[test]
+fn plain_tuple_return_with_struct_body_references_schema() {
+    let known: HashSet<&str> = HashSet::from(["User"]);
+    let defs: HashMap<&str, &str> = HashMap::from([("User", "struct User { id: i32 }")]);
+    let responses = parse_return_type(
+        &parse_return_type_str("-> (StatusCode, Json<User>)"),
+        &known,
+        &defs,
+    );
+    let media = responses["200"]
+        .content
+        .as_ref()
+        .and_then(|c| c.get("application/json"))
+        .expect("json body");
+    match media.schema.as_ref().expect("schema") {
+        SchemaRef::Ref(reference) => assert_eq!(reference.ref_path, "#/components/schemas/User"),
+        SchemaRef::Inline(schema) => panic!("expected $ref, got {schema:?}"),
+    }
 }
 
 #[test]

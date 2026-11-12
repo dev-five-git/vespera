@@ -1,0 +1,6 @@
+---
+source: crates/vespera_macro/src/parser/schema/type_schema/conversion/tests.rs
+assertion_line: 412
+expression: "format!(\"{ty_src} => {json}\")"
+---
+(i32, String) => {"type":"array","prefixItems":[{"type":"integer","format":"int32"},{"type":"string"}],"minItems":2,"maxItems":2}

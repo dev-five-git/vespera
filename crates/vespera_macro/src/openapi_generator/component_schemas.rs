@@ -155,7 +155,68 @@ pub(super) fn parse_component_schemas(
         }
     }
 
+    reject_internally_tagged_non_object_refs(&schemas)?;
     Ok(schemas)
+}
+
+/// Reject an internally tagged enum newtype variant that wraps a `$ref` to a
+/// component known to serialize as a non-object (e.g. `struct UserId(String)`
+/// emitting a `string` component).  `#[derive(Schema)]` only sees the variant's
+/// type NAME, so this can only be decided once every component is built; a
+/// `$ref` to a component not in this spec (external / merged) is left alone.
+///
+/// Internally tagged newtype variants are the only `oneOf` branches emitted as
+/// `allOf: [{tag object}, {$ref}]` under a `discriminator`.
+fn reject_internally_tagged_non_object_refs(
+    schemas: &BTreeMap<String, vespera_core::schema::Schema>,
+) -> syn::Result<()> {
+    use vespera_core::schema::{SchemaRef, SchemaType};
+    for (enum_name, schema) in schemas {
+        let Some(discriminator) = &schema.discriminator else {
+            continue;
+        };
+        let tag = &discriminator.property_name;
+        for branch in schema.one_of.iter().flatten() {
+            let SchemaRef::Inline(branch) = branch else {
+                continue;
+            };
+            let Some([SchemaRef::Inline(tag_object), SchemaRef::Ref(reference)]) =
+                branch.all_of.as_deref()
+            else {
+                continue;
+            };
+            let Some(target) = reference.ref_path.strip_prefix("#/components/schemas/") else {
+                continue;
+            };
+            let non_object = schemas.get(target).is_some_and(|target| {
+                target
+                    .schema_type
+                    .is_some_and(|ty| !matches!(ty, SchemaType::Object | SchemaType::Null))
+            });
+            if !non_object {
+                continue;
+            }
+            let variant = tag_object
+                .properties
+                .as_ref()
+                .and_then(|properties| properties.get(tag))
+                .and_then(|tag_schema| match tag_schema {
+                    SchemaRef::Inline(tag_schema) => tag_schema.r#enum.as_ref()?.first()?.as_str(),
+                    SchemaRef::Ref(_) => None,
+                })
+                .unwrap_or("?");
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!(
+                    "`{enum_name}`: {}",
+                    crate::parser::schema::internally_tagged_non_object_message(
+                        tag, variant, target
+                    )
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -249,6 +310,42 @@ mod tests {
             *struct_definitions.get("Hidden").unwrap(),
             "struct Hidden { id: i32 }"
         );
+    }
+
+    /// An internally tagged newtype variant over a `$ref` to a component that
+    /// is known to be a non-object (`struct UserId(String)` → `string`) is a
+    /// compile error; an object component or an unknown `$ref` is accepted.
+    #[rstest]
+    #[case::string_newtype_component("string", "struct Inner(String);", true)]
+    #[case::object_component("object", "struct Inner { id: i32 }", false)]
+    #[case::unknown_component("unknown", "struct Unrelated { id: i32 }", false)]
+    fn internally_tagged_newtype_over_non_object_ref(
+        #[case] name: &str,
+        #[case] inner_definition: &str,
+        #[case] is_error: bool,
+    ) {
+        let mut metadata = CollectedMetadata::new();
+        let inner_name = if name == "unknown" {
+            "Unrelated"
+        } else {
+            "Inner"
+        };
+        metadata
+            .structs
+            .push(struct_meta(inner_name, inner_definition));
+        metadata.structs.push(struct_meta(
+            "Event",
+            r#"#[serde(tag = "type")] enum Event { Ping, Data(Inner) }"#,
+        ));
+        let result =
+            try_generate_openapi_doc_with_metadata(None, None, None, None, &metadata, None, &[]);
+        assert_eq!(result.is_err(), is_error, "{name}");
+        if let Err(error) = result {
+            insta::assert_snapshot!(
+                format!("internally_tagged_newtype_ref_error_{name}"),
+                error.to_string()
+            );
+        }
     }
 
     #[rstest]

@@ -327,3 +327,74 @@ async fn context_validated_query_rejects_state_disapproved_value() {
     let errors = body["errors"].as_array().expect("errors");
     assert!(errors.iter().any(|error| error["path"] == "q"));
 }
+
+// ── Deserialization (data) failures share the 422 envelope ───────────
+
+#[derive(Deserialize, garde::Validate)]
+struct ItemPath {
+    #[garde(skip)]
+    #[allow(dead_code)]
+    id: u32,
+}
+
+async fn item(Validated(Path(_p)): Validated<Path<ItemPath>>) -> &'static str {
+    "ok"
+}
+
+#[derive(Deserialize, garde::Validate)]
+struct Page {
+    #[garde(skip)]
+    #[allow(dead_code)]
+    page: u32,
+}
+
+async fn page(Validated(Query(_p)): Validated<Query<Page>>) -> &'static str {
+    "ok"
+}
+
+fn data_error_router() -> Router {
+    Router::new()
+        .route("/login", post(login))
+        .route("/items/{id}", get(item))
+        .route("/page", get(page))
+}
+
+#[tokio::test]
+async fn deserialization_failures_use_the_422_envelope() {
+    let form = |body: &'static str| {
+        Request::builder()
+            .method("POST")
+            .uri("/login")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let get = |uri: &'static str| {
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let cases = [
+        ("form_missing_field", form("username=alice"), "password"),
+        ("query_wrong_type", get("/page?page=abc"), "page"),
+        ("query_missing_field", get("/page"), "page"),
+        ("path_struct_wrong_type", get("/items/abc"), "id"),
+    ];
+    for (name, req, expected_path) in cases {
+        let res = data_error_router().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), 422, "{name}");
+        assert_eq!(
+            res.headers()
+                .get("content-type")
+                .map(|v| v.to_str().unwrap()),
+            Some("application/json"),
+            "{name}"
+        );
+        let body = body_to_string(res.into_body()).await;
+        let parsed: ::serde_json::Value = ::serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["errors"][0]["path"], expected_path, "{name}: {body}");
+        insta::assert_snapshot!(format!("validated_422_deserialize_{name}"), body);
+    }
+}
