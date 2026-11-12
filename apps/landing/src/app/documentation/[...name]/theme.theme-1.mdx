@@ -120,7 +120,7 @@ Out of the box the autoconfigure module wires up:
 |---------|---------|----------|
 | App selection | Read `X-Vespera-App` request header; absent → default app. **Client-controlled** — restrict it with `vespera.bridge.exposed-apps` | Properties `vespera.bridge.app-header` / `vespera.bridge.exposed-apps`, or custom `AppNameResolver` bean |
 | Dispatch mode | `SmartDispatchModeResolver` since 0.2.0 — `DIRECT` for small/bodyless idempotent, `SYNC` for small non-idempotent, `BIDIRECTIONAL_STREAMING` for the rest | Property `vespera.bridge.dispatch-mode: bidirectional-streaming`, or custom `DispatchModeResolver` bean |
-| URL pattern | `@RequestMapping("/**")` catch-all | Set `vespera.bridge.controller-enabled: false` and supply your own controller |
+| URL pattern | `@RequestMapping("/**")` catch-all | Properties `vespera.bridge.include-patterns` / `vespera.bridge.exclude-patterns` (excluded paths fall through to other controllers, static resources, then `404`), or `vespera.bridge.controller-enabled: false` and your own controller |
 
 ---
 
@@ -133,6 +133,8 @@ vespera:
   bridge:
     app-header: X-My-App         # change the header that selects the app
     controller-enabled: true      # set false to disable the proxy controller
+    include-patterns: ["/**"]     # paths the proxy serves (default /**)
+    exclude-patterns: ["/assets/**"] # left to Spring MVC: other controllers, static resources, 404
 ```
 
 ### Custom App-Selection Strategy

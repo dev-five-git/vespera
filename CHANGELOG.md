@@ -192,6 +192,19 @@ Behaviour changes — no code change is needed, but they are observable:
   `bridgeVersion` defaults to the matching bridge release, `cargoSourceRoots` is
   ignored and `CargoBuildTask.commands` was replaced by its properties.
 
+### Java bridge: proxied paths and IDE metadata (`kr.devfive:vespera-bridge`)
+
+Additive; the defaults keep the previous behaviour.
+
+- New `vespera.bridge.include-patterns` (default `/**`) and
+  `vespera.bridge.exclude-patterns` (default none), in Spring `PathPattern`
+  syntax. Paths outside them are not mapped to the proxy and fall through to
+  the rest of Spring MVC (other controllers, static resources, then `404`);
+  `cors=rust` preflights follow the same patterns.
+- The JAR ships `META-INF/spring-configuration-metadata.json`: IDE completion,
+  descriptions and value hints for every `vespera.bridge.*` property and
+  `management.health.vespera.enabled`.
+
 ### musl native libraries (`kr.devfive:vespera-bridge`, Gradle plugin)
 
 - On a musl-libc Linux JVM (Alpine) the bridge looks for the bundled library

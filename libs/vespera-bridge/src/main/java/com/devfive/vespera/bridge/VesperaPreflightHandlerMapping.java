@@ -22,14 +22,23 @@ import java.util.Objects;
  * runs at {@link Ordered#HIGHEST_PRECEDENCE}, matches only preflights and
  * hands them to the proxy method through the regular
  * {@code RequestMappingHandlerAdapter}, so every {@link DispatchMode} works.
+ * Preflights outside {@code vespera.bridge.include-patterns} /
+ * {@code exclude-patterns} ({@link ProxyPathPatterns}) are left to Spring.
  */
 public final class VesperaPreflightHandlerMapping implements HandlerMapping, Ordered {
 
     private final HandlerMethod handler;
+    private final ProxyPathPatterns patterns;
 
     public VesperaPreflightHandlerMapping(VesperaProxyController controller) {
+        this(controller, ProxyPathPatterns.defaults());
+    }
+
+    /** Routes only the preflights whose path the proxy owns per {@code patterns}. */
+    public VesperaPreflightHandlerMapping(VesperaProxyController controller, ProxyPathPatterns patterns) {
         Objects.requireNonNull(controller, "controller");
         this.handler = new HandlerMethod(controller, proxyMethod());
+        this.patterns = Objects.requireNonNull(patterns, "patterns");
     }
 
     static Method proxyMethod() {
@@ -43,7 +52,7 @@ public final class VesperaPreflightHandlerMapping implements HandlerMapping, Ord
 
     @Override
     public HandlerExecutionChain getHandler(HttpServletRequest request) {
-        return CorsUtils.isPreFlightRequest(request) ? new HandlerExecutionChain(handler) : null;
+        return CorsUtils.isPreFlightRequest(request) && patterns.matches(request) ? new HandlerExecutionChain(handler) : null;
     }
 
     @Override
