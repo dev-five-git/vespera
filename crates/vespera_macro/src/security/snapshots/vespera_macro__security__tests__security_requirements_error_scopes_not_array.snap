@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/security/tests.rs
+expression: error.to_string()
+---
+#[route] `security` entries must be a scheme name (`"bearerAuth"`), a scheme with scopes (`("oauth2", ["read:users"])`), or an AND group of those (`["apiKey", ("oauth2", ["read:users"])]`)

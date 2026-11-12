@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/router_codegen/security_dsl_tests.rs
+expression: "input.err().expect(\"flows on openIdConnect\").to_string()"
+---
+vespera! macro: security scheme `oidc` of type `openIdConnect` cannot declare `flows`; only `oauth2` schemes have flows

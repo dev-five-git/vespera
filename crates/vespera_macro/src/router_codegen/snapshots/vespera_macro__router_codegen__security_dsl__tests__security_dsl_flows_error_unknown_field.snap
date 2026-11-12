@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/router_codegen/security_dsl_tests.rs
+expression: error.to_string()
+---
+unknown OAuth2 flow field: `audience`. Expected `authorization_url`, `token_url`, `refresh_url`, or `scopes`

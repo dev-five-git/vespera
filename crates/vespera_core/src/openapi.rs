@@ -153,7 +153,7 @@ pub struct OpenApi {
     pub components: Option<Components>,
     /// Security requirements
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub security: Option<Vec<BTreeMap<String, Vec<String>>>>,
+    pub security: Option<Vec<crate::schema::SecurityRequirement>>,
     /// Tag definitions
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<Tag>>,

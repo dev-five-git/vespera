@@ -62,6 +62,7 @@ mod router_codegen;
 mod schema_assertions;
 mod schema_impl;
 mod schema_macro;
+mod security;
 mod vespera_impl;
 
 use proc_macro::TokenStream;

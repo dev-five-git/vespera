@@ -272,6 +272,38 @@ error naming the feature).
 
 ---
 
+## Security Schemes & OAuth2 Scopes
+
+```rust
+vespera!(
+    security_schemes = [
+        { name = "bearerAuth", type = "http", scheme = "bearer" },
+        { name = "oauth2", type = "oauth2", flows = {
+            client_credentials = {
+                token_url = "https://auth.example.com/token",
+                scopes = { "read:users" = "Read users" },
+            },
+        } },
+        { name = "oidc", type = "openIdConnect",
+          open_id_connect_url = "https://auth.example.com/.well-known/openid-configuration" }
+    ],
+)
+
+#[vespera::route(get, security = ["bearerAuth"])]                       // no scopes
+#[vespera::route(get, security = [("oauth2", ["read:users"])])]         // → [{"oauth2":["read:users"]}]
+#[vespera::route(get, security = [["apiKey", ("oauth2", ["read:users"])]])] // AND group
+#[vespera::route(get, security = [])]                                   // explicitly public
+```
+
+- Flows: `implicit` (`authorization_url`), `password` / `client_credentials`
+  (`token_url`), `authorization_code` (both); `refresh_url` optional.
+- Compile errors: unknown scheme, `oauth2` without `flows`, missing flow URL,
+  a scope no flow of that `oauth2` scheme declares.
+- Runtime (feature `inprocess`): `principal.require_scopes(&["read:users"])?`
+  → `403` + `WWW-Authenticate: Bearer error="insufficient_scope"`.
+
+---
+
 ## Route Handler Requirements
 
 ```rust

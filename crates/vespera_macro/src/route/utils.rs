@@ -50,7 +50,7 @@ pub struct RouteInfo {
     pub error_status: Option<Vec<u16>>,
     pub typed_responses: Option<Vec<(u16, String)>>,
     pub tags: Option<Vec<String>>,
-    pub security: Option<Vec<String>>,
+    pub security: Option<Vec<vespera_core::schema::SecurityRequirement>>,
     pub headers: Vec<HeaderParam>,
     pub operation_id: Option<String>,
     pub summary: Option<String>,
@@ -95,7 +95,10 @@ fn build_route_info_from_args(route_args: &RouteArgs) -> RouteInfo {
         .responses
         .as_ref()
         .and_then(extract_typed_responses);
-    let security = route_args.security.as_ref().map(extract_strings);
+    // `#[route]` already rejected a malformed array at its own expansion.
+    let security = route_args.security.as_ref().and_then(|arr| {
+        crate::security::parse_security_requirements(arr, "#[route] `security`").ok()
+    });
     let headers = route_args.headers.clone().unwrap_or_default();
 
     let description = lit_value(route_args.description.as_ref());
@@ -701,5 +704,22 @@ mod tests {
             Some(vec![(422, "ValidationError".to_string())])
         );
         assert_eq!(extract_typed_responses(&invalid), None);
+    }
+
+    #[rstest::rstest]
+    #[case::scoped(
+        r#"#[route(get, security = [("oauth2", ["read:users"]), "apiKey"])] fn t() {}"#,
+        Some(r#"[{"oauth2":["read:users"]},{"apiKey":[]}]"#)
+    )]
+    #[case::malformed_is_dropped("#[route(get, security = [oauth2])] fn t() {}", None)]
+    fn slow_path_reads_scoped_security(#[case] code: &str, #[case] expected: Option<&str>) {
+        let route_info = extract_route_info(&parse_attrs_from_code(code)).expect("route attribute");
+        assert_eq!(
+            route_info
+                .security
+                .map(|security| serde_json::to_string(&security).unwrap())
+                .as_deref(),
+            expected
+        );
     }
 }
