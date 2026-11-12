@@ -100,7 +100,7 @@ Out of the box the autoconfigure module wires up:
 |---|---|---|
 | **App selection** | Read `X-Vespera-App` request header; absent → default app. **Client-controlled — restrict it with `vespera.bridge.exposed-apps`** (see [Multi-app routing → Security](#security-the-app-header-is-client-controlled)) | Properties `vespera.bridge.app-header` / `vespera.bridge.exposed-apps`, or custom [`AppNameResolver`](src/main/java/com/devfive/vespera/bridge/AppNameResolver.java) bean |
 | **Dispatch mode** | [`SmartDispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/SmartDispatchModeResolver.java) since 0.2.0 — picks per request: [`DIRECT`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) (pooled direct buffers, no JNI array copies) for small/bodyless safe requests (GET/HEAD/OPTIONS, Content-Length absent or ≤ 1 MiB) ~2.2 µs; `SYNC` (heap-buffered) for small unsafe requests (POST/PUT/PATCH/DELETE ≤ 256 KiB) ~3.2 µs; `BIDIRECTIONAL_STREAMING` for the rest ~24.1 µs | Property `vespera.bridge.dispatch-mode: bidirectional-streaming` (opt out, restore pre-0.2.0 default), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
-| **URL pattern** | Single `@RequestMapping("/**")` catch-all — every vespera router URL exactly mirrors the published OpenAPI path | Set `vespera.bridge.controller-enabled: false` and supply your own controller |
+| **URL pattern** | Single `@RequestMapping("/**")` catch-all — every vespera router URL exactly mirrors the published OpenAPI path | Properties `vespera.bridge.include-patterns` / `vespera.bridge.exclude-patterns` (see [Proxied paths](#proxied-paths-include--exclude-patterns)), or `vespera.bridge.controller-enabled: false` and your own controller |
 | **Body handling** | Servlet `InputStream` straight through to Rust (no buffering) for streaming modes; full read for sync/async | (encoded by the chosen `DispatchMode`) |
 
 Why `smart` as the default mode (since 0.2.0)? Measured on a small `GET /health` round-trip through the real JNI boundary the cheapest safe path per request is 7–11× cheaper than unconditional streaming:
@@ -139,6 +139,8 @@ vespera:
     app-header: X-My-App        # change the header that selects the app
     exposed-apps: [admin]       # apps the (client-controlled) app header may select
     controller-enabled: true     # set false to disable our controller
+    include-patterns: ["/**"]    # paths the proxy serves (default /**), see "Proxied paths"
+    exclude-patterns: []         # paths left to Spring MVC, e.g. ["/assets/**", "/*.html"]
     cors: rust                   # rust (default) | spring — who answers CORS, see "CORS"
     direct-retry-on-overflow: true # set false to avoid DIRECT retry double-execution
     max-buffered-request-bytes: 67108864 # default 64 MiB; 0 = unlimited
@@ -204,6 +206,39 @@ request-size status `413`. When the native cap could not be aligned (the
 library dispatched before the context started, or a controller built by hand),
 the proxy keeps a post-dispatch check with the same `500`. Use a streaming mode
 for large downloads.
+
+#### Proxied paths (include / exclude patterns)
+
+By default the proxy is a `/**` catch-all: more specific Spring MVC handlers
+(your `@RestController`s, `/error`, Actuator) still win, but everything else —
+including what Spring Boot would otherwise serve from `classpath:/static/` —
+goes to Rust. Narrow it with Spring
+[`PathPattern`](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller/ann-requestmapping.html#mvc-ann-requestmapping-uri-templates)
+patterns, matched against the path within the application (context path and a
+prefix `DispatcherServlet` mapping removed):
+
+```yaml
+vespera:
+  bridge:
+    include-patterns: ["/api/**", "/health"]   # default ["/**"]
+    exclude-patterns: ["/api/internal/**"]      # default []
+```
+
+A path outside `include-patterns`, or matching an `exclude-patterns` entry, is
+**not mapped to the proxy at all**: Spring MVC carries on with its other handler
+mappings — other controllers, static resources, and finally its own `404` —
+exactly as if the proxy did not exist. With `cors=rust`, preflights for those
+paths are left to Spring too. An invalid pattern fails startup. With the
+defaults the proxy's `@RequestMapping("/**")` is left untouched; otherwise
+`VesperaProxyPathMappings` re-registers it with the include patterns plus an
+exclusion condition once the context's singletons are initialised.
+
+#### IDE support
+
+The JAR ships `META-INF/spring-configuration-metadata.json`, so IntelliJ IDEA
+and the Spring Tools for VS Code / Eclipse complete and document every
+`vespera.bridge.*` key (plus `management.health.vespera.enabled`) and offer the
+values of `dispatch-mode` and `cors`.
 
 ### 2. Custom app-selection strategy
 

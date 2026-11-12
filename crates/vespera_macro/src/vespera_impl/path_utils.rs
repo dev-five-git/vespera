@@ -11,13 +11,13 @@ use crate::error::{MacroResult, err_call_site};
 /// each other's cache (permanent miss ping-pong) and — worse — race on
 /// the shared spec file that the generated code `include_str!`s.
 pub(super) fn current_crate_tag() -> String {
-    std::env::var("CARGO_PKG_NAME").unwrap_or_else(|_| "default".to_string())
+    crate::env_access::var("CARGO_PKG_NAME").unwrap_or_else(|_| "default".to_string())
 }
 
 /// `info.description` default: the crate's `description` from Cargo.toml
 /// (`CARGO_PKG_DESCRIPTION`), when non-blank.
 pub(super) fn package_description() -> Option<String> {
-    std::env::var("CARGO_PKG_DESCRIPTION")
+    crate::env_access::var("CARGO_PKG_DESCRIPTION")
         .ok()
         .map(|description| description.trim().to_string())
         .filter(|description| !description.is_empty())
@@ -25,7 +25,7 @@ pub(super) fn package_description() -> Option<String> {
 
 /// Find the folder path for route scanning
 pub fn find_folder_path(folder_name: &str) -> MacroResult<std::path::PathBuf> {
-    let root = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| {
+    let root = crate::env_access::var("CARGO_MANIFEST_DIR").map_err(|_| {
         err_call_site(
             "CARGO_MANIFEST_DIR is not set. vespera macros must be used within a cargo build.",
         )
@@ -45,7 +45,10 @@ pub fn find_folder_path(folder_name: &str) -> MacroResult<std::path::PathBuf> {
 /// runs workspace members from the workspace root). Absolute paths are kept;
 /// without a manifest directory the path is returned unchanged.
 pub fn resolve_manifest_relative(path: &str) -> PathBuf {
-    resolve_against(std::env::var_os("CARGO_MANIFEST_DIR"), Path::new(path))
+    resolve_against(
+        crate::env_access::var_os("CARGO_MANIFEST_DIR"),
+        Path::new(path),
+    )
 }
 
 fn resolve_against(base: Option<OsString>, path: &Path) -> PathBuf {
@@ -74,7 +77,7 @@ thread_local! {
 pub fn find_target_dir(manifest_path: &Path) -> PathBuf {
     target_dir_in(
         &find_workspace_root(manifest_path),
-        std::env::var_os("CARGO_TARGET_DIR"),
+        crate::env_access::var_os("CARGO_TARGET_DIR"),
     )
 }
 
@@ -322,7 +325,10 @@ mod tests {
     #[test]
     fn find_target_dir_is_inside_the_workspace_root_by_default() {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let expected = target_dir_in(temp_dir.path(), std::env::var_os("CARGO_TARGET_DIR"));
+        let expected = target_dir_in(
+            temp_dir.path(),
+            crate::env_access::var_os("CARGO_TARGET_DIR"),
+        );
         assert_eq!(find_target_dir(temp_dir.path()), expected);
     }
 
@@ -358,7 +364,6 @@ mod tests {
         );
     }
 
-    #[serial_test::serial]
     #[test]
     fn test_find_folder_path_with_src_folder() {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -367,18 +372,10 @@ mod tests {
         let src_routes = temp_dir.path().join("src").join("routes");
         fs::create_dir_all(&src_routes).expect("Failed to create src/routes dir");
 
-        // Save and set CARGO_MANIFEST_DIR
-        let old_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-        // SAFETY: We're in a single-threaded test context
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
         let result = find_folder_path("routes").unwrap();
-
-        // Restore CARGO_MANIFEST_DIR
-        if let Some(old_value) = old_manifest_dir {
-            // SAFETY: We're in a single-threaded test context
-            unsafe { std::env::set_var("CARGO_MANIFEST_DIR", old_value) };
-        }
 
         // Should return the src/routes path since it exists
         assert!(
@@ -387,18 +384,9 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
     fn find_folder_path_reports_missing_manifest_environment() {
-        let original = std::env::var("CARGO_MANIFEST_DIR").ok();
-        // SAFETY: this serialized test restores the process environment before returning.
-        unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") };
+        let _env_guard = crate::env_access::test_env::remove_var("CARGO_MANIFEST_DIR");
         let error = find_folder_path("routes").expect_err("manifest directory is required");
-        // SAFETY: this serialized test restores the process environment before returning.
-        unsafe {
-            if let Some(value) = original {
-                std::env::set_var("CARGO_MANIFEST_DIR", value);
-            }
-        }
         assert!(error.to_string().contains("CARGO_MANIFEST_DIR is not set"));
     }
 
@@ -406,27 +394,14 @@ mod tests {
     #[case::described(Some("  Pet store API "), Some("Pet store API"))]
     #[case::blank(Some("   "), None)]
     #[case::unset(None, None)]
-    #[serial_test::serial]
     fn package_description_reads_cargo_description(
         #[case] value: Option<&str>,
         #[case] expected: Option<&str>,
     ) {
-        let original = std::env::var("CARGO_PKG_DESCRIPTION").ok();
-        // SAFETY: this serialized test restores the process environment before returning.
-        unsafe {
-            match value {
-                Some(value) => std::env::set_var("CARGO_PKG_DESCRIPTION", value),
-                None => std::env::remove_var("CARGO_PKG_DESCRIPTION"),
-            }
-        }
-        let description = package_description();
-        // SAFETY: as above.
-        unsafe {
-            match original {
-                Some(value) => std::env::set_var("CARGO_PKG_DESCRIPTION", value),
-                None => std::env::remove_var("CARGO_PKG_DESCRIPTION"),
-            }
-        }
-        assert_eq!(description.as_deref(), expected);
+        let _env_guard = value.map_or_else(
+            || crate::env_access::test_env::remove_var("CARGO_PKG_DESCRIPTION"),
+            |value| crate::env_access::test_env::set_var("CARGO_PKG_DESCRIPTION", value),
+        );
+        assert_eq!(package_description().as_deref(), expected);
     }
 }

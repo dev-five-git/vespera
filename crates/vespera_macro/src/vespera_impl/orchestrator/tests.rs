@@ -14,6 +14,14 @@ fn create_temp_file(dir: &TempDir, filename: &str, content: &str) -> std::path::
     file_path
 }
 
+/// Point `CARGO_MANIFEST_DIR` at `dir` for this test thread only, so the
+/// `target/vespera/` cache and spec sidecars the orchestrator writes land in
+/// the test's own tempdir instead of the workspace `target/` shared by every
+/// concurrently running test.
+fn isolated_manifest_dir(dir: &TempDir) -> crate::env_access::test_env::EnvGuard {
+    crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir.path())
+}
+
 // ========== Tests for finalize_metadata ==========
 
 #[test]
@@ -86,6 +94,7 @@ fn test_process_vespera_macro_folder_not_found() {
 #[test]
 fn test_process_vespera_macro_collect_metadata_error() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let _manifest = isolated_manifest_dir(&temp_dir);
 
     // Create an invalid route file (will cause parse error but collect_metadata handles it)
     create_temp_file(&temp_dir, "invalid.rs", "not valid rust code {{{");
@@ -115,6 +124,7 @@ fn test_process_vespera_macro_collect_metadata_error() {
 #[test]
 fn test_process_vespera_macro_with_schema_storage() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let _manifest = isolated_manifest_dir(&temp_dir);
 
     // Create an empty file (valid but no routes)
     create_temp_file(&temp_dir, "empty.rs", "// empty file\n");
@@ -150,7 +160,6 @@ fn test_process_vespera_macro_with_schema_storage() {
 }
 
 #[test]
-#[serial_test::serial]
 fn test_process_vespera_macro_with_cron_storage() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
@@ -161,13 +170,10 @@ fn test_process_vespera_macro_with_cron_storage() {
         .expect("write health.rs");
 
     // Set CARGO_MANIFEST_DIR so module path derivation works
-    let old_manifest = std::env::var("CARGO_MANIFEST_DIR").ok();
-    unsafe {
-        std::env::set_var(
-            "CARGO_MANIFEST_DIR",
-            temp_dir.path().to_string_lossy().as_ref(),
-        );
-    }
+    let _env_guard = crate::env_access::test_env::set_var(
+        "CARGO_MANIFEST_DIR",
+        temp_dir.path().to_string_lossy().as_ref(),
+    );
 
     // Populate CRON_STORAGE with a fake cron entry under the CURRENT crate
     // key (CARGO_MANIFEST_DIR was set to temp_dir above, so this lands in the
@@ -215,15 +221,6 @@ fn test_process_vespera_macro_with_cron_storage() {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         storage.remove(&crate::schema_impl::current_crate_key());
     }
-
-    // Restore CARGO_MANIFEST_DIR
-    unsafe {
-        if let Some(val) = old_manifest {
-            std::env::set_var("CARGO_MANIFEST_DIR", val);
-        } else {
-            std::env::remove_var("CARGO_MANIFEST_DIR");
-        }
-    }
 }
 
 // ========== Tests for process_export_app ==========
@@ -232,6 +229,7 @@ fn test_process_vespera_macro_with_cron_storage() {
 fn test_process_export_app_folder_not_found() {
     let name: syn::Ident = syn::parse_quote!(TestApp);
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let _manifest = isolated_manifest_dir(&temp_dir);
     let result = process_export_app(
         &name,
         "nonexistent_folder_xyz",
@@ -249,6 +247,7 @@ fn test_process_export_app_folder_not_found() {
 #[test]
 fn test_process_export_app_with_empty_folder() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let _manifest = isolated_manifest_dir(&temp_dir);
 
     // Create an empty file
     create_temp_file(&temp_dir, "empty.rs", "// empty\n");
@@ -273,6 +272,7 @@ fn test_process_export_app_with_empty_folder() {
 #[test]
 fn test_process_export_app_with_schema_storage() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let _manifest = isolated_manifest_dir(&temp_dir);
 
     // Create an empty but valid Rust file
     create_temp_file(&temp_dir, "mod.rs", "// module file\n");
@@ -305,6 +305,7 @@ fn test_process_export_app_with_schema_storage() {
 fn test_process_export_app_collect_metadata_error() {
     // Lines 210-212: collect_metadata returns error for invalid Rust syntax
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let _manifest = isolated_manifest_dir(&temp_dir);
 
     // Create a file with invalid Rust syntax that will cause parse error
     create_temp_file(&temp_dir, "invalid.rs", "fn broken( { syntax error");
@@ -331,6 +332,7 @@ fn test_process_export_app_collect_metadata_error() {
 fn test_process_export_app_create_dir_error() {
     // Lines 232-234: create_dir_all failure when path contains a file
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let _manifest = isolated_manifest_dir(&temp_dir);
 
     // Create an empty valid Rust file
     create_temp_file(&temp_dir, "empty.rs", "// empty file\n");
@@ -362,6 +364,7 @@ fn test_process_export_app_create_dir_error() {
 fn test_process_export_app_write_spec_error() {
     // Lines 239-241: fs::write failure when spec file path is a directory
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let _manifest = isolated_manifest_dir(&temp_dir);
 
     // Create an empty valid Rust file
     create_temp_file(&temp_dir, "empty.rs", "// empty file\n");
@@ -393,6 +396,7 @@ fn test_process_export_app_write_spec_error() {
 #[test]
 fn test_process_vespera_macro_no_openapi_output() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let _manifest = isolated_manifest_dir(&temp_dir);
     create_temp_file(&temp_dir, "empty.rs", "// empty route file\n");
 
     let processed = ProcessedVesperaInput {
@@ -419,12 +423,11 @@ fn test_process_vespera_macro_no_openapi_output() {
 }
 
 #[test]
-#[serial_test::serial]
 fn test_process_vespera_macro_with_profiling() {
-    let old_profile = std::env::var("VESPERA_PROFILE").ok();
-    unsafe { std::env::set_var("VESPERA_PROFILE", "1") };
+    let _env_guard = crate::env_access::test_env::set_var("VESPERA_PROFILE", "1");
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let _manifest = isolated_manifest_dir(&temp_dir);
     create_temp_file(&temp_dir, "empty.rs", "// empty\n");
 
     let processed = ProcessedVesperaInput {
@@ -445,25 +448,15 @@ fn test_process_vespera_macro_with_profiling() {
 
     let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
 
-    // Restore
-    unsafe {
-        if let Some(val) = old_profile {
-            std::env::set_var("VESPERA_PROFILE", val);
-        } else {
-            std::env::remove_var("VESPERA_PROFILE");
-        }
-    };
-
     assert!(result.is_ok());
 }
 
 #[test]
-#[serial_test::serial]
 fn test_process_export_app_with_profiling() {
-    let old_profile = std::env::var("VESPERA_PROFILE").ok();
-    unsafe { std::env::set_var("VESPERA_PROFILE", "1") };
+    let _env_guard = crate::env_access::test_env::set_var("VESPERA_PROFILE", "1");
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let _manifest = isolated_manifest_dir(&temp_dir);
     create_temp_file(&temp_dir, "empty.rs", "// empty\n");
 
     let name: syn::Ident = syn::parse_quote!(TestProfileApp);
@@ -479,21 +472,11 @@ fn test_process_export_app_with_profiling() {
         Span::call_site(),
     );
 
-    // Restore
-    unsafe {
-        if let Some(val) = old_profile {
-            std::env::set_var("VESPERA_PROFILE", val);
-        } else {
-            std::env::remove_var("VESPERA_PROFILE");
-        }
-    };
-
     // Exercise the code path
     let _ = result;
 }
 
 #[test]
-#[serial_test::serial]
 fn test_process_vespera_macro_cache_hit() {
     // Exercises lines 320-324, 327, 329: the cache_hit branch in process_vespera_macro.
     // First call populates the cache, second call hits it.
@@ -508,8 +491,7 @@ fn test_process_vespera_macro_cache_hit() {
     let openapi_path = temp_dir.path().join("openapi.json");
 
     // Set CARGO_MANIFEST_DIR so cache path resolves to temp_dir/target/vespera/
-    let old_manifest = std::env::var("CARGO_MANIFEST_DIR").ok();
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+    let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
     let processed = ProcessedVesperaInput {
         folder_name: folder_path.clone(),
@@ -546,40 +528,15 @@ fn test_process_vespera_macro_cache_hit() {
         "Second call (cache hit) should succeed: {:?}",
         result2.err()
     );
-
-    // Restore CARGO_MANIFEST_DIR
-    unsafe {
-        if let Some(val) = old_manifest {
-            std::env::set_var("CARGO_MANIFEST_DIR", val);
-        } else {
-            std::env::remove_var("CARGO_MANIFEST_DIR");
-        }
-    };
 }
 
 #[test]
-#[serial_test::serial]
 fn process_export_app_reuses_fresh_cache_and_sidecar() {
-    struct Restore(Option<String>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            // SAFETY: this serialized test restores the process environment through RAII.
-            unsafe {
-                match self.0.take() {
-                    Some(value) => std::env::set_var("CARGO_MANIFEST_DIR", value),
-                    None => std::env::remove_var("CARGO_MANIFEST_DIR"),
-                }
-            }
-        }
-    }
-
     let temp = TempDir::new().unwrap();
     let routes = temp.path().join("src/routes");
     fs::create_dir_all(&routes).unwrap();
     fs::write(routes.join("mod.rs"), "// empty routes").unwrap();
-    let _restore = Restore(std::env::var("CARGO_MANIFEST_DIR").ok());
-    // SAFETY: this serialized test restores the process environment through RAII.
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp.path()) };
+    let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
     let name: syn::Ident = syn::parse_quote!(CachedApp);
     let folder = routes.to_string_lossy().into_owned();
 

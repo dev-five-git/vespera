@@ -21,7 +21,6 @@ mod circular_relation_tests {
     use std::collections::HashMap;
 
     use quote::quote;
-    use serial_test::serial;
 
     use crate::metadata::StructMetadata;
     use crate::schema_macro::{SchemaTypeInput, generate_schema_type_code};
@@ -31,7 +30,6 @@ mod circular_relation_tests {
     // ============================================================
 
     #[test]
-    #[serial]
     fn test_generate_schema_type_code_belongs_to_circular_inline_optional() {
         // Tests: BelongsTo with circular reference, optional field (is_optional = true)
         use tempfile::TempDir;
@@ -64,10 +62,9 @@ pub struct Model {
 "#;
         std::fs::write(models_dir.join("memo.rs"), memo_model).unwrap();
 
-        // Save original CARGO_MANIFEST_DIR
-        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-        // SAFETY: This is a test that runs single-threaded
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        // Point CARGO_MANIFEST_DIR (thread-locally) at the temp project
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
         // Generate schema from memo - has BelongsTo user which has circular ref back
         let tokens = quote!(MemoSchema from crate::models::memo::Model);
@@ -75,17 +72,6 @@ pub struct Model {
         let storage: HashMap<String, StructMetadata> = HashMap::new();
 
         let result = generate_schema_type_code(&input, &storage);
-
-        // Restore CARGO_MANIFEST_DIR
-        // SAFETY: This is a test that runs single-threaded
-        unsafe {
-            if let Some(dir) = original_manifest_dir {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
-
         assert!(result.is_ok());
         let (tokens, _metadata) = result.unwrap();
         let output = tokens.to_string();
@@ -97,7 +83,6 @@ pub struct Model {
     }
 
     #[test]
-    #[serial]
     fn test_generate_schema_type_code_has_one_circular_inline_required() {
         // Tests: HasOne with circular reference, required field (is_optional = false)
         use tempfile::TempDir;
@@ -132,10 +117,9 @@ pub struct Model {
 "#;
         std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
 
-        // Save original CARGO_MANIFEST_DIR
-        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-        // SAFETY: This is a test that runs single-threaded
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        // Point CARGO_MANIFEST_DIR (thread-locally) at the temp project
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
         // Generate schema from user - has HasOne profile which has circular ref back
         let tokens = quote!(UserSchema from crate::models::user::Model);
@@ -143,17 +127,6 @@ pub struct Model {
         let storage: HashMap<String, StructMetadata> = HashMap::new();
 
         let result = generate_schema_type_code(&input, &storage);
-
-        // Restore CARGO_MANIFEST_DIR
-        // SAFETY: This is a test that runs single-threaded
-        unsafe {
-            if let Some(dir) = original_manifest_dir {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
-
         assert!(result.is_ok());
         let (tokens, _metadata) = result.unwrap();
         let output = tokens.to_string();
@@ -165,7 +138,6 @@ pub struct Model {
     }
 
     #[test]
-    #[serial]
     fn test_generate_schema_type_code_belongs_to_circular_inline_required_file() {
         // Tests: BelongsTo with circular reference AND required FK (is_optional = false)
         // This requires file-based lookup with:
@@ -205,10 +177,9 @@ pub struct Model {
 "#;
         std::fs::write(models_dir.join("memo.rs"), memo_model).unwrap();
 
-        // Save original CARGO_MANIFEST_DIR
-        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-        // SAFETY: This is a test that runs single-threaded
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        // Point CARGO_MANIFEST_DIR (thread-locally) at the temp project
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
         // Generate schema from memo - has BelongsTo user which has circular ref back
         // The user_id field is required (not Option), so is_optional = false
@@ -218,17 +189,6 @@ pub struct Model {
         let storage: HashMap<String, StructMetadata> = HashMap::new();
 
         let result = generate_schema_type_code(&input, &storage);
-
-        // Restore CARGO_MANIFEST_DIR
-        // SAFETY: This is a test that runs single-threaded
-        unsafe {
-            if let Some(dir) = original_manifest_dir {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
-
         assert!(result.is_ok(), "Should generate schema: {:?}", result.err());
         let (tokens, _metadata) = result.unwrap();
         let output = tokens.to_string();

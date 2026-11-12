@@ -1,29 +1,11 @@
-use serial_test::serial;
 use tempfile::TempDir;
 
 use super::*;
 use crate::schema_macro::file_cache::bump_epoch;
 
-struct RestoreManifest(Option<String>);
-
-impl Drop for RestoreManifest {
-    fn drop(&mut self) {
-        // SAFETY: every test mutating the process environment is serialized.
-        unsafe {
-            match self.0.take() {
-                Some(value) => std::env::set_var("CARGO_MANIFEST_DIR", value),
-                None => std::env::remove_var("CARGO_MANIFEST_DIR"),
-            }
-        }
-    }
-}
-
 #[test]
-#[serial]
 fn fingerprint_without_manifest_uses_path_only() {
-    let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
-    // SAFETY: this serialized test restores the process environment through RAII.
-    unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") };
+    let _env_guard = crate::env_access::test_env::remove_var("CARGO_MANIFEST_DIR");
     bump_epoch();
 
     FILE_CACHE.with(|cache| {
@@ -33,7 +15,6 @@ fn fingerprint_without_manifest_uses_path_only() {
 }
 
 #[test]
-#[serial]
 fn struct_and_fk_lookups_revalidate_unchanged_entries_across_epochs() {
     let temp = TempDir::new().unwrap();
     let model_dir = temp.path().join("src/models");
@@ -44,9 +25,7 @@ fn struct_and_fk_lookups_revalidate_unchanged_entries_across_epochs() {
            pub enum Relation { #[sea_orm(belongs_to = "Entity", from = "Column::UserId", to = "Column::Id")] User }"#,
     )
     .unwrap();
-    let _restore = RestoreManifest(std::env::var("CARGO_MANIFEST_DIR").ok());
-    // SAFETY: this serialized test restores the process environment through RAII.
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp.path()) };
+    let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
 
     bump_epoch();
     let first =

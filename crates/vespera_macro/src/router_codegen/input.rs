@@ -168,28 +168,28 @@ impl Parse for AutoRouterInput {
 
         Ok(Self {
             dir: dir.or_else(|| {
-                std::env::var("VESPERA_DIR")
+                crate::env_access::var("VESPERA_DIR")
                     .map(|f| LitStr::new(&f, Span::call_site()))
                     .ok()
             }),
             openapi: openapi.or_else(|| {
-                std::env::var("VESPERA_OPENAPI")
+                crate::env_access::var("VESPERA_OPENAPI")
                     .map(|f| vec![LitStr::new(&f, Span::call_site())])
                     .ok()
             }),
             title: title.or_else(|| {
-                std::env::var("VESPERA_TITLE")
+                crate::env_access::var("VESPERA_TITLE")
                     .map(|f| LitStr::new(&f, Span::call_site()))
                     .ok()
             }),
             version: version
                 .or_else(|| {
-                    std::env::var("VESPERA_VERSION")
+                    crate::env_access::var("VESPERA_VERSION")
                         .map(|f| LitStr::new(&f, Span::call_site()))
                         .ok()
                 })
                 .or_else(|| {
-                    std::env::var("CARGO_PKG_VERSION")
+                    crate::env_access::var("CARGO_PKG_VERSION")
                         .map(|f| LitStr::new(&f, Span::call_site()))
                         .ok()
                 }),
@@ -197,13 +197,13 @@ impl Parse for AutoRouterInput {
             redoc_url,
             spec_url,
             servers: servers.or_else(|| {
-                std::env::var("VESPERA_SERVER_URL")
+                crate::env_access::var("VESPERA_SERVER_URL")
                     .ok()
                     .filter(|url| url.starts_with("http://") || url.starts_with("https://"))
                     .map(|url| {
                         vec![ServerConfig {
                             url,
-                            description: std::env::var("VESPERA_SERVER_DESCRIPTION").ok(),
+                            description: crate::env_access::var("VESPERA_SERVER_DESCRIPTION").ok(),
                         }]
                     })
             }),
@@ -218,7 +218,7 @@ impl Parse for AutoRouterInput {
 
 /// Read an env-var fallback for a string-valued `vespera!` argument.
 fn env_lit(name: &str) -> Option<LitStr> {
-    std::env::var(name)
+    crate::env_access::var(name)
         .ok()
         .map(|value| LitStr::new(&value, Span::call_site()))
 }
