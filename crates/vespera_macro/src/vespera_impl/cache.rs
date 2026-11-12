@@ -257,6 +257,7 @@ pub(super) fn compute_config_hash_with_merge_cache(
     super::path_utils::package_description().hash(&mut hasher);
     processed.docs_url.hash(&mut hasher);
     processed.redoc_url.hash(&mut hasher);
+    processed.spec_url.hash(&mut hasher);
     processed.openapi_file_names.hash(&mut hasher);
     match &processed.servers {
         None => "servers:none".hash(&mut hasher),
@@ -477,6 +478,7 @@ mod tests {
             version: None,
             docs_url: None,
             redoc_url: None,
+            spec_url: None,
             servers: None,
             security_schemes: None,
             security: None,
@@ -487,7 +489,6 @@ mod tests {
 
     #[test]
     fn test_compute_config_hash_with_servers() {
-        // Exercises lines 92-96: servers loop in compute_config_hash
         let processed_no_servers = base_processed();
 
         let processed_with_servers = ProcessedVesperaInput {
@@ -518,7 +519,6 @@ mod tests {
 
     #[test]
     fn test_compute_config_hash_with_merge() {
-        // Exercises lines 97-99: merge loop in compute_config_hash
         let processed_no_merge = base_processed();
 
         let processed_with_merge = ProcessedVesperaInput {

@@ -1,0 +1,42 @@
+---
+source: crates/vespera_macro/src/router_codegen/generator/tests_docs.rs
+expression: "render(docs_url, redoc_url, spec_url, &merge_apps)"
+---
+fn create_app() {
+    {
+        const __VESPERA_SPEC: &str = "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"x\",\"description\":\"</script>\"}}";
+        vespera::axum::Router::new()
+            .route(
+                "/docs",
+                vespera::axum::routing::get(|| async {
+                    static HTML: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+                    let html = HTML
+                        .get_or_init(|| vespera::docs::swagger_ui_html(__VESPERA_SPEC));
+                    vespera::axum::response::Html(html.as_str())
+                }),
+            )
+            .route(
+                "/redoc",
+                vespera::axum::routing::get(|| async {
+                    static HTML: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+                    let html = HTML
+                        .get_or_init(|| vespera::docs::redoc_html(__VESPERA_SPEC));
+                    vespera::axum::response::Html(html.as_str())
+                }),
+            )
+            .route(
+                "/openapi.json",
+                vespera::axum::routing::get(|| async {
+                    (
+                        [
+                            (
+                                vespera::axum::http::header::CONTENT_TYPE,
+                                "application/json",
+                            ),
+                        ],
+                        __VESPERA_SPEC,
+                    )
+                }),
+            )
+    }
+}

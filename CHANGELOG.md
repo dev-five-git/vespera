@@ -58,6 +58,19 @@ of an existing 0.5 application.
   longer duplicate schedulers) and run on a dedicated thread when no Tokio
   runtime is present.
 
+### Documentation UI (`vespera`, `vespera_macro`, `vespera_core`)
+
+- `docs_url` / `redoc_url` pages load `swagger-ui-dist` 5.34.0 and `redoc`
+  2.5.4 at exact versions with SRI (`integrity` + `crossorigin="anonymous"`)
+  instead of the latest unpkg release; pages behind a CSP must allow those
+  unpkg URLs. The embedded spec is escaped for the `<script>` context, so
+  `</script>` or `<!--` in a description or example no longer breaks the page.
+  The renderers are public in the new `vespera::docs` module.
+- New opt-in `vespera!(spec_url = "/openapi.json")` (env `VESPERA_SPEC_URL`)
+  serves the generated, merged spec as `application/json`.
+- `docs_url` / `redoc_url` / `spec_url` must start with `/` and be distinct;
+  violations are compile errors (previously an axum panic at startup).
+
 ### `Serve`
 
 - `serve()` provides `ConnectInfo<SocketAddr>`; the `Serve` trait gained

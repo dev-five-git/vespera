@@ -54,8 +54,9 @@ async fn main() -> std::io::Result<()> {
         openapi  = "openapi.json", // writes file at compile time
         title    = "My API",
         version  = "1.0.0",
-        docs_url = "/docs",        // Swagger UI
-        redoc_url = "/redoc"       // ReDoc alternative
+        docs_url = "/docs",        // Swagger UI (pinned + SRI-checked assets)
+        redoc_url = "/redoc",      // ReDoc alternative
+        spec_url = "/openapi.json" // raw spec as application/json
     )
     .serve("0.0.0.0:3000")
     .await
@@ -319,6 +320,7 @@ npx @apidevtools/swagger-cli validate openapi.json
 | `VESPERA_VERSION` | API version | `CARGO_PKG_VERSION` |
 | `VESPERA_DOCS_URL` | Swagger UI path | none |
 | `VESPERA_REDOC_URL` | ReDoc path | none |
+| `VESPERA_SPEC_URL` | Raw OpenAPI JSON path (`application/json`) | none |
 | `VESPERA_SERVER_URL` | Server URL | none (`servers` omitted → same origin) |
 
 ---
@@ -760,7 +762,7 @@ let app = vespera!(
 **What happens:**
 1. Child routers merged into parent router
 2. OpenAPI specs merged (paths, schemas, tags)
-3. Swagger UI shows all routes
+3. Swagger UI shows all routes (and `spec_url`, if set, serves the merged spec)
 
 ### How It Works (Compile-Time)
 
