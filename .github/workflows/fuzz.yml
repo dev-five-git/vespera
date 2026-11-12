@@ -1,0 +1,68 @@
+name: Fuzz
+
+# Coverage-guided fuzzing of the wire trust boundary (fuzz/). CI.yml's
+# `fuzz-build` job only COMPILES the targets on every PR; this workflow
+# actually RUNS each one for a bounded time — weekly, and on demand.
+#
+# Not a release gate: a crash fails this workflow and uploads the
+# reproducer (`fuzz/artifacts/<target>/crash-*`), replayable locally with
+#   cargo +nightly fuzz run <target> fuzz/artifacts/<target>/crash-<hash>
+on:
+  schedule:
+    # Mondays 03:17 UTC (off the top of the hour to dodge the cron rush).
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'Run time per target, in seconds'
+        required: false
+        default: '600'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: the jobs only read the repository and upload artifacts.
+permissions:
+  contents: read
+
+# Third-party actions pinned to full commit SHAs (same pins as CI.yml).
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [wire_dispatch, wire_header_parse]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
+        with:
+          toolchain: nightly-2026-08-29
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-fuzz
+      - name: cargo fuzz run
+        # The prebuilt cargo-fuzz is a static musl binary and defaults to its
+        # own target, where ASan cannot link; build for the gnu host instead.
+        # The input value is passed through env, never interpolated into the
+        # script, and must be a plain integer.
+        env:
+          SECONDS_PER_TARGET: ${{ inputs.seconds || '600' }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          case "$SECONDS_PER_TARGET" in
+            ''|*[!0-9]*) echo "::error::seconds must be an integer"; exit 1 ;;
+          esac
+          cargo fuzz run --target x86_64-unknown-linux-gnu "$TARGET" -- \
+            -max_total_time="$SECONDS_PER_TARGET" -rss_limit_mb=2048 -timeout=10
+      - name: Upload crash reproducers
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore

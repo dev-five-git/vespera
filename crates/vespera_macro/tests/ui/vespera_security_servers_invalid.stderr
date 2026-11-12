@@ -1,0 +1,19 @@
+error: invalid security scheme type: `magic`. Expected `apiKey`, `http`, `mutualTLS`, `oauth2`, or `openIdConnect`
+ --> tests/ui/vespera_security_servers_invalid.rs:6:66
+  |
+6 |     let _ = vespera!(security_schemes = [{ name = "auth", type = "magic" }]);
+  |                                                                  ^^^^^^^
+
+error: vespera! macro: security scheme `key` of type `apiKey` is missing required field `in` (one of "query", "header", or "cookie")
+  --> tests/ui/vespera_security_servers_invalid.rs:10:13
+   |
+10 |     let _ = vespera!(security_schemes = [{ name = "key", type = "apiKey", header_name = "X-Key" }]);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `vespera` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: invalid server URL: `localhost:3000`. URL must start with `http://` or `https://`
+  --> tests/ui/vespera_security_servers_invalid.rs:14:41
+   |
+14 |     let _ = vespera!(servers = [{ url = "localhost:3000" }]);
+   |                                         ^^^^^^^^^^^^^^^^

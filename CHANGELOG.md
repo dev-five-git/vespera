@@ -304,3 +304,23 @@ Additive; applications without springdoc are unaffected.
   named apps' operations get the app header parameter).
 - When springdoc is present, the proxy's `/**` catch-all is no longer listed
   in springdoc's own document.
+
+### Java bridge: programmatic client (`kr.devfive:vespera-bridge`)
+
+Additive.
+
+- New `VesperaClient` / `VesperaRequest` / `VesperaResponse` facade for calling
+  the embedded Rust app from Java code without HTTP:
+  `VesperaClient.create().get("/users/42").header("Accept", "application/json").send()`.
+  Builder for method, path, percent-encoded query parameters, headers, raw
+  bodies (`json(String|byte[])`, `text`, `form`, `body(byte[]|String, type)`,
+  `body(InputStream, type)` over bidirectional streaming), app name
+  (`forApp("admin")`), `remote_addr` / `scheme`. `send()` dispatches SYNC
+  (parking on virtual threads), `sendAsync()` / `sendAsync(executor)` ASYNC.
+  Responses expose status, headers, body bytes/string and the hoisted `422`
+  validation errors; domain JSON is never parsed.
+- HTTP error statuses are responses; transport failures (library not
+  initialised, malformed wire, a streamed body failing mid-transfer) throw the
+  new unchecked `VesperaClientException`.
+- The Spring autoconfiguration registers a `VesperaClient` bean
+  (`@ConditionalOnMissingBean`), also with `controller-enabled=false`.
