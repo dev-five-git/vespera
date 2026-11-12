@@ -132,8 +132,8 @@ jobs:
   # CycloneDX SBOMs of all seven published packages (scripts/sbom.sh: the five
   # crates via a hash-pinned cargo-cyclonedx, the two Java libraries via the
   # org.cyclonedx.bom Gradle plugin). The release job regenerates them from the
-  # released commit and attests them; building them here on every PR is what
-  # keeps that main-only path from breaking unnoticed. No attestation and no
+  # released commit and the attest job signs them; building them here on every
+  # PR is what keeps that main-only path from breaking unnoticed. No attestation and no
   # publishing happen here — the job only reads the repository.
   sbom:
     name: SBOM (CycloneDX)
@@ -431,12 +431,10 @@ jobs:
       contents: write
       # open the version PR / comment on it
       pull-requests: write
-      # Artifact attestations of what was just published (the steps after
-      # changepacks): an OIDC token for the Sigstore signing certificate, and
-      # write access to the repository's attestation store. Granted to this
-      # job only — no other job can mint tokens or write attestations.
-      id-token: write
-      attestations: write
+      # NO id-token / attestations here: this job runs third-party and build
+      # code (the changepacks CLI binary, cargo build scripts, Gradle plugins),
+      # none of which may mint an OIDC token or write attestations. The
+      # separate `attest` job below does that.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
@@ -467,22 +465,98 @@ jobs:
           # com.gradle.plugin-publish for the `publishPlugins` task)
           GRADLE_PUBLISH_KEY: ${{ secrets.GRADLE_PUBLISH_KEY }}
           GRADLE_PUBLISH_SECRET: ${{ secrets.GRADLE_PUBLISH_SECRET }}
-      # ── Provenance + SBOM attestations ─────────────────────────────────
+      # ── Provenance + SBOM attestations (collection) ────────────────────
       # Only when changepacks actually published something in this run (its
-      # `changepacks` output lists the published project paths). Nothing below
-      # publishes, and no registry / signing secret is exposed to these steps.
-      # Users verify with `gh attestation verify` (see SECURITY.md).
+      # `changepacks` output lists the published project paths). `!cancelled()`:
+      # a partially failed publish still sets that output for what DID publish,
+      # and those packages must be attested too (a re-run publishes nothing, so
+      # it would never attest them). Nothing below publishes, and no registry /
+      # signing secret is exposed to these steps. The files are handed to the
+      # `attest` job, which alone can sign.
       - name: Collect published artifacts and SBOMs
         id: release
-        if: steps.changepacks.outputs.changepacks != '' && steps.changepacks.outputs.changepacks != '[]'
+        if: ${{ !cancelled() && steps.changepacks.outputs.changepacks != '' && steps.changepacks.outputs.changepacks != '[]' }}
         env:
           PUBLISHED: ${{ steps.changepacks.outputs.changepacks }}
         # The exact .crate files `cargo publish` uploaded (checked against the
         # crates.io checksum) and the JARs the Gradle publish built, plus the
         # SBOMs of the released commit. See the script header.
         run: bash scripts/release-artifacts.sh "$PUBLISHED" "$RUNNER_TEMP/release"
+      - name: Upload attestation subjects
+        # Also after a partial collection failure: whatever was collected is
+        # still attested (the failed step keeps this job red).
+        if: ${{ !cancelled() && steps.release.outputs.any == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-attestation-subjects
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Sync Cargo.lock on the version PR
+        # changepacks bumps the workspace versions in Cargo.toml but not the
+        # workspace members' entries in Cargo.lock, so the version PR (and the
+        # release tag) would carry a stale lockfile. Refresh only the
+        # workspace members on that branch. Best effort: never blocks publish.
+        # Runs whenever changepacks itself succeeded — exactly as before the
+        # attestation steps were added — so a failed artifact collection never
+        # skips it.
+        if: ${{ !cancelled() && steps.changepacks.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          if ! git fetch --depth 1 origin changepacks/main 2>/dev/null; then
+            echo "no version PR branch"; exit 0
+          fi
+          git checkout -B changepacks/main FETCH_HEAD
+          cargo update --workspace
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock already in sync"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Sync Cargo.lock with the bumped workspace versions" -- Cargo.lock
+          git push origin HEAD:changepacks/main
+    outputs:
+      changepacks: ${{ steps.changepacks.outputs.changepacks }}
+      release_assets_urls: ${{ steps.changepacks.outputs.release_assets_urls }}
+      attest: ${{ steps.release.outputs.any }}
+
+  # Provenance + SBOM attestations of what the changepacks job published. A
+  # separate job so that ONLY GitHub's own attest actions run with
+  # `id-token: write` / `attestations: write` (no checkout, no repository or
+  # third-party code). Runs even when the changepacks job failed after a
+  # partial publish; "Re-run failed jobs" re-attests from the uploaded files
+  # (e.g. after a Sigstore outage) without publishing anything again.
+  # Users verify with `gh attestation verify` (see SECURITY.md).
+  attest:
+    name: attest release
+    needs: changepacks
+    if: ${{ !cancelled() && needs.changepacks.outputs.attest == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # attach the SBOMs to the GitHub releases
+      contents: write
+      # an OIDC token for the Sigstore signing certificate, and write access
+      # to the repository's attestation store
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-attestation-subjects
+          path: ${{ runner.temp }}/release
+      - name: Read the manifest
+        id: release
+        # One output pair per collected package: `<id>=<artifact>` and
+        # `<id>_sbom=<sbom>` (see scripts/release-artifacts.sh).
+        run: |
+          dir="$RUNNER_TEMP/release"
+          while IFS=$'\t' read -r _path _version id artifact sbom; do
+            [[ $id =~ ^[a-z_]+$ ]] || { echo "::error::bad manifest id '$id'"; exit 1; }
+            echo "$id=$dir/$artifact"
+            echo "${id}_sbom=$dir/$sbom"
+          done <"$dir/manifest.tsv" >>"$GITHUB_OUTPUT"
       - name: Attest build provenance
-        if: steps.release.outputs.any == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -537,46 +611,21 @@ jobs:
         # verifiable record). The Gradle plugin's SBOM is distributed only this
         # way: the Plugin Portal rejects JSON classifier artifacts. Best effort:
         # a missing release must not fail an already-published release run.
-        if: steps.release.outputs.any == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          dir="$RUNNER_TEMP/release"
           releases=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')
-          while IFS=$'\t' read -r path version _artifact sbom; do
+          while IFS=$'\t' read -r path version _id _artifact sbom; do
             # changepacks tags: <name>(<project path>)@<version>
             tag=$(grep -F -- "($path)@$version" <<<"$releases" | grep -E -- "@${version//./\\.}$" | head -n1 || true)
             if [ -z "$tag" ]; then
               echo "::warning::no GitHub release found for $path@$version"
               continue
             fi
-            gh release upload "$tag" "$sbom" --clobber --repo "$GITHUB_REPOSITORY"
-          done <"$RUNNER_TEMP/release/manifest.tsv"
-      - name: Sync Cargo.lock on the version PR
-        # changepacks bumps the workspace versions in Cargo.toml but not the
-        # workspace members' entries in Cargo.lock, so the version PR (and the
-        # release tag) would carry a stale lockfile. Refresh only the
-        # workspace members on that branch. Best effort: never blocks publish.
-        # Runs whenever changepacks itself succeeded — exactly as before the
-        # attestation steps were added — so a failed attestation never skips it.
-        if: ${{ !cancelled() && steps.changepacks.outcome == 'success' }}
-        continue-on-error: true
-        run: |
-          if ! git fetch --depth 1 origin changepacks/main 2>/dev/null; then
-            echo "no version PR branch"; exit 0
-          fi
-          git checkout -B changepacks/main FETCH_HEAD
-          cargo update --workspace
-          if git diff --quiet -- Cargo.lock; then
-            echo "Cargo.lock already in sync"; exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Sync Cargo.lock with the bumped workspace versions" -- Cargo.lock
-          git push origin HEAD:changepacks/main
-    outputs:
-      changepacks: ${{ steps.changepacks.outputs.changepacks }}
-      release_assets_urls: ${{ steps.changepacks.outputs.release_assets_urls }}
+            gh release upload "$tag" "$dir/$sbom" --clobber --repo "$GITHUB_REPOSITORY"
+          done <"$dir/manifest.tsv"
 
   # Java gate — builds the rust-jni-demo cdylib, runs the vespera-bridge unit
   # suite, publishes the bridge JAR to mavenLocal (so the demo-app Gradle
