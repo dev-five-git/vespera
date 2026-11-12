@@ -832,3 +832,42 @@ fn unknown_field_error_lists_spec_url() {
         .expect("unknown field must be rejected");
     assert!(error.to_string().contains("`spec_url`"), "{error}");
 }
+
+#[test]
+fn test_auto_router_input_parses_info_fields() {
+    let tokens = quote::quote!(
+        title = "Pets",
+        description = "Pet store",
+        summary = "Pets API",
+        terms_of_service = "https://example.com/terms",
+        contact_name = "API Team",
+        contact_url = "https://example.com/support",
+        contact_email = "api@example.com",
+        license = "MIT"
+    );
+    let input: AutoRouterInput = syn::parse2(tokens).unwrap();
+    let processed = process_vespera_input(input);
+    assert_eq!(processed.info.description.as_deref(), Some("Pet store"));
+    assert_eq!(processed.info.summary.as_deref(), Some("Pets API"));
+    assert_eq!(
+        processed.info.contact_email.as_deref(),
+        Some("api@example.com")
+    );
+    assert_eq!(processed.info.license.as_deref(), Some("MIT"));
+    assert!(processed.info.license_url.is_none());
+}
+
+#[rstest]
+#[case::bad_email(quote::quote!(contact_email = "nobody"), "`contact_email` must be an email")]
+#[case::duplicate(quote::quote!(summary = "a", summary = "b"), "duplicate field `summary`")]
+#[case::missing_eq(quote::quote!(license "MIT"), "expected `=`")]
+fn test_auto_router_input_rejects_bad_info(
+    #[case] tokens: proc_macro2::TokenStream,
+    #[case] message: &str,
+) {
+    let err = syn::parse2::<AutoRouterInput>(tokens)
+        .err()
+        .expect("must fail")
+        .to_string();
+    assert!(err.contains(message), "{err}");
+}

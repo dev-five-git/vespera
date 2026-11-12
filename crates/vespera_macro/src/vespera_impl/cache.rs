@@ -255,6 +255,7 @@ pub(super) fn compute_config_hash_with_merge_cache(
     processed.title.hash(&mut hasher);
     processed.version.hash(&mut hasher);
     super::path_utils::package_description().hash(&mut hasher);
+    processed.info.hash(&mut hasher);
     processed.docs_url.hash(&mut hasher);
     processed.redoc_url.hash(&mut hasher);
     processed.spec_url.hash(&mut hasher);
@@ -473,17 +474,7 @@ mod tests {
     fn base_processed() -> ProcessedVesperaInput {
         ProcessedVesperaInput {
             folder_name: "routes".to_string(),
-            openapi_file_names: vec![],
-            title: None,
-            version: None,
-            docs_url: None,
-            redoc_url: None,
-            spec_url: None,
-            servers: None,
-            security_schemes: None,
-            security: None,
-            tag_descriptions: None,
-            merge: vec![],
+            ..ProcessedVesperaInput::default()
         }
     }
 

@@ -54,6 +54,9 @@ async fn main() -> std::io::Result<()> {
         openapi  = "openapi.json", // writes file at compile time
         title    = "My API",
         version  = "1.0.0",
+        license  = "MIT",          // info.license (SPDX); also description, summary,
+                                   // terms_of_service, contact_{name,url,email},
+                                   // license_name + license_url
         docs_url = "/docs",        // Swagger UI (pinned + SRI-checked assets)
         redoc_url = "/redoc",      // ReDoc alternative
         spec_url = "/openapi.json" // raw spec as application/json

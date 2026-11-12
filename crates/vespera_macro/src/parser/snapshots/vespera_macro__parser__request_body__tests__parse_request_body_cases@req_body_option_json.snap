@@ -1,6 +1,6 @@
 ---
 source: crates/vespera_macro/src/parser/request_body.rs
-assertion_line: 202
+assertion_line: 207
 expression: body
 ---
 Some(
@@ -61,6 +61,7 @@ Some(
                 ),
                 example: None,
                 examples: None,
+                encoding: None,
             },
         },
     },

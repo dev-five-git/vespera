@@ -3,6 +3,7 @@ use std::fs;
 use tempfile::TempDir;
 
 use super::*;
+use crate::router_codegen::InfoArgs;
 
 fn create_temp_file(dir: &TempDir, filename: &str, content: &str) -> std::path::PathBuf {
     let file_path = dir.path().join(filename);
@@ -74,6 +75,7 @@ fn test_process_vespera_macro_folder_not_found() {
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
     let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
     assert!(result.is_err());
@@ -101,6 +103,7 @@ fn test_process_vespera_macro_collect_metadata_error() {
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
 
     // This exercises the collect_metadata path (which handles parse errors gracefully)
@@ -137,6 +140,7 @@ fn test_process_vespera_macro_with_schema_storage() {
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
 
     // This exercises the schema_storage extend path
@@ -193,6 +197,7 @@ fn test_process_vespera_macro_with_cron_storage() {
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
 
     // This exercises the CRON_STORAGE → CronMetadata derivation path
@@ -403,6 +408,7 @@ fn test_process_vespera_macro_no_openapi_output() {
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
 
     let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
@@ -434,6 +440,7 @@ fn test_process_vespera_macro_with_profiling() {
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
 
     let result = process_vespera_macro(&processed, &HashMap::new(), &[], Span::call_site());
@@ -517,6 +524,7 @@ fn test_process_vespera_macro_cache_hit() {
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
 
     // First call: cache MISS — scans files, generates spec, writes cache

@@ -525,6 +525,16 @@ let app = vespera!(
     openapi = "openapi.json",          // Output path, relative to the crate dir (written at compile time)
     title = "My API",                  // OpenAPI info.title
     version = "1.0.0",                 // OpenAPI info.version (default: CARGO_PKG_VERSION)
+    description = "Pet store API",     // OpenAPI info.description (default: Cargo.toml description)
+    summary = "Pets",                  // OpenAPI info.summary
+    terms_of_service = "https://example.com/terms",  // info.termsOfService (http(s) URL)
+    contact_name = "API Team",         // info.contact.name
+    contact_url = "https://example.com/support",     // info.contact.url (http(s) URL)
+    contact_email = "api@example.com", // info.contact.email
+    license = "MIT OR Apache-2.0",     // info.license.identifier (SPDX); also the name
+                                       //   unless license_name is set
+    // license_name = "Proprietary", license_url = "https://example.com/license",
+                                       //   non-SPDX license: name + url (excludes `license`)
     docs_url = "/docs",                // Swagger UI endpoint
     redoc_url = "/redoc",              // ReDoc endpoint
     spec_url = "/openapi.json",        // Raw OpenAPI JSON endpoint (application/json)
@@ -544,6 +554,22 @@ let app = vespera!(
     merge = [crate1::App1, crate2::App2]  // Merge child vespera apps
 );
 ```
+
+### API info
+
+`description`, `summary`, `terms_of_service`, `contact_name`, `contact_url`,
+`contact_email`, `license`, `license_name` and `license_url` fill the OpenAPI
+3.1 `info` object. They have no environment-variable fallback.
+
+- `license` is an SPDX expression and becomes `info.license.identifier` (and the
+  `name`, unless `license_name` overrides it).
+- A non-SPDX license uses `license_name` + `license_url`. OpenAPI 3.1 makes
+  `identifier` and `url` mutually exclusive, so `license` together with
+  `license_url`, or `license_url` without `license_name`, is a compile error.
+- `terms_of_service`, `contact_url` and `license_url` must be `http(s)://` URLs
+  and `contact_email` must look like an address (compile errors otherwise).
+- Without `description`, `info.description` is the crate's `description` from
+  `Cargo.toml`.
 
 ### Documentation endpoints
 

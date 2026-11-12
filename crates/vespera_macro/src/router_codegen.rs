@@ -6,10 +6,13 @@
 mod docs;
 mod export;
 mod generator;
+mod info;
 mod input;
 
 pub use export::{
     ExportAppInput, apply_export_prefix, namespace_export_schemas, schema_namespace_from_prefix,
 };
 pub use generator::generate_router_code;
+#[cfg(test)]
+pub use info::InfoArgs;
 pub use input::{AutoRouterInput, ProcessedVesperaInput, process_vespera_input};

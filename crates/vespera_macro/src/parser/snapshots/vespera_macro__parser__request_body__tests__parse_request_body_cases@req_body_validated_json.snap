@@ -60,6 +60,7 @@ Some(
                 ),
                 example: None,
                 examples: None,
+                encoding: None,
             },
         },
     },
