@@ -125,7 +125,9 @@ pub use dispatch::{
 pub use envelope::{
     HeaderValue, RequestEnvelope, ResponseEnvelope, ResponseMetadata, error_envelope,
 };
-pub use principal::{MISSING_PRINCIPAL_MSG, MissingPrincipal, Principal};
+pub use principal::{
+    INSUFFICIENT_SCOPE_MSG, InsufficientScope, MISSING_PRINCIPAL_MSG, MissingPrincipal, Principal,
+};
 pub use registry::{DEFAULT_APP_NAME, register_app, register_app_named, try_register_app_named};
 pub use streaming::{
     REQUEST_PRODUCER_JOIN_GRACE, RequestChunk, StreamAbort, StreamOutcome,

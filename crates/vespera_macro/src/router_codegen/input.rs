@@ -6,9 +6,10 @@ use syn::{
     punctuated::Punctuated,
 };
 use vespera_core::openapi::Server;
-use vespera_core::schema::{SecurityScheme, SecuritySchemeType};
+use vespera_core::schema::{OAuthFlows, SecurityRequirement, SecurityScheme, SecuritySchemeType};
 
 use super::info::{InfoArgs, is_info_field, validate_info};
+use super::security_dsl::{parse_flows, parse_security_values, validate_top_level_scopes};
 
 /// Server configuration for `OpenAPI`
 #[derive(Clone)]
@@ -43,7 +44,7 @@ pub struct AutoRouterInput {
     pub spec_url: Option<LitStr>,
     pub servers: Option<Vec<ServerConfig>>,
     pub security_schemes: Option<Vec<SecuritySchemeConfig>>,
-    pub security: Option<Vec<String>>,
+    pub security: Option<Vec<SecurityRequirement>>,
     pub tags: Option<Vec<TagConfig>>,
     /// Apps to merge (e.g., [`third::ThirdApp`, `another::AnotherApp`])
     pub merge: Option<Vec<syn::Path>>,
@@ -165,6 +166,13 @@ impl Parse for AutoRouterInput {
             ("spec_url", spec_url.as_ref()),
         ])?;
         let info = validate_info(&info_fields)?;
+        let security = match security {
+            Some((requirements, arr)) => {
+                validate_top_level_scopes(&requirements, &arr, security_schemes.as_deref())?;
+                Some(requirements)
+            }
+            None => None,
+        };
 
         Ok(Self {
             dir: dir.or_else(|| {
@@ -322,23 +330,6 @@ fn parse_tag_struct(input: ParseStream) -> syn::Result<TagConfig> {
     Ok(TagConfig { name, description })
 }
 
-fn parse_security_values(input: ParseStream) -> syn::Result<Vec<String>> {
-    input.parse::<syn::Token![=]>()?;
-
-    let content;
-    let _ = bracketed!(content in input);
-    let entries: Punctuated<LitStr, syn::Token![,]> =
-        content.parse_terminated(syn::parse::ParseBuffer::parse::<LitStr>, syn::Token![,])?;
-    Ok(entries.into_iter().map(|entry| entry.value()).collect())
-}
-
-fn security_requirements(schemes: Vec<String>) -> Vec<BTreeMap<String, Vec<String>>> {
-    schemes
-        .into_iter()
-        .map(|scheme| BTreeMap::from([(scheme, Vec::new())]))
-        .collect()
-}
-
 fn parse_security_scheme_values(input: ParseStream) -> syn::Result<Vec<SecuritySchemeConfig>> {
     input.parse::<syn::Token![=]>()?;
 
@@ -371,6 +362,7 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
     let mut scheme: Option<String> = None;
     let mut bearer_format: Option<String> = None;
     let mut open_id_connect_url: Option<String> = None;
+    let mut flows: Option<OAuthFlows> = None;
     let mut seen_fields = HashSet::<String>::new();
 
     while !content.is_empty() {
@@ -380,6 +372,14 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
                 span,
                 format!("duplicate security scheme field: `{field_name}`"),
             ));
+        }
+        if field_name == "flows" {
+            flows = Some(parse_flows(&content)?);
+            if !content.peek(syn::Token![,]) {
+                break;
+            }
+            content.parse::<syn::Token![,]>()?;
+            continue;
         }
         content.parse::<syn::Token![=]>()?;
         let value: LitStr = content.parse()?;
@@ -397,7 +397,7 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
                 return Err(syn::Error::new(
                     span,
                     format!(
-                        "unknown security scheme field: `{field_name}`. Expected `name`, `type`, `description`, `header_name`, `in`, `scheme`, `bearer_format`, or `open_id_connect_url`"
+                        "unknown security scheme field: `{field_name}`. Expected `name`, `type`, `description`, `header_name`, `in`, `scheme`, `bearer_format`, `open_id_connect_url`, or `flows`"
                     ),
                 ));
             }
@@ -432,6 +432,7 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
         header_name.as_deref(),
         scheme.as_deref(),
         open_id_connect_url.as_deref(),
+        flows.is_some(),
     )?;
 
     Ok(SecuritySchemeConfig {
@@ -443,7 +444,7 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
             r#in: location,
             scheme,
             bearer_format,
-            flows: None,
+            flows,
             open_id_connect_url,
         },
     })
@@ -456,9 +457,8 @@ fn parse_security_scheme_struct(input: ParseStream) -> syn::Result<SecuritySchem
 /// - `apiKey` → `header_name` (the api-key `name`) + `in` ∈ {query, header, cookie}
 /// - `http` → `scheme`
 /// - `openIdConnect` → `open_id_connect_url`
-/// - `oauth2` → requires `flows`, which the DSL does not yet parse → rejected
-///   with an explicit message (better than emitting an `oauth2` scheme with no
-///   flows, which is invalid)
+/// - `oauth2` → `flows` (at least one flow — checked by [`parse_flows`])
+/// - `flows` on any other type → rejected (OpenAPI defines it for `oauth2` only)
 /// - `mutualTLS` → no extra required fields
 fn validate_security_scheme_fields(
     name: &str,
@@ -467,6 +467,7 @@ fn validate_security_scheme_fields(
     header_name: Option<&str>,
     scheme: Option<&str>,
     open_id_connect_url: Option<&str>,
+    has_flows: bool,
 ) -> syn::Result<()> {
     let span = proc_macro2::Span::call_site();
     let missing = |field: &str, hint: &str| {
@@ -478,6 +479,15 @@ fn validate_security_scheme_fields(
             ),
         )
     };
+    if has_flows && scheme_type != SecuritySchemeType::OAuth2 {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "vespera! macro: security scheme `{name}` of type `{}` cannot declare `flows`; only `oauth2` schemes have flows",
+                scheme_type_label(scheme_type)
+            ),
+        ));
+    }
     match scheme_type {
         SecuritySchemeType::ApiKey => {
             if header_name.is_none() {
@@ -510,12 +520,12 @@ fn validate_security_scheme_fields(
             }
         }
         SecuritySchemeType::OAuth2 => {
-            return Err(syn::Error::new(
-                span,
-                format!(
-                    "vespera! macro: security scheme `{name}` of type `oauth2` requires `flows`, which the vespera! security_schemes DSL does not yet support"
-                ),
-            ));
+            if !has_flows {
+                return Err(missing(
+                    "flows",
+                    "e.g. `flows = { client_credentials = { token_url = \"...\", scopes = { ... } } }`",
+                ));
+            }
         }
         SecuritySchemeType::MutualTls => {}
     }
@@ -784,7 +794,7 @@ pub fn process_vespera_input(input: AutoRouterInput) -> ProcessedVesperaInput {
                 Some(schemes)
             }
         }),
-        security: input.security.map(security_requirements),
+        security: input.security,
         tag_descriptions: input.tags.and_then(|tags| {
             let tags = tags
                 .into_iter()

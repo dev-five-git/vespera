@@ -1,0 +1,36 @@
+---
+source: crates/vespera_macro/src/router_codegen/security_dsl_tests.rs
+expression: "serde_json::to_string_pretty(&serde_json::json!({\n    \"securitySchemes\": processed.security_schemes, \"security\":\n    processed.security,\n})).unwrap()"
+---
+{
+  "security": [
+    {
+      "oauth2": [
+        "read:users"
+      ]
+    },
+    {
+      "oidc": [
+        "openid",
+        "profile"
+      ]
+    }
+  ],
+  "securitySchemes": {
+    "oauth2": {
+      "flows": {
+        "clientCredentials": {
+          "scopes": {
+            "read:users": "Read users"
+          },
+          "tokenUrl": "https://auth.example.com/token"
+        }
+      },
+      "type": "oauth2"
+    },
+    "oidc": {
+      "openIdConnectUrl": "https://auth.example.com/.well-known/openid-configuration",
+      "type": "openIdConnect"
+    }
+  }
+}

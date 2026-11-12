@@ -65,7 +65,28 @@ pub async fn create_app() -> axum::Router {
         // `#[route(security = [...])]` (see `routes/secured.rs`).
         security_schemes = [
             { name = "bearerAuth", type = "http", scheme = "bearer", bearer_format = "JWT" },
-            { name = "apiKey", type = "apiKey", in = "header", header_name = "X-API-Key" }
+            { name = "apiKey", type = "apiKey", in = "header", header_name = "X-API-Key" },
+            {
+                name = "oauth2",
+                type = "oauth2",
+                description = "Demo authorization server",
+                flows = {
+                    authorization_code = {
+                        authorization_url = "https://auth.example.com/authorize",
+                        token_url = "https://auth.example.com/token",
+                        scopes = { "read:users" = "Read the user directory", "write:users" = "Modify users" },
+                    },
+                    client_credentials = {
+                        token_url = "https://auth.example.com/token",
+                        scopes = { "read:users" = "Read the user directory" },
+                    },
+                },
+            },
+            {
+                name = "oidc",
+                type = "openIdConnect",
+                open_id_connect_url = "https://auth.example.com/.well-known/openid-configuration"
+            }
         ],
         // Top-level tag descriptions (`tags[]` in the document).
         tags = [
@@ -101,7 +122,28 @@ pub async fn create_app_with_layer() -> axum::Router {
         license = "Apache-2.0",
         security_schemes = [
             { name = "bearerAuth", type = "http", scheme = "bearer", bearer_format = "JWT" },
-            { name = "apiKey", type = "apiKey", in = "header", header_name = "X-API-Key" }
+            { name = "apiKey", type = "apiKey", in = "header", header_name = "X-API-Key" },
+            {
+                name = "oauth2",
+                type = "oauth2",
+                description = "Demo authorization server",
+                flows = {
+                    authorization_code = {
+                        authorization_url = "https://auth.example.com/authorize",
+                        token_url = "https://auth.example.com/token",
+                        scopes = { "read:users" = "Read the user directory", "write:users" = "Modify users" },
+                    },
+                    client_credentials = {
+                        token_url = "https://auth.example.com/token",
+                        scopes = { "read:users" = "Read the user directory" },
+                    },
+                },
+            },
+            {
+                name = "oidc",
+                type = "openIdConnect",
+                open_id_connect_url = "https://auth.example.com/.well-known/openid-configuration"
+            }
         ],
         tags = [
             { name = "secured", description = "Security-scheme demo routes" },

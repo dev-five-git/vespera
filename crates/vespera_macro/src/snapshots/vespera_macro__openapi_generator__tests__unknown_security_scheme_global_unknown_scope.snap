@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/openapi_generator.rs
+expression: error.to_string()
+---
+top-level `security` requires scope `admin`, which no flow of oauth2 security scheme `oauth2` declares; declared scopes: `read:users`

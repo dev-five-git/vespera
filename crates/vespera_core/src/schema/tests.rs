@@ -259,6 +259,52 @@ fn security_scheme_type_uses_openapi_canonical_wire_names(
     assert_eq!(serde_json::to_string(&ty).unwrap(), expected);
 }
 
+fn flow(scopes: &[&str]) -> OAuthFlow {
+    OAuthFlow {
+        authorization_url: None,
+        token_url: Some("https://auth.example.com/token".to_string()),
+        refresh_url: None,
+        scopes: scopes
+            .iter()
+            .map(|scope| ((*scope).to_string(), String::new()))
+            .collect(),
+    }
+}
+
+#[rstest]
+#[case::implicit("implicit")]
+#[case::password("password")]
+#[case::client_credentials("client_credentials")]
+#[case::authorization_code("authorization_code")]
+fn oauth_flows_union_scopes_across_every_configured_flow(#[case] other: &str) {
+    let mut flows = OAuthFlows {
+        implicit: None,
+        password: None,
+        client_credentials: None,
+        authorization_code: None,
+    };
+    let slot = match other {
+        "implicit" => &mut flows.implicit,
+        "password" => &mut flows.password,
+        "client_credentials" => &mut flows.client_credentials,
+        _ => &mut flows.authorization_code,
+    };
+    *slot = Some(flow(&["write", "read"]));
+    if other == "implicit" {
+        flows.password = Some(flow(&["admin"]));
+    } else {
+        flows.implicit = Some(flow(&["admin"]));
+    }
+
+    assert!(flows.declares_scope("read"));
+    assert!(flows.declares_scope("admin"));
+    assert!(!flows.declares_scope("delete"));
+    assert_eq!(
+        flows.scope_names().into_iter().collect::<Vec<_>>(),
+        ["admin", "read", "write"]
+    );
+}
+
 #[test]
 fn from_compiled_json_invalid_input_yields_the_sentinel_instead_of_panicking() {
     let schema = Schema::from_compiled_json("{not valid json");
