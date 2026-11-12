@@ -159,10 +159,11 @@ public class VesperaProxyController {
         // ONCE instead of paying the DIRECT-overflow-then-stream double
         // dispatch again. `shouldAvoidDirect` is a single volatile read until
         // the first overflow is recorded, so non-overflowing apps pay nothing.
-        final DispatchMode effectiveMode = effectiveMode(
+        final DispatchMode effectiveMode = formSafeMode(effectiveMode(
                 mode,
                 mode == DispatchMode.DIRECT
-                        && directOverflowMemory.shouldAvoidDirect(appName, method, path, query));
+                        && directOverflowMemory.shouldAvoidDirect(appName, method, path, query)),
+                request);
 
         if (log.isDebugEnabled()) {
             log.debug("-> Rust  {} {} app={} mode={}", method, path, appName, effectiveMode);
@@ -182,7 +183,8 @@ public class VesperaProxyController {
         // streams the response), so all of them honour the same
         // vespera.bridge.max-buffered-request-bytes cap.
         final byte[] body = readBody(request, shape, maxBufferedRequestBytes);
-        final VesperaBridge.HeaderSource headers = requestHeaders(request, appSelectionHeader, null);
+        final VesperaBridge.HeaderSource headers = requestHeaders(
+                request, appSelectionHeader, forwardedContentLength(shape, body));
         switch (effectiveMode) {
             case SYNC:
                 dispatchSync(response, appName, method, path, query, headers, body,
@@ -212,6 +214,30 @@ public class VesperaProxyController {
         } catch (UnknownAppException unknown) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, unknown.getMessage());
         }
+    }
+
+    /**
+     * A form-urlencoded body may already have been consumed into request
+     * parameters by the servlet stack (see {@link FormBodySupport}); the
+     * bidirectional path would forward that drained stream as an empty body,
+     * so such requests buffer the (small) request body and stream only the
+     * response.
+     */
+    static DispatchMode formSafeMode(DispatchMode mode, HttpServletRequest request) {
+        return mode == DispatchMode.BIDIRECTIONAL_STREAMING && FormBodySupport.isFormUrlEncoded(request)
+                ? DispatchMode.STREAMING
+                : mode;
+    }
+
+    /**
+     * The {@code content-length} to forward when the buffered body differs
+     * from the declared length (a consumed form body rebuilt from parameters),
+     * else {@code null} to forward the client's header unchanged.
+     */
+    static String forwardedContentLength(RequestShape shape, byte[] body) {
+        return shape.contentLength >= 0 && body.length != shape.contentLength
+                ? Integer.toString(body.length)
+                : null;
     }
 
     /**
@@ -323,12 +349,13 @@ public class VesperaProxyController {
         if (contentLength > MAX_BUFFERED_BODY) {
             throw payloadTooLarge(contentLength, MAX_BUFFERED_BODY);
         }
-        // Single exit: javac duplicates the resource-close sequence once per
-        // normal return, so keeping exactly one return here keeps the
-        // try-with-resources bytecode in its canonical shape.
+        byte[] body;
         try (InputStream in = request.getInputStream()) {
-            return readBufferedBody(in, contentLength, cap);
+            body = readBufferedBody(in, contentLength, cap);
         }
+        // Spring's FormContentFilter / an earlier getParameter() call may have
+        // consumed a form-urlencoded body into request parameters already.
+        return FormBodySupport.recoverConsumedBody(request, body, contentLength);
     }
 
     static byte[] readBufferedBody(InputStream in, long contentLength, long cap)
