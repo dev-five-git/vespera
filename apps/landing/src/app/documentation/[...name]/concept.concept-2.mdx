@@ -42,6 +42,61 @@ pub struct CreateUserRequest {
 }
 ```
 
+## Custom serde Conversions
+
+Some serde attributes hand a value to your own code, so its wire shape is no longer the Rust type's. Document it with `#[schema(value_type = T)]`:
+
+```rust
+#[derive(Serialize, Deserialize, vespera::Schema)]
+pub struct Event {
+    // `ts_seconds` writes an integer, not a date-time string.
+    #[serde(with = "vespera::chrono::serde::ts_seconds")]
+    #[schema(value_type = i64)]
+    pub created_at: DateTime<Utc>,
+
+    // No value_type: documented as any value (`{}`) with a note.
+    #[serde(with = "my_hex")]
+    pub checksum: Vec<u8>,
+}
+
+#[derive(Clone, Serialize, Deserialize, vespera::Schema)]
+#[serde(into = "String", try_from = "String")] // documented as `string`
+pub struct Rgb { pub r: u8, pub g: u8, pub b: u8 }
+```
+
+<Table>
+  <TableHead>
+    <TableRow>
+      <TableHeaderCell>Attribute</TableHeaderCell>
+      <TableHeaderCell>Documented as</TableHeaderCell>
+    </TableRow>
+  </TableHead>
+  <TableBody>
+    <TableRow>
+      <TableCell>Field `#[schema(value_type = T)]`</TableCell>
+      <TableCell>`T`'s schema; other `#[schema(...)]` keys still apply</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>Field `#[serde(with / serialize_with / deserialize_with)]` without `value_type`</TableCell>
+      <TableCell>`{}` (any value) with a description. A one-sided key only affects its direction</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>Container `#[serde(into = "T")]`</TableCell>
+      <TableCell>`T` in responses; requests keep the fields (`{Name}Input`)</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>Container `#[serde(from = "T")]` / `try_from`</TableCell>
+      <TableCell>`T` in requests (`{Name}Input`); responses keep the fields</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>Container `#[schema(value_type = T)]`</TableCell>
+      <TableCell>`T` in both directions</TableCell>
+    </TableRow>
+  </TableBody>
+</Table>
+
+An `Option` field read by a custom deserializer is `required` in request bodies, because serde no longer fills a missing field with `None`.
+
 ## Type Mapping
 
 <Table>
@@ -119,6 +174,10 @@ pub struct CreateUserRequest {
     <TableRow>
       <TableCell>`url::Url`</TableCell>
       <TableCell>`string` with `format: uri`</TableCell>
+    </TableRow>
+    <TableRow>
+      <TableCell>`serde_json::Value`, SeaORM `Json` / `JsonValue`</TableCell>
+      <TableCell>`{}` (any JSON value)</TableCell>
     </TableRow>
     <TableRow>
       <TableCell>`()`</TableCell>
@@ -216,6 +275,8 @@ let app = vespera!(
     openapi = "openapi.json",   // write spec to this file at compile time
     title = "My API",
     version = "1.0.0",
+    license = "MIT",            // info.license (SPDX identifier)
+    contact_email = "api@example.com",
     docs_url = "/docs",         // Swagger UI
     redoc_url = "/redoc",       // ReDoc
     spec_url = "/openapi.json", // raw spec as application/json

@@ -1,0 +1,5 @@
+error: #[cron] `tz = "..."` requires the `cron-tz` feature: vespera = { features = ["cron", "cron-tz"] }. Without `tz`, jobs run in UTC.
+ --> tests/ui/cron_tz_needs_feature.rs:6:37
+  |
+6 | #[vespera::cron("0 0 9 * * *", tz = "Asia/Seoul")]
+  |                                     ^^^^^^^^^^^^

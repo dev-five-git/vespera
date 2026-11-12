@@ -516,6 +516,13 @@ mod tests {
     #[case::option_value("option_value", "Option<serde_json::Value>")]
     #[case::reexported_value("reexported_value", "vespera::serde_json::Value")]
     #[case::other_value("other_value", "other::Value")]
+    #[case::sea_orm_bare_json("sea_orm_bare_json", "Json")]
+    #[case::sea_orm_prelude_json("sea_orm_prelude_json", "sea_orm::prelude::Json")]
+    #[case::sea_orm_option_json("sea_orm_option_json", "Option<Json>")]
+    #[case::sea_orm_json_value("sea_orm_json_value", "JsonValue")]
+    #[case::sea_orm_qualified_json_value("sea_orm_qualified_json_value", "sea_orm::JsonValue")]
+    #[case::axum_json_wrapper("axum_json_wrapper", "Json<User>")]
+    #[case::generic_value("generic_value", "serde_json::Value<T>")]
     fn duration_and_json_value_shapes(#[case] name: &str, #[case] ty_src: &str) {
         let ty: Type = syn::parse_str(ty_src).unwrap();
         let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
@@ -528,10 +535,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn known_bare_value_schema_keeps_its_ref() {
-        let known: HashSet<String> = HashSet::from(["Value".to_string()]);
-        let ty: Type = syn::parse_str("Value").unwrap();
+    #[rstest]
+    #[case::value("Value")]
+    #[case::json_value("JsonValue")]
+    fn known_bare_value_schema_keeps_its_ref(#[case] name: &str) {
+        let known: HashSet<String> = HashSet::from([name.to_string()]);
+        let ty: Type = syn::parse_str(name).unwrap();
         assert!(matches!(
             parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions()),
             SchemaRef::Ref(_)
@@ -793,7 +802,6 @@ mod tests {
     #[rstest]
     #[case("Option")]
     #[case("Result")]
-    #[case("Json")]
     #[case("Path")]
     #[case("Query")]
     #[case("Header")]

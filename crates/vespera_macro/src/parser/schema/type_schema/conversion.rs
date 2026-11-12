@@ -343,7 +343,7 @@ fn parse_type_impl(
             // output is byte-identical: every primitive arm still produces the
             // same `SchemaRef`, and the fallback path consumes the same
             // `resolved_name` string.
-            if is_json_value_path(path, known_schemas) {
+            if is_json_value_path(path, segment, known_schemas) {
                 // `serde_json::Value` accepts any JSON value → `{}`.
                 return SchemaRef::Inline(Box::default());
             }
@@ -668,20 +668,30 @@ fn is_unsigned_int_type(ty: &Type) -> bool {
     }))
 }
 
-/// `serde_json::Value` — any path ending in `Value` that goes through a
-/// `serde_json` segment, or a bare `Value` that is not a known component
-/// schema (a user `#[derive(Schema)] struct Value` keeps its `$ref`).
+/// `serde_json::Value` under any of its names:
+///
+/// - `Value` through a `serde_json` segment (`serde_json::Value`,
+///   `vespera::serde_json::Value`);
+/// - SeaORM's aliases `Json` (`sea_orm::prelude::Json`) and `JsonValue`
+///   (`sea_orm::JsonValue`), qualified or not — but only WITHOUT generic
+///   arguments: `Json<T>` is axum's body wrapper, not a JSON value;
+/// - a bare `Value` / `Json` / `JsonValue` that is not a known component
+///   schema (a user `#[derive(Schema)] struct Value` keeps its `$ref`).
 fn is_json_value_path(
     path: &syn::Path,
+    last: &syn::PathSegment,
     known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
 ) -> bool {
     let segments = &path.segments;
-    segments.last().is_some_and(|last| last.ident == "Value")
-        && if segments.len() == 1 {
-            !known_schemas.contains("Value")
-        } else {
-            segments.iter().any(|segment| segment.ident == "serde_json")
-        }
+    let alias = last.ident == "Json" || last.ident == "JsonValue";
+    if !(alias || last.ident == "Value") || !last.arguments.is_none() {
+        return false;
+    }
+    if segments.len() == 1 {
+        !known_schemas.contains(last.ident.to_string().as_str())
+    } else {
+        alias || segments.iter().any(|segment| segment.ident == "serde_json")
+    }
 }
 
 /// Schema of a `Duration`, chosen from how its path is spelled.

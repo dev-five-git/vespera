@@ -17,11 +17,12 @@ use super::{
     schema_attrs::{SchemaConstraints, extract_schema_constraints},
     serde_attrs::{
         SerdeSide, extract_default, extract_deny_unknown_fields, extract_doc_comment,
-        extract_field_rename_for, extract_flatten, extract_rename_all, extract_rename_all_for,
-        extract_schema_ref_override, extract_serde_skip_flags, extract_transparent, rename_field,
-        strip_raw_prefix_owned,
+        extract_field_codec, extract_field_rename_for, extract_flatten, extract_rename_all,
+        extract_rename_all_for, extract_schema_ref_override, extract_serde_skip_flags,
+        extract_transparent, rename_field, strip_raw_prefix_owned,
     },
     type_schema::{parse_type_to_schema_ref, tuple_array_schema},
+    wire_override::{current_container_override, field_schema_ref},
 };
 use crate::schema_macro::type_utils::{is_option_type, option_inner};
 
@@ -85,24 +86,37 @@ fn parse_struct_body(
         };
     }
 
+    // `#[schema(value_type = T)]`, or serde `into` (response view) /
+    // `from` / `try_from` (request view): the wire shape is `T`'s.
+    if let Some(ty) = current_container_override(&struct_item.attrs) {
+        let schema_ref = parse_type_to_schema_ref(&ty, known_schemas, struct_definitions);
+        return with_description(schema_ref, struct_description);
+    }
+
     // Transparent wrappers (serde requires exactly one non-skipped field) and
     // newtype tuple structs (serde decides "newtype" by the DECLARED field
     // count) serialize as their inner value, so they use the inner schema.
     let transparent = extract_transparent(&struct_item.attrs);
-    let inner_field_ty = match &struct_item.fields {
+    let inner_field = match &struct_item.fields {
         Fields::Named(fields_named) if transparent => {
-            single_emitted_type(fields_named.named.iter())
+            single_emitted_field(fields_named.named.iter())
         }
         Fields::Unnamed(fields_unnamed) if transparent => {
-            single_emitted_type(fields_unnamed.unnamed.iter())
+            single_emitted_field(fields_unnamed.unnamed.iter())
         }
         Fields::Unnamed(fields_unnamed) if fields_unnamed.unnamed.len() == 1 => {
-            fields_unnamed.unnamed.first().map(|field| &field.ty)
+            fields_unnamed.unnamed.first()
         }
         _ => None,
     };
-    if let Some(field_ty) = inner_field_ty {
-        let schema_ref = parse_type_to_schema_ref(field_ty, known_schemas, struct_definitions);
+    if let Some(field) = inner_field {
+        let schema_ref = field_schema_ref(
+            field,
+            &extract_schema_constraints(&field.attrs),
+            super::request_view::current_side(),
+            known_schemas,
+            struct_definitions,
+        );
         return with_description(schema_ref, struct_description);
     }
 
@@ -162,12 +176,14 @@ pub(super) fn emitted_unnamed_types(fields: &syn::FieldsUnnamed) -> Vec<&syn::Ty
         .collect()
 }
 
-/// The type of the ONLY non-skipped field, if exactly one remains.
-fn single_emitted_type<'a>(fields: impl Iterator<Item = &'a syn::Field>) -> Option<&'a syn::Type> {
+/// The ONLY non-skipped field, if exactly one remains.
+fn single_emitted_field<'a>(
+    fields: impl Iterator<Item = &'a syn::Field>,
+) -> Option<&'a syn::Field> {
     let mut emitted =
         fields.filter(|field| !extract_serde_skip_flags(&field.attrs).fully_skipped());
     let first = emitted.next()?;
-    emitted.next().is_none().then_some(&first.ty)
+    emitted.next().is_none().then_some(first)
 }
 
 /// Turn a `SchemaRef` into a `Schema`, attaching `description` (a `$ref` is
@@ -273,16 +289,11 @@ pub(super) fn collect_named_fields(
         let field_name = extract_field_rename_for(&field.attrs, side)
             .unwrap_or_else(|| rename_field(&rust_field_name, rename_all));
 
-        // A field marked `#[schema(any)]` SHORT-CIRCUITS type conversion: the
-        // emitted schema is the generic `{type: "object"}` regardless of the
-        // Rust type (matching the derive-Schema leaf-type assertion that also
-        // exempts `any` fields).
+        // `#[schema(any)]` / `#[schema(value_type = T)]` / serde `with`
+        // replace the Rust type's schema (see `wire_override`).
         let constraints = extract_schema_constraints(&field.attrs);
-        let mut schema_ref = if constraints.is_any() {
-            SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object)))
-        } else {
-            parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions)
-        };
+        let mut schema_ref =
+            field_schema_ref(field, &constraints, side, known_schemas, struct_definitions);
 
         // Doc comment → description; Rust `#[deprecated]` → `deprecated`;
         // `skip_deserializing` (output only) → `readOnly`, `skip_serializing`
@@ -326,7 +337,11 @@ pub(super) fn collect_named_fields(
         } else {
             skip_flags.maybe_omitted_on_output()
         };
-        if !is_option_type(&field.ty) && !optional {
+        // serde fills an absent `Option` with `None` only when it reads the
+        // field itself: a custom `deserialize_with` makes it mandatory.
+        let absent_is_none = is_option_type(&field.ty)
+            && !(request && extract_field_codec(&field.attrs).deserialize);
+        if !absent_is_none && !optional {
             out.required.push(field_name.clone());
         }
 
@@ -477,3 +492,6 @@ fn apply_constraints(schema: &mut Schema, c: &SchemaConstraints) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_wire_override;

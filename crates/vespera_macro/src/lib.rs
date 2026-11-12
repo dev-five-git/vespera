@@ -85,12 +85,20 @@ pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Mark a function as a cron job with the given cron expression.
 ///
+/// The expression is evaluated in **UTC** unless `tz = "Area/City"` names an
+/// IANA time zone (needs the `cron-tz` feature; unknown names are compile
+/// errors).  `overlap = "skip"` skips a tick while the previous run of the
+/// same job is still going (default `"allow"`: runs may overlap).
+///
 /// # Example
 /// ```ignore
 /// #[vespera::cron("0 */5 * * * *")]
 /// pub async fn cleanup_sessions() {
 ///     println!("Running cleanup");
 /// }
+///
+/// #[vespera::cron("0 0 9 * * Mon-Fri", tz = "Asia/Seoul", overlap = "skip")]
+/// pub async fn morning_report() {}
 /// ```
 #[cfg(not(tarpaulin_include))]
 #[proc_macro_attribute]

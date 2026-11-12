@@ -8,8 +8,8 @@ use vespera_core::{
 
 use super::shared::{input_rename_all, named_struct_fields, serde_field_name};
 use crate::parser::schema::{
-    apply_field_rules, extract_doc_comment, parse_type_to_schema_ref,
-    schema_attrs::extract_schema_constraints,
+    SerdeSide, apply_field_rules, extract_doc_comment, parse_type_to_schema_ref,
+    schema_attrs::extract_schema_constraints, wire_override::field_schema_ref,
 };
 
 /// A required `in: path` parameter.
@@ -76,14 +76,16 @@ pub(in crate::parser) fn path_extractor_parameters(
                     .iter()
                     .find(|field| serde_field_name(field, rename_all.as_deref()) == *name);
                 let schema = field.map_or_else(string_path_schema, |field| {
-                    let mut schema =
-                        parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions);
-                    // `#[schema(..)]` / `#[garde(..)]` rules a validated path enforces.
-                    apply_field_rules(
-                        &mut schema,
+                    let constraints = extract_schema_constraints(&field.attrs);
+                    let mut schema = field_schema_ref(
                         field,
-                        &extract_schema_constraints(&field.attrs),
+                        &constraints,
+                        SerdeSide::Deserialize,
+                        known_schemas,
+                        struct_definitions,
                     );
+                    // `#[schema(..)]` / `#[garde(..)]` rules a validated path enforces.
+                    apply_field_rules(&mut schema, field, &constraints);
                     schema
                 });
                 // The field's doc comment documents the parameter.
@@ -225,5 +227,27 @@ mod tests {
             "path_struct_parameters_validation_rules",
             serde_json::to_string_pretty(&params).unwrap()
         );
+    }
+
+    #[test]
+    fn path_struct_fields_honour_value_type_and_custom_deserializers() {
+        let ty: syn::Type = syn::parse_quote!(Key);
+        let defs = HashMap::from([(
+            "Key",
+            r#"pub struct Key {
+                #[serde(deserialize_with = "slug")]
+                #[schema(value_type = String)]
+                pub org: OrgSlug,
+                #[serde(with = "hex")]
+                pub id: Vec<u8>,
+            }"#,
+        )]);
+        let names = vec!["org".to_string(), "id".to_string()];
+        let params = super::path_extractor_parameters(&ty, &names, &HashSet::new(), &defs);
+        let schemas: Vec<String> = params
+            .iter()
+            .map(|p| serde_json::to_string(&p.schema).unwrap())
+            .collect();
+        insta::assert_snapshot!("path_wire_override_fields", schemas.join("\n"));
     }
 }

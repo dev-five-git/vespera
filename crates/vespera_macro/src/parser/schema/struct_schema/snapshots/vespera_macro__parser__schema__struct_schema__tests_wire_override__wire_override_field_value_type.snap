@@ -1,0 +1,76 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_wire_override.rs
+assertion_line: 83
+expression: "format!(\"{src}\\n\\n--- response ---\\n{}\\n--- request ---\\n{}\",\nrender(src, false), render(src, true))"
+---
+struct Event {
+        /// Unix seconds.
+        #[serde(with = "chrono::serde::ts_seconds")]
+        #[schema(value_type = i64, minimum = 0)]
+        at: DateTime<Utc>,
+        #[serde(with = "chrono::serde::ts_seconds_option")]
+        #[schema(value_type = Option<i64>)]
+        until: Option<DateTime<Utc>>,
+        #[schema(value_type = Vec<Wire>)]
+        wires: Vec<String>,
+    }
+
+--- response ---
+{
+  "type": "object",
+  "properties": {
+    "at": {
+      "type": "integer",
+      "format": "int64",
+      "description": "Unix seconds.",
+      "minimum": 0
+    },
+    "until": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "int64"
+    },
+    "wires": {
+      "type": "array",
+      "items": {
+        "$ref": "#/components/schemas/Wire"
+      }
+    }
+  },
+  "required": [
+    "at",
+    "wires"
+  ]
+}
+--- request ---
+{
+  "type": "object",
+  "properties": {
+    "at": {
+      "type": "integer",
+      "format": "int64",
+      "description": "Unix seconds.",
+      "minimum": 0
+    },
+    "until": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "int64"
+    },
+    "wires": {
+      "type": "array",
+      "items": {
+        "$ref": "#/components/schemas/Wire"
+      }
+    }
+  },
+  "required": [
+    "at",
+    "until",
+    "wires"
+  ]
+}

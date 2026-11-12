@@ -1,11 +1,13 @@
 //! Serde attribute extraction utilities for OpenAPI schema generation.
 
+mod codec;
 mod common;
 mod enum_repr;
 mod extract;
 mod fallback;
 mod rename_case;
 
+pub use codec::{extract_container_conversion, extract_field_codec};
 pub use common::{
     capitalize_first, extract_doc_comment, extract_schema_name_from_entity,
     extract_schema_ref_override, extract_transparent, strip_raw_prefix_owned,

@@ -65,6 +65,9 @@ pub struct Info {
     pub title: String,
     /// API version
     pub version: String,
+    /// Short summary of the API
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     /// API description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -77,9 +80,6 @@ pub struct Info {
     /// License information
     #[serde(skip_serializing_if = "Option::is_none")]
     pub license: Option<License>,
-    /// Summary
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub summary: Option<String>,
 }
 
 /// Server variable
@@ -141,6 +141,13 @@ pub struct OpenApi {
     pub servers: Option<Vec<Server>>,
     /// Path definitions
     pub paths: BTreeMap<String, PathItem>,
+    /// Webhooks (OpenAPI 3.1): incoming requests the API *sends* to
+    /// consumers, keyed by a unique webhook name.
+    ///
+    /// `vespera!` never fills this; it exists so a post-processed document
+    /// can declare webhooks and so specs that carry them round-trip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhooks: Option<BTreeMap<String, PathItem>>,
     /// Components (reusable components)
     #[serde(skip_serializing_if = "is_empty_components")]
     pub components: Option<Components>,
@@ -329,6 +336,13 @@ impl OpenApi {
         }
         if self.external_docs.is_none() {
             self.external_docs = other.external_docs;
+        }
+        // Webhooks: union by name, self-wins on a name conflict.
+        if let Some(other_webhooks) = other.webhooks {
+            let self_webhooks = self.webhooks.get_or_insert_with(BTreeMap::new);
+            for (name, item) in other_webhooks {
+                self_webhooks.entry(name).or_insert(item);
+            }
         }
 
         // Merge tags, de-duplicating by name with first-wins semantics while

@@ -97,6 +97,7 @@ pub fn generate_and_write_openapi(
         Some(file_asts),
         route_storage,
     )?;
+    input.info.apply(&mut openapi_doc.info);
     if openapi_doc.info.description.is_none() {
         openapi_doc.info.description = super::path_utils::package_description();
     }

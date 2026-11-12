@@ -54,6 +54,13 @@ pub async fn create_app() -> axum::Router {
         docs_url = "/docs",
         redoc_url = "/redoc",
         spec_url = "/openapi.json",
+        description = "Vespera axum example API",
+        summary = "Example routes exercising every vespera feature",
+        terms_of_service = "https://example.com/terms",
+        contact_name = "Vespera Team",
+        contact_url = "https://github.com/dev-five-git/vespera",
+        contact_email = "vespera@example.com",
+        license = "Apache-2.0",
         merge = [ThirdApp]
     )
     .with_state(app_state(db))
@@ -74,6 +81,13 @@ pub async fn create_app_with_layer() -> axum::Router {
         docs_url = "/docs",
         redoc_url = "/redoc",
         spec_url = "/openapi.json",
+        description = "Vespera axum example API",
+        summary = "Example routes exercising every vespera feature",
+        terms_of_service = "https://example.com/terms",
+        contact_name = "Vespera Team",
+        contact_url = "https://github.com/dev-five-git/vespera",
+        contact_email = "vespera@example.com",
+        license = "Apache-2.0",
         merge = [ThirdApp]
     )
     .layer(cors)

@@ -49,6 +49,18 @@ of an existing 0.5 application.
   `Ipv4Addr` / `Ipv6Addr` are `string` with `format: ipv4` / `ipv6`, and
   `url::Url` is `string` with `format: uri`. These fields no longer need a
   `Schema` impl. A user `Schema` type with the same name keeps its `$ref`.
+- Fields converted by `#[serde(with / serialize_with / deserialize_with)]` are
+  documented as `{}` with a description instead of their Rust type (e.g. a
+  `ts_seconds` `DateTime` was a date-time string, but is an integer on the
+  wire). New `#[schema(value_type = T)]` documents the real shape, on fields
+  and on containers. Container `#[serde(into = "T")]` documents responses as
+  `T`, and `from` / `try_from` documents requests (`{Name}Input`) as `T`. An
+  `Option` read by a custom deserializer is `required` in requests. The
+  derive's `Schema` assertion checks `value_type` instead of the field type.
+- SeaORM `Json` / `JsonValue` columns are `{}` (they hold any JSON value, not
+  only objects; previously `type: object`), and `schema_type!` maps
+  `JsonValue` to `serde_json::Value`. `Json<T>` is still treated as axum's
+  wrapper.
 - `flatten` on an `Option<T>` makes `T`'s fields optional; an enum's
   `rename_all` no longer renames struct-variant fields (as in serde);
   `rename_all_fields` and `deny_unknown_fields` are supported.
@@ -84,6 +96,30 @@ of an existing 0.5 application.
   `serve_with_graceful_shutdown(addr, signal)` (breaking for custom
   implementors).
 
+### Cron hardening (`vespera`, `vespera_macro`, `vespera_core`)
+
+Existing `#[vespera::cron("...")]` jobs keep their syntax and schedule; the
+items below are additions, plus one behaviour change to graceful shutdown.
+
+- **Time zones:** jobs are evaluated in **UTC** (unchanged, now documented);
+  `#[vespera::cron("0 0 9 * * *", tz = "Asia/Seoul")]` evaluates one in an
+  IANA zone. Needs the new opt-in `cron-tz` feature (adds `chrono-tz`); the
+  name is checked at compile time, and `tz` without the feature is a compile
+  error.
+- **Overlap policy:** `overlap = "skip"` skips (and logs) a tick while the
+  previous run of the job is still going; the default stays `"allow"`.
+- **Panics:** every run is supervised, so a panicking job is logged to stderr
+  (`vespera: cron job `module::function` panicked: …`) instead of vanishing
+  with a dropped `JoinHandle`; the schedule keeps going.
+- **Shutdown:** new `vespera::cron::shutdown()` (stop scheduling, process-wide
+  and permanent) and `vespera::cron::shutdown_and_wait(timeout)` (also wait
+  for in-flight runs). **Behaviour change:** `serve_with_graceful_shutdown`
+  now calls both — no new cron runs once its signal resolves, and after the
+  server drained, in-flight runs get up to `cron::DEFAULT_SHUTDOWN_GRACE`
+  (10 s) before it returns.
+- `CronJob` gained the `with_name`, `with_timezone` and `with_overlap`
+  builders (used by the `vespera!` expansion), and `cron::Overlap`.
+
 ### OpenAPI accuracy (`vespera`, `vespera_macro`, `vespera_core`)
 
 - No default `servers: [{url: "http://localhost:3000"}]`; `servers` is omitted
@@ -113,6 +149,19 @@ of an existing 0.5 application.
   not implement `Schema`, and `#[route]` handlers inside inline `mod { .. }`
   blocks. `#[cfg]`-gated route modules / handlers that are compiled out are
   skipped.
+
+### OpenAPI info, webhooks, encoding (`vespera`, `vespera_macro`, `vespera_core`)
+
+- New optional `vespera!` arguments fill the `info` object: `description`
+  (overrides the `Cargo.toml` description), `summary`, `terms_of_service`,
+  `contact_name` / `contact_url` / `contact_email`, and `license` (SPDX →
+  `identifier`) or `license_name` + `license_url`. Invalid URLs / emails and
+  `license` combined with `license_url` are compile errors.
+- `vespera_core::openapi::OpenApi` gained `webhooks` (OpenAPI 3.1, omitted
+  when `None`; `merge` unions it self-wins) and `vespera_core::route::MediaType`
+  gained `encoding` (new `Encoding` type). `vespera!` leaves both unset; they
+  exist for post-processing. Struct literals of these types must add the new
+  fields. `Info` now serializes `summary` before `description`.
 
 ### `Validated<T>`
 
