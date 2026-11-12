@@ -8,8 +8,9 @@ name: JNI Bench (nightly)
 # runners are far too noisy to threshold absolute ns/op, so this job runs
 # the gated *BenchTest suite nightly purely to RECORD the numbers
 # (printed to the job summary + uploaded as artifacts) so a human can spot
-# drift over time. It never fails on a slow number — see PERF_REPORT.md
-# for the locally-measured baselines.
+# drift over time. It never fails on a slow number — see
+# libs/vespera-bridge/docs/jni-before-after-2026-06-11.md for the
+# locally-measured baselines.
 
 on:
   schedule:
