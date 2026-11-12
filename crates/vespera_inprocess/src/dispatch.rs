@@ -330,6 +330,7 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
         query,
         headers,
         body,
+        principal,
     } = envelope;
     // `http::HeaderMap` panics past 32 768 entries; the wire parser caps
     // the count at `MAX_REQUEST_HEADERS`, this envelope entry does it here
@@ -350,6 +351,7 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
         // and let `header_value_from_owner` fall back to `from_str` (same
         // bytes, same errors, no behaviour change).
         None,
+        principal,
     )
     .await
     {

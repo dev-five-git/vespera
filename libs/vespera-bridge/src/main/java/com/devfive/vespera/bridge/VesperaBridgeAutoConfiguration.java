@@ -58,6 +58,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       register a {@code @Bean DispatchModeResolver} —
  *       the default {@link SmartDispatchModeResolver} is
  *       automatically disabled.</li>
+ *   <li><strong>Forwarded principal</strong>:
+ *       the authenticated servlet / Spring Security principal is
+ *       forwarded to Rust ({@code vespera::inprocess::Principal}); set
+ *       {@code vespera.bridge.forward-principal=false} to stop it, or
+ *       register a {@code @Bean PrincipalResolver} to customise it.</li>
  *   <li><strong>Proxied URL space</strong>:
  *       set {@code vespera.bridge.include-patterns} /
  *       {@code vespera.bridge.exclude-patterns} — excluded paths fall
@@ -142,6 +147,17 @@ public class VesperaBridgeAutoConfiguration {
     @ConditionalOnMissingBean
     public AppNameResolver vesperaBridgeAppNameResolver(VesperaBridgeProperties props) {
         return new HeaderAppNameResolver(props.getAppHeader(), props.getExposedApps());
+    }
+
+    /**
+     * Trusted principal forwarded to Rust: the authenticated servlet principal
+     * ({@link ServletPrincipalResolver}) unless
+     * {@code vespera.bridge.forward-principal=false}, which forwards none.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public PrincipalResolver vesperaBridgePrincipalResolver(VesperaBridgeProperties props) {
+        return props.isForwardPrincipal() ? new ServletPrincipalResolver() : PrincipalResolver.none();
     }
 
     /**
@@ -282,7 +298,8 @@ public class VesperaBridgeAutoConfiguration {
             @Qualifier("vesperaBridgeAsyncResponseExecutor") Executor asyncResponseExecutor,
             VesperaBridgeProperties props,
             VesperaBridgeNativeSettings nativeSettings,
-            ObjectProvider<DispatchObserver> observers) {
+            ObjectProvider<DispatchObserver> observers,
+            PrincipalResolver principalResolver) {
         return new VesperaProxyController(
                 appResolver,
                 modeResolver,
@@ -292,7 +309,8 @@ public class VesperaBridgeAutoConfiguration {
                 props.getMaxBufferedResponseBytes(),
                 props.getRequestId().effectiveHeader(),
                 observers.orderedStream().toList(),
-                props.getCors());
+                props.getCors(),
+                principalResolver);
     }
 
     /**

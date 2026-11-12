@@ -199,6 +199,10 @@ class ConfigurationMetadataTest {
         assertEquals("/**", properties.get(PREFIX + ".include-patterns").path("defaultValue").path(0).asText());
         assertEquals(VesperaProxyController.DEFAULT_MAX_BUFFERED_REQUEST_BYTES,
                 properties.get(PREFIX + ".max-buffered-request-bytes").path("defaultValue").asLong());
+        JsonNode forwardPrincipal = properties.get(PREFIX + ".forward-principal");
+        assertTrue(forwardPrincipal.path("defaultValue").asBoolean(), "forward-principal defaults to true");
+        assertTrue(forwardPrincipal.path("description").asText().contains("never"),
+                "forward-principal documents that the principal never comes from client headers");
         assertFalse(byName(root.path("groups")).get(PREFIX + ".native")
                 .path("description").asText().isBlank());
     }

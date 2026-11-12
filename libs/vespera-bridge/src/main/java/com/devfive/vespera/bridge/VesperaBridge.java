@@ -47,7 +47,7 @@ public class VesperaBridge {
 
     /**
      * Streams request headers into the encoder; the optional defaults add the
-     * {@code remote_addr} / {@code scheme} wire fields ({@code null} = omitted).
+     * {@code remote_addr} / {@code scheme} / trusted {@code principal} (never from client headers) wire fields ({@code null} = omitted).
      */
     @FunctionalInterface
     public interface HeaderSource {
@@ -60,6 +60,10 @@ public class VesperaBridge {
 
         /** {@code http} / {@code https}, or {@code null}. */
         default String scheme() {
+            return null;
+        }
+
+        default VesperaPrincipal principal() {
             return null;
         }
     }

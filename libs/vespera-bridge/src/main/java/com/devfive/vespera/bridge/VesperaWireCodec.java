@@ -494,6 +494,7 @@ final class VesperaWireCodec {
                 }
                 writeOptionalField(buf, ",\"remote_addr\":", headers.remoteAddr());
                 writeOptionalField(buf, ",\"scheme\":", headers.scheme());
+                writePrincipal(buf, headers.principal());
             }
             finishHeaderJson(buf, normalizedAppName);
             return buf;
@@ -501,6 +502,46 @@ final class VesperaWireCodec {
             shrinkHeaderBufferIfOversized(buf);
             throw failure;
         }
+    }
+
+    /**
+     * Emit the trusted {@code ,"principal":{"name":...,"authorities":[...],"attributes":{...}}}
+     * field (empty {@code authorities} / {@code attributes} omitted), unless
+     * {@code principal} is {@code null}.
+     */
+    static void writePrincipal(ExposedByteArrayOutputStream buf, VesperaPrincipal principal) {
+        if (principal == null) {
+            return;
+        }
+        buf.putAscii(",\"principal\":{\"name\":");
+        writeJsonString(buf, principal.name());
+        if (!principal.authorities().isEmpty()) {
+            buf.putAscii(",\"authorities\":[");
+            boolean first = true;
+            for (String authority : principal.authorities()) {
+                if (!first) {
+                    buf.put(',');
+                }
+                first = false;
+                writeJsonString(buf, authority);
+            }
+            buf.put(']');
+        }
+        if (!principal.attributes().isEmpty()) {
+            buf.putAscii(",\"attributes\":{");
+            boolean first = true;
+            for (Map.Entry<String, String> e : principal.attributes().entrySet()) {
+                if (!first) {
+                    buf.put(',');
+                }
+                first = false;
+                writeJsonString(buf, e.getKey());
+                buf.put(':');
+                writeJsonString(buf, e.getValue());
+            }
+            buf.put('}');
+        }
+        buf.put('}');
     }
 
     /** Emit {@code prefix} + the JSON string {@code value}, unless it is {@code null}. */

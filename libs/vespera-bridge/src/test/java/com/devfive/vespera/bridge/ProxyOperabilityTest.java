@@ -98,7 +98,7 @@ class ProxyOperabilityTest {
         request.setScheme("HTTPS");
 
         ProxyHeaderSource source = new ProxyHeaderSource(
-                request, "x-vespera-app", "3", "x-request-id", "id-1");
+                request, "x-vespera-app", "3", "x-request-id", "id-1", VesperaPrincipal.of("alice"));
         Map<String, String> headers = collect(source);
         assertEquals("id-1", headers.get("x-request-id"));
         assertEquals("3", headers.get("content-length"));
@@ -106,6 +106,8 @@ class ProxyOperabilityTest {
         assertFalse(headers.containsKey("x-vespera-app"));
         assertEquals("[0:0:0:0:0:0:0:1]:51000", source.remoteAddr());
         assertEquals("https", source.scheme());
+        assertEquals(VesperaPrincipal.of("alice"), source.principal());
+        assertNull(VesperaProxyController.requestHeaders(request, null, null).principal());
 
         Map<String, String> plain = collect(VesperaProxyController.requestHeaders(request, null, null));
         assertEquals("bad id", plain.get("x-request-id"));

@@ -20,14 +20,14 @@
 
 use std::borrow::Cow;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::envelope::ResponseMetadata;
 
 use super::header_write::{JsonSink, SliceSink};
 use super::{
-    CowPairs, STACK_CAP, ValidationErrorItem, WIRE_VERSION, WireRequestHeader, parse_wire_header,
-    write_wire_header_into_slice,
+    CowPairs, STACK_CAP, ValidationErrorItem, WIRE_VERSION, WirePrincipal, WireRequestHeader,
+    parse_wire_header, write_wire_header_into_slice,
 };
 
 // ── Borrowed Cow helper for the bench-only serde parse ───────────────
@@ -126,6 +126,80 @@ pub(super) fn de_opt_cow<'de, D: serde::Deserializer<'de>>(
         }
     }
     deserializer.deserialize_option(V)
+}
+
+/// Deserialize the optional `principal` object (`null` → `None`) — the
+/// serde twin of `header_read::principal`.  A hand-written map visitor (not
+/// a derive) so a JSON *array* is rejected like the hand parser rejects it
+/// (a derived struct would also accept the sequence form).  Bench-only.
+pub(super) fn de_opt_principal<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<WirePrincipal<'de>>, D::Error> {
+    // serde_json's `deserialize_option` answers `null` itself and hands
+    // anything else to `deserialize_map` below, so the error path always
+    // reports the object visitor's `expecting`.
+    Option::<PrincipalObject<'de>>::deserialize(deserializer).map(|p| p.map(|p| p.0))
+}
+
+/// `WirePrincipal` newtype carrying the map-only `Deserialize` impl.
+struct PrincipalObject<'a>(WirePrincipal<'a>);
+
+impl<'de> serde::Deserialize<'de> for PrincipalObject<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = PrincipalObject<'de>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a principal object")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut access: A,
+            ) -> Result<Self::Value, A::Error> {
+                use serde::de::Error;
+                let mut name: Option<Cow<'de, str>> = None;
+                let mut authorities: Option<Vec<Cow<'de, str>>> = None;
+                let mut attributes: Option<CowPairs<'de>> = None;
+                while let Some(key) = access.next_key::<BorrowableCow<'de>>()? {
+                    match key.0.as_ref() {
+                        "name" if name.is_some() => return Err(A::Error::duplicate_field("name")),
+                        "name" => name = Some(access.next_value::<BorrowableCow<'de>>()?.0),
+                        "authorities" if authorities.is_some() => {
+                            return Err(A::Error::duplicate_field("authorities"));
+                        }
+                        "authorities" => {
+                            let list = access.next_value::<Vec<BorrowableCow<'de>>>()?;
+                            authorities = Some(list.into_iter().map(|c| c.0).collect());
+                        }
+                        "attributes" if attributes.is_some() => {
+                            return Err(A::Error::duplicate_field("attributes"));
+                        }
+                        "attributes" => attributes = Some(access.next_value::<CowMap<'de>>()?.0),
+                        _ => {
+                            access.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(PrincipalObject(WirePrincipal {
+                    name: name.ok_or_else(|| A::Error::missing_field("name"))?,
+                    authorities: authorities.unwrap_or_default(),
+                    attributes: attributes.unwrap_or_default(),
+                }))
+            }
+        }
+        deserializer.deserialize_map(V)
+    }
+}
+
+/// [`de_cow_pairs`] as a `Deserialize` type (for `next_value`).
+struct CowMap<'a>(CowPairs<'a>);
+
+impl<'de> serde::Deserialize<'de> for CowMap<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        de_cow_pairs(deserializer).map(CowMap)
+    }
 }
 
 // ── Serde response-header twins ──────────────────────────────────────
