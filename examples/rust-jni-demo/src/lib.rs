@@ -1,21 +1,21 @@
 #![allow(unsafe_code)]
 
-//! Vespera JNI integration demo â **multi-app** edition.
+//! Vespera JNI integration demo — **multi-app** edition.
 //!
 //! | Mode | Entry | Transport |
 //! |------|-------|-----------|
-//! | Server (default app only) | `main.rs` â `axum::serve` | TCP :3000 |
-//! | JNI multi-app | `jni_apps!` â Java picks app via `X-Vespera-App` header | In-process binary wire |
+//! | Server (default app only) | `main.rs` → `axum::serve` | TCP :3000 |
+//! | JNI multi-app | `jni_apps!` → Java picks app via `X-Vespera-App` header | In-process binary wire |
 //!
 //! Two named apps are registered:
 //!
-//! - **`_default`** (default â reachable without header) â the
+//! - **`_default`** (default — reachable without header) — the
 //!   document-validation API in `src/routes/`.
-//! - **`admin`** (reachable with `X-Vespera-App: admin`) â the
+//! - **`admin`** (reachable with `X-Vespera-App: admin`) — the
 //!   admin dashboard API in `src/admin_routes/`.
 //!
 //! Both apps share the same Rust process / same Tokio runtime / same
-//! JNI bridge â Spring picks the target per request based on the
+//! JNI bridge — Spring picks the target per request based on the
 //! configured `AppNameResolver` (a Java-side bean in `vespera-bridge`).
 
 mod admin_routes;
@@ -36,7 +36,7 @@ pub fn create_app() -> axum::Router {
 
 /// Admin app router (registered under `"admin"`).  Generates a
 /// separate `openapi-admin.json` so the admin surface has its own
-/// OpenAPI document â multi-app callers fetch the spec for whichever
+/// OpenAPI document — multi-app callers fetch the spec for whichever
 /// app they target.
 pub fn admin_app() -> axum::Router {
     vespera!(
@@ -48,7 +48,7 @@ pub fn admin_app() -> axum::Router {
 }
 
 // Register both apps under their respective names.  Java side
-// selects per request via the `X-Vespera-App` header â default app
+// selects per request via the `X-Vespera-App` header — default app
 // when the header is absent, `"admin"` app when the header reads
 // `admin`.  Exactly one `JNI_OnLoad` is generated for the cdylib.
 vespera::jni_apps! {
@@ -56,7 +56,7 @@ vespera::jni_apps! {
     "admin"    => admin_app,
 }
 
-// ââ Tests ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -142,6 +142,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn register_route_validates_with_422() {
+        let ok = parse(
+            &dispatch(
+                create_app(),
+                &req(
+                    "POST",
+                    "/documents/register",
+                    r#"{"title":"Policy","pageCount":3}"#,
+                ),
+            )
+            .await,
+        );
+        assert_eq!(ok["status"], 200, "{ok}");
+        let bad = parse(
+            &dispatch(
+                create_app(),
+                &req(
+                    "POST",
+                    "/documents/register",
+                    r#"{"title":"","pageCount":0}"#,
+                ),
+            )
+            .await,
+        );
+        assert_eq!(bad["status"], 422, "{bad}");
+        assert!(bad["body"].as_str().unwrap().contains("errors"));
+    }
+
+    #[tokio::test]
     async fn diag_routes_count_finished_runs() {
         let app = create_app();
         let body = |path: &str| {
@@ -200,7 +229,7 @@ mod tests {
         assert_eq!(parse(&json)["status"], 200);
     }
 
-    // ââ Coverage: inprocess::dispatch_typed âââââââââââââââââââââââ
+    // ── Coverage: inprocess::dispatch_typed ───────────────────────
     #[tokio::test]
     async fn dispatch_typed_returns_envelope() {
         use vespera::inprocess::dispatch_typed;
@@ -210,7 +239,7 @@ mod tests {
         assert!(!result.metadata.version.is_empty());
     }
 
-    // ââ Coverage: inprocess::error_envelope âââââââââââââââââââââââ
+    // ── Coverage: inprocess::error_envelope ───────────────────────
     #[test]
     fn error_envelope_creates_500() {
         use vespera::inprocess::error_envelope;
@@ -221,10 +250,10 @@ mod tests {
         assert!(!e.metadata.version.is_empty());
     }
 
-    // ââ Coverage: content-type auto-inject ââââââââââââââââââââââââ
+    // ── Coverage: content-type auto-inject ────────────────────────
     #[tokio::test]
     async fn body_without_content_type_gets_default() {
-        // Send a body WITHOUT content-type header â dispatch should inject it
+        // Send a body WITHOUT content-type header — dispatch should inject it
         let envelope = RequestEnvelope {
             principal: None,
             method: "POST".into(),
@@ -247,7 +276,7 @@ mod tests {
         assert_eq!(parse(&json)["status"], 200);
     }
 
-    // ââ Coverage: invalid HTTP method fallback ââââââââââââââââââââ
+    // ── Coverage: invalid HTTP method fallback ────────────────────
     #[tokio::test]
     async fn invalid_method_falls_back_to_get() {
         let envelope = RequestEnvelope {
@@ -259,11 +288,11 @@ mod tests {
             body: String::new(),
         };
         let json = dispatch(create_app(), &envelope).await;
-        // Invalid method parses â fallback GET, unknown route â 404
+        // Invalid method parses → fallback GET, unknown route → 404
         assert_eq!(parse(&json)["status"], 404);
     }
 
-    // ââ Form-urlencoded + header-inspection routes ââââââââââââââââ
+    // ── Form-urlencoded + header-inspection routes ────────────────
     fn with_headers(
         method: &str,
         path: &str,
@@ -316,7 +345,7 @@ mod tests {
         );
     }
 
-    /// The servlet's Latin-1 view of the UTF-8 bytes `rÃ©sumÃ©` maps back to
+    /// The servlet's Latin-1 view of the UTF-8 bytes `résumé` maps back to
     /// those bytes in Rust and out again as Latin-1 chars.
     #[tokio::test]
     async fn raw_header_route_round_trips_latin1_bytes() {
@@ -327,7 +356,7 @@ mod tests {
         )
         .await;
         let v = parse(&json);
-        assert_eq!(v["body"], "rÃ©sumÃ©.pdf");
+        assert_eq!(v["body"], "résumé.pdf");
         assert_eq!(
             v["headers"]["content-disposition"],
             format!("attachment; filename=\"{servlet_view}\"")

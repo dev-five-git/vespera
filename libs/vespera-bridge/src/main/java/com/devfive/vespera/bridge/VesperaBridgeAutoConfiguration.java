@@ -67,6 +67,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       set {@code vespera.bridge.include-patterns} /
  *       {@code vespera.bridge.exclude-patterns} — excluded paths fall
  *       through to other controllers and static resources.</li>
+ *   <li><strong>Programmatic calls</strong>: inject the
+ *       {@link VesperaClient} bean (replaceable) to call the Rust app
+ *       from services, jobs or listeners without HTTP.</li>
  *   <li><strong>Completely BYO controller</strong>:
  *       set {@code vespera.bridge.controller-enabled=false} and
  *       provide your own {@code @RestController} that calls the
@@ -141,6 +144,19 @@ public class VesperaBridgeAutoConfiguration {
                 VesperaBridge.shutdown(props.getShutdownTimeout());
             }
         };
+    }
+
+    /**
+     * Programmatic in-process client for the default app
+     * ({@code client.forApp("admin")} for a named one). Independent of
+     * {@code vespera.bridge.controller-enabled}; depends on the native
+     * settings bean so {@code vespera.bridge.native.*} and
+     * {@code library-name} are applied before the first client dispatch.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public VesperaClient vesperaClient(VesperaBridgeNativeSettings nativeSettings) {
+        return VesperaClient.create();
     }
 
     @Bean

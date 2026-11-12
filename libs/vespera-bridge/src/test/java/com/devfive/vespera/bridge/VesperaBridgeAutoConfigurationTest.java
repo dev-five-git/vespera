@@ -59,6 +59,19 @@ class VesperaBridgeAutoConfigurationTest {
     }
 
     @Test
+    void clientBeanIsExposedEvenWithoutTheControllerAndIsReplaceable() {
+        runner.withPropertyValues("vespera.bridge.controller-enabled=false")
+                .run(ctx -> {
+                    VesperaClient client = ctx.getBean(VesperaClient.class);
+                    assertEquals(null, client.appName());
+                    assertFalse(ctx.containsBean("vesperaProxyController"));
+                });
+        VesperaClient custom = VesperaClient.create().forApp("admin");
+        runner.withBean(VesperaClient.class, () -> custom)
+                .run(ctx -> assertSame(custom, ctx.getBean(VesperaClient.class)));
+    }
+
+    @Test
     void defaultResolverIsSmart() {
         runner.run(
                 ctx ->

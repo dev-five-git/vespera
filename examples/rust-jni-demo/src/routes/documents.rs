@@ -7,7 +7,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use vespera::{Schema, axum::Json};
+use vespera::{Schema, Validated, axum::Json};
 
 // ── DTOs (with Schema for OpenAPI) ───────────────────────────────────
 
@@ -61,6 +61,17 @@ pub struct DocumentMetadata {
     pub retention_years: u32,
 }
 
+/// Register request — `#[schema]` rules drive both the OpenAPI spec and the
+/// runtime `garde::Validate` impl behind `Validated<T>` (422 on failure).
+#[derive(Debug, Clone, Serialize, Deserialize, Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterDocumentRequest {
+    #[schema(min_length = 1, max_length = 200)]
+    pub title: String,
+    #[schema(minimum = 1, maximum = 9999)]
+    pub page_count: u32,
+}
+
 // ── Route Handlers ───────────────────────────────────────────────────
 
 /// Validate a document against the organisation's rule set
@@ -68,6 +79,16 @@ pub struct DocumentMetadata {
 #[vespera::route(post, path = "/validate")]
 pub async fn validate(Json(req): Json<ValidateDocumentRequest>) -> Json<ValidationResult> {
     Json(validate_document(&req))
+}
+
+/// Register a document; an invalid body is answered `422` with the
+/// `{"errors":[...]}` envelope (hoisted into the wire's `validation_errors`).
+#[allow(clippy::unused_async)]
+#[vespera::route(post, path = "/register")]
+pub async fn register(
+    Validated(Json(req)): Validated<Json<RegisterDocumentRequest>>,
+) -> Json<RegisterDocumentRequest> {
+    Json(req)
 }
 
 // ── Business Logic ───────────────────────────────────────────────────

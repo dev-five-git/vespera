@@ -137,6 +137,30 @@ Contract:
 
 `dispatchDirectPooled(byte[] wireRequest, boolean retryOnOverflow)` wraps the raw call with per-thread reusable direct buffers (64 KiB initial, doubling up to `vespera.direct.maxBufferBytes`, default 4 MiB).
 
+## Programmatic Client (VesperaClient)
+
+Call the embedded Rust app from Java code — a Spring service, a scheduled job, a message listener — without HTTP and without the proxy controller. `VesperaClient` builds the wire request with the proxy's codec, dispatches in-process and returns a `VesperaResponse`:
+
+```java
+VesperaClient client = VesperaClient.create();            // default app
+VesperaResponse r = client.get("/users/42")
+        .header("Accept", "application/json")
+        .query("expand", "roles teams")                    // ?expand=roles%20teams
+        .send();
+r.status(); r.header("content-type"); r.bodyString(); r.bodyBytes();
+r.validationErrors();                                      // hoisted 422 errors, [] otherwise
+
+client.post("/users").json("{\"name\":\"a\"}").send();     // raw JSON, never parsed
+client.post("/upload").body(bytes, "application/octet-stream").send();
+client.forApp("admin").get("/dashboard").send();          // named app
+CompletableFuture<VesperaResponse> f = client.get("/x").sendAsync();
+```
+
+- `send()` dispatches SYNC (`dispatchBytes`; parks instead of pinning on a virtual thread); `sendAsync()` uses `dispatchAsync` — the future completes on a Tokio worker, so use `*Async` continuations or `sendAsync(executor)`.
+- `body(InputStream, contentType)` streams the request body through the bidirectional streaming path (the response is collected in memory).
+- HTTP error statuses (including the `503` of a shut-down runtime and the `500` of a Rust panic) are normal responses. Only transport failures (library not initialised, malformed wire, a streamed body failing mid-transfer) throw the unchecked `VesperaClientException`.
+- Spring Boot autoconfigures a `VesperaClient` bean (`@ConditionalOnMissingBean`), also when `vespera.bridge.controller-enabled=false`.
+
 ## Direct API (Without the Proxy Controller)
 
 ```java

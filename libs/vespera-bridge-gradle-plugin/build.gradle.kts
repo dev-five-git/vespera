@@ -7,6 +7,8 @@ plugins {
     // Gradle Plugin Portal publishing (`publishPlugins` task). Credentials
     // come from GRADLE_PUBLISH_KEY / GRADLE_PUBLISH_SECRET env vars in CI.
     id("com.gradle.plugin-publish") version "2.2.1"
+    // CycloneDX SBOM of the plugin JAR (see "SBOM" at the end of this file).
+    id("org.cyclonedx.bom") version "3.5.1"
 }
 
 // Fail LOUDLY when the Plugin Portal release is actually requested without
@@ -162,4 +164,20 @@ mavenPublishing {
             developerConnection.set("scm:git:ssh://git@github.com:dev-five-git/vespera.git")
         }
     }
+}
+
+// ── SBOM ──────────────────────────────────────────────────────────────────
+// CycloneDX SBOM of what the plugin JAR pulls into a consumer's build (its
+// runtimeClasspath; the Gradle API itself is provided by the consuming Gradle).
+// Deliberately NOT attached to the `pluginMaven` publication: that publication
+// is also what `publishPlugins` uploads, and the Gradle Plugin Portal rejects
+// non-JAR (JSON) classified artifacts. The release job instead attests this
+// file against the plugin JAR and uploads it as a GitHub release asset; CI
+// (`sbom` job) builds it on every PR.
+tasks.named<org.cyclonedx.gradle.CyclonedxDirectTask>("cyclonedxDirectBom") {
+    includeConfigs = listOf("runtimeClasspath")
+    xmlOutput.unsetConvention()
+    jsonOutput.set(
+        layout.buildDirectory.file("reports/cyclonedx-direct/${project.name}-${project.version}-cyclonedx.json"),
+    )
 }

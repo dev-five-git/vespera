@@ -122,6 +122,7 @@ Out of the box the autoconfigure module wires up:
 | Dispatch mode | `SmartDispatchModeResolver` since 0.2.0 — `DIRECT` for small/bodyless idempotent, `SYNC` for small non-idempotent, `BIDIRECTIONAL_STREAMING` for the rest | Property `vespera.bridge.dispatch-mode: bidirectional-streaming`, or custom `DispatchModeResolver` bean |
 | URL pattern | `@RequestMapping("/**")` catch-all | Properties `vespera.bridge.include-patterns` / `vespera.bridge.exclude-patterns` (excluded paths fall through to other controllers, static resources, then `404`), or `vespera.bridge.controller-enabled: false` and your own controller |
 | Forwarded principal | `ServletPrincipalResolver` sends the authenticated `getUserPrincipal()` (plus Spring Security authorities) in the trusted `principal` wire field; Rust extracts `vespera::inprocess::Principal` | Property `vespera.bridge.forward-principal: false`, or custom `PrincipalResolver` bean |
+| Programmatic client | A `VesperaClient` bean for the default app (see [Dispatch Modes & Wire Format](/documentation/theme/theme-2)), also with `controller-enabled: false` | Your own `VesperaClient` bean |
 
 ---
 
