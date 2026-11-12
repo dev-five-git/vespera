@@ -51,6 +51,15 @@ repositories {
     gradlePluginPortal()
 }
 
+dependencies {
+    testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.1.3")
+}
+
+tasks.test {
+    useJUnitPlatform()
+}
+
 gradlePlugin {
     // Required by the Plugin Portal (`com.gradle.plugin-publish`).
     website.set("https://github.com/dev-five-git/vespera")
