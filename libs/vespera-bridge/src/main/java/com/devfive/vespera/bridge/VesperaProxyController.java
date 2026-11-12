@@ -581,7 +581,8 @@ public class VesperaProxyController {
             long maxBufferedResponseBytes) throws IOException {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
-        byte[] wireResp = VesperaBridge.dispatchBytes(wireReq);
+        // Parks (instead of pinning the carrier) on a virtual thread.
+        byte[] wireResp = ParkingDispatch.dispatchBytes(wireReq, VesperaBridge.currentThreadIsVirtual());
         rejectOversizedBufferedResponse(wireResp, maxBufferedResponseBytes);
         WireResponseWriter.writeWireResponse(wireResp, response, method);
     }

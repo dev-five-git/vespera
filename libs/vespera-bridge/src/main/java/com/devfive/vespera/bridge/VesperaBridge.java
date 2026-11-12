@@ -843,8 +843,8 @@ public class VesperaBridge {
             boolean currentThreadIsVirtual) {
         requireRequestInputs(method, path);
         return VesperaDirectBufferPool.dispatchDirectPooled(
-                appName, method, path, query, headers, body,
-                retryOnOverflow, currentThreadIsVirtual, VesperaBridge::dispatchBytes, true);
+                appName, method, path, query, headers, body, retryOnOverflow, currentThreadIsVirtual,
+                currentThreadIsVirtual ? ParkingDispatch::park : VesperaBridge::dispatchBytes, true);
     }
 
     /**
