@@ -12,7 +12,6 @@ fn test_get_fk_column_cache_hit() {
 /// Path-keyed lookup caches survive epoch bumps so repeated `schema_type!`
 /// expansions in one crate share path resolution work. Staleness is guarded
 /// by the lower file-content / struct-definition mtime caches.
-#[serial_test::serial]
 #[test]
 fn path_lookup_caches_survive_epoch_bumps() {
     // Fresh epoch; cache a (negative) FK result for this epoch.
@@ -35,27 +34,15 @@ fn path_lookup_caches_survive_epoch_bumps() {
     );
 }
 
-#[serial_test::serial]
 #[test]
 fn path_lookup_revalidates_when_resolved_file_mtime_changes() {
-    struct Restore(Option<String>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(v) => unsafe { std::env::set_var("CARGO_MANIFEST_DIR", v) },
-                None => unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") },
-            }
-        }
-    }
-
     let temp_dir = TempDir::new().unwrap();
     let models_dir = temp_dir.path().join("src").join("models");
     std::fs::create_dir_all(&models_dir).unwrap();
     let model_path = models_dir.join("user.rs");
     std::fs::write(&model_path, "pub struct Model { pub id: i32 }").unwrap();
 
-    let _restore = Restore(std::env::var("CARGO_MANIFEST_DIR").ok());
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+    let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
     bump_epoch();
     let first = get_struct_from_schema_path("crate::models::user::Model")
@@ -75,20 +62,18 @@ fn path_lookup_revalidates_when_resolved_file_mtime_changes() {
     );
 }
 
-#[serial_test::serial]
 #[test]
 fn test_print_profile_summary_with_profile_env() {
-    unsafe { std::env::set_var("VESPERA_PROFILE", "1") };
+    let _env_guard = crate::env_access::test_env::set_var("VESPERA_PROFILE", "1");
 
     print_profile_summary();
 
-    unsafe { std::env::remove_var("VESPERA_PROFILE") };
+    let _env_guard = crate::env_access::test_env::remove_var("VESPERA_PROFILE");
 }
 
-#[serial_test::serial]
 #[test]
 fn test_print_profile_summary_without_profile_env() {
-    unsafe { std::env::remove_var("VESPERA_PROFILE") };
+    let _env_guard = crate::env_access::test_env::remove_var("VESPERA_PROFILE");
 
     print_profile_summary();
 }
@@ -102,7 +87,6 @@ fn test_print_profile_summary_without_profile_env() {
 ///   epoch N+1 → read path once → 1 more metadata call (epoch cache stale)
 ///
 /// Total expected: 2 metadata calls for 3 reads across 2 epochs.
-#[serial_test::serial]
 #[test]
 fn test_epoch_skips_metadata_syscall() {
     let temp_dir = TempDir::new().unwrap();
@@ -147,7 +131,6 @@ fn test_epoch_skips_metadata_syscall() {
     );
 }
 
-#[serial_test::serial]
 #[test]
 fn test_missing_file_content_is_negative_cached_within_epoch() {
     let temp_dir = TempDir::new().unwrap();
@@ -190,7 +173,6 @@ fn test_missing_file_content_is_negative_cached_within_epoch() {
 ///   - `schema_type!`   → reaches file_cache via generate_schema_type_code
 ///   - `export_app!`    → reaches file_cache via collect_metadata
 ///   - `vespera!`       → reaches file_cache via collect_metadata
-#[serial_test::serial]
 #[test]
 fn test_epoch_cross_entry_invalidation() {
     let temp_dir = TempDir::new().unwrap();
@@ -249,27 +231,15 @@ fn test_epoch_cross_entry_invalidation() {
 /// walks + stats; subsequent lookups in the same epoch reuse the validated
 /// `DirEntry` (and the per-epoch fingerprint cache) with zero new
 /// `fs::metadata` syscalls.
-#[serial_test::serial]
 #[test]
 fn test_file_list_skips_walk_within_same_epoch() {
-    struct Restore(Option<String>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(v) => unsafe { std::env::set_var("CARGO_MANIFEST_DIR", v) },
-                None => unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") },
-            }
-        }
-    }
-
     let temp_dir = TempDir::new().unwrap();
     let src_dir = temp_dir.path().join("src");
     std::fs::create_dir_all(&src_dir).unwrap();
     std::fs::write(src_dir.join("a.rs"), "pub struct Alpha { pub id: i32 }").unwrap();
     std::fs::write(src_dir.join("b.rs"), "pub struct Beta { pub name: String }").unwrap();
 
-    let _restore = Restore(std::env::var("CARGO_MANIFEST_DIR").ok());
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+    let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
     reset_metadata_call_count();
     bump_epoch();
@@ -297,27 +267,16 @@ fn test_file_list_skips_walk_within_same_epoch() {
 /// so a long-lived rust-analyzer proc-macro server reused for a DIFFERENT
 /// crate (different `CARGO_MANIFEST_DIR`) stops resolving cross-file lookups
 /// against the previous crate's `src/`.
-#[serial_test::serial]
 #[test]
 fn manifest_dir_revalidates_across_epochs() {
-    // Restore the (load-bearing) env var even if an assertion panics.
-    struct Restore(Option<String>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(v) => unsafe { std::env::set_var("CARGO_MANIFEST_DIR", v) },
-                None => unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") },
-            }
-        }
-    }
-    let _restore = Restore(std::env::var("CARGO_MANIFEST_DIR").ok());
-
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", "/vespera_test/crate_a") };
+    let _env_guard =
+        crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", "/vespera_test/crate_a");
     bump_epoch();
     assert_eq!(get_manifest_dir().as_deref(), Some("/vespera_test/crate_a"));
 
     // Same epoch: cached even though the env changed underneath.
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", "/vespera_test/crate_b") };
+    let _env_guard =
+        crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", "/vespera_test/crate_b");
     assert_eq!(
         get_manifest_dir().as_deref(),
         Some("/vespera_test/crate_a"),

@@ -1,5 +1,4 @@
 use rstest::rstest;
-use serial_test::serial;
 
 use super::*;
 
@@ -71,18 +70,8 @@ fn module_path(segments: &[&str]) -> Vec<String> {
 /// Run `body` with `CARGO_MANIFEST_DIR` pointing at `dir`, restoring
 /// the original value afterwards.
 fn with_manifest_dir<T>(dir: &std::path::Path, body: impl FnOnce() -> T) -> T {
-    let original = std::env::var("CARGO_MANIFEST_DIR").ok();
-    // SAFETY: callers are #[serial] tests — no concurrent env access.
-    unsafe { std::env::set_var("CARGO_MANIFEST_DIR", dir) };
-    let result = body();
-    // SAFETY: same as above.
-    unsafe {
-        match original {
-            Some(value) => std::env::set_var("CARGO_MANIFEST_DIR", value),
-            None => std::env::remove_var("CARGO_MANIFEST_DIR"),
-        }
-    }
-    result
+    let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", dir);
+    body()
 }
 
 // ── generate_inline_type_definition: snapshot the full output ───────
@@ -441,7 +430,6 @@ fn no_relations_from_def_converts_datetime_types() {
 // ── File-lookup variants (CARGO_MANIFEST_DIR + temp project) ────────
 
 #[test]
-#[serial]
 fn file_lookup_generates_inline_type_for_circular_model() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let models_dir = temp_dir.path().join("src").join("models");
@@ -473,7 +461,6 @@ fn file_lookup_generates_inline_type_for_circular_model() {
 }
 
 #[test]
-#[serial]
 fn file_lookup_no_relations_strips_relations() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let models_dir = temp_dir.path().join("src").join("models");
@@ -506,7 +493,6 @@ fn file_lookup_no_relations_strips_relations() {
 }
 
 #[test]
-#[serial]
 fn file_lookup_missing_model_file_returns_none() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     std::fs::create_dir_all(temp_dir.path().join("src")).unwrap();
@@ -527,7 +513,6 @@ fn file_lookup_missing_model_file_returns_none() {
 }
 
 #[test]
-#[serial]
 fn file_lookup_no_relations_missing_model_file_returns_none() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     std::fs::create_dir_all(temp_dir.path().join("src")).unwrap();

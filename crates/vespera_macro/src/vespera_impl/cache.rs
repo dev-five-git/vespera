@@ -356,13 +356,13 @@ pub(super) fn compute_export_config_hash(app_name: &str, folder_name: &str, pref
 /// merged child's spec content into the parent cache key.  Mirrors the
 /// resolution `generate_and_write_openapi` uses when merging child specs.
 fn merge_spec_dir() -> Option<std::path::PathBuf> {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+    let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").ok()?;
     Some(find_target_dir(Path::new(&manifest_dir)).join("vespera"))
 }
 
 /// Get the path to this crate's routes cache file.
 pub(super) fn get_cache_path() -> std::path::PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let manifest_path = Path::new(&manifest_dir);
     find_target_dir(manifest_path)
         .join("vespera")
@@ -375,7 +375,7 @@ pub(super) fn get_export_cache_path(
     folder_name: &str,
     prefix: &str,
 ) -> std::path::PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let manifest_path = Path::new(&manifest_dir);
     find_target_dir(manifest_path).join("vespera").join(format!(
         "export-routes-{}-{}-{:016x}.cache",
@@ -404,7 +404,7 @@ pub(super) fn compute_macro_dev_fingerprint() -> u64 {
 }
 
 fn compute_macro_dev_fingerprint_uncached() -> u64 {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let workspace_root = find_workspace_root(Path::new(&manifest_dir));
     fingerprint_rs_directory(&macro_src_dir(&workspace_root))
 }
@@ -909,28 +909,12 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
     fn present_merge_sidecar_content_contributes_to_config_hash() {
-        struct Restore(Option<String>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                // SAFETY: this serialized test restores the process environment through RAII.
-                unsafe {
-                    match self.0.take() {
-                        Some(value) => std::env::set_var("CARGO_MANIFEST_DIR", value),
-                        None => std::env::remove_var("CARGO_MANIFEST_DIR"),
-                    }
-                }
-            }
-        }
-
         let temp = tempfile::TempDir::new().unwrap();
         let vespera_dir = temp.path().join("target/vespera");
         std::fs::create_dir_all(&vespera_dir).unwrap();
         std::fs::write(vespera_dir.join("Child.openapi.json"), "child-v1").unwrap();
-        let _restore = Restore(std::env::var("CARGO_MANIFEST_DIR").ok());
-        // SAFETY: this serialized test restores the process environment through RAII.
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp.path()) };
+        let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
         let processed = ProcessedVesperaInput {
             merge: vec![syn::parse_quote!(child::Child)],
             ..base_processed()

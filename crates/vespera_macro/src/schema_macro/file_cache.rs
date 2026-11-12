@@ -322,7 +322,7 @@ fn get_manifest_dir_inner(cache: &mut FileCache) -> Option<String> {
     {
         return Some(dir.clone());
     }
-    let dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+    let dir = crate::env_access::var("CARGO_MANIFEST_DIR").ok();
     cache.manifest_dir.clone_from(&dir);
     cache.manifest_dir_epoch = epoch;
     dir
@@ -567,7 +567,7 @@ pub fn parse_struct_cached(definition: &str) -> Result<syn::ItemStruct, syn::Err
 /// Call this at the end of macro execution to output cache statistics.
 /// Silent by default — only outputs when `VESPERA_PROFILE=1`.
 pub fn print_profile_summary() {
-    if std::env::var("VESPERA_PROFILE").is_err() {
+    if crate::env_access::var("VESPERA_PROFILE").is_err() {
         return;
     }
 
