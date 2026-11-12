@@ -85,6 +85,19 @@ pub enum ParameterLocation {
     Cookie,
 }
 
+/// OpenAPI parameter serialization style (`style` of a Parameter Object).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ParameterStyle {
+    Matrix,
+    Label,
+    Form,
+    Simple,
+    SpaceDelimited,
+    PipeDelimited,
+    DeepObject,
+}
+
 /// Parameter definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,6 +118,13 @@ pub struct Parameter {
     /// Example value
     #[serde(skip_serializing_if = "Option::is_none")]
     pub example: Option<serde_json::Value>,
+    /// Serialization style (e.g. `form` for repeated query keys). `None`
+    /// means the location's OpenAPI default applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<ParameterStyle>,
+    /// Whether array/object values expand into one parameter per element.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explode: Option<bool>,
 }
 
 /// Request body definition

@@ -10,6 +10,8 @@ mod path;
 mod query;
 mod shared;
 
+pub(super) use path::{path_extractor_parameters, path_parameter, string_path_schema};
+
 /// Analyze function parameter and convert to OpenAPI parameter(s).
 pub fn parse_function_parameter(
     arg: &FnArg,
@@ -93,12 +95,24 @@ mod tests {
             struct_definitions.insert("User", r"pub struct User { pub id: i32, pub name: String }");
         }
 
+        if func_src.contains("PathIds") {
+            struct_definitions.insert(
+                "PathIds",
+                r#"#[serde(rename_all = "camelCase")] pub struct PathIds {
+                    pub user_id: u64,
+                    #[serde(rename = "post_id")] pub post: Uuid,
+                }"#,
+            );
+        }
+
         (known_schemas, struct_definitions)
     }
 
     #[rstest]
     #[case("fn test(params: Path<(String, i32)>) {}", vec!["user_id".to_string(), "count".to_string()], vec![vec![ParameterLocation::Path, ParameterLocation::Path]], "path_tuple")]
     #[case("fn show(Path(id): Path<i32>) {}", vec!["item_id".to_string()], vec![vec![ParameterLocation::Path]], "path_single")]
+    #[case("fn test(id: Path<i32>) {}", vec!["user_id".to_string(), "post_id".to_string()], vec![vec![ParameterLocation::Path, ParameterLocation::Path]], "path_scalar_multi")]
+    #[case("fn test(Path(ids): Path<PathIds>) {}", vec!["userId".to_string(), "post_id".to_string(), "missing".to_string()], vec![vec![ParameterLocation::Path, ParameterLocation::Path, ParameterLocation::Path]], "path_struct")]
     #[case("fn test(Query(params): Query<HashMap<String, String>>) {}", vec![], vec![vec![]], "query_hashmap")]
     #[case("fn test(TypedHeader(user_agent): TypedHeader<UserAgent>, count: i32) {}", vec![], vec![vec![ParameterLocation::Header], vec![]], "typed_header_and_arg")]
     #[case("fn test(TypedHeader(user_agent): TypedHeader<UserAgent>, content_type: Option<TypedHeader<ContentType>>, authorization: Option<TypedHeader<Authorization<Bearer>>>) {}", vec![], vec![vec![ParameterLocation::Header], vec![], vec![]], "typed_header_multi")]
@@ -167,7 +181,6 @@ mod tests {
     #[case("fn test(params: Query<Vec<i32>>) {}", vec![])]
     #[case("fn test(params: Query<Option<String>>) {}", vec![])]
     #[case("fn test(Path([a]): Path<[i32; 1]>) {}", vec![])]
-    #[case("fn test(id: Path<i32>) {}", vec!["user_id".to_string(), "post_id".to_string()])]
     #[case("fn test((x, y): (i32, i32)) {}", vec![])]
     fn parse_function_parameter_wrong_cases(
         #[case] func_src: &str,

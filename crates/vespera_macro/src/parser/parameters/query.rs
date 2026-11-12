@@ -2,17 +2,20 @@ use std::collections::{HashMap, HashSet};
 
 use syn::Type;
 use vespera_core::{
-    route::{Parameter, ParameterLocation},
-    schema::SchemaRef,
+    route::{Parameter, ParameterLocation, ParameterStyle},
+    schema::{SchemaRef, SchemaType},
 };
 
-use super::shared::{convert_to_inline_schema, is_known_type, is_primitive_or_like};
+use super::shared::{
+    convert_to_inline_schema, is_known_type, is_primitive_or_like, named_struct_fields,
+    serde_field_name,
+};
 use crate::{
     parser::schema::{
-        extract_default, extract_field_rename, extract_rename_all, parse_struct_to_schema,
-        parse_type_to_schema_ref, rename_field,
+        extract_default, extract_flatten, extract_rename_all, extract_serde_skip_flags,
+        parse_struct_to_schema, parse_type_to_schema_ref,
     },
-    schema_macro::type_utils::{is_map_type as utils_is_map_type, is_option_type},
+    schema_macro::type_utils::{is_map_type as utils_is_map_type, is_option_type, option_inner},
 };
 
 pub(super) fn parse_query_extractor(
@@ -59,70 +62,112 @@ pub(super) fn parse_query_extractor(
             struct_definitions,
         )),
         example: None,
+        style: None,
+        explode: None,
     }])
 }
 
+/// One `in: query` parameter per deserialized field of a `Query<Struct>`.
+///
+/// Mirrors serde's input-side view of the struct: `#[serde(skip)]` /
+/// `skip_deserializing` fields are never read from the query string, and
+/// `#[serde(flatten)]` fields of a known struct contribute that struct's
+/// fields (all optional when the flattened field is an `Option`). A flattened
+/// non-struct (e.g. a `HashMap` catch-all) has no fixed names and is left out.
+///
+/// Array fields (`Vec<T>`, sets) are documented as `style: form, explode:
+/// true` — repeated keys (`?tag=a&tag=b`). Note that axum's own `Query` uses
+/// `serde_urlencoded`, which cannot deserialize repeated keys into a `Vec`;
+/// use `axum_extra::extract::Query` for that wire shape.
 pub(super) fn parse_query_struct_to_parameters(
     ty: &Type,
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) -> Option<Vec<Parameter>> {
-    let Type::Path(type_path) = ty else {
-        return None;
+    let mut parameters = Vec::new();
+    let mut visiting = Vec::new();
+    collect_query_struct_parameters(
+        ty,
+        false,
+        known_schemas,
+        struct_definitions,
+        &mut visiting,
+        &mut parameters,
+    );
+    (!parameters.is_empty()).then_some(parameters)
+}
+
+fn collect_query_struct_parameters(
+    ty: &Type,
+    force_optional: bool,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
+    visiting: &mut Vec<String>,
+    parameters: &mut Vec<Parameter>,
+) {
+    let Some(struct_item) = named_struct_fields(ty, struct_definitions) else {
+        return;
     };
-    // A segment-less path names no struct: fall through to `None` rather than panic.
-    let ident_str = type_path.path.segments.last()?.ident.to_string();
-    if let Some(struct_def) = struct_definitions.get(ident_str.as_str())
-        && let Ok(struct_item) = syn::parse_str::<syn::ItemStruct>(struct_def)
-    {
-        let mut parameters = Vec::new();
-        let rename_all = extract_rename_all(&struct_item.attrs);
-
-        if let syn::Fields::Named(fields_named) = &struct_item.fields {
-            for field in &fields_named.named {
-                let rust_field_name = field
-                    .ident
-                    .as_ref()
-                    .map_or_else(|| "unknown".to_string(), std::string::ToString::to_string);
-                let field_name = extract_field_rename(&field.attrs)
-                    .unwrap_or_else(|| rename_field(&rust_field_name, rename_all.as_deref()));
-                let field_type = &field.ty;
-                let is_optional = is_option_type(field_type);
-                // #[serde(default)] fields are optional in request inputs even
-                // when the Rust type is non-Option (B4: request optional).
-                let has_default = extract_default(&field.attrs).is_some();
-                let mut field_schema =
-                    parse_type_to_schema_ref(field_type, known_schemas, struct_definitions);
-
-                if let SchemaRef::Ref(ref_ref) = &field_schema
-                    && let Some(type_name) = ref_ref.ref_path.strip_prefix("#/components/schemas/")
-                    && let Some(struct_def) = struct_definitions.get(type_name)
-                    && let Ok(nested_struct_item) = syn::parse_str::<syn::ItemStruct>(struct_def)
-                {
-                    let nested_schema = parse_struct_to_schema(
-                        &nested_struct_item,
-                        known_schemas,
-                        struct_definitions,
-                    );
-                    field_schema = SchemaRef::Inline(Box::new(nested_schema));
-                }
-
-                parameters.push(Parameter {
-                    name: field_name,
-                    r#in: ParameterLocation::Query,
-                    description: None,
-                    required: Some(!(is_optional || has_default)),
-                    schema: Some(convert_to_inline_schema(field_schema, is_optional)),
-                    example: None,
-                });
-            }
-        }
-
-        if !parameters.is_empty() {
-            return Some(parameters);
-        }
+    // A (boxed) struct that flattens itself would recurse forever.
+    let struct_name = struct_item.ident.to_string();
+    if visiting.contains(&struct_name) {
+        return;
     }
-    None
+    visiting.push(struct_name);
+    let rename_all = extract_rename_all(&struct_item.attrs);
+
+    for field in &struct_item.fields {
+        let skip_flags = extract_serde_skip_flags(&field.attrs);
+        if skip_flags.skip || skip_flags.skip_deserializing {
+            continue;
+        }
+        let is_optional = is_option_type(&field.ty);
+
+        if extract_flatten(&field.attrs) {
+            let flattened_ty = option_inner(&field.ty).unwrap_or(&field.ty);
+            collect_query_struct_parameters(
+                flattened_ty,
+                force_optional || is_optional,
+                known_schemas,
+                struct_definitions,
+                visiting,
+                parameters,
+            );
+            continue;
+        }
+
+        // #[serde(default)] fields are optional in request inputs even
+        // when the Rust type is non-Option (B4: request optional).
+        let has_default = extract_default(&field.attrs).is_some();
+        let mut field_schema =
+            parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions);
+
+        if let SchemaRef::Ref(ref_ref) = &field_schema
+            && let Some(type_name) = ref_ref.ref_path.strip_prefix("#/components/schemas/")
+            && let Some(struct_def) = struct_definitions.get(type_name)
+            && let Ok(nested_struct_item) = syn::parse_str::<syn::ItemStruct>(struct_def)
+        {
+            let nested_schema =
+                parse_struct_to_schema(&nested_struct_item, known_schemas, struct_definitions);
+            field_schema = SchemaRef::Inline(Box::new(nested_schema));
+        }
+
+        let is_array = matches!(
+            &field_schema,
+            SchemaRef::Inline(schema) if schema.schema_type == Some(SchemaType::Array)
+        );
+        parameters.push(Parameter {
+            name: serde_field_name(field, rename_all.as_deref()),
+            r#in: ParameterLocation::Query,
+            description: None,
+            required: Some(!(force_optional || is_optional || has_default)),
+            schema: Some(convert_to_inline_schema(field_schema, is_optional)),
+            example: None,
+            style: is_array.then_some(ParameterStyle::Form),
+            explode: is_array.then_some(true),
+        });
+    }
+    visiting.pop();
 }
 
 #[cfg(test)]
@@ -137,6 +182,91 @@ mod tests {
 
     use super::*;
     use crate::parser::parameters::parse_function_parameter;
+
+    /// `(name, required, style, explode)` of every query parameter.
+    type ParamShape = (String, Option<bool>, Option<ParameterStyle>, Option<bool>);
+
+    fn query_shapes(ty: &str, defs: &[(&'static str, &'static str)]) -> Vec<ParamShape> {
+        let struct_definitions: HashMap<&str, &str> = defs.iter().copied().collect();
+        let ty: Type = syn::parse_str(ty).unwrap();
+        parse_query_struct_to_parameters(&ty, &HashSet::new(), &struct_definitions)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| (p.name, p.required, p.style, p.explode))
+            .collect()
+    }
+
+    fn shape(name: &str, required: bool) -> ParamShape {
+        (name.to_string(), Some(required), None, None)
+    }
+
+    fn array_shape(name: &str, required: bool) -> ParamShape {
+        (
+            name.to_string(),
+            Some(required),
+            Some(ParameterStyle::Form),
+            Some(true),
+        )
+    }
+
+    #[rstest::rstest]
+    #[case::skips_non_deserialized_fields(
+        "Q",
+        vec![(
+            "Q",
+            r"pub struct Q {
+                #[serde(skip)] pub internal: String,
+                #[serde(skip_deserializing)] pub computed: i32,
+                #[serde(skip_serializing)] pub input_only: i32,
+                pub q: String,
+            }",
+        )],
+        vec![shape("input_only", true), shape("q", true)]
+    )]
+    #[case::flatten_expands_known_struct(
+        "Q",
+        vec![
+            ("Q", r"pub struct Q { pub q: String, #[serde(flatten)] pub page: Page }"),
+            ("Page", r#"#[serde(rename_all = "camelCase")] pub struct Page { pub page_size: u32, pub cursor: Option<String> }"#),
+        ],
+        vec![shape("q", true), shape("pageSize", true), shape("cursor", false)]
+    )]
+    #[case::flatten_option_makes_fields_optional(
+        "Q",
+        vec![
+            ("Q", r"pub struct Q { #[serde(flatten)] pub page: Option<Page> }"),
+            ("Page", r"pub struct Page { pub page: u32 }"),
+        ],
+        vec![shape("page", false)]
+    )]
+    #[case::flatten_unknown_type_is_left_out(
+        "Q",
+        vec![(
+            "Q",
+            r"pub struct Q { pub q: String, #[serde(flatten)] pub rest: HashMap<String, String> }",
+        )],
+        vec![shape("q", true)]
+    )]
+    #[case::self_flatten_terminates(
+        "Q",
+        vec![("Q", r"pub struct Q { pub q: String, #[serde(flatten)] pub again: Q }")],
+        vec![shape("q", true)]
+    )]
+    #[case::array_fields_use_form_explode(
+        "Q",
+        vec![(
+            "Q",
+            r"pub struct Q { pub tags: Vec<String>, pub ids: Option<HashSet<u32>>, pub one: u32 }",
+        )],
+        vec![array_shape("tags", true), array_shape("ids", false), shape("one", true)]
+    )]
+    fn query_struct_shapes(
+        #[case] ty: &str,
+        #[case] defs: Vec<(&'static str, &'static str)>,
+        #[case] expected: Vec<ParamShape>,
+    ) {
+        assert_eq!(query_shapes(ty, &defs), expected);
+    }
 
     #[test]
     fn parse_query_struct_to_parameters_cases() {

@@ -4,7 +4,9 @@ use syn::Type;
 use vespera_core::schema::{Schema, SchemaRef};
 
 use crate::{
-    parser::schema::is_primitive_type,
+    parser::schema::{
+        extract_field_rename, is_primitive_type, rename_field, strip_raw_prefix_owned,
+    },
     schema_macro::type_utils::is_primitive_like as utils_is_primitive_like,
 };
 
@@ -64,6 +66,32 @@ pub(super) fn is_known_type(
     }
 
     false
+}
+
+/// The struct named by `ty`'s last path segment, when `struct_definitions`
+/// holds it as a struct with **named** fields.
+pub(super) fn named_struct_fields(
+    ty: &Type,
+    struct_definitions: &HashMap<&str, &str>,
+) -> Option<syn::ItemStruct> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    let ident = type_path.path.segments.last()?.ident.to_string();
+    let struct_item =
+        syn::parse_str::<syn::ItemStruct>(struct_definitions.get(ident.as_str())?).ok()?;
+    matches!(struct_item.fields, syn::Fields::Named(_)).then_some(struct_item)
+}
+
+/// The wire name serde uses for a named field: `#[serde(rename)]` wins over
+/// the container's `rename_all`; a raw identifier loses its `r#` prefix.
+pub(super) fn serde_field_name(field: &syn::Field, rename_all: Option<&str>) -> String {
+    extract_field_rename(&field.attrs).unwrap_or_else(|| {
+        let rust_name = field.ident.as_ref().map_or_else(String::new, |ident| {
+            strip_raw_prefix_owned(ident.to_string())
+        });
+        rename_field(&rust_name, rename_all)
+    })
 }
 
 #[cfg(test)]
