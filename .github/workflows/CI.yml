@@ -14,7 +14,10 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel a main run: its changepacks job publishes to crates.io /
+  # Maven Central / the Gradle Plugin Portal, and cancelling it mid-upload
+  # leaves a partial release. Main runs queue instead; PR runs still cancel.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Least privilege by default: every job only reads the repository. Jobs that
 # need more (the PR-comment and release jobs below) grant it explicitly.
@@ -43,7 +46,7 @@ jobs:
           components: clippy, rustfmt
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version: 1.4.4
       - name: cargo fmt
         run: cargo fmt --all --check
       - name: cargo clippy (all targets, all features)
@@ -219,6 +222,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     container:
       image: xd009642/tarpaulin:develop-nightly
       options: --security-opt seccomp=unconfined
@@ -226,7 +230,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version: 1.4.4
       - uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
       - name: Install
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -260,7 +264,9 @@ jobs:
         uses: codecov/codecov-action@f9fe539f5290016afa014f8ef31597d3a61c2dea # v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: true
+          # The 100% gate above is the coverage check; a Codecov outage must
+          # not fail `test` and with it block the release job that needs it.
+          fail_ci_if_error: false
           files: lcov.info
         if: github.ref == 'refs/heads/main'
 
@@ -422,6 +428,25 @@ jobs:
           # com.gradle.plugin-publish for the `publishPlugins` task)
           GRADLE_PUBLISH_KEY: ${{ secrets.GRADLE_PUBLISH_KEY }}
           GRADLE_PUBLISH_SECRET: ${{ secrets.GRADLE_PUBLISH_SECRET }}
+      - name: Sync Cargo.lock on the version PR
+        # changepacks bumps the workspace versions in Cargo.toml but not the
+        # workspace members' entries in Cargo.lock, so the version PR (and the
+        # release tag) would carry a stale lockfile. Refresh only the
+        # workspace members on that branch. Best effort: never blocks publish.
+        continue-on-error: true
+        run: |
+          if ! git fetch --depth 1 origin changepacks/main 2>/dev/null; then
+            echo "no version PR branch"; exit 0
+          fi
+          git checkout -B changepacks/main FETCH_HEAD
+          cargo update --workspace
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock already in sync"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Sync Cargo.lock with the bumped workspace versions" -- Cargo.lock
+          git push origin HEAD:changepacks/main
     outputs:
       changepacks: ${{ steps.changepacks.outputs.changepacks }}
       release_assets_urls: ${{ steps.changepacks.outputs.release_assets_urls }}
