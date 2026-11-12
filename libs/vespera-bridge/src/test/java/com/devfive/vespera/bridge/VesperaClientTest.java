@@ -227,6 +227,19 @@ class VesperaClientTest {
     }
 
     @Test
+    void principalTravelsAsTrustedWireField() throws IOException {
+        client.get("/headers/principal")
+                .principal(VesperaPrincipal.of("alice", "ROLE_USER"))
+                .send();
+        JsonNode p = header(transport.requests.get(0)).get("principal");
+        assertEquals("alice", p.get("name").asText());
+        assertEquals("ROLE_USER", p.get("authorities").get(0).asText());
+
+        client.get("/headers/principal").send();
+        assertNull(header(transport.requests.get(1)).get("principal"));
+    }
+
+    @Test
     void validationErrorsAndMultiValueHeadersAreExposed() {
         transport.response = responseWire(422,
                 "{\"content-type\":\"application/json\",\"set-cookie\":[\"a=1\",\"b=2\"]}",

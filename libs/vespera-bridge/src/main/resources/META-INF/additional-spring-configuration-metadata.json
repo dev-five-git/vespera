@@ -21,6 +21,10 @@
       "defaultValue": ["/**"]
     },
     {
+      "name": "vespera.bridge.forward-principal",
+      "defaultValue": true
+    },
+    {
       "name": "vespera.bridge.max-buffered-request-bytes",
       "defaultValue": 67108864
     },

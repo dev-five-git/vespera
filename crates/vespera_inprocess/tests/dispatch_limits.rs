@@ -284,6 +284,7 @@ async fn buffered_response_over_cap_becomes_500(#[case] path: &str) {
     let envelope = dispatch_owned(
         vespera_inprocess::Router::new().route("/big", get(big_stream)),
         RequestEnvelope {
+            principal: None,
             method: "GET".into(),
             path: "/big".into(),
             query: String::new(),

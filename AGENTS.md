@@ -23,7 +23,7 @@ Also provides in-process dispatch (`vespera_inprocess` crate) and JNI integratio
 | **One-liner `.serve(addr)`** | `vespera::Serve` (`crates/vespera/src/serve.rs`) | Extension trait on `axum::Router` — `create_app().serve("0.0.0.0:3000").await` replaces 3 lines of `TcpListener::bind` + `axum::serve` boilerplate |
 | **Binary wire format (JNI)** | `vespera_inprocess` | `[u32 BE len | UTF-8 JSON header | raw body]` — multipart / PDFs / images travel as raw bytes; **`422` validation errors hoisted** into the wire header as `"validation_errors": [...]` so Java decoders never special-case error shapes |
 | **Multi-app routing (JNI/FFI)** | `vespera::jni_apps! { "_default" => app, "admin" => admin_app }` | Wire header carries optional `"app"` field; Java side picks per request via `X-Vespera-App` header (configurable via `AppNameResolver`) |
-| **Zero-config Spring autoconfigure** | `libs/vespera-bridge/.../VesperaBridgeAutoConfiguration` | `VesperaProxyController` + `AppNameResolver` + `DispatchModeResolver` beans auto-registered; replace any of them via `@ConditionalOnMissingBean` |
+| **Zero-config Spring autoconfigure** | `libs/vespera-bridge/.../VesperaBridgeAutoConfiguration` | `VesperaProxyController` + `AppNameResolver` + `DispatchModeResolver` + `PrincipalResolver` beans auto-registered; replace any of them via `@ConditionalOnMissingBean` |
 | **Programmatic Java client** | `libs/vespera-bridge/.../VesperaClient` | `VesperaClient.create().get("/users/42").send()` → `VesperaResponse` (status / headers / raw body / hoisted `422` errors) in-process, no HTTP; SYNC / ASYNC / streamed-upload paths; autoconfigured bean independent of `controller-enabled` |
 | **Cron jobs** | `#[vespera::cron("...")]` | Auto-discovered like routes (`CRON_STORAGE` + a module-tree scan fallback in `vespera_impl/cron_discovery.rs` for modules expanded after `vespera!`); started once per `vespera!` invocation via `vespera::cron::start_once` — on the current Tokio runtime; in a JVM-loaded JNI library (`JNI_OnLoad`) on the shared JNI runtime via `vespera_jni::on_shared_runtime` (honours `configureRuntime`, stops on `shutdown0`; `VesperaBridge.init()` starts the runtime when jobs wait); otherwise a dedicated `vespera-cron` thread (plain `#[test]`); jobs sleep until the wall clock reaches the occurrence; croner 4, shared parser in `vespera_core::cron`. **UTC by default**; `tz = "Asia/Seoul"` needs the opt-in `cron-tz` feature (chrono-tz; name checked at compile time, `tz` without the feature is a compile error); `overlap = "allow"` (default) / `"skip"`; every run is supervised (panics logged via `eprintln!`, schedule continues); `cron::shutdown()` / `shutdown_and_wait(timeout)` stop scheduling process-wide and for good, and `serve_with_graceful_shutdown` calls both (10 s grace) |
 
@@ -213,7 +213,8 @@ bytes 0..4    : u32 BE = header_json byte length N
 bytes 4..4+N  : UTF-8 JSON
                   (request)  { "v":1, "method", "path",
                                "query"?, "headers"?, "app"?,
-                               "remote_addr"?, "scheme"? }
+                               "remote_addr"?, "scheme"?,
+                               "principal"? }
                   (response) { "v":1, "status", "headers",
                                "metadata", "validation_errors"? }
 bytes 4+N..   : raw body bytes (UTF-8 text or binary —
@@ -225,6 +226,7 @@ bytes 4+N..   : raw body bytes (UTF-8 text or binary —
 - All failure modes (malformed wire, panic in Rust, no app registered) return a valid length-prefixed wire response, so the Java decoder never has to special-case errors.
 - `validation_errors` is an optional array hoisted from 422 JSON bodies (`{"errors":[...]}`) — original body preserved verbatim alongside.
 - Optional request fields `remote_addr` (`ip:port`) and `scheme` (`http`/`https`) become the `ConnectInfo<SocketAddr>` and `http::uri::Scheme` request extensions (unparseable values are ignored; the URI stays origin-form). The Java proxy fills them from the servlet request.
+- Optional request field `principal` (`null` | `{"name", "authorities"?: [string], "attributes"?: {string:string}}`) is the **trusted side channel** for the authenticated caller: only the host writes it (Java: `PrincipalResolver` bean, default `ServletPrincipalResolver` = `getUserPrincipal()` + Spring Security authorities read reflectively; `vespera.bridge.forward-principal=false` disables), never from client headers. Dispatch inserts it as the `vespera_inprocess::Principal` request extension (also `RequestEnvelope::principal` on the text API); the `Principal` extractor rejects `401` when absent (`Option<Principal>` / `Extension<Principal>` also work). Parsed by `wire/header_read/principal.rs` (child module extending `Parser`; serde twin `bench_serde::de_opt_principal`), `authorities` / `attributes` capped at `MAX_PRINCIPAL_ENTRIES` = 1024 each (`400`).
 - `metadata` stays a string→string map; a Rust panic answers `500` with `"panicked":"true"` in it (`vespera_inprocess::panic_error_wire`), which the bridge uses for WARN logs, `DispatchEvent.panicked` and the Micrometer `outcome=PANIC` tag.
 - **Header values use a Latin-1 mapping** (`vespera_inprocess::header_latin1`, documented on the Java side in `WireHeaderStringSupport`): servlet containers expose header bytes as ISO-8859-1 strings, so each byte travels as the JSON char `U+0000–U+00FF`. Request: a value whose chars are all `≤ U+00FF` maps back to one byte per char; a value with any wider char keeps its UTF-8 bytes (non-servlet producers). Response: every value byte (including `obs-text ≥ 0x80`, formerly rendered as `""`) becomes one char, so `HttpServletResponse.addHeader` restores the raw bytes. ASCII is byte-identical (`wire_contract.rs`); the serde A/B twin applies the same mapping.
 
@@ -308,11 +310,12 @@ vespera::jni_apps! {                                  // multi-app primary API
 ### Spring Boot autoconfigure (Java side)
 
 `vespera-bridge` ships a Spring Boot autoconfiguration that wires up
-`VesperaProxyController` + two strategy beans, both replaceable via
+`VesperaProxyController` + three strategy beans, all replaceable via
 `@ConditionalOnMissingBean`:
 
 - `AppNameResolver` (default: `HeaderAppNameResolver("X-Vespera-App", vespera.bridge.exposed-apps)`) — picks app per request. The header is client-controlled: `vespera.bridge.exposed-apps` allowlists selectable apps (others → proxy `404`, no dispatch; unset → one-time WARN on first non-default selection); the selection header is never forwarded to Rust
 - `DispatchModeResolver` (default since vespera-bridge 0.2.0: `SmartDispatchModeResolver` — small/bodyless idempotent → `DIRECT` ~2.2µs, small non-idempotent → `SYNC` ~3.2µs, else `BIDIRECTIONAL_STREAMING` ~24µs; `vespera.bridge.dispatch-mode=bidirectional-streaming` restores pre-0.2.0 `BidirectionalStreamingDispatchModeResolver` — bodyless requests take response-only `STREAMING`, everything else bidirectional) — picks `DispatchMode`
+- `PrincipalResolver` (default: `ServletPrincipalResolver`, or `PrincipalResolver.none()` with `vespera.bridge.forward-principal=false`) — the trusted principal forwarded in the `principal` wire field
 
 Property `vespera.bridge.controller-enabled=false` disables the whole controller for BYO scenarios; `vespera.bridge.include-patterns` (default `/**`) / `exclude-patterns` (PathPattern) narrow the proxy's mapping instead — `VesperaProxyPathMappings` re-registers the `/**` `RequestMappingInfo` with the includes + an exclusion `RequestCondition` (no-op with the defaults), so excluded paths fall through to other handler mappings / static resources / `404`. The JAR ships `spring-configuration-metadata.json` (configuration processor + `additional-spring-configuration-metadata.json`; `ConfigurationMetadataTest` asserts every bound and `@ConditionalOnProperty` key is documented).  See [`libs/vespera-bridge/README.md`](libs/vespera-bridge/README.md#customization) for the customization recipes.
 

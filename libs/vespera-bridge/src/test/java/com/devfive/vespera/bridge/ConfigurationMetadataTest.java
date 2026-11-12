@@ -213,6 +213,10 @@ class ConfigurationMetadataTest {
         assertEquals("group", properties.get(PREFIX + ".springdoc.mode").path("defaultValue").asText());
         assertFalse(byName(root.path("groups")).get(PREFIX + ".springdoc")
                 .path("description").asText().isBlank());
+        JsonNode forwardPrincipal = properties.get(PREFIX + ".forward-principal");
+        assertTrue(forwardPrincipal.path("defaultValue").asBoolean(), "forward-principal defaults to true");
+        assertTrue(forwardPrincipal.path("description").asText().contains("never"),
+                "forward-principal documents that the principal never comes from client headers");
         assertFalse(byName(root.path("groups")).get(PREFIX + ".native")
                 .path("description").asText().isBlank());
     }

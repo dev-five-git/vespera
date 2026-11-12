@@ -130,6 +130,19 @@ public class VesperaBridgeProperties {
     private boolean directRetryOnOverflow = true;
 
     /**
+     * Whether the autoconfigured {@link ServletPrincipalResolver} forwards the
+     * authenticated servlet principal ({@code HttpServletRequest#getUserPrincipal()},
+     * plus Spring Security authorities) to Rust in the trusted wire
+     * {@code principal} field, where handlers extract
+     * {@code vespera::inprocess::Principal}.  Default {@code true}: the value
+     * comes from the container's / Spring Security's authentication, never
+     * from client headers, and unauthenticated requests forward nothing.  Set
+     * {@code false} to forward no principal.  A custom
+     * {@link PrincipalResolver} bean replaces the default either way.
+     */
+    private boolean forwardPrincipal = true;
+
+    /**
      * Maximum request-body bytes the Spring proxy may buffer for
      * SYNC/ASYNC/DIRECT/STREAMING dispatch modes.  The conservative default is
      * 64 MiB so a custom resolver cannot accidentally route an unknown-length
@@ -275,6 +288,14 @@ public class VesperaBridgeProperties {
 
     public void setDirectRetryOnOverflow(boolean directRetryOnOverflow) {
         this.directRetryOnOverflow = directRetryOnOverflow;
+    }
+
+    public boolean isForwardPrincipal() {
+        return forwardPrincipal;
+    }
+
+    public void setForwardPrincipal(boolean forwardPrincipal) {
+        this.forwardPrincipal = forwardPrincipal;
     }
 
     public long getMaxBufferedRequestBytes() {

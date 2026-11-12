@@ -17,7 +17,9 @@ Both request and response use the same length-prefixed layout:
 bytes 0..4    : u32 BE = header_json byte length N
 bytes 4..4+N  : UTF-8 JSON
                   (request)  { "v":1, "method", "path",
-                               "query"?, "headers"? }
+                               "query"?, "headers"?, "app"?,
+                               "remote_addr"?, "scheme"?,
+                               "principal"? }
                   (response) { "v":1, "status", "headers",
                                "metadata", "validation_errors"? }
 bytes 4+N..   : raw body bytes (UTF-8 text or binary —
@@ -28,6 +30,7 @@ Key properties:
 - No base64 — multipart uploads, PDFs, and images travel as raw bytes
 - `"v":1` is the protocol version; mismatched versions return a `400` wire response
 - `"validation_errors"` is an optional array hoisted from `422` JSON bodies — Java decoders read validation errors from the header without parsing the body
+- `"principal"` (`{"name", "authorities"?, "attributes"?}`) carries the authenticated user. Only the Java bridge sets it (from `HttpServletRequest#getUserPrincipal()` and Spring Security authorities via the `PrincipalResolver` bean), never from client headers; Rust handlers extract `vespera::inprocess::Principal`, which answers `401` when it is absent
 - All failure paths (malformed wire, Rust panic, no app registered) return a valid length-prefixed response, so the decoder never has to special-case errors
 
 ## Dispatch Modes

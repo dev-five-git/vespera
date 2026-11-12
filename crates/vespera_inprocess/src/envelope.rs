@@ -18,6 +18,10 @@ pub struct RequestEnvelope {
     pub headers: HashMap<String, String>,
     #[serde(default)]
     pub body: String,
+    /// Authenticated principal from the trusted embedding host (never from
+    /// client headers); inserted as a [`crate::Principal`] request extension.
+    #[serde(default)]
+    pub principal: Option<crate::Principal>,
 }
 
 /// Response header value — single string or multiple values.
