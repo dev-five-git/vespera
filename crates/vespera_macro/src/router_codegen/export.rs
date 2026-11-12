@@ -415,9 +415,16 @@ mod tests {
         metadata.routes.push(route_metadata("/users/{user_id}"));
         apply_export_prefix(&mut metadata, "/api/media-library");
 
-        let router =
-            crate::router_codegen::generate_router_code(&metadata, None, None, None, &[], &[])
-                .to_string();
+        let router = crate::router_codegen::generate_router_code(
+            &metadata,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+        )
+        .to_string();
         let file_cache = std::collections::HashMap::from([(
             "users.rs".to_string(),
             syn::parse_file("pub async fn get_user() {}").unwrap(),

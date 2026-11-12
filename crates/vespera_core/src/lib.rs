@@ -10,6 +10,7 @@
 #[cfg(feature = "cron")]
 #[cfg_attr(docsrs, doc(cfg(feature = "cron")))]
 pub mod cron;
+pub mod docs;
 pub mod openapi;
 pub mod route;
 pub mod schema;

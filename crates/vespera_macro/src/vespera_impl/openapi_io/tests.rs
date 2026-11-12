@@ -28,6 +28,7 @@ fn test_generate_and_write_openapi_no_output() {
         version: None,
         docs_url: None,
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
@@ -58,6 +59,7 @@ fn test_generate_and_write_openapi_docs_only() {
         version: Some("1.0.0".to_string()),
         docs_url: Some("/docs".to_string()),
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
@@ -91,6 +93,7 @@ fn test_generate_and_write_openapi_redoc_only() {
         version: None,
         docs_url: None,
         redoc_url: Some("/redoc".to_string()),
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
@@ -121,6 +124,7 @@ fn test_generate_and_write_openapi_both_docs() {
         version: None,
         docs_url: Some("/docs".to_string()),
         redoc_url: Some("/redoc".to_string()),
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
@@ -141,6 +145,49 @@ fn test_generate_and_write_openapi_both_docs() {
     assert!(result.spec_pretty.is_none());
 }
 
+/// `spec_url` alone (no docs pages, no openapi file) still embeds the spec.
+#[test]
+fn test_generate_and_write_openapi_spec_url_only() {
+    let processed = processed_with_spec_url();
+    let result = generate_and_write_openapi(
+        &processed,
+        &CollectedMetadata::new(),
+        HashMap::new(),
+        &[],
+        &mut MergeSpecCache::new(),
+    )
+    .unwrap();
+    assert!(result.spec_json.is_some());
+    assert!(result.spec_pretty.is_none());
+
+    // Toggling `spec_url` changes the macro cache key (the router differs).
+    let without = ProcessedVesperaInput {
+        spec_url: None,
+        ..processed
+    };
+    assert_ne!(
+        super::super::cache::compute_config_hash(&processed_with_spec_url()),
+        super::super::cache::compute_config_hash(&without)
+    );
+}
+
+fn processed_with_spec_url() -> ProcessedVesperaInput {
+    ProcessedVesperaInput {
+        folder_name: "routes".to_string(),
+        openapi_file_names: vec![],
+        title: None,
+        version: None,
+        docs_url: None,
+        redoc_url: None,
+        spec_url: Some("/openapi.json".to_string()),
+        servers: None,
+        security_schemes: None,
+        security: None,
+        tag_descriptions: None,
+        merge: vec![],
+    }
+}
+
 #[test]
 fn test_generate_and_write_openapi_file_output() {
     let (_target, _manifest) = isolated_target();
@@ -154,6 +201,7 @@ fn test_generate_and_write_openapi_file_output() {
         version: Some("2.0.0".to_string()),
         docs_url: None,
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
@@ -191,6 +239,7 @@ fn test_generate_and_write_openapi_creates_directories() {
         version: None,
         docs_url: None,
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
@@ -223,6 +272,7 @@ fn test_generate_and_write_openapi_with_merge_no_manifest_dir() {
         version: None,
         docs_url: Some("/docs".to_string()),
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
@@ -265,6 +315,7 @@ fn test_generate_and_write_openapi_with_merge_and_valid_spec() {
         version: Some("2.0.0".to_string()),
         docs_url: Some("/docs".to_string()),
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
@@ -394,6 +445,7 @@ fn test_generate_and_write_openapi_file_write_error() {
         version: Some("1.0.0".to_string()),
         docs_url: None,
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
@@ -507,6 +559,7 @@ fn merge_input(path: syn::Path) -> ProcessedVesperaInput {
         version: None,
         docs_url: Some("/docs".to_string()),
         redoc_url: None,
+        spec_url: None,
         servers: None,
         security_schemes: None,
         security: None,
