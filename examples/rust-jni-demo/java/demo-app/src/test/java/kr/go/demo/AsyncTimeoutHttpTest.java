@@ -26,8 +26,9 @@ import org.springframework.context.annotation.Bean;
 
 /**
  * An {@code ASYNC} dispatch that outlives Spring MVC's async request timeout
- * is answered {@code 503}, reported to observers exactly once, and the late
- * native completion is discarded without errors.
+ * is answered {@code 503}, reported to observers exactly once, and the native
+ * dispatch is cancelled: the Rust handler is dropped (never finishes) and its
+ * in-flight slot is released, without errors in the log.
  */
 @ExtendWith(OutputCaptureExtension.class)
 @SpringBootTest(
@@ -82,24 +83,25 @@ class AsyncTimeoutHttpTest extends AbstractVesperaHttpIntegrationTest {
     }
 
     @Test
-    void asyncTimeoutIsA503RecordedOnceAndTheLateResultIsDiscarded(CapturedOutput output) throws Exception {
+    void asyncTimeoutIsA503RecordedOnceAndCancelsTheHandler(CapturedOutput output) throws Exception {
         String key = "async-timeout-" + System.nanoTime();
         String requestId = key;
 
         HttpResponse<String> response = get("/diag/sleep/" + key + "/" + HANDLER_MILLIS, requestId);
         assertEquals(503, response.statusCode(), response.body());
 
-        // Wait for the handler to finish: the native future then completes and
-        // its continuation tries to set the (already timed out) result.
+        // The timeout cancelled the native future: the sleeping handler is
+        // dropped long before its HANDLER_MILLIS are over.
         long deadline = System.nanoTime() + 10_000_000_000L;
-        while (!"1".equals(get("/diag/runs/" + key, key + "-poll").body())) {
+        while (!"1".equals(get("/diag/runs/" + key + ":dropped", key + "-poll").body())) {
             if (System.nanoTime() > deadline) {
-                throw new AssertionError("the slow handler never finished");
+                throw new AssertionError("the timed-out handler was not cancelled");
             }
             Thread.sleep(50);
         }
-        // Give the discarded continuation time to run on the response executor.
-        Thread.sleep(500);
+        // Outlive the original handler delay: it must never finish.
+        Thread.sleep(HANDLER_MILLIS);
+        assertEquals("0", get("/diag/runs/" + key, key + "-poll2").body());
 
         List<DispatchEvent> events = eventsFor(requestId);
         assertEquals(1, events.size(), "reported exactly once: " + events);

@@ -266,7 +266,10 @@ public final class VesperaRequest {
      * or heavy continuations with the {@code *Async} variants, and never call
      * a blocking vespera dispatch ({@link #send()}) inline from one; or use
      * {@link #sendAsync(Executor)}. Transport failures complete the future
-     * exceptionally with {@link VesperaClientException}.
+     * exceptionally with {@link VesperaClientException}. Cancelling the
+     * returned future (or completing it exceptionally, e.g. via
+     * {@code orTimeout}) cancels the native dispatch: the Rust handler is
+     * dropped and its in-flight slot released.
      *
      * @throws IllegalStateException for an {@link InputStream} body (use
      *         {@link #sendAsync(Executor)})
@@ -276,7 +279,8 @@ public final class VesperaRequest {
             throw new IllegalStateException(
                     "a streamed (InputStream) body blocks while it is read; use sendAsync(Executor)");
         }
-        return dispatchAsync().thenApply(VesperaRequest::decode);
+        CompletableFuture<byte[]> raw = dispatchAsync();
+        return propagateCancellation(raw, raw.thenApply(VesperaRequest::decode));
     }
 
     /**
@@ -289,7 +293,24 @@ public final class VesperaRequest {
         if (bodyStream != null) {
             return CompletableFuture.supplyAsync(this::send, executor);
         }
-        return dispatchAsync().thenApplyAsync(VesperaRequest::decode, executor);
+        CompletableFuture<byte[]> raw = dispatchAsync();
+        return propagateCancellation(raw, raw.thenApplyAsync(VesperaRequest::decode, executor));
+    }
+
+    /**
+     * A dependent stage does not cancel its source: once {@code decoded} (the
+     * caller's future) completes exceptionally, cancel {@code raw} as well so
+     * the native dispatch behind it is aborted. A no-op when {@code raw} is
+     * already done (the response arrived, or the failure came from it).
+     */
+    static <T> CompletableFuture<T> propagateCancellation(
+            CompletableFuture<byte[]> raw, CompletableFuture<T> decoded) {
+        decoded.whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                raw.cancel(false);
+            }
+        });
+        return decoded;
     }
 
     private CompletableFuture<byte[]> dispatchAsync() {

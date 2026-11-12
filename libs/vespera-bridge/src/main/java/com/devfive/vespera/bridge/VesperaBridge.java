@@ -400,10 +400,11 @@ public class VesperaBridge {
      * converted to a `500` wire response; JNI conversion failures to
      * a `400` wire response.  The future is never left dangling.
      *
-     * <p>Cancellation is not propagated to the Rust task in this
-     * release: {@code future.cancel(true)} will mark the future as
-     * cancelled on the Java side, but the in-flight Rust dispatch
-     * continues to completion (and its result is discarded).
+     * <p>Cancellation propagates to Rust: when {@code future} completes
+     * exceptionally ({@code cancel(..)}, {@code orTimeout(..)}, an external
+     * {@code completeExceptionally(..)}) the in-flight Rust handler is
+     * dropped at its next {@code .await} and its
+     * {@code vespera.async.maxInFlight} slot is released at once.
      *
      * <p><strong>Threading contract (IMPORTANT):</strong> the future is
      * completed on a Rust Tokio <em>runtime worker thread</em>, so any
@@ -429,8 +430,9 @@ public class VesperaBridge {
      * @param future        the future to complete with the wire response
      * @param wireRequest   length-prefixed binary wire request
      */
-    public static native void dispatchAsync(
-            CompletableFuture<byte[]> future, byte[] wireRequest);
+    public static void dispatchAsync(CompletableFuture<byte[]> future, byte[] wireRequest) {
+        AsyncDispatch.dispatch(future, wireRequest);
+    }
 
     /**
      * Convenience wrapper around {@link #dispatchAsync} that allocates

@@ -20,6 +20,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
@@ -666,7 +668,13 @@ public class VesperaProxyController {
      * response entity is built on {@link #asyncResponseExecutor} (with the
      * request id in the MDC), and the outcome is reported once — by the
      * entity, or by Spring's async timeout ({@code 503}) when the request
-     * timed out first (a late native result is then discarded unreported).
+     * timed out first.
+     *
+     * <p>Cancel-on-disconnect: when the servlet async request ends before the
+     * native result (Spring async timeout, or a container-reported error such
+     * as the client disconnecting), the native future is cancelled, which
+     * aborts the Rust handler and frees its in-flight slot instead of letting
+     * it run to completion for a response nobody can receive.
      */
     private DeferredResult<ResponseEntity<?>> dispatchAsyncFlow(
             String appName, String method, String path, String query,
@@ -675,13 +683,21 @@ public class VesperaProxyController {
         byte[] wireReq = VesperaBridge.encodeRequest(
                 appName, method, path, query, headers, body);
         DeferredResult<ResponseEntity<?>> result = new DeferredResult<>();
-        // Spring answers an async timeout with 503 (AsyncRequestTimeoutException).
-        result.onTimeout(() -> exchange.complete(
-                HttpStatus.SERVICE_UNAVAILABLE.value(), response.panicked()));
-        result.onError(failure -> exchange.complete(500, response.panicked()));
         final String requestId = exchange.requestId;
         final long cap = javaResponseCap(maxBufferedResponseBytes);
-        VesperaBridge.dispatch(wireReq)
+        CompletableFuture<byte[]> nativeResult = VesperaBridge.dispatch(wireReq);
+        // Spring answers an async timeout with 503 (AsyncRequestTimeoutException).
+        result.onTimeout(() -> {
+            nativeResult.cancel(false);
+            exchange.complete(HttpStatus.SERVICE_UNAVAILABLE.value(), response.panicked());
+        });
+        result.onError(failure -> {
+            nativeResult.cancel(false);
+            exchange.complete(500, response.panicked());
+        });
+        // Any other end of the async request (a no-op once the result is in).
+        result.onCompletion(() -> nativeResult.cancel(false));
+        nativeResult
                 .thenApplyAsync(
                         wireResp -> ProxyExchange.withMdc(requestId,
                                 () -> buildCappedAsyncResponseEntity(wireResp, method, cap, response)),
@@ -720,6 +736,12 @@ public class VesperaProxyController {
         }
         Throwable cause = ex instanceof CompletionException && ex.getCause() != null
                 ? ex.getCause() : ex;
+        if (cause instanceof CancellationException) {
+            // The request already ended (timeout / disconnect) and cancelled
+            // the native dispatch; this entity is never sent.
+            return ProxyErrors.entity(HttpStatus.SERVICE_UNAVAILABLE.value(),
+                    "vespera: dispatch cancelled");
+        }
         if (cause instanceof ResponseStatusException rejected) {
             return ProxyErrors.entity(rejected.getStatusCode().value(), rejected.getReason());
         }

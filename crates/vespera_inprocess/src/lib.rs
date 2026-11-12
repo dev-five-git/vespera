@@ -86,6 +86,7 @@ macro_rules! traced {
 }
 
 mod bounded;
+mod cancel;
 mod config;
 mod direct;
 mod dispatch;
@@ -101,6 +102,7 @@ mod wire;
 /// Re-export `axum::Router` so consumers don't need a direct axum dependency.
 pub use axum::Router;
 pub use bounded::DISPATCH_TIMEOUT_MSG;
+pub use cancel::{cancel, cancellable, cancellable_in_flight};
 pub use config::{
     DEFAULT_MAX_BUFFERED_RESPONSE_BYTES, DEFAULT_MAX_REQUEST_BYTES,
     DEFAULT_MAX_STREAMING_REQUEST_PRODUCERS, DEFAULT_STREAMING_CHANNEL_CAPACITY,

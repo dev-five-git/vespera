@@ -12,7 +12,7 @@ class ParkingDispatchTest {
         UnsatisfiedLinkError async = assertThrows(UnsatisfiedLinkError.class,
                 () -> ParkingDispatch.dispatchBytes(new byte[4], true));
         org.junit.jupiter.api.Assertions.assertTrue(
-                async.getMessage().contains("dispatchAsync"), async.getMessage());
+                async.getMessage().contains("AsyncDispatch.dispatch0"), async.getMessage());
         UnsatisfiedLinkError sync = assertThrows(UnsatisfiedLinkError.class,
                 () -> ParkingDispatch.dispatchBytes(new byte[4], false));
         org.junit.jupiter.api.Assertions.assertTrue(
