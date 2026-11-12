@@ -233,6 +233,27 @@ mod tests {
         assert!(!registered(token));
     }
 
+    /// `cancel` from another OS thread racing the future's own completion
+    /// (the `AsyncDispatch.cancel0` vs runtime-worker race).  Either side may
+    /// win — a late cancel can even report `true` while the output is
+    /// `Some`, harmless because the host already gave up — but the entry is
+    /// always gone afterwards and the registry / oneshot hand-off is
+    /// race-free (run under Miri, which checks the latter).
+    #[test]
+    fn cancel_racing_completion_from_another_thread_leaves_no_entry() {
+        for _ in 0..4 {
+            let (token, fut) = cancellable(async { 7 });
+            let racer = std::thread::spawn(move || cancel(token));
+            let output = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("runtime")
+                .block_on(fut);
+            let won = racer.join().unwrap();
+            assert!(output == Some(7) || (output.is_none() && won));
+            assert!(!registered(token));
+        }
+    }
+
     #[test]
     fn unknown_and_zero_tokens_are_not_cancellable() {
         assert!(!cancel(0));

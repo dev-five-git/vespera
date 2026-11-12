@@ -34,6 +34,11 @@ pub use config::{
 };
 use config::{async_overloaded_wire, try_acquire_async_permit};
 
+// The two hand-rolled atomic admission protocols (runtime lease gate,
+// `dispatchAsync` cap), JNI-free so loom can model-check them.
+#[path = "jni_impl_gates.rs"]
+mod gates;
+
 // Shared runtime lifecycle (lazy build, in-flight leases, deferred hooks,
 // graceful shutdown) lives in a sidecar module.
 #[path = "jni_impl_lifecycle.rs"]
