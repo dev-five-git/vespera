@@ -170,10 +170,7 @@ fn same_definition(a: &syn::ItemType, b: &syn::ItemType) -> bool {
 /// `Result<Json<User>, AppError>`), or `None` when the arguments do not fit
 /// the alias's type parameters.
 fn apply_alias(alias: &syn::ItemType, ty: &Type) -> Option<Type> {
-    let Type::Path(type_path) = ty else {
-        return None;
-    };
-    let segment = type_path.path.segments.last()?;
+    let segment = crate::schema_macro::type_utils::last_path_segment(ty)?;
     let args: Vec<&Type> = match &segment.arguments {
         syn::PathArguments::AngleBracketed(args) => args
             .args

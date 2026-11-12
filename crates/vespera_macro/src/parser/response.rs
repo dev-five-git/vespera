@@ -271,17 +271,13 @@ fn is_unresolved_named_type(
     known_schemas: &HashSet<&str>,
     struct_definitions: &HashMap<&str, &str>,
 ) -> bool {
-    let Type::Path(type_path) = ty else {
-        return false;
-    };
-    let Some(segment) = type_path.path.segments.last() else {
-        return false;
-    };
-    let ident = segment.ident.to_string();
-    !(is_builtin_openapi_type(&ident)
-        || RESPONSE_IDENTS.contains(&ident.as_str())
-        || known_schemas.contains(ident.as_str())
-        || struct_definitions.contains_key(ident.as_str()))
+    crate::schema_macro::type_utils::last_path_segment(ty).is_some_and(|segment| {
+        let ident = segment.ident.to_string();
+        !(is_builtin_openapi_type(&ident)
+            || RESPONSE_IDENTS.contains(&ident.as_str())
+            || known_schemas.contains(ident.as_str())
+            || struct_definitions.contains_key(ident.as_str()))
+    })
 }
 
 fn content_for_type(
