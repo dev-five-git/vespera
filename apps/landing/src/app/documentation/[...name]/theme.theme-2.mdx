@@ -17,7 +17,9 @@ Both request and response use the same length-prefixed layout:
 bytes 0..4    : u32 BE = header_json byte length N
 bytes 4..4+N  : UTF-8 JSON
                   (request)  { "v":1, "method", "path",
-                               "query"?, "headers"? }
+                               "query"?, "headers"?, "app"?,
+                               "remote_addr"?, "scheme"?,
+                               "principal"? }
                   (response) { "v":1, "status", "headers",
                                "metadata", "validation_errors"? }
 bytes 4+N..   : raw body bytes (UTF-8 text or binary —
@@ -28,6 +30,7 @@ Key properties:
 - No base64 — multipart uploads, PDFs, and images travel as raw bytes
 - `"v":1` is the protocol version; mismatched versions return a `400` wire response
 - `"validation_errors"` is an optional array hoisted from `422` JSON bodies — Java decoders read validation errors from the header without parsing the body
+- `"principal"` (`{"name", "authorities"?, "attributes"?}`) carries the authenticated user. Only the Java bridge sets it (from `HttpServletRequest#getUserPrincipal()` and Spring Security authorities via the `PrincipalResolver` bean), never from client headers; Rust handlers extract `vespera::inprocess::Principal`, which answers `401` when it is absent
 - All failure paths (malformed wire, Rust panic, no app registered) return a valid length-prefixed response, so the decoder never has to special-case errors
 
 ## Dispatch Modes
@@ -133,6 +136,30 @@ Contract:
 - `Integer.MIN_VALUE`: response exceeds 2 GiB
 
 `dispatchDirectPooled(byte[] wireRequest, boolean retryOnOverflow)` wraps the raw call with per-thread reusable direct buffers (64 KiB initial, doubling up to `vespera.direct.maxBufferBytes`, default 4 MiB).
+
+## Programmatic Client (VesperaClient)
+
+Call the embedded Rust app from Java code — a Spring service, a scheduled job, a message listener — without HTTP and without the proxy controller. `VesperaClient` builds the wire request with the proxy's codec, dispatches in-process and returns a `VesperaResponse`:
+
+```java
+VesperaClient client = VesperaClient.create();            // default app
+VesperaResponse r = client.get("/users/42")
+        .header("Accept", "application/json")
+        .query("expand", "roles teams")                    // ?expand=roles%20teams
+        .send();
+r.status(); r.header("content-type"); r.bodyString(); r.bodyBytes();
+r.validationErrors();                                      // hoisted 422 errors, [] otherwise
+
+client.post("/users").json("{\"name\":\"a\"}").send();     // raw JSON, never parsed
+client.post("/upload").body(bytes, "application/octet-stream").send();
+client.forApp("admin").get("/dashboard").send();          // named app
+CompletableFuture<VesperaResponse> f = client.get("/x").sendAsync();
+```
+
+- `send()` dispatches SYNC (`dispatchBytes`; parks instead of pinning on a virtual thread); `sendAsync()` uses `dispatchAsync` — the future completes on a Tokio worker, so use `*Async` continuations or `sendAsync(executor)`.
+- `body(InputStream, contentType)` streams the request body through the bidirectional streaming path (the response is collected in memory).
+- HTTP error statuses (including the `503` of a shut-down runtime and the `500` of a Rust panic) are normal responses. Only transport failures (library not initialised, malformed wire, a streamed body failing mid-transfer) throw the unchecked `VesperaClientException`.
+- Spring Boot autoconfigures a `VesperaClient` bean (`@ConditionalOnMissingBean`), also when `vespera.bridge.controller-enabled=false`.
 
 ## Direct API (Without the Proxy Controller)
 

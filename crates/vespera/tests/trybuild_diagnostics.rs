@@ -7,6 +7,7 @@
 //! The `.stderr` snapshots are toolchain-sensitive; regenerate with:
 //!   TRYBUILD=overwrite cargo test -p vespera --features cron --test trybuild_diagnostics
 //!   TRYBUILD=overwrite cargo test -p vespera --features cron-tz --test trybuild_diagnostics
+//!   TRYBUILD=overwrite cargo test -p vespera --no-default-features --test trybuild_diagnostics
 
 #[test]
 fn ui_diagnostics() {
@@ -32,4 +33,8 @@ fn ui_diagnostics() {
     // reports `AssertValidate`'s `#[diagnostic::on_unimplemented]` message.
     #[cfg(feature = "validation")]
     t.compile_fail("tests/ui/validated_payload_without_validate.rs");
+    // Without the (default-on) `multipart` feature, `#[derive(Multipart)]`
+    // resolves to a stand-in derive whose `compile_error!` names the feature.
+    #[cfg(not(feature = "multipart"))]
+    t.compile_fail("tests/ui/multipart_needs_feature.rs");
 }

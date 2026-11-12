@@ -58,10 +58,18 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       register a {@code @Bean DispatchModeResolver} —
  *       the default {@link SmartDispatchModeResolver} is
  *       automatically disabled.</li>
+ *   <li><strong>Forwarded principal</strong>:
+ *       the authenticated servlet / Spring Security principal is
+ *       forwarded to Rust ({@code vespera::inprocess::Principal}); set
+ *       {@code vespera.bridge.forward-principal=false} to stop it, or
+ *       register a {@code @Bean PrincipalResolver} to customise it.</li>
  *   <li><strong>Proxied URL space</strong>:
  *       set {@code vespera.bridge.include-patterns} /
  *       {@code vespera.bridge.exclude-patterns} — excluded paths fall
  *       through to other controllers and static resources.</li>
+ *   <li><strong>Programmatic calls</strong>: inject the
+ *       {@link VesperaClient} bean (replaceable) to call the Rust app
+ *       from services, jobs or listeners without HTTP.</li>
  *   <li><strong>Completely BYO controller</strong>:
  *       set {@code vespera.bridge.controller-enabled=false} and
  *       provide your own {@code @RestController} that calls the
@@ -138,10 +146,34 @@ public class VesperaBridgeAutoConfiguration {
         };
     }
 
+    /**
+     * Programmatic in-process client for the default app
+     * ({@code client.forApp("admin")} for a named one). Independent of
+     * {@code vespera.bridge.controller-enabled}; depends on the native
+     * settings bean so {@code vespera.bridge.native.*} and
+     * {@code library-name} are applied before the first client dispatch.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public VesperaClient vesperaClient(VesperaBridgeNativeSettings nativeSettings) {
+        return VesperaClient.create();
+    }
+
     @Bean
     @ConditionalOnMissingBean
     public AppNameResolver vesperaBridgeAppNameResolver(VesperaBridgeProperties props) {
         return new HeaderAppNameResolver(props.getAppHeader(), props.getExposedApps());
+    }
+
+    /**
+     * Trusted principal forwarded to Rust: the authenticated servlet principal
+     * ({@link ServletPrincipalResolver}) unless
+     * {@code vespera.bridge.forward-principal=false}, which forwards none.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public PrincipalResolver vesperaBridgePrincipalResolver(VesperaBridgeProperties props) {
+        return props.isForwardPrincipal() ? new ServletPrincipalResolver() : PrincipalResolver.none();
     }
 
     /**
@@ -282,7 +314,8 @@ public class VesperaBridgeAutoConfiguration {
             @Qualifier("vesperaBridgeAsyncResponseExecutor") Executor asyncResponseExecutor,
             VesperaBridgeProperties props,
             VesperaBridgeNativeSettings nativeSettings,
-            ObjectProvider<DispatchObserver> observers) {
+            ObjectProvider<DispatchObserver> observers,
+            PrincipalResolver principalResolver) {
         return new VesperaProxyController(
                 appResolver,
                 modeResolver,
@@ -292,7 +325,8 @@ public class VesperaBridgeAutoConfiguration {
                 props.getMaxBufferedResponseBytes(),
                 props.getRequestId().effectiveHeader(),
                 observers.orderedStream().toList(),
-                props.getCors());
+                props.getCors(),
+                principalResolver);
     }
 
     /**

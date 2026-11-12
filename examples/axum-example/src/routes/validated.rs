@@ -19,7 +19,10 @@
 //! `openapi.json`.
 
 use serde::{Deserialize, Serialize};
-use vespera::axum::{Json, extract::Path};
+use vespera::axum::{
+    Form, Json,
+    extract::{Path, Query},
+};
 use vespera::{Schema, Validated, ValidatedWith};
 
 use crate::TagPolicy;
@@ -103,4 +106,118 @@ pub async fn create_tagged_post(
     post: ValidatedWith<TagPolicy, Json<TaggedPost>>,
 ) -> Json<TaggedPost> {
     post.into_inner()
+}
+
+/// Query string for `GET /validated/search` — validated like a body.
+#[derive(Debug, Deserialize, Serialize, Schema)]
+pub struct ValidatedSearchQuery {
+    /// Search term, 2–64 characters.
+    #[schema(min_length = 2, max_length = 64)]
+    pub q: String,
+
+    /// Page size, 1–100.
+    #[schema(minimum = 1, maximum = 100)]
+    pub limit: u32,
+}
+
+/// Search with validated query parameters.
+///
+/// `Validated<Query<T>>` documents each field as a query parameter plus the
+/// `422` response, and answers `422` for an out-of-range value.
+#[vespera::route(get, path = "/search", tags = ["validated"])]
+pub async fn validated_search(
+    Validated(Query(query)): Validated<Query<ValidatedSearchQuery>>,
+) -> Json<ValidatedSearchQuery> {
+    Json(query)
+}
+
+/// `application/x-www-form-urlencoded` body for `POST /validated/signup`.
+#[derive(Debug, Deserialize, Serialize, Schema)]
+pub struct ValidatedSignupForm {
+    /// Login handle.
+    #[schema(min_length = 3, max_length = 32)]
+    pub username: String,
+
+    /// Contact email.
+    #[schema(format = "email")]
+    pub email: String,
+}
+
+/// Sign up with a validated urlencoded form (`Validated<Form<T>>`).
+#[vespera::route(post, path = "/signup", tags = ["validated"])]
+pub async fn validated_signup(
+    Validated(Form(form)): Validated<Form<ValidatedSignupForm>>,
+) -> Json<ValidatedSignupForm> {
+    Json(form)
+}
+
+/// Path parameters for `GET /validated/pages/{page}`.
+#[derive(Debug, Deserialize, Serialize, Schema)]
+pub struct ValidatedPagePath {
+    /// 1-based page number, at most 1000.
+    #[schema(minimum = 1, maximum = 1000)]
+    pub page: u32,
+}
+
+/// Fetch a page by a validated path parameter (`Validated<Path<T>>`).
+#[vespera::route(get, path = "/pages/{page}", tags = ["validated"])]
+pub async fn validated_page(
+    Validated(Path(path)): Validated<Path<ValidatedPagePath>>,
+) -> Json<ValidatedPagePath> {
+    Json(path)
+}
+
+/// Profile validated by garde's own derive — `#[derive(Schema)]` documents
+/// every `#[garde(...)]` rule with a JSON Schema equivalent, so the
+/// constraints in `openapi.json` match the `422` this route answers.
+#[derive(Debug, Deserialize, Serialize, Schema, garde::Validate)]
+pub struct GardeProfile {
+    /// 2–20 characters (`chars` mode → `minLength` / `maxLength`).
+    #[garde(length(chars, min = 2, max = 20))]
+    pub display_name: String,
+
+    /// `email` → `format: email`.
+    #[garde(email)]
+    pub email: String,
+
+    /// Optional homepage — `url` → `format: uri` on the non-null value.
+    #[garde(url)]
+    pub homepage: Option<String>,
+
+    /// `range` → `minimum` / `maximum` (inclusive).
+    #[garde(range(min = 18, max = 120))]
+    pub age: u8,
+
+    /// 1–3 hashtags, each a `#`-prefixed ASCII word of at most 16 chars
+    /// (`inner(...)` → `items`).
+    #[garde(
+        length(min = 1, max = 3),
+        inner(length(chars, max = 16), prefix("#"), ascii)
+    )]
+    pub hashtags: Vec<String>,
+
+    /// `ip` → `anyOf: [{format: ipv4}, {format: ipv6}]`.
+    #[garde(ip)]
+    pub last_ip: String,
+
+    /// ISO 3166-1 alpha-2 code (`pattern`).
+    #[garde(pattern(r"^[A-Z]{2}$"))]
+    pub country: String,
+
+    /// Avatar file name ending in `.png` (`suffix` → escaped `pattern`).
+    #[garde(suffix(".png"))]
+    pub avatar: String,
+
+    /// Unicode-aware `alphanumeric` has no portable regex — enforced at
+    /// runtime, not documented.
+    #[garde(alphanumeric)]
+    pub nickname: String,
+}
+
+/// Create a profile validated by `#[derive(garde::Validate)]`.
+#[vespera::route(post, path = "/profiles", tags = ["validated"])]
+pub async fn create_garde_profile(
+    Validated(Json(profile)): Validated<Json<GardeProfile>>,
+) -> Json<GardeProfile> {
+    Json(profile)
 }

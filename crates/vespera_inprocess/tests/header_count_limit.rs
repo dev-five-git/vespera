@@ -65,6 +65,7 @@ async fn envelope_api_answers_431_instead_of_panicking() {
         .map(|i| (format!("x-h{i}"), "v".to_owned()))
         .collect();
     let envelope = RequestEnvelope {
+        principal: None,
         method: "GET".to_owned(),
         path: "/n".to_owned(),
         query: String::new(),

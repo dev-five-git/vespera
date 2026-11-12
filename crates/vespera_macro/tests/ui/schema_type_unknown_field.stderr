@@ -1,0 +1,17 @@
+error: field `nmae` does not exist in type `User`. Available fields: ["id", "name"]
+  --> tests/ui/schema_type_unknown_field.rs:11:28
+   |
+11 | schema_type!(OmitTypo from User, omit = ["nmae"]);
+   |                            ^^^^
+
+error: field `idd` does not exist in type `User`. Available fields: ["id", "name"]
+  --> tests/ui/schema_type_unknown_field.rs:13:28
+   |
+13 | schema_type!(PickTypo from User, pick = ["idd"]);
+   |                            ^^^^
+
+error: rename target `type` (for source field `name`) is not a valid Rust identifier; use letters/digits/`_` (not starting with a digit) and avoid reserved keywords
+  --> tests/ui/schema_type_unknown_field.rs:15:29
+   |
+15 | schema_type!(BadRename from User, rename = [("name", "type")]);
+   |                             ^^^^

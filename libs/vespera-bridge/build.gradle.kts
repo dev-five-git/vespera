@@ -2,6 +2,8 @@ plugins {
     `java-library`
     jacoco
     id("com.vanniktech.maven.publish") version "0.37.0"
+    // CycloneDX SBOM of the published JAR (see "SBOM" at the end of this file).
+    id("org.cyclonedx.bom") version "3.5.1"
 }
 
 group = "kr.devfive"
@@ -61,6 +63,10 @@ val springFrameworkVersion = "7.0.10"
 val springBoot3Version = "3.5.16"
 val springFramework3Version = "6.2.19"
 val micrometerVersion = "1.15.12"
+// Optional springdoc-openapi integration (VesperaSpringdocAutoConfiguration):
+// springdoc 3.x targets Boot 4, 2.x Boot 3.5 — the APIs the bridge uses exist in both.
+val springdocVersion = "3.2.0"
+val springdoc3Version = "2.10.0"
 
 dependencies {
     compileOnly("org.springframework.boot:spring-boot-autoconfigure:$springBootVersion")
@@ -70,6 +76,10 @@ dependencies {
     // Optional: MicrometerDispatchObserver / VesperaBridgeMetricsAutoConfiguration
     // only load when the application ships Micrometer (e.g. via Actuator).
     compileOnly("io.micrometer:micrometer-core:$micrometerVersion")
+    // Optional: VesperaSpringdocAutoConfiguration only loads when the application
+    // ships springdoc-openapi (webmvc-api or -ui); its swagger-core / Jackson 2
+    // types come with it.
+    compileOnly("org.springdoc:springdoc-openapi-starter-webmvc-ui:$springdocVersion")
     // Optional: the `vespera` Actuator health indicator. Boot 4 moved the health
     // API to spring-boot-health (org.springframework.boot.health.contributor);
     // Boot 3.5 keeps it in spring-boot-actuator (org.springframework.boot.actuate
@@ -91,6 +101,7 @@ dependencies {
 
     testImplementation("org.springframework.boot:spring-boot-starter-web:$springBootVersion")
     testImplementation("io.micrometer:micrometer-core:$micrometerVersion")
+    testImplementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:$springdocVersion")
     testImplementation("org.springframework.boot:spring-boot-health:$springBootVersion")
     // VesperaWireTest cross-checks the hand-rolled JSON codec against Jackson.
     testImplementation("com.fasterxml.jackson.core:jackson-databind:2.23.0")
@@ -120,6 +131,7 @@ val testBoot3Runtime: Configuration = configurations.create("testBoot3Runtime") 
 dependencies {
     testBoot3Runtime("org.springframework.boot:spring-boot-starter-web:$springBoot3Version")
     testBoot3Runtime("io.micrometer:micrometer-core:$micrometerVersion")
+    testBoot3Runtime("org.springdoc:springdoc-openapi-starter-webmvc-ui:$springdoc3Version")
     testBoot3Runtime("org.springframework.boot:spring-boot-actuator:$springBoot3Version")
     testBoot3Runtime("org.springframework.boot:spring-boot-test:$springBoot3Version")
     testBoot3Runtime("org.springframework:spring-test:$springFramework3Version")
@@ -225,6 +237,32 @@ mavenPublishing {
             url.set("https://github.com/dev-five-git/vespera")
             connection.set("scm:git:git://github.com/dev-five-git/vespera.git")
             developerConnection.set("scm:git:ssh://git@github.com:dev-five-git/vespera.git")
+        }
+    }
+}
+
+// ── SBOM ──────────────────────────────────────────────────────────────────
+// CycloneDX SBOM of exactly what this JAR ships to consumers: the
+// runtimeClasspath (empty today — every Spring/servlet/slf4j/Micrometer
+// dependency is compileOnly, see "Dependency model" above). Published next to
+// the JAR as `vespera-bridge-<version>-cyclonedx.json` (classifier
+// `cyclonedx`, the convention of the CycloneDX Maven/Gradle tooling), signed
+// with the rest of the publication for Maven Central. CI (`sbom` job) builds it
+// on every PR; the release job additionally attests it against the JAR.
+val cyclonedxDirectBom = tasks.named<org.cyclonedx.gradle.CyclonedxDirectTask>("cyclonedxDirectBom") {
+    includeConfigs = listOf("runtimeClasspath")
+    xmlOutput.unsetConvention()
+    jsonOutput.set(
+        layout.buildDirectory.file("reports/cyclonedx-direct/${project.name}-${project.version}-cyclonedx.json"),
+    )
+}
+
+publishing {
+    publications.withType<MavenPublication>().configureEach {
+        artifact(cyclonedxDirectBom.flatMap { it.jsonOutput }) {
+            classifier = "cyclonedx"
+            extension = "json"
+            builtBy(cyclonedxDirectBom)
         }
     }
 }

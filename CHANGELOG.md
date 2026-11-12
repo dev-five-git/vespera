@@ -36,6 +36,13 @@ of an existing 0.5 application.
   `Html<T>` is `text/html`, `Sse` is `text/event-stream`, `Bytes` / `Vec<u8>`
   bodies are `application/octet-stream`; `Option<Json<T>>` request bodies are
   `required: false`.
+- `#[garde(...)]` rules on a `#[derive(Schema, garde::Validate)]` type are
+  documented: `length` (`chars` mode, or `min = 1`; item / property counts),
+  `range`, `email` / `url` / `ip*`, `pattern` / `prefix` / `suffix` /
+  `contains` / `ascii`, and `inner(...)` on `items` now appear in the schema,
+  and `#[schema(...)]` / `#[garde(...)]` rules on `Query<Struct>` /
+  `Path<Struct>` fields reach the parameter schemas. Explicit `#[schema(...)]`
+  keywords win; snapshots of such types change.
 - `serde_json::Value` is `{}`, `std::time::Duration` is `{secs, nanos}`;
   `{*rest}` wildcards are documented as `{rest}`.
 - `IpAddr`, `SocketAddr` (and `V4` / `V6`) and `PathBuf` are `string`.
@@ -69,6 +76,17 @@ of an existing 0.5 application.
 - `#[cron]` jobs start once per process (repeated `create_app()` calls no
   longer duplicate schedulers) and run on a dedicated thread when no Tokio
   runtime is present.
+
+### Cargo features (`vespera`, `vespera_macro`)
+
+- Multipart support (`vespera::multipart`, `vespera::tempfile`,
+  `#[derive(Multipart)]`, `schema_type!(..., multipart)`) is behind the new
+  `multipart` feature. It is **default-on**, so default builds are unaffected;
+  **breaking only for `default-features = false` builds that use multipart** —
+  add `features = ["multipart"]` (without it `#[derive(Multipart)]` is a
+  compile error naming the feature). Dropping it removes tempfile, multer,
+  encoding_rs and their dependencies; `axum-extra/multipart` moved from the
+  default list into the feature.
 
 ### Documentation UI (`vespera`, `vespera_macro`, `vespera_core`)
 
@@ -188,6 +206,16 @@ items below are additions, plus one behaviour change to graceful shutdown.
   `shutdown0` / `VesperaBridge.shutdown(Duration)` every dispatch answers
   `503`.
 
+### Observability (`vespera`, `vespera_inprocess`)
+
+- New opt-in `tracing` feature (`vespera/tracing` forwards to
+  `vespera_inprocess/tracing`): a `vespera.dispatch` span per in-process / JNI
+  dispatch (`mode`, `method`, `path` without query, `app`, `status`,
+  `duration_ms`, `panicked`), WARN / ERROR events for synthesised error
+  responses (`400` / `413` / `431` / `503` / `504` / engine `5xx`) and
+  panics, and cron diagnostics as `tracing` events (target `vespera::cron`)
+  instead of `eprintln!`. Off by default; default builds are unchanged.
+
 ### Java bridge (`kr.devfive:vespera-bridge`)
 
 - Spring is a provided dependency (Spring Boot 3.5 and 4 supported); declare
@@ -267,3 +295,88 @@ Additive; the defaults keep the previous behaviour.
   are accepted, and on a musl build host the host build goes to the `-musl`
   folder. A jar built this way needs a bridge from this release to load the
   musl library on Alpine.
+
+### springdoc-openapi integration (`kr.devfive:vespera-bridge`)
+
+Additive; applications without springdoc are unaffected.
+
+- With springdoc-openapi on the classpath (your dependency; the bridge only
+  compiles against it) the Rust routes appear in the application's Swagger UI.
+  The Rust app must serve its document with `vespera!(spec_url = ...)`; the
+  bridge fetches it in-process (native `GET`, no HTTP) from
+  `vespera.bridge.springdoc.spec-path` (default `/openapi.json`), or from a
+  custom `VesperaOpenApiSource` bean.
+- `vespera.bridge.springdoc.mode=group` (default): one Swagger UI definition
+  per documented app (`_default` + `exposed-apps`), served verbatim at
+  `/v3/api-docs/vespera/<app>`; springdoc's own document stays listed as
+  `application`. `mode=merge` merges the paths, components and tags into
+  springdoc's `/v3/api-docs` instead (clashing component names prefixed,
+  named apps' operations get the app header parameter).
+- When springdoc is present, the proxy's `/**` catch-all is no longer listed
+  in springdoc's own document.
+
+### Trusted principal side channel (`vespera_inprocess`, `kr.devfive:vespera-bridge`)
+
+- New optional request wire-header field
+  `"principal": {"name", "authorities"?: [..], "attributes"?: {..}}`, set only
+  by the host (never derived from client headers). Rust handlers extract it as
+  `vespera::inprocess::Principal` (`401` when absent), `Option<Principal>` or
+  `Extension<Principal>`; `RequestEnvelope` gained a `principal` field (a
+  struct literal needs `principal: None`). `authorities` / `attributes` are
+  capped at 1024 entries each (`400`).
+- **Behaviour change:** the Spring proxy now forwards the authenticated
+  servlet principal (`getUserPrincipal()`, plus Spring Security authorities)
+  through a new `PrincipalResolver` bean (default `ServletPrincipalResolver`).
+  Disable with `vespera.bridge.forward-principal=false`, or replace the bean.
+  `VesperaBridge.HeaderSource` gained a `principal()` default method.
+  `VesperaRequest.principal(VesperaPrincipal)` sends it from the programmatic
+  `VesperaClient`.
+### Cancel on disconnect (`vespera_inprocess`, `vespera_jni`, `kr.devfive:vespera-bridge`)
+
+- `dispatchAsync` cancellation reaches Rust: when its `CompletableFuture`
+  completes exceptionally (`cancel(..)`, `orTimeout(..)`, an external
+  `completeExceptionally(..)`) the Rust handler future is dropped at its next
+  `.await` and its `vespera.async.maxInFlight` slot is released (previously
+  the handler ran to completion and its result was discarded).
+- The proxy's `ASYNC` mode cancels the native dispatch when the servlet async
+  request ends first (Spring async timeout, a container-reported error or
+  client disconnect): the timed-out handler no longer keeps running.
+- `VesperaClient` `sendAsync()` / `sendAsync(executor)`: cancelling (or
+  otherwise exceptionally completing) the returned future cancels the native
+  dispatch the same way.
+- A `dispatchAsync` task releases its in-flight slot just before it completes
+  the future, so a caller that sees the completion also sees the slot free.
+- `VesperaBridge.dispatchAsync` is now a Java method (same signature) over the
+  new package-private `AsyncDispatch` natives; the JNI symbol
+  `VesperaBridge.dispatchAsync` is replaced by `AsyncDispatch.dispatch0`
+  (returns a cancellation token) and `AsyncDispatch.cancel0`. As before, the
+  bridge JAR and the native library must come from the same release.
+- New `vespera_inprocess::{cancellable, cancel, cancellable_in_flight}`
+  (host-driven cancellation of a spawned dispatch future) and
+  `vespera_jni::async_in_flight()` (current `dispatchAsync` slot count).
+- Streaming modes already stop on a failed client write (the response body is
+  dropped as soon as the servlet `OutputStream` throws, including on the
+  flush before the body waits); this is now covered by tests. `SYNC` /
+  `DIRECT` dispatches cannot observe a disconnect before the handler returns
+  (the response is only written afterwards); bound them with
+  `vespera.dispatch.timeoutMillis`.
+
+### Java bridge: programmatic client (`kr.devfive:vespera-bridge`)
+
+Additive.
+
+- New `VesperaClient` / `VesperaRequest` / `VesperaResponse` facade for calling
+  the embedded Rust app from Java code without HTTP:
+  `VesperaClient.create().get("/users/42").header("Accept", "application/json").send()`.
+  Builder for method, path, percent-encoded query parameters, headers, raw
+  bodies (`json(String|byte[])`, `text`, `form`, `body(byte[]|String, type)`,
+  `body(InputStream, type)` over bidirectional streaming), app name
+  (`forApp("admin")`), `remote_addr` / `scheme`. `send()` dispatches SYNC
+  (parking on virtual threads), `sendAsync()` / `sendAsync(executor)` ASYNC.
+  Responses expose status, headers, body bytes/string and the hoisted `422`
+  validation errors; domain JSON is never parsed.
+- HTTP error statuses are responses; transport failures (library not
+  initialised, malformed wire, a streamed body failing mid-transfer) throw the
+  new unchecked `VesperaClientException`.
+- The Spring autoconfiguration registers a `VesperaClient` bean
+  (`@ConditionalOnMissingBean`), also with `controller-enabled=false`.

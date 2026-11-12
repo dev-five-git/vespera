@@ -5,7 +5,13 @@ edition = "2024"
 publish = false
 
 [dependencies]
-vespera = { path = "../../crates/vespera" }
+# `tracing`: testkit is only a dev-dependency (of axum-example), so this
+# turns `vespera/tracing` (and through it `vespera_inprocess/tracing`) on for
+# workspace TEST builds only — `cargo test --workspace` and the CI tarpaulin
+# 100% gate then compile, run and cover the instrumentation
+# (`vespera_inprocess/tests/tracing_instrumentation.rs`, cron diagnostics),
+# while `cargo run -p axum-example` keeps its plain stderr diagnostics.
+vespera = { path = "../../crates/vespera", features = ["tracing"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tower = { version = "0.5", features = ["util"] }

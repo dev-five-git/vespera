@@ -67,6 +67,18 @@ class ProxyControllerBodyHeaderTest {
                 new ResponseStatusException(org.springframework.http.HttpStatusCode.valueOf(413), "big"));
         assertEquals(413, tooLarge.getStatusCode().value());
         assertEquals("big", new String((byte[]) tooLarge.getBody(), StandardCharsets.UTF_8));
+
+        // A native future cancelled because the request already ended
+        // (timeout / disconnect): a quiet 503 that is never sent.
+        for (Throwable cancelled : new Throwable[] {
+                new java.util.concurrent.CancellationException(),
+                new java.util.concurrent.CompletionException(
+                        new java.util.concurrent.CancellationException())}) {
+            ResponseEntity<?> gone = VesperaProxyController.asyncFailureToResponse(cancelled);
+            assertEquals(503, gone.getStatusCode().value());
+            assertEquals("vespera: dispatch cancelled",
+                    new String((byte[]) gone.getBody(), StandardCharsets.UTF_8));
+        }
     }
 
     // ── ASYNC buffered-response cap parity with SYNC ─────────────────────

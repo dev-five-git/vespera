@@ -25,10 +25,12 @@ use vespera::{axum, vespera};
 
 /// Default app router (registered under `"_default"`).  Generates
 /// `openapi.json` with the document-validation routes (`/health`,
-/// `/echo`, `/documents/validate`).
+/// `/echo`, `/documents/validate`) and serves it at `GET /openapi.json`
+/// (`spec_url`) — the bridge's springdoc integration fetches it in-process.
 pub fn create_app() -> axum::Router {
     vespera!(
         openapi = "openapi.json",
+        spec_url = "/openapi.json",
         title = "Document Validation API",
         version = "0.1.0"
     )
@@ -37,11 +39,12 @@ pub fn create_app() -> axum::Router {
 /// Admin app router (registered under `"admin"`).  Generates a
 /// separate `openapi-admin.json` so the admin surface has its own
 /// OpenAPI document — multi-app callers fetch the spec for whichever
-/// app they target.
+/// app they target (also served at `GET /openapi.json` of that app).
 pub fn admin_app() -> axum::Router {
     vespera!(
         dir = "admin_routes",
         openapi = "openapi-admin.json",
+        spec_url = "/openapi.json",
         title = "Admin Dashboard API",
         version = "0.1.0"
     )
@@ -67,6 +70,7 @@ mod tests {
 
     fn req(method: &str, path: &str, body: &str) -> RequestEnvelope {
         RequestEnvelope {
+            principal: None,
             method: method.into(),
             path: path.into(),
             query: String::new(),
@@ -141,6 +145,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn register_route_validates_with_422() {
+        let ok = parse(
+            &dispatch(
+                create_app(),
+                &req(
+                    "POST",
+                    "/documents/register",
+                    r#"{"title":"Policy","pageCount":3}"#,
+                ),
+            )
+            .await,
+        );
+        assert_eq!(ok["status"], 200, "{ok}");
+        let bad = parse(
+            &dispatch(
+                create_app(),
+                &req(
+                    "POST",
+                    "/documents/register",
+                    r#"{"title":"","pageCount":0}"#,
+                ),
+            )
+            .await,
+        );
+        assert_eq!(bad["status"], 422, "{bad}");
+        assert!(bad["body"].as_str().unwrap().contains("errors"));
+    }
+
+    #[tokio::test]
     async fn diag_routes_count_finished_runs() {
         let app = create_app();
         let body = |path: &str| {
@@ -159,6 +192,47 @@ mod tests {
         // Sizes are clamped.
         let big = body(&format!("/diag/blob/rust-big/{}", usize::MAX)).await;
         assert_eq!(big.len(), routes::diag::MAX_BLOB_BYTES);
+        // A finished drip counts a run; nothing was dropped.
+        assert_eq!(body("/diag/drip/rust-drip/2/1").await.len(), 2048);
+        assert_eq!(body("/diag/runs/rust-drip").await, "1");
+        assert_eq!(body("/diag/runs/rust-drip:dropped").await, "0");
+        // A sleep cancelled mid-flight records the drop, not a run.
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            dispatch(
+                app.clone(),
+                &req("GET", "/diag/sleep/rust-cancel/60000", ""),
+            ),
+        )
+        .await;
+        assert!(cancelled.is_err());
+        assert_eq!(body("/diag/runs/rust-cancel").await, "0");
+        assert_eq!(body("/diag/runs/rust-cancel:dropped").await, "1");
+        // A drip body dropped before its end records the drop.
+        vespera::inprocess::register_app_named("diag-test", create_app);
+        let header =
+            r#"{"v":1,"method":"GET","path":"/diag/drip/rust-drip-cut/100/1","app":"diag-test"}"#;
+        let mut wire = u32::try_from(header.len()).unwrap().to_be_bytes().to_vec();
+        wire.extend_from_slice(header.as_bytes());
+        let mut chunks = 0;
+        let _ = vespera::inprocess::dispatch_streaming_with_header_async(
+            wire,
+            |_h: &[u8]| {},
+            |c: &[u8]| {
+                if !c.is_empty() {
+                    chunks += 1;
+                }
+                if chunks >= 2 {
+                    std::ops::ControlFlow::Break(())
+                } else {
+                    std::ops::ControlFlow::Continue(())
+                }
+            },
+        )
+        .await;
+        assert_eq!(body("/diag/runs/rust-drip-cut:dropped").await, "1");
+        assert_eq!(body("/diag/runs/rust-drip-cut").await, "0");
+        assert_eq!(body("/diag/async-in-flight").await, "0");
     }
 
     #[tokio::test]
@@ -171,6 +245,7 @@ mod tests {
     #[tokio::test]
     async fn request_headers_forwarded() {
         let envelope = RequestEnvelope {
+            principal: None,
             method: "GET".into(),
             path: "/health".into(),
             query: String::new(),
@@ -187,6 +262,7 @@ mod tests {
     #[tokio::test]
     async fn query_string_forwarded() {
         let envelope = RequestEnvelope {
+            principal: None,
             method: "GET".into(),
             path: "/health".into(),
             query: "foo=bar&baz=1".into(),
@@ -223,6 +299,7 @@ mod tests {
     async fn body_without_content_type_gets_default() {
         // Send a body WITHOUT content-type header — dispatch should inject it
         let envelope = RequestEnvelope {
+            principal: None,
             method: "POST".into(),
             path: "/documents/validate".into(),
             query: String::new(),
@@ -247,6 +324,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_method_falls_back_to_get() {
         let envelope = RequestEnvelope {
+            principal: None,
             method: "INVALID_METHOD".into(),
             path: "/nonexistent".into(),
             query: String::new(),
@@ -266,6 +344,7 @@ mod tests {
         body: &str,
     ) -> RequestEnvelope {
         RequestEnvelope {
+            principal: None,
             method: method.into(),
             path: path.into(),
             query: String::new(),
@@ -360,5 +439,22 @@ mod tests {
             vespera::inprocess::dispatch_from_bytes_async(call(r#","remote_addr":"10.0.0.1:80""#))
                 .await;
         assert_eq!(body(plain), "none 10.0.0.1:80");
+    }
+
+    /// The trusted `principal` reaches `/headers/principal`; anonymous requests get `401`.
+    #[tokio::test]
+    async fn principal_route_reads_the_trusted_principal() {
+        let mut envelope = req("GET", "/headers/principal", "");
+        envelope.principal = Some(vespera::inprocess::Principal {
+            name: "alice".to_owned(),
+            authorities: vec!["ROLE_USER".to_owned(), "ROLE_ADMIN".to_owned()],
+            attributes: [("tenant".to_owned(), "acme".to_owned())].into(),
+        });
+        let v = parse(&dispatch(create_app(), &envelope).await);
+        assert_eq!(v["status"], 200);
+        assert_eq!(v["body"], "alice [ROLE_USER,ROLE_ADMIN] tenant=acme");
+
+        let anonymous = parse(&dispatch(create_app(), &req("GET", "/headers/principal", "")).await);
+        assert_eq!(anonymous["status"], 401);
     }
 }

@@ -74,10 +74,12 @@
 //! |---|---|---|
 //! | `validation` | yes | [`Validated`] / [`ValidatedWith`] and the `#[derive(Schema)]`-generated validator |
 //! | `mimalloc` | yes | mimalloc as the JNI cdylib's global allocator (no-op unless `jni` is enabled) |
+//! | `multipart` | yes | `multipart` — `TypedMultipart`, `#[derive(Multipart)]`, `schema_type!(..., multipart)` (adds tempfile + multer) |
 //! | `cron` | no | `#[vespera::cron("...")]` jobs (evaluated in UTC) and the `cron` scheduler module |
 //! | `cron-tz` | no | `#[vespera::cron("...", tz = "Asia/Seoul")]` — IANA time zones for cron jobs (implies `cron`, adds chrono-tz) |
 //! | `inprocess` | no | `inprocess` — drive a `Router` in-process without a TCP socket |
 //! | `jni` | no | `jni`, `jni_app!` / `jni_apps!` — embed the app in a Java/Spring host |
+//! | `tracing` | no | `tracing` spans/events for in-process / JNI dispatch (`vespera.dispatch` span, error/panic events) and cron diagnostics (target `vespera::cron`) instead of `eprintln!` |
 //!
 //! See the [repository README](https://github.com/dev-five-git/vespera#readme)
 //! and the [documentation site](https://vespera.devfive.kr) for the full guide.
@@ -107,7 +109,19 @@ pub mod docs {
 pub use vespera_core::openapi::OpenApi;
 
 // Re-export macros from vespera_macro
-pub use vespera_macro::{Multipart, Schema, cron, export_app, route, schema, schema_type, vespera};
+pub use vespera_macro::{Schema, cron, export_app, route, schema, schema_type, vespera};
+
+/// `#[derive(Multipart)]` — typed `multipart/form-data` extraction for
+/// `multipart::TypedMultipart` (also emitted by `schema_type!(..., multipart)`).
+#[cfg(feature = "multipart")]
+#[cfg_attr(docsrs, doc(cfg(feature = "multipart")))]
+pub use vespera_macro::Multipart;
+
+// Without the `multipart` feature `#[derive(Multipart)]` still resolves, but to
+// a stand-in derive that expands to a `compile_error!` naming the feature.
+#[cfg(not(feature = "multipart"))]
+#[doc(hidden)]
+pub use vespera_macro::MultipartFeatureDisabled as Multipart;
 
 /// Marker trait implemented by every `#[derive(Schema)]` type.
 ///
@@ -146,9 +160,13 @@ pub use serde_json;
 pub use chrono;
 
 // Native multipart form data extraction (replaces axum_typed_multipart)
+#[cfg(feature = "multipart")]
+#[cfg_attr(docsrs, doc(cfg(feature = "multipart")))]
 pub mod multipart;
 
 // Re-export tempfile for schema_type! multipart mode (NamedTempFile)
+#[cfg(feature = "multipart")]
+#[cfg_attr(docsrs, doc(cfg(feature = "multipart")))]
 pub use tempfile;
 
 #[cfg(feature = "cron")]

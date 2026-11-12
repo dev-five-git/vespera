@@ -20,6 +20,13 @@ class VesperaBridgePluginFunctionalTest {
     private val host = NativePlatform.hostPlatform()
     private val hostOs = host.substringBefore('-')
 
+    // Cross / prebuilt platforms that never coincide with the host's own
+    // slot (the host build would overwrite them on an aarch64 runner).
+    private val crossPlatform = if (host == "linux-aarch64") "linux-x86_64" else "linux-aarch64"
+    private val crossTriple =
+        if (host == "linux-aarch64") "x86_64-unknown-linux-gnu" else "aarch64-unknown-linux-gnu"
+    private val extraPlatform = if (host == "macos-aarch64") "macos-x86_64" else "macos-aarch64"
+
     private fun write(path: String, text: String = path) {
         val f = File(dir, path)
         f.parentFile.mkdirs()
@@ -70,14 +77,14 @@ class VesperaBridgePluginFunctionalTest {
     fun bundlesHostTargetsAndExtraLibraries() {
         val hostLib = NativePlatform.mapLibraryName(hostOs, "demo")
         write("rust/target/release/$hostLib", "host")
-        write("rust/target/aarch64-unknown-linux-gnu/release/libdemo.so", "cross")
-        write("prebuilt/native/macos-aarch64/libdemo.dylib", "extra")
-        write("prebuilt/native/linux-aarch64/libdemo.so", "stale extra")
+        write("rust/target/$crossTriple/release/libdemo.so", "cross")
+        write("prebuilt/native/$extraPlatform/libdemo.dylib", "extra")
+        write("prebuilt/native/$crossPlatform/libdemo.so", "stale extra")
         write("prebuilt/README.txt", "not bundled")
         setUp(
             """
                 extraNativeLibs.set(layout.projectDirectory.dir("prebuilt"))
-                targets.put("linux-aarch64", "aarch64-unknown-linux-gnu")
+                targets.put("$crossPlatform", "$crossTriple")
             """,
         )
 
@@ -86,8 +93,8 @@ class VesperaBridgePluginFunctionalTest {
         assertEquals(TaskOutcome.SUCCESS, result.task(":bundleNativeLib")?.outcome)
         assertEquals("host", resource("$host/$hostLib").readText())
         // The local cross build wins over the prebuilt copy of the same file.
-        assertEquals("cross", resource("linux-aarch64/libdemo.so").readText())
-        assertEquals("extra", resource("macos-aarch64/libdemo.dylib").readText())
+        assertEquals("cross", resource("$crossPlatform/libdemo.so").readText())
+        assertEquals("extra", resource("$extraPlatform/libdemo.dylib").readText())
         assertFalse(File(dir, "build/resources/main/README.txt").exists())
     }
 
@@ -129,11 +136,11 @@ class VesperaBridgePluginFunctionalTest {
     fun missingCrossBuildNamesTheTarget() {
         val hostLib = NativePlatform.mapLibraryName(hostOs, "demo")
         write("rust/target/release/$hostLib")
-        setUp("""    targets.put("linux-aarch64", "aarch64-unknown-linux-gnu")""")
+        setUp("""    targets.put("$crossPlatform", "$crossTriple")""")
 
         val result = run("processResources").buildAndFail()
 
-        assertTrue(result.output.contains("target 'aarch64-unknown-linux-gnu'"), result.output)
+        assertTrue(result.output.contains("target '$crossTriple'"), result.output)
     }
 
     @Test
@@ -142,14 +149,14 @@ class VesperaBridgePluginFunctionalTest {
         setUp(
             """
                 packageName.set("demo")
-                targets.put("linux-aarch64", "aarch64-unknown-linux-gnu")
+                targets.put("$crossPlatform", "$crossTriple")
             """ + printCommands,
         )
 
         val first = run("cargoBuild").build()
         val second = run("cargoBuild").build()
 
-        assertTrue(first.output.contains("--target, aarch64-unknown-linux-gnu"), first.output)
+        assertTrue(first.output.contains("--target, $crossTriple"), first.output)
         assertEquals(TaskOutcome.SUCCESS, second.task(":cargoBuild")?.outcome)
     }
 
@@ -182,14 +189,14 @@ class VesperaBridgePluginFunctionalTest {
     fun configurationCacheIsStoredAndReused() {
         val hostLib = NativePlatform.mapLibraryName(hostOs, "rust_jni_demo")
         write("rust/target/release/$hostLib", "cc")
-        write("rust/target/aarch64-unknown-linux-gnu/release/librust_jni_demo.so", "cross")
-        write("prebuilt/native/macos-aarch64/librust_jni_demo.dylib", "extra")
+        write("rust/target/$crossTriple/release/librust_jni_demo.so", "cross")
+        write("prebuilt/native/$extraPlatform/librust_jni_demo.dylib", "extra")
         setUp(
             """
                 packageName.set("rust-jni-demo")
                 autoBuildCargo.set(true)
                 extraNativeLibs.set(layout.projectDirectory.dir("prebuilt"))
-                targets.put("linux-aarch64", "aarch64-unknown-linux-gnu")
+                targets.put("$crossPlatform", "$crossTriple")
             """,
             crateName = "rust_jni_demo",
             // Untyped stub (no cargo run): a build-script lambda typed against
@@ -213,7 +220,7 @@ class VesperaBridgePluginFunctionalTest {
         assertEquals(TaskOutcome.SUCCESS, second.task(":cargoBuild")?.outcome)
         assertEquals(TaskOutcome.SUCCESS, second.task(":bundleNativeLib")?.outcome)
         assertEquals("cc", resource("$host/$hostLib").readText())
-        assertEquals("extra", resource("macos-aarch64/librust_jni_demo.dylib").readText())
+        assertEquals("extra", resource("$extraPlatform/librust_jni_demo.dylib").readText())
     }
 
     @Test

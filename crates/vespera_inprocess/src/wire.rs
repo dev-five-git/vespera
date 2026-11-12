@@ -16,7 +16,7 @@ use crate::internal::{ConnectionInfo, HEADER_TOO_LARGE_MSG, ResponseParts};
 /// the `serde_json` derive path; the serde version is retained as
 /// `bench_serde::parse_wire_header_serde` for the criterion A/B).
 mod header_read;
-pub use header_read::{MAX_REQUEST_HEADERS, TOO_MANY_HEADERS_MSG};
+pub use header_read::{MAX_PRINCIPAL_ENTRIES, MAX_REQUEST_HEADERS, TOO_MANY_HEADERS_MSG};
 /// Hand-rolled response-header serializer (byte-identical to the
 /// `serde_json` path retained as
 /// `bench_serde::write_wire_header_into_slice_serde` for the criterion A/B).
@@ -38,12 +38,14 @@ pub use bench_serde::{bench_parse_hand, bench_parse_serde, bench_write_hand, ben
 /// derive(serde::Deserialize))]` on [`WireRequestHeader`] — they live in
 /// [`bench_serde`] alongside the rest of the bench-only serde twin.
 #[cfg(any(test, feature = "bench-support"))]
-use bench_serde::{de_cow_pairs, de_opt_cow};
+use bench_serde::{de_cow_pairs, de_opt_cow, de_opt_principal};
 
 use header_write::JsonSink;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_principal;
 
 /// Wire format protocol version.  The JSON header's `v` field MUST
 /// equal this for requests; responses always emit this value.
@@ -112,6 +114,41 @@ pub struct WireRequestHeader<'a> {
         serde(default, borrow, deserialize_with = "de_opt_cow")
     )]
     pub scheme: Option<Cow<'a, str>>,
+    /// Optional authenticated principal set by the **trusted host** (never
+    /// derived from client headers) — see [`crate::Principal`].  Inserted
+    /// as a `Principal` request extension; `null` / absent → none.
+    #[cfg_attr(
+        any(test, feature = "bench-support"),
+        serde(default, borrow, deserialize_with = "de_opt_principal")
+    )]
+    pub principal: Option<WirePrincipal<'a>>,
+}
+
+/// The request wire header's `principal` object
+/// (`{"name", "authorities"?, "attributes"?}`), borrowing from the wire input.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct WirePrincipal<'a> {
+    pub name: Cow<'a, str>,
+    pub authorities: Vec<Cow<'a, str>>,
+    /// `string -> string` pairs in wire order; a repeated key keeps its last
+    /// value once converted to [`crate::Principal::attributes`].
+    pub attributes: CowPairs<'a>,
+}
+
+impl WirePrincipal<'_> {
+    /// Owned [`crate::Principal`] for the request extension.
+    #[must_use]
+    pub fn to_principal(&self) -> crate::Principal {
+        crate::Principal {
+            name: self.name.to_string(),
+            authorities: self.authorities.iter().map(ToString::to_string).collect(),
+            attributes: self
+                .attributes
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
 }
 
 impl WireRequestHeader<'_> {
@@ -132,7 +169,9 @@ impl WireRequestHeader<'_> {
     /// request extensions dispatch inserts (see [`ConnectionInfo`]).
     #[must_use]
     pub fn connection_info(&self) -> ConnectionInfo {
-        ConnectionInfo::parse(self.remote_addr.as_deref(), self.scheme.as_deref())
+        let mut info = ConnectionInfo::parse(self.remote_addr.as_deref(), self.scheme.as_deref());
+        info.principal = self.principal.as_ref().map(WirePrincipal::to_principal);
+        info
     }
 }
 
@@ -373,6 +412,8 @@ static ERROR_WIRE_HEADERS: LazyLock<http::HeaderMap> = LazyLock::new(|| {
 /// `content-type: text/plain; charset=utf-8`.
 #[must_use]
 pub fn error_wire(status: u16, msg: &str) -> Vec<u8> {
+    #[cfg(feature = "tracing")]
+    crate::obs::error_response(status, msg);
     let headers = &*ERROR_WIRE_HEADERS;
     let metadata = ResponseMetadata::current();
     // Write the header + plain-text body straight into one buffer.  An error

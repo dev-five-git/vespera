@@ -31,3 +31,6 @@ node_modules
 # `openapi = "..."` resolves next to the crate (CARGO_MANIFEST_DIR)
 /examples/rust-jni-demo/openapi*.json
 .retry-now/
+
+# CycloneDX SBOMs written by cargo-cyclonedx (scripts/sbom.sh collects them)
+*.cdx.json

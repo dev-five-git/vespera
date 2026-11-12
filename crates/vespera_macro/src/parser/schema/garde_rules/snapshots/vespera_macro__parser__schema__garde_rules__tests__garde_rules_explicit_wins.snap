@@ -1,0 +1,19 @@
+---
+source: crates/vespera_macro/src/parser/schema/garde_rules/tests.rs
+expression: field_json(field_src)
+---
+{
+  "type": "string",
+  "format": "hostname",
+  "minLength": 5,
+  "maxLength": 10,
+  "pattern": "^x",
+  "allOf": [
+    {
+      "pattern": "^y"
+    },
+    {
+      "pattern": "z$"
+    }
+  ]
+}

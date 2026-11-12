@@ -155,6 +155,8 @@ The naming convention is `{RelationNamePascal}In{ResponseBase}` — `user` on `A
 | `multipart` | Derive `Multipart` instead of serde (bare keyword) |
 | `omit_default` | Auto-omit fields with DB defaults (bare keyword) |
 
+Generated types derive `vespera::Schema` (unless `ignore`), so a generated request type with `#[serde(default)]` or one-sided `skip_*` fields gets a separate `{Name}Input` request component — see [Request Views](/documentation/concept/concept-2#request-views-nameinput). SeaORM `JsonValue` columns become `serde_json::Value` fields, documented as any JSON value (`{}`).
+
 ---
 
 ## schema! Macro
