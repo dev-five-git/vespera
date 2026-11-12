@@ -30,16 +30,34 @@ rustdoc-args = ["--cfg", "docsrs"]
 # cdylib builds get the faster global allocator automatically (~9–14%
 # on the dispatch hot path); set `default-features = false` to supply
 # your own `#[global_allocator]` instead.
+#
+# `multipart` is default-on so `TypedMultipart` / `schema_type!(..., multipart)`
+# keep working out of the box; `default-features = false` drops it (and its
+# tempfile / multer dependency subtree) — re-add it with `features = ["multipart"]`.
 default = [
     "axum-extra/typed-header",
     "axum-extra/form",
     "axum-extra/query",
-    "axum-extra/multipart",
     "axum-extra/cookie",
+    "multipart",
     "validation",
     "mimalloc",
 ]
-cron = ["tokio/time", "tokio/sync", "vespera_core/cron-chrono", "vespera_macro/cron"]
+# `multipart/form-data` support: `vespera::multipart` (`TypedMultipart`,
+# `FieldData`, `NamedTempFile` uploads), `#[derive(Multipart)]` and
+# `schema_type!(..., multipart)`. Pulls in tempfile, axum's / axum-extra's
+# multer-based multipart extractors and tokio's fs / io-util. Without it, a
+# `#[derive(Multipart)]` (also emitted by `schema_type!(..., multipart)`) is a
+# compile error naming this feature.
+multipart = [
+    "dep:tempfile",
+    "axum/multipart",
+    "axum-extra/multipart",
+    "tokio/fs",
+    "tokio/io-util",
+    "tokio/rt",
+]
+cron = ["tokio/rt", "tokio/time", "tokio/sync", "vespera_core/cron-chrono", "vespera_macro/cron"]
 # `#[vespera::cron("...", tz = "Asia/Seoul")]`: evaluate a job in an IANA time
 # zone instead of UTC (the default). Pulls in chrono-tz and its embedded tz
 # database (~7 MB of generated source, compiled for the proc-macro too), so it
@@ -62,20 +80,20 @@ validation = ["dep:garde", "dep:serde_path_to_error", "vespera_macro/validation"
 [dependencies]
 vespera_core = { workspace = true }
 vespera_macro = { workspace = true }
-axum = { version = "0.8", default-features = false, features = ["form", "http1", "json", "matched-path", "multipart", "original-uri", "query", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio"] }
 axum-extra = { version = "0.12", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["serde", "now"] }
-tempfile = "3"
+tempfile = { version = "3", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tower-layer = "0.3"
 tower-service = "0.3"
 # Used by the `Serve` extension trait to bind a TcpListener and drive
-# axum::serve, and by the multipart extractor to keep temp-file I/O
-# off the async workers (`fs` + `io-util` for tokio::fs writes,
-# `rt` for spawn_blocking).  Default-on because virtually every axum
+# axum::serve.  The `multipart` feature adds `fs` + `io-util` + `rt` so the
+# multipart extractor keeps temp-file I/O off the async workers (tokio::fs
+# writes, spawn_blocking).  Always present because virtually every axum
 # user already has tokio in their dependency graph.
-tokio = { version = "1", features = ["net", "rt", "fs", "io-util"] }
+tokio = { version = "1", features = ["net"] }
 vespera_inprocess = { workspace = true, optional = true }
 vespera_jni = { workspace = true, optional = true }
 # Hidden behind `validation` feature; re-exported via the private
@@ -122,6 +140,7 @@ harness = false
 [[bench]]
 name = "multipart_error"
 harness = false
+required-features = ["multipart"]
 
 [lints]
 workspace = true

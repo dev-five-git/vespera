@@ -8,7 +8,7 @@ use vespera_core::{
 
 use super::shared::{input_rename_all, named_struct_fields, serde_field_name};
 use crate::parser::schema::{
-    SerdeSide, extract_doc_comment, parse_type_to_schema_ref,
+    SerdeSide, apply_field_rules, extract_doc_comment, parse_type_to_schema_ref,
     schema_attrs::extract_schema_constraints, wire_override::field_schema_ref,
 };
 
@@ -76,13 +76,17 @@ pub(in crate::parser) fn path_extractor_parameters(
                     .iter()
                     .find(|field| serde_field_name(field, rename_all.as_deref()) == *name);
                 let schema = field.map_or_else(string_path_schema, |field| {
-                    field_schema_ref(
+                    let constraints = extract_schema_constraints(&field.attrs);
+                    let mut schema = field_schema_ref(
                         field,
-                        &extract_schema_constraints(&field.attrs),
+                        &constraints,
                         SerdeSide::Deserialize,
                         known_schemas,
                         struct_definitions,
-                    )
+                    );
+                    // `#[schema(..)]` / `#[garde(..)]` rules a validated path enforces.
+                    apply_field_rules(&mut schema, field, &constraints);
+                    schema
                 });
                 // The field's doc comment documents the parameter.
                 Parameter {
@@ -205,6 +209,24 @@ mod tests {
         assert!(parse_path_extractor(&bare, &[], &HashSet::new(), &HashMap::new()).is_none());
         let lifetime: syn::Type = syn::parse_quote!(Path<'static>);
         assert!(parse_path_extractor(&lifetime, &[], &HashSet::new(), &HashMap::new()).is_none());
+    }
+
+    /// `#[schema(..)]` / `#[garde(..)]` rules on a `Path<Struct>` field are
+    /// documented on the path parameter's schema.
+    #[test]
+    fn path_struct_parameters_document_validation_rules() {
+        let ty: syn::Type = syn::parse_quote!(Ids);
+        let definitions: HashMap<&str, &str> = std::iter::once((
+            "Ids",
+            r#"pub struct Ids { #[garde(prefix("u-"))] pub user: String, #[schema(minimum = 1)] pub post: u64 }"#,
+        ))
+        .collect();
+        let names = vec!["user".to_string(), "post".to_string()];
+        let params = super::path_extractor_parameters(&ty, &names, &HashSet::new(), &definitions);
+        insta::assert_snapshot!(
+            "path_struct_parameters_validation_rules",
+            serde_json::to_string_pretty(&params).unwrap()
+        );
     }
 
     #[test]

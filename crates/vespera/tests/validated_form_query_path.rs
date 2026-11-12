@@ -539,46 +539,52 @@ async fn nested_missing_field_path_points_at_the_field() {
     assert_eq!(parsed["errors"][0]["path"], "address.city", "{body}");
 }
 
-#[derive(::vespera::Multipart, garde::Validate)]
-#[allow(dead_code)]
-struct Upload {
-    #[garde(length(min = 1))]
-    name: String,
-}
+/// `TypedMultipart` pass-through (needs the default-on `multipart` feature).
+#[cfg(feature = "multipart")]
+mod multipart_passthrough {
+    use super::*;
 
-async fn upload(
-    Validated(::vespera::multipart::TypedMultipart(_u)): Validated<
-        ::vespera::multipart::TypedMultipart<Upload>,
-    >,
-) -> &'static str {
-    "ok"
-}
+    #[derive(::vespera::Multipart, garde::Validate)]
+    #[allow(dead_code)]
+    struct Upload {
+        #[garde(length(min = 1))]
+        name: String,
+    }
 
-async fn upload_unvalidated(
-    ::vespera::multipart::TypedMultipart(_u): ::vespera::multipart::TypedMultipart<Upload>,
-) -> &'static str {
-    "ok"
-}
+    async fn upload(
+        Validated(::vespera::multipart::TypedMultipart(_u)): Validated<
+            ::vespera::multipart::TypedMultipart<Upload>,
+        >,
+    ) -> &'static str {
+        "ok"
+    }
 
-/// Rejections of extractors other than `Json`/`Form`/`Query`/`Path` (here
-/// `TypedMultipart` without a multipart content type) are not re-shaped:
-/// the inner extractor's own response passes through untouched.
-#[tokio::test]
-async fn non_serde_extractor_rejection_passes_through_unchanged() {
-    let request = || {
-        Request::builder()
-            .method("POST")
-            .uri("/upload")
-            .header("content-type", "text/plain")
-            .body(Body::from("name=x"))
-            .unwrap()
-    };
-    let validated = Router::new().route("/upload", post(upload));
-    let res = validated.oneshot(request()).await.unwrap();
-    let (status, body) = (res.status(), body_to_string(res.into_body()).await);
-    let unwrapped = Router::new().route("/upload", post(upload_unvalidated));
-    let raw_res = unwrapped.oneshot(request()).await.unwrap();
-    assert_ne!(status, 200);
-    assert_eq!(status, raw_res.status());
-    assert_eq!(body, body_to_string(raw_res.into_body()).await);
+    async fn upload_unvalidated(
+        ::vespera::multipart::TypedMultipart(_u): ::vespera::multipart::TypedMultipart<Upload>,
+    ) -> &'static str {
+        "ok"
+    }
+
+    /// Rejections of extractors other than `Json`/`Form`/`Query`/`Path` (here
+    /// `TypedMultipart` without a multipart content type) are not re-shaped:
+    /// the inner extractor's own response passes through untouched.
+    #[tokio::test]
+    async fn non_serde_extractor_rejection_passes_through_unchanged() {
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/upload")
+                .header("content-type", "text/plain")
+                .body(Body::from("name=x"))
+                .unwrap()
+        };
+        let validated = Router::new().route("/upload", post(upload));
+        let res = validated.oneshot(request()).await.unwrap();
+        let (status, body) = (res.status(), body_to_string(res.into_body()).await);
+        let unwrapped = Router::new().route("/upload", post(upload_unvalidated));
+        let raw_res = unwrapped.oneshot(request()).await.unwrap();
+        assert_ne!(status, 200);
+        assert_eq!(status, raw_res.status());
+        assert_eq!(body, body_to_string(raw_res.into_body()).await);
+    }
 }

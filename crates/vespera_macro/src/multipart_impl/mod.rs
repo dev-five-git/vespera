@@ -29,6 +29,20 @@ use syn::{DeriveInput, Fields};
 use self::attrs::{extract_strict, extract_struct_default};
 use self::fields::{FieldCodegen, process_fields};
 
+/// Message of the `compile_error!` emitted when `vespera`'s `multipart`
+/// feature is off (see [`feature_disabled_error`]).
+const FEATURE_DISABLED_MSG: &str = "`#[derive(Multipart)]` (also emitted by `schema_type!(..., multipart)`) \
+     requires vespera's `multipart` feature: it is on by default, so re-enable it after \
+     `default-features = false` with vespera = { features = [\"multipart\"] }";
+
+/// Expansion of `vespera::Multipart` when `vespera` is built **without** its
+/// `multipart` feature: a single `compile_error!` spanned at the struct name,
+/// so the user sees which feature to enable instead of unresolved
+/// `vespera::multipart::...` paths inside generated code.
+pub fn feature_disabled_error(input: &DeriveInput) -> TokenStream {
+    syn::Error::new(input.ident.span(), FEATURE_DISABLED_MSG).to_compile_error()
+}
+
 /// Process the `#[derive(TryFromMultipart)]` macro input.
 pub fn process_derive(input: &DeriveInput) -> TokenStream {
     let struct_name = &input.ident;
@@ -145,6 +159,15 @@ pub fn process_derive(input: &DeriveInput) -> TokenStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_feature_disabled_error_names_the_feature() {
+        let input: syn::DeriveInput = syn::parse_str("struct MyForm { pub name: String }").unwrap();
+        let code = feature_disabled_error(&input).to_string();
+        assert!(code.starts_with(":: core :: compile_error !"), "{code}");
+        assert!(code.contains("vespera's `multipart` feature"), "{code}");
+        assert!(!code.contains("TryFromMultipartWithState"), "{code}");
+    }
 
     #[test]
     fn test_process_derive_basic_struct() {

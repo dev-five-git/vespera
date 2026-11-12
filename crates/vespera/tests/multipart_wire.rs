@@ -10,6 +10,8 @@
 //! `axum::extract::DefaultBodyLimit::disable()` layer; without it
 //! axum's default 2 MiB cap would silently truncate larger uploads.
 
+#![cfg(feature = "multipart")]
+
 use ::axum::{
     Router,
     body::Body,
