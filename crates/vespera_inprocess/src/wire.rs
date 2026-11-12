@@ -16,6 +16,7 @@ use crate::internal::{ConnectionInfo, HEADER_TOO_LARGE_MSG, ResponseParts};
 /// the `serde_json` derive path; the serde version is retained as
 /// `bench_serde::parse_wire_header_serde` for the criterion A/B).
 mod header_read;
+pub use header_read::{MAX_REQUEST_HEADERS, TOO_MANY_HEADERS_MSG};
 /// Hand-rolled response-header serializer (byte-identical to the
 /// `serde_json` path retained as
 /// `bench_serde::write_wire_header_into_slice_serde` for the criterion A/B).

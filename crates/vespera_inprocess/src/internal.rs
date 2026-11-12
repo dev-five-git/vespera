@@ -13,6 +13,7 @@ use tower::ServiceExt;
 
 use crate::Router;
 use crate::envelope::{HeaderValue, ResponseEnvelope, ResponseMetadata};
+use crate::wire::{MAX_REQUEST_HEADERS, TOO_MANY_HEADERS_MSG};
 
 // ── Internal Helpers ─────────────────────────────────────────────────
 
@@ -141,6 +142,12 @@ fn parse_method_or_405(method_str: &str) -> Result<Method, (u16, String)> {
 /// inlined closure shape so the `request_build_ab` criterion A/B arm
 /// stays byte-identical to the prior production shape.
 #[inline]
+/// `431` for a request with more than [`MAX_REQUEST_HEADERS`] headers.
+#[cold]
+fn too_many_headers_err() -> (u16, String) {
+    (431, TOO_MANY_HEADERS_MSG.to_owned())
+}
+
 fn invalid_request_err<E: std::fmt::Display>(e: E) -> (u16, String) {
     (400, format!("invalid request: {e}"))
 }
@@ -333,23 +340,39 @@ fn build_axum_request_inner<'h>(
         .0
         .saturating_add(usize::from(default_json_when_absent));
     let header_map = request.headers_mut();
+    // `try_reserve` / `try_append`: `HeaderMap` PANICS past its 32 768-entry
+    // `MAX_SIZE`, and the direct envelope API (`dispatch_owned`) takes an
+    // arbitrary header collection — so the count is capped here as well as
+    // in the wire parser, and overflow becomes a `431` instead of a panic.
+    if reserve > MAX_REQUEST_HEADERS.saturating_add(1) {
+        return Err(too_many_headers_err());
+    }
     if reserve > 0 {
-        header_map.reserve(reserve);
+        header_map
+            .try_reserve(reserve)
+            .map_err(|_| too_many_headers_err())?;
     }
 
     let mut has_content_type = false;
-    for (name, value) in headers {
+    for (index, (name, value)) in headers.enumerate() {
+        if index == MAX_REQUEST_HEADERS {
+            return Err(too_many_headers_err());
+        }
         let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(invalid_request_err)?;
         let header_value =
             header_value_from_owner(value, header_bytes_owner).map_err(invalid_request_err)?;
         has_content_type = has_content_type || header_name == CONTENT_TYPE;
-        header_map.append(header_name, header_value);
+        header_map
+            .try_append(header_name, header_value)
+            .map_err(|_| too_many_headers_err())?;
     }
     if default_json_when_absent && !has_content_type {
-        header_map.append(
-            CONTENT_TYPE,
-            http::HeaderValue::from_static("application/json"),
-        );
+        header_map
+            .try_append(
+                CONTENT_TYPE,
+                http::HeaderValue::from_static("application/json"),
+            )
+            .map_err(|_| too_many_headers_err())?;
     }
     Ok(request)
 }
@@ -721,6 +744,23 @@ mod tests {
     /// turns into a wire response — never a panic.  Guards the
     /// "all failure modes return a valid wire response" contract for
     /// every `request_builder` call site.
+    /// An iterator whose `size_hint` lower bound is `0` slips past the
+    /// up-front reserve check; the per-header count still caps it at 431.
+    #[test]
+    fn header_count_is_capped_even_without_a_size_hint() {
+        let headers = std::iter::repeat_n(("x-a", "v"), MAX_REQUEST_HEADERS + 1).filter(|_| true);
+        let err = build_axum_request_inner(
+            Method::GET,
+            Uri::from_static("/"),
+            Body::empty(),
+            headers,
+            None,
+            false,
+        )
+        .expect_err("over the cap");
+        assert_eq!(err, (431, TOO_MANY_HEADERS_MSG.to_owned()));
+    }
+
     #[test]
     fn malformed_path_returns_error_not_panic() {
         let result = block_on(async {

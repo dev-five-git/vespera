@@ -56,6 +56,29 @@ const _: () = assert!(
 /// realloc on the larger, common request shape is the priority (speed first).
 const TYPICAL_HEADER_CAP: usize = 16;
 
+/// Hard cap on the number of request headers accepted in one wire header.
+///
+/// `http::HeaderMap` panics once it holds more than 32 768 entries
+/// (`MAX_SIZE`), so an unbounded `headers` object was a remote panic (and
+/// an unbounded `Vec` growth) on every wire entry point.  1024 is an order
+/// of magnitude above any real client — Tomcat's own default
+/// `maxHeaderCount` is 100 — while staying far below the `HeaderMap`
+/// ceiling.  Exceeding it is reported as [`TOO_MANY_HEADERS_MSG`], which
+/// the dispatch prelude maps to a `431 Request Header Fields Too Large`
+/// wire response.
+///
+/// The bench-only `serde_json` twin does not enforce this cap (it is never
+/// used in production); the hand-vs-serde property tests stay below it.
+pub const MAX_REQUEST_HEADERS: usize = 1024;
+
+/// Parse error reported when a wire header carries more than
+/// [`MAX_REQUEST_HEADERS`] headers (mapped to a `431` wire response).
+pub const TOO_MANY_HEADERS_MSG: &str = "too many request headers (more than 1024)";
+const _: () = assert!(
+    MAX_REQUEST_HEADERS == 1024,
+    "keep TOO_MANY_HEADERS_MSG in sync"
+);
+
 /// Error message returned when the wire header `v` field is numerically
 /// out of range for `u8`.  Locked in one place so a future wording change
 /// cannot drift between the in-loop early-out (the accumulator-overflow
@@ -211,6 +234,9 @@ impl<'a> Parser<'a> {
             let name = self.read_string()?;
             self.expect(b':')?;
             let value = self.read_string()?;
+            if out.len() == MAX_REQUEST_HEADERS {
+                return Err(TOO_MANY_HEADERS_MSG.to_owned());
+            }
             out.push((name, value));
             self.skip_ws();
             match self.cur() {

@@ -195,8 +195,102 @@ async fn channel_body_without_a_producer_is_clean_eof() {
         max_bytes: 0,
         received: 0,
         limit_exceeded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        clean_end: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        permit_wait: None,
     };
 
-    body.start_producer_if_needed();
     assert!(body.frame().await.is_none());
+}
+
+fn channel_body<P>(pull: P) -> ChannelBody
+where
+    P: FnMut() -> crate::RequestChunk + Send + 'static,
+{
+    ChannelBody::new(
+        pull,
+        Arc::new(Mutex::new(None)),
+        0,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+}
+
+/// A producer that reports a clean `End` yields its data then a clean EOF.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn channel_body_clean_end_is_eof() {
+    let mut sent = false;
+    let mut body = channel_body(move || {
+        if sent {
+            crate::RequestChunk::End
+        } else {
+            sent = true;
+            crate::RequestChunk::Data(b"abc".to_vec())
+        }
+    });
+    let data = body.frame().await.expect("frame").expect("data");
+    assert_eq!(data.into_data().expect("data frame"), "abc");
+    assert!(
+        body.frame().await.is_none(),
+        "clean End must be a clean EOF"
+    );
+}
+
+/// A channel that closes WITHOUT the producer having seen `End` — e.g. the
+/// `spawn_blocking` producer was dropped unrun during runtime shutdown, so
+/// its sender is dropped too — must surface as a body error, never as a
+/// clean (silently truncated) EOF.
+#[rstest::rstest]
+#[case::dropped_without_end(false, true)]
+#[case::clean_end(true, false)]
+#[tokio::test]
+async fn channel_close_is_eof_only_after_a_clean_end(
+    #[case] clean_end: bool,
+    #[case] expect_abort: bool,
+) {
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    drop(tx);
+    let mut body = ChannelBody {
+        rx: Some(rx),
+        pull_chunk: None,
+        capacity: 1,
+        producer_handle: Arc::new(Mutex::new(None)),
+        max_bytes: 0,
+        received: 0,
+        limit_exceeded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        clean_end: Arc::new(std::sync::atomic::AtomicBool::new(clean_end)),
+        permit_wait: None,
+    };
+    let first = body.frame().await;
+    assert_eq!(matches!(first, Some(Err(_))), expect_abort);
+    assert_eq!(first.is_none(), !expect_abort);
+    assert!(
+        body.frame().await.is_none(),
+        "terminal after the first close"
+    );
+}
+
+/// The producer-slot semaphore admits uncontended producers without
+/// boxing, and a saturated cap leaves the body pending until a slot frees.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn producer_slot_waits_while_saturated() {
+    let slots = Arc::new(tokio::sync::Semaphore::new(1));
+    let mut first = channel_body(|| crate::RequestChunk::End);
+    let held = std::future::poll_fn(|cx| first.poll_producer_slot(&slots, cx)).await;
+    assert!(held.is_some(), "uncontended slot");
+    assert!(first.permit_wait.is_none(), "fast path does not box");
+
+    let mut second = channel_body(|| crate::RequestChunk::End);
+    let pending =
+        std::future::poll_fn(|cx| Poll::Ready(second.poll_producer_slot(&slots, cx).is_pending()))
+            .await;
+    assert!(pending, "saturated cap waits");
+    assert!(second.permit_wait.is_some());
+    drop(held);
+    let acquired = std::future::poll_fn(|cx| second.poll_producer_slot(&slots, cx)).await;
+    assert!(acquired.is_some(), "freed slot is handed over");
+    assert!(second.permit_wait.is_none());
+
+    slots.close();
+    let mut third = channel_body(|| crate::RequestChunk::End);
+    let closed = std::future::poll_fn(|cx| third.poll_producer_slot(&slots, cx)).await;
+    assert!(closed.is_none(), "a closed semaphore runs uncapped");
 }

@@ -5,17 +5,37 @@
 //!
 //! Split out of `streaming.rs` to keep that file within the 1000-line cap.
 
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
+
+use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 
 use bytes::Bytes;
 use http_body::{Body as HttpBody, Frame};
 
 use super::{MAX_CONSECUTIVE_EMPTY_READS, RequestChunk, StreamAbort};
-use crate::config::effective_streaming_channel_capacity;
+use crate::config::{effective_streaming_channel_capacity, max_streaming_request_producers};
+
+/// Process-wide request-producer slots ([`max_streaming_request_producers`]);
+/// `None` when uncapped.  Built on the first producer start, after which the
+/// cap is fixed like every other knob.
+static PRODUCER_SLOTS: OnceLock<Option<Arc<Semaphore>>> = OnceLock::new();
+
+fn producer_slots() -> Option<&'static Arc<Semaphore>> {
+    PRODUCER_SLOTS
+        .get_or_init(|| match max_streaming_request_producers() {
+            0 => None,
+            max => Some(Arc::new(Semaphore::new(max.min(Semaphore::MAX_PERMITS)))),
+        })
+        .as_ref()
+}
+
+type PermitFuture =
+    Pin<Box<dyn Future<Output = Result<OwnedSemaphorePermit, AcquireError>> + Send>>;
 
 /// How long a finished bidirectional dispatch waits for the request
 /// producer to exit after the request source was closed.
@@ -142,6 +162,14 @@ pub struct ChannelBody {
     pub(super) received: usize,
     /// Latched when `received` exceeded `max_bytes`.
     pub(super) limit_exceeded: Arc<AtomicBool>,
+    /// Set by the producer ONLY when the host reported a clean
+    /// [`RequestChunk::End`].  A channel that closes without it (the
+    /// `spawn_blocking` task was dropped unrun at runtime shutdown, or the
+    /// producer exited any other way) is an aborted upload, never a clean
+    /// EOF — see the `Poll::Ready(None)` arm of `poll_frame`.
+    pub(super) clean_end: Arc<AtomicBool>,
+    /// In-progress wait for a producer slot while the cap is saturated.
+    pub(super) permit_wait: Option<PermitFuture>,
 }
 
 impl ChannelBody {
@@ -162,14 +190,52 @@ impl ChannelBody {
             max_bytes,
             received: 0,
             limit_exceeded,
+            clean_end: Arc::new(AtomicBool::new(false)),
+            permit_wait: None,
         }
     }
 
-    pub(super) fn start_producer_if_needed(&mut self) {
-        if self.rx.is_some() {
-            return;
+    /// Start the producer on the first poll, once a producer slot
+    /// ([`max_streaming_request_producers`]) is available.  `Pending` while
+    /// waiting for a slot (no thread is held meanwhile).
+    pub(super) fn poll_start_producer(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if self.rx.is_some() || self.pull_chunk.is_none() {
+            return Poll::Ready(());
         }
+        let permit = match producer_slots() {
+            None => None,
+            Some(slots) => match self.poll_producer_slot(slots, cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(permit) => permit,
+            },
+        };
+        self.start_producer(permit);
+        Poll::Ready(())
+    }
 
+    /// Acquire one producer slot: an uncontended `try_acquire_owned` costs
+    /// no allocation; only a saturated cap boxes the waiting future.
+    pub(super) fn poll_producer_slot(
+        &mut self,
+        slots: &Arc<Semaphore>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<OwnedSemaphorePermit>> {
+        if self.permit_wait.is_none()
+            && let Ok(permit) = Arc::clone(slots).try_acquire_owned()
+        {
+            return Poll::Ready(Some(permit));
+        }
+        let wait = self
+            .permit_wait
+            .get_or_insert_with(|| Box::pin(Arc::clone(slots).acquire_owned()));
+        let acquired = std::task::ready!(wait.as_mut().poll(cx));
+        self.permit_wait = None;
+        // The semaphore is never closed; an `Err` ("closed") would only run
+        // this producer uncapped rather than stall the upload.
+        Poll::Ready(acquired.ok())
+    }
+
+    fn start_producer(&mut self, permit: Option<OwnedSemaphorePermit>) {
         let Some(pull) = self.pull_chunk.take() else {
             return;
         };
@@ -180,7 +246,7 @@ impl ChannelBody {
         // with the producer so unpolled bodies avoid both pieces of setup.
         let (tx, rx) = tokio::sync::mpsc::channel::<RequestFrame>(self.capacity);
         self.rx = Some(rx);
-        let handle = spawn_request_producer(pull, tx);
+        let handle = spawn_request_producer(pull, tx, Arc::clone(&self.clean_end), permit);
         store_request_producer_handle(&self.producer_handle, handle);
     }
 }
@@ -193,7 +259,9 @@ impl HttpBody for ChannelBody {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        self.start_producer_if_needed();
+        if self.poll_start_producer(cx).is_pending() {
+            return Poll::Pending;
+        }
 
         let Some(rx) = self.rx.as_mut() else {
             return Poll::Ready(None);
@@ -214,8 +282,23 @@ impl HttpBody for ChannelBody {
             }
             // Producer reported an abort: surface it as a body error so
             // axum/the handler rejects the truncated upload.
-            Poll::Ready(Some(Err(abort))) => Poll::Ready(Some(Err(abort))),
-            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(Some(Err(abort))) => {
+                self.rx = None;
+                Poll::Ready(Some(Err(abort)))
+            }
+            // The channel closed.  Only a producer that saw the host's
+            // explicit `End` marks the body complete; any other close (the
+            // `spawn_blocking` task dropped unrun during runtime shutdown, a
+            // producer torn down mid-stream) must not be mistaken for a clean
+            // EOF — that would accept a truncated upload as complete.
+            Poll::Ready(None) => {
+                self.rx = None;
+                if self.clean_end.load(Ordering::Acquire) {
+                    Poll::Ready(None)
+                } else {
+                    Poll::Ready(Some(Err(StreamAbort)))
+                }
+            }
             Poll::Pending => Poll::Pending,
         }
     }
@@ -224,8 +307,13 @@ impl HttpBody for ChannelBody {
 fn spawn_request_producer(
     mut pull: PullChunk,
     tx: tokio::sync::mpsc::Sender<RequestFrame>,
+    clean_end: Arc<AtomicBool>,
+    permit: Option<OwnedSemaphorePermit>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
+        // Producer slot: released when this blocking task ends — or when the
+        // runtime drops it unrun at shutdown.
+        let _permit = permit;
         // Fallback sender for the OUTER panic guard: if any panic escapes
         // the producer loop below (not just `pull()`, but `Bytes::from`, the
         // chunk-splitter `while`, or `tx.blocking_send`), the catch below
@@ -333,7 +421,12 @@ fn spawn_request_producer(
                             }
                         }
                     }
-                    RequestChunk::End => break 'producer,
+                    RequestChunk::End => {
+                        // Published BEFORE `tx` drops, so the receiver sees
+                        // the flag once it observes the closed channel.
+                        clean_end.store(true, Ordering::Release);
+                        break 'producer;
+                    }
                     RequestChunk::Error => {
                         // Best-effort: if the receiver is already gone there
                         // is nothing to abort.

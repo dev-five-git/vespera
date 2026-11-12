@@ -83,12 +83,13 @@ pub use axum::Router;
 pub use bounded::DISPATCH_TIMEOUT_MSG;
 pub use config::{
     DEFAULT_MAX_BUFFERED_RESPONSE_BYTES, DEFAULT_MAX_REQUEST_BYTES,
-    DEFAULT_STREAMING_CHANNEL_CAPACITY, DEFAULT_STREAMING_CHUNK_BYTES, dispatch_timeout,
-    effective_streaming_channel_capacity, max_buffered_response_bytes, max_request_bytes,
-    max_streaming_request_bytes, request_exceeds_limit, set_dispatch_timeout,
+    DEFAULT_MAX_STREAMING_REQUEST_PRODUCERS, DEFAULT_STREAMING_CHANNEL_CAPACITY,
+    DEFAULT_STREAMING_CHUNK_BYTES, dispatch_timeout, effective_streaming_channel_capacity,
+    max_buffered_response_bytes, max_request_bytes, max_streaming_request_bytes,
+    max_streaming_request_producers, request_exceeds_limit, set_dispatch_timeout,
     set_max_buffered_response_bytes, set_max_request_bytes, set_max_streaming_request_bytes,
-    set_streaming_channel_capacity, set_streaming_chunk_bytes, streaming_channel_capacity,
-    streaming_chunk_bytes,
+    set_max_streaming_request_producers, set_streaming_channel_capacity, set_streaming_chunk_bytes,
+    streaming_channel_capacity, streaming_chunk_bytes,
 };
 pub use dispatch::{
     DirectWriteResult, check_ingress_cap, dispatch, dispatch_from_bytes, dispatch_from_bytes_async,
@@ -106,7 +107,7 @@ pub use streaming::{
     dispatch_bidirectional_streaming_with_header_closing, dispatch_streaming_async,
     dispatch_streaming_with_header_async, dispatch_streaming_with_outcome_async,
 };
-pub use wire::{error_wire, panic_error_wire};
+pub use wire::{MAX_REQUEST_HEADERS, error_wire, panic_error_wire};
 
 /// Bench-only surface for the same-run hand-rolled vs `serde_json` A/B in
 /// `benches/dispatch.rs` (the `wire_header_serde` criterion group).

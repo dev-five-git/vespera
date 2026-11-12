@@ -21,9 +21,9 @@ use crate::internal::{
 };
 use crate::registry::resolve_app_router;
 use crate::wire::{
-    WIRE_VERSION, WireRequestHeader, error_wire, header_capacity_with_floor, parse_wire_header,
-    split_wire_borrowed, split_wire_request, to_wire_bytes, write_wire_header_into_slice,
-    write_wire_header_into_vec,
+    TOO_MANY_HEADERS_MSG, WIRE_VERSION, WireRequestHeader, error_wire, header_capacity_with_floor,
+    parse_wire_header, split_wire_borrowed, split_wire_request, to_wire_bytes,
+    write_wire_header_into_slice, write_wire_header_into_vec,
 };
 
 // ── Shared wire prelude (used by every wire entry point) ─────────────
@@ -101,7 +101,8 @@ pub fn cap_and_split(input: Vec<u8>) -> Result<(Bytes, Bytes), Vec<u8>> {
 pub fn parse_validate_resolve(
     header_bytes: &[u8],
 ) -> Result<(WireRequestHeader<'_>, Router), Vec<u8>> {
-    let header = parse_wire_header(header_bytes).map_err(|msg| error_wire(400, &msg))?;
+    let header = parse_wire_header(header_bytes)
+        .map_err(|msg| error_wire(parse_error_status(&msg), &msg))?;
     if header.v != WIRE_VERSION {
         return Err(error_wire(
             400,
@@ -113,6 +114,17 @@ pub fn parse_validate_resolve(
     }
     let router = resolve_app_router(&header)?;
     Ok((header, router))
+}
+
+/// Status for a wire-header parse failure: `431` when the header carried
+/// more than [`crate::wire::MAX_REQUEST_HEADERS`] headers, else `400`.
+/// Cold path only (runs on a parse error).
+fn parse_error_status(msg: &str) -> u16 {
+    if msg.ends_with(TOO_MANY_HEADERS_MSG) {
+        431
+    } else {
+        400
+    }
 }
 
 /// Return the sub-[`Bytes`] of `owner` that exactly backs the string slice `s`,
