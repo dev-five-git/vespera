@@ -1,0 +1,59 @@
+error[E0277]: `NoRules` cannot be validated by `Validated` / `ValidatedWith`: it does not implement `garde::Validate`
+  --> tests/ui/validated_payload_without_validate.rs:21:59
+   |
+21 | pub async fn create(Validated(Json(body)): Validated<Json<NoRules>>) -> String {
+   |                                                           ^^^^^^^ this payload type has no `garde::Validate` impl
+   |
+help: the trait `vespera::__validation::garde::Validate` is not implemented for `NoRules`
+  --> tests/ui/validated_payload_without_validate.rs:10:1
+   |
+10 | pub struct NoRules {
+   | ^^^^^^^^^^^^^^^^^^
+   = note: `#[derive(Schema)]` generates `garde::Validate` only for a struct with named fields and at least one runtime `#[schema(...)]` rule (e.g. `#[schema(min_length = 1)]`); enums, tuple structs and rule-less structs get none
+   = note: add a `#[schema(...)]` rule, `#[derive(garde::Validate)]` the type yourself, or drop the `Validated` wrapper and take the plain extractor
+   = help: the following other types implement trait `vespera::__validation::garde::Validate`:
+             &T
+             &mut T
+             ()
+             (A,)
+             (A, B)
+             (A, B, C)
+             (A, B, C, D)
+             (A, B, C, D, E)
+           and $N others
+   = note: required for `NoRules` to implement `vespera::__validation::AssertValidate`
+note: required by a bound in `_::__vespera_assert_validate`
+  --> tests/ui/validated_payload_without_validate.rs:21:59
+   |
+21 | pub async fn create(Validated(Json(body)): Validated<Json<NoRules>>) -> String {
+   |                                                           ^^^^^^^ required by this bound in `__vespera_assert_validate`
+
+error[E0277]: `Kind` cannot be validated by `Validated` / `ValidatedWith`: it does not implement `garde::Validate`
+  --> tests/ui/validated_payload_without_validate.rs:27:94
+   |
+27 |     Validated(vespera::axum::extract::Query(_kind)): Validated<vespera::axum::extract::Query<Kind>>,
+   |                                                                                              ^^^^ this payload type has no `garde::Validate` impl
+   |
+help: the trait `vespera::__validation::garde::Validate` is not implemented for `Kind`
+  --> tests/ui/validated_payload_without_validate.rs:15:1
+   |
+15 | pub enum Kind {
+   | ^^^^^^^^^^^^^
+   = note: `#[derive(Schema)]` generates `garde::Validate` only for a struct with named fields and at least one runtime `#[schema(...)]` rule (e.g. `#[schema(min_length = 1)]`); enums, tuple structs and rule-less structs get none
+   = note: add a `#[schema(...)]` rule, `#[derive(garde::Validate)]` the type yourself, or drop the `Validated` wrapper and take the plain extractor
+   = help: the following other types implement trait `vespera::__validation::garde::Validate`:
+             &T
+             &mut T
+             ()
+             (A,)
+             (A, B)
+             (A, B, C)
+             (A, B, C, D)
+             (A, B, C, D, E)
+           and $N others
+   = note: required for `Kind` to implement `vespera::__validation::AssertValidate`
+note: required by a bound in `_::__vespera_assert_validate`
+  --> tests/ui/validated_payload_without_validate.rs:27:94
+   |
+27 |     Validated(vespera::axum::extract::Query(_kind)): Validated<vespera::axum::extract::Query<Kind>>,
+   |                                                                                              ^^^^ required by this bound in `__vespera_assert_validate`

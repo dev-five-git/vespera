@@ -1,0 +1,5 @@
+---
+source: examples/axum-example/tests/integration_validated.rs
+expression: endpoint.to_string()
+---
+{"bind":"0.0.0.0:3000","callback":null,"data_dir":"/var/lib/app","homepage":"https://example.com/","ip":"127.0.0.1","ipv4":"10.0.0.1","ipv6":"::1","timeout":{"nanos":500000000,"secs":1}}
