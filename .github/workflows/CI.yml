@@ -61,6 +61,9 @@ jobs:
         run: cargo doc --workspace --no-deps --all-features
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
+      - name: Version alignment
+        # All seven published packages share one version; see the script.
+        run: bun scripts/check-version-alignment.ts
       - name: oxlint
         # `bun run lint` would re-run the `prelint` cargo gates above; call
         # the linter it wraps directly.

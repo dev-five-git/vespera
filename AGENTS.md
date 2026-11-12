@@ -437,6 +437,7 @@ props only.
 - **No direct vespera_jni/vespera_inprocess dep**: Use `vespera` features
 - **Java package**: `com.devfive.vespera.bridge` (fixed for JNI symbol stability)
 - **Java build**: Gradle (Kotlin DSL), published to Maven Central (`kr.devfive:vespera-bridge`, `kr.devfive:vespera-bridge-gradle-plugin`) via changepacks → `./gradlew publishToMavenCentral` (vanniktech maven-publish + GPG in-memory signing)
+- **One version for every package**: the five `vespera*` crates, `vespera-bridge` and the Gradle plugin always share a version. List **all seven** packages in every `.changepacks/changepack_log_*.json` with the **same** level (0.x: breaking = `Minor`); `bun scripts/check-version-alignment.ts` (CI lint job) fails otherwise.
 
 ## ANTI-PATTERNS (THIS PROJECT)
 

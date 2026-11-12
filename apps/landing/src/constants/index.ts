@@ -6,7 +6,7 @@
  */
 export const VESPERA_VERSION = '0.6'
 export const VESPERA_BRIDGE_VERSION = '0.6.0'
-export const VESPERA_BRIDGE_PLUGIN_VERSION = '0.5.0'
+export const VESPERA_BRIDGE_PLUGIN_VERSION = '0.6.0'
 
 export interface SideMenuItem {
   label: string
