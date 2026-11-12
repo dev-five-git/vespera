@@ -154,6 +154,16 @@ async fn run(path: &str, script: &[Pull], probe: &Probe) -> (u64, Vec<u8>) {
 #[case::over_limit_in_first_chunk("/echo", &[Pull::Data(MAX_STREAM_REQUEST + 1)], 413, None, 1, 1)]
 #[case::error_on_first_pull("/echo", &[Pull::Error], 400, None, 1, 1)]
 #[case::panic_on_first_pull("/echo", &[Pull::Panic], 400, None, 1, 1)]
+// The budget is spent on two data chunks, so the spawned producer takes the
+// failing third pull and aborts the body the same way.
+#[case::error_after_the_inline_budget(
+    "/echo",
+    &[Pull::Data(64), Pull::Data(64), Pull::Error],
+    400,
+    None,
+    3,
+    2
+)]
 #[case::empty_read_then_end("/echo", &[Pull::Data(0), Pull::End], 200, Some(0), 2, 2)]
 #[case::empty_reads_exhaust_the_budget(
     "/echo",
