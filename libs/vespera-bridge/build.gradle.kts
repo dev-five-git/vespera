@@ -2,6 +2,8 @@ plugins {
     `java-library`
     jacoco
     id("com.vanniktech.maven.publish") version "0.37.0"
+    // CycloneDX SBOM of the published JAR (see "SBOM" at the end of this file).
+    id("org.cyclonedx.bom") version "3.5.1"
 }
 
 group = "kr.devfive"
@@ -225,6 +227,32 @@ mavenPublishing {
             url.set("https://github.com/dev-five-git/vespera")
             connection.set("scm:git:git://github.com/dev-five-git/vespera.git")
             developerConnection.set("scm:git:ssh://git@github.com:dev-five-git/vespera.git")
+        }
+    }
+}
+
+// ── SBOM ──────────────────────────────────────────────────────────────────
+// CycloneDX SBOM of exactly what this JAR ships to consumers: the
+// runtimeClasspath (empty today — every Spring/servlet/slf4j/Micrometer
+// dependency is compileOnly, see "Dependency model" above). Published next to
+// the JAR as `vespera-bridge-<version>-cyclonedx.json` (classifier
+// `cyclonedx`, the convention of the CycloneDX Maven/Gradle tooling), signed
+// with the rest of the publication for Maven Central. CI (`sbom` job) builds it
+// on every PR; the release job additionally attests it against the JAR.
+val cyclonedxDirectBom = tasks.named<org.cyclonedx.gradle.CyclonedxDirectTask>("cyclonedxDirectBom") {
+    includeConfigs = listOf("runtimeClasspath")
+    xmlOutput.unsetConvention()
+    jsonOutput.set(
+        layout.buildDirectory.file("reports/cyclonedx-direct/${project.name}-${project.version}-cyclonedx.json"),
+    )
+}
+
+publishing {
+    publications.withType<MavenPublication>().configureEach {
+        artifact(cyclonedxDirectBom.flatMap { it.jsonOutput }) {
+            classifier = "cyclonedx"
+            extension = "json"
+            builtBy(cyclonedxDirectBom)
         }
     }
 }

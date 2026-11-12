@@ -976,6 +976,16 @@ vespera.bridge:
 
 The supported platforms are `linux-x86_64`, `linux-aarch64`, `linux-x86_64-musl`, `linux-aarch64-musl`, `macos-x86_64`, `macos-aarch64`, `windows-x86_64`. Place the cdylib at `src/main/resources/native/{platform}/` to bundle it; see [`examples/rust-jni-demo/java/demo-app/build.gradle.kts`](../../examples/rust-jni-demo/java/demo-app/build.gradle.kts) for a working Gradle task.
 
+## SBOM and provenance
+
+Each release publishes a CycloneDX SBOM next to the JAR on Maven Central
+(`kr.devfive:vespera-bridge:<version>:cyclonedx@json`, i.e.
+`vespera-bridge-<version>-cyclonedx.json`), and the release workflow attests the
+JARs and SBOM with GitHub build provenance. Verify a downloaded JAR with
+`gh attestation verify vespera-bridge-<version>.jar --repo dev-five-git/vespera`;
+see [SECURITY.md](../../SECURITY.md#verifying-releases) for the SBOM attestation
+and the Gradle plugin.
+
 ## End-to-end example
 
 See [`examples/rust-jni-demo`](../../examples/rust-jni-demo/) for a complete Rust + Spring Boot integration including build scripts, native bundling, and a curl smoke test.
