@@ -703,3 +703,93 @@ fn collect_metadata_rejects_file_outside_folder() {
             .contains("Failed to strip prefix from file")
     );
 }
+
+/// A route module declared behind `#[cfg(..)]` that `#[route]` never
+/// registered is compiled out: the slow path skips it, while `#[cfg]`-gated
+/// handlers in an ungated file are skipped individually.
+#[test]
+fn cfg_gated_route_modules_and_handlers_are_skipped() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    create_temp_file(
+        &temp_dir,
+        "mod.rs",
+        "pub mod users;\n#[cfg(feature = \"admin\")]\npub mod admin;\n",
+    );
+    create_temp_file(
+        &temp_dir,
+        "users.rs",
+        "#[route(get)] pub async fn list() {}\n#[cfg(feature = \"beta\")] #[route(post)] pub async fn beta() {}\n",
+    );
+    create_temp_file(
+        &temp_dir,
+        "admin.rs",
+        "#[route(get)] pub async fn panel() {}\n",
+    );
+    create_temp_file(
+        &temp_dir,
+        "admin/stats.rs",
+        "#[route(get)] pub async fn stats() {}\n",
+    );
+    crate::schema_macro::file_cache::bump_epoch();
+
+    let (metadata, _) = collect_metadata(temp_dir.path(), "routes", &[]).unwrap();
+
+    let names: Vec<&str> = metadata
+        .routes
+        .iter()
+        .map(|route| route.function_name.as_str())
+        .collect();
+    assert_eq!(names, ["list"]);
+}
+
+#[test]
+fn inline_module_route_is_a_compile_error() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    create_temp_file(
+        &temp_dir,
+        "users.rs",
+        "mod v2 { #[route(get)] pub async fn list() {} }\n",
+    );
+    crate::schema_macro::file_cache::bump_epoch();
+
+    let error = collect_metadata(temp_dir.path(), "routes", &[]).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("inside the inline module `mod v2"),
+        "{error}"
+    );
+}
+
+#[test]
+fn stored_inline_module_route_is_a_compile_error() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let file = create_temp_file(
+        &temp_dir,
+        "users.rs",
+        "mod v2 { #[route(get)] pub async fn list() {} }\n",
+    );
+    crate::schema_macro::file_cache::bump_epoch();
+    let storage = [StoredRouteInfo {
+        fn_name: "list".to_string(),
+        method: Some("get".to_string()),
+        custom_path: None,
+        error_status: None,
+        typed_responses: None,
+        tags: None,
+        security: None,
+        headers: Vec::new(),
+        success_status: None,
+        operation_id: None,
+        summary: None,
+        request_example: None,
+        response_example: None,
+        deprecated: false,
+        description: None,
+        fn_sig_str: "async fn list()".to_string(),
+        file_path: Some(file.display().to_string()),
+    }];
+
+    let error = collect_metadata(temp_dir.path(), "routes", &storage).unwrap_err();
+    assert!(error.to_string().contains("`list`"), "{error}");
+}

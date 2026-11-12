@@ -14,6 +14,15 @@ pub(super) fn current_crate_tag() -> String {
     std::env::var("CARGO_PKG_NAME").unwrap_or_else(|_| "default".to_string())
 }
 
+/// `info.description` default: the crate's `description` from Cargo.toml
+/// (`CARGO_PKG_DESCRIPTION`), when non-blank.
+pub(super) fn package_description() -> Option<String> {
+    std::env::var("CARGO_PKG_DESCRIPTION")
+        .ok()
+        .map(|description| description.trim().to_string())
+        .filter(|description| !description.is_empty())
+}
+
 /// Find the folder path for route scanning
 pub fn find_folder_path(folder_name: &str) -> MacroResult<std::path::PathBuf> {
     let root = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| {
@@ -391,5 +400,33 @@ mod tests {
             }
         }
         assert!(error.to_string().contains("CARGO_MANIFEST_DIR is not set"));
+    }
+
+    #[rstest::rstest]
+    #[case::described(Some("  Pet store API "), Some("Pet store API"))]
+    #[case::blank(Some("   "), None)]
+    #[case::unset(None, None)]
+    #[serial_test::serial]
+    fn package_description_reads_cargo_description(
+        #[case] value: Option<&str>,
+        #[case] expected: Option<&str>,
+    ) {
+        let original = std::env::var("CARGO_PKG_DESCRIPTION").ok();
+        // SAFETY: this serialized test restores the process environment before returning.
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var("CARGO_PKG_DESCRIPTION", value),
+                None => std::env::remove_var("CARGO_PKG_DESCRIPTION"),
+            }
+        }
+        let description = package_description();
+        // SAFETY: as above.
+        unsafe {
+            match original {
+                Some(value) => std::env::set_var("CARGO_PKG_DESCRIPTION", value),
+                None => std::env::remove_var("CARGO_PKG_DESCRIPTION"),
+            }
+        }
+        assert_eq!(description.as_deref(), expected);
     }
 }

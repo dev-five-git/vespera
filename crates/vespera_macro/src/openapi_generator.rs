@@ -12,6 +12,8 @@ use crate::{metadata::CollectedMetadata, route_impl::StoredRouteInfo};
 mod component_schemas;
 mod defaults;
 mod paths;
+#[cfg(test)]
+mod tests_accuracy;
 
 use component_schemas::{
     build_file_cache, build_schema_lookups, build_struct_file_index, parse_component_schemas,
@@ -79,11 +81,15 @@ pub fn try_generate_openapi_doc_with_metadata(
         }
     };
 
+    // Recursive generic instantiations materialise as components while the
+    // schemas and paths are built; start from a clean slate (a previous
+    // expansion on this thread may have left some behind).
+    crate::parser::schema::generic_instances::take_materialized();
     let (known_schema_names, struct_definitions) = build_schema_lookups(metadata);
     let file_cache = file_cache.unwrap_or_else(|| build_file_cache(metadata));
     let struct_file_index = build_struct_file_index(&file_cache);
     stage("lookups + file index");
-    let schemas = parse_component_schemas(
+    let mut schemas = parse_component_schemas(
         metadata,
         &known_schema_names,
         &struct_definitions,
@@ -99,6 +105,9 @@ pub fn try_generate_openapi_doc_with_metadata(
         route_storage,
     )?;
     stage("path items");
+    for (name, schema) in crate::parser::schema::generic_instances::take_materialized() {
+        schemas.entry(name).or_insert(schema);
+    }
     let security_config = security_config.unwrap_or_default();
     let tags = build_tags(all_tags, security_config.tag_descriptions.as_ref());
 
@@ -109,13 +118,11 @@ pub fn try_generate_openapi_doc_with_metadata(
             version: version.unwrap_or_else(|| "1.0.0".to_string()),
             ..Default::default()
         },
-        servers: servers.or_else(|| {
-            Some(vec![Server {
-                url: "http://localhost:3000".to_string(),
-                description: None,
-                variables: None,
-            }])
-        }),
+        // No configured server → omit `servers`: the OpenAPI default is the
+        // same origin that serves the document, which is what an embedded
+        // `/docs` UI needs. A hard-coded `http://localhost:3000` broke every
+        // deployment that did not run on that exact address.
+        servers,
         paths,
         components: Some(Components {
             schemas: if schemas.is_empty() {
@@ -241,11 +248,8 @@ mod tests {
         assert_eq!(doc.info.version, "1.0.0");
         assert!(doc.paths.is_empty());
         assert!(doc.components.as_ref().unwrap().schemas.is_none());
-        assert_eq!(doc.servers.as_ref().unwrap().len(), 1);
-        assert_eq!(
-            doc.servers.as_ref().unwrap()[0].url,
-            "http://localhost:3000"
-        );
+        // No configured server → `servers` is omitted (spec default: same origin).
+        assert!(doc.servers.is_none());
     }
 
     #[rstest]

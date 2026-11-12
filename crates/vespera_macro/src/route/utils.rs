@@ -8,6 +8,40 @@ use crate::{args::RouteArgs, http::is_http_method, metadata::HeaderParam};
 // second byte-identical copy of the function.
 pub use crate::parser::schema::extract_doc_comment;
 
+/// Operation `(summary, description)` from the route arguments and the
+/// handler's doc comment.
+///
+/// An explicit `description = ".."` wins and the doc comment is ignored.
+/// Otherwise the doc comment is split the rustdoc way: its first paragraph
+/// (lines up to the first blank line, joined with spaces so a wrapped
+/// sentence stays whole) becomes the `summary` — unless `summary = ".."` is
+/// given, in which case the WHOLE doc becomes the description — and the
+/// paragraphs after it become the `description`.
+pub fn doc_summary_and_description(
+    summary: Option<String>,
+    description: Option<String>,
+    attrs: &[syn::Attribute],
+) -> (Option<String>, Option<String>) {
+    if description.is_some() {
+        return (summary, description);
+    }
+    let Some(doc) = extract_doc_comment(attrs) else {
+        return (summary, None);
+    };
+    if summary.is_some() {
+        return (summary, Some(doc));
+    }
+    let (first, rest) = doc.split_once("\n\n").unwrap_or((doc.as_str(), ""));
+    let summary = first.lines().map(str::trim).collect::<Vec<_>>().join(" ");
+    let rest = rest.trim_start_matches('\n');
+    (Some(summary), (!rest.is_empty()).then(|| rest.to_string()))
+}
+
+/// Whether a handler carries Rust's `#[deprecated]` attribute.
+pub fn has_deprecated_attr(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| attr.path().is_ident("deprecated"))
+}
+
 #[derive(Debug)]
 pub struct RouteInfo {
     pub method: String,
@@ -427,6 +461,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[rstest::rstest]
+    #[case::wrapped_summary(None, None, &[" Get a user", " by id.", "", "", " More."], (Some("Get a user by id."), Some("More.")))]
+    #[case::first_paragraph_is_summary(None, None, &[" Get a user.", "", " Looks it up", " by id."], (Some("Get a user."), Some("Looks it up\nby id.")))]
+    #[case::single_line(None, None, &[" Get a user."], (Some("Get a user."), None))]
+    #[case::explicit_summary_keeps_whole_doc(Some("S"), None, &[" A", " B"], (Some("S"), Some("A\nB")))]
+    #[case::explicit_description_ignores_doc(None, Some("D"), &[" A"], (None, Some("D")))]
+    #[case::no_doc(Some("S"), None, &[], (Some("S"), None))]
+    fn doc_comment_splits_into_summary_and_description(
+        #[case] summary: Option<&str>,
+        #[case] description: Option<&str>,
+        #[case] doc: &[&str],
+        #[case] expected: (Option<&str>, Option<&str>),
+    ) {
+        let attrs: Vec<syn::Attribute> = doc
+            .iter()
+            .map(|line| syn::parse_quote!(#[doc = #line]))
+            .collect();
+        let (s, d) = doc_summary_and_description(
+            summary.map(str::to_string),
+            description.map(str::to_string),
+            &attrs,
+        );
+        assert_eq!((s.as_deref(), d.as_deref()), expected);
+    }
+
+    #[test]
+    fn deprecated_attribute_is_detected() {
+        let item: syn::ItemFn = syn::parse_quote! {
+            #[deprecated(note = "use v2")]
+            async fn old() {}
+        };
+        assert!(has_deprecated_attr(&item.attrs));
+        let item: syn::ItemFn = syn::parse_quote!(
+            async fn new() {}
+        );
+        assert!(!has_deprecated_attr(&item.attrs));
     }
 
     // Tests for extract_doc_comment function

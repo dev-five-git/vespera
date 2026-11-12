@@ -5,6 +5,7 @@ use std::path::Path;
 
 use syn::Item;
 
+mod module_scope;
 mod path_scan;
 
 pub use path_scan::{fingerprints_from_scan, scan_route_folder};
@@ -13,7 +14,7 @@ use crate::{
     error::{MacroResult, err_call_site},
     file_utils::{file_to_segments, normalize_display_path, normalize_path_key},
     metadata::{CollectedMetadata, RouteMetadata},
-    route::{extract_doc_comment, extract_route_info},
+    route::{doc_summary_and_description, extract_route_info, has_deprecated_attr},
     route_impl::StoredRouteInfo,
 };
 
@@ -162,6 +163,7 @@ fn push_parsed_routes(
     let mut route_entries: Vec<(&syn::ItemFn, crate::route::RouteInfo)> = Vec::new();
     for item in &file_ast.items {
         if let Item::Fn(fn_item) = item
+            && !module_scope::is_cfg_gated(&fn_item.attrs)
             && let Some(route_info) = extract_route_info(&fn_item.attrs)
         {
             route_entries.push((fn_item, route_info));
@@ -172,11 +174,10 @@ fn push_parsed_routes(
     for (i, (fn_item, route_info)) in route_entries.into_iter().enumerate() {
         let route_path = build_route_path(base_path, route_info.path.as_deref());
 
-        // Description priority: route attribute > doc comment
-        // (move the owned Option instead of cloning + dropping it)
-        let description = route_info
-            .description
-            .or_else(|| extract_doc_comment(&fn_item.attrs));
+        // Summary / description: route attributes > doc comment (first
+        // line → summary, rest → description) — same rule as `#[route]`.
+        let (summary, description) =
+            doc_summary_and_description(route_info.summary, route_info.description, &fn_item.attrs);
 
         let (mp, fp) = take_or_clone(module_path, file_path, i + 1 == n);
 
@@ -193,10 +194,10 @@ fn push_parsed_routes(
             security: route_info.security,
             headers: route_info.headers,
             operation_id: route_info.operation_id,
-            summary: route_info.summary,
+            summary,
             request_example: route_info.request_example,
             response_example: route_info.response_example,
-            deprecated: route_info.deprecated,
+            deprecated: route_info.deprecated || has_deprecated_attr(&fn_item.attrs),
             description,
         });
     }
@@ -308,6 +309,15 @@ pub fn collect_metadata_from_files<'a>(
         // every non-last route but MOVED into the last route's push —
         // refcount-free amortization of two String allocations per file.
         if let Some(stored_routes) = storage_by_file.get(&file_key) {
+            let stored_names: Vec<&str> = stored_routes
+                .iter()
+                .map(|stored| stored.fn_name.as_str())
+                .collect();
+            if let Some(found) = module_scope::stored_inline_mod_route(file, &stored_names) {
+                return Err(err_call_site(module_scope::inline_mod_route_error(
+                    file, &found,
+                )));
+            }
             push_stored_routes(
                 &mut metadata,
                 &base_path,
@@ -319,6 +329,9 @@ pub fn collect_metadata_from_files<'a>(
             // No file_asts insertion needed in fast path:
             // #[derive(Schema)] already extracts serde(default = "fn") values
             // into SCHEMA_STORAGE.field_defaults (Priority 0 in process_default_functions)
+        } else if module_scope::is_cfg_gated_module(folder_path, &segments) {
+            // Never registered by `#[route]` and declared behind `#[cfg(..)]`:
+            // the module is compiled out, so it contributes no routes.
         } else {
             let file_ast = crate::schema_macro::file_cache::get_parsed_file(file).ok_or_else(|| err_call_site(format!("vespera! macro: cannot read or parse '{}'. Fix the Rust syntax errors in this file.", file.display())))?;
 
@@ -332,6 +345,11 @@ pub fn collect_metadata_from_files<'a>(
             // The `clone()` stays: the map needs to own its key, because
             // `push_parsed_routes` takes `&mut file_path` and may `mem::take`
             // it for the file's last route.
+            if let Some(found) = module_scope::inline_mod_route(&file_ast.items, &|_| false) {
+                return Err(err_call_site(module_scope::inline_mod_route_error(
+                    file, &found,
+                )));
+            }
             let file_ast: &syn::File = file_asts.entry(file_path.clone()).or_insert(file_ast);
 
             push_parsed_routes(

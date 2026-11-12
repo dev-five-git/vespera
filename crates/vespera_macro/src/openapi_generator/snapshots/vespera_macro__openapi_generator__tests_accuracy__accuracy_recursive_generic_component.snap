@@ -1,0 +1,123 @@
+---
+source: crates/vespera_macro/src/openapi_generator/tests_accuracy.rs
+expression: pretty(&doc)
+---
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/page": {
+      "get": {
+        "operationId": "page",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Tree_i32"
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "format": "uint64"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "total"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tree": {
+      "get": {
+        "operationId": "tree",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tree_i32"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Page": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "uint64"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ]
+      },
+      "Tree": {
+        "type": "object",
+        "properties": {
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Tree"
+            }
+          },
+          "value": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "value",
+          "children"
+        ]
+      },
+      "Tree_i32": {
+        "type": "object",
+        "properties": {
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Tree_i32"
+            }
+          },
+          "value": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "required": [
+          "value",
+          "children"
+        ]
+      }
+    }
+  }
+}

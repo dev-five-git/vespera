@@ -4,16 +4,11 @@
     "title": "API",
     "version": "0.1.0"
   },
-  "servers": [
-    {
-      "url": "http://localhost:3000"
-    }
-  ],
   "paths": {
     "/": {
       "get": {
         "operationId": "root_endpoint",
-        "description": "Health check endpoint",
+        "summary": "Health check endpoint",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -88,7 +83,7 @@
         "tags": [
           "config"
         ],
-        "description": "Get current config",
+        "summary": "Get current config",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -107,7 +102,7 @@
         "tags": [
           "config"
         ],
-        "description": "Update config",
+        "summary": "Update config",
         "requestBody": {
           "required": true,
           "content": {
@@ -307,7 +302,7 @@
         "tags": [
           "error"
         ],
-        "description": "Logout endpoint that uses CookieJar to clear cookies",
+        "summary": "Logout endpoint that uses CookieJar to clear cookies",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -475,7 +470,7 @@
         "tags": [
           "error"
         ],
-        "description": "Delete endpoint that returns just a StatusCode",
+        "summary": "Delete endpoint that returns just a StatusCode",
         "parameters": [
           {
             "name": "id",
@@ -510,7 +505,8 @@
         "tags": [
           "flatten"
         ],
-        "description": "List users with pagination (demonstrates flatten for request/response)\n\nThe request accepts flattened pagination parameters (page, per_page)\nand returns a response with flattened metadata (total, has_more).",
+        "summary": "List users with pagination (demonstrates flatten for request/response)",
+        "description": "The request accepts flattened pagination parameters (page, per_page)\nand returns a response with flattened metadata (total, has_more).",
         "requestBody": {
           "required": true,
           "content": {
@@ -541,7 +537,7 @@
         "tags": [
           "flatten"
         ],
-        "description": "Advanced search endpoint with multiple flatten fields",
+        "summary": "Advanced search endpoint with multiple flatten fields",
         "requestBody": {
           "required": true,
           "content": {
@@ -609,7 +605,7 @@
         "tags": [
           "form"
         ],
-        "description": "Subscribe to newsletter via form submission",
+        "summary": "Subscribe to newsletter via form submission",
         "requestBody": {
           "required": true,
           "content": {
@@ -640,7 +636,7 @@
         "tags": [
           "form"
         ],
-        "description": "Submit a contact form",
+        "summary": "Submit a contact form",
         "requestBody": {
           "required": true,
           "content": {
@@ -671,7 +667,7 @@
         "tags": [
           "form"
         ],
-        "description": "Upload a file via raw multipart form data",
+        "summary": "Upload a file via raw multipart form data",
         "requestBody": {
           "required": true,
           "content": {
@@ -906,7 +902,7 @@
         "tags": [
           "hello"
         ],
-        "description": "Hello!!",
+        "summary": "Hello!!",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -972,7 +968,7 @@
     "/memos": {
       "post": {
         "operationId": "create_memo",
-        "description": "Create a new memo",
+        "summary": "Create a new memo",
         "requestBody": {
           "required": true,
           "content": {
@@ -998,7 +994,7 @@
       },
       "put": {
         "operationId": "update_memo",
-        "description": "Update a memo",
+        "summary": "Update a memo",
         "requestBody": {
           "required": true,
           "content": {
@@ -1026,7 +1022,7 @@
     "/memos/format": {
       "get": {
         "operationId": "get_memo_format",
-        "description": "Get memo response format",
+        "summary": "Get memo response format",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1044,7 +1040,7 @@
     "/memos/{id}": {
       "get": {
         "operationId": "get_memo",
-        "description": "Get memo by id",
+        "summary": "Get memo by id",
         "parameters": [
           {
             "name": "id",
@@ -1129,7 +1125,7 @@
     "/memos/{id}/summary": {
       "get": {
         "operationId": "get_memo_summary",
-        "description": "Get a memo summary (same-file relation adapter with a custom schema name)",
+        "summary": "Get a memo summary (same-file relation adapter with a custom schema name)",
         "parameters": [
           {
             "name": "id",
@@ -1298,7 +1294,7 @@
     "/shapes/bytes": {
       "get": {
         "operationId": "raw_bytes",
-        "description": "`application/octet-stream` response behind a header array.",
+        "summary": "`application/octet-stream` response behind a header array.",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1317,7 +1313,7 @@
     "/shapes/files/{rest}": {
       "get": {
         "operationId": "file_by_wildcard",
-        "description": "`GET /shapes/files/{*rest}` — documented as `/shapes/files/{rest}`.",
+        "summary": "`GET /shapes/files/{*rest}` — documented as `/shapes/files/{rest}`.",
         "parameters": [
           {
             "name": "rest",
@@ -1345,7 +1341,7 @@
     "/shapes/html": {
       "get": {
         "operationId": "html_page",
-        "description": "`text/html` response.",
+        "summary": "`text/html` response.",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1363,7 +1359,7 @@
     "/shapes/items/{item_id}/{slug}": {
       "get": {
         "operationId": "item_by_path",
-        "description": "`GET /shapes/items/{item_id}/{slug}` — `item_id` is documented as an\ninteger and `slug` as a string (not the whole struct).",
+        "summary": "`GET /shapes/items/{item_id}/{slug}` — `item_id` is documented as an integer and `slug` as a string (not the whole struct).",
         "parameters": [
           {
             "name": "item_id",
@@ -1400,7 +1396,7 @@
     "/shapes/note": {
       "post": {
         "operationId": "optional_note",
-        "description": "Optional JSON body (`requestBody.required: false`).",
+        "summary": "Optional JSON body (`requestBody.required: false`).",
         "requestBody": {
           "required": false,
           "content": {
@@ -1428,7 +1424,7 @@
     "/shapes/opaque": {
       "get": {
         "operationId": "opaque",
-        "description": "`impl IntoResponse` is opaque: description only.",
+        "summary": "`impl IntoResponse` is opaque: description only.",
         "responses": {
           "200": {
             "description": "Successful response"
@@ -1439,7 +1435,7 @@
     "/shapes/raw_path": {
       "get": {
         "operationId": "raw_path",
-        "description": "Explicit paths are served verbatim (no kebab-casing): `/shapes/raw_path`.",
+        "summary": "Explicit paths are served verbatim (no kebab-casing): `/shapes/raw_path`.",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1457,7 +1453,7 @@
     "/shapes/redirect": {
       "get": {
         "operationId": "redirect",
-        "description": "Redirects carry no documented body.",
+        "summary": "Redirects carry no documented body.",
         "responses": {
           "200": {
             "description": "Successful response"
@@ -1468,7 +1464,7 @@
     "/shapes/search": {
       "get": {
         "operationId": "search",
-        "description": "`GET /shapes/search` (axum-extra `Query` deserializes repeated keys).",
+        "summary": "`GET /shapes/search` (axum-extra `Query` deserializes repeated keys).",
         "parameters": [
           {
             "name": "q",
@@ -1550,7 +1546,7 @@
     "/shapes/upload": {
       "post": {
         "operationId": "upload_bytes",
-        "description": "`application/octet-stream` request body.",
+        "summary": "`application/octet-stream` request body.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1736,7 +1732,7 @@
     "/third": {
       "get": {
         "operationId": "third_root_endpoint",
-        "description": "Third app root endpoint",
+        "summary": "Third app root endpoint",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1757,7 +1753,7 @@
         "tags": [
           "third"
         ],
-        "description": "Third app hello endpoint",
+        "summary": "Third app hello endpoint",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1829,7 +1825,7 @@
         "tags": [
           "typed-form"
         ],
-        "description": "List all file uploads",
+        "summary": "List all file uploads",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -1851,7 +1847,7 @@
         "tags": [
           "typed-form"
         ],
-        "description": "Create a new file upload with multipart form data",
+        "summary": "Create a new file upload with multipart form data",
         "requestBody": {
           "required": true,
           "content": {
@@ -1892,7 +1888,7 @@
         "tags": [
           "typed-form"
         ],
-        "description": "Update a file upload with multipart form data",
+        "summary": "Update a file upload with multipart form data",
         "parameters": [
           {
             "name": "id",
@@ -1942,7 +1938,7 @@
         "tags": [
           "typed-form"
         ],
-        "description": "Patch a file upload (partial update via schema_type! multipart)",
+        "summary": "Patch a file upload (partial update via schema_type! multipart)",
         "parameters": [
           {
             "name": "id",
@@ -2033,7 +2029,7 @@
     "/users": {
       "get": {
         "operationId": "get_users",
-        "description": "Get all users (returns public response without internal_score)",
+        "summary": "Get all users (returns public response without internal_score)",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -2052,7 +2048,7 @@
       },
       "post": {
         "operationId": "create_user",
-        "description": "Create a new user\nRequest body uses CreateUserRequest (generated from User with only name, email)",
+        "summary": "Create a new user Request body uses CreateUserRequest (generated from User with only name, email)",
         "requestBody": {
           "required": true,
           "content": {
@@ -2080,7 +2076,7 @@
     "/users/dto/{id}": {
       "get": {
         "operationId": "get_user_dto",
-        "description": "Get user DTO (demonstrates field rename feature)\nThe Rust struct uses user_id/display_name, but JSON uses id/name",
+        "summary": "Get user DTO (demonstrates field rename feature) The Rust struct uses user_id/display_name, but JSON uses id/name",
         "parameters": [
           {
             "name": "id",
@@ -2126,7 +2122,7 @@
     "/users/summary": {
       "get": {
         "operationId": "get_users_summary",
-        "description": "Get user summaries (minimal fields for list views)",
+        "summary": "Get user summaries (minimal fields for list views)",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -2147,7 +2143,7 @@
     "/users/with-meta": {
       "post": {
         "operationId": "create_user_with_meta",
-        "description": "Create a new user with metadata (demonstrates `add` feature)\nRequest body uses CreateUserWithMeta (picks name/email, adds request_id/created_at)",
+        "summary": "Create a new user with metadata (demonstrates `add` feature) Request body uses CreateUserWithMeta (picks name/email, adds request_id/created_at)",
         "requestBody": {
           "required": true,
           "content": {
@@ -2175,7 +2171,7 @@
     "/users/{id}": {
       "get": {
         "operationId": "get_user",
-        "description": "Get user by ID (full internal view)",
+        "summary": "Get user by ID (full internal view)",
         "parameters": [
           {
             "name": "id",
@@ -2207,7 +2203,7 @@
         "tags": [
           "uuid_items"
         ],
-        "description": "List all UUID items",
+        "summary": "List all UUID items",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -2229,7 +2225,7 @@
         "tags": [
           "uuid_items"
         ],
-        "description": "Create a new UUID item",
+        "summary": "Create a new UUID item",
         "requestBody": {
           "required": true,
           "content": {
@@ -2260,7 +2256,7 @@
         "tags": [
           "validated"
         ],
-        "description": "Echo back the validated input.  If the request body fails\nvalidation, this handler never runs — the `Validated` extractor\nreturns a `422` before it is reached.",
+        "summary": "Echo back the validated input.  If the request body fails validation, this handler never runs — the `Validated` extractor returns a `422` before it is reached.",
         "requestBody": {
           "required": true,
           "content": {
