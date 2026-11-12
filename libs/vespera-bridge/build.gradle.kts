@@ -62,7 +62,7 @@ val springBootVersion = "4.1.2"
 val springFrameworkVersion = "7.0.10"
 val springBoot3Version = "3.5.16"
 val springFramework3Version = "6.2.19"
-val micrometerVersion = "1.15.12"
+val micrometerVersion = "1.17.2"
 // Optional springdoc-openapi integration (VesperaSpringdocAutoConfiguration):
 // springdoc 3.x targets Boot 4, 2.x Boot 3.5 — the APIs the bridge uses exist in both.
 val springdocVersion = "3.2.0"
@@ -72,7 +72,7 @@ dependencies {
     compileOnly("org.springframework.boot:spring-boot-autoconfigure:$springBootVersion")
     compileOnly("org.springframework:spring-webmvc:$springFrameworkVersion")
     compileOnly("jakarta.servlet:jakarta.servlet-api:6.1.0")
-    compileOnly("org.slf4j:slf4j-api:2.0.17")
+    compileOnly("org.slf4j:slf4j-api:2.0.20")
     // Optional: MicrometerDispatchObserver / VesperaBridgeMetricsAutoConfiguration
     // only load when the application ships Micrometer (e.g. via Actuator).
     compileOnly("io.micrometer:micrometer-core:$micrometerVersion")
