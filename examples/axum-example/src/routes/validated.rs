@@ -19,7 +19,10 @@
 //! `openapi.json`.
 
 use serde::{Deserialize, Serialize};
-use vespera::axum::{Json, extract::Path};
+use vespera::axum::{
+    Form, Json,
+    extract::{Path, Query},
+};
 use vespera::{Schema, Validated, ValidatedWith};
 
 use crate::TagPolicy;
@@ -103,6 +106,65 @@ pub async fn create_tagged_post(
     post: ValidatedWith<TagPolicy, Json<TaggedPost>>,
 ) -> Json<TaggedPost> {
     post.into_inner()
+}
+
+/// Query string for `GET /validated/search` — validated like a body.
+#[derive(Debug, Deserialize, Serialize, Schema)]
+pub struct ValidatedSearchQuery {
+    /// Search term, 2–64 characters.
+    #[schema(min_length = 2, max_length = 64)]
+    pub q: String,
+
+    /// Page size, 1–100.
+    #[schema(minimum = 1, maximum = 100)]
+    pub limit: u32,
+}
+
+/// Search with validated query parameters.
+///
+/// `Validated<Query<T>>` documents each field as a query parameter plus the
+/// `422` response, and answers `422` for an out-of-range value.
+#[vespera::route(get, path = "/search", tags = ["validated"])]
+pub async fn validated_search(
+    Validated(Query(query)): Validated<Query<ValidatedSearchQuery>>,
+) -> Json<ValidatedSearchQuery> {
+    Json(query)
+}
+
+/// `application/x-www-form-urlencoded` body for `POST /validated/signup`.
+#[derive(Debug, Deserialize, Serialize, Schema)]
+pub struct ValidatedSignupForm {
+    /// Login handle.
+    #[schema(min_length = 3, max_length = 32)]
+    pub username: String,
+
+    /// Contact email.
+    #[schema(format = "email")]
+    pub email: String,
+}
+
+/// Sign up with a validated urlencoded form (`Validated<Form<T>>`).
+#[vespera::route(post, path = "/signup", tags = ["validated"])]
+pub async fn validated_signup(
+    Validated(Form(form)): Validated<Form<ValidatedSignupForm>>,
+) -> Json<ValidatedSignupForm> {
+    Json(form)
+}
+
+/// Path parameters for `GET /validated/pages/{page}`.
+#[derive(Debug, Deserialize, Serialize, Schema)]
+pub struct ValidatedPagePath {
+    /// 1-based page number, at most 1000.
+    #[schema(minimum = 1, maximum = 1000)]
+    pub page: u32,
+}
+
+/// Fetch a page by a validated path parameter (`Validated<Path<T>>`).
+#[vespera::route(get, path = "/pages/{page}", tags = ["validated"])]
+pub async fn validated_page(
+    Validated(Path(path)): Validated<Path<ValidatedPagePath>>,
+) -> Json<ValidatedPagePath> {
+    Json(path)
 }
 
 /// Profile validated by garde's own derive — `#[derive(Schema)]` documents

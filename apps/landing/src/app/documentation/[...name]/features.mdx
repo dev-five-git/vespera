@@ -79,7 +79,7 @@ pub async fn reindex() {}
 
 ### Panics and Shutdown
 
-- A panicking job is logged to stderr and its schedule keeps going.
+- A panicking job is logged to stderr and its schedule keeps going. With the `tracing` feature, cron diagnostics are `tracing` events on target `vespera::cron` instead (panic at ERROR, overlap skip at WARN).
 - `vespera::cron::shutdown()` stops scheduling new runs; `vespera::cron::shutdown_and_wait(timeout).await` also waits up to `timeout` for runs in progress.
 - `serve_with_graceful_shutdown(addr, signal)` does both: no new runs once `signal` resolves, and runs in progress get up to 10 seconds after the server has drained.
 

@@ -14,7 +14,9 @@
 //!   skips — and logs — a tick while the previous run is still going.
 //! - **Panics.** Every run is supervised: a panicking job is logged to
 //!   stderr (`vespera: cron job `…` panicked: …`) and the schedule keeps
-//!   going.
+//!   going.  With the `tracing` feature these diagnostics (panic, overlap
+//!   skip, unschedulable job) are `tracing` events on target
+//!   `vespera::cron` (ERROR / WARN) instead of `eprintln!`.
 //! - **Shutdown.** [`shutdown`] stops scheduling new runs for good;
 //!   [`shutdown_and_wait`] additionally waits (bounded) for in-flight runs.
 //!   [`Serve::serve_with_graceful_shutdown`](crate::Serve::serve_with_graceful_shutdown)
@@ -48,6 +50,22 @@ use std::{
 use chrono::{DateTime, Utc};
 use tokio::{sync::Notify, task::JoinHandle};
 use vespera_core::cron::{Cron, parse};
+
+/// Scheduler diagnostic: a `tracing` event at `$level` on target
+/// `vespera::cron` with the `tracing` feature, else a `vespera: `-prefixed
+/// `eprintln!` (the pre-feature behaviour).
+#[cfg(feature = "tracing")]
+macro_rules! cron_diag {
+    ($level:ident, $($arg:tt)+) => {
+        ::tracing::$level!(target: "vespera::cron", $($arg)+)
+    };
+}
+#[cfg(not(feature = "tracing"))]
+macro_rules! cron_diag {
+    ($level:ident, $($arg:tt)+) => {
+        ::std::eprintln!("vespera: {}", ::std::format_args!($($arg)+))
+    };
+}
 
 /// Boxed future returned by a cron job function.
 pub type JobFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -249,8 +267,9 @@ impl Controller {
                 && error.is_panic()
             {
                 let payload = error.into_panic();
-                eprintln!(
-                    "vespera: cron job `{}` panicked: {}",
+                cron_diag!(
+                    error,
+                    "cron job `{}` panicked: {}",
                     job.name,
                     panic_message(&*payload)
                 );
@@ -294,7 +313,7 @@ fn spawn_scheduler_thread(jobs: Vec<CronJob>) {
         .name("vespera-cron".to_owned())
         .spawn(move || run_scheduler_thread(jobs))
         .map_or_else(
-            |error| eprintln!("vespera: failed to start the cron scheduler thread: {error}"),
+            |error| cron_diag!(error, "failed to start the cron scheduler thread: {error}"),
             drop,
         );
 }
@@ -369,7 +388,7 @@ async fn run_job(job: CronJob, controller: &'static Controller) {
     let schedule = match Schedule::new(&job) {
         Ok(schedule) => schedule,
         Err(error) => {
-            eprintln!("vespera: cron job `{}` not scheduled: {error}", job.name);
+            cron_diag!(error, "cron job `{}` not scheduled: {error}", job.name);
             return;
         }
     };
@@ -385,8 +404,9 @@ async fn run_job(job: CronJob, controller: &'static Controller) {
         }
         running.retain(|run| !run.is_finished());
         if job.overlap == Overlap::Skip && !running.is_empty() {
-            eprintln!(
-                "vespera: cron job `{}` skipped its {next} run: the previous run is still in progress",
+            cron_diag!(
+                warn,
+                "cron job `{}` skipped its {next} run: the previous run is still in progress",
                 job.name
             );
         } else {

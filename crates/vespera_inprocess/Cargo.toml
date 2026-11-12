@@ -28,6 +28,12 @@ bench-support = []
 # nothing extra.  Kept opt-in so a standalone build (the criterion gate's
 # `cargo bench -p vespera_inprocess`) keeps the runtime it has always measured.
 connect-info = ["axum/tokio"]
+# Structured `tracing` instrumentation: a `vespera.dispatch` span per wire
+# dispatch (mode / method / path / app / status / duration_ms / panicked) and
+# WARN/ERROR events for synthesised error responses (400 / 413 / 431 / 503 /
+# 504 / engine 5xx) and panics.  OFF by default: without it the crate has no
+# `tracing` dependency and the dispatch paths compile exactly as before.
+tracing = ["dep:tracing"]
 
 [dependencies]
 # Lock-free read snapshot for the multi-app router registry: named-app
@@ -47,6 +53,7 @@ serde_json = "1"
 # `time`: the optional per-dispatch deadline (`set_dispatch_timeout`) and the
 # bounded request-producer join on the bidirectional streaming paths.
 tokio = { version = "1", features = ["rt", "sync", "time"] }
+tracing = { version = "0.1.41", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["json", "query", "tokio", "http1"] }
@@ -68,6 +75,9 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Case-table unit tests (the repo-wide convention, already used by
 # vespera_core / vespera_macro).  Test-only: never linked into the cdylib.
 rstest = "0.28"
+# Span/event capture for `tests/tracing_instrumentation.rs` (feature
+# `tracing`): a `Registry` + a tiny collecting `Layer`.  Test-only.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 
 [[bench]]
 name = "dispatch"

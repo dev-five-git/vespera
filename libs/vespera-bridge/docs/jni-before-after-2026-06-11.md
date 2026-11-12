@@ -235,3 +235,30 @@ Single-thread latency was at its floor; the remaining headroom was CONCURRENT th
 | direct_pooled | 3.45M (47.5%) | 4.64M (66.8%) | **+34.6%** |
 
 Single-thread latency unchanged. Oracle-reviewed: TLS runtime drops at thread exit (outside block_on), reentrant nested dispatch panics are caught by catch_unwind → 500 wire, detached \	okio::spawn\ on the sync path no longer outlives block_on (documented, fragile pattern). Streaming bidirectional (spawn_blocking) + async (RUNTIME.spawn) verified unaffected.
+
+## PR regression gate (added 2026-11-12)
+
+The numbers above are hand-run snapshots. PRs touching `crates/vespera_inprocess`,
+`crates/vespera_jni` or `libs/vespera-bridge` are now gated automatically by
+`.github/workflows/jni-bench-gate.yml`, which works like the criterion gate in `bench.yml`:
+
+- `scripts/jni-bench-interleaved.sh <base-rev>` builds the merge base and the PR head
+  separately. Each side gets the `rust-jni-demo` cdylib, built `--release` (fat LTO) with
+  pinned code alignment (`-C llvm-args=-align-all-functions=6 -C llvm-args=-align-all-nofallthru-blocks=5`),
+  and the bridge JAR. Both sides then run [`../bench/JniDispatchBench.java`](../bench/JniDispatchBench.java),
+  a dependency-free `System.nanoTime` harness (no JMH). For each mode it warms up for
+  1.5 s, sizes blocks to about 20 ms, takes 40 round-robin blocks and reports the median
+  block ns/op. The script runs 5 interleaved rounds (base,head / head,base / ...) with one
+  fresh JVM per side per round.
+- The harness measures these modes. Each op covers encode → JNI → decode status:
+  `sync_get` (`dispatchBytes`), `direct_get` (`dispatchDirect`), `streaming_get`
+  (`dispatchStreaming`), `full_streaming_post_64k` (`dispatchFullStreaming`, 64 KiB
+  `POST /echo`) and `async_get` (`dispatchAsync` + blocking `get`).
+- `scripts/jni-bench-compare.ts` pairs round *i* of the two sides. A mode **fails** when the
+  median paired change is above **+30%** **and** every round is above **+20%**.
+
+A local A/A run (merge base == head, Windows, JDK 17, `CARGO_JOBS=2`) passed. The head
+medians were sync 1,501 / direct 1,402 / streaming 1,796 / full-streaming-64k 26,320 /
+async 19,589 ns/op. Once the machine was quiet (rounds 4–5), the per-round paired changes
+for the small modes stayed within ±3%. While the machine was still busy, single rounds
+swung by up to −60%. The every-round floor stops swings like that from tripping the gate.

@@ -79,6 +79,7 @@
 //! | `cron-tz` | no | `#[vespera::cron("...", tz = "Asia/Seoul")]` — IANA time zones for cron jobs (implies `cron`, adds chrono-tz) |
 //! | `inprocess` | no | `inprocess` — drive a `Router` in-process without a TCP socket |
 //! | `jni` | no | `jni`, `jni_app!` / `jni_apps!` — embed the app in a Java/Spring host |
+//! | `tracing` | no | `tracing` spans/events for in-process / JNI dispatch (`vespera.dispatch` span, error/panic events) and cron diagnostics (target `vespera::cron`) instead of `eprintln!` |
 //!
 //! See the [repository README](https://github.com/dev-five-git/vespera#readme)
 //! and the [documentation site](https://vespera.devfive.kr) for the full guide.

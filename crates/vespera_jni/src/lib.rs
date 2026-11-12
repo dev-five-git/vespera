@@ -239,10 +239,10 @@ pub use jni_impl::mark_jni_loaded as __mark_jni_loaded;
 /// `configure*0` JNI hooks (which call them), they are first-wins and must
 /// run before the first dispatch; each returns `false` once fixed.
 pub use jni_impl::{
-    DEFAULT_ASYNC_MAX_IN_FLIGHT, DEFAULT_RUNTIME_MAX_BLOCKING_THREADS, RUNTIME_SHUT_DOWN_MSG,
-    async_max_in_flight, runtime_max_blocking_threads, runtime_worker_threads,
-    set_async_max_in_flight, set_runtime_max_blocking_threads, set_runtime_worker_threads,
-    shutdown_runtime,
+    ASYNC_CANCELLED_MSG, DEFAULT_ASYNC_MAX_IN_FLIGHT, DEFAULT_RUNTIME_MAX_BLOCKING_THREADS,
+    RUNTIME_SHUT_DOWN_MSG, async_in_flight, async_max_in_flight, runtime_max_blocking_threads,
+    runtime_worker_threads, set_async_max_in_flight, set_runtime_max_blocking_threads,
+    set_runtime_worker_threads, shutdown_runtime,
 };
 /// Deferred shared-runtime work (used by `vespera::cron` in JNI mode).
 pub use jni_impl::{RuntimeHook, jni_loaded, on_shared_runtime};

@@ -6,10 +6,12 @@ publish = false
 
 [dependencies]
 vespera = { path = "../../crates/vespera", features = ["cron", "cron-tz"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tower-http = { version = "0.7", features = ["cors"] }
+# `Stream` for the `Sse` demo in `routes/events.rs`.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 sea-orm = { version = "^2.0.4", features = ["sqlx-sqlite", "runtime-tokio", "macros", "with-uuid"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 tempfile = "3"
