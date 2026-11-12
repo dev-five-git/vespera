@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::error::{MacroResult, err_call_site};
@@ -29,32 +30,69 @@ pub fn find_folder_path(folder_name: &str) -> MacroResult<std::path::PathBuf> {
     Ok(Path::new(folder_name).to_path_buf())
 }
 
+/// Resolve a user-supplied output path (`openapi = "..."`) against the
+/// crate's `CARGO_MANIFEST_DIR`, so `openapi = "openapi.json"` lands next to
+/// the crate's `Cargo.toml` no matter which directory rustc runs in (cargo
+/// runs workspace members from the workspace root). Absolute paths are kept;
+/// without a manifest directory the path is returned unchanged.
+pub fn resolve_manifest_relative(path: &str) -> PathBuf {
+    resolve_against(std::env::var_os("CARGO_MANIFEST_DIR"), Path::new(path))
+}
+
+fn resolve_against(base: Option<OsString>, path: &Path) -> PathBuf {
+    match base {
+        Some(base) if path.is_relative() => Path::new(&base).join(path),
+        _ => path.to_path_buf(),
+    }
+}
+
 thread_local! {
-    /// Resolved target dirs keyed by the manifest path that started the
+    /// Resolved workspace roots keyed by the manifest path that started the
     /// walk.  The workspace layout is fixed within a build (and across
-    /// invocations in a long-lived proc-macro server), so a target dir
-    /// resolved once stays valid — this avoids re-walking ancestors and
-    /// re-reading each `Cargo.toml` on every `vespera!` / sidecar-path
-    /// call.  Mirrors `file_cache`'s process-lifetime `manifest_dir` cache.
-    static TARGET_DIR_CACHE: RefCell<HashMap<PathBuf, PathBuf>> =
+    /// invocations in a long-lived proc-macro server), so a root resolved
+    /// once stays valid — this avoids re-walking ancestors and re-reading
+    /// each `Cargo.toml` on every `vespera!` / sidecar-path call.  Mirrors
+    /// `file_cache`'s process-lifetime `manifest_dir` cache.
+    static WORKSPACE_ROOT_CACHE: RefCell<HashMap<PathBuf, PathBuf>> =
         RefCell::new(HashMap::new());
 }
 
-/// Find the workspace root's target directory (cached per manifest path).
+/// The cargo target directory for the crate at `manifest_path`.
+///
+/// Honours `CARGO_TARGET_DIR` (a relative value is taken relative to the
+/// workspace root, the directory cargo runs rustc from); otherwise
+/// `<workspace root>/target`.
 pub fn find_target_dir(manifest_path: &Path) -> PathBuf {
-    if let Some(cached) = TARGET_DIR_CACHE.with(|c| c.borrow().get(manifest_path).cloned()) {
+    target_dir_in(
+        &find_workspace_root(manifest_path),
+        std::env::var_os("CARGO_TARGET_DIR"),
+    )
+}
+
+/// `CARGO_TARGET_DIR` (when non-empty; an absolute value replaces the root
+/// on `join`) or `<workspace root>/target`.
+fn target_dir_in(workspace_root: &Path, cargo_target_dir: Option<OsString>) -> PathBuf {
+    match cargo_target_dir {
+        Some(target_dir) if !target_dir.is_empty() => workspace_root.join(target_dir),
+        _ => workspace_root.join("target"),
+    }
+}
+
+/// The workspace root of the crate at `manifest_path` (cached per path).
+pub fn find_workspace_root(manifest_path: &Path) -> PathBuf {
+    if let Some(cached) = WORKSPACE_ROOT_CACHE.with(|c| c.borrow().get(manifest_path).cloned()) {
         return cached;
     }
-    let resolved = find_target_dir_uncached(manifest_path);
-    TARGET_DIR_CACHE.with(|c| {
+    let resolved = find_workspace_root_uncached(manifest_path);
+    WORKSPACE_ROOT_CACHE.with(|c| {
         c.borrow_mut()
             .insert(manifest_path.to_path_buf(), resolved.clone());
     });
     resolved
 }
 
-fn find_target_dir_uncached(manifest_path: &Path) -> PathBuf {
-    // Look for workspace root by finding a Cargo.toml with [workspace] section
+fn find_workspace_root_uncached(manifest_path: &Path) -> PathBuf {
+    // Look for workspace root by finding a Cargo.toml with a `workspace` table
     let mut current = Some(manifest_path);
     let mut last_with_lock = None;
 
@@ -64,26 +102,46 @@ fn find_target_dir_uncached(manifest_path: &Path) -> PathBuf {
             last_with_lock = Some(dir.to_path_buf());
         }
 
-        // Check if this is a workspace root (has Cargo.toml with [workspace]).
-        // `read_to_string` already fails when the file does not exist, so the
-        // previous `.exists()` pre-flight is redundant — drop it to save one
-        // stat per iteration of the walk.
+        // `read_to_string` already fails when the file does not exist, so no
+        // `.exists()` pre-flight is needed.
         if let Ok(contents) = std::fs::read_to_string(dir.join("Cargo.toml"))
-            && contents.contains("[workspace]")
+            && declares_workspace(&contents)
         {
-            return dir.join("target");
+            return dir.to_path_buf();
         }
 
         current = dir.parent();
     }
 
-    // If we found a Cargo.lock but no [workspace], use the topmost one
-    if let Some(lock_dir) = last_with_lock {
-        return lock_dir.join("target");
-    }
+    // No workspace manifest: the topmost directory holding a Cargo.lock,
+    // else the crate itself.
+    last_with_lock.unwrap_or_else(|| manifest_path.to_path_buf())
+}
 
-    // Fallback: use manifest dir's target
-    manifest_path.join("target")
+/// Whether a `Cargo.toml` declares a `[workspace]` table — a table header
+/// `[workspace]` / `[workspace.<sub>]` (whitespace inside the brackets
+/// allowed) at the start of a line, or a top-level `workspace = ...` key.
+/// Line-anchored so `workspace` inside a string, comment or another key
+/// (`"[workspace]"`, `# [workspace]`, `[package.workspace]`) does not match.
+fn declares_workspace(cargo_toml: &str) -> bool {
+    let mut top_level = true;
+    for line in cargo_toml.lines() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        if let Some(header) = line.strip_prefix('[') {
+            let name = header.split(']').next().unwrap_or_default();
+            if name.split('.').next().unwrap_or_default().trim() == "workspace" {
+                return true;
+            }
+            top_level = false;
+        } else if top_level
+            && line
+                .split_once('=')
+                .is_some_and(|(key, _)| key.trim() == "workspace")
+        {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -102,19 +160,19 @@ mod tests {
         assert!(result.to_string_lossy().contains("nonexistent_folder_xyz"));
     }
 
-    // ========== Tests for find_target_dir ==========
+    // ========== Tests for find_workspace_root ==========
 
     #[test]
-    fn test_find_target_dir_no_workspace() {
+    fn test_find_workspace_root_no_workspace() {
         // Test fallback to manifest dir's target
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let manifest_path = temp_dir.path();
-        let result = find_target_dir(manifest_path);
-        assert_eq!(result, manifest_path.join("target"));
+        let result = find_workspace_root(manifest_path);
+        assert_eq!(result, manifest_path);
     }
 
     #[test]
-    fn test_find_target_dir_with_cargo_lock() {
+    fn test_find_workspace_root_with_cargo_lock() {
         // Test finding target dir with Cargo.lock present
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let manifest_path = temp_dir.path();
@@ -122,13 +180,13 @@ mod tests {
         // Create Cargo.lock (but no [workspace] in Cargo.toml)
         fs::write(manifest_path.join("Cargo.lock"), "").expect("Failed to write Cargo.lock");
 
-        let result = find_target_dir(manifest_path);
+        let result = find_workspace_root(manifest_path);
         // Should use the directory with Cargo.lock
-        assert_eq!(result, manifest_path.join("target"));
+        assert_eq!(result, manifest_path);
     }
 
     #[test]
-    fn test_find_target_dir_with_workspace() {
+    fn test_find_workspace_root_with_workspace() {
         // Test finding workspace root
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let workspace_root = temp_dir.path();
@@ -146,13 +204,13 @@ mod tests {
         fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"crate1\"")
             .expect("Failed to write Cargo.toml");
 
-        let result = find_target_dir(&crate_dir);
+        let result = find_workspace_root(&crate_dir);
         // Should return workspace root's target
-        assert_eq!(result, workspace_root.join("target"));
+        assert_eq!(result, workspace_root);
     }
 
     #[test]
-    fn test_find_target_dir_workspace_with_cargo_lock() {
+    fn test_find_workspace_root_workspace_with_cargo_lock() {
         // Test that [workspace] takes priority over Cargo.lock
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let workspace_root = temp_dir.path();
@@ -171,12 +229,12 @@ mod tests {
         fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"crate1\"")
             .expect("Failed to write Cargo.toml");
 
-        let result = find_target_dir(&crate_dir);
-        assert_eq!(result, workspace_root.join("target"));
+        let result = find_workspace_root(&crate_dir);
+        assert_eq!(result, workspace_root);
     }
 
     #[test]
-    fn test_find_target_dir_deeply_nested() {
+    fn test_find_workspace_root_deeply_nested() {
         // Test deeply nested crate structure
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let workspace_root = temp_dir.path();
@@ -193,8 +251,88 @@ mod tests {
         fs::create_dir_all(&deep_crate).expect("Failed to create nested dirs");
         fs::write(deep_crate.join("Cargo.toml"), "[package]").expect("Failed to write Cargo.toml");
 
-        let result = find_target_dir(&deep_crate);
-        assert_eq!(result, workspace_root.join("target"));
+        let result = find_workspace_root(&deep_crate);
+        assert_eq!(result, workspace_root);
+    }
+
+    #[rstest::rstest]
+    #[case::table("[workspace]\nmembers = []", true)]
+    #[case::spaced_table("[ workspace ]", true)]
+    #[case::sub_table_only("[workspace.package]\nversion = \"1\"", true)]
+    #[case::trailing_comment("[workspace] # root", true)]
+    #[case::inline_key("workspace = { members = [] }\n[package]", true)]
+    #[case::member_pointer("[package]\nname = \"a\"\nworkspace = \"..\"", false)]
+    #[case::commented_out("# [workspace]\n[package]", false)]
+    #[case::string_value("[package]\ndescription = \"[workspace]\"", false)]
+    #[case::other_table("[package.workspace]", false)]
+    #[case::array_table("[[bin]]\nname = \"x\"", false)]
+    #[case::empty("", false)]
+    fn declares_workspace_is_line_anchored(#[case] toml: &str, #[case] expected: bool) {
+        assert_eq!(declares_workspace(toml), expected);
+    }
+
+    #[test]
+    fn workspace_package_table_marks_the_root() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace.package]\nversion = \"1\"",
+        )
+        .unwrap();
+        let member = root.join("member");
+        fs::create_dir(&member).unwrap();
+        fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = \"member\"\nworkspace = \"..\"",
+        )
+        .unwrap();
+        assert_eq!(find_workspace_root(&member), root);
+    }
+
+    #[rstest::rstest]
+    #[case::unset(None, "root/target")]
+    #[case::empty(Some(""), "root/target")]
+    #[case::relative(Some("out/tgt"), "root/out/tgt")]
+    fn target_dir_honours_cargo_target_dir(#[case] env: Option<&str>, #[case] expected: &str) {
+        assert_eq!(
+            target_dir_in(Path::new("root"), env.map(OsString::from)),
+            Path::new(expected)
+        );
+    }
+
+    #[test]
+    fn absolute_cargo_target_dir_replaces_the_root() {
+        let absolute = std::env::temp_dir().join("vespera-target");
+        assert_eq!(
+            target_dir_in(Path::new("root"), Some(absolute.clone().into_os_string())),
+            absolute
+        );
+    }
+
+    #[test]
+    fn find_target_dir_is_inside_the_workspace_root_by_default() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let expected = target_dir_in(temp_dir.path(), std::env::var_os("CARGO_TARGET_DIR"));
+        assert_eq!(find_target_dir(temp_dir.path()), expected);
+    }
+
+    #[test]
+    fn output_paths_resolve_against_the_manifest_dir() {
+        let absolute = std::env::temp_dir().join("spec.json");
+        assert_eq!(
+            resolve_against(Some(OsString::from("crate")), Path::new("openapi.json")),
+            Path::new("crate").join("openapi.json")
+        );
+        assert_eq!(
+            resolve_against(Some(OsString::from("crate")), &absolute),
+            absolute
+        );
+        assert_eq!(
+            resolve_against(None, Path::new("openapi.json")),
+            Path::new("openapi.json")
+        );
+        assert!(resolve_manifest_relative("openapi.json").ends_with("openapi.json"));
     }
 
     #[test]

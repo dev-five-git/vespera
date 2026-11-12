@@ -395,7 +395,7 @@ pub async fn delete_item(Path(id): Path<i64>) -> Result<StatusCode, (StatusCode,
 ```rust
 let app = vespera!(
     dir = "routes",                    // Route folder (default: "routes")
-    openapi = "openapi.json",          // Output path (writes file at compile time)
+    openapi = "openapi.json",          // Output path, relative to the crate dir (written at compile time)
     title = "My API",                  // OpenAPI info.title
     version = "1.0.0",                 // OpenAPI info.version (default: CARGO_PKG_VERSION)
     docs_url = "/docs",                // Swagger UI endpoint
@@ -844,6 +844,8 @@ let app = vespera!(
     openapi = ["openapi.json", "docs/api-spec.json"]
 );
 ```
+
+Relative paths resolve against the crate's `CARGO_MANIFEST_DIR` (the directory holding its `Cargo.toml`), so workspace members write next to their own manifest. vespera's build cache lives under the cargo target directory (`CARGO_TARGET_DIR` is honoured).
 
 ### Custom Route Folder
 

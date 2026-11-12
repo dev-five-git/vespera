@@ -15,7 +15,7 @@ use syn::spanned::Spanned;
 
 use super::{
     cache::{MergeSpecCache, MergeSpecRead, path_fingerprint},
-    path_utils::{current_crate_tag, find_target_dir},
+    path_utils::{current_crate_tag, find_target_dir, resolve_manifest_relative},
     schema_merge::SchemaMergeGuard,
 };
 
@@ -164,7 +164,7 @@ pub fn generate_and_write_openapi(
     } else {
         let json_pretty = serde_json::to_string_pretty(&openapi_doc).map_err(|e| err_call_site(format!("OpenAPI generation: failed to serialize document to JSON. Error: {e}. Check that all schema types are serializable.")))?;
         for openapi_file_name in &input.openapi_file_names {
-            let file_path = Path::new(openapi_file_name);
+            let file_path = &resolve_manifest_relative(openapi_file_name);
             if let Some(parent) = file_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| err_call_site(format!("OpenAPI output: failed to create directory '{}'. Error: {}. Ensure the path is valid and writable.", parent.display(), e)))?;
             }
@@ -198,7 +198,7 @@ pub fn ensure_openapi_files_from_cache(
         return Ok(());
     };
     for openapi_file_name in openapi_file_names {
-        let file_path = Path::new(openapi_file_name);
+        let file_path = &resolve_manifest_relative(openapi_file_name);
         let should_write = !content_unchanged(file_path, pretty);
         if should_write {
             if let Some(parent) = file_path.parent() {

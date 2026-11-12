@@ -14,7 +14,7 @@ use crate::{
     router_codegen::ProcessedVesperaInput,
 };
 
-use super::path_utils::{current_crate_tag, find_target_dir};
+use super::path_utils::{current_crate_tag, find_target_dir, find_workspace_root};
 
 /// Current cache format. Bump when the on-disk layout changes —
 /// old caches deserialize with `cache_format: 0` (serde default) and
@@ -373,20 +373,18 @@ pub(super) fn compute_macro_dev_fingerprint() -> u64 {
 
 fn compute_macro_dev_fingerprint_uncached() -> u64 {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    let target_dir = find_target_dir(Path::new(&manifest_dir));
-    macro_src_dir(&target_dir).map_or(0, |macro_src| fingerprint_rs_directory(&macro_src))
+    let workspace_root = find_workspace_root(Path::new(&manifest_dir));
+    fingerprint_rs_directory(&macro_src_dir(&workspace_root))
 }
 
-/// Derives the in-workspace macro source path only from the supplied target
-/// directory, keeping parent resolution independent of process environment.
-fn macro_src_dir(target_dir: &Path) -> Option<PathBuf> {
-    Some(
-        target_dir
-            .parent()?
-            .join("crates")
-            .join("vespera_macro")
-            .join("src"),
-    )
+/// Derives the in-workspace macro source path only from the supplied
+/// workspace root (not the target dir, which `CARGO_TARGET_DIR` may move),
+/// keeping resolution independent of process environment.
+fn macro_src_dir(workspace_root: &Path) -> PathBuf {
+    workspace_root
+        .join("crates")
+        .join("vespera_macro")
+        .join("src")
 }
 
 /// Fingerprints only Rust files below the supplied directory, taking the root
@@ -887,26 +885,18 @@ mod tests {
     #[test]
     fn macro_source_path_and_directory_fingerprint_are_directly_testable() {
         let temp = tempfile::TempDir::new().unwrap();
-        let target_dir = temp.path().join("target");
         let expected_src = temp.path().join("crates/vespera_macro/src");
         std::fs::create_dir_all(&expected_src).unwrap();
         let macro_file = expected_src.join("lib.rs");
         std::fs::write(&macro_file, "pub fn first() {}").unwrap();
 
-        let derived_src = macro_src_dir(&target_dir).unwrap();
+        let derived_src = macro_src_dir(temp.path());
         let before = fingerprint_rs_directory(&derived_src);
         std::fs::write(&macro_file, "pub fn first() { let changed = true; }").unwrap();
         let after = fingerprint_rs_directory(&derived_src);
 
         assert_eq!(derived_src, expected_src);
         assert_ne!(before, after, "a Rust source change must move the digest");
-    }
-
-    #[test]
-    fn macro_source_path_has_no_parent_at_filesystem_root() {
-        let root = Path::new(std::path::MAIN_SEPARATOR_STR);
-        assert!(root.parent().is_none(), "test fixture must be a root path");
-        assert_eq!(macro_src_dir(root), None);
     }
 
     #[test]
