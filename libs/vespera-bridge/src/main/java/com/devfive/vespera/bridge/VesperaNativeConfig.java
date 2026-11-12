@@ -157,6 +157,20 @@ final class VesperaNativeConfig {
             "async.maxInFlight", "vespera.async.maxInFlight", -1,
             v -> VesperaBridge.configureAsyncMaxInFlight0(toInt(v)));
 
+    // Concurrent bidirectional upload producers (blocking-pool threads);
+    // `0` = unlimited, negative = untouched (env / default 256 applies).
+    static final Knob MAX_REQUEST_PRODUCERS = new Knob(
+            "streaming.maxRequestProducers", "vespera.streaming.maxRequestProducers", -1,
+            VesperaNativeConfig::configureMaxRequestProducers0);
+
+    static native boolean configureMaxRequestProducers0(long maxProducers);
+
+    /**
+     * Build the shared runtime now when native work waits for it (cron jobs
+     * registered from {@code JNI_OnLoad}); a no-op otherwise.
+     */
+    static native boolean startRuntime0();
+
     private static final Knob[] ALL = {
         RUNTIME_WORKER_THREADS,
         RUNTIME_MAX_BLOCKING_THREADS,
@@ -165,6 +179,7 @@ final class VesperaNativeConfig {
         MAX_BUFFERED_RESPONSE_BYTES,
         DISPATCH_TIMEOUT_MILLIS,
         ASYNC_MAX_IN_FLIGHT,
+        MAX_REQUEST_PRODUCERS,
     };
 
     private static volatile Integer pendingChunkBytes = null;
@@ -178,6 +193,16 @@ final class VesperaNativeConfig {
                 VesperaBridge::configureStreaming0);
         for (Knob knob : ALL) {
             knob.applyResolved();
+        }
+        // Every runtime knob is applied: start the runtime if cron jobs wait.
+        startRuntimeIfNeeded(VesperaNativeConfig::startRuntime0);
+    }
+
+    static boolean startRuntimeIfNeeded(java.util.function.BooleanSupplier start) {
+        try {
+            return start.getAsBoolean();
+        } catch (UnsatisfiedLinkError olderNativeLibrary) {
+            return false;
         }
     }
 

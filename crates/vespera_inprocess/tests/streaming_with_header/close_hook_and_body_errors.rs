@@ -300,8 +300,9 @@ async fn response_streaming_chunk_break_returns_500_not_silent_success() {
         Some(500),
         "a chunk-sink break must yield 500, not a truncated 200 success"
     );
-    // The first chunk was already delivered to the sink before the break fired.
-    assert_eq!(body_buf.lock().unwrap().as_slice(), b"first");
+    // The first sink call (ready frames are coalesced into one call) was
+    // already delivered before the break fired.
+    assert!(body_buf.lock().unwrap().starts_with(b"first"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

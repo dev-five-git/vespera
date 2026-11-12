@@ -186,4 +186,40 @@ class SmartDispatchModeResolverTest {
         assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING,
                 zero.resolveMode(request("POST", 1), false));
     }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource(delimiter = '|', nullValues = "NULL", value = {
+            "text/event-stream|true",
+            "Text/Event-Stream; charset=utf-8|true",
+            "application/json, text/event-stream;q=0.5|true",
+            "application/x-ndjson|true",
+            "application/stream+json|true",
+            "text/event-stream;q=0|false",
+            "text/event-stream;q=0.0;level=1|false",
+            "text/event-stream;level=1;q=bogus|true",
+            "application/json|false",
+            "*/*|false",
+            "text/event-streaming|false",
+            "NULL|false",
+    })
+    void streamingAcceptsAreRecognised(String accept, boolean expected) {
+        assertEquals(expected, SmartDispatchModeResolver.acceptsStreaming(accept));
+    }
+
+    @Test
+    void eventStreamAcceptStreamsTheResponse() {
+        MockHttpServletRequest get = new MockHttpServletRequest("GET", "/events");
+        get.addHeader("Accept", "text/event-stream");
+        assertEquals(DispatchMode.STREAMING, resolver.resolveMode(get));
+        assertEquals(DispatchMode.STREAMING, resolver.resolveMode(get, true));
+
+        MockHttpServletRequest post = (MockHttpServletRequest) request("POST", 128);
+        post.addHeader("Accept", "application/x-ndjson");
+        assertEquals(DispatchMode.STREAMING, resolver.resolveMode(post));
+
+        MockHttpServletRequest big = (MockHttpServletRequest) request(
+                "POST", SmartDispatchModeResolver.DEFAULT_MAX_SYNC_BYTES + 1);
+        big.addHeader("Accept", "text/event-stream");
+        assertEquals(DispatchMode.BIDIRECTIONAL_STREAMING, resolver.resolveMode(big));
+    }
 }

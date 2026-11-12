@@ -28,6 +28,21 @@ const MAX_DISPATCH_TIMEOUT_MS: usize = 30 * 24 * 60 * 60 * 1000;
 static MAX_BUFFERED_RESPONSE_BYTES: OnceLock<usize> = OnceLock::new();
 static MAX_STREAMING_REQUEST_BYTES: OnceLock<usize> = OnceLock::new();
 static DISPATCH_TIMEOUT_MS: OnceLock<usize> = OnceLock::new();
+static MAX_STREAMING_REQUEST_PRODUCERS: OnceLock<usize> = OnceLock::new();
+
+/// Default cap on concurrently running bidirectional-streaming request
+/// producers (256).
+///
+/// Each in-flight streamed upload parks one blocking-pool thread in the
+/// host's blocking `read` (the JNI `InputStream.read`).  Without a cap a
+/// burst of slow uploads can occupy the whole blocking pool (Tokio's default
+/// 512) and starve the application's own `spawn_blocking` work (file I/O,
+/// multipart temp files, blocking DB drivers).  256 leaves at least half of
+/// the default pool to the application; a producer over the cap waits
+/// (asynchronously, holding no thread) for a slot, which simply back-pressures
+/// that upload.
+pub const DEFAULT_MAX_STREAMING_REQUEST_PRODUCERS: usize = 256;
+const MAX_STREAMING_REQUEST_PRODUCERS_LIMIT: usize = 1 << 20;
 
 /// Maximum response **body** size the buffered dispatch paths will
 /// materialise, in bytes.  `0` means unlimited.
@@ -39,8 +54,16 @@ static DISPATCH_TIMEOUT_MS: OnceLock<usize> = OnceLock::new();
 /// A response whose body exceeds the cap is replaced by a `500` wire
 /// response naming the limit (nothing has been handed to the caller yet on
 /// the buffered paths, so the substitution is clean).  The streaming paths
-/// never materialise the body and are not affected; the direct-write path
-/// writes into the caller's fixed-size buffer and is bounded by it.
+/// never materialise the body and are not affected.
+///
+/// The direct-write path ([`crate::dispatch_into_async`] and friends) is
+/// bounded by the same cap: when a response with no exact size hint
+/// overflows the caller's buffer, the remaining body is drained only to
+/// count its exact size, and that counting drain stops with the same `500`
+/// once the body exceeds this cap (with `0` = unlimited it is unbounded).
+/// The resumable variant ([`crate::dispatch_into_async_borrowed_resumable`])
+/// never drains past the caller's buffer at all — it hands the unread
+/// remainder back as a [`crate::PendingDirectResponse`].
 #[must_use]
 #[inline]
 pub fn max_buffered_response_bytes() -> usize {
@@ -81,6 +104,35 @@ pub fn max_streaming_request_bytes() -> usize {
 /// `0` means unlimited.  Returns `false` when the value was already fixed.
 pub fn set_max_streaming_request_bytes(bytes: usize) -> bool {
     MAX_STREAMING_REQUEST_BYTES.set(bytes).is_ok()
+}
+
+/// Maximum number of bidirectional-streaming request producers (blocking
+/// upload readers) running at once.  `0` means unlimited.
+///
+/// Resolution: [`set_max_streaming_request_producers`] >
+/// `VESPERA_MAX_STREAMING_REQUEST_PRODUCERS` env var >
+/// [`DEFAULT_MAX_STREAMING_REQUEST_PRODUCERS`] (256).  A producer over the
+/// cap is not rejected: it waits for a free slot before it is started.
+#[must_use]
+#[inline]
+pub fn max_streaming_request_producers() -> usize {
+    *MAX_STREAMING_REQUEST_PRODUCERS.get_or_init(|| {
+        read_env_clamped(
+            "VESPERA_MAX_STREAMING_REQUEST_PRODUCERS",
+            DEFAULT_MAX_STREAMING_REQUEST_PRODUCERS,
+            0,
+            MAX_STREAMING_REQUEST_PRODUCERS_LIMIT,
+        )
+    })
+}
+
+/// Override the request-producer cap **before the first bidirectional
+/// streaming dispatch**.  `0` means unlimited.  Returns `false` when the
+/// value was already fixed.
+pub fn set_max_streaming_request_producers(producers: usize) -> bool {
+    MAX_STREAMING_REQUEST_PRODUCERS
+        .set(producers.min(MAX_STREAMING_REQUEST_PRODUCERS_LIMIT))
+        .is_ok()
 }
 
 fn dispatch_timeout_ms() -> usize {
@@ -136,8 +188,9 @@ mod tests {
     use super::super::parse_config_value;
     use super::{
         DEFAULT_MAX_BUFFERED_RESPONSE_BYTES, MAX_DISPATCH_TIMEOUT_MS, dispatch_timeout,
-        max_buffered_response_bytes, max_streaming_request_bytes, set_dispatch_timeout,
-        set_max_buffered_response_bytes, set_max_streaming_request_bytes,
+        max_buffered_response_bytes, max_streaming_request_bytes, max_streaming_request_producers,
+        set_dispatch_timeout, set_max_buffered_response_bytes, set_max_streaming_request_bytes,
+        set_max_streaming_request_producers,
     };
     use rstest::rstest;
     use std::time::Duration;
@@ -171,6 +224,9 @@ mod tests {
         assert!(set_max_buffered_response_bytes(1234));
         assert!(set_max_streaming_request_bytes(99));
         assert!(set_dispatch_timeout(Duration::from_micros(10)));
+        assert!(set_max_streaming_request_producers(3));
+        assert_eq!(max_streaming_request_producers(), 3);
+        assert!(!set_max_streaming_request_producers(4));
 
         assert_eq!(max_buffered_response_bytes(), 1234);
         assert_eq!(max_streaming_request_bytes(), 99);

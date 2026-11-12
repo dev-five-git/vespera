@@ -7,8 +7,8 @@ use std::time::Duration;
 use axum::routing::get;
 
 use super::{
-    RUNTIME_SHUT_DOWN_MSG, block_on_shared_runtime, panic_wire, runtime, runtime_unavailable_wire,
-    shutdown_runtime,
+    RUNTIME_SHUT_DOWN_MSG, block_on_shared_runtime, on_shared_runtime, panic_wire, runtime,
+    runtime_unavailable_wire, shutdown_runtime, start_runtime_for_hooks,
 };
 
 const APP: &str = "shutdown_test";
@@ -22,7 +22,11 @@ fn status_and_body(wire: &[u8]) -> (String, Vec<u8>) {
 }
 
 fn request() -> Vec<u8> {
-    let header = format!(r#"{{"v":1,"method":"GET","path":"/ok","app":"{APP}"}}"#);
+    request_path("/ok")
+}
+
+fn request_path(path: &str) -> Vec<u8> {
+    let header = format!(r#"{{"v":1,"method":"GET","path":"{path}","app":"{APP}"}}"#);
     let mut wire = u32::try_from(header.len()).unwrap().to_be_bytes().to_vec();
     wire.extend_from_slice(header.as_bytes());
     wire
@@ -61,8 +65,32 @@ fn shutdown_makes_later_dispatches_answer_503() {
     }
 
     vespera_inprocess::register_app_named(APP, || {
-        vespera_inprocess::Router::new().route("/ok", get(|| async { "ok" }))
+        vespera_inprocess::Router::new()
+            .route("/ok", get(|| async { "ok" }))
+            .route(
+                "/slow",
+                get(|| async {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    "slow"
+                }),
+            )
     });
+    // Nothing waits for the runtime yet: it stays lazy.
+    assert!(!start_runtime_for_hooks());
+    // A hook registered before the runtime exists runs once it is built.
+    let (hook_tx, hook_rx) = std::sync::mpsc::channel();
+    let hook_tx_later = hook_tx.clone();
+    on_shared_runtime(Box::new(move |handle| {
+        drop(handle.spawn(async move { hook_tx.send("early").unwrap() }));
+    }));
+    on_shared_runtime(Box::new(|_| panic!("a panicking hook is contained")));
+    assert!(start_runtime_for_hooks());
+    assert_eq!(hook_rx.recv_timeout(Duration::from_secs(5)), Ok("early"));
+    // ... and one registered afterwards runs at once.
+    on_shared_runtime(Box::new(move |handle| {
+        drop(handle.spawn(async move { hook_tx_later.send("late").unwrap() }));
+    }));
+    assert_eq!(hook_rx.recv_timeout(Duration::from_secs(5)), Ok("late"));
     let (header, _) = status_and_body(&runtime_unavailable_wire());
     assert!(
         header.contains(r#""status":500"#),
@@ -75,8 +103,25 @@ fn shutdown_makes_later_dispatches_answer_503() {
     assert!(header.contains(r#""status":200"#), "{header}");
     assert_eq!(body, b"ok");
 
-    assert!(shutdown_runtime(Duration::from_secs(1)));
+    // A dispatch in flight when the shutdown starts is drained, not cut.
+    let slow = std::thread::spawn(|| {
+        block_on_shared_runtime(vespera_inprocess::dispatch_from_bytes_async(request_path(
+            "/slow",
+        )))
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(shutdown_runtime(Duration::from_secs(5)));
+    let (header, body) = status_and_body(
+        &slow
+            .join()
+            .expect("slow dispatch thread")
+            .expect("leased before the shutdown"),
+    );
+    assert!(header.contains(r#""status":200"#), "{header}");
+    assert_eq!(body, b"slow");
     assert!(runtime().is_none());
+    on_shared_runtime(Box::new(|_| panic!("never runs after shutdown")));
+    assert!(!start_runtime_for_hooks());
     assert!(block_on_shared_runtime(async {}).is_none());
     let (header, body) = status_and_body(&runtime_unavailable_wire());
     assert!(header.contains(r#""status":503"#), "{header}");

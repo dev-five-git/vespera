@@ -16,6 +16,7 @@ use crate::internal::{ConnectionInfo, HEADER_TOO_LARGE_MSG, ResponseParts};
 /// the `serde_json` derive path; the serde version is retained as
 /// `bench_serde::parse_wire_header_serde` for the criterion A/B).
 mod header_read;
+pub use header_read::{MAX_REQUEST_HEADERS, TOO_MANY_HEADERS_MSG};
 /// Hand-rolled response-header serializer (byte-identical to the
 /// `serde_json` path retained as
 /// `bench_serde::write_wire_header_into_slice_serde` for the criterion A/B).
@@ -437,7 +438,7 @@ pub fn panic_error_wire(msg: &str) -> Vec<u8> {
 /// Every non-422 status **bypasses this adapter entirely**: the buffered
 /// and direct-write dispatchers stream response frames straight into the
 /// destination buffer via [`crate::dispatch::finish_buffered_wire`] and
-/// [`crate::dispatch::finish_direct_write`], avoiding the intermediate
+/// [`crate::direct::finish_resumable`], avoiding the intermediate
 /// `Vec` copy this helper is only worth on the cold 422 path.  Kept `pub`
 /// (not `pub(crate)`) because `alloc_budget.rs` case F asserts the 422
 /// materialise path allocates a known-bounded number of buffers and its

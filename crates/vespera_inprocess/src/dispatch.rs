@@ -14,6 +14,10 @@ use crate::bounded::{
     response_too_large_wire, timeout_wire,
 };
 use crate::config::max_buffered_response_bytes;
+use crate::direct::{
+    DirectWriteResult, ResumableDirectWrite, finish_direct_write, finish_resumable,
+    resumable_from_wire, write_wire_into,
+};
 use crate::envelope::{RequestEnvelope, ResponseEnvelope, ResponseMetadata};
 use crate::internal::{
     BODY_STREAM_ERROR_MSG, HEADER_TOO_LARGE_MSG, dispatch_and_split, dispatch_parts,
@@ -21,9 +25,9 @@ use crate::internal::{
 };
 use crate::registry::resolve_app_router;
 use crate::wire::{
-    WIRE_VERSION, WireRequestHeader, error_wire, header_capacity_with_floor, parse_wire_header,
-    split_wire_borrowed, split_wire_request, to_wire_bytes, write_wire_header_into_slice,
-    write_wire_header_into_vec,
+    MAX_REQUEST_HEADERS, TOO_MANY_HEADERS_MSG, WIRE_VERSION, WireRequestHeader, error_wire,
+    header_capacity_with_floor, parse_wire_header, split_wire_borrowed, split_wire_request,
+    to_wire_bytes, write_wire_header_into_vec,
 };
 
 // ── Shared wire prelude (used by every wire entry point) ─────────────
@@ -101,7 +105,8 @@ pub fn cap_and_split(input: Vec<u8>) -> Result<(Bytes, Bytes), Vec<u8>> {
 pub fn parse_validate_resolve(
     header_bytes: &[u8],
 ) -> Result<(WireRequestHeader<'_>, Router), Vec<u8>> {
-    let header = parse_wire_header(header_bytes).map_err(|msg| error_wire(400, &msg))?;
+    let header = parse_wire_header(header_bytes)
+        .map_err(|msg| error_wire(parse_error_status(&msg), &msg))?;
     if header.v != WIRE_VERSION {
         return Err(error_wire(
             400,
@@ -113,6 +118,30 @@ pub fn parse_validate_resolve(
     }
     let router = resolve_app_router(&header)?;
     Ok((header, router))
+}
+
+/// `431` envelope for a [`dispatch_owned`] call with more than
+/// [`MAX_REQUEST_HEADERS`] headers.
+#[cold]
+#[inline(never)]
+fn too_many_headers_envelope() -> ResponseEnvelope {
+    ResponseEnvelope {
+        status: 431,
+        headers: BTreeMap::new(),
+        body: TOO_MANY_HEADERS_MSG.to_owned(),
+        metadata: ResponseMetadata::current(),
+    }
+}
+
+/// Status for a wire-header parse failure: `431` when the header carried
+/// more than [`crate::wire::MAX_REQUEST_HEADERS`] headers, else `400`.
+/// Cold path only (runs on a parse error).
+fn parse_error_status(msg: &str) -> u16 {
+    if msg.ends_with(TOO_MANY_HEADERS_MSG) {
+        431
+    } else {
+        400
+    }
 }
 
 /// Return the sub-[`Bytes`] of `owner` that exactly backs the string slice `s`,
@@ -302,6 +331,13 @@ pub async fn dispatch_owned(router: Router, envelope: RequestEnvelope) -> Respon
         headers,
         body,
     } = envelope;
+    // `http::HeaderMap` panics past 32 768 entries; the wire parser caps
+    // the count at `MAX_REQUEST_HEADERS`, this envelope entry does it here
+    // (kept out of the shared request builder so the buffered fast path's
+    // codegen is unchanged).
+    if headers.len() > MAX_REQUEST_HEADERS {
+        return too_many_headers_envelope();
+    }
     let parts = match dispatch_parts(
         router,
         &method,
@@ -496,26 +532,6 @@ async fn drain_buffered_body(mut out: Vec<u8>, mut body: Body, max: usize) -> Ve
     out
 }
 
-/// Outcome of [`dispatch_into_async`] / [`dispatch_into`].
-///
-/// Carries the truncation/overflow discriminant the FFI bridge relies on
-/// to decide whether `out[..n]` is a complete wire response or the
-/// response needs a larger buffer.  Dropping this value silently treats
-/// `Overflow(required)` as `Complete(n)`, exposing the
-/// read-uninitialised-prefix hazard documented on
-/// [`DirectWriteResult::Overflow`] — hence `#[must_use]`.
-#[must_use]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DirectWriteResult {
-    /// A complete wire response occupies `out[0..n]`.
-    Complete(usize),
-    /// The response needs `required` bytes and `out` was too small.
-    /// `out` contents are **undefined** (a prefix may have been
-    /// written).  `required` is exact — a retry with a buffer of at
-    /// least this size succeeds, but **re-runs the handler**.
-    Overflow(usize),
-}
-
 /// Sync wrapper around [`dispatch_into_async`] for FFI callers that
 /// own a [`tokio::runtime::Runtime`].
 pub fn dispatch_into(
@@ -553,9 +569,12 @@ pub fn dispatch_into(
 /// [`DirectWriteResult::Overflow`].  An exact-length body (a `Full`
 /// response / explicit `Content-Length`) reports it immediately from the
 /// body's size hint **without draining**; an unknown-length (streaming)
-/// body is drained (counting, not writing) to compute the size.  Either
-/// way the handler has already run; retrying runs it again — callers must
-/// gate retries on idempotency.
+/// body is drained (counting, not writing) to compute the size — bounded by
+/// [`crate::max_buffered_response_bytes`], past which a `500` wire response
+/// naming the limit is written instead.  Either way the handler has already
+/// run; retrying runs it again — callers must gate retries on idempotency,
+/// or use [`dispatch_into_async_borrowed_resumable`], which keeps the
+/// overflowing response instead.
 ///
 /// A configured [`crate::dispatch_timeout`] that expires writes a `504`
 /// wire response into `out` instead.
@@ -610,18 +629,65 @@ pub async fn dispatch_into_async_borrowed(input: &[u8], out: &mut [u8]) -> Direc
 }
 
 async fn dispatch_into_borrowed_inner(input: &[u8], out: &mut [u8]) -> DirectWriteResult {
+    match dispatch_borrowed_to_parts(input).await {
+        Ok((status, headers, metadata, body)) => {
+            finish_direct_write(out, status, headers, metadata, body).await
+        }
+        Err(wire) => write_wire_into(out, &wire),
+    }
+}
+
+/// **Resumable** sibling of [`dispatch_into_async_borrowed`]: identical
+/// for a response that fits `out`, but a response that does not is **kept**
+/// and returned as [`ResumableDirectWrite::Overflow`] instead of being
+/// discarded — continue it with
+/// [`PendingDirectResponse::write_into`](crate::PendingDirectResponse::write_into)
+/// (a larger buffer) or
+/// [`PendingDirectResponse::stream`](crate::PendingDirectResponse::stream)
+/// without re-running the handler.
+///
+/// Nothing past `out` is drained: the response body stops being read the
+/// moment a frame does not fit (or up front, when its exact size hint
+/// already exceeds `out`), so an unbounded body never blocks or buffers
+/// here.  A `text/event-stream` response is returned pending immediately
+/// ([`PendingDirectResponse::prefers_streaming`](crate::PendingDirectResponse::prefers_streaming))
+/// because it may never end.  A configured [`crate::dispatch_timeout`]
+/// bounds the call (expiry → `504` wire, written into `out`).
+pub async fn dispatch_into_async_borrowed_resumable(
+    input: &[u8],
+    out: &mut [u8],
+) -> ResumableDirectWrite {
+    let done = Deadline::start()
+        .run(dispatch_into_borrowed_resumable_inner(input, &mut *out))
+        .await;
+    done.unwrap_or_else(|| resumable_from_wire(out, timeout_wire()))
+}
+
+async fn dispatch_into_borrowed_resumable_inner(
+    input: &[u8],
+    out: &mut [u8],
+) -> ResumableDirectWrite {
+    match dispatch_borrowed_to_parts(input).await {
+        Ok((status, headers, metadata, body)) => {
+            finish_resumable(out, status, headers, metadata, body, true).await
+        }
+        Err(wire) => resumable_from_wire(out, wire),
+    }
+}
+
+/// Shared prelude of the borrowed direct-write dispatchers: ingress cap →
+/// borrowed split → parse/validate/resolve → dispatch.  `Err` carries the
+/// ready-to-deliver wire error.
+async fn dispatch_borrowed_to_parts(
+    input: &[u8],
+) -> Result<(u16, http::HeaderMap, ResponseMetadata, Body), Vec<u8>> {
     // Ingress cap (defense-in-depth) — same policy as `dispatch_into_async`.
     if let Some(err) = check_ingress_cap(input.len()) {
-        return write_wire_into(out, &err);
+        return Err(err);
     }
-    let (header_bytes, body_bytes) = match split_wire_borrowed(input) {
-        Ok(parts) => parts,
-        Err(msg) => return write_wire_into(out, &error_wire(400, &msg)),
-    };
-    let (header, router) = match parse_validate_resolve(header_bytes) {
-        Ok(parts) => parts,
-        Err(wire) => return write_wire_into(out, &wire),
-    };
+    let (header_bytes, body_bytes) =
+        split_wire_borrowed(input).map_err(|msg| error_wire(400, &msg))?;
+    let (header, router) = parse_validate_resolve(header_bytes)?;
 
     // dispatch_and_split detects Content-Type during its build pass; we
     // only signal that a non-empty body should default to JSON.
@@ -641,7 +707,7 @@ async fn dispatch_into_borrowed_inner(input: &[u8], out: &mut [u8]) -> DirectWri
     // borrowed path (the zero-copy URI win applies only to the owned paths).
     // Same reasoning for the header-owner argument: no owning `Bytes`, so
     // `header_value_from_owner` falls back to `from_str` exactly as before.
-    let (status, headers, metadata, resp_body) = match dispatch_and_split(
+    dispatch_and_split(
         router,
         &header.method,
         &header.path,
@@ -654,130 +720,7 @@ async fn dispatch_into_borrowed_inner(input: &[u8], out: &mut [u8]) -> DirectWri
         header.connection_info(),
     )
     .await
-    {
-        Ok(parts) => parts,
-        Err((status, msg)) => return write_wire_into(out, &error_wire(status, &msg)),
-    };
-
-    finish_direct_write(out, status, headers, metadata, resp_body).await
-}
-
-/// Shared tail of the direct-write dispatchers ([`dispatch_into_async`]
-/// and [`dispatch_into_async_borrowed`]): `422` responses are materialised
-/// so `validation_errors` hoisting is preserved byte-for-byte; every other
-/// status streams status + headers + body frames straight into `out`,
-/// reporting the exact required size on overflow.
-async fn finish_direct_write(
-    out: &mut [u8],
-    status: u16,
-    headers: http::HeaderMap,
-    metadata: ResponseMetadata,
-    mut body: Body,
-) -> DirectWriteResult {
-    if status == 422 {
-        // Bounded prefetch: a small 422 is materialised to preserve the
-        // `validation_errors` hoisting byte-for-byte; an oversized one falls
-        // through to the ordinary direct write below, unhoisted.
-        match prefetch_422_body(body).await {
-            Prefetched422::Small(bytes) => {
-                // Same cap check as the buffered `finish_buffered_wire` 422
-                // branch, so the two modes agree when the cap is below the
-                // hoist prefetch bound (64 KiB).
-                let max = max_buffered_response_bytes();
-                if max != 0 && bytes.len() > max {
-                    return write_wire_into(out, &response_too_large_wire(max));
-                }
-                let wire = to_wire_bytes((status, headers, bytes, metadata));
-                return write_wire_into(out, &wire);
-            }
-            Prefetched422::Large(rest) => body = rest,
-            Prefetched422::Failed => {
-                return write_wire_into(out, &error_wire(500, BODY_STREAM_ERROR_MSG));
-            }
-        }
-    }
-
-    // Write the wire header straight into `out` — no intermediate Vec
-    // and no second copy.  `header_total` is the exact header byte count
-    // whether or not it fit, so overflow reporting stays exact.
-    let header_total = write_wire_header_into_slice(out, status, &headers, &metadata);
-    let mut written = if header_total <= out.len() {
-        header_total
-    } else {
-        0
-    };
-    let mut required = header_total;
-
-    // Fast overflow: when the body length is known exactly (a `Full` body /
-    // explicit `Content-Length`) and the response cannot fit, report the
-    // exact required size immediately instead of draining every frame just
-    // to count bytes — this is the undersized-buffer retry path the pooled
-    // JNI `dispatchDirect` takes. Unknown-length (streaming) bodies have no
-    // exact hint and fall through to the drain loop unchanged.
-    if let Some(exact) = body.size_hint().exact() {
-        let required_u64 = u64::try_from(header_total)
-            .unwrap_or(u64::MAX)
-            .saturating_add(exact);
-        if required_u64 > u64::try_from(out.len()).unwrap_or(u64::MAX) {
-            return DirectWriteResult::Overflow(
-                usize::try_from(required_u64).unwrap_or(usize::MAX),
-            );
-        }
-    }
-
-    loop {
-        match body.frame().await {
-            Some(Ok(frame)) => {
-                if let Some(data) = frame.data_ref()
-                    && !data.is_empty()
-                {
-                    let len = data.len();
-                    // Write only while the output is still contiguous
-                    // (`written == required` ⇒ nothing has been skipped yet).
-                    // `checked_add` guards the bounds test against a
-                    // pathological frame length wrapping `usize`; `written`
-                    // then stays ≤ `out.len()` so the in-place add cannot
-                    // overflow.
-                    if written == required
-                        && written.checked_add(len).is_some_and(|end| end <= out.len())
-                    {
-                        out[written..written + len].copy_from_slice(data);
-                        written += len;
-                    }
-                    // Saturating so an (impossible-in-practice) cumulative
-                    // overflow reports `Overflow(usize::MAX)` rather than
-                    // wrapping to a bogus small required size.
-                    required = required.saturating_add(len);
-                }
-            }
-            // Response body aborted mid-stream. Nothing has been committed to
-            // the caller yet (we write into `out` and only return at the end),
-            // so discard the partial write and emit a 500 error wire instead
-            // of reporting truncated bytes as a successful response.
-            Some(Err(_)) => {
-                let wire = error_wire(500, BODY_STREAM_ERROR_MSG);
-                return write_wire_into(out, &wire);
-            }
-            None => break,
-        }
-    }
-
-    if written == required {
-        DirectWriteResult::Complete(written)
-    } else {
-        DirectWriteResult::Overflow(required)
-    }
-}
-
-/// Copy a fully-assembled wire response into `out`, or report the
-/// exact required size.
-fn write_wire_into(out: &mut [u8], wire: &[u8]) -> DirectWriteResult {
-    if wire.len() <= out.len() {
-        out[..wire.len()].copy_from_slice(wire);
-        DirectWriteResult::Complete(wire.len())
-    } else {
-        DirectWriteResult::Overflow(wire.len())
-    }
+    .map_err(|(status, msg)| error_wire(status, &msg))
 }
 
 #[cfg(test)]

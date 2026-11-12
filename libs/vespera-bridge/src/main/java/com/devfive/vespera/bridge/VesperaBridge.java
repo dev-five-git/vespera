@@ -636,7 +636,7 @@ public class VesperaBridge {
      * (GET/HEAD/OPTIONS) automatically; for unsafe methods the caller
      * must decide.
      */
-    public static final class BufferTooSmallException extends RuntimeException {
+    public static class BufferTooSmallException extends RuntimeException {
         private final int requiredSize;
 
         public BufferTooSmallException(int requiredSize) {
@@ -697,6 +697,12 @@ public class VesperaBridge {
      *         {@code inLen} is negative, or exceeds {@code in.capacity()}
      */
     public static int dispatchDirect(ByteBuffer in, int inLen, ByteBuffer out) {
+        validateDirectBuffers(in, inLen, out);
+        return dispatchDirect0(in, inLen, out);
+    }
+
+    /** Caller-side checks shared by the direct-buffer natives. */
+    static void validateDirectBuffers(ByteBuffer in, int inLen, ByteBuffer out) {
         Objects.requireNonNull(in, "in");
         Objects.requireNonNull(out, "out");
         if (!in.isDirect() || !out.isDirect()) {
@@ -720,7 +726,6 @@ public class VesperaBridge {
             throw new IllegalArgumentException(
                     "inLen " + inLen + " out of range for in.capacity() " + in.capacity());
         }
-        return dispatchDirect0(in, inLen, out);
     }
 
     /**
@@ -835,8 +840,8 @@ public class VesperaBridge {
             boolean currentThreadIsVirtual) {
         requireRequestInputs(method, path);
         return VesperaDirectBufferPool.dispatchDirectPooled(
-                appName, method, path, query, headers, body,
-                retryOnOverflow, currentThreadIsVirtual);
+                appName, method, path, query, headers, body, retryOnOverflow, currentThreadIsVirtual,
+                currentThreadIsVirtual ? ParkingDispatch::park : VesperaBridge::dispatchBytes, true);
     }
 
     /**

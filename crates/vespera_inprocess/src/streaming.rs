@@ -1,11 +1,16 @@
 //! Streaming dispatch variants: response streaming, header-callback
 //! streaming, and bidirectional (request + response) streaming.
 
+use std::future::Future;
 use std::ops::ControlFlow;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 
 use axum::body::Body;
+use bytes::Bytes;
+use http_body::Body as _;
 use http_body_util::BodyExt;
 
 use crate::bounded::{Deadline, Prefetched422, prefetch_422_body, timeout_wire};
@@ -192,6 +197,7 @@ where
             &mut deadline,
             &mut on_header,
             &mut counting,
+            false,
         )
         .await
     };
@@ -281,6 +287,19 @@ impl StreamOutcome {
 ///
 /// `deadline` bounds only the time to the header (the 422 prefetch above);
 /// once the header is committed the body drains without a total deadline.
+///
+/// Frames that are already available are coalesced (up to the streaming
+/// chunk size) into one `on_chunk` call; the batch is delivered as soon as
+/// the body would wait.  With `flush_hints` (the header-first variants,
+/// whose host has already committed the status) an **empty** `on_chunk`
+/// call follows whenever the body is about to wait and something was
+/// delivered since the last hint: the host should flush its output buffer
+/// then, so incremental responses (SSE) are not held back.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared tail of four public streaming entry points; each argument is a distinct \
+              per-dispatch input"
+)]
 async fn emit_header_then_stream_body<H, F>(
     status: u16,
     headers: http::HeaderMap,
@@ -289,6 +308,7 @@ async fn emit_header_then_stream_body<H, F>(
     deadline: &mut Deadline,
     on_header: &mut H,
     on_chunk: &mut F,
+    flush_hints: bool,
 ) -> StreamOutcome
 where
     H: FnMut(&[u8]),
@@ -318,29 +338,159 @@ where
     }
 
     on_header(&build_wire_header_bytes(status, &headers, &metadata));
+    // The header is committed: the dispatch deadline bounds only the time to
+    // the first header, never the body (a long download that is still making
+    // progress must not be cut off mid-stream).
+    stream_body_tail(body, on_chunk, flush_hints).await
+}
+
+/// Post-header body tail shared by every header-first streaming path and
+/// [`crate::PendingDirectResponse::stream`]: frame-by-frame delivery with
+/// ready-frame coalescing and (with `flush_hints`) an empty-chunk flush hint
+/// before the body waits.  The header was just delivered, so it starts
+/// "unflushed".
+pub async fn stream_body_tail<F>(
+    mut body: Body,
+    on_chunk: &mut F,
+    flush_hints: bool,
+) -> StreamOutcome
+where
+    F: FnMut(&[u8]) -> ControlFlow<()>,
+{
+    let mut batch = FrameBatch::new(crate::config::streaming_chunk_bytes());
+    // Something (the header, then body bytes) reached the sink since the
+    // last flush hint.
+    let mut unflushed = flush_hints;
     loop {
-        // The header is committed: the dispatch deadline bounds only the
-        // time to the first header, never the body (a long download that is
-        // still making progress must not be cut off mid-stream).
-        match body.frame().await {
-            None => return StreamOutcome::Complete,
+        // Poll the body ONCE without waiting: frames that are already
+        // available are coalesced into one sink call (fewer FFI crossings for
+        // bodies made of many small frames), and only when the body would
+        // actually wait is the batch delivered — followed by a flush hint on
+        // the header-first paths, so a latency-sensitive stream (SSE, chunked
+        // progress) reaches the client now instead of sitting in the host's
+        // output buffer.  A body that never waits (an in-memory payload) is
+        // never flushed early, so bulk throughput is unchanged.
+        let next = match poll_frame_now(&mut body).await {
+            Poll::Ready(next) => next,
+            Poll::Pending => {
+                if batch.deliver(on_chunk).is_break() {
+                    return StreamOutcome::SinkStopped;
+                }
+                if unflushed {
+                    unflushed = false;
+                    if on_chunk(&[]).is_break() {
+                        return StreamOutcome::SinkStopped;
+                    }
+                }
+                body.frame().await
+            }
+        };
+        match next {
+            None => {
+                return if batch.deliver(on_chunk).is_break() {
+                    StreamOutcome::SinkStopped
+                } else {
+                    StreamOutcome::Complete
+                };
+            }
             Some(Ok(frame)) => {
-                if let Some(data) = frame.data_ref()
+                if let Ok(data) = frame.into_data()
                     && !data.is_empty()
-                    && on_chunk(data.as_ref()).is_break()
                 {
+                    unflushed = flush_hints;
                     // The chunk sink asked to stop (e.g. the host's output sink
                     // failed). The header is already committed, so report the
                     // truncation to the caller.
-                    return StreamOutcome::SinkStopped;
+                    if batch.push(data, on_chunk).is_break() {
+                        return StreamOutcome::SinkStopped;
+                    }
                 }
             }
             // The response body aborted mid-stream after the header was
-            // committed: status/headers can no longer change, so surface the
-            // truncation so the host can abort the transport instead of sending
-            // a clean terminator over a short body.
-            Some(Err(_)) => return StreamOutcome::BodyError,
+            // committed: status/headers can no longer change, so deliver what
+            // was already produced and surface the truncation so the host can
+            // abort the transport instead of sending a clean terminator over a
+            // short body.
+            Some(Err(_)) => {
+                return if batch.deliver(on_chunk).is_break() {
+                    StreamOutcome::SinkStopped
+                } else {
+                    StreamOutcome::BodyError
+                };
+            }
         }
+    }
+}
+
+/// Poll `body` for its next frame exactly once, without waiting: `Pending`
+/// means the body has nothing ready right now (its waker is registered, so a
+/// following `body.frame().await` resumes normally).
+fn poll_frame_now(
+    body: &mut Body,
+) -> impl Future<Output = Poll<Option<Result<http_body::Frame<Bytes>, axum::Error>>>> + '_ {
+    std::future::poll_fn(move |cx| Poll::Ready(Pin::new(&mut *body).poll_frame(cx)))
+}
+
+/// Coalesces response frames that are ready back-to-back into one sink call.
+///
+/// The first frame is held zero-copy (a single-frame body — the common
+/// `Json` / `Bytes` response — is delivered without any copy); only a
+/// second small frame arriving before the body waits starts a copying
+/// batch, capped at the streaming chunk size so the buffered amount stays
+/// `O(chunk)`.
+struct FrameBatch {
+    held: Option<Bytes>,
+    merged: Vec<u8>,
+    cap: usize,
+}
+
+impl FrameBatch {
+    const fn new(cap: usize) -> Self {
+        Self {
+            held: None,
+            merged: Vec::new(),
+            cap,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.held.as_ref().map_or(self.merged.len(), Bytes::len)
+    }
+
+    /// Add one non-empty frame, delivering the current batch first when the
+    /// frame would push it past the cap.
+    fn push<F>(&mut self, data: Bytes, on_chunk: &mut F) -> ControlFlow<()>
+    where
+        F: FnMut(&[u8]) -> ControlFlow<()>,
+    {
+        if self.len().saturating_add(data.len()) > self.cap {
+            self.deliver(on_chunk)?;
+        }
+        if self.len() == 0 {
+            self.held = Some(data);
+        } else {
+            if let Some(held) = self.held.take() {
+                self.merged.extend_from_slice(&held);
+            }
+            self.merged.extend_from_slice(&data);
+        }
+        ControlFlow::Continue(())
+    }
+
+    /// Hand the batched bytes (if any) to the sink.
+    fn deliver<F>(&mut self, on_chunk: &mut F) -> ControlFlow<()>
+    where
+        F: FnMut(&[u8]) -> ControlFlow<()>,
+    {
+        if let Some(held) = self.held.take() {
+            return on_chunk(&held);
+        }
+        if self.merged.is_empty() {
+            return ControlFlow::Continue(());
+        }
+        let flow = on_chunk(&self.merged);
+        self.merged.clear();
+        flow
     }
 }
 
@@ -358,6 +508,14 @@ where
 /// success or error. On error (malformed wire, no app, invalid
 /// method, …) the bytes passed to `on_header` are a normal
 /// `error_wire(...)` response and `on_chunk` is **not** invoked.
+///
+/// Body frames that are ready back-to-back are coalesced (up to
+/// [`crate::streaming_chunk_bytes`]) into one `on_chunk` call.  `on_chunk`
+/// may also be called with an **empty slice**: a *flush hint* fired when the
+/// body is about to wait after something (the header or body bytes) was
+/// delivered — a buffering sink (e.g. a servlet `OutputStream`) should flush
+/// so incremental responses such as `text/event-stream` reach the client
+/// immediately.  Sinks that do not buffer can ignore it.
 pub async fn dispatch_streaming_with_header_async<H, F>(
     input: Vec<u8>,
     mut on_header: H,
@@ -437,6 +595,7 @@ where
         &mut deadline,
         &mut on_header,
         &mut on_chunk,
+        true,
     )
     .await
 }
@@ -519,8 +678,15 @@ where
     let mut header_bytes: Vec<u8> = Vec::with_capacity(4 + WIRE_HEADER_RESERVE);
     let outcome = {
         let on_header = |h: &[u8]| header_bytes.extend_from_slice(h);
-        bidirectional_streaming_inner(input_header, pull_chunk, on_chunk, on_header, request_close)
-            .await
+        bidirectional_streaming_inner(
+            input_header,
+            pull_chunk,
+            on_chunk,
+            on_header,
+            request_close,
+            false,
+        )
+        .await
     };
     match outcome {
         // `Complete` covers a clean drain AND the pre-dispatch error paths
@@ -547,6 +713,10 @@ where
 /// error). On any pre-dispatch / wire error the bytes passed to
 /// `on_header` are a normal `error_wire(...)` response and neither
 /// `pull_chunk` nor `on_chunk` is invoked beyond that point.
+///
+/// Like [`dispatch_streaming_with_header_async`], ready frames are
+/// coalesced and `on_chunk(&[])` is a flush hint fired before the body
+/// waits.
 ///
 /// Ergonomic form with no request-source close hook; see
 /// [`dispatch_bidirectional_streaming_with_header_closing`] for the
@@ -589,8 +759,15 @@ where
     H: FnMut(&[u8]),
     C: FnOnce(),
 {
-    bidirectional_streaming_inner(input_header, pull_chunk, on_chunk, on_header, request_close)
-        .await
+    bidirectional_streaming_inner(
+        input_header,
+        pull_chunk,
+        on_chunk,
+        on_header,
+        request_close,
+        true,
+    )
+    .await
 }
 
 async fn bidirectional_streaming_inner<P, F, H, C>(
@@ -599,6 +776,7 @@ async fn bidirectional_streaming_inner<P, F, H, C>(
     mut on_chunk: F,
     mut on_header: H,
     request_close: C,
+    flush_hints: bool,
 ) -> StreamOutcome
 where
     P: FnMut() -> RequestChunk + Send + 'static,
@@ -713,6 +891,7 @@ where
         &mut deadline,
         &mut on_header,
         &mut on_chunk,
+        flush_hints,
     )
     .await;
 

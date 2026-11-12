@@ -5,9 +5,10 @@ use std::sync::OnceLock;
 
 mod limits;
 pub use limits::{
-    DEFAULT_MAX_BUFFERED_RESPONSE_BYTES, dispatch_timeout, max_buffered_response_bytes,
-    max_streaming_request_bytes, set_dispatch_timeout, set_max_buffered_response_bytes,
-    set_max_streaming_request_bytes,
+    DEFAULT_MAX_BUFFERED_RESPONSE_BYTES, DEFAULT_MAX_STREAMING_REQUEST_PRODUCERS, dispatch_timeout,
+    max_buffered_response_bytes, max_streaming_request_bytes, max_streaming_request_producers,
+    set_dispatch_timeout, set_max_buffered_response_bytes, set_max_streaming_request_bytes,
+    set_max_streaming_request_producers,
 };
 
 // ── Streaming Configuration ──────────────────────────────────────────

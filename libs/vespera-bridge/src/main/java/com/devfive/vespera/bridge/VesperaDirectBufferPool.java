@@ -462,6 +462,30 @@ final class VesperaDirectBufferPool {
             boolean retryOnOverflow,
             boolean currentThreadIsVirtual,
             HeapDispatcher heapDispatcher) {
+        return dispatchDirectPooled(
+                appName, method, path, query, headers, body,
+                retryOnOverflow, currentThreadIsVirtual, heapDispatcher, false);
+    }
+
+    /**
+     * {@code keepStash}: an overflow whose response the Rust side kept (an
+     * event stream, or larger than the pool cap) surfaces as a
+     * {@link StashedOverflowException} the caller must stream or discard —
+     * the proxy streams it without re-running the handler.  When
+     * {@code false} it is discarded and a plain
+     * {@link BufferTooSmallException} is thrown.
+     */
+    static ByteBuffer dispatchDirectPooled(
+            String appName,
+            String method,
+            String path,
+            String query,
+            HeaderSource headers,
+            byte[] body,
+            boolean retryOnOverflow,
+            boolean currentThreadIsVirtual,
+            HeapDispatcher heapDispatcher,
+            boolean keepStash) {
         byte[] bodyBytes = body != null ? body : VesperaWireCodec.EMPTY_BODY;
         ExposedByteArrayOutputStream hdr =
                 VesperaWireCodec.fillHeaderJson(appName, method, path, query, headers);
@@ -483,7 +507,7 @@ final class VesperaDirectBufferPool {
             }
             int written = VesperaWireCodec.assembleInto(hdr.backingArray(), headerLen, bodyBytes, pool[0]);
             requireExpectedWrite(written, total);
-            return dispatchViaPool(pool, total, retryOnOverflow);
+            return dispatchViaPool(pool, total, retryOnOverflow, keepStash);
         } finally {
             VesperaWireCodec.shrinkHeaderBufferIfOversized(hdr);
         }
@@ -491,53 +515,59 @@ final class VesperaDirectBufferPool {
 
     /**
      * Dispatch the request already prepared in the pooled in-buffer
-     * ({@code pool[0][0..reqLen]}) and apply the response-overflow
-     * policy.  {@code wireFallback} supplies the equivalent wire bytes
-     * lazily — only materialised when a permitted retry exceeds the
-     * pool cap and must take the {@link VesperaBridge#dispatchBytes} path.
+     * ({@code pool[0][0..reqLen]}) through the resumable native and apply
+     * the response-overflow policy (see
+     * {@link #dispatchViaPool(ByteBuffer[], int, boolean, DirectDispatcher, DirectStash.Ops, boolean)}).
      */
     private static ByteBuffer dispatchViaPool(
             ByteBuffer[] pool, int reqLen, boolean retryOnOverflow) {
-        return dispatchViaPool(pool, reqLen, retryOnOverflow, VesperaBridge::dispatchDirect);
+        return dispatchViaPool(pool, reqLen, retryOnOverflow, false);
     }
 
+    private static ByteBuffer dispatchViaPool(
+            ByteBuffer[] pool, int reqLen, boolean retryOnOverflow, boolean keepStash) {
+        return dispatchViaPool(pool, reqLen, retryOnOverflow,
+                DirectStash::dispatchResumable, DirectStash.NATIVE, keepStash);
+    }
+
+    /** Legacy (stash-less) seam: every overflow is handled by re-dispatching. */
     static ByteBuffer dispatchViaPool(
             ByteBuffer[] pool,
             int reqLen,
             boolean retryOnOverflow,
             DirectDispatcher dispatcher) {
+        return dispatchViaPool(pool, reqLen, retryOnOverflow, dispatcher, null, false);
+    }
+
+    /**
+     * Overflow policy.  When the dispatcher left a stash handle in
+     * {@code pool[1]} (resumable native, {@code stash != null}), the finished
+     * response is fetched into a grown buffer <strong>without re-running the
+     * handler</strong> — for every method, regardless of
+     * {@code retryOnOverflow}.  An event stream, or a response beyond the
+     * pool cap, raises {@link StashedOverflowException} ({@code keepStash})
+     * or is discarded into a plain {@link BufferTooSmallException}.  Without
+     * a handle the legacy policy applies: re-dispatch only when
+     * {@code retryOnOverflow}.
+     */
+    static ByteBuffer dispatchViaPool(
+            ByteBuffer[] pool,
+            int reqLen,
+            boolean retryOnOverflow,
+            DirectDispatcher dispatcher,
+            DirectStash.Ops stash,
+            boolean keepStash) {
         boolean recorded = false;
         try {
             int n = dispatcher.dispatch(pool[0], reqLen, pool[1]);
             if (n == Integer.MIN_VALUE) {
                 throw responseExceedsTwoGiBException();
             }
-            if (n < 0) {
-                int required = -n;
-                if (!retryOnOverflow) {
-                    throw new BufferTooSmallException(required);
-                }
-                if (required > DIRECT_MAX_CAPACITY) {
-                    // Response exceeds the pooled direct buffer's hard cap. Do NOT
-                    // heap-buffer the whole response via dispatchBytes — that
-                    // defeats streaming and risks an OOM spike on large downloads
-                    // (a small/bodyless safe GET the SmartDispatch resolver routes
-                    // here can still return gigabytes). Surface the overflow so the
-                    // caller re-routes this request through response streaming.
-                    throw new BufferTooSmallException(required);
-                }
-                pool[1] = ByteBuffer.allocateDirect(grownCapacity(required));
-                n = dispatcher.dispatch(pool[0], reqLen, pool[1]);
-            }
-            if (n == Integer.MIN_VALUE) {
-                throw responseExceedsTwoGiBException();
-            }
-            if (n < 0) {
-                // A second overflow is legitimate: the retry re-ran the
-                // handler, and a non-deterministic handler may produce a
-                // larger response this time.  Surface the new exact size
-                // instead of retrying unboundedly.
-                throw new BufferTooSmallException(-n);
+            long token = n < 0 && stash != null ? DirectStash.token(pool[1]) : 0L;
+            if (token != 0L) {
+                n = fetchStashed(pool, -n, token, DirectStash.flags(pool[1]), stash, keepStash);
+            } else if (n < 0) {
+                n = redispatch(pool, reqLen, -n, retryOnOverflow, dispatcher);
             }
             ByteBuffer view = pool[1].asReadOnlyBuffer();
             view.position(0).limit(n);
@@ -549,6 +579,68 @@ final class VesperaDirectBufferPool {
                 recordDirectPoolUse(pool, reqLen, 0);
             }
         }
+    }
+
+    /** Copy a stashed overflow into a grown {@code pool[1]}; returns its length. */
+    private static int fetchStashed(
+            ByteBuffer[] pool, int required, long token, int flags,
+            DirectStash.Ops stash, boolean keepStash) {
+        boolean eventStream = (flags & DirectStash.FLAG_STREAM) != 0;
+        while (!eventStream && required <= DIRECT_MAX_CAPACITY) {
+            if (pool[1].capacity() < required) {
+                pool[1] = ByteBuffer.allocateDirect(grownCapacity(required));
+            }
+            int n = stash.fetch(token, pool[1]);
+            if (n >= 0) {
+                return n;
+            }
+            if (n == Integer.MIN_VALUE) {
+                throw new IllegalStateException(
+                        "vespera DIRECT overflow stash entry expired before it was fetched");
+            }
+            // An inexact (lower-bound) size can stay short of the real
+            // length; at the cap there is no bigger buffer to try.
+            required = pool[1].capacity() == DIRECT_MAX_CAPACITY
+                    ? Math.max(-n, DIRECT_MAX_CAPACITY + 1)
+                    : Math.max(-n, pool[1].capacity() + 1);
+        }
+        StashedOverflowException stashed =
+                new StashedOverflowException(required, token, eventStream, stash);
+        if (keepStash) {
+            throw stashed;
+        }
+        stashed.discard();
+        throw new BufferTooSmallException(required);
+    }
+
+    /** Legacy overflow: re-run the dispatch into a grown buffer when permitted. */
+    private static int redispatch(
+            ByteBuffer[] pool, int reqLen, int required, boolean retryOnOverflow,
+            DirectDispatcher dispatcher) {
+        if (!retryOnOverflow) {
+            throw new BufferTooSmallException(required);
+        }
+        if (required > DIRECT_MAX_CAPACITY) {
+            // Response exceeds the pooled direct buffer's hard cap. Do NOT
+            // heap-buffer the whole response via dispatchBytes — that
+            // defeats streaming and risks an OOM spike on large downloads.
+            // Surface the overflow so the caller re-routes this request
+            // through response streaming.
+            throw new BufferTooSmallException(required);
+        }
+        pool[1] = ByteBuffer.allocateDirect(grownCapacity(required));
+        int n = dispatcher.dispatch(pool[0], reqLen, pool[1]);
+        if (n == Integer.MIN_VALUE) {
+            throw responseExceedsTwoGiBException();
+        }
+        if (n < 0) {
+            // A second overflow is legitimate: the retry re-ran the
+            // handler, and a non-deterministic handler may produce a
+            // larger response this time.  Surface the new exact size
+            // instead of retrying unboundedly.
+            throw new BufferTooSmallException(-n);
+        }
+        return n;
     }
 
     static IllegalStateException responseExceedsTwoGiBException() {

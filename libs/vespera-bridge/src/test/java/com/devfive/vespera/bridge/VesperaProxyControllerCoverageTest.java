@@ -273,9 +273,9 @@ class VesperaProxyControllerCoverageTest {
 
     @Test
     void retryDecisionRequiresBothConfigurationAndSafeMethod() {
-        assertTrue(VesperaProxyController.shouldRetryDirect(true, "GET"));
-        assertFalse(VesperaProxyController.shouldRetryDirect(false, "GET"));
-        assertFalse(VesperaProxyController.shouldRetryDirect(true, "POST"));
+        assertTrue(DirectModeDispatcher.shouldRetry(true, "GET"));
+        assertFalse(DirectModeDispatcher.shouldRetry(false, "GET"));
+        assertFalse(DirectModeDispatcher.shouldRetry(true, "POST"));
     }
 
     @Test
