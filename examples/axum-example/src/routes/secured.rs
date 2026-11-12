@@ -1,10 +1,12 @@
 //! Security schemes and operation metadata.
 //!
 //! `vespera!(security_schemes = [...])` in `lib.rs` declares `bearerAuth`
-//! (HTTP bearer, JWT) and `apiKey` (`X-API-Key` header) under
-//! `components.securitySchemes`; each route here opts in with
-//! `#[route(security = [...])]`. `security = []` documents an explicitly
-//! unauthenticated operation.
+//! (HTTP bearer, JWT), `apiKey` (`X-API-Key` header), `oauth2` (authorization
+//! code + client credentials flows with scopes) and `oidc` (OpenID Connect)
+//! under `components.securitySchemes`; each route here opts in with
+//! `#[route(security = [...])]` — `("oauth2", ["read:users"])` also names the
+//! required scopes, checked against the flows at compile time.
+//! `security = []` documents an explicitly unauthenticated operation.
 //!
 //! The scheme only *documents* auth — enforcing it stays the handler's (or a
 //! middleware's) job, shown here with a plain `HeaderMap` check.
@@ -82,4 +84,32 @@ pub async fn legacy_reports(headers: HeaderMap) -> Result<Json<Vec<String>>, Sta
 #[vespera::route(get, path = "/public", tags = ["secured"], security = [])]
 pub async fn public_status() -> &'static str {
     "public"
+}
+
+/// Token the demo maps to the `read:users` OAuth2 scope
+/// (`Authorization: Bearer read-users-token`).
+pub const READ_USERS_TOKEN: &str = "read-users-token";
+
+/// User directory — needs the `read:users` scope, granted either by the
+/// OAuth2 server or by the OpenID Connect provider (alternatives, OR).
+///
+/// A scope missing from every flow of `oauth2` is a compile error.
+#[vespera::route(
+    get,
+    path = "/directory",
+    tags = ["secured"],
+    security = [("oauth2", ["read:users"]), ("oidc", ["openid", "read:users"])],
+    error_status = [401, 403]
+)]
+pub async fn user_directory(headers: HeaderMap) -> Result<Json<Vec<String>>, StatusCode> {
+    match headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+    {
+        Some(READ_USERS_TOKEN) => Ok(Json(vec!["alice".to_string(), "bob".to_string()])),
+        // Authenticated, but the token lacks the `read:users` scope.
+        Some(DEMO_TOKEN) => Err(StatusCode::FORBIDDEN),
+        _ => Err(StatusCode::UNAUTHORIZED),
+    }
 }

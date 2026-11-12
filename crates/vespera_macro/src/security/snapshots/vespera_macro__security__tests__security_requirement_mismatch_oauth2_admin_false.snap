@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/security/tests.rs
+expression: "describe_requirement_error(&error, \"route `get_user` (`GET /users`)\",\n&schemes)"
+---
+route `get_user` (`GET /users`) requires scope `admin`, which no flow of oauth2 security scheme `oauth2` declares; declared scopes: `read:users`, `write:users`

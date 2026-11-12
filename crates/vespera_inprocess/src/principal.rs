@@ -49,6 +49,27 @@ impl Principal {
         self.authorities.iter().any(|a| a == authority)
     }
 
+    /// Require every one of `scopes` among [`Self::authorities`] (exact match) —
+    /// the runtime counterpart of `#[route(security = [("oauth2", [...])])]`,
+    /// for hosts that forward granted OAuth2 scopes as authorities.
+    ///
+    /// # Errors
+    ///
+    /// [`InsufficientScope`] listing the missing scopes (in `scopes` order);
+    /// as a response it answers `403 Forbidden`.
+    pub fn require_scopes(&self, scopes: &[&str]) -> Result<(), InsufficientScope> {
+        let missing: Vec<String> = scopes
+            .iter()
+            .filter(|scope| !self.has_authority(scope))
+            .map(|scope| (*scope).to_owned())
+            .collect();
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(InsufficientScope { missing })
+        }
+    }
+
     /// The attribute named `key`, if the host set one.
     #[must_use]
     pub fn attribute(&self, key: &str) -> Option<&str> {
@@ -67,6 +88,38 @@ pub const MISSING_PRINCIPAL_MSG: &str = "authentication required";
 impl IntoResponse for MissingPrincipal {
     fn into_response(self) -> Response {
         (StatusCode::UNAUTHORIZED, MISSING_PRINCIPAL_MSG).into_response()
+    }
+}
+
+/// Rejection of [`Principal::require_scopes`]: the principal lacks required
+/// scopes.  Responds `403 Forbidden` with a plain-text body and the RFC 6750
+/// §3.1 challenge `WWW-Authenticate: Bearer error="insufficient_scope",
+/// scope="<missing scopes>"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InsufficientScope {
+    /// The required scopes the principal does not hold.
+    pub missing: Vec<String>,
+}
+
+/// Body of the [`InsufficientScope`] `403` response.
+pub const INSUFFICIENT_SCOPE_MSG: &str = "insufficient scope";
+
+impl IntoResponse for InsufficientScope {
+    fn into_response(self) -> Response {
+        // RFC 7230 quoted-string: escape `\` and `"` inside the scope value.
+        let scope = self
+            .missing
+            .join(" ")
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        let challenge = format!("Bearer error=\"insufficient_scope\", scope=\"{scope}\"");
+        let mut response = (StatusCode::FORBIDDEN, INSUFFICIENT_SCOPE_MSG).into_response();
+        if let Ok(value) = http::HeaderValue::from_str(&challenge) {
+            response
+                .headers_mut()
+                .insert(http::header::WWW_AUTHENTICATE, value);
+        }
+        response
     }
 }
 
@@ -158,5 +211,51 @@ mod tests {
         assert!(!p.has_authority("ROLE_ADMIN"));
         assert_eq!(p.attribute("tenant"), Some("acme"));
         assert_eq!(p.attribute("missing"), None);
+    }
+
+    #[test]
+    fn require_scopes_lists_every_missing_scope_in_order() {
+        let p = Principal {
+            authorities: vec!["read:users".to_owned(), "write:users".to_owned()],
+            ..alice()
+        };
+        assert_eq!(p.require_scopes(&[]), Ok(()));
+        assert_eq!(p.require_scopes(&["read:users", "write:users"]), Ok(()));
+        assert_eq!(
+            p.require_scopes(&["admin", "read:users", "delete:users"]),
+            Err(InsufficientScope {
+                missing: vec!["admin".to_owned(), "delete:users".to_owned()],
+            })
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::plain(
+        &["admin", "delete:users"],
+        Some(r#"Bearer error="insufficient_scope", scope="admin delete:users""#)
+    )]
+    #[case::quoted(&[r#"a"b\c"#], Some(r#"Bearer error="insufficient_scope", scope="a\"b\\c""#))]
+    #[case::not_a_header_value(&["line\nbreak"], None)]
+    #[tokio::test]
+    async fn insufficient_scope_answers_403_with_a_bearer_challenge(
+        #[case] missing: &[&str],
+        #[case] challenge: Option<&str>,
+    ) {
+        let response = InsufficientScope {
+            missing: missing.iter().map(|scope| (*scope).to_owned()).collect(),
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response
+                .headers()
+                .get(http::header::WWW_AUTHENTICATE)
+                .map(|value| value.to_str().unwrap()),
+            challenge
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body, INSUFFICIENT_SCOPE_MSG.as_bytes());
     }
 }

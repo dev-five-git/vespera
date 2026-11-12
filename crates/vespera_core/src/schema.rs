@@ -4,7 +4,9 @@ mod components;
 mod schema_ref;
 mod serde_impls;
 
-pub use components::{Components, OAuthFlow, OAuthFlows, SecurityScheme, SecuritySchemeType};
+pub use components::{
+    Components, OAuthFlow, OAuthFlows, SecurityRequirement, SecurityScheme, SecuritySchemeType,
+};
 pub use schema_ref::{AdditionalProperties, Reference, SchemaRef};
 
 use serde::{Deserialize, Serialize};

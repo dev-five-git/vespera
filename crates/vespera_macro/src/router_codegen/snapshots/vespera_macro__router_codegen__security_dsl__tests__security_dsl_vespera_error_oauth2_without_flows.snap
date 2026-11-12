@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/router_codegen/security_dsl_tests.rs
+expression: error.to_string()
+---
+vespera! macro: security scheme `oauth2` of type `oauth2` is missing required field `flows` (e.g. `flows = { client_credentials = { token_url = "...", scopes = { ... } } }`)

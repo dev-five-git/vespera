@@ -1,0 +1,25 @@
+error: vespera! macro: security scheme `oauth2` of type `oauth2` is missing required field `flows` (e.g. `flows = { client_credentials = { token_url = "...", scopes = { ... } } }`)
+ --> tests/ui/vespera_oauth2_security_invalid.rs:7:13
+  |
+7 |     let _ = vespera!(security_schemes = [{ name = "oauth2", type = "oauth2" }]);
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `vespera` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: OAuth2 `authorization_code` flow is missing required field `token_url`
+  --> tests/ui/vespera_oauth2_security_invalid.rs:14:19
+   |
+14 |         flows = { authorization_code = { authorization_url = "https://auth.example.com/authorize" } },
+   |                   ^^^^^^^^^^^^^^^^^^
+
+error: top-level `security` requires scope `admin`, which no flow of oauth2 security scheme `oauth2` declares; declared scopes: `read:users`
+  --> tests/ui/vespera_oauth2_security_invalid.rs:30:20
+   |
+30 |         security = [("oauth2", ["read:users", "admin"])],
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: #[route] `security` entries must be a scheme name (`"bearerAuth"`), a scheme with scopes (`("oauth2", ["read:users"])`), or an AND group of those (`["apiKey", ("oauth2", ["read:users"])]`)
+  --> tests/ui/vespera_oauth2_security_invalid.rs:34:26
+   |
+34 | #[route(get, security = [("oauth2", "read:users")])]
+   |                          ^^^^^^^^^^^^^^^^^^^^^^^^

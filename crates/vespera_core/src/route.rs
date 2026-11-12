@@ -256,7 +256,7 @@ pub struct Operation {
     pub responses: BTreeMap<String, Response>,
     /// Security requirements
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub security: Option<Vec<BTreeMap<String, Vec<String>>>>,
+    pub security: Option<Vec<crate::schema::SecurityRequirement>>,
     /// Whether this operation is deprecated
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deprecated: Option<bool>,

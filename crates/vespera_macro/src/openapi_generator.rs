@@ -4,10 +4,14 @@ use std::collections::{BTreeMap, HashMap};
 
 use vespera_core::{
     openapi::{Info, OpenApi, OpenApiVersion, Server, Tag},
-    schema::{Components, SecurityScheme},
+    schema::{Components, SecurityRequirement, SecurityScheme},
 };
 
-use crate::{metadata::CollectedMetadata, route_impl::StoredRouteInfo};
+use crate::{
+    metadata::CollectedMetadata,
+    route_impl::StoredRouteInfo,
+    security::{RequirementError, check_requirements, describe_requirement_error},
+};
 
 mod component_schemas;
 mod defaults;
@@ -28,7 +32,7 @@ pub use paths::find_duplicate_operation_id;
 #[derive(Default)]
 pub struct OpenApiSecurity {
     pub security_schemes: Option<BTreeMap<String, SecurityScheme>>,
-    pub security: Option<Vec<BTreeMap<String, Vec<String>>>>,
+    pub security: Option<Vec<SecurityRequirement>>,
     pub tag_descriptions: Option<HashMap<String, String>>,
 }
 
@@ -161,7 +165,8 @@ pub fn try_generate_openapi_doc_with_metadata(
 }
 
 /// Reject `#[route(security = [...])]` / top-level `security = [...]` names
-/// that are not declared in `vespera!(security_schemes = [...])`.
+/// that are not declared in `vespera!(security_schemes = [...])`, and scopes an
+/// `oauth2` scheme's flows do not declare.
 ///
 /// Only enforced when the app declares `security_schemes` at all — an app that
 /// relies on schemes supplied elsewhere (none declared here) is left alone.
@@ -176,52 +181,32 @@ pub fn try_generate_openapi_doc_with_metadata(
 pub fn validate_security_references(
     metadata: &CollectedMetadata,
     schemes: &BTreeMap<String, SecurityScheme>,
-    security: Option<&[BTreeMap<String, Vec<String>>]>,
+    security: Option<&[SecurityRequirement]>,
 ) -> syn::Result<()> {
-    let declared = || {
-        schemes
-            .keys()
-            .map(|name| format!("`{name}`"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let unknown = |user: String, name: &str| {
+    let fail = |user: &str, error: &RequirementError| {
         syn::Error::new(
             proc_macro2::Span::call_site(),
-            format!(
-                "{user} references unknown security scheme `{name}`; declared in \
-                 `vespera!(security_schemes = [...])`: {}",
-                declared()
-            ),
+            describe_requirement_error(error, user, schemes),
         )
     };
     for route in &metadata.routes {
-        for name in route.security.iter().flatten() {
-            if !schemes.contains_key(name) {
-                let handler = if route.module_path.is_empty() {
-                    route.function_name.clone()
-                } else {
-                    format!("{}::{}", route.module_path, route.function_name)
-                };
-                return Err(unknown(
-                    format!(
-                        "route `{handler}` (`{} {}`)",
-                        route.method.to_ascii_uppercase(),
-                        route.path
-                    ),
-                    name,
-                ));
-            }
+        let requirements = route.security.as_deref().unwrap_or_default();
+        if let Err(error) = check_requirements(requirements, schemes, true) {
+            let handler = if route.module_path.is_empty() {
+                route.function_name.clone()
+            } else {
+                format!("{}::{}", route.module_path, route.function_name)
+            };
+            let user = format!(
+                "route `{handler}` (`{} {}`)",
+                route.method.to_ascii_uppercase(),
+                route.path
+            );
+            return Err(fail(&user, &error));
         }
     }
-    for requirement in security.into_iter().flatten() {
-        for name in requirement.keys() {
-            if !schemes.contains_key(name) {
-                return Err(unknown("top-level `security`".to_string(), name));
-            }
-        }
-    }
-    Ok(())
+    check_requirements(security.unwrap_or_default(), schemes, true)
+        .map_err(|error| fail("top-level `security`", &error))
 }
 
 fn build_tags(
@@ -326,6 +311,16 @@ mod tests {
         assert_eq!(doc_servers[1].url, "http://localhost:3000");
     }
 
+    /// `"name"` or `"name=scope,scope"` → one single-scheme requirement.
+    fn requirement(spec: &str) -> SecurityRequirement {
+        let (name, scopes) = spec.split_once('=').unwrap_or((spec, ""));
+        let scopes = scopes
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        BTreeMap::from([(name.to_string(), scopes.collect())])
+    }
+
     /// Route / top-level security names must exist in `security_schemes`
     /// (only enforced when schemes are declared at all).
     #[rstest::rstest]
@@ -333,6 +328,9 @@ mod tests {
     #[case::global_unknown("global_unknown", None, Some("oauth"), true, true)]
     #[case::all_known("all_known", Some(vec!["bearerAuth"]), Some("bearerAuth"), true, false)]
     #[case::no_schemes_declared("no_schemes", Some(vec!["anything"]), None, false, false)]
+    #[case::route_known_scope("route_known_scope", Some(vec!["oauth2=read:users"]), None, true, false)]
+    #[case::route_unknown_scope("route_unknown_scope", Some(vec!["oauth2=read:users,admin"]), None, true, true)]
+    #[case::global_unknown_scope("global_unknown_scope", None, Some("oauth2=admin"), true, true)]
     fn security_references_are_validated(
         #[case] name: &str,
         #[case] route_security: Option<Vec<&str>>,
@@ -350,7 +348,7 @@ mod tests {
             error_status: None,
             typed_responses: None,
             tags: None,
-            security: route_security.map(|names| names.into_iter().map(String::from).collect()),
+            security: route_security.map(|names| names.into_iter().map(requirement).collect()),
             headers: Vec::new(),
             success_status: None,
             operation_id: None,
@@ -362,21 +360,34 @@ mod tests {
         });
         let config = OpenApiSecurity {
             security_schemes: declare_schemes.then(|| {
-                BTreeMap::from([(
-                    "bearerAuth".to_string(),
-                    SecurityScheme {
-                        r#type: SecuritySchemeType::Http,
-                        description: None,
-                        name: None,
-                        r#in: None,
-                        scheme: Some("bearer".to_string()),
-                        bearer_format: None,
-                        flows: None,
-                        open_id_connect_url: None,
-                    },
-                )])
+                BTreeMap::from([
+                    (
+                        "bearerAuth".to_string(),
+                        SecurityScheme {
+                            r#type: SecuritySchemeType::Http,
+                            description: None,
+                            name: None,
+                            r#in: None,
+                            scheme: Some("bearer".to_string()),
+                            bearer_format: None,
+                            flows: None,
+                            open_id_connect_url: None,
+                        },
+                    ),
+                    (
+                        "oauth2".to_string(),
+                        serde_json::from_value(serde_json::json!({
+                            "type": "oauth2",
+                            "flows": { "clientCredentials": {
+                                "tokenUrl": "https://auth.example.com/token",
+                                "scopes": { "read:users": "Read users" }
+                            } }
+                        }))
+                        .unwrap(),
+                    ),
+                ])
             }),
-            security: global.map(|g| vec![BTreeMap::from([(g.to_string(), Vec::new())])]),
+            security: global.map(|g| vec![requirement(g)]),
             tag_descriptions: None,
         };
         let result = config.security_schemes.as_ref().map_or(Ok(()), |schemes| {
@@ -400,7 +411,10 @@ mod tests {
             error_status: None,
             typed_responses: None,
             tags: Some(vec!["secure".to_string()]),
-            security: Some(vec!["bearerAuth".to_string()]),
+            security: Some(vec![BTreeMap::from([(
+                "bearerAuth".to_string(),
+                Vec::new(),
+            )])]),
             headers: Vec::new(),
             success_status: None,
             operation_id: None,
@@ -435,7 +449,10 @@ mod tests {
             error_status: None,
             typed_responses: None,
             tags: Some(vec!["secure".to_string()]),
-            security: Some(vec!["bearerAuth".to_string()]),
+            security: Some(vec![BTreeMap::from([(
+                "bearerAuth".to_string(),
+                Vec::new(),
+            )])]),
             headers: Vec::new(),
             success_status: None,
             operation_id: None,

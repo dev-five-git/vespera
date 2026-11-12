@@ -174,7 +174,10 @@ fn test_auto_router_input_parse_global_security() {
     let input: AutoRouterInput = syn::parse2(tokens).unwrap();
     assert_eq!(
         input.security,
-        Some(vec!["bearerAuth".to_string(), "apiKey".to_string()])
+        Some(vec![
+            BTreeMap::from([("bearerAuth".to_string(), Vec::new())]),
+            BTreeMap::from([("apiKey".to_string(), Vec::new())]),
+        ])
     );
 }
 
@@ -579,15 +582,12 @@ fn test_security_scheme_http_valid() {
 }
 
 #[test]
-fn test_security_scheme_oauth2_rejected() {
+fn test_security_scheme_oauth2_without_flows_rejected() {
     let tokens = quote::quote!(security_schemes = [
         { name = "oauth", type = "oauth2" }
     ]);
     let result: syn::Result<AutoRouterInput> = syn::parse2(tokens);
-    assert!(
-        result.is_err(),
-        "oauth2 (no flows support) must be rejected"
-    );
+    assert!(result.is_err(), "oauth2 without flows must be rejected");
     assert!(result.err().unwrap().to_string().contains("flows"));
 }
 
@@ -656,7 +656,7 @@ fn test_server_duplicate_field_rejected() {
 )]
 #[case::unknown_security_field(
     quote::quote!(security_schemes = [{ name = "auth", type = "mutualTLS", audience = "api" }]),
-    "unknown security scheme field: `audience`. Expected `name`, `type`, `description`, `header_name`, `in`, `scheme`, `bearer_format`, or `open_id_connect_url`"
+    "unknown security scheme field: `audience`. Expected `name`, `type`, `description`, `header_name`, `in`, `scheme`, `bearer_format`, `open_id_connect_url`, or `flows`"
 )]
 #[case::security_missing_name(
     quote::quote!(security_schemes = [{ type = "mutualTLS" }]),

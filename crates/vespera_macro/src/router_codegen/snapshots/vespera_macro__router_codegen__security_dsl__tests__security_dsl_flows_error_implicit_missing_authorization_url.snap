@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/router_codegen/security_dsl_tests.rs
+expression: error.to_string()
+---
+OAuth2 `implicit` flow is missing required field `authorization_url`

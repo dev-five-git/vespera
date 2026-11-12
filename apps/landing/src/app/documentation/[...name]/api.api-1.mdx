@@ -51,7 +51,7 @@ A relative `openapi` path resolves against the crate's `CARGO_MANIFEST_DIR`, so 
 
 ## Security Schemes
 
-Declare schemes with `security_schemes`, then attach requirements to routes with `#[vespera::route(security = [...])]`. Each entry becomes an OpenAPI security requirement with empty scopes; `security = []` on a route emits an explicitly unauthenticated operation. A route referencing an unknown scheme is a compile error (checked after `merge`).
+Declare schemes with `security_schemes`, then attach requirements to routes with `#[vespera::route(security = [...])]`. Each entry becomes an OpenAPI security requirement (with scopes for `("oauth2", ["read:users"])`, see below); `security = []` on a route emits an explicitly unauthenticated operation. A route referencing an unknown scheme is a compile error (checked after `merge`).
 
 ```rust
 let app = vespera!(
@@ -73,6 +73,71 @@ pub async fn health() -> &'static str { "ok" }
 ```
 
 Supported `type` values are OpenAPI's camelCase wire names: `"apiKey"`, `"http"`, `"mutualTLS"`, `"oauth2"` and `"openIdConnect"`. The DSL uses `header_name` for the api-key `name` field so it does not clash with the scheme's own `name`.
+
+### OAuth2 / OpenID Connect scopes
+
+An `oauth2` scheme declares its `flows` (`implicit`, `password`,
+`client_credentials`, `authorization_code`) with the URLs OpenAPI requires for
+each flow and a `scopes` map; an `openIdConnect` scheme takes its discovery
+URL. Requirements name scopes as a `("scheme", ["scope", ...])` tuple:
+
+```rust
+let app = vespera!(
+    openapi = "openapi.json",
+    security_schemes = [
+        {
+            name = "oauth2",
+            type = "oauth2",
+            flows = {
+                authorization_code = {
+                    authorization_url = "https://auth.example.com/authorize",
+                    token_url = "https://auth.example.com/token",
+                    refresh_url = "https://auth.example.com/refresh", // optional
+                    scopes = { "read:users" = "Read users", "write:users" = "Modify users" },
+                },
+                client_credentials = {
+                    token_url = "https://auth.example.com/token",
+                    scopes = { "read:users" = "Read users" },
+                },
+            },
+        },
+        {
+            name = "oidc",
+            type = "openIdConnect",
+            open_id_connect_url = "https://auth.example.com/.well-known/openid-configuration"
+        }
+    ],
+    security = [("oauth2", ["read:users"])] // document-level default
+);
+
+// Alternatives (OR): an oauth2 token with `read:users`, or an OIDC login.
+#[vespera::route(get, path = "/users", security = [("oauth2", ["read:users"]), ("oidc", ["openid"])])]
+pub async fn list_users() -> ... { ... }
+
+// AND group: an API key *and* an oauth2 token with `write:users`.
+#[vespera::route(post, path = "/users", security = [["apiKey", ("oauth2", ["write:users"])]])]
+pub async fn create_user() -> ... { ... }
+
+// `[]` as an alternative makes authentication optional (`{}` in OpenAPI).
+#[vespera::route(get, path = "/feed", security = ["bearerAuth", []])]
+pub async fn feed() -> ... { ... }
+```
+
+```json
+"security": [{ "oauth2": ["read:users"] }, { "oidc": ["openid"] }]
+```
+
+Checked at compile time: an `oauth2` scheme without `flows`, a flow missing
+`authorization_url` / `token_url`, `flows` on a non-`oauth2` scheme, and a
+requirement asking an `oauth2` scheme for a scope that none of its flows
+declares are all compile errors. (OpenID Connect scopes live in the discovery
+document and other scheme types take free-form role names, so those are not
+checked.)
+
+The scopes only *document* the requirement. When the host forwards the granted
+scopes as `vespera::inprocess::Principal` authorities (feature `inprocess`),
+`principal.require_scopes(&["read:users"])?` enforces them, answering `403`
+with `WWW-Authenticate: Bearer error="insufficient_scope", scope="..."`.
 
 ## Environment Variable Fallbacks
 
