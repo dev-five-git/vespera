@@ -53,6 +53,7 @@ pub async fn create_app() -> axum::Router {
         openapi = "openapi.json",
         docs_url = "/docs",
         redoc_url = "/redoc",
+        spec_url = "/openapi.json",
         merge = [ThirdApp]
     )
     .with_state(app_state(db))
@@ -72,6 +73,7 @@ pub async fn create_app_with_layer() -> axum::Router {
         openapi = "openapi.json",
         docs_url = "/docs",
         redoc_url = "/redoc",
+        spec_url = "/openapi.json",
         merge = [ThirdApp]
     )
     .layer(cors)

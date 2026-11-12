@@ -37,6 +37,8 @@ pub struct AutoRouterInput {
     pub version: Option<LitStr>,
     pub docs_url: Option<LitStr>,
     pub redoc_url: Option<LitStr>,
+    /// Route serving the generated OpenAPI document as `application/json`.
+    pub spec_url: Option<LitStr>,
     pub servers: Option<Vec<ServerConfig>>,
     pub security_schemes: Option<Vec<SecuritySchemeConfig>>,
     pub security: Option<Vec<String>>,
@@ -54,6 +56,7 @@ impl Parse for AutoRouterInput {
         let mut version = None;
         let mut docs_url = None;
         let mut redoc_url = None;
+        let mut spec_url = None;
         let mut servers = None;
         let mut security_schemes = None;
         let mut security = None;
@@ -94,6 +97,10 @@ impl Parse for AutoRouterInput {
                         input.parse::<syn::Token![=]>()?;
                         redoc_url = Some(input.parse()?);
                     }
+                    "spec_url" => {
+                        input.parse::<syn::Token![=]>()?;
+                        spec_url = Some(input.parse()?);
+                    }
                     "title" => {
                         input.parse::<syn::Token![=]>()?;
                         title = Some(input.parse()?);
@@ -121,7 +128,7 @@ impl Parse for AutoRouterInput {
                         return Err(syn::Error::new(
                             ident.span(),
                             format!(
-                                "unknown field: `{ident_str}`. Expected `dir`, `openapi`, `title`, `version`, `docs_url`, `redoc_url`, `servers`, `security_schemes`, `security`, `tags`, or `merge`"
+                                "unknown field: `{ident_str}`. Expected `dir`, `openapi`, `title`, `version`, `docs_url`, `redoc_url`, `spec_url`, `servers`, `security_schemes`, `security`, `tags`, or `merge`"
                             ),
                         ));
                     }
@@ -140,51 +147,53 @@ impl Parse for AutoRouterInput {
             }
         }
 
+        let docs_url = docs_url.or_else(|| env_lit("VESPERA_DOCS_URL"));
+        let redoc_url = redoc_url.or_else(|| env_lit("VESPERA_REDOC_URL"));
+        let spec_url = spec_url.or_else(|| env_lit("VESPERA_SPEC_URL"));
+        validate_doc_urls(&[
+            ("docs_url", docs_url.as_ref()),
+            ("redoc_url", redoc_url.as_ref()),
+            ("spec_url", spec_url.as_ref()),
+        ])?;
+
         Ok(Self {
             dir: dir.or_else(|| {
-                std::env::var("VESPERA_DIR")
+                crate::env_access::var("VESPERA_DIR")
                     .map(|f| LitStr::new(&f, Span::call_site()))
                     .ok()
             }),
             openapi: openapi.or_else(|| {
-                std::env::var("VESPERA_OPENAPI")
+                crate::env_access::var("VESPERA_OPENAPI")
                     .map(|f| vec![LitStr::new(&f, Span::call_site())])
                     .ok()
             }),
             title: title.or_else(|| {
-                std::env::var("VESPERA_TITLE")
+                crate::env_access::var("VESPERA_TITLE")
                     .map(|f| LitStr::new(&f, Span::call_site()))
                     .ok()
             }),
             version: version
                 .or_else(|| {
-                    std::env::var("VESPERA_VERSION")
+                    crate::env_access::var("VESPERA_VERSION")
                         .map(|f| LitStr::new(&f, Span::call_site()))
                         .ok()
                 })
                 .or_else(|| {
-                    std::env::var("CARGO_PKG_VERSION")
+                    crate::env_access::var("CARGO_PKG_VERSION")
                         .map(|f| LitStr::new(&f, Span::call_site()))
                         .ok()
                 }),
-            docs_url: docs_url.or_else(|| {
-                std::env::var("VESPERA_DOCS_URL")
-                    .map(|f| LitStr::new(&f, Span::call_site()))
-                    .ok()
-            }),
-            redoc_url: redoc_url.or_else(|| {
-                std::env::var("VESPERA_REDOC_URL")
-                    .map(|f| LitStr::new(&f, Span::call_site()))
-                    .ok()
-            }),
+            docs_url,
+            redoc_url,
+            spec_url,
             servers: servers.or_else(|| {
-                std::env::var("VESPERA_SERVER_URL")
+                crate::env_access::var("VESPERA_SERVER_URL")
                     .ok()
                     .filter(|url| url.starts_with("http://") || url.starts_with("https://"))
                     .map(|url| {
                         vec![ServerConfig {
                             url,
-                            description: std::env::var("VESPERA_SERVER_DESCRIPTION").ok(),
+                            description: crate::env_access::var("VESPERA_SERVER_DESCRIPTION").ok(),
                         }]
                     })
             }),
@@ -194,6 +203,40 @@ impl Parse for AutoRouterInput {
             merge,
         })
     }
+}
+
+/// Read an env-var fallback for a string-valued `vespera!` argument.
+fn env_lit(name: &str) -> Option<LitStr> {
+    crate::env_access::var(name)
+        .ok()
+        .map(|value| LitStr::new(&value, Span::call_site()))
+}
+
+/// Reject `docs_url` / `redoc_url` / `spec_url` values axum would panic on at
+/// router build time: a path not starting with `/`, or two of them on the
+/// same path.
+fn validate_doc_urls(urls: &[(&str, Option<&LitStr>)]) -> syn::Result<()> {
+    let mut seen: Vec<(&str, String)> = Vec::new();
+    for (key, lit) in urls {
+        let Some(lit) = lit else { continue };
+        let value = lit.value();
+        if !value.starts_with('/') {
+            return Err(syn::Error::new(
+                lit.span(),
+                format!("vespera! macro: `{key}` must start with `/`, got \"{value}\""),
+            ));
+        }
+        if let Some((other, _)) = seen.iter().find(|(_, v)| *v == value) {
+            return Err(syn::Error::new(
+                lit.span(),
+                format!(
+                    "vespera! macro: `{key}` and `{other}` both use \"{value}\"; each documentation route needs its own path"
+                ),
+            ));
+        }
+        seen.push((key, value));
+    }
+    Ok(())
 }
 
 fn parse_tag_values(input: ParseStream) -> syn::Result<Vec<TagConfig>> {
@@ -681,6 +724,7 @@ pub struct ProcessedVesperaInput {
     pub version: Option<String>,
     pub docs_url: Option<String>,
     pub redoc_url: Option<String>,
+    pub spec_url: Option<String>,
     pub servers: Option<Vec<Server>>,
     pub security_schemes: Option<BTreeMap<String, SecurityScheme>>,
     pub security: Option<Vec<BTreeMap<String, Vec<String>>>>,
@@ -705,6 +749,7 @@ pub fn process_vespera_input(input: AutoRouterInput) -> ProcessedVesperaInput {
         version: input.version.map(|v| v.value()),
         docs_url: input.docs_url.map(|u| u.value()),
         redoc_url: input.redoc_url.map(|u| u.value()),
+        spec_url: input.spec_url.map(|u| u.value()),
         servers: input.servers.map(|svrs| {
             svrs.into_iter()
                 .map(|s| Server {

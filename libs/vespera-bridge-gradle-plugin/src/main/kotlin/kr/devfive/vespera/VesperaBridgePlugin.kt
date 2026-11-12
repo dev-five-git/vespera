@@ -4,6 +4,9 @@ import org.gradle.api.file.DuplicatesStrategy
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.Task
+import org.gradle.api.provider.ValueSource
+import org.gradle.api.provider.ValueSourceParameters
+import org.gradle.api.provider.ValueSourceSpec
 import org.gradle.api.tasks.Copy
 import org.gradle.language.jvm.tasks.ProcessResources
 import java.io.File
@@ -50,9 +53,15 @@ class VesperaBridgePlugin : Plugin<Project> {
         ext.targets.convention(emptyMap())
         embeddedBridgeVersion()?.let { ext.bridgeVersion.convention(it) }
 
-        // Compute platform-derived values eagerly (host machine info).
-        val hostPlatform = NativePlatform.detectOs(System.getProperty("os.name", "")) +
-            "-" + NativePlatform.detectArch(System.getProperty("os.arch", ""))
+        // Host platform (`<os>-<arch>`, `-musl` on a musl Linux host). Probed in
+        // a ValueSource: its result (not `/proc/self/maps`, which differs per
+        // process) is the configuration-cache fingerprint.
+        val hostPlatform = project.providers.of(
+            HostPlatformValueSource::class.java,
+            object : org.gradle.api.Action<ValueSourceSpec<ValueSourceParameters.None>> {
+                override fun execute(spec: ValueSourceSpec<ValueSourceParameters.None>) {}
+            },
+        )
         val generatedResourcesDir = project.layout.buildDirectory.dir("generated/vesperaNativeResources")
 
         // Lazy references, evaluated when the tasks are realised. Every
@@ -61,7 +70,7 @@ class VesperaBridgePlugin : Plugin<Project> {
             .orElse(ext.cargoRoot.map { File(it.asFile, "target") })
         val plannedBuilds = ext.crateName.zip(ext.cargoProfile) { crate, profile ->
             NativePlatform.plannedBuilds(
-                hostPlatform,
+                hostPlatform.get(),
                 NativePlatform.libraryStem(crate, ext.libName.orNull),
                 profile,
                 ext.targets.get(),
@@ -176,6 +185,11 @@ class VesperaBridgePlugin : Plugin<Project> {
                     "vespera.targetDir to that directory."
             }
         }
+    }
+
+    /** The build host's bridge platform key ([NativePlatform.hostPlatform]). */
+    internal abstract class HostPlatformValueSource : ValueSource<String, ValueSourceParameters.None> {
+        override fun obtain(): String = NativePlatform.hostPlatform()
     }
 
     internal companion object {

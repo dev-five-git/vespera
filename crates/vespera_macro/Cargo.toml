@@ -54,7 +54,6 @@ rstest = "0.28"
 insta = "1.49"
 prettyplease = "0.3"
 tempfile = "3"
-serial_test = "4"
 trybuild = "1"
 
 [lints]

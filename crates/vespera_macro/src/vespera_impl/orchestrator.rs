@@ -59,7 +59,7 @@ pub fn process_vespera_macro(
     route_storage: &[StoredRouteInfo],
     folder_span: Span,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    let profile_start = if std::env::var("VESPERA_PROFILE").is_ok() {
+    let profile_start = if crate::env_access::var("VESPERA_PROFILE").is_ok() {
         eprintln!(
             "[vespera-profile] storage at expansion: {} routes, {} schemas",
             route_storage.len(),
@@ -211,7 +211,7 @@ pub fn process_vespera_macro(
     // rust-analyzer proc-macro server never picks up another crate's jobs.
     let cron_jobs = {
         let storage = crate::cron_impl::current_crate_crons();
-        let src_dir = std::env::var("CARGO_MANIFEST_DIR")
+        let src_dir = crate::env_access::var("CARGO_MANIFEST_DIR")
             .ok()
             .map(|dir| PathBuf::from(dir).join("src"));
         let call_site = Span::call_site().local_file();
@@ -222,6 +222,7 @@ pub fn process_vespera_macro(
         &metadata,
         processed.docs_url.as_deref(),
         processed.redoc_url.as_deref(),
+        processed.spec_url.as_deref(),
         spec_tokens,
         &processed.merge,
         &cron_jobs,
@@ -270,7 +271,7 @@ pub fn process_export_app(
     prefix: &str,
     folder_span: Span,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    let profile_start = if std::env::var("VESPERA_PROFILE").is_ok() {
+    let profile_start = if crate::env_access::var("VESPERA_PROFILE").is_ok() {
         Some(std::time::Instant::now())
     } else {
         None
@@ -365,7 +366,7 @@ pub fn process_export_app(
     };
     let spec_path_str = crate::file_utils::path_to_include_str_literal(&spec_file);
 
-    let router_code = generate_router_code(&metadata, None, None, None, &[], &[]);
+    let router_code = generate_router_code(&metadata, None, None, None, None, &[], &[]);
 
     let result = Ok(quote! {
         /// Auto-generated vespera app struct

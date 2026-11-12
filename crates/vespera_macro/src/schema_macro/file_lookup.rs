@@ -16,13 +16,11 @@ mod schema_type_lookup_tests {
     use std::collections::HashMap;
 
     use quote::quote;
-    use serial_test::serial;
 
     use crate::metadata::StructMetadata;
     use crate::schema_macro::{SchemaTypeInput, generate_schema_type_code};
 
     #[test]
-    #[serial]
     fn test_generate_schema_type_code_qualified_path_file_lookup_success() {
         // Tests: qualified path found via file lookup, module_path used when source is empty
         use tempfile::TempDir;
@@ -42,10 +40,9 @@ pub struct Model {
 ";
         std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
 
-        // Save original CARGO_MANIFEST_DIR
-        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-        // SAFETY: This is a test that runs single-threaded
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        // Point CARGO_MANIFEST_DIR (thread-locally) at the temp project
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
         // Use qualified path - file lookup should succeed
         let tokens = quote!(UserSchema from crate::models::user::Model);
@@ -53,17 +50,6 @@ pub struct Model {
         let storage: HashMap<String, StructMetadata> = HashMap::new(); // Empty storage - force file lookup
 
         let result = generate_schema_type_code(&input, &storage);
-
-        // Restore CARGO_MANIFEST_DIR
-        // SAFETY: This is a test that runs single-threaded
-        unsafe {
-            if let Some(dir) = original_manifest_dir {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
-
         assert!(result.is_ok());
         let (tokens, _metadata) = result.unwrap();
         let output = tokens.to_string();
@@ -74,7 +60,6 @@ pub struct Model {
     }
 
     #[test]
-    #[serial]
     fn test_generate_schema_type_code_simple_name_requires_call_site_struct() {
         // Unit tests have no proc-macro call-site file for the temp fixture. A
         // bare source name must now fail loudly instead of scanning src/**/*.rs
@@ -95,27 +80,15 @@ pub struct Model {
 ";
         std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
 
-        // Save original CARGO_MANIFEST_DIR
-        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-        // SAFETY: This is a test that runs single-threaded
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        // Point CARGO_MANIFEST_DIR (thread-locally) at the temp project
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
         let tokens = quote!(Schema from Model, name = "UserSchema");
         let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
         let storage: HashMap<String, StructMetadata> = HashMap::new(); // Empty storage - force file lookup
 
         let result = generate_schema_type_code(&input, &storage);
-
-        // Restore CARGO_MANIFEST_DIR
-        // SAFETY: This is a test that runs single-threaded
-        unsafe {
-            if let Some(dir) = original_manifest_dir {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
-
         let err = result.expect_err("bare cross-file lookup must fail");
         assert!(
             err.to_string().contains("not found in this file"),
@@ -128,7 +101,6 @@ pub struct Model {
     // ============================================================
 
     #[test]
-    #[serial]
     fn test_generate_schema_type_code_has_many_explicit_pick_inline_type() {
         // Tests: HasMany is explicitly picked, inline type is generated
         use tempfile::TempDir;
@@ -159,10 +131,9 @@ pub struct Model {
 "#;
         std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
 
-        // Save original CARGO_MANIFEST_DIR
-        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-        // SAFETY: This is a test that runs single-threaded
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        // Point CARGO_MANIFEST_DIR (thread-locally) at the temp project
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
         // Explicitly pick HasMany field - should generate inline type
         let tokens =
@@ -171,17 +142,6 @@ pub struct Model {
         let storage: HashMap<String, StructMetadata> = HashMap::new();
 
         let result = generate_schema_type_code(&input, &storage);
-
-        // Restore CARGO_MANIFEST_DIR
-        // SAFETY: This is a test that runs single-threaded
-        unsafe {
-            if let Some(dir) = original_manifest_dir {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
-
         assert!(result.is_ok());
         let (tokens, _metadata) = result.unwrap();
         let output = tokens.to_string();
@@ -193,7 +153,6 @@ pub struct Model {
     }
 
     #[test]
-    #[serial]
     fn test_generate_schema_type_code_has_many_explicit_pick_file_not_found() {
         // Tests: HasMany is explicitly picked but target file not found - should skip field
         use tempfile::TempDir;
@@ -214,10 +173,9 @@ pub struct Model {
 "#;
         std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
 
-        // Save original CARGO_MANIFEST_DIR
-        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-        // SAFETY: This is a test that runs single-threaded
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        // Point CARGO_MANIFEST_DIR (thread-locally) at the temp project
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
         // Explicitly picked HasMany field must error when inline generation fails.
         let tokens =
@@ -226,17 +184,6 @@ pub struct Model {
         let storage: HashMap<String, StructMetadata> = HashMap::new();
 
         let result = generate_schema_type_code(&input, &storage);
-
-        // Restore CARGO_MANIFEST_DIR
-        // SAFETY: This is a test that runs single-threaded
-        unsafe {
-            if let Some(dir) = original_manifest_dir {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
-
         let err = result.expect_err("picked relation must not be silently omitted");
         assert!(
             err.to_string().contains("explicitly picked"),
@@ -244,7 +191,6 @@ pub struct Model {
         );
     }
     #[test]
-    #[serial]
     fn test_generate_schema_type_code_qualified_path_with_nonempty_module_path() {
         // Tests: qualified path with explicit module segments that are not empty
         use tempfile::TempDir;
@@ -263,10 +209,9 @@ pub struct Model {
 ";
         std::fs::write(models_dir.join("user.rs"), user_model).unwrap();
 
-        // Save original CARGO_MANIFEST_DIR
-        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-        // SAFETY: This is a test that runs single-threaded
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        // Point CARGO_MANIFEST_DIR (thread-locally) at the temp project
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
         // crate::models::user::Model - this is a qualified path
         // extract_module_path should return ["crate", "models", "user"]
@@ -276,17 +221,6 @@ pub struct Model {
         let storage: HashMap<String, StructMetadata> = HashMap::new();
 
         let result = generate_schema_type_code(&input, &storage);
-
-        // Restore CARGO_MANIFEST_DIR
-        // SAFETY: This is a test that runs single-threaded
-        unsafe {
-            if let Some(dir) = original_manifest_dir {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
-
         assert!(result.is_ok());
         let (tokens, _metadata) = result.unwrap();
         let output = tokens.to_string();
@@ -294,7 +228,6 @@ pub struct Model {
     }
 
     #[test]
-    #[serial]
     fn test_generate_schema_type_code_cross_module_json_alias_uses_public_path() {
         use tempfile::TempDir;
 
@@ -326,22 +259,13 @@ impl ActiveModelBehavior for ActiveModel {}
         )
         .unwrap();
 
-        let original_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", temp_dir.path()) };
+        let _env_guard =
+            crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp_dir.path());
 
         let tokens = quote!(RouteJsonCaseSchema from crate::models::json_case::Model);
         let input: SchemaTypeInput = syn::parse2(tokens).unwrap();
         let storage: HashMap<String, StructMetadata> = HashMap::new();
         let result = generate_schema_type_code(&input, &storage);
-
-        unsafe {
-            if let Some(dir) = original_manifest_dir {
-                std::env::set_var("CARGO_MANIFEST_DIR", dir);
-            } else {
-                std::env::remove_var("CARGO_MANIFEST_DIR");
-            }
-        }
-
         assert!(result.is_ok());
         let (tokens, _metadata) = result.unwrap();
         let output = tokens.to_string();

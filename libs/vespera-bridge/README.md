@@ -68,7 +68,7 @@ vespera {
 }
 ```
 
-Each `targets` key is a bridge platform (`<os>-<arch>`, os `windows` / `macos` / `linux`); its library is read from `<targetDir>/<triple>/<profile>/` and bundled under `native/<os>-<arch>/` with that platform's file name (`.dll` / `lib*.dylib` / `lib*.so`). A key naming the host platform replaces the host build. The cross toolchain/linker must already be installed. Everything under `extraNativeLibs/native/` is merged in; a locally built library wins over a prebuilt one with the same path. `cargoBuild` is never `UP-TO-DATE` (Cargo's own incremental check decides) and declares no file inputs.
+Each `targets` key is a bridge platform (`<os>-<arch>`, os `windows` / `macos` / `linux`); its library is read from `<targetDir>/<triple>/<profile>/` and bundled under `native/<os>-<arch>/` with that platform's file name (`.dll` / `lib*.dylib` / `lib*.so`). A plain `linux-<arch>` key built for a `*-linux-musl*` triple is bundled under `native/linux-<arch>-musl/` (where the bridge looks first on a musl JVM); `linux-<arch>-musl` keys are accepted too, so one jar can carry both builds, e.g. `targets.put("linux-x86_64-musl", "x86_64-unknown-linux-musl")` next to the glibc host build. A key naming the host platform replaces the host build (on an Alpine build host the host platform is `linux-<arch>-musl`). The cross toolchain/linker must already be installed. Everything under `extraNativeLibs/native/` is merged in; a locally built library wins over a prebuilt one with the same path. `cargoBuild` is never `UP-TO-DATE` (Cargo's own incremental check decides) and declares no file inputs.
 
 ## Two-line integration
 
@@ -100,7 +100,7 @@ Out of the box the autoconfigure module wires up:
 |---|---|---|
 | **App selection** | Read `X-Vespera-App` request header; absent → default app. **Client-controlled — restrict it with `vespera.bridge.exposed-apps`** (see [Multi-app routing → Security](#security-the-app-header-is-client-controlled)) | Properties `vespera.bridge.app-header` / `vespera.bridge.exposed-apps`, or custom [`AppNameResolver`](src/main/java/com/devfive/vespera/bridge/AppNameResolver.java) bean |
 | **Dispatch mode** | [`SmartDispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/SmartDispatchModeResolver.java) since 0.2.0 — picks per request: [`DIRECT`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) (pooled direct buffers, no JNI array copies) for small/bodyless safe requests (GET/HEAD/OPTIONS, Content-Length absent or ≤ 1 MiB) ~2.2 µs; `SYNC` (heap-buffered) for small unsafe requests (POST/PUT/PATCH/DELETE ≤ 256 KiB) ~3.2 µs; `BIDIRECTIONAL_STREAMING` for the rest ~24.1 µs | Property `vespera.bridge.dispatch-mode: bidirectional-streaming` (opt out, restore pre-0.2.0 default), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
-| **URL pattern** | Single `@RequestMapping("/**")` catch-all — every vespera router URL exactly mirrors the published OpenAPI path | Set `vespera.bridge.controller-enabled: false` and supply your own controller |
+| **URL pattern** | Single `@RequestMapping("/**")` catch-all — every vespera router URL exactly mirrors the published OpenAPI path | Properties `vespera.bridge.include-patterns` / `vespera.bridge.exclude-patterns` (see [Proxied paths](#proxied-paths-include--exclude-patterns)), or `vespera.bridge.controller-enabled: false` and your own controller |
 | **Body handling** | Servlet `InputStream` straight through to Rust (no buffering) for streaming modes; full read for sync/async | (encoded by the chosen `DispatchMode`) |
 
 Why `smart` as the default mode (since 0.2.0)? Measured on a small `GET /health` round-trip through the real JNI boundary the cheapest safe path per request is 7–11× cheaper than unconditional streaming:
@@ -139,6 +139,8 @@ vespera:
     app-header: X-My-App        # change the header that selects the app
     exposed-apps: [admin]       # apps the (client-controlled) app header may select
     controller-enabled: true     # set false to disable our controller
+    include-patterns: ["/**"]    # paths the proxy serves (default /**), see "Proxied paths"
+    exclude-patterns: []         # paths left to Spring MVC, e.g. ["/assets/**", "/*.html"]
     cors: rust                   # rust (default) | spring — who answers CORS, see "CORS"
     direct-retry-on-overflow: true # set false to avoid DIRECT retry double-execution
     max-buffered-request-bytes: 67108864 # default 64 MiB; 0 = unlimited
@@ -204,6 +206,39 @@ request-size status `413`. When the native cap could not be aligned (the
 library dispatched before the context started, or a controller built by hand),
 the proxy keeps a post-dispatch check with the same `500`. Use a streaming mode
 for large downloads.
+
+#### Proxied paths (include / exclude patterns)
+
+By default the proxy is a `/**` catch-all: more specific Spring MVC handlers
+(your `@RestController`s, `/error`, Actuator) still win, but everything else —
+including what Spring Boot would otherwise serve from `classpath:/static/` —
+goes to Rust. Narrow it with Spring
+[`PathPattern`](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller/ann-requestmapping.html#mvc-ann-requestmapping-uri-templates)
+patterns, matched against the path within the application (context path and a
+prefix `DispatcherServlet` mapping removed):
+
+```yaml
+vespera:
+  bridge:
+    include-patterns: ["/api/**", "/health"]   # default ["/**"]
+    exclude-patterns: ["/api/internal/**"]      # default []
+```
+
+A path outside `include-patterns`, or matching an `exclude-patterns` entry, is
+**not mapped to the proxy at all**: Spring MVC carries on with its other handler
+mappings — other controllers, static resources, and finally its own `404` —
+exactly as if the proxy did not exist. With `cors=rust`, preflights for those
+paths are left to Spring too. An invalid pattern fails startup. With the
+defaults the proxy's `@RequestMapping("/**")` is left untouched; otherwise
+`VesperaProxyPathMappings` re-registers it with the include patterns plus an
+exclusion condition once the context's singletons are initialised.
+
+#### IDE support
+
+The JAR ships `META-INF/spring-configuration-metadata.json`, so IntelliJ IDEA
+and the Spring Tools for VS Code / Eclipse complete and document every
+`vespera.bridge.*` key (plus `management.health.vespera.enabled`) and offer the
+values of `dispatch-mode` and `cors`.
 
 ### 2. Custom app-selection strategy
 
@@ -866,7 +901,9 @@ vespera.bridge:
    **Directory safety (POSIX).** The base and hash directories are created with mode `0700` and, before a cached copy is trusted, verified to be real directories (symbolic links are rejected), owned by the current user, and not group- or other-writable; an explicit `vespera.native.dir` / `VESPERA_NATIVE_DIR` is subject to the same checks. The extracted library is made owner read/execute only (`0500`). If verification fails — for example a squatted, shared (`1777`-style) or symlinked directory — the library is extracted into a fresh private `vespera-native-*` temp directory for this JVM only (no reuse, removed on exit where possible) and a warning is logged. **Directory safety (Windows / non-POSIX).** The same guarantee comes from the owner and the ACL: the base and hash directories must be real directories (no symbolic link or junction), owned by the current user, and their ACL must not grant write-like rights (`WRITE_DATA`, `APPEND_DATA`, `DELETE_CHILD`, `DELETE`, `WRITE_ACL`, `WRITE_OWNER`) to anyone but the owner, `SYSTEM` or `Administrators` (inherit-only entries, `DENY` entries and SIDs that do not resolve to an account are ignored). A predictable directory that fails this — e.g. one another user created first under a shared `java.io.tmpdir` to plant a DLL — is not reused: the library is extracted into a fresh, randomly named `vespera-native-*` temp directory for this JVM and a warning is logged. A file system without ACLs gets the same fallback.
 2. **Fallback** — `System.loadLibrary("crateName")` searches `java.library.path`.
 
-The supported triples are `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64`, `windows-x86_64`. Place the cdylib at `src/main/resources/native/{os}-{arch}/` to bundle it; see [`examples/rust-jni-demo/java/demo-app/build.gradle.kts`](../../examples/rust-jni-demo/java/demo-app/build.gradle.kts) for a working Gradle task.
+**musl vs glibc (Linux).** A glibc `.so` cannot be loaded into a musl JVM (Alpine) and vice versa, so musl builds live under their own `native/linux-<arch>-musl/` folder. On Linux the bridge detects the libc the JVM itself is linked against from `/proc/self/maps` (no process is spawned; a mapped `ld-musl-*` means musl) — falling back, without `/proc`, to "`/lib/ld-musl-*` exists and no `ld-linux*` loader does" — and can be forced with `-Dvespera.native.libc=musl|glibc`. On musl it tries `native/linux-<arch>-musl/` first and only when no musl library is bundled loads `native/linux-<arch>/` with a WARN (that load most likely fails); glibc JVMs only ever look at `native/linux-<arch>/`. Build the musl library with a `*-linux-musl` Rust target (a cdylib needs `RUSTFLAGS="-C target-feature=-crt-static"`).
+
+The supported platforms are `linux-x86_64`, `linux-aarch64`, `linux-x86_64-musl`, `linux-aarch64-musl`, `macos-x86_64`, `macos-aarch64`, `windows-x86_64`. Place the cdylib at `src/main/resources/native/{platform}/` to bundle it; see [`examples/rust-jni-demo/java/demo-app/build.gradle.kts`](../../examples/rust-jni-demo/java/demo-app/build.gradle.kts) for a working Gradle task.
 
 ## End-to-end example
 

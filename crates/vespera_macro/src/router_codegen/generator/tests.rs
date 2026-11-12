@@ -27,6 +27,7 @@ fn test_generate_router_code_empty() {
         None,
         None,
         None,
+        None,
         &[],
         &[],
     );
@@ -187,6 +188,7 @@ fn test_generate_router_code_single_route(
         None,
         None,
         None,
+        None,
         &[],
         &[],
     );
@@ -270,6 +272,7 @@ pub fn update_user() -> String {
         None,
         None,
         None,
+        None,
         &[],
         &[],
     );
@@ -328,6 +331,7 @@ pub fn create_users() -> String {
         None,
         None,
         None,
+        None,
         &[],
         &[],
     );
@@ -378,6 +382,7 @@ pub fn index() -> String {
         None,
         None,
         None,
+        None,
         &[],
         &[],
     );
@@ -419,6 +424,7 @@ pub fn get_users() -> String {
         None,
         None,
         None,
+        None,
         &[],
         &[],
     );
@@ -445,6 +451,7 @@ fn test_generate_router_code_with_docs() {
         &metadata,
         Some("/docs"),
         None,
+        None,
         Some(quote::quote!(#spec)),
         &[],
         &[],
@@ -452,7 +459,7 @@ fn test_generate_router_code_with_docs() {
     let code = result.to_string();
 
     assert!(code.contains("/docs"));
-    assert!(code.contains("swagger-ui"));
+    assert!(code.contains("swagger_ui_html"));
     assert!(code.contains("__VESPERA_SPEC"));
     assert!(code.contains("OnceLock"));
 }
@@ -466,6 +473,7 @@ fn test_generate_router_code_with_redoc() {
         &metadata,
         None,
         Some("/redoc"),
+        None,
         Some(quote::quote!(#spec)),
         &[],
         &[],
@@ -487,6 +495,7 @@ fn test_generate_router_code_with_both_docs() {
         &metadata,
         Some("/docs"),
         Some("/redoc"),
+        None,
         Some(quote::quote!(#spec)),
         &[],
         &[],
@@ -526,7 +535,7 @@ fn test_generate_router_code_unknown_http_method() {
         description: None,
     });
 
-    let result = generate_router_code(&metadata, None, None, None, &[], &[]);
+    let result = generate_router_code(&metadata, None, None, None, None, &[], &[]);
     let code = result.to_string();
 
     assert!(
@@ -588,7 +597,7 @@ pub fn get_users() -> String {
         description: None,
     });
 
-    let result = generate_router_code(&metadata, None, None, None, &[], &[]);
+    let result = generate_router_code(&metadata, None, None, None, None, &[], &[]);
     let code = result.to_string();
 
     // Valid route should be present
@@ -614,7 +623,7 @@ fn test_generate_router_code_with_merge_apps() {
     let metadata = CollectedMetadata::new();
     let merge_apps: Vec<syn::Path> = vec![syn::parse_quote!(third::ThirdApp)];
 
-    let result = generate_router_code(&metadata, None, None, None, &merge_apps, &[]);
+    let result = generate_router_code(&metadata, None, None, None, None, &merge_apps, &[]);
     let code = result.to_string();
 
     // Should use VesperaRouter instead of plain Router
@@ -637,6 +646,7 @@ fn test_generate_router_code_with_docs_and_merge() {
     let result = generate_router_code(
         &metadata,
         Some("/docs"),
+        None,
         None,
         Some(quote::quote!(#spec)),
         &merge_apps,
@@ -670,6 +680,7 @@ fn test_generate_router_code_with_redoc_and_merge() {
         &metadata,
         None,
         Some("/redoc"),
+        None,
         Some(quote::quote!(#spec)),
         &merge_apps,
         &[],
@@ -694,6 +705,7 @@ fn test_generate_router_code_with_both_docs_and_merge() {
         &metadata,
         Some("/docs"),
         Some("/redoc"),
+        None,
         Some(quote::quote!(#spec)),
         &merge_apps,
         &[],
@@ -728,7 +740,7 @@ fn test_generate_router_code_with_multiple_merge_apps() {
         syn::parse_quote!(second::App),
     ];
 
-    let result = generate_router_code(&metadata, None, None, None, &merge_apps, &[]);
+    let result = generate_router_code(&metadata, None, None, None, None, &merge_apps, &[]);
     let code = result.to_string();
 
     // Should reference both apps
@@ -751,7 +763,7 @@ fn test_generate_router_code_with_merge_and_cron() {
         file_path: "src/tasks.rs".to_string(),
     }];
 
-    let result = generate_router_code(&metadata, None, None, None, &merge_apps, &cron_jobs);
+    let result = generate_router_code(&metadata, None, None, None, None, &merge_apps, &cron_jobs);
     let code = result.to_string();
 
     assert!(
@@ -778,7 +790,7 @@ fn test_generate_router_code_with_cron_no_merge() {
         file_path: "src/cron/health.rs".to_string(),
     }];
 
-    let result = generate_router_code(&metadata, None, None, None, &[], &cron_jobs);
+    let result = generate_router_code(&metadata, None, None, None, None, &[], &cron_jobs);
     let code = result.to_string();
 
     assert!(

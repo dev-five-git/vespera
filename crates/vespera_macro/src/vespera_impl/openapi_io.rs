@@ -63,6 +63,12 @@ pub(super) fn write_if_changed(path: &Path, content: &str) -> std::io::Result<Op
     Ok(path_fingerprint(path))
 }
 
+/// Whether the router serves the spec at runtime (docs pages or `spec_url`),
+/// which requires embedding the compact JSON.
+fn serves_spec(input: &ProcessedVesperaInput) -> bool {
+    input.docs_url.is_some() || input.redoc_url.is_some() || input.spec_url.is_some()
+}
+
 /// Generate `OpenAPI` JSON and write to files, returning docs info
 pub fn generate_and_write_openapi(
     input: &ProcessedVesperaInput,
@@ -71,8 +77,7 @@ pub fn generate_and_write_openapi(
     route_storage: &[StoredRouteInfo],
     merge_specs: &mut MergeSpecCache,
 ) -> MacroResult<OpenApiWriteResult> {
-    if input.openapi_file_names.is_empty() && input.docs_url.is_none() && input.redoc_url.is_none()
-    {
+    if input.openapi_file_names.is_empty() && !serves_spec(input) {
         return Ok(OpenApiWriteResult {
             spec_json: None,
             spec_pretty: None,
@@ -180,7 +185,7 @@ pub fn generate_and_write_openapi(
     };
 
     // Compact JSON for embedding (smaller binary, faster downstream compilation).
-    let spec_json = if input.docs_url.is_some() || input.redoc_url.is_some() {
+    let spec_json = if serves_spec(input) {
         Some(serde_json::to_string(&openapi_doc).map_err(|e| err_call_site(format!("OpenAPI generation: failed to serialize document to JSON. Error: {e}. Check that all schema types are serializable.")))?)
     } else {
         None
@@ -234,7 +239,7 @@ pub fn ensure_openapi_files_from_cache(
 /// `target/vespera/` directory — with a single shared file name, crate
 /// A's `include_str!` could read the spec crate B just wrote.
 pub(super) fn embed_spec_path() -> std::path::PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     find_target_dir(Path::new(&manifest_dir))
         .join("vespera")
         .join(format!("vespera_spec-{}.json", current_crate_tag()))
@@ -243,7 +248,7 @@ pub(super) fn embed_spec_path() -> std::path::PathBuf {
 /// Path of the pretty-spec sidecar (warm-rebuild source for
 /// `openapi.json` recovery — see `ensure_openapi_files_from_cache`).
 pub(super) fn pretty_sidecar_path() -> std::path::PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     find_target_dir(Path::new(&manifest_dir))
         .join("vespera")
         .join(format!("openapi_pretty-{}.json", current_crate_tag()))

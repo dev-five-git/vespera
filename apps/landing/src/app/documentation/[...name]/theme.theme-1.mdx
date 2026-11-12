@@ -106,9 +106,9 @@ public class MyApp {
 1. **Bundled** — looks up `native/{os}-{arch}/{libname}` inside the running JAR's classpath. If found, the file is extracted to a temp file (auto-deleted on JVM exit) and loaded via `System.load`.
 2. **Fallback** — `System.loadLibrary("crateName")` searches `java.library.path`.
 
-Supported platform triples: `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64`, `windows-x86_64`.
+Supported platforms: `linux-x86_64`, `linux-aarch64`, `linux-x86_64-musl`, `linux-aarch64-musl`, `macos-x86_64`, `macos-aarch64`, `windows-x86_64`. On a musl (Alpine) JVM the bridge tries `native/linux-{arch}-musl/` first and falls back to the glibc `native/linux-{arch}/` library with a warning; the libc is detected from `/proc/self/maps` and can be forced with `-Dvespera.native.libc=musl|glibc`. The Gradle plugin bundles `*-linux-musl` targets under the `-musl` folder.
 
-Place the cdylib at `src/main/resources/native/{os}-{arch}/` to bundle it inside the JAR for single-file deployment.
+Place the cdylib at `src/main/resources/native/{platform}/` to bundle it inside the JAR for single-file deployment.
 
 ---
 
@@ -120,7 +120,7 @@ Out of the box the autoconfigure module wires up:
 |---------|---------|----------|
 | App selection | Read `X-Vespera-App` request header; absent → default app. **Client-controlled** — restrict it with `vespera.bridge.exposed-apps` | Properties `vespera.bridge.app-header` / `vespera.bridge.exposed-apps`, or custom `AppNameResolver` bean |
 | Dispatch mode | `SmartDispatchModeResolver` since 0.2.0 — `DIRECT` for small/bodyless idempotent, `SYNC` for small non-idempotent, `BIDIRECTIONAL_STREAMING` for the rest | Property `vespera.bridge.dispatch-mode: bidirectional-streaming`, or custom `DispatchModeResolver` bean |
-| URL pattern | `@RequestMapping("/**")` catch-all | Set `vespera.bridge.controller-enabled: false` and supply your own controller |
+| URL pattern | `@RequestMapping("/**")` catch-all | Properties `vespera.bridge.include-patterns` / `vespera.bridge.exclude-patterns` (excluded paths fall through to other controllers, static resources, then `404`), or `vespera.bridge.controller-enabled: false` and your own controller |
 
 ---
 
@@ -133,6 +133,8 @@ vespera:
   bridge:
     app-header: X-My-App         # change the header that selects the app
     controller-enabled: true      # set false to disable the proxy controller
+    include-patterns: ["/**"]     # paths the proxy serves (default /**)
+    exclude-patterns: ["/assets/**"] # left to Spring MVC: other controllers, static resources, 404
 ```
 
 ### Custom App-Selection Strategy

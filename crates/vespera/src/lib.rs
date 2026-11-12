@@ -96,6 +96,12 @@ pub mod openapi {
     pub use vespera_core::openapi::*;
 }
 
+/// Swagger UI / ReDoc pages served by `vespera!(docs_url = ..., redoc_url = ...)`
+/// (pinned, SRI-checked assets; spec escaped for the inline `<script>`).
+pub mod docs {
+    pub use vespera_core::docs::*;
+}
+
 // Re-export OpenApi directly for convenience (used by merge feature)
 pub use vespera_core::openapi::OpenApi;
 
