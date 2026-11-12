@@ -764,3 +764,71 @@ fn security_scheme_type_labels_match_openapi_wire_names(
 ) {
     assert_eq!(scheme_type_label(scheme_type), expected);
 }
+
+#[test]
+fn spec_url_is_parsed_and_processed() {
+    let input: AutoRouterInput = syn::parse2(quote::quote!(
+        docs_url = "/docs",
+        redoc_url = "/redoc",
+        spec_url = "/openapi.json"
+    ))
+    .unwrap();
+    assert_eq!(input.spec_url.as_ref().unwrap().value(), "/openapi.json");
+
+    let processed = process_vespera_input(input);
+    assert_eq!(processed.spec_url.as_deref(), Some("/openapi.json"));
+    assert_eq!(processed.docs_url.as_deref(), Some("/docs"));
+    assert_eq!(processed.redoc_url.as_deref(), Some("/redoc"));
+}
+
+#[rstest]
+#[case::spec_url_not_a_string(
+    quote::quote!(spec_url = 42),
+    "expected string literal"
+)]
+#[case::spec_url_missing_eq(
+    quote::quote!(spec_url "/openapi.json"),
+    "expected `=`"
+)]
+#[case::spec_url_duplicate(
+    quote::quote!(spec_url = "/a.json", spec_url = "/b.json"),
+    "duplicate field `spec_url` in vespera! macro"
+)]
+#[case::spec_url_relative(
+    quote::quote!(spec_url = "openapi.json"),
+    "vespera! macro: `spec_url` must start with `/`, got \"openapi.json\""
+)]
+#[case::docs_url_relative(
+    quote::quote!(docs_url = "docs"),
+    "vespera! macro: `docs_url` must start with `/`, got \"docs\""
+)]
+#[case::redoc_url_empty(
+    quote::quote!(redoc_url = ""),
+    "vespera! macro: `redoc_url` must start with `/`, got \"\""
+)]
+#[case::spec_url_collides_with_docs_url(
+    quote::quote!(docs_url = "/docs", spec_url = "/docs"),
+    "vespera! macro: `spec_url` and `docs_url` both use \"/docs\"; each documentation route needs its own path"
+)]
+#[case::redoc_url_collides_with_docs_url(
+    quote::quote!(docs_url = "/docs", redoc_url = "/docs"),
+    "vespera! macro: `redoc_url` and `docs_url` both use \"/docs\"; each documentation route needs its own path"
+)]
+fn invalid_doc_url_arguments_are_rejected(
+    #[case] tokens: proc_macro2::TokenStream,
+    #[case] expected: &str,
+) {
+    let error = syn::parse2::<AutoRouterInput>(tokens)
+        .err()
+        .expect("fixture must be rejected");
+
+    assert_eq!(error.to_string(), expected);
+}
+
+#[test]
+fn unknown_field_error_lists_spec_url() {
+    let error = syn::parse2::<AutoRouterInput>(quote::quote!(spec = "/openapi.json"))
+        .err()
+        .expect("unknown field must be rejected");
+    assert!(error.to_string().contains("`spec_url`"), "{error}");
+}

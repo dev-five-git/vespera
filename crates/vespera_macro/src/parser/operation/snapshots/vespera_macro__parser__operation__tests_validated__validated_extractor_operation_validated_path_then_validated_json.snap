@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/parser/operation/tests_validated.rs
+expression: "render(sig_src, path)"
+---
+fn update(Validated(Path(id)): Validated<Path<i64>>, Validated(Json(body)): Validated<Json<CreateUser>>) -> String
+parameters: [{"name":"id","in":"path","required":true,"schema":{"type":"integer","format":"int64"}}]
+requestBody: {"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CreateUser"}}}}
+responses: ["200", "422"]

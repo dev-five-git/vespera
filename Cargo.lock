@@ -372,7 +372,9 @@ dependencies = [
 name = "axum-example"
 version = "0.1.0"
 dependencies = [
+ "garde",
  "insta",
+ "rstest",
  "sea-orm",
  "serde",
  "serde_json",
@@ -381,6 +383,7 @@ dependencies = [
  "third",
  "tokio",
  "tower-http",
+ "url",
  "uuid",
  "vespera",
 ]
@@ -3432,6 +3435,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]
@@ -3505,6 +3509,7 @@ version = "0.5.0"
 dependencies = [
  "chrono-tz",
  "croner",
+ "insta",
  "rstest",
  "serde",
  "serde_json",

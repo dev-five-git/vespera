@@ -38,6 +38,10 @@ of an existing 0.5 application.
   `required: false`.
 - `serde_json::Value` is `{}`, `std::time::Duration` is `{secs, nanos}`;
   `{*rest}` wildcards are documented as `{rest}`.
+- `IpAddr`, `SocketAddr` (and `V4` / `V6`) and `PathBuf` are `string`.
+  `Ipv4Addr` / `Ipv6Addr` are `string` with `format: ipv4` / `ipv6`, and
+  `url::Url` is `string` with `format: uri`. These fields no longer need a
+  `Schema` impl. A user `Schema` type with the same name keeps its `$ref`.
 - `flatten` on an `Option<T>` makes `T`'s fields optional; an enum's
   `rename_all` no longer renames struct-variant fields (as in serde);
   `rename_all_fields` and `deny_unknown_fields` are supported.
@@ -53,6 +57,19 @@ of an existing 0.5 application.
 - `#[cron]` jobs start once per process (repeated `create_app()` calls no
   longer duplicate schedulers) and run on a dedicated thread when no Tokio
   runtime is present.
+
+### Documentation UI (`vespera`, `vespera_macro`, `vespera_core`)
+
+- `docs_url` / `redoc_url` pages load `swagger-ui-dist` 5.34.0 and `redoc`
+  2.5.4 at exact versions with SRI (`integrity` + `crossorigin="anonymous"`)
+  instead of the latest unpkg release; pages behind a CSP must allow those
+  unpkg URLs. The embedded spec is escaped for the `<script>` context, so
+  `</script>` or `<!--` in a description or example no longer breaks the page.
+  The renderers are public in the new `vespera::docs` module.
+- New opt-in `vespera!(spec_url = "/openapi.json")` (env `VESPERA_SPEC_URL`)
+  serves the generated, merged spec as `application/json`.
+- `docs_url` / `redoc_url` / `spec_url` must start with `/` and be distinct;
+  violations are compile errors (previously an axum panic at startup).
 
 ### `Serve`
 
@@ -119,6 +136,15 @@ items below are additions, plus one behaviour change to graceful shutdown.
 - `Json` / `Form` / `Query` / `Path` deserialization failures now return
   `422` with the `{"errors":[{"path","message"}]}` envelope instead of axum's
   plain-text rejection.
+- A `Validated<...>` argument that follows a `Path<T>` argument now documents
+  the `422` response. `ValidatedWith<C, T>` arguments now document their wrapped
+  body or query parameters and the `422` response. Both were previously missing
+  from the spec.
+- New compile error: a `Validated` / `ValidatedWith` payload without
+  `garde::Validate`, such as a `Schema` struct with no runtime `#[schema(...)]`
+  rule, or an enum. It is reported at the argument (`` `T` cannot be validated
+  by `Validated` / `ValidatedWith` ``) rather than as a `Handler` trait-bound
+  error. Such code never compiled; only the message changes.
 
 ### In-process / JNI (`vespera_inprocess`, `vespera_jni`)
 
@@ -189,3 +215,17 @@ Behaviour changes — no code change is needed, but they are observable:
 - Gradle plugin: hyphenated `crateName`s work (new `packageName` / `libName`),
   `bridgeVersion` defaults to the matching bridge release, `cargoSourceRoots` is
   ignored and `CargoBuildTask.commands` was replaced by its properties.
+
+### musl native libraries (`kr.devfive:vespera-bridge`, Gradle plugin)
+
+- On a musl-libc Linux JVM (Alpine) the bridge looks for the bundled library
+  in `native/linux-<arch>-musl/` first; it falls back to the glibc
+  `native/linux-<arch>/` library only when no musl one is bundled, with a WARN.
+  The libc is detected from `/proc/self/maps` (no process spawn) and can be
+  forced with `-Dvespera.native.libc=musl|glibc`. glibc JVMs are unchanged.
+- Gradle plugin: a `*-linux-musl*` target triple is bundled under
+  `native/linux-<arch>-musl/` even when its `targets` key is the plain
+  `linux-<arch>` (previously `native/linux-<arch>/`); `linux-<arch>-musl` keys
+  are accepted, and on a musl build host the host build goes to the `-musl`
+  folder. A jar built this way needs a bridge from this release to load the
+  musl library on Alpine.

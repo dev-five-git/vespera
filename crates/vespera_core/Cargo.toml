@@ -36,6 +36,7 @@ croner = { version = "4", default-features = false, optional = true }
 chrono-tz = { version = "0.10", optional = true }
 
 [dev-dependencies]
+insta = "1.49"
 rstest = "0.28"
 
 [lints]

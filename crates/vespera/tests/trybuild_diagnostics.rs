@@ -1,5 +1,6 @@
 //! Compile-fail (UI) tests for the macro diagnostics: malformed
-//! `#[route(responses = [...])]` and `#[cron("...")]` input must fail at
+//! `#[route(responses = [...])]` and `#[cron("...")]` input — and a
+//! `Validated<Json<T>>` payload without `garde::Validate` — must fail at
 //! COMPILE time with a clear message — instead of being silently dropped
 //! (incomplete OpenAPI) or panicking the `JobScheduler` at application startup.
 //!
@@ -27,4 +28,8 @@ fn ui_diagnostics() {
     t.compile_fail("tests/ui/cron_invalid_tz.rs");
     #[cfg(all(feature = "cron", not(feature = "cron-tz")))]
     t.compile_fail("tests/ui/cron_tz_needs_feature.rs");
+    // A `Validated` payload without `garde::Validate` (rule-less struct, enum)
+    // reports `AssertValidate`'s `#[diagnostic::on_unimplemented]` message.
+    #[cfg(feature = "validation")]
+    t.compile_fail("tests/ui/validated_payload_without_validate.rs");
 }

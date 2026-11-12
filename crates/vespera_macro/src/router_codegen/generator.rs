@@ -7,7 +7,7 @@ use crate::{
     method::http_method_to_token_stream,
 };
 
-use super::docs::{REDOC_HTML, SWAGGER_UI_HTML, generate_docs_route_tokens};
+use super::docs::{DocsPage, generate_docs_route_tokens, generate_spec_route_tokens};
 
 /// Build `crate::<module_path>::<function_name>` as a `syn::Path`.
 /// Empty segments inside `module_path` (from accidental `::` doubling)
@@ -85,11 +85,15 @@ fn generate_cron_scheduler_code(cron_jobs: &[CronMetadata]) -> proc_macro2::Toke
 }
 
 /// Generate Axum router code from collected metadata
+///
+/// `docs_url` / `redoc_url` / `spec_url` each add a GET route serving the
+/// spec in `spec_tokens` (Swagger UI page, ReDoc page, raw JSON).
 #[allow(clippy::too_many_lines)]
 pub fn generate_router_code(
     metadata: &CollectedMetadata,
     docs_url: Option<&str>,
     redoc_url: Option<&str>,
+    spec_url: Option<&str>,
     spec_tokens: Option<proc_macro2::TokenStream>,
     merge_apps: &[syn::Path],
     cron_jobs: &[CronMetadata],
@@ -119,7 +123,7 @@ pub fn generate_router_code(
     // Check if we need to merge specs at runtime
     let has_merge = !merge_apps.is_empty();
 
-    // Generate merge code once, reuse in both docs_url and redoc_url routes
+    // Generate merge code once, reuse in the docs_url / redoc_url / spec_url routes
     let merge_spec_code: Vec<_> = merge_apps
         .iter()
         .map(|app_path| {
@@ -140,7 +144,7 @@ pub fn generate_router_code(
     if let Some(docs_url) = docs_url {
         router_nests.push(generate_docs_route_tokens(
             docs_url,
-            SWAGGER_UI_HTML,
+            DocsPage::SwaggerUi,
             &docs_spec_expr,
         ));
     }
@@ -148,12 +152,17 @@ pub fn generate_router_code(
     if let Some(redoc_url) = redoc_url {
         router_nests.push(generate_docs_route_tokens(
             redoc_url,
-            REDOC_HTML,
+            DocsPage::Redoc,
             &docs_spec_expr,
         ));
     }
 
-    let needs_spec_const = spec_tokens.is_some() && (docs_url.is_some() || redoc_url.is_some());
+    if let Some(spec_url) = spec_url {
+        router_nests.push(generate_spec_route_tokens(spec_url, &docs_spec_expr));
+    }
+
+    let needs_spec_const =
+        spec_tokens.is_some() && (docs_url.is_some() || redoc_url.is_some() || spec_url.is_some());
     let cron_code = generate_cron_scheduler_code(cron_jobs);
 
     if needs_spec_const {
@@ -241,3 +250,6 @@ pub fn generate_router_code(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_docs;

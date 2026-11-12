@@ -1,0 +1,8 @@
+---
+source: crates/vespera_macro/src/parser/operation/tests_validated.rs
+expression: "render(sig_src, path)"
+---
+fn search(filter: vespera::ValidatedWith<Limits, Query<Filter>>) -> String
+parameters: [{"name":"q","in":"query","required":true,"schema":{"type":"string"}},{"name":"limit","in":"query","required":false,"schema":{"type":["integer","null"],"format":"uint32"}}]
+requestBody: null
+responses: ["200", "422"]

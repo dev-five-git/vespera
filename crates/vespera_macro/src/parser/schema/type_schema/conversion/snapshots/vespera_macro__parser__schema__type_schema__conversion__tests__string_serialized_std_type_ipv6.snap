@@ -1,0 +1,5 @@
+---
+source: crates/vespera_macro/src/parser/schema/type_schema/conversion/tests.rs
+expression: "format!(\"{ty_src} => {json}\")"
+---
+std::net::Ipv6Addr => {"type":"string","format":"ipv6"}

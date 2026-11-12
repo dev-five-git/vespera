@@ -1,6 +1,7 @@
 package kr.devfive.vespera
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -80,6 +81,157 @@ class NativePlatformTest {
             "linux-x86_64", "demo", "release", mapOf("linux-x86_64" to "x86_64-unknown-linux-musl"),
         )
         assertEquals(listOf("x86_64-unknown-linux-musl"), builds.map { it.triple })
+        // ... but a musl triple is bundled where the bridge looks on musl.
+        assertEquals(listOf("linux-x86_64-musl"), builds.map { it.platform })
+    }
+
+    @ParameterizedTest
+    @CsvSource(
+        "linux-x86_64, x86_64-unknown-linux-gnu, linux-x86_64",
+        "linux-x86_64, x86_64-unknown-linux-musl, linux-x86_64-musl",
+        "linux-aarch64, aarch64-unknown-linux-musl, linux-aarch64-musl",
+        "linux-armv7, armv7-unknown-linux-musleabihf, linux-armv7-musl",
+        "linux-aarch64-musl, aarch64-unknown-linux-musl, linux-aarch64-musl",
+        // An explicit -musl key with a custom target spec is kept as is.
+        "linux-x86_64-musl, my-custom-target, linux-x86_64-musl",
+        "macos-aarch64, aarch64-apple-darwin, macos-aarch64",
+        "windows-x86_64, x86_64-pc-windows-msvc, windows-x86_64",
+    )
+    fun bundlesMuslTriplesUnderTheMuslClassifier(key: String, triple: String, expected: String) {
+        assertEquals(expected, NativePlatform.bundlePlatform(key, triple))
+    }
+
+    @Test
+    fun plansGlibcAndMuslLibrariesSideBySide() {
+        val builds = NativePlatform.plannedBuilds(
+            "linux-x86_64",
+            "demo",
+            "release",
+            mapOf(
+                "linux-x86_64-musl" to "x86_64-unknown-linux-musl",
+                "linux-aarch64" to "aarch64-unknown-linux-musl",
+            ),
+        )
+        assertEquals(
+            listOf(
+                NativePlatform.NativeBuild("linux-x86_64", null, "release/libdemo.so"),
+                NativePlatform.NativeBuild(
+                    "linux-aarch64-musl", "aarch64-unknown-linux-musl",
+                    "aarch64-unknown-linux-musl/release/libdemo.so",
+                ),
+                NativePlatform.NativeBuild(
+                    "linux-x86_64-musl", "x86_64-unknown-linux-musl",
+                    "x86_64-unknown-linux-musl/release/libdemo.so",
+                ),
+            ),
+            builds,
+        )
+    }
+
+    @Test
+    fun aMuslHostIsCoveredByAMuslTarget() {
+        val viaKey = NativePlatform.plannedBuilds(
+            "linux-x86_64-musl", "demo", "release", mapOf("linux-x86_64-musl" to "x86_64-unknown-linux-musl"),
+        )
+        assertEquals(listOf("x86_64-unknown-linux-musl"), viaKey.map { it.triple })
+        val viaTriple = NativePlatform.plannedBuilds(
+            "linux-x86_64-musl", "demo", "release", mapOf("linux-x86_64" to "x86_64-unknown-linux-musl"),
+        )
+        assertEquals(listOf("x86_64-unknown-linux-musl"), viaTriple.map { it.triple })
+        // A glibc target does not cover a musl host: the host build is kept.
+        val glibc = NativePlatform.plannedBuilds(
+            "linux-x86_64-musl", "demo", "release", mapOf("linux-aarch64" to "aarch64-unknown-linux-gnu"),
+        )
+        assertEquals(
+            listOf(
+                NativePlatform.NativeBuild("linux-x86_64-musl", null, "release/libdemo.so"),
+                NativePlatform.NativeBuild(
+                    "linux-aarch64", "aarch64-unknown-linux-gnu", "aarch64-unknown-linux-gnu/release/libdemo.so",
+                ),
+            ),
+            glibc,
+        )
+    }
+
+    @Test
+    fun rejectsMuslMisconfigurations() {
+        assertThrows<IllegalArgumentException> {
+            NativePlatform.bundlePlatform("linux-x86_64-musl", "x86_64-unknown-linux-gnu")
+        }
+        assertThrows<IllegalArgumentException> { NativePlatform.osOfPlatformKey("macos-aarch64-musl") }
+        assertThrows<IllegalArgumentException> { NativePlatform.osOfPlatformKey("linux-x86_64-gnu") }
+        val clash = assertThrows<IllegalArgumentException> {
+            NativePlatform.plannedBuilds(
+                "windows-x86_64", "demo", "release",
+                mapOf(
+                    "linux-x86_64" to "x86_64-unknown-linux-musl",
+                    "linux-x86_64-musl" to "x86_64-unknown-linux-musl",
+                ),
+            )
+        }
+        assertTrue(clash.message!!.contains("native/linux-x86_64-musl/"), clash.message)
+    }
+
+    private val muslMaps = listOf(
+        "55d0c0a00000-55d0c0a01000 r--p 00000000 00:2f 1234  /usr/lib/jvm/java-17-openjdk/bin/java",
+        "7f1c2b000000-7f1c2b014000 r--p 00000000 00:2f 5678  /lib/ld-musl-x86_64.so.1",
+        "7ffd1c000000-7ffd1c021000 rw-p 00000000 00:00 0  [stack]",
+    )
+    private val glibcMaps = listOf(
+        "7f1c2b000000-7f1c2b028000 r--p 00000000 08:01 5678  /usr/lib/x86_64-linux-gnu/libc.so.6",
+    )
+
+    private fun dirs(vararg entries: Pair<String, List<String>>): (String) -> List<String> =
+        { dir -> entries.toMap()[dir].orEmpty() }
+
+    @Test
+    fun detectsMuslFromTheMappedLibc() {
+        assertTrue(NativePlatform.isMusl(null, { muslMaps }, dirs()))
+        // Debian's musl package installs the loader on glibc: the mapping wins.
+        assertFalse(
+            NativePlatform.isMusl(null, { glibcMaps }, dirs("/lib" to listOf("ld-musl-x86_64.so.1"))),
+        )
+        assertTrue(NativePlatform.isMusl(null, { listOf("7f-80 r-xp 0 0 1 /lib/libc.musl-aarch64.so.1") }, dirs()))
+        assertFalse(NativePlatform.isMusl(null, { listOf("7f-80 r-xp 0 0 1 /lib/libc-2.31.so") }, dirs()))
+    }
+
+    @Test
+    fun fallsBackToTheLoaderFilesWithoutProc() {
+        assertTrue(NativePlatform.isMusl(null, { null }, dirs("/lib" to listOf("ld-musl-aarch64.so.1"))))
+        assertFalse(
+            NativePlatform.isMusl(
+                null,
+                { null },
+                dirs("/lib" to listOf("ld-musl-x86_64.so.1"), "/lib64" to listOf("ld-linux-x86-64.so.2")),
+            ),
+        )
+        assertFalse(NativePlatform.isMusl(null, { null }, dirs()))
+    }
+
+    @ParameterizedTest
+    @CsvSource("musl, true", "' MUSL ', true", "glibc, false", "gnu, false")
+    fun theOverrideWinsWithoutProbing(override: String, expected: Boolean) {
+        assertEquals(
+            expected,
+            NativePlatform.isMusl(override, { error("must not probe") }, { error("must not probe") }),
+        )
+    }
+
+    @Test
+    fun parsesTheMapsPathColumn() {
+        assertEquals("ld-musl-x86_64.so.1", NativePlatform.mappedFileName(muslMaps[1]))
+        assertEquals("libc.so.6", NativePlatform.mappedFileName("7f-80 r--p 0 08:01 5 /lib/libc.so.6 (deleted)"))
+        assertNull(NativePlatform.mappedFileName(muslMaps[2]))
+        assertNull(NativePlatform.mappedFileName("7f-80 rw-p 0 00:00 0 /dir/"))
+    }
+
+    @Test
+    fun platformKeysCarryTheMuslClassifierOnlyOnLinux() {
+        assertEquals("linux-x86_64-musl", NativePlatform.platformKey("linux", "x86_64", true))
+        assertEquals("linux-x86_64", NativePlatform.platformKey("linux", "x86_64", false))
+        assertEquals("macos-aarch64", NativePlatform.platformKey("macos", "aarch64", true))
+        // The real host probe never throws and yields a valid key.
+        NativePlatform.osOfPlatformKey(NativePlatform.hostPlatform())
     }
 
     @Test

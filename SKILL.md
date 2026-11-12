@@ -54,8 +54,9 @@ async fn main() -> std::io::Result<()> {
         openapi  = "openapi.json", // writes file at compile time
         title    = "My API",
         version  = "1.0.0",
-        docs_url = "/docs",        // Swagger UI
-        redoc_url = "/redoc"       // ReDoc alternative
+        docs_url = "/docs",        // Swagger UI (pinned + SRI-checked assets)
+        redoc_url = "/redoc",      // ReDoc alternative
+        spec_url = "/openapi.json" // raw spec as application/json
     )
     .serve("0.0.0.0:3000")
     .await
@@ -109,6 +110,32 @@ pub async fn create(
   (`length`, `email`, `range`, `pattern`, custom, …).
 - Vespera's `#[derive(Schema)]` continues to drive the OpenAPI spec — the two
   derives compose cleanly on the same struct.
+- Or skip garde entirely: a runtime `#[schema(...)]` rule (`min_length`,
+  `format = "email"`, …) makes `#[derive(Schema)]` generate the impl. A
+  rule-less struct or an enum has none, so `Validated<Json<T>>` with it fails at
+  the argument with `` `T` cannot be validated by `Validated` / `ValidatedWith` ``.
+- Any `Validated` / `ValidatedWith` argument documents the `422` response,
+  even after a plain `Path<T>` argument.
+
+### Context-aware validation (`ValidatedWith<C, T>`)
+
+For `#[garde(context(C))]` rules, use `ValidatedWith<C, T>`. The context is
+borrowed from the router state via `vespera::ValidationContext<C>`. A state of
+type `C` implements this automatically; otherwise implement it for your state:
+
+```rust
+impl vespera::ValidationContext<TagPolicy> for Arc<AppState> {
+    fn validation_context(&self) -> &TagPolicy { &self.tag_policy }
+}
+
+#[vespera::route(post)]
+pub async fn create(post: ValidatedWith<TagPolicy, Json<TaggedPost>>) -> &'static str {
+    let Json(_post) = post.into_inner(); // tuple pattern is private — use into_inner / Deref
+    "ok"
+}
+```
+
+The spec documents the same body, parameters and `422` as for `Validated`.
 
 ### JNI / Binary wire integration
 
@@ -198,6 +225,9 @@ pub async fn reindex() {}
 | `NaiveTime` | `string` + `format: time` | |
 | `DateTime`, `DateTimeWithTimeZone` | `string` + `format: date-time` | |
 | `FieldData<NamedTempFile>` | `string` + `format: binary` | File upload field |
+| `Ipv4Addr` / `Ipv6Addr` | `string` + `format: ipv4` / `ipv6` | |
+| `IpAddr`, `SocketAddr` (+`V4`/`V6`), `PathBuf` | `string` | serde writes them as strings |
+| `url::Url` | `string` + `format: uri` | |
 | `serde_json::Value` | `{}` | Any JSON value |
 | `std::time::Duration` | `object` `{secs, nanos}` | serde's std shape; other qualified `Duration`s → `{}` |
 | `()` | empty response | 204 No Content |
@@ -321,6 +351,7 @@ npx @apidevtools/swagger-cli validate openapi.json
 | `VESPERA_VERSION` | API version | `CARGO_PKG_VERSION` |
 | `VESPERA_DOCS_URL` | Swagger UI path | none |
 | `VESPERA_REDOC_URL` | ReDoc path | none |
+| `VESPERA_SPEC_URL` | Raw OpenAPI JSON path (`application/json`) | none |
 | `VESPERA_SERVER_URL` | Server URL | none (`servers` omitted → same origin) |
 
 ---
@@ -762,7 +793,7 @@ let app = vespera!(
 **What happens:**
 1. Child routers merged into parent router
 2. OpenAPI specs merged (paths, schemas, tags)
-3. Swagger UI shows all routes
+3. Swagger UI shows all routes (and `spec_url`, if set, serves the merged spec)
 
 ### How It Works (Compile-Time)
 
