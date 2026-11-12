@@ -1,0 +1,17 @@
+error: #[route] attribute: function must be public. Add `pub` before `fn`.
+ --> tests/ui/route_fn_signature.rs:7:7
+  |
+7 | async fn not_public() {}
+  |       ^^
+
+error: #[route] attribute: function must be async. Add `async` before `fn`.
+  --> tests/ui/route_fn_signature.rs:10:5
+   |
+10 | pub fn not_async() {}
+   |     ^^
+
+error: #[route] attribute: can only be applied to functions, not other items. Move or remove the attribute.
+  --> tests/ui/route_fn_signature.rs:13:5
+   |
+13 | pub struct NotAFunction;
+   |     ^^^^^^

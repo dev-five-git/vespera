@@ -410,6 +410,8 @@ props only.
 | Concern | Location |
 |---|---|
 | Macro integration tests | `crates/vespera_macro/tests/` (+ `insta` snapshots) |
+| Macro compile-fail diagnostics | `crates/vespera_macro/tests/ui/` + `crates/vespera/tests/ui/` (trybuild, `trybuild_diagnostics.rs`; regenerate `.stderr` with `TRYBUILD=overwrite`, then review) |
+| Wire parser fuzzing | `fuzz/` (cargo-fuzz, own workspace: `wire_dispatch`, differential `wire_header_parse` vs the serde twin); Java: `WireHeaderReaderFuzzTest` (seeded) |
 | Validated/422 contract | `crates/vespera/tests/validated_extractor.rs`, `crates/vespera/tests/jni_validation.rs` | Envelope built via `#[derive(Serialize)]` structs (not `serde_json::json!`); exact bytes locked by `insta::assert_snapshot!` in `validated_extractor.rs` |
 | Core unit tests | `crates/vespera_core/src/**` inline `#[cfg(test)]` |
 | JNI end-to-end | `examples/rust-jni-demo` (Rust + Java + Gradle) |
@@ -483,13 +485,15 @@ java -jar demo-app/build/libs/demo-app-0.1.0.jar
 # Check generated OpenAPI
 cat examples/axum-example/openapi.json
 
-# Java side (both suites the jni-e2e CI job runs)
+# Java side (the suites the jni-e2e CI job runs)
 cd libs/vespera-bridge && ./gradlew test          # bridge unit suite
+cd libs/vespera-bridge-gradle-plugin && ./gradlew test  # Gradle plugin suite
 cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 
 # CI: jni-e2e job (JDK 17 on ubuntu/windows/macos + ubuntu-24.04-arm +
 # macos-15-intel; JDK 21/25 on ubuntu) runs the vespera-bridge
-# unit suite AND the demo-app E2E tests (incl. StreamingClosureStressTest).
+# unit suite AND the demo-app E2E tests (incl. StreamingClosureStressTest);
+# the JDK 17 legs also run the vespera-bridge-gradle-plugin test suite.
 # It is also the coverage for `crates/vespera_jni`, which tarpaulin excludes
 # (`#![cfg(not(tarpaulin_include))]`) because its symbols need a live JVM.
 # See .github/workflows/CI.yml
@@ -505,6 +509,12 @@ cd examples/rust-jni-demo/java && ./gradlew :demo-app:test  # JNI E2E
 #   semver   (PRs only, not a release gate) cargo-semver-checks per published
 #            crate; release type is read from .changepacks/changepack_log_*.json,
 #            so an intentional break must be declared as a Minor (0.x) / Major bump
+#   fuzz-build (not a release gate) `cargo fuzz build` of fuzz/ on pinned nightly
+# Fuzz workflow (.github/workflows/fuzz.yml, weekly + workflow_dispatch, never a
+# gate): runs every fuzz/ target for a bounded time (default 600 s each) and
+# uploads crash reproducers. Dependabot (.github/dependabot.yml): weekly grouped
+# minor/patch PRs for cargo, the three Gradle builds, bun and github-actions
+# (dtolnay/rust-toolchain + changepacks/action are branch-pinned → ignored).
 # Third-party actions are pinned to commit SHAs; workflows default to
 # `permissions: contents: read`.
 cargo deny check                                   # local equivalent of `deny`
