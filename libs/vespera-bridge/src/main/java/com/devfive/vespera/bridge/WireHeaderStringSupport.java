@@ -3,7 +3,28 @@ package com.devfive.vespera.bridge;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
-/** Shared string/canonical-key helpers for {@link WireHeaderReader}. */
+/**
+ * Shared string/canonical-key helpers for {@link WireHeaderReader}.
+ *
+ * <p><strong>Header-value charset contract (Latin-1).</strong> HTTP header
+ * values are byte strings; servlet containers expose them as ISO-8859-1
+ * {@code String}s (one byte → one char {@code U+0000–U+00FF}) and write
+ * response header chars back the same way. The wire header is UTF-8 JSON, so
+ * the bytes travel as those chars:
+ * <ul>
+ *   <li><em>Request:</em> the proxy forwards the container's string unchanged
+ *       (JSON-encoded as UTF-8); Rust maps a value whose chars are all
+ *       {@code <= U+00FF} back to one byte per char — the raw bytes the
+ *       client sent. A value containing any wider char keeps its UTF-8
+ *       encoding (non-servlet producers sending UTF-8 text).</li>
+ *   <li><em>Response:</em> Rust emits every value byte as the char with the
+ *       same code point (bytes {@code >= 0x80} included — they used to be
+ *       dropped), so {@code HttpServletResponse.addHeader} restores the exact
+ *       bytes, e.g. a UTF-8 {@code Content-Disposition} filename.</li>
+ * </ul>
+ * ASCII values are unaffected in both directions. Header names are ASCII
+ * tokens and never remapped.
+ */
 final class WireHeaderStringSupport {
 
     private static final int DIRECT_STRING_SCRATCH_INITIAL = 256;

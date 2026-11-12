@@ -115,6 +115,14 @@ fn header_value_from_owner(
     value: &str,
     owner: Option<&Bytes>,
 ) -> Result<http::HeaderValue, http::header::InvalidHeaderValue> {
+    if !value.is_ascii() {
+        // Non-ASCII values follow the wire's Latin-1 contract (see
+        // `crate::header_latin1`): the servlet's ISO-8859-1 view of the raw
+        // request bytes maps back to those bytes, wider chars keep UTF-8.
+        return http::HeaderValue::from_bytes(&crate::header_latin1::header_value_wire_bytes(
+            value,
+        ));
+    }
     if let Some(owner) = owner
         && let Some(slice) = crate::dispatch::slice_from_owner(owner, value)
     {
@@ -405,17 +413,15 @@ pub fn bench_build_request_old(
         .map_or(usize::MAX, |req| request_field_len_sum(&req))
 }
 
-/// Non-UTF-8 header values collapse to the empty string on the text-envelope
-/// path — same "empty on non-UTF-8" contract as the wire-path sibling
-/// `super::wire::header_write::header_value_as_str` (borrowed `&str`
-/// there vs owned `String` here — the split is deliberate so the wire
-/// path stays zero-copy).  Declared once here so the three
-/// [`collect_header_map`] call sites cannot silently drift from each
-/// other if the fallback ever changes.  `#[inline]` folds it back into
-/// each caller so the codegen matches the previous inline expression.
+/// Header values render through the same Latin-1 contract on the
+/// text-envelope path as on the wire path
+/// (`super::wire::header_write::write_header_value_string`): visible ASCII
+/// verbatim, each `obs-text` byte as the `char` with the same code point.
+/// Declared once here so the three [`collect_header_map`] call sites cannot
+/// silently drift from each other.
 #[inline]
 fn header_value_to_owned(v: &http::HeaderValue) -> String {
-    v.to_str().unwrap_or_default().to_owned()
+    crate::header_latin1::header_value_latin1(v).into_owned()
 }
 
 /// Collapse an [`http::HeaderMap`] into the wire's name → value map.
@@ -625,6 +631,22 @@ mod tests {
             .build()
             .expect("build current-thread runtime")
             .block_on(fut)
+    }
+
+    #[test]
+    fn non_ascii_header_value_maps_latin1_chars_back_to_bytes() {
+        let owner = Bytes::from_static("r\u{c3}\u{a9}sum\u{c3}\u{a9}".as_bytes());
+        let value = header_value_from_owner("r\u{c3}\u{a9}sum\u{c3}\u{a9}", Some(&owner)).unwrap();
+        assert_eq!(value.as_bytes(), "r\u{e9}sum\u{e9}".as_bytes());
+
+        let wide = header_value_from_owner("\u{d55c}\u{ae00}", None).unwrap();
+        assert_eq!(wide.as_bytes(), "\u{d55c}\u{ae00}".as_bytes());
+    }
+
+    #[test]
+    fn non_ascii_response_header_survives_envelope_conversion() {
+        let value = http::HeaderValue::from_bytes(b"caf\xe9").unwrap();
+        assert_eq!(header_value_to_owned(&value), "caf\u{e9}");
     }
 
     #[test]
