@@ -33,6 +33,12 @@ pub fn parse_enum_to_schema(
     struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
 ) -> Schema {
     let enum_description = extract_doc_comment(&enum_item.attrs);
+    // `#[schema(value_type)]` / serde `into` / `from` (see `wire_override`).
+    if let Some(ty) = super::wire_override::current_container_override(&enum_item.attrs) {
+        let schema_ref =
+            super::type_schema::parse_type_to_schema_ref(&ty, known_schemas, struct_definitions);
+        return super::struct_schema::with_description(schema_ref, enum_description);
+    }
     let rename_all = extract_rename_all(&enum_item.attrs);
     let rename_all_fields = extract_rename_all_fields(&enum_item.attrs);
     // Container `rename_all` renames VARIANTS only; struct-variant fields

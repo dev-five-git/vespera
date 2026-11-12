@@ -257,6 +257,9 @@ fn collect_schema_attribute_summary(
             } else if meta.path.is_ident("ref") {
                 summary.has_ref_override = true;
                 meta.value()?.parse::<syn::LitStr>()?;
+            } else if meta.path.is_ident("value_type") {
+                // A type (`Vec<Wire>`), which the `Expr` arm below would reject.
+                meta.value()?.parse::<syn::Type>()?;
             } else if meta.input.peek(syn::Token![=]) {
                 meta.value()?.parse::<syn::Expr>()?;
             } else if meta.input.peek(syn::token::Paren) {
@@ -587,3 +590,6 @@ pub fn extract_defaults_from_file(
 #[cfg(test)]
 #[path = "schema_impl/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod tests_wire_override;

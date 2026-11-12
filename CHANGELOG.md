@@ -42,6 +42,18 @@ of an existing 0.5 application.
   `Ipv4Addr` / `Ipv6Addr` are `string` with `format: ipv4` / `ipv6`, and
   `url::Url` is `string` with `format: uri`. These fields no longer need a
   `Schema` impl. A user `Schema` type with the same name keeps its `$ref`.
+- Fields converted by `#[serde(with / serialize_with / deserialize_with)]` are
+  documented as `{}` with a description instead of their Rust type (e.g. a
+  `ts_seconds` `DateTime` was a date-time string, but is an integer on the
+  wire). New `#[schema(value_type = T)]` documents the real shape, on fields
+  and on containers. Container `#[serde(into = "T")]` documents responses as
+  `T`, and `from` / `try_from` documents requests (`{Name}Input`) as `T`. An
+  `Option` read by a custom deserializer is `required` in requests. The
+  derive's `Schema` assertion checks `value_type` instead of the field type.
+- SeaORM `Json` / `JsonValue` columns are `{}` (they hold any JSON value, not
+  only objects; previously `type: object`), and `schema_type!` maps
+  `JsonValue` to `serde_json::Value`. `Json<T>` is still treated as axum's
+  wrapper.
 - `flatten` on an `Option<T>` makes `T`'s fields optional; an enum's
   `rename_all` no longer renames struct-variant fields (as in serde);
   `rename_all_fields` and `deny_unknown_fields` are supported.

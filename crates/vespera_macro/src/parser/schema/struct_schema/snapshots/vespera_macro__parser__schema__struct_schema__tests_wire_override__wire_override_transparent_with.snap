@@ -1,0 +1,15 @@
+---
+source: crates/vespera_macro/src/parser/schema/struct_schema/tests_wire_override.rs
+assertion_line: 83
+expression: "format!(\"{src}\\n\\n--- response ---\\n{}\\n--- request ---\\n{}\",\nrender(src, false), render(src, true))"
+---
+#[serde(transparent)] struct Stamp { #[serde(with = "ts_seconds")] at: DateTime<Utc> }
+
+--- response ---
+{
+  "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+}
+--- request ---
+{
+  "description": "Converted by a custom serde function (`with` / `serialize_with` / `deserialize_with`); its wire shape is not known. Add `#[schema(value_type = T)]` to document it."
+}
