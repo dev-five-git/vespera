@@ -1089,7 +1089,9 @@ pub async fn reindex() {}
 
 - Every run is supervised: a panicking job is logged to stderr
   (`vespera: cron job `module::function` panicked: …`) and its schedule keeps
-  going.
+  going. With the `tracing` feature, cron diagnostics are `tracing` events on
+  target `vespera::cron` instead (panic / unschedulable job at ERROR, overlap
+  skip at WARN).
 - `vespera::cron::shutdown()` stops scheduling new runs (process-wide, for
   good); `vespera::cron::shutdown_and_wait(timeout).await` additionally waits
   up to `timeout` for in-flight runs and returns whether they all finished.
@@ -1257,6 +1259,23 @@ public class MyApp {
 > `vespera.bridge.controller-enabled`.
 
 The `VesperaProxyController` auto-registers as a catch-all and forwards every HTTP request through a length-prefixed **binary wire format** (`[u32 BE | UTF-8 JSON header | raw body]`) — multipart uploads, PDFs, and images travel raw, with zero base64 overhead.
+
+### Rust-side observability (`tracing` feature)
+
+```toml
+vespera = { version = "0.6", features = ["jni", "tracing"] }
+```
+
+With the opt-in `tracing` feature every in-process / JNI dispatch runs inside a
+`vespera.dispatch` span (INFO) with the fields `mode` (`bytes` / `async` /
+`direct` / `streaming` / `bidirectional`), `method`, `path` (never the query
+string), `app`, `status`, `duration_ms` and `panicked`. Synthesised error
+responses emit an event — WARN for malformed wire (`400`), size limits
+(`413`), too many headers (`431`), runtime shut down / overloaded (`503`),
+deadline (`504`) and other `4xx`; ERROR for engine `5xx` and for a panic that
+unwinds out of a dispatch. Install any subscriber (e.g.
+`tracing_subscriber::fmt().init()`) in your library's init code. Without the
+feature there is no `tracing` dependency and no instrumentation code.
 
 See [`libs/vespera-bridge`](./libs/vespera-bridge/) for the Java library docs and [`examples/rust-jni-demo`](./examples/rust-jni-demo/) for a complete end-to-end demo.
 
