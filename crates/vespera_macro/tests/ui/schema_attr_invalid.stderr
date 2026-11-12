@@ -1,0 +1,11 @@
+error: expected a numeric literal (int or float)
+  --> tests/ui/schema_attr_invalid.rs:13:24
+   |
+13 |     #[schema(minimum = "zero")]
+   |                        ^^^^^^
+
+error: unsupported literal type for `example`
+  --> tests/ui/schema_attr_invalid.rs:19:24
+   |
+19 |     #[schema(example = b'x')]
+   |                        ^^^^
