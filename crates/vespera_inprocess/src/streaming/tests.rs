@@ -101,6 +101,7 @@ async fn validation_body_error_commits_a_complete_500_header() {
             chunks.extend_from_slice(bytes);
             ControlFlow::Continue(())
         },
+        false,
     )
     .await;
 
@@ -125,6 +126,7 @@ async fn validation_body_sink_stop_is_reported_after_422_header() {
         &mut Deadline::disabled(),
         &mut |bytes| header.extend_from_slice(bytes),
         &mut |_bytes| ControlFlow::Break(()),
+        false,
     )
     .await;
 
@@ -147,6 +149,7 @@ async fn empty_validation_body_emits_only_a_complete_422_header() {
             chunk_calls += 1;
             ControlFlow::Continue(())
         },
+        false,
     )
     .await;
 
@@ -176,6 +179,7 @@ async fn trailers_and_empty_data_frames_are_ignored_before_payload() {
             chunks.extend_from_slice(bytes);
             ControlFlow::Continue(())
         },
+        false,
     )
     .await;
 
@@ -293,4 +297,147 @@ async fn producer_slot_waits_while_saturated() {
     let mut third = channel_body(|| crate::RequestChunk::End);
     let closed = std::future::poll_fn(|cx| third.poll_producer_slot(&slots, cx)).await;
     assert!(closed.is_none(), "a closed semaphore runs uncapped");
+}
+
+/// One scripted step of [`ScriptedBody`].
+#[derive(Clone, Copy)]
+enum Step {
+    /// Not ready yet (wakes itself so the next poll proceeds).
+    Wait,
+    Data(&'static [u8]),
+    Fail,
+}
+
+struct ScriptedBody {
+    steps: Vec<Step>,
+    next: usize,
+}
+
+impl HttpBody for ScriptedBody {
+    type Data = Bytes;
+    type Error = std::io::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let Some(step) = self.steps.get(self.next).copied() else {
+            return Poll::Ready(None);
+        };
+        self.next += 1;
+        match step {
+            Step::Wait => {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            Step::Data(bytes) => Poll::Ready(Some(Ok(Frame::data(Bytes::from_static(bytes))))),
+            Step::Fail => Poll::Ready(Some(Err(std::io::Error::other("body failed")))),
+        }
+    }
+}
+
+/// Runs the header-first tail over `steps`; the sink records every call
+/// (`""` = flush hint) and answers `Break` on call number `break_at`.
+async fn scripted(
+    steps: Vec<Step>,
+    flush_hints: bool,
+    break_at: Option<usize>,
+) -> (StreamOutcome, Vec<String>) {
+    let mut calls = Vec::new();
+    let mut header = Vec::new();
+    let outcome = emit_header_then_stream_body(
+        200,
+        http::HeaderMap::new(),
+        ResponseMetadata::current(),
+        Body::new(ScriptedBody { steps, next: 0 }),
+        &mut Deadline::disabled(),
+        &mut |bytes| header.extend_from_slice(bytes),
+        &mut |bytes| {
+            calls.push(String::from_utf8_lossy(bytes).into_owned());
+            if break_at == Some(calls.len()) {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        },
+        flush_hints,
+    )
+    .await;
+    assert_eq!(decode_status(&header), 200);
+    (outcome, calls)
+}
+
+#[rstest::rstest]
+// Ready frames coalesce into ONE sink call; nothing waits, so no flush.
+#[case::ready_frames_coalesce(
+    vec![Step::Data(b"a"), Step::Data(b"b"), Step::Data(b"c")], true, None,
+    StreamOutcome::Complete, &["abc"][..]
+)]
+// A waiting body delivers the batch then flushes (header-first paths).
+#[case::flush_before_waiting(
+    vec![Step::Wait, Step::Data(b"a"), Step::Data(b"b"), Step::Wait, Step::Data(b"c")], true, None,
+    StreamOutcome::Complete, &["", "ab", "", "c"][..]
+)]
+// No flush hints on the header-less paths, but batches still split at waits.
+#[case::no_hints_without_header_first(
+    vec![Step::Wait, Step::Data(b"a"), Step::Wait, Step::Data(b"c")], false, None,
+    StreamOutcome::Complete, &["a", "c"][..]
+)]
+// A second wait with nothing new delivered does not flush again.
+#[case::flush_only_when_unflushed(
+    vec![Step::Wait, Step::Wait, Step::Data(b"a")], true, None,
+    StreamOutcome::Complete, &["", "a"][..]
+)]
+// A body error delivers what was produced, then reports the truncation.
+#[case::body_error_delivers_batch(
+    vec![Step::Data(b"a"), Step::Fail], true, None,
+    StreamOutcome::BodyError, &["a"][..]
+)]
+#[case::stop_on_batch_before_body_error(
+    vec![Step::Data(b"a"), Step::Fail], true, Some(1),
+    StreamOutcome::SinkStopped, &["a"][..]
+)]
+#[case::stop_on_flush(
+    vec![Step::Wait, Step::Data(b"a")], true, Some(1),
+    StreamOutcome::SinkStopped, &[""][..]
+)]
+#[case::stop_on_batch_before_wait(
+    vec![Step::Data(b"a"), Step::Wait, Step::Data(b"b")], true, Some(1),
+    StreamOutcome::SinkStopped, &["a"][..]
+)]
+#[case::stop_on_final_batch(
+    vec![Step::Data(b"a")], true, Some(1),
+    StreamOutcome::SinkStopped, &["a"][..]
+)]
+#[tokio::test]
+async fn ready_frames_are_batched_and_waits_flush(
+    #[case] steps: Vec<Step>,
+    #[case] flush_hints: bool,
+    #[case] break_at: Option<usize>,
+    #[case] expected_outcome: StreamOutcome,
+    #[case] expected_calls: &[&str],
+) {
+    let (outcome, calls) = scripted(steps, flush_hints, break_at).await;
+    assert_eq!(outcome, expected_outcome);
+    assert_eq!(calls, expected_calls);
+}
+
+/// A batch never grows past the streaming chunk size: a frame that would
+/// overflow it delivers the batch first (and a sink stop there is honoured).
+#[rstest::rstest]
+#[case::continue_(None, StreamOutcome::Complete, 2)]
+#[case::stop_on_overflow_delivery(Some(1), StreamOutcome::SinkStopped, 1)]
+#[tokio::test]
+async fn batch_is_capped_at_the_chunk_size(
+    #[case] break_at: Option<usize>,
+    #[case] expected_outcome: StreamOutcome,
+    #[case] expected_calls: usize,
+) {
+    static BIG: [u8; crate::DEFAULT_STREAMING_CHUNK_BYTES] =
+        [b'x'; crate::DEFAULT_STREAMING_CHUNK_BYTES];
+    let half = &BIG[..=(crate::streaming_chunk_bytes() / 2)];
+    let (outcome, calls) = scripted(vec![Step::Data(half), Step::Data(half)], true, break_at).await;
+    assert_eq!(outcome, expected_outcome);
+    assert_eq!(calls.len(), expected_calls);
+    assert!(calls.iter().all(|c| c.len() == half.len()));
 }
