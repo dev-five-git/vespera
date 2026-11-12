@@ -2,6 +2,7 @@
 //! binary wire API, and the direct-write (caller buffer) API.
 
 use std::collections::BTreeMap;
+use std::pin::pin;
 
 use axum::body::Body;
 use bytes::Bytes;
@@ -419,7 +420,7 @@ pub fn dispatch_from_bytes(input: Vec<u8>, runtime: &tokio::runtime::Runtime) ->
 pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
     traced!(crate::obs::buffered_mode(), {
         Deadline::start()
-            .run(dispatch_from_bytes_inner(input))
+            .run(pin!(dispatch_from_bytes_inner(input)))
             .await
             .unwrap_or_else(timeout_wire)
     })
@@ -586,10 +587,10 @@ pub fn dispatch_into(
 /// wire response into `out` instead.
 pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResult {
     traced!("direct", {
-        Deadline::start()
-            .run(dispatch_into_inner(input, &mut *out))
-            .await
-            .unwrap_or_else(|| write_wire_into(out, &timeout_wire()))
+        let done = Deadline::start()
+            .run(pin!(dispatch_into_inner(input, &mut *out)))
+            .await;
+        done.unwrap_or_else(|| write_wire_into(out, &timeout_wire()))
     })
 }
 
@@ -631,10 +632,10 @@ async fn dispatch_into_inner(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResul
 /// the same error / `422` / overflow semantics apply.
 pub async fn dispatch_into_async_borrowed(input: &[u8], out: &mut [u8]) -> DirectWriteResult {
     traced!("direct", {
-        Deadline::start()
-            .run(dispatch_into_borrowed_inner(input, &mut *out))
-            .await
-            .unwrap_or_else(|| write_wire_into(out, &timeout_wire()))
+        let done = Deadline::start()
+            .run(pin!(dispatch_into_borrowed_inner(input, &mut *out)))
+            .await;
+        done.unwrap_or_else(|| write_wire_into(out, &timeout_wire()))
     })
 }
 
@@ -669,7 +670,9 @@ pub async fn dispatch_into_async_borrowed_resumable(
 ) -> ResumableDirectWrite {
     traced!("direct", {
         let done = Deadline::start()
-            .run(dispatch_into_borrowed_resumable_inner(input, &mut *out))
+            .run(pin!(dispatch_into_borrowed_resumable_inner(
+                input, &mut *out
+            )))
             .await;
         done.unwrap_or_else(|| resumable_from_wire(out, timeout_wire()))
     })

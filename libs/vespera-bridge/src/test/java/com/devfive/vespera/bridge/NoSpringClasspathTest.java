@@ -45,4 +45,33 @@ class NoSpringClasspathTest {
             bridge.getMethod("clearCurrentThreadBuffers").invoke(null);
         }
     }
+
+    /**
+     * The Kotlin extensions ship in the same JAR with kotlin-stdlib /
+     * kotlinx-coroutines as {@code compileOnly}: the Java client API must
+     * load and run without them (no Kotlin class reachable from Java code).
+     */
+    @Test
+    void javaClientApiRunsWithoutKotlinOnTheClasspath() throws Exception {
+        URL mainClasses = VesperaBridge.class.getProtectionDomain().getCodeSource().getLocation();
+        try (URLClassLoader isolated =
+                new URLClassLoader(new URL[] {mainClasses}, ClassLoader.getPlatformClassLoader())) {
+            assertThrows(ClassNotFoundException.class,
+                    () -> Class.forName("kotlin.Unit", false, isolated));
+            assertThrows(ClassNotFoundException.class,
+                    () -> Class.forName("kotlinx.coroutines.future.FutureKt", false, isolated));
+
+            Class<?> client = Class.forName("com.devfive.vespera.bridge.VesperaClient", true, isolated);
+            Object defaultClient = client.getMethod("create").invoke(null);
+            Object admin = client.getMethod("forApp", String.class).invoke(defaultClient, "admin");
+            Object request = client.getMethod("get", String.class).invoke(admin, "/users/42");
+            Class<?> requestType = request.getClass();
+            requestType.getMethod("query", String.class, Object.class).invoke(request, "q", "a b");
+            requestType.getMethod("header", String.class, String.class).invoke(request, "Accept", "x");
+            assertEquals("q=a%20b", requestType.getMethod("queryString").invoke(request));
+            assertEquals("admin", requestType.getMethod("appName").invoke(request));
+            Class.forName("com.devfive.vespera.bridge.VesperaResponse", true, isolated);
+            Class.forName("com.devfive.vespera.bridge.VesperaClientException", true, isolated);
+        }
+    }
 }

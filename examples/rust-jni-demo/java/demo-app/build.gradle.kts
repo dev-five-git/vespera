@@ -47,6 +47,10 @@ vespera {
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("com.fasterxml.jackson.core:jackson-databind")
+    // Swagger UI at /swagger-ui.html: the bridge's springdoc integration adds the
+    // Rust apps' documents (vespera!(spec_url = "/openapi.json")) next to the
+    // Java one. Optional for vespera-bridge users (springdoc 3.x for Boot 4).
+    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.2.0")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     // The `vespera` Actuator health indicator (BridgeHardeningHttpTest).
     testImplementation("org.springframework.boot:spring-boot-starter-actuator")

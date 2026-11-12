@@ -628,17 +628,22 @@ fn sidecar_validation_covers_missing_fingerprints_corruption_and_success() {
     let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
     let vespera_dir = temp.path().join("target/vespera");
     fs::create_dir_all(&vespera_dir).unwrap();
-    let compact = embed_spec_path();
-    let pretty = pretty_sidecar_path();
+    let compact = embed_spec_path("t");
+    let pretty = pretty_sidecar_path("t");
     fs::write(&compact, "compact").unwrap();
     fs::write(&pretty, "pretty").unwrap();
     let compact_fp = path_fingerprint(&compact).unwrap();
     let pretty_fp = path_fingerprint(&pretty).unwrap();
 
-    assert!(load_validated_sidecar_specs(Some(hash_str("compact")), None, None, None).is_none());
-    assert!(load_validated_sidecar_specs(None, Some(hash_str("pretty")), None, None).is_none());
+    assert!(
+        load_validated_sidecar_specs("t", Some(hash_str("compact")), None, None, None).is_none()
+    );
+    assert!(
+        load_validated_sidecar_specs("t", None, Some(hash_str("pretty")), None, None).is_none()
+    );
     assert!(
         load_validated_sidecar_specs(
+            "t",
             Some(hash_str("wrong")),
             None,
             Some(compact_fp.wrapping_add(1)),
@@ -648,6 +653,7 @@ fn sidecar_validation_covers_missing_fingerprints_corruption_and_success() {
     );
     assert!(
         load_validated_sidecar_specs(
+            "t",
             None,
             Some(hash_str("wrong")),
             None,
@@ -657,6 +663,7 @@ fn sidecar_validation_covers_missing_fingerprints_corruption_and_success() {
     );
 
     let loaded = load_validated_sidecar_specs(
+        "t",
         Some(hash_str("compact")),
         Some(hash_str("pretty")),
         Some(compact_fp),
@@ -669,7 +676,7 @@ fn sidecar_validation_covers_missing_fingerprints_corruption_and_success() {
 
 #[test]
 fn sidecar_validation_accepts_cache_without_generated_specs() {
-    let loaded = load_validated_sidecar_specs(None, None, None, None)
+    let loaded = load_validated_sidecar_specs("t", None, None, None, None)
         .expect("a cache without configured specs needs no sidecar validation");
 
     assert!(loaded.pretty.is_none());
@@ -682,7 +689,7 @@ fn embedding_reports_directory_creation_and_spec_write_errors() {
     let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", create_temp.path());
     fs::create_dir_all(create_temp.path().join("target")).unwrap();
     fs::write(create_temp.path().join("target/vespera"), "blocking file").unwrap();
-    let Err(create_error) = write_spec_for_embedding(Some("{}".to_string())) else {
+    let Err(create_error) = write_spec_for_embedding("t", Some("{}".to_string())) else {
         panic!("blocking parent must fail directory creation");
     };
     assert!(
@@ -693,9 +700,9 @@ fn embedding_reports_directory_creation_and_spec_write_errors() {
 
     let write_temp = TempDir::new().unwrap();
     let _env_guard = test_env::set_var("CARGO_MANIFEST_DIR", write_temp.path());
-    let spec_path = embed_spec_path();
+    let spec_path = embed_spec_path("t");
     fs::create_dir_all(&spec_path).unwrap();
-    let Err(write_error) = write_spec_for_embedding(Some("{}".to_string())) else {
+    let Err(write_error) = write_spec_for_embedding("t", Some("{}".to_string())) else {
         panic!("a directory cannot be overwritten as a spec file");
     };
     assert!(

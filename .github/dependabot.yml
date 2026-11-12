@@ -41,6 +41,17 @@ updates:
     groups:
       gradle-minor-patch:
         update-types: [minor, patch]
+    # The bridge pins Spring Boot 3.5 / Framework 6.2 on purpose
+    # (`springBoot3Version` / `springFramework3Version` drive the `testBoot3`
+    # compatibility run). Dependabot cannot tell those variables from the
+    # Boot 4 / Framework 7 ones (same artifacts), so a major bump would turn
+    # the compatibility run into a second Boot 4 run. Major Spring upgrades
+    # are done by hand.
+    ignore:
+      - dependency-name: 'org.springframework.boot:*'
+        update-types: ['version-update:semver-major']
+      - dependency-name: 'org.springframework:*'
+        update-types: ['version-update:semver-major']
 
   # Bun workspace (root package.json + apps/*, single bun.lock).
   - package-ecosystem: bun

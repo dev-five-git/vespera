@@ -70,7 +70,8 @@ jobs:
         run: bunx oxlint
       - name: Front tests
         # Root bunfig.toml preloads @devup-ui/bun-plugin + bun-test-env-dom
-        # (see AGENTS.md "Front tests need the bun preloads").
+        # (see AGENTS.md "Front tests need the bun preloads"). Also runs
+        # e2e/devup-api: openapi.json → @devup-api typed client → tsc.
         run: bun test
 
   # The libFuzzer targets under fuzz/ are their own cargo workspace, so no

@@ -2397,6 +2397,7 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "testkit",
  "tokio",
  "vespera",
 ]

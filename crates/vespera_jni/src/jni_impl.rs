@@ -355,6 +355,10 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_VesperaBridge_dispatchByt
 
 #[path = "jni_impl_direct.rs"]
 mod direct;
+
+// Poll-first dispatch behind the bridge's virtual-thread `ParkingDispatch`.
+#[path = "jni_impl_park.rs"]
+mod park;
 pub use direct::stash as direct_stash;
 
 /// `com.devfive.vespera.bridge.AsyncDispatch.dispatch0(CompletableFuture<byte[]>, byte[]) -> long`

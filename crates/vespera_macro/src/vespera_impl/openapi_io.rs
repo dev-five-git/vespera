@@ -15,7 +15,7 @@ use syn::spanned::Spanned;
 
 use super::{
     cache::{MergeSpecCache, MergeSpecRead, path_fingerprint},
-    path_utils::{current_crate_tag, find_target_dir, resolve_manifest_relative},
+    path_utils::{find_target_dir, resolve_manifest_relative},
     schema_merge::SchemaMergeGuard,
 };
 
@@ -235,24 +235,26 @@ pub fn ensure_openapi_files_from_cache(
 
 /// Path of the compact-spec embed sidecar (`include_str!` target).
 ///
-/// The file name is **namespaced per crate**: two workspace members
-/// both using `vespera!` compile in parallel under the same shared
-/// `target/vespera/` directory — with a single shared file name, crate
-/// A's `include_str!` could read the spec crate B just wrote.
-pub(super) fn embed_spec_path() -> std::path::PathBuf {
+/// The file name is **namespaced per invocation** (`tag` =
+/// `super::invocation::invocation_tag`: crate name + settings hash): two
+/// workspace members both using `vespera!` compile in parallel under the
+/// same shared `target/vespera/` directory, and one crate may hold several
+/// `vespera!` calls with different settings — with a shared file name, one
+/// invocation's `include_str!` could read the spec another just wrote.
+pub(super) fn embed_spec_path(tag: &str) -> std::path::PathBuf {
     let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     find_target_dir(Path::new(&manifest_dir))
         .join("vespera")
-        .join(format!("vespera_spec-{}.json", current_crate_tag()))
+        .join(format!("vespera_spec-{tag}.json"))
 }
 
 /// Path of the pretty-spec sidecar (warm-rebuild source for
 /// `openapi.json` recovery — see `ensure_openapi_files_from_cache`).
-pub(super) fn pretty_sidecar_path() -> std::path::PathBuf {
+pub(super) fn pretty_sidecar_path(tag: &str) -> std::path::PathBuf {
     let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     find_target_dir(Path::new(&manifest_dir))
         .join("vespera")
-        .join(format!("openapi_pretty-{}.json", current_crate_tag()))
+        .join(format!("openapi_pretty-{tag}.json"))
 }
 
 /// Build the `include_str!` tokens pointing at the embed sidecar.
@@ -278,6 +280,7 @@ pub(super) struct SidecarSpecs {
 /// (a full regeneration rewrites both sidecars, so corruption
 /// self-heals on the next build).
 pub(super) fn load_validated_sidecar_specs(
+    tag: &str,
     spec_json_hash: Option<u64>,
     spec_pretty_hash: Option<u64>,
     spec_json_fingerprint: Option<u64>,
@@ -286,7 +289,7 @@ pub(super) fn load_validated_sidecar_specs(
     let spec_tokens = match (spec_json_hash, spec_json_fingerprint) {
         (None, _) => None,
         (Some(expected_hash), Some(expected_fingerprint)) => {
-            let path = embed_spec_path();
+            let path = embed_spec_path(tag);
             if !super::cache::sidecar_matches(
                 &path,
                 Some(expected_hash),
@@ -301,7 +304,7 @@ pub(super) fn load_validated_sidecar_specs(
     let pretty = match (spec_pretty_hash, spec_pretty_fingerprint) {
         (None, _) => None,
         (Some(expected_hash), Some(expected_fingerprint)) => {
-            let path = pretty_sidecar_path();
+            let path = pretty_sidecar_path(tag);
             let content = std::fs::read_to_string(&path).ok()?;
             if super::cache::path_fingerprint(&path) != Some(expected_fingerprint)
                 && super::cache::hash_str(&content) != expected_hash
@@ -320,9 +323,9 @@ pub(super) fn load_validated_sidecar_specs(
 
 /// Write the pretty-spec sidecar (write-if-differs).  Best-effort like
 /// the cache itself: failures only cost a future cache miss.
-pub(super) fn write_pretty_sidecar(spec_pretty: Option<&str>) -> Option<u64> {
+pub(super) fn write_pretty_sidecar(tag: &str, spec_pretty: Option<&str>) -> Option<u64> {
     let pretty = spec_pretty?;
-    let path = pretty_sidecar_path();
+    let path = pretty_sidecar_path(tag);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -331,12 +334,13 @@ pub(super) fn write_pretty_sidecar(spec_pretty: Option<&str>) -> Option<u64> {
 
 /// Write compact spec JSON to target dir for `include_str!` embedding.
 pub(super) fn write_spec_for_embedding(
+    tag: &str,
     spec_json: Option<String>,
 ) -> syn::Result<Option<EmbeddedSpecWrite>> {
     let Some(json) = spec_json else {
         return Ok(None);
     };
-    let spec_file = embed_spec_path();
+    let spec_file = embed_spec_path(tag);
     if let Some(parent) = spec_file.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             syn::Error::new(

@@ -14,7 +14,7 @@ use crate::{
     router_codegen::ProcessedVesperaInput,
 };
 
-use super::path_utils::{current_crate_tag, find_target_dir, find_workspace_root};
+use super::path_utils::{current_crate_tag, find_target_dir};
 
 /// Current cache format. Bump when the on-disk layout changes —
 /// old caches deserialize with `cache_format: 0` (serde default) and
@@ -22,7 +22,8 @@ use super::path_utils::{current_crate_tag, find_target_dir, find_workspace_root}
 pub(super) const CACHE_FORMAT: u32 = 2;
 
 /// Cache for avoiding redundant route scanning and OpenAPI generation.
-/// Persisted to `target/vespera/routes.cache` across builds.
+/// Persisted to `target/vespera/routes-<tag>.cache` across builds (one
+/// file per `vespera!` invocation — see `super::invocation`).
 ///
 /// The spec JSON strings themselves live in **sidecar files** (the
 /// `include_str!` embed file and the pretty sidecar) — the cache only
@@ -37,10 +38,11 @@ pub(super) struct VesperaCache {
     /// Macro crate version — invalidates cache when macro code changes
     #[serde(default)]
     pub(super) macro_version: String,
-    /// In-repo macro source fingerprint — invalidates cache when the
-    /// macro source itself changes during vespera development (the
-    /// version alone only changes per release).  `0` for downstream
-    /// users.  See [`compute_macro_dev_fingerprint`].
+    /// Macro (+ `vespera_core`) source fingerprint — invalidates the cache
+    /// when a macro built from mutable sources (in-repo, git or `path`
+    /// dependency) changed; the version alone only changes per release.
+    /// `0` for a packaged crates.io macro.  See
+    /// [`compute_macro_dev_fingerprint`].
     #[serde(default)]
     pub(super) macro_dev_fingerprint: u64,
     /// File path → modification time (secs since UNIX_EPOCH)
@@ -252,28 +254,57 @@ pub(super) fn compute_config_hash_with_merge_cache(
     merge_specs: &mut MergeSpecCache,
 ) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    processed.title.hash(&mut hasher);
-    processed.version.hash(&mut hasher);
+    hash_invocation_settings(processed, &mut hasher);
     super::path_utils::package_description().hash(&mut hasher);
-    processed.info.hash(&mut hasher);
-    processed.docs_url.hash(&mut hasher);
-    processed.redoc_url.hash(&mut hasher);
-    processed.spec_url.hash(&mut hasher);
-    processed.openapi_file_names.hash(&mut hasher);
+    // Merge children: fold each child app's exported OpenAPI sidecar
+    // content (the names are part of the settings above), so a change to a
+    // child's spec invalidates the parent's cached merged document — the
+    // path name alone cannot detect a child whose routes / schemas changed
+    // between builds.  Mirrors the sidecar resolution in
+    // `generate_and_write_openapi` (`vespera_dir / <LastSegment>.openapi.json`).
+    for merge_path in &processed.merge {
+        if let Some((_struct_name, spec_file)) = merge_specs.spec_file_for(merge_path) {
+            match merge_specs.read(&spec_file) {
+                MergeSpecRead::Present(content) => content.hash(&mut hasher),
+                // Absent / unreadable child sidecar → stable marker so the
+                // hashed state still differs from a present spec.
+                MergeSpecRead::Error(_) => "child-spec:absent".hash(&mut hasher),
+            }
+        }
+    }
+    hasher.finish()
+}
+
+/// Hash a `vespera!` invocation's own (normalized) macro settings — every
+/// input field, but nothing read from disk or the environment.  Shared by
+/// the cache key above and the per-invocation file tag
+/// (`super::invocation::invocation_tag`).
+pub(super) fn hash_invocation_settings(
+    processed: &ProcessedVesperaInput,
+    hasher: &mut impl Hasher,
+) {
+    processed.folder_name.hash(hasher);
+    processed.title.hash(hasher);
+    processed.version.hash(hasher);
+    processed.info.hash(hasher);
+    processed.docs_url.hash(hasher);
+    processed.redoc_url.hash(hasher);
+    processed.spec_url.hash(hasher);
+    processed.openapi_file_names.hash(hasher);
     match &processed.servers {
-        None => "servers:none".hash(&mut hasher),
+        None => "servers:none".hash(hasher),
         Some(servers) => {
-            "servers:some".hash(&mut hasher);
-            servers.len().hash(&mut hasher);
+            "servers:some".hash(hasher);
+            servers.len().hash(hasher);
             for s in servers {
-                s.url.hash(&mut hasher);
-                s.description.hash(&mut hasher);
+                s.url.hash(hasher);
+                s.description.hash(hasher);
             }
         }
     }
     if let Some(ref schemes) = processed.security_schemes {
         for (name, scheme) in schemes {
-            name.hash(&mut hasher);
+            name.hash(hasher);
             // Hash a STABLE serialized representation of the whole scheme
             // rather than a hand-picked field subset.  The previous list
             // omitted `flows` and `open_id_connect_url`, so changing only an
@@ -285,22 +316,22 @@ pub(super) fn compute_config_hash_with_merge_cache(
             // closing this class of stale-cache bug for good.  Serialization
             // is infallible for this plain struct; a hypothetical failure
             // falls back to a stable marker so the hash still differs.
-            hash_security_scheme(scheme, &mut hasher);
+            hash_security_scheme(scheme, hasher);
         }
     }
     match &processed.security {
-        None => "security:none".hash(&mut hasher),
+        None => "security:none".hash(hasher),
         Some(security) => {
-            "security:some".hash(&mut hasher);
-            security.len().hash(&mut hasher);
+            "security:some".hash(hasher);
+            security.len().hash(hasher);
             // Hash each requirement's scheme names AND scopes (BTreeMap →
             // sorted, deterministic). Scopes alone changing (`oauth2:
             // ["read"]` → `["read", "write"]`) must invalidate the cache.
             for requirement in security {
-                requirement.len().hash(&mut hasher);
+                requirement.len().hash(hasher);
                 for (name, scopes) in requirement {
-                    name.hash(&mut hasher);
-                    scopes.hash(&mut hasher);
+                    name.hash(hasher);
+                    scopes.hash(hasher);
                 }
             }
         }
@@ -309,28 +340,13 @@ pub(super) fn compute_config_hash_with_merge_cache(
         let mut names: Vec<_> = descriptions.keys().collect();
         names.sort_unstable();
         for name in names {
-            name.hash(&mut hasher);
-            descriptions[name].hash(&mut hasher);
+            name.hash(hasher);
+            descriptions[name].hash(hasher);
         }
     }
-    // Merge children: hash each child app's NAME *and* its exported
-    // OpenAPI sidecar content, so a change to a child's spec invalidates
-    // the parent's cached merged document — the path name alone cannot
-    // detect a child whose routes / schemas changed between builds.
-    // Mirrors the sidecar resolution in `generate_and_write_openapi`
-    // (`vespera_dir / <LastSegment>.openapi.json`).
     for merge_path in &processed.merge {
-        quote!(#merge_path).to_string().hash(&mut hasher);
-        if let Some((_struct_name, spec_file)) = merge_specs.spec_file_for(merge_path) {
-            match merge_specs.read(&spec_file) {
-                MergeSpecRead::Present(content) => content.hash(&mut hasher),
-                // Absent / unreadable child sidecar → stable marker so the
-                // hashed state still differs from a present spec.
-                MergeSpecRead::Error(_) => "child-spec:absent".hash(&mut hasher),
-            }
-        }
+        quote!(#merge_path).to_string().hash(hasher);
     }
-    hasher.finish()
 }
 
 /// Hashes one complete security scheme, preserving the stable serialization
@@ -361,13 +377,14 @@ fn merge_spec_dir() -> Option<std::path::PathBuf> {
     Some(find_target_dir(Path::new(&manifest_dir)).join("vespera"))
 }
 
-/// Get the path to this crate's routes cache file.
-pub(super) fn get_cache_path() -> std::path::PathBuf {
+/// Get the path to a `vespera!` invocation's routes cache file; `tag` is
+/// its `super::invocation::invocation_tag`.
+pub(super) fn get_cache_path(tag: &str) -> std::path::PathBuf {
     let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let manifest_path = Path::new(&manifest_dir);
     find_target_dir(manifest_path)
         .join("vespera")
-        .join(format!("routes-{}.cache", current_crate_tag()))
+        .join(format!("routes-{tag}.cache"))
 }
 
 /// Get the path to this crate/app/folder's `export_app!` route cache file.
@@ -386,38 +403,53 @@ pub(super) fn get_export_cache_path(
     ))
 }
 
-/// Fingerprint of the vespera_macro **source tree itself**, for cache
-/// invalidation while developing the macro in this repository.
+/// Fingerprint of the vespera_macro **source tree itself** (plus the
+/// sibling `vespera_core` sources compiled into it), for cache
+/// invalidation whenever the macro is built from mutable sources.
 ///
-/// `macro_version` only changes per release, so editing macro code
-/// in-repo would otherwise keep serving the previous build's cached
-/// spec.  When `{workspace_root}/crates/vespera_macro/src` exists
-/// (i.e. the consuming crate lives inside the vespera repo), hash
-/// every `.rs` mtime in it; for downstream users the directory is
-/// absent and this is a single failed `stat` (returns 0).
+/// `macro_version` only changes per release, so editing macro code — or
+/// the `vespera_core` OpenAPI types the macro serializes — would otherwise
+/// keep serving the previous build's cached spec.  The sources are located
+/// through the macro crate's **own** compile-time `CARGO_MANIFEST_DIR`, so
+/// this covers the in-repo workspace, git dependencies and out-of-repo
+/// `path` dependencies alike (the former consumer-workspace probe only
+/// covered the first, and never looked at `vespera_core`).  A *packaged*
+/// macro (crates.io / vendored — it carries the `Cargo.toml.orig` that
+/// `cargo package` adds) is immutable per version: one `stat`, returns 0.
 pub(super) fn compute_macro_dev_fingerprint() -> u64 {
     // Memoized per proc-macro process: macro source mtimes cannot change
     // the dll that is currently executing, so one scan per process is
     // exactly as precise as one scan per invocation.  (A fresh cargo
     // build of vespera_macro loads a fresh dll → fresh process state.)
     static MEMO: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *MEMO.get_or_init(compute_macro_dev_fingerprint_uncached)
+    *MEMO.get_or_init(|| macro_dev_fingerprint_for(Path::new(env!("CARGO_MANIFEST_DIR"))))
 }
 
-fn compute_macro_dev_fingerprint_uncached() -> u64 {
-    let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    let workspace_root = find_workspace_root(Path::new(&manifest_dir));
-    fingerprint_rs_directory(&macro_src_dir(&workspace_root))
+/// Fingerprint the macro sources of the macro crate at `macro_manifest_dir`
+/// (see [`compute_macro_dev_fingerprint`]); the root is explicit so tests can
+/// exercise the packaged and source-tree layouts.
+fn macro_dev_fingerprint_for(macro_manifest_dir: &Path) -> u64 {
+    if macro_manifest_dir.join("Cargo.toml.orig").exists() {
+        return 0;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for dir in macro_src_dirs(macro_manifest_dir) {
+        fingerprint_rs_directory(&dir).hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
-/// Derives the in-workspace macro source path only from the supplied
-/// workspace root (not the target dir, which `CARGO_TARGET_DIR` may move),
-/// keeping resolution independent of process environment.
-fn macro_src_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root
-        .join("crates")
-        .join("vespera_macro")
-        .join("src")
+/// The source directories whose edits change macro output: the macro crate's
+/// own `src` and the sibling `vespera_core/src`.  A missing directory
+/// fingerprints as 0.
+fn macro_src_dirs(macro_manifest_dir: &Path) -> [PathBuf; 2] {
+    [
+        macro_manifest_dir.join("src"),
+        macro_manifest_dir
+            .join("..")
+            .join("vespera_core")
+            .join("src"),
+    ]
 }
 
 /// Fingerprints only Rust files below the supplied directory, taking the root
@@ -464,511 +496,4 @@ pub(super) fn write_cache(cache_path: &Path, cache: &VesperaCache) {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use vespera_core::schema::SecuritySchemeType;
-
-    use super::*;
-
-    fn base_processed() -> ProcessedVesperaInput {
-        ProcessedVesperaInput {
-            folder_name: "routes".to_string(),
-            ..ProcessedVesperaInput::default()
-        }
-    }
-
-    #[test]
-    fn test_compute_config_hash_with_servers() {
-        let processed_no_servers = base_processed();
-
-        let processed_with_servers = ProcessedVesperaInput {
-            servers: Some(vec![
-                vespera_core::openapi::Server {
-                    url: "https://api.example.com".to_string(),
-                    description: None,
-                    variables: None,
-                },
-                vespera_core::openapi::Server {
-                    url: "http://localhost:3000".to_string(),
-                    description: None,
-                    variables: None,
-                },
-            ]),
-            ..base_processed()
-        };
-
-        let hash_no_servers = compute_config_hash(&processed_no_servers);
-        let hash_with_servers = compute_config_hash(&processed_with_servers);
-
-        // Different servers should produce different hashes
-        assert_ne!(
-            hash_no_servers, hash_with_servers,
-            "Servers should affect config hash"
-        );
-    }
-
-    #[test]
-    fn test_compute_config_hash_with_merge() {
-        let processed_no_merge = base_processed();
-
-        let processed_with_merge = ProcessedVesperaInput {
-            merge: vec![syn::parse_quote!(app::TestApp)],
-            ..base_processed()
-        };
-
-        let hash_no_merge = compute_config_hash(&processed_no_merge);
-        let hash_with_merge = compute_config_hash(&processed_with_merge);
-
-        assert_ne!(
-            hash_no_merge, hash_with_merge,
-            "Merge paths should affect config hash"
-        );
-    }
-
-    #[test]
-    fn test_read_cache_corrupt_file_returns_none() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("routes.cache");
-        std::fs::write(&path, "{not valid json").unwrap();
-        assert!(read_cache(&path).is_none(), "corrupt cache must be a miss");
-    }
-
-    #[test]
-    fn test_read_cache_missing_file_returns_none() {
-        let dir = tempfile::TempDir::new().unwrap();
-        assert!(read_cache(&dir.path().join("nope.cache")).is_none());
-    }
-
-    #[test]
-    fn test_old_format_cache_deserializes_with_format_zero() {
-        // A pre-sidecar cache (inline spec strings, no cache_format
-        // field) must still parse — with cache_format defaulting to 0
-        // so the orchestrator's `== CACHE_FORMAT` check misses.
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("routes.cache");
-        let old_format = serde_json::json!({
-            "macro_version": "0.1.0",
-            "macro_dev_fingerprint": 1u64,
-            "file_fingerprints": {},
-            "schema_hash": 2u64,
-            "config_hash": 3u64,
-            "metadata": { "routes": [], "structs": [] },
-            "spec_json": "{\"openapi\":\"3.1.0\"}",
-            "spec_pretty": "{\n  \"openapi\": \"3.1.0\"\n}"
-        });
-        std::fs::write(&path, old_format.to_string()).unwrap();
-        let cache = read_cache(&path).expect("old format must still deserialize");
-        assert_eq!(cache.cache_format, 0, "missing field defaults to 0");
-        assert_ne!(cache.cache_format, CACHE_FORMAT, "format check must miss");
-        assert!(cache.spec_json_hash.is_none());
-        assert!(cache.spec_pretty_hash.is_none());
-    }
-
-    #[test]
-    fn test_hash_str_deterministic_and_content_sensitive() {
-        assert_eq!(hash_str("abc"), hash_str("abc"));
-        assert_ne!(hash_str("abc"), hash_str("abd"));
-    }
-
-    #[test]
-    fn sidecar_matches_accepts_matching_fingerprint_without_hash_miss() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("spec.json");
-        std::fs::write(&path, "{\"openapi\":\"3.1.0\"}").unwrap();
-
-        let fingerprint = path_fingerprint(&path);
-        assert!(sidecar_matches(&path, Some(0), fingerprint));
-    }
-
-    #[test]
-    fn sidecar_matches_falls_back_to_hash_when_fingerprint_differs() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("spec.json");
-        let content = "{\"openapi\":\"3.1.0\"}";
-        std::fs::write(&path, content).unwrap();
-
-        assert!(sidecar_matches(&path, Some(hash_str(content)), Some(1)));
-        assert!(!sidecar_matches(&path, Some(hash_str("corrupt")), Some(1)));
-    }
-
-    /// A macro-source edit that PRESERVES the mtime (timestamp-preserving
-    /// checkout / `cp -p` / build-cache restore) but changes the file size
-    /// must still move the macro-dev fingerprint — the mtime-only version
-    /// reported an unchanged fingerprint here and served a stale route cache.
-    #[test]
-    fn macro_source_fingerprint_reacts_to_size_only_change() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let file = dir.path().join("lib.rs");
-        std::fs::write(&file, "fn a() {}").unwrap();
-        let original_mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
-
-        let before = fingerprint_rs_directory(dir.path());
-
-        // Rewrite with a DIFFERENT length, then restore the original mtime.
-        std::fs::write(&file, "fn a() {} // grew").unwrap();
-        let handle = std::fs::File::options().write(true).open(&file).unwrap();
-        handle.set_modified(original_mtime).unwrap();
-        drop(handle);
-        assert_eq!(
-            std::fs::metadata(&file).unwrap().modified().unwrap(),
-            original_mtime,
-            "test precondition: mtime must be unchanged"
-        );
-
-        assert_ne!(
-            before,
-            fingerprint_rs_directory(dir.path()),
-            "mtime-preserving size change must change the fingerprint"
-        );
-    }
-
-    /// A byte-identical rewrite that also restores the mtime is a genuine
-    /// cache HIT — the size term must not make the fingerprint unstable.
-    #[test]
-    fn macro_source_fingerprint_is_stable_for_identical_content_and_mtime() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let file = dir.path().join("lib.rs");
-        std::fs::write(&file, "fn a() {}").unwrap();
-        let original_mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
-
-        let before = fingerprint_rs_directory(dir.path());
-
-        std::fs::write(&file, "fn a() {}").unwrap();
-        let handle = std::fs::File::options().write(true).open(&file).unwrap();
-        handle.set_modified(original_mtime).unwrap();
-        drop(handle);
-
-        assert_eq!(
-            before,
-            fingerprint_rs_directory(dir.path()),
-            "unchanged file must keep its fingerprint"
-        );
-    }
-
-    #[test]
-    fn export_config_hash_is_namespaced_by_app_and_folder() {
-        let base = compute_export_config_hash("ThirdApp", "routes", "");
-
-        assert_ne!(base, compute_export_config_hash("AdminApp", "routes", ""));
-        assert_ne!(base, compute_export_config_hash("ThirdApp", "api", ""));
-        assert_ne!(
-            base,
-            compute_export_config_hash("ThirdApp", "routes", "/api")
-        );
-    }
-
-    #[test]
-    fn security_scheme_field_changes_affect_config_hash() {
-        fn scheme(http_scheme: &str) -> SecurityScheme {
-            SecurityScheme {
-                r#type: SecuritySchemeType::Http,
-                description: Some("Auth".to_string()),
-                name: None,
-                r#in: None,
-                scheme: Some(http_scheme.to_string()),
-                bearer_format: Some("JWT".to_string()),
-                flows: None,
-                open_id_connect_url: None,
-            }
-        }
-
-        let bearer = ProcessedVesperaInput {
-            security_schemes: Some(BTreeMap::from([(
-                "bearerAuth".to_string(),
-                scheme("bearer"),
-            )])),
-            ..base_processed()
-        };
-        let basic = ProcessedVesperaInput {
-            security_schemes: Some(BTreeMap::from([(
-                "bearerAuth".to_string(),
-                scheme("basic"),
-            )])),
-            ..base_processed()
-        };
-
-        assert_ne!(compute_config_hash(&bearer), compute_config_hash(&basic));
-    }
-
-    #[test]
-    fn security_none_and_empty_some_have_distinct_config_hashes() {
-        let omitted = base_processed();
-        let explicit_empty = ProcessedVesperaInput {
-            security: Some(Vec::new()),
-            ..base_processed()
-        };
-
-        assert_ne!(
-            compute_config_hash(&omitted),
-            compute_config_hash(&explicit_empty)
-        );
-    }
-
-    fn fresh_cache() -> VesperaCache {
-        VesperaCache {
-            cache_format: CACHE_FORMAT,
-            macro_version: "9.9.9".to_string(),
-            macro_dev_fingerprint: 11,
-            file_fingerprints: HashMap::from([("routes/users.rs".to_string(), 22u64)]),
-            schema_hash: 33,
-            config_hash: 44,
-            metadata: CollectedMetadata::new(),
-            spec_json_hash: None,
-            spec_pretty_hash: None,
-            spec_json_fingerprint: None,
-            spec_pretty_fingerprint: None,
-        }
-    }
-
-    fn fresh_key(fingerprints: &HashMap<String, u64>) -> CacheKey<'_> {
-        CacheKey {
-            macro_version: "9.9.9",
-            macro_dev_fingerprint: 11,
-            file_fingerprints: fingerprints,
-            schema_hash: 33,
-            config_hash: 44,
-        }
-    }
-
-    /// Every invalidation input in the cache header must independently flip
-    /// freshness — this is the whole reason the predicate lives in one place.
-    #[rstest::rstest]
-    #[case::cache_format(|c: &mut VesperaCache| c.cache_format = CACHE_FORMAT + 1)]
-    #[case::macro_version(|c: &mut VesperaCache| c.macro_version = "9.9.10".to_string())]
-    #[case::macro_dev_fingerprint(|c: &mut VesperaCache| c.macro_dev_fingerprint = 12)]
-    #[case::file_fingerprints(|c: &mut VesperaCache| {
-        c.file_fingerprints
-            .insert("routes/users.rs".to_string(), 23);
-    })]
-    #[case::schema_hash(|c: &mut VesperaCache| c.schema_hash = 34)]
-    #[case::config_hash(|c: &mut VesperaCache| c.config_hash = 45)]
-    fn is_fresh_flips_on_each_invalidation_input(#[case] mutate: fn(&mut VesperaCache)) {
-        let fingerprints = fresh_cache().file_fingerprints;
-        let key = fresh_key(&fingerprints);
-
-        let cache = fresh_cache();
-        assert!(cache.is_fresh(&key), "unmutated cache must be fresh");
-
-        let mut stale = fresh_cache();
-        mutate(&mut stale);
-        assert!(
-            !stale.is_fresh(&key),
-            "mutating one invalidation input must miss the cache"
-        );
-    }
-
-    #[test]
-    fn is_fresh_detects_added_and_removed_route_files() {
-        let fingerprints = fresh_cache().file_fingerprints;
-        let key = fresh_key(&fingerprints);
-
-        let mut extra_file = fresh_cache();
-        extra_file
-            .file_fingerprints
-            .insert("routes/posts.rs".to_string(), 55);
-        assert!(!extra_file.is_fresh(&key));
-
-        let mut no_files = fresh_cache();
-        no_files.file_fingerprints.clear();
-        assert!(!no_files.is_fresh(&key));
-    }
-
-    #[test]
-    fn server_description_changes_affect_config_hash() {
-        let production = ProcessedVesperaInput {
-            servers: Some(vec![vespera_core::openapi::Server {
-                url: "https://api.example.com".to_string(),
-                description: Some("Production".to_string()),
-                variables: None,
-            }]),
-            ..base_processed()
-        };
-        let staging = ProcessedVesperaInput {
-            servers: Some(vec![vespera_core::openapi::Server {
-                url: "https://api.example.com".to_string(),
-                description: Some("Staging".to_string()),
-                variables: None,
-            }]),
-            ..base_processed()
-        };
-
-        assert_ne!(
-            compute_config_hash(&production),
-            compute_config_hash(&staging)
-        );
-    }
-
-    #[test]
-    fn sidecar_without_expected_hash_never_matches() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("spec.json");
-        std::fs::write(&path, "{}").unwrap();
-        assert!(!sidecar_matches(&path, None, path_fingerprint(&path)));
-    }
-
-    #[test]
-    fn stored_route_signatures_contribute_to_schema_hash() {
-        let route = |sig: &str| crate::route_impl::StoredRouteInfo {
-            fn_name: "get_user".to_string(),
-            method: None,
-            custom_path: None,
-            success_status: None,
-            error_status: None,
-            typed_responses: None,
-            tags: None,
-            security: None,
-            headers: Vec::new(),
-            operation_id: None,
-            summary: None,
-            request_example: None,
-            response_example: None,
-            deprecated: false,
-            description: None,
-            file_path: Some("src/routes/users.rs".to_string()),
-            fn_sig_str: sig.to_string(),
-        };
-        let before = with_route_signature_hash(7, &[route("fn get_user () -> Result < A , B >")]);
-        let after = with_route_signature_hash(7, &[route("fn get_user () -> Result < A , C >")]);
-        assert_ne!(before, after);
-        assert_eq!(
-            before,
-            with_route_signature_hash(7, &[route("fn get_user () -> Result < A , B >")])
-        );
-        assert_ne!(
-            with_route_signature_hash(7, &[]),
-            with_route_signature_hash(8, &[])
-        );
-    }
-
-    #[test]
-    fn schema_field_defaults_contribute_to_schema_hash() {
-        let without_default = StructMetadata::new(
-            "User".to_string(),
-            "pub struct User { pub id: i32 }".to_string(),
-        );
-        let mut with_default = without_default.clone();
-        with_default
-            .field_defaults
-            .insert("id".to_string(), serde_json::json!(7));
-        let base = HashMap::from([("User".to_string(), without_default)]);
-        let changed = HashMap::from([("User".to_string(), with_default)]);
-
-        assert_ne!(compute_schema_hash(&base), compute_schema_hash(&changed));
-    }
-
-    #[test]
-    fn security_requirement_names_and_tag_descriptions_affect_config_hash() {
-        let secured = ProcessedVesperaInput {
-            security: Some(vec![BTreeMap::from([
-                ("zeta".to_string(), Vec::new()),
-                ("alpha".to_string(), Vec::new()),
-            ])]),
-            tag_descriptions: Some(HashMap::from([
-                ("users".to_string(), "User operations".to_string()),
-                ("admin".to_string(), "Admin operations".to_string()),
-            ])),
-            ..base_processed()
-        };
-
-        assert_ne!(
-            compute_config_hash(&base_processed()),
-            compute_config_hash(&secured)
-        );
-    }
-
-    /// Changing only a requirement's scopes must invalidate the cache.
-    #[rstest::rstest]
-    #[case::added_scope(vec!["read"], vec!["read", "write"])]
-    #[case::replaced_scope(vec!["read"], vec!["admin"])]
-    #[case::empty_vs_some(vec![], vec!["read"])]
-    fn security_requirement_scopes_affect_config_hash(
-        #[case] before: Vec<&str>,
-        #[case] after: Vec<&str>,
-    ) {
-        let with_scopes = |scopes: Vec<&str>| ProcessedVesperaInput {
-            security: Some(vec![BTreeMap::from([(
-                "oauth2".to_string(),
-                scopes.into_iter().map(str::to_string).collect(),
-            )])]),
-            ..base_processed()
-        };
-        assert_ne!(
-            compute_config_hash(&with_scopes(before)),
-            compute_config_hash(&with_scopes(after))
-        );
-    }
-
-    #[test]
-    fn present_merge_sidecar_content_contributes_to_config_hash() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let vespera_dir = temp.path().join("target/vespera");
-        std::fs::create_dir_all(&vespera_dir).unwrap();
-        std::fs::write(vespera_dir.join("Child.openapi.json"), "child-v1").unwrap();
-        let _env_guard = crate::env_access::test_env::set_var("CARGO_MANIFEST_DIR", temp.path());
-        let processed = ProcessedVesperaInput {
-            merge: vec![syn::parse_quote!(child::Child)],
-            ..base_processed()
-        };
-        let mut cache = MergeSpecCache::new();
-
-        let with_child = compute_config_hash_with_merge_cache(&processed, &mut cache);
-        assert_ne!(with_child, compute_config_hash(&base_processed()));
-    }
-
-    #[test]
-    fn macro_source_fingerprint_is_zero_for_an_absent_directory() {
-        let temp = tempfile::TempDir::new().unwrap();
-        assert_eq!(fingerprint_rs_directory(&temp.path().join("absent")), 0);
-    }
-
-    #[test]
-    fn macro_source_path_and_directory_fingerprint_are_directly_testable() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let expected_src = temp.path().join("crates/vespera_macro/src");
-        std::fs::create_dir_all(&expected_src).unwrap();
-        let macro_file = expected_src.join("lib.rs");
-        std::fs::write(&macro_file, "pub fn first() {}").unwrap();
-
-        let derived_src = macro_src_dir(temp.path());
-        let before = fingerprint_rs_directory(&derived_src);
-        std::fs::write(&macro_file, "pub fn first() { let changed = true; }").unwrap();
-        let after = fingerprint_rs_directory(&derived_src);
-
-        assert_eq!(derived_src, expected_src);
-        assert_ne!(before, after, "a Rust source change must move the digest");
-    }
-
-    #[test]
-    fn rs_fingerprints_skip_other_extensions_and_survive_nesting() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let nested = temp.path().join("routes");
-        std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(temp.path().join("lib.rs"), "pub struct App;").unwrap();
-        std::fs::write(temp.path().join("README.md"), "fixture").unwrap();
-        std::fs::write(nested.join("users.rs"), "pub fn list() {}").unwrap();
-
-        let scanned = collect_files_with_mtimes(temp.path()).unwrap();
-        let rust_only: Vec<_> = scanned
-            .iter()
-            .filter(|(path, _)| path.extension().is_some_and(|e| e == "rs"))
-            .collect();
-
-        assert_eq!(scanned.len(), 3, "the walk must recurse and see every file");
-        assert_eq!(rust_only.len(), 2, "both `.rs` files must be fingerprinted");
-        assert!(
-            rust_only.iter().all(|(_, fingerprint)| *fingerprint != 0),
-            "every `.rs` file must carry a real fingerprint: {rust_only:?}"
-        );
-        assert_ne!(
-            hash_rs_fingerprints(scanned.clone()),
-            hash_rs_fingerprints(
-                scanned
-                    .into_iter()
-                    .filter(|(path, _)| !path.ends_with("users.rs"))
-                    .collect()
-            ),
-            "dropping a nested `.rs` file must move the digest"
-        );
-    }
-}
+mod tests;
