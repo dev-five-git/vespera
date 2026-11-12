@@ -97,3 +97,66 @@ fn openapi_documents_new_validated_routes_and_builtins() {
         );
     }
 }
+
+#[rstest]
+#[case::valid("/validated/search?q=rust&limit=10", StatusCode::OK, None)]
+#[case::short_term(
+    "/validated/search?q=r&limit=10",
+    StatusCode::UNPROCESSABLE_ENTITY,
+    Some("q")
+)]
+#[case::limit_too_big(
+    "/validated/search?q=rust&limit=101",
+    StatusCode::UNPROCESSABLE_ENTITY,
+    Some("limit")
+)]
+#[case::page_ok("/validated/pages/3", StatusCode::OK, None)]
+#[case::page_zero("/validated/pages/0", StatusCode::UNPROCESSABLE_ENTITY, Some("page"))]
+#[tokio::test]
+async fn validated_query_and_path(
+    #[case] uri: &str,
+    #[case] status: StatusCode,
+    #[case] error_path: Option<&str>,
+) {
+    let server = TestServer::new(create_app().await);
+    let response = server.get(uri).await;
+    response.assert_status(status);
+    if let Some(path) = error_path {
+        assert_eq!(response.json::<Value>()["errors"][0]["path"], path);
+    }
+}
+
+#[rstest]
+#[case::valid("username=alice&email=alice%40example.com", StatusCode::OK, None)]
+#[case::bad_email(
+    "username=alice&email=nope",
+    StatusCode::UNPROCESSABLE_ENTITY,
+    Some("email")
+)]
+#[case::short_name(
+    "username=al&email=alice%40example.com",
+    StatusCode::UNPROCESSABLE_ENTITY,
+    Some("username")
+)]
+#[tokio::test]
+async fn validated_form(
+    #[case] body: &'static str,
+    #[case] status: StatusCode,
+    #[case] error_path: Option<&str>,
+) {
+    let server = TestServer::new(create_app().await);
+    let response = server
+        .post("/validated/signup")
+        .content_type("application/x-www-form-urlencoded")
+        .bytes(body.into())
+        .await;
+    response.assert_status(status);
+    let json: Value = response.json();
+    match error_path {
+        Some(path) => assert_eq!(json["errors"][0]["path"], path),
+        None => assert_eq!(
+            json,
+            json!({"username": "alice", "email": "alice@example.com"})
+        ),
+    }
+}

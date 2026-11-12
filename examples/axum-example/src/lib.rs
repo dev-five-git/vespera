@@ -54,6 +54,17 @@ pub async fn create_app() -> axum::Router {
         docs_url = "/docs",
         redoc_url = "/redoc",
         spec_url = "/openapi.json",
+        // Declared once here, referenced per route via
+        // `#[route(security = [...])]` (see `routes/secured.rs`).
+        security_schemes = [
+            { name = "bearerAuth", type = "http", scheme = "bearer", bearer_format = "JWT" },
+            { name = "apiKey", type = "apiKey", in = "header", header_name = "X-API-Key" }
+        ],
+        // Top-level tag descriptions (`tags[]` in the document).
+        tags = [
+            { name = "secured", description = "Security-scheme demo routes" },
+            { name = "events", description = "Server-sent events" }
+        ],
         merge = [ThirdApp]
     )
     .with_state(app_state(db))
@@ -74,6 +85,14 @@ pub async fn create_app_with_layer() -> axum::Router {
         docs_url = "/docs",
         redoc_url = "/redoc",
         spec_url = "/openapi.json",
+        security_schemes = [
+            { name = "bearerAuth", type = "http", scheme = "bearer", bearer_format = "JWT" },
+            { name = "apiKey", type = "apiKey", in = "header", header_name = "X-API-Key" }
+        ],
+        tags = [
+            { name = "secured", description = "Security-scheme demo routes" },
+            { name = "events", description = "Server-sent events" }
+        ],
         merge = [ThirdApp]
     )
     .layer(cors)

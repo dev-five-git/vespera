@@ -1139,9 +1139,22 @@ vespera/
 ├── examples/
 │   ├── axum-example/         # Standalone OpenAPI server
 │   ├── rust-jni-demo/        # Rust + Spring Boot JNI integration
+│   ├── third/                # Child app merged into axum-example
 │   └── testkit/              # In-process test client used by the examples
 └── benches/                  # Compile-time macro benchmarks (not default members)
 ```
+
+## Examples
+
+Each example has integration tests (`cargo test -p <name>`) that run against
+the generated router, so they double as executable documentation.
+
+| Example | Demonstrates |
+|---------|--------------|
+| [`axum-example`](./examples/axum-example) | File-based routing (`routes/foo`, `routes/path`), `#[derive(Schema)]` (generics, enums, `#[serde(flatten)]`, std/`url` string types), `schema_type!` (`pick` / `omit` / `rename` / `add` / `partial` / `multipart` / `omit_default`, SeaORM relations in `models/`), `Json` / `Form` / `Query` / `Path` / `TypedHeader` / `TypedMultipart` / raw `Multipart` extractors, binary / HTML / text bodies, typed error responses (`responses`, `error_status`, `status = 204`), `Validated<Json \| Query \| Form \| Path>` and `ValidatedWith` (`routes/validated.rs`), security schemes + `security = [...]` and operation metadata (`operation_id`, `summary`, `description`, `response_example`, `deprecated` — `routes/secured.rs`), top-level tag descriptions, `Sse<S>` (`routes/events.rs`), `docs_url` / `redoc_url` / `spec_url`, `merge = [ThirdApp]`, layers + state, `#[vespera::cron]` jobs, and `serve_with_graceful_shutdown` (`main.rs`) |
+| [`third`](./examples/third) | A child app exported with `export_app!` and merged by `axum-example` |
+| [`rust-jni-demo`](./examples/rust-jni-demo) | Embedding in Spring Boot: `jni_apps!` multi-app routing (`_default` + `admin`, one OpenAPI file per app), urlencoded forms, Latin-1 header round-trips, `ConnectInfo` / scheme forwarding, streaming + `text/event-stream` responses, and `.serve(addr)` standalone mode (`main.rs`); the Java side lives in `java/` |
+| [`testkit`](./examples/testkit) | The tiny in-process (`tower::oneshot`) test client the examples' tests use |
 
 ---
 

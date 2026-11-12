@@ -562,6 +562,27 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         }
       }
     },
+    "/events": {
+      "get": {
+        "operationId": "ticks",
+        "tags": [
+          "events"
+        ],
+        "summary": "Emit three `tick` events and close the stream.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/flatten": {
       "post": {
         "operationId": "list_users",
@@ -1402,6 +1423,96 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
             }
           }
         }
+      }
+    },
+    "/secured/me": {
+      "get": {
+        "operationId": "getCurrentUser",
+        "tags": [
+          "secured"
+        ],
+        "summary": "Current user",
+        "description": "Requires `Authorization: Bearer <token>`; answers 401 otherwise.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentUser"
+                },
+                "example": {
+                  "id": 1,
+                  "name": "demo"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error response"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/secured/public": {
+      "get": {
+        "operationId": "public_status",
+        "tags": [
+          "secured"
+        ],
+        "summary": "Public status — `security = []` marks it explicitly unauthenticated.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/secured/reports": {
+      "get": {
+        "operationId": "legacy_reports",
+        "tags": [
+          "secured"
+        ],
+        "summary": "Legacy report listing, guarded by an API key.",
+        "description": "Marked `deprecated` — Swagger UI renders it struck through.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error response"
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "deprecated": true
       }
     },
     "/shapes/bytes": {
@@ -2363,6 +2474,212 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         }
       }
     },
+    "/validated/pages/{page}": {
+      "get": {
+        "operationId": "validated_page",
+        "tags": [
+          "validated"
+        ],
+        "summary": "Fetch a page by a validated path parameter (`Validated<Path<T>>`).",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "path",
+            "description": "1-based page number, at most 1000.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "uint32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidatedPagePath"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "message": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "message"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "errors"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/validated/search": {
+      "get": {
+        "operationId": "validated_search",
+        "tags": [
+          "validated"
+        ],
+        "summary": "Search with validated query parameters.",
+        "description": "`Validated<Query<T>>` documents each field as a query parameter plus the\n`422` response, and answers `422` for an out-of-range value.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Search term, 2–64 characters.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, 1–100.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "uint32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidatedSearchQuery"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "message": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "message"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "errors"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/validated/signup": {
+      "post": {
+        "operationId": "validated_signup",
+        "tags": [
+          "validated"
+        ],
+        "summary": "Sign up with a validated urlencoded form (`Validated<Form<T>>`).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidatedSignupForm"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidatedSignupForm"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "message": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "message"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "errors"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/validated/tags": {
       "post": {
         "operationId": "create_tagged_post",
@@ -3155,6 +3472,23 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
         "required": [
           "name",
           "tags"
+        ]
+      },
+      "CurrentUser": {
+        "type": "object",
+        "description": "The authenticated caller.",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "uint32"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
         ]
       },
       "Enum": {
@@ -5353,6 +5687,66 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "createdAt"
         ]
       },
+      "ValidatedPagePath": {
+        "type": "object",
+        "description": "Path parameters for `GET /validated/pages/{page}`.",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "format": "uint32",
+            "description": "1-based page number, at most 1000.",
+            "minimum": 1,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "page"
+        ]
+      },
+      "ValidatedSearchQuery": {
+        "type": "object",
+        "description": "Query string for `GET /validated/search` — validated like a body.",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "uint32",
+            "description": "Page size, 1–100.",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "q": {
+            "type": "string",
+            "description": "Search term, 2–64 characters.",
+            "minLength": 2,
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "q",
+          "limit"
+        ]
+      },
+      "ValidatedSignupForm": {
+        "type": "object",
+        "description": "`application/x-www-form-urlencoded` body for `POST /validated/signup`.",
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "Contact email."
+          },
+          "username": {
+            "type": "string",
+            "description": "Login handle.",
+            "minLength": 3,
+            "maxLength": 32
+          }
+        },
+        "required": [
+          "username",
+          "email"
+        ]
+      },
       "ValidatedUserRequest": {
         "type": "object",
         "description": "Validated request body for `POST /validated/users`.",
@@ -5393,6 +5787,18 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
           "tags"
         ]
       }
+    },
+    "securitySchemes": {
+      "apiKey": {
+        "type": "apiKey",
+        "name": "X-API-Key",
+        "in": "header"
+      },
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
     }
   },
   "tags": [
@@ -5401,6 +5807,10 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
     },
     {
       "name": "error"
+    },
+    {
+      "name": "events",
+      "description": "Server-sent events"
     },
     {
       "name": "flatten"
@@ -5413,6 +5823,10 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
     },
     {
       "name": "network"
+    },
+    {
+      "name": "secured",
+      "description": "Security-scheme demo routes"
     },
     {
       "name": "terms"
