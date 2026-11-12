@@ -17,6 +17,7 @@ fn create_base_openapi() -> OpenApi {
         },
         servers: None,
         paths: BTreeMap::new(),
+        webhooks: None,
         components: None,
         security: None,
         tags: None,
@@ -686,4 +687,57 @@ fn test_merge_top_level_servers_security_external_docs() {
         base2.external_docs.as_ref().unwrap().url,
         "https://self.example.com/docs"
     );
+}
+
+#[test]
+fn webhooks_are_omitted_when_unset_and_round_trip_when_set() {
+    let mut api = create_base_openapi();
+    assert!(!serde_json::to_string(&api).unwrap().contains("webhooks"));
+
+    api.webhooks = Some(BTreeMap::from([(
+        "newPet".to_string(),
+        create_path_item("New pet"),
+    )]));
+    let json = serde_json::to_string(&api).unwrap();
+    let parsed: OpenApi = serde_json::from_str(&json).unwrap();
+    let webhooks = parsed.webhooks.unwrap();
+    assert_eq!(
+        webhooks["newPet"].get.as_ref().unwrap().summary.as_deref(),
+        Some("New pet")
+    );
+}
+
+#[test]
+fn merge_unions_webhooks_with_self_wins() {
+    let mut base = create_base_openapi();
+    base.webhooks = Some(BTreeMap::from([(
+        "shared".to_string(),
+        create_path_item("base"),
+    )]));
+    let mut other = create_base_openapi();
+    other.webhooks = Some(BTreeMap::from([
+        ("shared".to_string(), create_path_item("other")),
+        ("extra".to_string(), create_path_item("extra")),
+    ]));
+
+    base.merge(other);
+
+    let webhooks = base.webhooks.unwrap();
+    let summary = |name: &str| webhooks[name].get.as_ref().unwrap().summary.clone();
+    assert_eq!(summary("shared").as_deref(), Some("base"));
+    assert_eq!(summary("extra").as_deref(), Some("extra"));
+}
+
+#[test]
+fn merge_adopts_webhooks_when_self_has_none() {
+    let mut base = create_base_openapi();
+    let mut other = create_base_openapi();
+    other.webhooks = Some(BTreeMap::from([(
+        "hook".to_string(),
+        create_path_item("hook"),
+    )]));
+
+    base.merge(other);
+
+    assert!(base.webhooks.unwrap().contains_key("hook"));
 }

@@ -89,6 +89,30 @@ of an existing 0.5 application.
   `serve_with_graceful_shutdown(addr, signal)` (breaking for custom
   implementors).
 
+### Cron hardening (`vespera`, `vespera_macro`, `vespera_core`)
+
+Existing `#[vespera::cron("...")]` jobs keep their syntax and schedule; the
+items below are additions, plus one behaviour change to graceful shutdown.
+
+- **Time zones:** jobs are evaluated in **UTC** (unchanged, now documented);
+  `#[vespera::cron("0 0 9 * * *", tz = "Asia/Seoul")]` evaluates one in an
+  IANA zone. Needs the new opt-in `cron-tz` feature (adds `chrono-tz`); the
+  name is checked at compile time, and `tz` without the feature is a compile
+  error.
+- **Overlap policy:** `overlap = "skip"` skips (and logs) a tick while the
+  previous run of the job is still going; the default stays `"allow"`.
+- **Panics:** every run is supervised, so a panicking job is logged to stderr
+  (`vespera: cron job `module::function` panicked: …`) instead of vanishing
+  with a dropped `JoinHandle`; the schedule keeps going.
+- **Shutdown:** new `vespera::cron::shutdown()` (stop scheduling, process-wide
+  and permanent) and `vespera::cron::shutdown_and_wait(timeout)` (also wait
+  for in-flight runs). **Behaviour change:** `serve_with_graceful_shutdown`
+  now calls both — no new cron runs once its signal resolves, and after the
+  server drained, in-flight runs get up to `cron::DEFAULT_SHUTDOWN_GRACE`
+  (10 s) before it returns.
+- `CronJob` gained the `with_name`, `with_timezone` and `with_overlap`
+  builders (used by the `vespera!` expansion), and `cron::Overlap`.
+
 ### OpenAPI accuracy (`vespera`, `vespera_macro`, `vespera_core`)
 
 - No default `servers: [{url: "http://localhost:3000"}]`; `servers` is omitted
@@ -118,6 +142,19 @@ of an existing 0.5 application.
   not implement `Schema`, and `#[route]` handlers inside inline `mod { .. }`
   blocks. `#[cfg]`-gated route modules / handlers that are compiled out are
   skipped.
+
+### OpenAPI info, webhooks, encoding (`vespera`, `vespera_macro`, `vespera_core`)
+
+- New optional `vespera!` arguments fill the `info` object: `description`
+  (overrides the `Cargo.toml` description), `summary`, `terms_of_service`,
+  `contact_name` / `contact_url` / `contact_email`, and `license` (SPDX →
+  `identifier`) or `license_name` + `license_url`. Invalid URLs / emails and
+  `license` combined with `license_url` are compile errors.
+- `vespera_core::openapi::OpenApi` gained `webhooks` (OpenAPI 3.1, omitted
+  when `None`; `merge` unions it self-wins) and `vespera_core::route::MediaType`
+  gained `encoding` (new `Encoding` type). `vespera!` leaves both unset; they
+  exist for post-processing. Struct literals of these types must add the new
+  fields. `Info` now serializes `summary` before `description`.
 
 ### `Validated<T>`
 

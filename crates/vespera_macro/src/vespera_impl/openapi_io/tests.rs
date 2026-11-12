@@ -7,6 +7,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::env_access::test_env::{self, EnvGuard};
+use crate::router_codegen::InfoArgs;
 use crate::vespera_impl::cache::hash_str;
 
 /// A fresh tempdir posing as `CARGO_MANIFEST_DIR` for this test thread only,
@@ -34,6 +35,7 @@ fn test_generate_and_write_openapi_no_output() {
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -65,6 +67,7 @@ fn test_generate_and_write_openapi_docs_only() {
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -99,6 +102,7 @@ fn test_generate_and_write_openapi_redoc_only() {
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -130,6 +134,7 @@ fn test_generate_and_write_openapi_both_docs() {
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -185,6 +190,7 @@ fn processed_with_spec_url() -> ProcessedVesperaInput {
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     }
 }
 
@@ -207,6 +213,7 @@ fn test_generate_and_write_openapi_file_output() {
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -245,6 +252,7 @@ fn test_generate_and_write_openapi_creates_directories() {
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
     let result = generate_and_write_openapi(
@@ -278,6 +286,7 @@ fn test_generate_and_write_openapi_with_merge_no_manifest_dir() {
         security: None,
         tag_descriptions: None,
         merge: vec![syn::parse_quote!(app::TestApp)], // Has merge but no valid manifest dir
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
     // This should still work - merge logic is skipped when CARGO_MANIFEST_DIR lookup fails
@@ -321,6 +330,7 @@ fn test_generate_and_write_openapi_with_merge_and_valid_spec() {
         security: None,
         tag_descriptions: None,
         merge: vec![syn::parse_quote!(child::ChildApp)],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
 
@@ -451,6 +461,7 @@ fn test_generate_and_write_openapi_file_write_error() {
         security: None,
         tag_descriptions: None,
         merge: vec![],
+        info: InfoArgs::default(),
     };
     let metadata = CollectedMetadata::new();
 
@@ -565,6 +576,7 @@ fn merge_input(path: syn::Path) -> ProcessedVesperaInput {
         security: None,
         tag_descriptions: None,
         merge: vec![path],
+        info: InfoArgs::default(),
     }
 }
 
@@ -793,4 +805,31 @@ fn security_references_are_validated_after_merge(#[case] scheme: &str, #[case] o
             insta::assert_snapshot!("merged_security_reference_unknown_error", error.to_string());
         }
     }
+}
+
+#[test]
+fn test_generate_and_write_openapi_applies_info_args() {
+    let processed = ProcessedVesperaInput {
+        folder_name: "routes".to_string(),
+        spec_url: Some("/openapi.json".to_string()),
+        info: InfoArgs {
+            description: Some("Configured description".to_string()),
+            license: Some("MIT".to_string()),
+            contact_email: Some("api@example.com".to_string()),
+            ..Default::default()
+        },
+        ..ProcessedVesperaInput::default()
+    };
+    let result = generate_and_write_openapi(
+        &processed,
+        &CollectedMetadata::new(),
+        HashMap::new(),
+        &[],
+        &mut MergeSpecCache::new(),
+    )
+    .unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&result.spec_json.unwrap()).unwrap();
+    assert_eq!(doc["info"]["description"], "Configured description");
+    assert_eq!(doc["info"]["license"]["identifier"], "MIT");
+    assert_eq!(doc["info"]["contact"]["email"], "api@example.com");
 }

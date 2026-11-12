@@ -1,0 +1,20 @@
+---
+source: crates/vespera_macro/src/router_codegen/info.rs
+expression: info_json(pairs)
+---
+{
+  "title": "",
+  "version": "",
+  "summary": "Pets",
+  "description": "Pet store API",
+  "termsOfService": "https://example.com/terms",
+  "contact": {
+    "name": "API Team",
+    "url": "https://example.com/support",
+    "email": "api@example.com"
+  },
+  "license": {
+    "name": "MIT",
+    "identifier": "MIT"
+  }
+}

@@ -561,6 +561,16 @@ let app = vespera!(
     openapi = "openapi.json",          // Output path, relative to the crate dir (written at compile time)
     title = "My API",                  // OpenAPI info.title
     version = "1.0.0",                 // OpenAPI info.version (default: CARGO_PKG_VERSION)
+    description = "Pet store API",     // OpenAPI info.description (default: Cargo.toml description)
+    summary = "Pets",                  // OpenAPI info.summary
+    terms_of_service = "https://example.com/terms",  // info.termsOfService (http(s) URL)
+    contact_name = "API Team",         // info.contact.name
+    contact_url = "https://example.com/support",     // info.contact.url (http(s) URL)
+    contact_email = "api@example.com", // info.contact.email
+    license = "MIT OR Apache-2.0",     // info.license.identifier (SPDX); also the name
+                                       //   unless license_name is set
+    // license_name = "Proprietary", license_url = "https://example.com/license",
+                                       //   non-SPDX license: name + url (excludes `license`)
     docs_url = "/docs",                // Swagger UI endpoint
     redoc_url = "/redoc",              // ReDoc endpoint
     spec_url = "/openapi.json",        // Raw OpenAPI JSON endpoint (application/json)
@@ -580,6 +590,22 @@ let app = vespera!(
     merge = [crate1::App1, crate2::App2]  // Merge child vespera apps
 );
 ```
+
+### API info
+
+`description`, `summary`, `terms_of_service`, `contact_name`, `contact_url`,
+`contact_email`, `license`, `license_name` and `license_url` fill the OpenAPI
+3.1 `info` object. They have no environment-variable fallback.
+
+- `license` is an SPDX expression and becomes `info.license.identifier` (and the
+  `name`, unless `license_name` overrides it).
+- A non-SPDX license uses `license_name` + `license_url`. OpenAPI 3.1 makes
+  `identifier` and `url` mutually exclusive, so `license` together with
+  `license_url`, or `license_url` without `license_name`, is a compile error.
+- `terms_of_service`, `contact_url` and `license_url` must be `http(s)://` URLs
+  and `contact_email` must look like an address (compile errors otherwise).
+- Without `description`, `info.description` is the crate's `description` from
+  `Cargo.toml`.
 
 ### Documentation endpoints
 
@@ -973,7 +999,8 @@ pub async fn hourly_report() {
 
 1. `#[cron("...")]` registers the job at compile time (like `#[route]`)
 2. `vespera!()` auto-discovers all registered cron jobs — no extra parameters needed
-3. A background scheduler spawns via `tokio::spawn` when the app starts
+3. A background scheduler spawns via `tokio::spawn` when the app starts (once
+   per process, however often the router is built)
 
 ```rust
 // No cron-specific config — just works
@@ -995,14 +1022,63 @@ Uses 6-field cron expressions (`sec min hour day month weekday`):
 Expressions are validated at compile time by the very parser the runtime
 scheduler uses ([croner](https://crates.io/crates/croner) 4: `L`, `W`, `#`,
 `?`, names and an optional trailing year are supported), so an accepted
-expression can never fail at startup. Times are UTC. When both day-of-month and
+expression can never fail at startup. When both day-of-month and
 day-of-week are restricted, **both** must match (AND, not the classic cron OR).
+
+### Time Zones (default: UTC)
+
+Expressions are evaluated in **UTC** unless the job names an IANA time zone
+with `tz`. Time zones need the opt-in `cron-tz` feature (it adds
+[chrono-tz](https://crates.io/crates/chrono-tz) and its embedded tz database,
+~7 MB of generated source, which is why it is not part of `cron`):
+
+```toml
+vespera = { version = "0.6", features = ["cron", "cron-tz"] }
+```
+
+```rust
+// 09:00 in Seoul every day (00:00 UTC)
+#[vespera::cron("0 0 9 * * *", tz = "Asia/Seoul")]
+pub async fn morning_report() {}
+```
+
+The name is checked at compile time (exact, case-sensitive IANA names such as
+`"Asia/Seoul"`, `"America/New_York"`, `"UTC"`); using `tz` without the
+`cron-tz` feature is a compile error. Daylight-saving transitions follow
+croner: a fixed-time job whose time falls into a spring-forward gap runs right
+after the gap, and runs once in a fall-back overlap.
+
+### Overlapping Runs
+
+By default every tick starts a run, so a job that takes longer than its
+interval overlaps itself (`overlap = "allow"`). With `overlap = "skip"`, a tick
+is skipped — and logged to stderr — while the previous run of the same job is
+still going:
+
+```rust
+#[vespera::cron("0 */5 * * * *", overlap = "skip")]
+pub async fn reindex() {}
+```
+
+### Panics and Shutdown
+
+- Every run is supervised: a panicking job is logged to stderr
+  (`vespera: cron job `module::function` panicked: …`) and its schedule keeps
+  going.
+- `vespera::cron::shutdown()` stops scheduling new runs (process-wide, for
+  good); `vespera::cron::shutdown_and_wait(timeout).await` additionally waits
+  up to `timeout` for in-flight runs and returns whether they all finished.
+- `serve_with_graceful_shutdown(addr, signal)` does this for you: no new runs
+  start once `signal` resolves, and after the server drained, in-flight runs
+  get up to `vespera::cron::DEFAULT_SHUTDOWN_GRACE` (10 s).
+- In a JNI library the jobs run on the shared JNI runtime and stop (in-flight
+  runs are cancelled) with `VesperaBridge.shutdown(...)` / `shutdown0`.
 
 ### Requirements
 
 - Functions must be `pub async fn`
 - Functions must take **no parameters** (no `State`, no extractors)
-- The `cron` feature must be enabled
+- The `cron` feature must be enabled (`cron-tz` too for `tz = "..."`)
 
 ---
 
