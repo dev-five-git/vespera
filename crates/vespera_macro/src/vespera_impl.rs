@@ -5,6 +5,7 @@
 //! imported directly from its owning child module.
 
 mod cache;
+mod cron_discovery;
 mod openapi_io;
 mod orchestrator;
 mod path_utils;
