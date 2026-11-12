@@ -161,6 +161,7 @@ jobs:
         env:
           MERGE_BASE: ${{ steps.scope.outputs.merge_base }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUSTFLAGS: "-C llvm-args=-x86-branches-within-32B-boundaries"
         run: |
           git checkout --detach "$HEAD_SHA"
           scripts/bench-interleaved.sh "$MERGE_BASE" "${BENCH_FILTER}"
