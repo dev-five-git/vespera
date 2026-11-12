@@ -83,7 +83,7 @@ val springBootVersion = "4.1.2"
 val springFrameworkVersion = "7.0.10"
 val springBoot3Version = "3.5.16"
 val springFramework3Version = "6.2.19"
-val micrometerVersion = "1.15.12"
+val micrometerVersion = "1.17.2"
 // Optional springdoc-openapi integration (VesperaSpringdocAutoConfiguration):
 // springdoc 3.x targets Boot 4, 2.x Boot 3.5 — the APIs the bridge uses exist in both.
 val springdocVersion = "3.2.0"
@@ -91,7 +91,7 @@ val springdoc3Version = "2.10.0"
 // Kotlin extensions: compiled against these, provided by the Kotlin app.
 // kotlinx-coroutines >= 1.7 carries `kotlinx.coroutines.future.await` in core.
 val kotlinVersion = "2.4.21"
-val coroutinesVersion = "1.8.0"
+val coroutinesVersion = "1.11.0"
 
 dependencies {
     // Optional Kotlin extensions (VesperaKotlin.kt) — provided by the Kotlin app;
@@ -102,12 +102,12 @@ dependencies {
     // VesperaResponse / VesperaClientException): Kotlin reads them from the
     // class files, so callers get `String?` / `String` instead of platform
     // types. Annotations are not needed at runtime.
-    compileOnly("org.jspecify:jspecify:1.0.0")
+    compileOnly("org.jspecify:jspecify:1.0.1")
 
     compileOnly("org.springframework.boot:spring-boot-autoconfigure:$springBootVersion")
     compileOnly("org.springframework:spring-webmvc:$springFrameworkVersion")
     compileOnly("jakarta.servlet:jakarta.servlet-api:6.1.0")
-    compileOnly("org.slf4j:slf4j-api:2.0.17")
+    compileOnly("org.slf4j:slf4j-api:2.0.20")
     // Optional: MicrometerDispatchObserver / VesperaBridgeMetricsAutoConfiguration
     // only load when the application ships Micrometer (e.g. via Actuator).
     compileOnly("io.micrometer:micrometer-core:$micrometerVersion")

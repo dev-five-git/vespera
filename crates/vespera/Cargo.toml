@@ -113,7 +113,7 @@ garde = { workspace = true, optional = true }
 # the graph via axum's json/form/query features).
 serde_path_to_error = { version = "0.1", optional = true }
 # `tracing` feature: cron diagnostics as `tracing` events (see the feature).
-tracing = { version = "0.1.41", default-features = false, features = ["std"], optional = true }
+tracing = { version = "0.1.44", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
 # Used by integration tests under `tests/` that exercise the

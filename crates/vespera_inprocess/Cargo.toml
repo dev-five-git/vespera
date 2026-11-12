@@ -53,7 +53,7 @@ serde_json = "1"
 # `time`: the optional per-dispatch deadline (`set_dispatch_timeout`) and the
 # bounded request-producer join on the bidirectional streaming paths.
 tokio = { version = "1", features = ["rt", "sync", "time"] }
-tracing = { version = "0.1.41", default-features = false, features = ["std"], optional = true }
+tracing = { version = "0.1.44", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["json", "query", "tokio", "http1"] }
