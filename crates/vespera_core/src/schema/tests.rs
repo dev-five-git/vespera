@@ -622,6 +622,7 @@ fn schema_ref_inline_schema_preserves_every_supported_keyword() {
         "nullable": false,
         "readOnly": true,
         "writeOnly": false,
+        "deprecated": true,
         "externalDocs": {"description": "Reference", "url": "https://example.com"},
         "$defs": {"Local": {"type": "number"}},
         "$dynamicAnchor": "node",
@@ -674,6 +675,7 @@ fn schema_ref_inline_schema_preserves_every_supported_keyword() {
     assert_eq!(output["discriminator"]["propertyName"], "kind");
     assert_eq!(output["readOnly"], true);
     assert_eq!(output["writeOnly"], false);
+    assert_eq!(output["deprecated"], true);
     assert_eq!(output["externalDocs"]["url"], "https://example.com");
     assert_eq!(output["$defs"]["Local"]["type"], "number");
     assert_eq!(output["$dynamicAnchor"], "node");

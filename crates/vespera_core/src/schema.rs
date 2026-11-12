@@ -146,6 +146,8 @@ pub struct Schema {
     pub read_only: Option<bool>,
     /// Write-only flag
     pub write_only: Option<bool>,
+    /// Deprecated flag (JSON Schema 2020-12 `deprecated` annotation)
+    pub deprecated: Option<bool>,
     /// External documentation reference
     pub external_docs: Option<ExternalDocumentation>,
 
