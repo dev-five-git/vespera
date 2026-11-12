@@ -522,11 +522,12 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'
                     .catch_unwind(),
                 );
                 runtime.handle().spawn(async move {
-                    // Held until the future is completed; released with the
-                    // task on every path (including runtime shutdown and
-                    // cancellation).  The lease keeps `shutdown_runtime`'s
-                    // drain waiting for it.
-                    let _permit = permit;
+                    // The in-flight permit is released with the task on every
+                    // path (including runtime shutdown and cancellation) and,
+                    // on the normal path, just BEFORE the future is
+                    // completed — so a caller that observes the completion
+                    // also observes its slot as free.  The lease is held until
+                    // the completion so `shutdown_runtime`'s drain waits for it.
                     let _lease = runtime;
                     let response = match dispatch.await {
                         Some(Ok(response)) => response,
@@ -536,6 +537,7 @@ pub extern "system" fn Java_com_devfive_vespera_bridge_AsyncDispatch_dispatch0<'
                         // only keeps the always-complete contract.
                         None => vespera_inprocess::error_wire(503, ASYNC_CANCELLED_MSG),
                     };
+                    drop(permit);
                     completion.complete(&response);
                 });
                 token = cancel_token;

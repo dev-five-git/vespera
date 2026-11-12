@@ -59,11 +59,26 @@ class CancelOnDisconnectE2ETest {
         return Long.parseLong(get("/diag/async-in-flight"));
     }
 
+    /**
+     * Waits until no {@code dispatchAsync} holds an in-flight slot and returns
+     * that baseline ({@code 0}).  The counter is process-wide: async dispatches
+     * of earlier tests (in this class or others sharing the JVM) may still be
+     * winding down — e.g. a cancelled task releases its slot only once a
+     * Tokio worker polls it again — and reading a transient value as the
+     * baseline would make the exact {@code baseline + 1} check below miss.
+     */
+    private static long awaitAsyncIdle() throws InterruptedException {
+        await("no async dispatch in flight", () -> asyncInFlight() == 0);
+        return 0;
+    }
+
     private static void await(String what, BooleanSupplier condition) throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        // Generous: CI runners (macOS / Windows) can be slow to schedule.
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
         while (!condition.getAsBoolean()) {
             if (System.nanoTime() > deadline) {
-                throw new AssertionError("timed out waiting for: " + what);
+                throw new AssertionError("timed out waiting for: " + what
+                        + " (async in flight: " + asyncInFlight() + ")");
             }
             Thread.sleep(10);
         }
@@ -149,7 +164,7 @@ class CancelOnDisconnectE2ETest {
     @Test
     void cancellingTheAsyncFutureAbortsTheHandlerAndFreesItsSlot() throws Exception {
         String key = "cancel-async-" + System.nanoTime();
-        long baseline = asyncInFlight();
+        long baseline = awaitAsyncIdle();
         byte[] wire = VesperaBridge.encodeRequest(
                 "GET", "/diag/sleep/" + key + "/60000", null, Map.of(), null);
         CompletableFuture<byte[]> future = VesperaBridge.dispatch(wire);
@@ -170,7 +185,7 @@ class CancelOnDisconnectE2ETest {
     @Test
     void anExternalTimeoutAlsoAbortsTheAsyncHandler() throws Exception {
         String key = "cancel-async-timeout-" + System.nanoTime();
-        long baseline = asyncInFlight();
+        long baseline = awaitAsyncIdle();
         byte[] wire = VesperaBridge.encodeRequest(
                 "GET", "/diag/sleep/" + key + "/60000", null, Map.of(), null);
         CompletableFuture<byte[]> future = new CompletableFuture<>();

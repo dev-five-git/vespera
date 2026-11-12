@@ -296,6 +296,11 @@ Additive; the defaults keep the previous behaviour.
 - The proxy's `ASYNC` mode cancels the native dispatch when the servlet async
   request ends first (Spring async timeout, a container-reported error or
   client disconnect): the timed-out handler no longer keeps running.
+- `VesperaClient` `sendAsync()` / `sendAsync(executor)`: cancelling (or
+  otherwise exceptionally completing) the returned future cancels the native
+  dispatch the same way.
+- A `dispatchAsync` task releases its in-flight slot just before it completes
+  the future, so a caller that sees the completion also sees the slot free.
 - `VesperaBridge.dispatchAsync` is now a Java method (same signature) over the
   new package-private `AsyncDispatch` natives; the JNI symbol
   `VesperaBridge.dispatchAsync` is replaced by `AsyncDispatch.dispatch0`
