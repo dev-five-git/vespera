@@ -499,18 +499,42 @@ mod tests {
         }
     }
 
-    // Test for Duration type
-    #[test]
-    fn test_parse_type_to_schema_ref_duration() {
-        let ty: Type = syn::parse_str("Duration").unwrap();
+    /// `Duration` spellings and `serde_json::Value` map to their serde wire
+    /// shapes (std `{secs, nanos}`, any-value `{}` when ambiguous).
+    #[rstest]
+    #[case::bare_duration("bare_duration", "Duration")]
+    #[case::std_duration("std_duration", "std::time::Duration")]
+    #[case::core_duration("core_duration", "core::time::Duration")]
+    #[case::option_duration("option_duration", "Option<Duration>")]
+    #[case::time_crate_duration("time_crate_duration", "time::Duration")]
+    #[case::chrono_duration("chrono_duration", "chrono::Duration")]
+    #[case::other_three_segment_duration("other_three_segment_duration", "a::b::Duration")]
+    #[case::std_other_duration("std_other_duration", "std::other::Duration")]
+    #[case::json_value("json_value", "serde_json::Value")]
+    #[case::bare_value("bare_value", "Value")]
+    #[case::option_value("option_value", "Option<serde_json::Value>")]
+    #[case::reexported_value("reexported_value", "vespera::serde_json::Value")]
+    #[case::other_value("other_value", "other::Value")]
+    fn duration_and_json_value_shapes(#[case] name: &str, #[case] ty_src: &str) {
+        let ty: Type = syn::parse_str(ty_src).unwrap();
         let schema_ref = parse_type_to_schema_ref(&ty, &empty_known(), &empty_struct_definitions());
+        insta::assert_snapshot!(
+            format!("wire_shape_{name}"),
+            format!(
+                "{ty_src} => {}",
+                serde_json::to_string(&schema_ref).unwrap()
+            )
+        );
+    }
 
-        if let SchemaRef::Inline(schema) = schema_ref {
-            assert_eq!(schema.schema_type, Some(SchemaType::String));
-            assert_eq!(schema.format, Some("duration".to_string()));
-        } else {
-            panic!("Expected inline schema for Duration");
-        }
+    #[test]
+    fn known_bare_value_schema_keeps_its_ref() {
+        let known: HashSet<String> = HashSet::from(["Value".to_string()]);
+        let ty: Type = syn::parse_str("Value").unwrap();
+        assert!(matches!(
+            parse_type_to_schema_ref(&ty, &known, &empty_struct_definitions()),
+            SchemaRef::Ref(_)
+        ));
     }
 
     // Test for qualified chrono types (e.g., chrono::DateTime<Utc>)
@@ -549,7 +573,6 @@ mod tests {
     #[rstest]
     #[case("Option<DateTime>", "date-time")]
     #[case("Option<NaiveDate>", "date")]
-    #[case("Option<Duration>", "duration")]
     fn test_parse_type_to_schema_ref_optional_date_time_types(
         #[case] ty_str: &str,
         #[case] expected_format: &str,
