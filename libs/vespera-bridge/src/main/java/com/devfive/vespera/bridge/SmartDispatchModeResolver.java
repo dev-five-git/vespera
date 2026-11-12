@@ -9,6 +9,12 @@ import jakarta.servlet.http.HttpServletRequest;
  * streaming 24.1&nbsp;µs):
  *
  * <ul>
+ *   <li>{@link DispatchMode#STREAMING} — requests whose {@code Accept}
+ *       names a streaming-only media type ({@code text/event-stream},
+ *       {@code application/x-ndjson}, {@code application/stream+json}) and
+ *       whose body fits the SYNC gate: the response is a long-lived stream,
+ *       which a buffered mode would hold back until it ends.  Larger
+ *       bodies take {@link DispatchMode#BIDIRECTIONAL_STREAMING}.</li>
  *   <li>{@link DispatchMode#DIRECT} — safe requests
  *       (GET / HEAD / OPTIONS per RFC 9110) up to the DIRECT gate
  *       ({@link #DEFAULT_MAX_DIRECT_BYTES}, 1 MiB), or provably
@@ -119,6 +125,15 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
         boolean bodyless = shape.definitelyBodyless;
         String method = shape.method;
 
+        if (acceptsStreaming(request.getHeader("Accept"))) {
+            // SSE / NDJSON: response-stream it so events reach the client as
+            // they are produced (buffered modes would hold them until the
+            // stream ends — forever for a long-lived event stream).
+            return syncSized(contentLength, bodyless)
+                    ? DispatchMode.STREAMING
+                    : DispatchMode.BIDIRECTIONAL_STREAMING;
+        }
+
         if (HttpMethods.isSafe(method)) {
             // Safe (GET/HEAD/OPTIONS): DIRECT up to the (larger) DIRECT gate,
             // else stream.  Safety matters because a DIRECT response overflow
@@ -152,6 +167,48 @@ public class SmartDispatchModeResolver implements DispatchModeResolver {
         return syncSized(contentLength, bodyless)
                 ? DispatchMode.SYNC
                 : DispatchMode.BIDIRECTIONAL_STREAMING;
+    }
+
+    /**
+     * Whether an {@code Accept} value names a streaming-only media type
+     * ({@code text/event-stream}, {@code application/x-ndjson},
+     * {@code application/stream+json}) with a non-zero quality.  A cheap
+     * {@code "stream"}/{@code "ndjson"} probe keeps the common
+     * {@code application/json} / {@code *}{@code /*} case allocation-free.
+     */
+    static boolean acceptsStreaming(String accept) {
+        if (accept == null) {
+            return false;
+        }
+        String lower = accept.toLowerCase(java.util.Locale.ROOT);
+        if (!lower.contains("stream") && !lower.contains("ndjson")) {
+            return false;
+        }
+        for (String range : lower.split(",")) {
+            int semi = range.indexOf(';');
+            String type = (semi < 0 ? range : range.substring(0, semi)).trim();
+            if ((type.equals("text/event-stream")
+                    || type.equals("application/x-ndjson")
+                    || type.equals("application/stream+json"))
+                    && !zeroQuality(semi < 0 ? "" : range.substring(semi))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean zeroQuality(String params) {
+        for (String param : params.split(";")) {
+            String p = param.trim();
+            if (p.startsWith("q=")) {
+                try {
+                    return Double.parseDouble(p.substring(2).trim()) <= 0.0;
+                } catch (NumberFormatException e) {
+                    return false;
+                }
+            }
+        }
+        return false;
     }
 
     /** Whether a request fits the SYNC gate (bodyless or within the cap). */
