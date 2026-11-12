@@ -24,7 +24,7 @@ Also provides in-process dispatch (`vespera_inprocess` crate) and JNI integratio
 | **Binary wire format (JNI)** | `vespera_inprocess` | `[u32 BE len | UTF-8 JSON header | raw body]` — multipart / PDFs / images travel as raw bytes; **`422` validation errors hoisted** into the wire header as `"validation_errors": [...]` so Java decoders never special-case error shapes |
 | **Multi-app routing (JNI/FFI)** | `vespera::jni_apps! { "_default" => app, "admin" => admin_app }` | Wire header carries optional `"app"` field; Java side picks per request via `X-Vespera-App` header (configurable via `AppNameResolver`) |
 | **Zero-config Spring autoconfigure** | `libs/vespera-bridge/.../VesperaBridgeAutoConfiguration` | `VesperaProxyController` + `AppNameResolver` + `DispatchModeResolver` beans auto-registered; replace any of them via `@ConditionalOnMissingBean` |
-| **Cron jobs** | `#[vespera::cron("...")]` | Auto-discovered like routes; runs via the built-in `vespera::cron` tokio scheduler (croner 4, shared parser in `vespera_core::cron`) |
+| **Cron jobs** | `#[vespera::cron("...")]` | Auto-discovered like routes (`CRON_STORAGE` + a module-tree scan fallback in `vespera_impl/cron_discovery.rs` for modules expanded after `vespera!`); started once per `vespera!` invocation via `vespera::cron::start_once` — on the current Tokio runtime, or a dedicated `vespera-cron` thread when there is none (plain `#[test]`, `JNI_OnLoad`); croner 4, shared parser in `vespera_core::cron` |
 
 ## STRUCTURE
 
@@ -209,6 +209,7 @@ bytes 4+N..   : raw body bytes (UTF-8 text or binary —
 - `"v":1` is the protocol version; mismatched versions get a `400` wire response.
 - All failure modes (malformed wire, panic in Rust, no app registered) return a valid length-prefixed wire response, so the Java decoder never has to special-case errors.
 - `validation_errors` is an optional array hoisted from 422 JSON bodies (`{"errors":[...]}`) — original body preserved verbatim alongside.
+- **Header values use a Latin-1 mapping** (`vespera_inprocess::header_latin1`, documented on the Java side in `WireHeaderStringSupport`): servlet containers expose header bytes as ISO-8859-1 strings, so each byte travels as the JSON char `U+0000–U+00FF`. Request: a value whose chars are all `≤ U+00FF` maps back to one byte per char; a value with any wider char keeps its UTF-8 bytes (non-servlet producers). Response: every value byte (including `obs-text ≥ 0x80`, formerly rendered as `""`) becomes one char, so `HttpServletResponse.addHeader` restores the raw bytes. ASCII is byte-identical (`wire_contract.rs`); the serde A/B twin applies the same mapping.
 
 ### JNI Dispatch Modes (seven dispatch symbols + `configure*0` hooks)
 
@@ -287,7 +288,7 @@ vespera::jni_apps! {                                  // multi-app primary API
 `VesperaProxyController` + two strategy beans, both replaceable via
 `@ConditionalOnMissingBean`:
 
-- `AppNameResolver` (default: `HeaderAppNameResolver("X-Vespera-App")`) — picks app per request
+- `AppNameResolver` (default: `HeaderAppNameResolver("X-Vespera-App", vespera.bridge.exposed-apps)`) — picks app per request. The header is client-controlled: `vespera.bridge.exposed-apps` allowlists selectable apps (others → proxy `404`, no dispatch; unset → one-time WARN on first non-default selection); the selection header is never forwarded to Rust
 - `DispatchModeResolver` (default since vespera-bridge 0.2.0: `SmartDispatchModeResolver` — small/bodyless idempotent → `DIRECT` ~2.2µs, small non-idempotent → `SYNC` ~3.2µs, else `BIDIRECTIONAL_STREAMING` ~24µs; `vespera.bridge.dispatch-mode=bidirectional-streaming` restores pre-0.2.0 `BidirectionalStreamingDispatchModeResolver` — bodyless requests take response-only `STREAMING`, everything else bidirectional) — picks `DispatchMode`
 
 Property `vespera.bridge.controller-enabled=false` disables the whole controller for BYO scenarios.  See [`libs/vespera-bridge/README.md`](libs/vespera-bridge/README.md#customization) for the customization recipes.
