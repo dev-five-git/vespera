@@ -154,6 +154,39 @@ pub struct MediaType {
     /// Examples
     #[serde(skip_serializing_if = "Option::is_none")]
     pub examples: Option<BTreeMap<String, Example>>,
+    /// Per-property serialization for `multipart` / form request bodies,
+    /// keyed by property name.
+    ///
+    /// `vespera!` leaves this unset: OpenAPI 3.1 already defaults a
+    /// `type: string, format: binary` part (the schema of `FieldData` /
+    /// `NamedTempFile` fields) to `application/octet-stream`, so emitting it
+    /// would only restate the default. Set it when post-processing the
+    /// document to narrow a part's media type (e.g. `image/png`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<BTreeMap<String, Encoding>>,
+}
+
+/// Encoding of a single `multipart` / form request-body property
+/// (OpenAPI 3.1 Encoding Object).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Encoding {
+    /// Content-Type of the part, e.g. `image/png` or `image/png, image/jpeg`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    /// Additional part headers (`Content-Type` is described by
+    /// `content_type` and ignored here)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<BTreeMap<String, Header>>,
+    /// Serialization style (`application/x-www-form-urlencoded` only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    /// Whether array/object values generate separate parameters
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explode: Option<bool>,
+    /// Whether reserved characters are sent without percent-encoding
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_reserved: Option<bool>,
 }
 
 /// Example definition
@@ -332,6 +365,36 @@ impl PathItem {
 mod tests {
     use super::*;
     use rstest::rstest;
+
+    #[test]
+    fn media_type_encoding_serializes_only_when_set() {
+        let mut media = MediaType {
+            schema: None,
+            example: None,
+            examples: None,
+            encoding: None,
+        };
+        assert_eq!(serde_json::to_string(&media).unwrap(), "{}");
+
+        media.encoding = Some(BTreeMap::from([(
+            "avatar".to_string(),
+            Encoding {
+                content_type: Some("image/png".to_string()),
+                allow_reserved: Some(false),
+                ..Encoding::default()
+            },
+        )]));
+        let json = serde_json::to_string(&media).unwrap();
+        assert_eq!(
+            json,
+            r#"{"encoding":{"avatar":{"contentType":"image/png","allowReserved":false}}}"#
+        );
+        let parsed: MediaType = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed.encoding.unwrap()["avatar"].content_type.as_deref(),
+            Some("image/png")
+        );
+    }
 
     #[test]
     fn path_item_operations_iterates_present_methods_in_order() {

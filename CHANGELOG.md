@@ -119,6 +119,19 @@ of an existing 0.5 application.
   blocks. `#[cfg]`-gated route modules / handlers that are compiled out are
   skipped.
 
+### OpenAPI info, webhooks, encoding (`vespera`, `vespera_macro`, `vespera_core`)
+
+- New optional `vespera!` arguments fill the `info` object: `description`
+  (overrides the `Cargo.toml` description), `summary`, `terms_of_service`,
+  `contact_name` / `contact_url` / `contact_email`, and `license` (SPDX →
+  `identifier`) or `license_name` + `license_url`. Invalid URLs / emails and
+  `license` combined with `license_url` are compile errors.
+- `vespera_core::openapi::OpenApi` gained `webhooks` (OpenAPI 3.1, omitted
+  when `None`; `merge` unions it self-wins) and `vespera_core::route::MediaType`
+  gained `encoding` (new `Encoding` type). `vespera!` leaves both unset; they
+  exist for post-processing. Struct literals of these types must add the new
+  fields. `Info` now serializes `summary` before `description`.
+
 ### `Validated<T>`
 
 - `Json` / `Form` / `Query` / `Path` deserialization failures now return

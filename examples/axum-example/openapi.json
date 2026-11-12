@@ -2,7 +2,19 @@
   "openapi": "3.1.0",
   "info": {
     "title": "API",
-    "version": "0.1.0"
+    "version": "0.1.0",
+    "summary": "Example routes exercising every vespera feature",
+    "description": "Vespera axum example API",
+    "termsOfService": "https://example.com/terms",
+    "contact": {
+      "name": "Vespera Team",
+      "url": "https://github.com/dev-five-git/vespera",
+      "email": "vespera@example.com"
+    },
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    }
   },
   "paths": {
     "/": {

@@ -38,6 +38,7 @@ fn single_content_body(media_type: &str, schema: SchemaRef) -> RequestBody {
             schema: Some(schema),
             example: None,
             examples: None,
+            encoding: None,
         },
     );
     RequestBody {

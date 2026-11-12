@@ -161,6 +161,7 @@ pub fn build_operation_from_function(
                                 schema: schema.clone(),
                                 example: None,
                                 examples: None,
+                                encoding: None,
                             },
                         )])
                     }),
@@ -323,6 +324,7 @@ fn typed_response(
             schema: Some(schema),
             example: None,
             examples: None,
+            encoding: None,
         },
     );
 
@@ -373,6 +375,7 @@ fn validation_error_response() -> Response {
             }))),
             example: None,
             examples: None,
+            encoding: None,
         },
     );
 
