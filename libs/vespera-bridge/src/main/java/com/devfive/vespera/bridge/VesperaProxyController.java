@@ -16,7 +16,6 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -70,7 +69,7 @@ public class VesperaProxyController {
     private final AppNameResolver appResolver;
     private final DispatchModeResolver modeResolver;
     private final Executor asyncResponseExecutor;
-    private final boolean directRetryOnOverflow;
+    private final DirectModeDispatcher direct;
     private final long maxBufferedRequestBytes;
     private final long maxBufferedResponseBytes;
     /** Lower-case app-selection header stripped before forwarding, or {@code null}. */
@@ -90,13 +89,6 @@ public class VesperaProxyController {
 
     /** SLF4J MDC key holding the request id while a request is dispatched. */
     public static final String MDC_REQUEST_ID = "requestId";
-
-    // Adaptive DIRECT-overflow avoidance: routes that overflowed the pooled
-    // direct buffer once are streamed up front thereafter, removing the
-    // repeated DIRECT-overflow-then-stream double dispatch a known-large
-    // (download) route would otherwise pay on every request. Internal state, so
-    // it is created directly rather than injected (no bean-wiring change).
-    private final DirectOverflowMemory directOverflowMemory = new DirectOverflowMemory();
 
     static final long DEFAULT_MAX_BUFFERED_REQUEST_BYTES = 64L * 1024L * 1024L;
     static final long DEFAULT_MAX_BUFFERED_RESPONSE_BYTES = 64L * 1024L * 1024L;
@@ -192,7 +184,7 @@ public class VesperaProxyController {
         this.appResolver = Objects.requireNonNull(appResolver, "appResolver");
         this.modeResolver = Objects.requireNonNull(modeResolver, "modeResolver");
         this.asyncResponseExecutor = Objects.requireNonNull(asyncResponseExecutor, "asyncResponseExecutor");
-        this.directRetryOnOverflow = directRetryOnOverflow;
+        this.direct = new DirectModeDispatcher(directRetryOnOverflow);
         this.maxBufferedRequestBytes = Math.max(0, maxBufferedRequestBytes);
         this.maxBufferedResponseBytes = Math.max(0, maxBufferedResponseBytes);
         this.appSelectionHeader = appResolver.selectionHeaderName();
@@ -331,7 +323,7 @@ public class VesperaProxyController {
         final DispatchMode effectiveMode = formSafeMode(effectiveMode(
                 mode,
                 mode == DispatchMode.DIRECT
-                        && directOverflowMemory.shouldAvoidDirect(appName, method, path, query)),
+                        && direct.shouldAvoidDirect(appName, method, path, query)),
                 request);
 
         exchange.mode = effectiveMode;
@@ -376,7 +368,7 @@ public class VesperaProxyController {
                 return dispatchAsyncFlow(appName, method, path, query, headers, body,
                         response, exchange);
             case STREAMING:
-                dispatchStreaming(response, appName, method, path, query, headers, body);
+                DirectModeDispatcher.streamResponse(response, appName, method, path, query, headers, body);
                 return null;
             case DIRECT:
             default:
@@ -749,28 +741,6 @@ public class VesperaProxyController {
     }
 
     /**
-     * Response-only streaming — request body materialised, response
-     * streams chunk-by-chunk to the servlet output stream.  Status
-     * and headers commit through the JNI header callback BEFORE the
-     * first body byte hits the wire.
-     */
-    private void dispatchStreaming(
-            HttpServletResponse response,
-            String appName, String method, String path, String query,
-            VesperaBridge.HeaderSource headers, byte[] body) throws IOException {
-        byte[] wireReq = VesperaBridge.encodeRequest(
-                appName, method, path, query, headers, body);
-        WireResponseWriter.BodyPermittingOutputStream bodyOut =
-                new WireResponseWriter.BodyPermittingOutputStream(response.getOutputStream(), method);
-        VesperaBridge.dispatchStreamingWithHeader(
-                wireReq,
-                headerBytes -> bodyOut.applyPermitsBody(
-                        WireResponseWriter.applyDecodedHeader(headerBytes, response, method)),
-                bodyOut);
-        response.getOutputStream().flush();
-    }
-
-    /**
      * Bidirectional streaming — both request body (from
      * {@code request.getInputStream()}) and response body (to
      * {@code response.getOutputStream()}) flow chunk-by-chunk.
@@ -827,30 +797,18 @@ public class VesperaProxyController {
     }
 
     /**
-     * Direct-buffer dispatch — request body materialised (DIRECT is
-     * gated to small bounded payloads by the resolver), response served
-     * from the pooled direct buffer without a {@code byte[]}
-     * materialisation: the header slice is decoded to commit
-     * status/headers, then the body region is channelled straight into
-     * the servlet output stream.
-     *
-     * <p>Overflow retry (which re-runs the Rust handler) is permitted
-     * only for <em>safe</em> methods (GET/HEAD/OPTIONS), which are not
-     * intended to mutate server state. The replayed response may still
-     * differ (for example timestamps or generated request IDs); for every
-     * other method — including
-     * idempotent-but-unsafe PUT/DELETE, whose second run can return a
-     * different response (e.g. DELETE → 204 then 404) — a
-     * {@link VesperaBridge.BufferTooSmallException} surfaces as a
-     * {@code 500} with the required size, so the controller never
-     * double-executes a handler whose response could change.
+     * {@link DispatchMode#DIRECT} boundary: a <em>safe</em> method goes to
+     * {@link DirectModeDispatcher}; every other method is served via
+     * {@code SYNC}, because a DIRECT overflow retry re-runs the handler
+     * (e.g. DELETE → 204 then 404), so the controller never double-executes
+     * a handler whose response could change.
      */
     void dispatchDirectMode(
             HttpServletResponse response,
             String appName, String method, String path, String query,
             VesperaBridge.HeaderSource headers, byte[] body,
             Boolean currentThreadIsVirtual) throws IOException {
-        if (!isSafe(method)) {
+        if (!HttpMethods.isSafe(method)) {
             // DIRECT runs the Rust handler on the FIRST dispatch before any
             // overflow is known; for an UNSAFE method an overflow would 500
             // *after* the side effect already happened (partial unsafe
@@ -875,97 +833,9 @@ public class VesperaProxyController {
                     maxBufferedResponseBytes);
             return;
         }
-        boolean retry = shouldRetryDirect(directRetryOnOverflow, method);
-        ByteBuffer wireResp;
-        try {
-            // Encodes straight into the pooled direct buffer — no
-            // intermediate wire-sized byte[].
-            wireResp = VesperaBridge.dispatchDirectPooled(
-                    appName, method, path, query, headers, body, retry,
-                    currentThreadIsVirtual == null
-                            ? VesperaBridge.currentThreadIsVirtual()
-                            : currentThreadIsVirtual.booleanValue());
-        } catch (StashedOverflowException stashed) {
-            // The finished response (an event stream, or larger than the
-            // pooled buffer cap) is still held on the Rust side: stream it
-            // instead of re-running the handler, and stream this route up
-            // front next time.
-            directOverflowMemory.recordOverflow(appName, method, path, query);
-            WireResponseWriter.BodyPermittingOutputStream bodyOut =
-                    new WireResponseWriter.BodyPermittingOutputStream(response.getOutputStream(), method);
-            stashed.streamTo(
-                    headerBytes -> bodyOut.applyPermitsBody(
-                            WireResponseWriter.applyDecodedHeader(headerBytes, response, method)),
-                    bodyOut);
-            response.getOutputStream().flush();
-            return;
-        } catch (VesperaBridge.BufferTooSmallException overflow) {
-            // The first dispatch already ran; its oversized result was discarded.
-            if (retry) {
-                // Safe method + retry enabled: the response is larger than the
-                // pooled direct buffer's hard cap. Re-route through response
-                // streaming so a large download streams chunk-by-chunk instead
-                // of being heap-buffered — the prior dispatchBytes fallback
-                // could spike the JVM heap (OOM) on multi-GiB responses. A safe
-                // re-run is not intended to mutate state, but its response may
-                // differ (timestamps, random IDs). The DIRECT path has not
-                // committed yet, so streaming takes over cleanly.
-                //
-                // Remember this route so the NEXT request to it streams up
-                // front (see DirectOverflowMemory + the effectiveMode downgrade
-                // in proxy()) — avoiding a repeated DIRECT-overflow-then-stream
-                // double dispatch on a known-large route. Recorded only on this
-                // safe + retry path, where we actually fall back to streaming.
-                directOverflowMemory.recordOverflow(appName, method, path, query);
-                dispatchStreaming(response, appName, method, path, query, headers, body);
-                return;
-            }
-            // Unsafe method (or retry disabled): re-running could return a
-            // different response (e.g. DELETE → 204 then 404), so surface the
-            // size to the operator instead of silently double-executing.
-            ProxyErrors.write(response, 500, "vespera DIRECT overflow: response needs "
-                    + overflow.requiredSize()
-                    + " bytes; route this request via BIDIRECTIONAL_STREAMING");
-            return;
-        }
-
-        // Commit status + headers parsed straight from the direct buffer —
-        // no byte[] copy, no DecodedResponse object graph (maps / metadata /
-        // body views). addHeader on the still-uncommitted response is
-        // equivalent to setHeader for a header's first value and appends for
-        // multi-valued headers (e.g. set-cookie).
-        int bodyLen = WireResponseWriter.applyDirectHeaderAndPositionBody(wireResp, response, method);
-
-        // Stream the body region of the direct buffer with an explicit
-        // per-thread heap scratch.  Channels.newChannel(OutputStream)
-        // allocates its own temporary heap buffer for direct-buffer writes;
-        // keeping the scratch here makes the copy strategy predictable and
-        // avoids one allocation per DIRECT response.  Loop until the whole
-        // ByteBuffer region is consumed before flushing/committing.
-        if (bodyLen > 0) {
-            VesperaDirectBufferPool.writeDirectBody(wireResp, response.getOutputStream());
-        }
+        direct.dispatch(response, appName, method, path, query, headers, body,
+                currentThreadIsVirtual);
     }
-
-
-
-    /**
-     * "Safe" per RFC 9110 (GET/HEAD/OPTIONS) — not intended to mutate server
-     * state, so the DIRECT overflow retry is allowed even though the replayed
-     * response may differ (timestamps, random IDs). Idempotent-but-unsafe
-     * methods (PUT/DELETE) are intentionally excluded: their second run can
-     * return a different response (e.g. DELETE → 204 then 404), so on overflow
-     * they fail with {@link VesperaBridge.BufferTooSmallException} instead of
-     * auto-retrying and silently double-executing.
-     */
-    private static boolean isSafe(String method) {
-        return HttpMethods.isSafe(method);
-    }
-
-    static boolean shouldRetryDirect(boolean directRetryOnOverflow, String method) {
-        return directRetryOnOverflow && isSafe(method);
-    }
-
 
     /**
      * Build the buffered {@code ASYNC} response entity, enforcing the
