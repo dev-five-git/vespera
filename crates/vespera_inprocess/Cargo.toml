@@ -24,7 +24,10 @@ bench-support = []
 # the lock-free fast path the default app already enjoys.  Registration
 # (startup-only, first-wins) goes through copy-on-write `rcu`.
 arc-swap = "1"
-axum = { version = "0.8", default-features = false }
+# `tokio`: gates `axum::extract::ConnectInfo`, inserted as a request
+# extension from the optional `remote_addr` wire field.  `vespera` already
+# enables it, so a real build compiles nothing extra.
+axum = { version = "0.8", default-features = false, features = ["tokio"] }
 bytes = "1"
 http = "1"
 http-body = "1"

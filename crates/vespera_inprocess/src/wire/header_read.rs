@@ -13,8 +13,8 @@
 //!   ([`Cow::Borrowed`]) when it carries no escapes, and falls back to
 //!   an owned decode ([`Cow::Owned`]) for `\" \\ \/ \b \f \n \r \t
 //!   \uXXXX` — including UTF-16 surrogate pairs;
-//! * `v` defaults to `0`, `query` to empty, `headers` to empty, `app`
-//!   to `None`; `method`/`path` are required;
+//! * `v` defaults to `0`, `query` to empty, `headers` to empty, `app` /
+//!   `remote_addr` / `scheme` to `None`; `method`/`path` are required;
 //! * duplicate known keys, lone/invalid surrogates, bad escapes,
 //!   unescaped control characters, invalid UTF-8, and trailing content
 //!   are **parse errors** (never a panic).
@@ -80,6 +80,14 @@ pub(super) fn parse(input: &[u8]) -> Result<WireRequestHeader<'_>, String> {
     Ok(header)
 }
 
+/// An optional string-or-null header field plus whether it was seen
+/// (serde rejects a repeated known field even when its value was `null`).
+#[derive(Default)]
+struct OptField<'a> {
+    seen: bool,
+    value: Option<Cow<'a, str>>,
+}
+
 struct Parser<'a> {
     input: &'a [u8],
     pos: usize,
@@ -97,8 +105,9 @@ impl<'a> Parser<'a> {
         let mut query_seen = false;
         let mut headers: CowPairs<'a> = Vec::new();
         let mut headers_seen = false;
-        let mut app: Option<Cow<'a, str>> = None;
-        let mut app_seen = false;
+        let mut app = OptField::default();
+        let mut remote_addr = OptField::default();
+        let mut scheme = OptField::default();
 
         self.skip_ws();
         if self.cur() == Some(b'}') {
@@ -145,13 +154,9 @@ impl<'a> Parser<'a> {
                         headers = self.read_headers()?;
                         headers_seen = true;
                     }
-                    "app" => {
-                        if app_seen {
-                            return Err("duplicate field `app`".to_owned());
-                        }
-                        app = self.read_opt_string()?;
-                        app_seen = true;
-                    }
+                    "app" => self.read_opt_string_once(&mut app, "app")?,
+                    "remote_addr" => self.read_opt_string_once(&mut remote_addr, "remote_addr")?,
+                    "scheme" => self.read_opt_string_once(&mut scheme, "scheme")?,
                     // Unknown (forward-compat) key: iteratively
                     // validate-and-skip its value (no native recursion).
                     _ => self.skip_value()?,
@@ -178,7 +183,9 @@ impl<'a> Parser<'a> {
             path,
             query,
             headers,
-            app,
+            app: app.value,
+            remote_addr: remote_addr.value,
+            scheme: scheme.value,
         })
     }
 
@@ -220,7 +227,18 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
-    /// Parse `app`: a JSON string (borrow/owned) or `null` (`None`),
+    /// Read an optional string field into `slot`, rejecting a duplicate
+    /// (serde rejects a repeated known field even when it is optional).
+    fn read_opt_string_once(&mut self, slot: &mut OptField<'a>, field: &str) -> Result<(), String> {
+        if slot.seen {
+            return Err(format!("duplicate field `{field}`"));
+        }
+        slot.value = self.read_opt_string()?;
+        slot.seen = true;
+        Ok(())
+    }
+
+    /// Parse `app` / `remote_addr` / `scheme`: a JSON string (borrow/owned) or `null` (`None`),
     /// matching serde's `deserialize_option` -> string-or-null contract.
     fn read_opt_string(&mut self) -> Result<Option<Cow<'a, str>>, String> {
         self.skip_ws();

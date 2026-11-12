@@ -164,6 +164,7 @@ where
             Some(&header_bytes),
             Body::from(body_bytes),
             default_json_when_absent,
+            header.connection_info(),
         ))
         .await;
     let (status, headers, metadata, body) = match dispatched {
@@ -412,6 +413,7 @@ where
             Some(&header_bytes),
             Body::from(body_bytes),
             default_json_when_absent,
+            header.connection_info(),
         ))
         .await
     {
@@ -675,6 +677,7 @@ where
             Some(&header_bytes),
             body,
             default_json_when_absent,
+            header.connection_info(),
         ))
         .await;
     // Pre-commit failures (bad method/path → 405/400, expired deadline →

@@ -165,6 +165,35 @@ const METADATA_SEGMENT_CURRENT: &[u8] = concat!(
 )
 .as_bytes();
 
+/// Metadata segment of a caught-panic error response: the current version
+/// plus `"panicked":"true"`.  The flag is a JSON **string** (not a boolean)
+/// so it stays inside the documented `metadata` `string -> string` shape that
+/// every existing decoder (e.g. the Java `WireHeaderReader.readStringMap`)
+/// already accepts — an older decoder simply sees one more metadata entry.
+const METADATA_SEGMENT_PANICKED: &[u8] = concat!(
+    ",\"metadata\":{\"version\":\"",
+    env!("CARGO_PKG_VERSION"),
+    "\",\"panicked\":\"true\"}"
+)
+.as_bytes();
+
+/// Serialize a caught-panic error response header (no length prefix):
+/// identical to [`write_response_header`] for `ResponseMetadata::current()`
+/// except that the metadata object carries `"panicked":"true"`.
+pub(super) fn write_panicked_response_header<S: JsonSink>(
+    sink: &mut S,
+    status: u16,
+    headers: &http::HeaderMap,
+) {
+    const _: () = assert!(WIRE_VERSION == 1);
+    sink.put(b"{\"v\":1,\"status\":");
+    write_status_code(sink, status);
+    sink.put(b",\"headers\":");
+    write_headers(sink, headers);
+    sink.put(METADATA_SEGMENT_PANICKED);
+    sink.put(b"}");
+}
+
 /// Append `s` as a quoted, escaped JSON string straight into `sink` —
 /// the byte-for-byte analogue of `serde_json`'s `format_escaped_str`.
 /// Runs of non-escaped bytes are copied in bulk; only the escape set

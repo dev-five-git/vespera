@@ -229,6 +229,7 @@ async fn dispatch_owned_to_parts(
         Some(&header_bytes),
         Body::from(body_bytes),
         default_json_when_absent,
+        header.connection_info(),
     )
     .await
     .map_err(|(status, msg)| error_wire(status, &msg))
@@ -650,6 +651,7 @@ async fn dispatch_into_borrowed_inner(input: &[u8], out: &mut [u8]) -> DirectWri
         None,
         body,
         default_json_when_absent,
+        header.connection_info(),
     )
     .await
     {
