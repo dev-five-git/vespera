@@ -634,12 +634,20 @@ pool); virtual-thread deployments transparently fall back to the heap
 path at a small per-call allocation cost.
 
 **Carrier pinning:** a virtual thread blocked inside a native call is
-pinned to its carrier.  On a virtual thread the proxy's `SYNC` path (and
-the heap fallback above) therefore dispatches through `dispatchAsync` +
-`join()` — the virtual thread parks and releases its carrier while the
-handler runs (~1.5 µs extra; the `vespera.async.maxInFlight` cap applies).
-Platform threads keep the direct call.  The streaming modes still pin
-(they write to the servlet streams from the calling thread).
+pinned to its carrier.  On a virtual thread the proxy's `SYNC` path (the
+heap fallback above, and `VesperaClient.send()`) therefore never blocks
+natively across a wait.  Since 0.6 it is **poll-first**: the Rust dispatch
+is polled once on the calling thread; a handler that completes without
+waiting answers right there (pinned-call cost, ~1.3 µs p50), and one that
+has to wait (I/O, timers) is handed to a Tokio worker while the virtual
+thread parks on a `CompletableFuture` — the carrier is released for the
+wait.  `-Dvespera.virtualThread.pollFirst=false` restores the pre-0.6
+`dispatchAsync` + `join()` for every request (~15 µs p50 and ~1/5 the
+throughput for a handler that never waits).  Both apply the
+`vespera.async.maxInFlight` cap.  Measurements:
+[`docs/virtual-thread-park.md`](docs/virtual-thread-park.md).  Platform
+threads keep the direct call.  The streaming modes still pin (they write to
+the servlet streams from the calling thread).
 
 You can still opt out of DIRECT entirely if you prefer streaming
 end-to-end:
@@ -728,7 +736,7 @@ CompletableFuture<VesperaResponse> f = client.get("/x").sendAsync();
 
 | Call | Dispatch path |
 |---|---|
-| `send()` | SYNC `dispatchBytes`; on a virtual thread it parks on `dispatchAsync` instead of pinning the carrier |
+| `send()` | SYNC `dispatchBytes`; on a virtual thread it polls the dispatch once inline and parks on a Tokio-completed future only when the handler waits (never pins the carrier across a wait) |
 | `sendAsync()` | ASYNC `dispatchAsync` (counts toward `vespera.async.maxInFlight` → `503`). The future completes on a Tokio worker: use `*Async` continuations for heavy work, or `sendAsync(executor)` |
 | `body(InputStream, contentType)` + `send()` | bidirectional streaming: Rust pulls the request body chunk-by-chunk (capped by `maxStreamingRequestBytes`); the response is collected in memory. Sent once; async only via `sendAsync(executor)` |
 
