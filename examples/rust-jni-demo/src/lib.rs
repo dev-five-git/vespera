@@ -141,6 +141,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn register_route_validates_with_422() {
+        let ok = parse(
+            &dispatch(
+                create_app(),
+                &req(
+                    "POST",
+                    "/documents/register",
+                    r#"{"title":"Policy","pageCount":3}"#,
+                ),
+            )
+            .await,
+        );
+        assert_eq!(ok["status"], 200, "{ok}");
+        let bad = parse(
+            &dispatch(
+                create_app(),
+                &req(
+                    "POST",
+                    "/documents/register",
+                    r#"{"title":"","pageCount":0}"#,
+                ),
+            )
+            .await,
+        );
+        assert_eq!(bad["status"], 422, "{bad}");
+        assert!(bad["body"].as_str().unwrap().contains("errors"));
+    }
+
+    #[tokio::test]
     async fn diag_routes_count_finished_runs() {
         let app = create_app();
         let body = |path: &str| {

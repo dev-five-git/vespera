@@ -102,6 +102,7 @@ Out of the box the autoconfigure module wires up:
 | **Dispatch mode** | [`SmartDispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/SmartDispatchModeResolver.java) since 0.2.0 — picks per request: [`DIRECT`](src/main/java/com/devfive/vespera/bridge/DispatchMode.java) (pooled direct buffers, no JNI array copies) for small/bodyless safe requests (GET/HEAD/OPTIONS, Content-Length absent or ≤ 1 MiB) ~2.2 µs; `SYNC` (heap-buffered) for small unsafe requests (POST/PUT/PATCH/DELETE ≤ 256 KiB) ~3.2 µs; `BIDIRECTIONAL_STREAMING` for the rest ~24.1 µs | Property `vespera.bridge.dispatch-mode: bidirectional-streaming` (opt out, restore pre-0.2.0 default), or custom [`DispatchModeResolver`](src/main/java/com/devfive/vespera/bridge/DispatchModeResolver.java) bean |
 | **URL pattern** | Single `@RequestMapping("/**")` catch-all — every vespera router URL exactly mirrors the published OpenAPI path | Properties `vespera.bridge.include-patterns` / `vespera.bridge.exclude-patterns` (see [Proxied paths](#proxied-paths-include--exclude-patterns)), or `vespera.bridge.controller-enabled: false` and your own controller |
 | **Body handling** | Servlet `InputStream` straight through to Rust (no buffering) for streaming modes; full read for sync/async | (encoded by the chosen `DispatchMode`) |
+| **Programmatic client** | A [`VesperaClient`](src/main/java/com/devfive/vespera/bridge/VesperaClient.java) bean for the default app (see [Programmatic client](#programmatic-client-vesperaclient)), also with `controller-enabled: false` | Your own `VesperaClient` bean (e.g. `VesperaClient.create().forApp("admin")`) |
 
 Why `smart` as the default mode (since 0.2.0)? Measured on a small `GET /health` round-trip through the real JNI boundary the cheapest safe path per request is 7–11× cheaper than unconditional streaming:
 
@@ -618,6 +619,76 @@ servlet pool (e.g. 200 Tomcat threads) the steady-state cost is:
   process-wide, independent of the servlet pool; excess blocking work queues
   instead of spawning more threads. Idle blocking threads are reaped by
   Tokio after a keep-alive period.
+
+## Programmatic client (`VesperaClient`)
+
+To call the embedded Rust app from Java code — a Spring service, a
+`@Scheduled` job, a message listener — without HTTP and without the proxy
+controller, use `VesperaClient`. It builds the wire request with the same
+codec as the proxy, dispatches it in-process and returns a `VesperaResponse`:
+
+```java
+VesperaClient client = VesperaClient.create();            // default app
+VesperaResponse r = client.get("/users/42")
+        .header("Accept", "application/json")
+        .query("expand", "roles teams")                    // -> ?expand=roles%20teams
+        .send();
+r.status();                 // 200
+r.header("content-type");   // case-insensitive, first value
+r.bodyString();             // charset from content-type, else UTF-8
+r.bodyBytes();              // owned copy (r.body() = read-only ByteBuffer view)
+r.validationErrors();       // hoisted 422 errors, [] otherwise
+
+client.post("/users").json("{\"name\":\"a\"}").send();     // raw JSON string/bytes
+client.post("/upload").body(bytes, "application/octet-stream").send();
+client.patch("/profile").form(Map.of("name", "Jane Doe")).send();
+client.forApp("admin").get("/dashboard").send();          // named app (jni_apps!)
+
+CompletableFuture<VesperaResponse> f = client.get("/x").sendAsync();
+```
+
+| Call | Dispatch path |
+|---|---|
+| `send()` | SYNC `dispatchBytes`; on a virtual thread it parks on `dispatchAsync` instead of pinning the carrier |
+| `sendAsync()` | ASYNC `dispatchAsync` (counts toward `vespera.async.maxInFlight` → `503`). The future completes on a Tokio worker: use `*Async` continuations for heavy work, or `sendAsync(executor)` |
+| `body(InputStream, contentType)` + `send()` | bidirectional streaming: Rust pulls the request body chunk-by-chunk (capped by `maxStreamingRequestBytes`); the response is collected in memory. Sent once; async only via `sendAsync(executor)` |
+
+- **No JSON mapping.** Bodies are raw bytes or strings; the bridge never
+  parses domain JSON. Use your own mapper on `bodyString()` / `bodyBytes()`.
+- **Statuses are responses, not exceptions.** `4xx` / `5xx`, the `503` of a
+  shut-down runtime and the `500` of a Rust panic (`r.panicked()`) are
+  returned normally. Only transport failures — library not initialised,
+  missing native symbol, malformed wire, a streamed body failing mid-transfer —
+  throw the unchecked `VesperaClientException` (or fail the future with it).
+- Header names are lower-cased; `header()` replaces, `addHeader()` joins with
+  `", "` (`"; "` for `cookie`). Query names/values are percent-encoded
+  (RFC 3986, UTF-8); a `?query` already in the path is kept and appended to.
+  `VesperaClient.encodePathSegment(id)` encodes path segments.
+- `remoteAddr("ip:port")` / `scheme("https")` fill the optional
+  `remote_addr` / `scheme` wire fields (`ConnectInfo<SocketAddr>` / `Scheme`).
+- **Spring:** the autoconfiguration exposes a `VesperaClient` bean (default
+  app; `@ConditionalOnMissingBean`), also when
+  `vespera.bridge.controller-enabled=false`. It is created after
+  `vespera.bridge.native.*` / `library-name` are applied.
+
+```java
+@Service
+class ReportJob {
+    private final VesperaClient vespera;
+    ReportJob(VesperaClient vespera) { this.vespera = vespera; }
+
+    @Scheduled(cron = "0 0 * * * *")
+    void run() {
+        VesperaResponse r = vespera.post("/reports/rebuild").json("{}").send();
+        if (!r.isSuccessful()) log.warn("rebuild failed: {} {}", r.status(), r.bodyString());
+    }
+}
+```
+
+The DIRECT pooled-buffer path stays a proxy optimisation (its per-thread
+buffer view would have to be copied out anyway). For full control (header-first
+streaming into your own `OutputStream`, `dispatchDirect`), use the low-level
+API below.
 
 ## Direct API (without the proxy controller)
 
