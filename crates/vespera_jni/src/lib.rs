@@ -81,7 +81,12 @@ macro_rules! jni_app {
 ///
 /// Each `name` must be a string literal matching the validation rules
 /// in [`register_app_named`] (non-empty, ≤ 64 bytes, alphanumeric +
-/// `_` `-`).  Each `factory` is an expression evaluating to a
+/// `_` `-`), and names must be unique (compared after trimming).  Both
+/// rules are checked **at compile time**: an invalid or duplicated name is
+/// a build error instead of an app that is silently never registered.  A
+/// registration that still fails at load time (e.g. a factory re-entering
+/// the registry) is reported on stderr and fails `System.loadLibrary` with
+/// `JNI_ERR`.  Each `factory` is an expression evaluating to a
 /// `Fn() -> Router + Send + Sync + 'static` (typically a `pub fn`
 /// path).
 ///
@@ -107,6 +112,17 @@ macro_rules! jni_app {
 #[macro_export]
 macro_rules! jni_apps {
     ( $( $name:literal => $factory:expr ),+ $(,)? ) => {
+        const _: () = {
+            ::std::assert!(
+                $crate::__jni_app_names_valid(&[$($name),+]),
+                "jni_apps!: every app name must be non-empty, at most 64 bytes, and only contain [A-Za-z0-9_-]"
+            );
+            ::std::assert!(
+                $crate::__jni_app_names_unique(&[$($name),+]),
+                "jni_apps!: duplicate app name — each app may be registered only once"
+            );
+        };
+
         #[unsafe(no_mangle)]
         pub extern "system" fn JNI_OnLoad(
             _vm: $crate::jni::JavaVM,
@@ -116,17 +132,92 @@ macro_rules! jni_apps {
             // must never unwind across this `extern "system"` boundary
             // into the JVM.  Catch it and fail library load with
             // `JNI_ERR` instead of aborting the host process.
-            let loaded = ::std::panic::catch_unwind(|| {
+            //
+            // `Ok(false)` (name already registered) is accepted: it only
+            // happens when the library is loaded again into a process that
+            // already registered these apps, where first-wins is intended.
+            let loaded = ::std::panic::catch_unwind(|| -> bool {
                 $(
-                    $crate::vespera_inprocess::register_app_named($name, $factory);
+                    if let ::std::result::Result::Err(err) =
+                        $crate::vespera_inprocess::try_register_app_named($name, $factory)
+                    {
+                        ::std::eprintln!(
+                            "vespera: jni_apps! failed to register app {:?}: {}",
+                            $name,
+                            err
+                        );
+                        return false;
+                    }
                 )+
+                true
             });
             match loaded {
-                ::std::result::Result::Ok(()) => $crate::jni::sys::JNI_VERSION_1_8,
-                ::std::result::Result::Err(_) => $crate::jni::sys::JNI_ERR,
+                ::std::result::Result::Ok(true) => $crate::jni::sys::JNI_VERSION_1_8,
+                _ => $crate::jni::sys::JNI_ERR,
             }
         }
     };
+}
+
+/// Compile-time check behind [`jni_apps!`]: every name satisfies the
+/// [`vespera_inprocess::register_app_named`] rules (trimmed, non-empty,
+/// ≤ 64 bytes, `[A-Za-z0-9_-]`).
+#[doc(hidden)]
+#[must_use]
+pub const fn __jni_app_names_valid(names: &[&str]) -> bool {
+    let mut i = 0;
+    while i < names.len() {
+        let name = names[i].as_bytes().trim_ascii();
+        if name.is_empty() || name.len() > 64 {
+            return false;
+        }
+        let mut j = 0;
+        while j < name.len() {
+            let b = name[j];
+            if !(b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+                return false;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Compile-time check behind [`jni_apps!`]: no two names are equal after
+/// trimming (the registry trims before keying).
+#[doc(hidden)]
+#[must_use]
+pub const fn __jni_app_names_unique(names: &[&str]) -> bool {
+    let mut i = 0;
+    while i < names.len() {
+        let mut j = i + 1;
+        while j < names.len() {
+            if const_bytes_eq(
+                names[i].as_bytes().trim_ascii(),
+                names[j].as_bytes().trim_ascii(),
+            ) {
+                return false;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    true
+}
+
+const fn const_bytes_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }
 
 // Everything below requires a JVM — excluded from coverage.
@@ -139,9 +230,40 @@ mod jni_buf;
 // SAFETY SCOPE: JNI exports and direct-buffer submodule contain FFI entry points.
 #[allow(unsafe_code)]
 pub(crate) mod jni_impl;
+
+/// Process-wide JNI runtime / admission knobs.  Like the
+/// `configure*0` JNI hooks (which call them), they are first-wins and must
+/// run before the first dispatch; each returns `false` once fixed.
+pub use jni_impl::{
+    DEFAULT_ASYNC_MAX_IN_FLIGHT, DEFAULT_RUNTIME_MAX_BLOCKING_THREADS, async_max_in_flight,
+    runtime_max_blocking_threads, runtime_worker_threads, set_async_max_in_flight,
+    set_runtime_max_blocking_threads, set_runtime_worker_threads,
+};
 // SAFETY SCOPE: streaming-with-header JNI exports contain FFI entry points.
 #[allow(unsafe_code)]
 pub(crate) mod jni_impl_streaming_header;
 // SAFETY SCOPE: streaming callbacks use cached JMethodID calls and signed-byte views.
 #[allow(unsafe_code)]
 mod streaming_closures;
+
+#[cfg(test)]
+mod app_name_check_tests {
+    use rstest::rstest;
+
+    #[rstest]
+    #[case::single_default(&["_default"], true, true)]
+    #[case::several(&["_default", "admin", "public-v2"], true, true)]
+    #[case::duplicate(&["admin", "admin"], true, false)]
+    #[case::duplicate_after_trim(&["admin", " admin "], true, false)]
+    #[case::empty(&["  "], false, true)]
+    #[case::bad_char(&["ad min"], false, true)]
+    #[case::too_long(&["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"], false, true)]
+    fn compile_time_app_name_checks(
+        #[case] names: &[&str],
+        #[case] valid: bool,
+        #[case] unique: bool,
+    ) {
+        assert_eq!(super::__jni_app_names_valid(names), valid);
+        assert_eq!(super::__jni_app_names_unique(names), unique);
+    }
+}

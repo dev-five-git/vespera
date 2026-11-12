@@ -68,6 +68,7 @@
 //! [`Router::clone`], which is cheap because axum's router is
 //! internally `Arc`-shared.
 
+mod bounded;
 mod config;
 mod dispatch;
 mod envelope;
@@ -78,11 +79,15 @@ mod wire;
 
 /// Re-export `axum::Router` so consumers don't need a direct axum dependency.
 pub use axum::Router;
+pub use bounded::DISPATCH_TIMEOUT_MSG;
 pub use config::{
-    DEFAULT_STREAMING_CHANNEL_CAPACITY, DEFAULT_STREAMING_CHUNK_BYTES,
-    effective_streaming_channel_capacity, max_request_bytes, request_exceeds_limit,
-    set_max_request_bytes, set_streaming_channel_capacity, set_streaming_chunk_bytes,
-    streaming_channel_capacity, streaming_chunk_bytes,
+    DEFAULT_MAX_BUFFERED_RESPONSE_BYTES, DEFAULT_MAX_REQUEST_BYTES,
+    DEFAULT_STREAMING_CHANNEL_CAPACITY, DEFAULT_STREAMING_CHUNK_BYTES, dispatch_timeout,
+    effective_streaming_channel_capacity, max_buffered_response_bytes, max_request_bytes,
+    max_streaming_request_bytes, request_exceeds_limit, set_dispatch_timeout,
+    set_max_buffered_response_bytes, set_max_request_bytes, set_max_streaming_request_bytes,
+    set_streaming_channel_capacity, set_streaming_chunk_bytes, streaming_channel_capacity,
+    streaming_chunk_bytes,
 };
 pub use dispatch::{
     DirectWriteResult, check_ingress_cap, dispatch, dispatch_from_bytes, dispatch_from_bytes_async,
@@ -94,10 +99,11 @@ pub use envelope::{
 };
 pub use registry::{DEFAULT_APP_NAME, register_app, register_app_named, try_register_app_named};
 pub use streaming::{
-    RequestChunk, StreamAbort, StreamOutcome, dispatch_bidirectional_streaming,
-    dispatch_bidirectional_streaming_closing, dispatch_bidirectional_streaming_with_header,
+    REQUEST_PRODUCER_JOIN_GRACE, RequestChunk, StreamAbort, StreamOutcome,
+    dispatch_bidirectional_streaming, dispatch_bidirectional_streaming_closing,
+    dispatch_bidirectional_streaming_with_header,
     dispatch_bidirectional_streaming_with_header_closing, dispatch_streaming_async,
-    dispatch_streaming_with_header_async,
+    dispatch_streaming_with_header_async, dispatch_streaming_with_outcome_async,
 };
 pub use wire::error_wire;
 

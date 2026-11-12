@@ -9,6 +9,11 @@ use http_body::Body as HttpBody;
 use http_body_util::BodyExt;
 
 use crate::Router;
+use crate::bounded::{
+    Deadline, Prefetched422, append_capped, prefetch_422_body, response_alloc_failed_wire,
+    response_too_large_wire, timeout_wire,
+};
+use crate::config::max_buffered_response_bytes;
 use crate::envelope::{RequestEnvelope, ResponseEnvelope, ResponseMetadata};
 use crate::internal::{
     BODY_STREAM_ERROR_MSG, HEADER_TOO_LARGE_MSG, dispatch_and_split, dispatch_parts,
@@ -365,7 +370,19 @@ pub fn dispatch_from_bytes(input: Vec<u8>, runtime: &tokio::runtime::Runtime) ->
 /// All failure modes return a valid wire-format response (same
 /// guarantees as [`dispatch_from_bytes`]), including `404` when no app
 /// is registered under the requested name.
+///
+/// When a [`crate::dispatch_timeout`] is configured, the whole dispatch
+/// (handler + body drain) races it and an expired deadline yields a `504`
+/// wire response.  A body larger than [`crate::max_buffered_response_bytes`]
+/// yields a `500` wire response naming the limit.
 pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
+    Deadline::start()
+        .run(dispatch_from_bytes_inner(input))
+        .await
+        .unwrap_or_else(timeout_wire)
+}
+
+async fn dispatch_from_bytes_inner(input: Vec<u8>) -> Vec<u8> {
     // Shared owned-wire prelude: ingress cap → split → parse/validate/resolve
     // → zero-copy URI fast-path → dispatch_and_split.  Centralised in
     // [`dispatch_owned_to_parts`] so the two owned-wire dispatchers cannot
@@ -378,36 +395,6 @@ pub async fn dispatch_from_bytes_async(input: Vec<u8>) -> Vec<u8> {
         }
         Err(wire) => wire,
     }
-}
-
-/// Materialise a `422 Unprocessable Entity` response into wire bytes so the
-/// `validation_errors` hoisting into the wire header (performed inside
-/// [`to_wire_bytes`]) is preserved **byte-for-byte** — validation failures
-/// are tiny + cold so the materialise cost is in the noise, and the hoist
-/// invariant is non-negotiable (Java decoders rely on it).
-///
-/// On a body-stream error mid-collect, returns `error_wire(500, ...)`
-/// instead of falling through to an empty-bodied 422 — a truncated/failed
-/// response must never be reported as a clean success.  This matches the
-/// non-422 paths in [`finish_buffered_wire`] / [`finish_direct_write`] and
-/// the [`crate::internal::collect_response_parts`] contract.
-///
-/// Shared by both finish_* tails so the [`BODY_STREAM_ERROR_MSG`] string +
-/// the 422 hoist-preservation invariant live in exactly one place.
-async fn build_422_wire(
-    status: u16,
-    headers: http::HeaderMap,
-    metadata: ResponseMetadata,
-    body: Body,
-) -> Vec<u8> {
-    let Ok(collected) = body.collect().await else {
-        // Body aborted mid-collect: a failed 422 must surface as a 500,
-        // never as a clean (empty-bodied) 422 — same contract as the
-        // non-422 path and `collect_response_parts`.
-        return error_wire(500, BODY_STREAM_ERROR_MSG);
-    };
-    let body_bytes = collected.to_bytes();
-    to_wire_bytes((status, headers, body_bytes, metadata))
 }
 
 /// Buffered sibling of [`finish_direct_write`]: assemble the full wire
@@ -424,19 +411,32 @@ async fn build_422_wire(
 ///   keeps peak memory at ~one body (the growing `Vec`) instead of
 ///   body-plus-collected.
 ///
-/// `status == 422` is routed through [`build_422_wire`] to preserve the
-/// `validation_errors` hoisting byte-for-byte; a body-stream error mid-drain
-/// on the non-422 path discards the partial buffer and returns
-/// `error_wire(500, ...)`, matching the previous
-/// [`crate::internal::dispatch_parts`] 500-on-body-error contract.
+/// `status == 422` first prefetches at most `MAX_HOIST_BODY_BYTES + 1` bytes
+/// ([`prefetch_422_body`]): a small body is materialised via [`to_wire_bytes`]
+/// so `validation_errors` hoisting is preserved byte-for-byte, while an
+/// oversized 422 continues through the ordinary (non-hoisting) drain below —
+/// a huge 422 body is never collected just to be skipped by the hoist.  A
+/// body-stream error discards the partial buffer and returns
+/// `error_wire(500, ...)` (never a truncated success), and a body larger than
+/// [`max_buffered_response_bytes`] returns a `500` naming the limit.
 async fn finish_buffered_wire(
     status: u16,
     headers: http::HeaderMap,
     metadata: ResponseMetadata,
-    body: Body,
+    mut body: Body,
 ) -> Vec<u8> {
+    let max = max_buffered_response_bytes();
     if status == 422 {
-        return build_422_wire(status, headers, metadata, body).await;
+        match prefetch_422_body(body).await {
+            Prefetched422::Small(bytes) => {
+                if max != 0 && bytes.len() > max {
+                    return response_too_large_wire(max);
+                }
+                return to_wire_bytes((status, headers, bytes, metadata));
+            }
+            Prefetched422::Large(rest) => body = rest,
+            Prefetched422::Failed => return error_wire(500, BODY_STREAM_ERROR_MSG),
+        }
     }
 
     // Size the final buffer up front: 4-byte length prefix + adaptive header
@@ -445,31 +445,43 @@ async fn finish_buffered_wire(
     // reports one (Full bodies do), so a single-frame response serializes
     // with zero reallocations.
     let header_cap = header_capacity_with_floor(&headers, &metadata);
-    let body_cap = usize::try_from(body.size_hint().exact().unwrap_or(0)).unwrap_or(0);
-    // Saturating so a pathological/oversized exact body hint cannot wrap the
-    // capacity arithmetic (debug panic / release wrap → under-reserve); the
-    // common case computes the identical value, and `finish_direct_write`
-    // already uses the same saturating accounting for its overflow reporting.
-    let mut out = Vec::with_capacity(4usize.saturating_add(header_cap).saturating_add(body_cap));
+    let body_cap = usize::try_from(body.size_hint().exact().unwrap_or(0)).unwrap_or(usize::MAX);
+    // A body that announces (exact size hint) more than the cap is rejected
+    // before a single frame is drained.
+    if max != 0 && body_cap > max {
+        return response_too_large_wire(max);
+    }
+    // Saturating so a pathological exact body hint cannot wrap the capacity
+    // arithmetic; the reservation is FALLIBLE so an unallocatable response
+    // degrades to a `500` wire response instead of aborting the host process.
+    let want = 4usize.saturating_add(header_cap).saturating_add(body_cap);
+    let mut out = Vec::new();
+    if out.try_reserve_exact(want).is_err() {
+        return response_alloc_failed_wire(want);
+    }
     // The `false` arm is unreachable for a real `HeaderMap` (4 GiB+ of header
     // JSON); it emits a 500 wire response rather than panicking on the
     // response path.
     if write_wire_header_into_vec(&mut out, status, &headers, &metadata) {
-        drain_buffered_body(out, body).await
+        drain_buffered_body(out, body, max).await
     } else {
         error_wire(500, HEADER_TOO_LARGE_MSG)
     }
 }
 
-/// Appends complete body frames while replacing any failed stream with a 500 wire.
-async fn drain_buffered_body(mut out: Vec<u8>, mut body: Body) -> Vec<u8> {
+/// Appends complete body frames — capped at `max` body bytes (`0` =
+/// unlimited) and grown fallibly — while replacing any failed stream with a
+/// 500 wire response.
+async fn drain_buffered_body(mut out: Vec<u8>, mut body: Body, max: usize) -> Vec<u8> {
+    let mut body_len = 0usize;
     loop {
         match body.frame().await {
             Some(Ok(frame)) => {
                 if let Some(data) = frame.data_ref()
                     && !data.is_empty()
+                    && let Err(wire) = append_capped(&mut out, data, &mut body_len, max)
                 {
-                    out.extend_from_slice(data);
+                    return wire;
                 }
             }
             // Body aborted mid-stream: nothing has been handed to the caller
@@ -526,10 +538,11 @@ pub fn dispatch_into(
 ///
 /// # Exceptions to direct writing
 ///
-/// * **`422` responses** are materialised first so the
-///   `validation_errors` hoisting into the wire header (see
+/// * **`422` responses** up to the 64 KiB hoist bound are materialised
+///   first so the `validation_errors` hoisting into the wire header (see
 ///   [`dispatch_from_bytes`]) is preserved byte-for-byte — validation
-///   failures are tiny and cold, correctness wins.
+///   failures are tiny and cold, correctness wins.  A larger 422 body is
+///   written directly, unhoisted.
 /// * **Pre-dispatch errors** (malformed wire, bad version, unknown
 ///   app, invalid method) write the small `error_wire` response.
 ///
@@ -542,7 +555,17 @@ pub fn dispatch_into(
 /// body is drained (counting, not writing) to compute the size.  Either
 /// way the handler has already run; retrying runs it again — callers must
 /// gate retries on idempotency.
+///
+/// A configured [`crate::dispatch_timeout`] that expires writes a `504`
+/// wire response into `out` instead.
 pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResult {
+    Deadline::start()
+        .run(dispatch_into_inner(input, &mut *out))
+        .await
+        .unwrap_or_else(|| write_wire_into(out, &timeout_wire()))
+}
+
+async fn dispatch_into_inner(input: Vec<u8>, out: &mut [u8]) -> DirectWriteResult {
     // Shared owned-wire prelude lives in [`dispatch_owned_to_parts`] — same
     // ingress cap / split / parse-validate-resolve / zero-copy URI fast-path
     // as `dispatch_from_bytes_async`.  This caller's tail diverges only in
@@ -579,6 +602,13 @@ pub async fn dispatch_into_async(input: Vec<u8>, out: &mut [u8]) -> DirectWriteR
 /// Byte-identical to [`dispatch_into_async`] for the same wire bytes; all
 /// the same error / `422` / overflow semantics apply.
 pub async fn dispatch_into_async_borrowed(input: &[u8], out: &mut [u8]) -> DirectWriteResult {
+    Deadline::start()
+        .run(dispatch_into_borrowed_inner(input, &mut *out))
+        .await
+        .unwrap_or_else(|| write_wire_into(out, &timeout_wire()))
+}
+
+async fn dispatch_into_borrowed_inner(input: &[u8], out: &mut [u8]) -> DirectWriteResult {
     // Ingress cap (defense-in-depth) — same policy as `dispatch_into_async`.
     if let Some(err) = check_ingress_cap(input.len()) {
         return write_wire_into(out, &err);
@@ -643,12 +673,26 @@ async fn finish_direct_write(
     mut body: Body,
 ) -> DirectWriteResult {
     if status == 422 {
-        // Materialise via the shared [`build_422_wire`] helper to preserve
-        // the `validation_errors` hoisting in the wire header byte-for-byte
-        // and to keep the [`BODY_STREAM_ERROR_MSG`] 500 fallback in one
-        // place (see the helper's contract docs).
-        let wire = build_422_wire(status, headers, metadata, body).await;
-        return write_wire_into(out, &wire);
+        // Bounded prefetch: a small 422 is materialised to preserve the
+        // `validation_errors` hoisting byte-for-byte; an oversized one falls
+        // through to the ordinary direct write below, unhoisted.
+        match prefetch_422_body(body).await {
+            Prefetched422::Small(bytes) => {
+                // Same cap check as the buffered `finish_buffered_wire` 422
+                // branch, so the two modes agree when the cap is below the
+                // hoist prefetch bound (64 KiB).
+                let max = max_buffered_response_bytes();
+                if max != 0 && bytes.len() > max {
+                    return write_wire_into(out, &response_too_large_wire(max));
+                }
+                let wire = to_wire_bytes((status, headers, bytes, metadata));
+                return write_wire_into(out, &wire);
+            }
+            Prefetched422::Large(rest) => body = rest,
+            Prefetched422::Failed => {
+                return write_wire_into(out, &error_wire(500, BODY_STREAM_ERROR_MSG));
+            }
+        }
     }
 
     // Write the wire header straight into `out` — no intermediate Vec

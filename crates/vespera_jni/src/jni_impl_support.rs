@@ -29,6 +29,49 @@ pub fn throw_streaming_abort(env: &mut jni::Env<'_>, header_failed: bool) {
     }
 }
 
+/// Liveness token for a request-pull closure handed to the bidirectional
+/// dispatch.  The dispatch may DETACH a producer still parked in
+/// `InputStream.read` (bounded join), so after it returns the caller asks
+/// [`PullToken::producer_dropped`] before reusing the pooled pull array.
+pub struct PullToken(Arc<()>);
+
+impl PullToken {
+    /// `true` once the wrapped pull closure has been dropped — the producer
+    /// finished (or never started) and no Java array is in flight.
+    #[must_use]
+    pub fn producer_dropped(&self) -> bool {
+        Arc::strong_count(&self.0) == 1
+    }
+}
+
+/// A pull closure bundled with its liveness token.  Called through a
+/// `&mut self` method so the wrapping closure captures the WHOLE struct
+/// (edition-2021 disjoint capture would otherwise capture only `pull` and
+/// drop the token early).
+struct TrackedPull<P> {
+    pull: P,
+    _token: Arc<()>,
+}
+
+impl<P: FnMut() -> T, T> TrackedPull<P> {
+    fn next(&mut self) -> T {
+        (self.pull)()
+    }
+}
+
+/// Wrap `pull` so it carries a [`PullToken`] reference for its lifetime.
+pub fn track_pull<P, T>(pull: P) -> (impl FnMut() -> T + Send + 'static, PullToken)
+where
+    P: FnMut() -> T + Send + 'static,
+{
+    let token = Arc::new(());
+    let mut tracked = TrackedPull {
+        pull,
+        _token: Arc::clone(&token),
+    };
+    (move || tracked.next(), PullToken(token))
+}
+
 pub fn push_unless_header_failed(
     header_failed: &AtomicBool,
     push: &mut impl FnMut(&[u8]) -> std::ops::ControlFlow<()>,

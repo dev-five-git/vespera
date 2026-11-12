@@ -639,6 +639,11 @@ mod serde_ab;
 #[path = "dispatch/streaming.rs"]
 mod streaming;
 
+// `sync_runtime_ab`: per-thread current-thread vs shared multi-thread
+// `block_on` driver for the JNI sync dispatch symbols.
+#[path = "dispatch/runtime_ab.rs"]
+mod runtime_ab;
+
 /// Request-header handling cost: a POST carrying a realistic multi-header
 /// set (the shape a real browser / reverse-proxy sends) dispatched
 /// end-to-end via `dispatch_from_bytes`.  The `wire_path` / `bytes_path`
@@ -766,7 +771,8 @@ criterion_group!(
     streaming::bench_streaming_path,
     streaming::bench_async_spawn_pattern,
     streaming::bench_close_hook_ab,
-    streaming::bench_async_completion_isolation_ab
+    streaming::bench_async_completion_isolation_ab,
+    runtime_ab::bench_sync_runtime_ab
 );
 
 // The within-run A/B groups compare the production hand-rolled paths against

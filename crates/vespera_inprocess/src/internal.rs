@@ -2,12 +2,10 @@
 //! request building, router oneshot driving, and response collection.
 
 use std::collections::BTreeMap;
-use std::ops::ControlFlow;
 
 use axum::body::Body;
 use bytes::Bytes;
 use http::{HeaderName, Method, Request, Uri, header::CONTENT_TYPE};
-use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use crate::Router;
@@ -131,7 +129,7 @@ fn header_value_from_owner(
 /// Carries the axum `Service<_, Error = Infallible>` contract once: the `Err`
 /// variant is uninhabited, so the `match err {}` is exhaustive and emits
 /// **no panic/unwind site on this FFI-adjacent hot path**.  Used by every
-/// dispatcher in this module ([`dispatch_parts`], [`dispatch_response_streaming`],
+/// dispatcher in this module ([`dispatch_parts`],
 /// [`dispatch_and_split`]).  `#[inline]` so the state machine collapses into
 /// each caller exactly as the prior copy-pasted `match` shape did.
 #[inline]
@@ -294,7 +292,7 @@ fn build_axum_request_inner<'h>(
 }
 
 /// Build the axum request shared by the buffered ([`dispatch_parts`]) and
-/// response-streaming ([`dispatch_response_streaming`]) paths — both take a
+/// response-streaming paths — both take a
 /// fully-buffered [`Bytes`] body and default a missing `Content-Type` when
 /// the body is non-empty.  Parses the method (`Err((405, _))` on failure) and
 /// the URI (`Err((400, _))` on failure), then delegates the in-place
@@ -407,89 +405,6 @@ pub fn bench_build_request_old(
         .map_or(usize::MAX, |req| request_field_len_sum(&req))
 }
 
-/// Drive a [`Router`] and stream response body chunks through
-/// `on_chunk`, returning the status/headers/metadata once the body
-/// stream finishes.
-///
-/// Same pre-dispatch error semantics as [`dispatch_parts`] (invalid
-/// HTTP method → `Err((405, ...))`).  A **response body stream error**
-/// mid-drain returns `Err((500, ...))` so the caller emits a 500 wire
-/// response instead of reporting the partially-streamed body as a
-/// success — a truncated body must never be presented as complete.
-/// (Chunks emitted via `on_chunk` before the error have already left,
-/// but the 500 status the caller returns signals the failure.)
-// 8 params: the request line (method / path / query), the borrowed header
-// iterator, the body, the optional wire-`Bytes` owner for zero-copy
-// `HeaderValue` construction, and the chunk sink are each distinct per-request
-// inputs.  Bundling them into a struct would add indirection on this hot path
-// without removing any genuinely-needed data — same reasoning as
-// [`dispatch_and_split`].
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the 8 params are distinct per-request inputs; bundling them into a \
-              struct would add indirection on this hot path"
-)]
-pub async fn dispatch_response_streaming<'h, F>(
-    router: Router,
-    method_str: &str,
-    path: &str,
-    query: &str,
-    headers: impl Iterator<Item = (&'h str, &'h str)>,
-    body_bytes: Bytes,
-    header_bytes_owner: Option<&Bytes>,
-    on_chunk: &mut F,
-) -> Result<(u16, http::HeaderMap, ResponseMetadata), (u16, String)>
-where
-    F: FnMut(&[u8]) -> ControlFlow<()>,
-{
-    let request = build_request_from_bytes(
-        method_str,
-        path,
-        query,
-        headers,
-        body_bytes,
-        header_bytes_owner,
-    )?;
-
-    let response = router_oneshot(router, request).await;
-
-    let (parts, mut body) = response.into_parts();
-
-    // Stream body chunks: pull frames one at a time and surface only
-    // data frames (trailers are dropped — wire format does not carry
-    // them).  A frame error means the body aborted mid-stream; propagate
-    // it as a 500 so a truncated response is never reported as a clean
-    // success.
-    loop {
-        match body.frame().await {
-            Some(Ok(frame)) => {
-                if let Some(data) = frame.data_ref()
-                    && !data.is_empty()
-                    && on_chunk(data.as_ref()).is_break()
-                {
-                    // The chunk sink asked to stop EARLY (e.g. the host's
-                    // OutputStream failed mid-stream).  The bytes already
-                    // delivered are truncated, so surface a 500 — exactly
-                    // like the body-error arm below — instead of falling
-                    // through to the original success header, which would
-                    // report a short, truncated response as a clean success.
-                    return Err((500, BODY_SINK_STOPPED_MSG.to_owned()));
-                }
-            }
-            Some(Err(_)) => {
-                return Err((500, BODY_STREAM_ERROR_MSG.to_owned()));
-            }
-            None => break,
-        }
-    }
-
-    Ok((
-        parts.status.as_u16(),
-        parts.headers,
-        ResponseMetadata::current(),
-    ))
-}
-
 /// Non-UTF-8 header values collapse to the empty string on the text-envelope
 /// path — same "empty on non-UTF-8" contract as the wire-path sibling
 /// `super::wire::header_write::header_value_as_str` (borrowed `&str`
@@ -580,18 +495,17 @@ fn collect_header_map(headers: &http::HeaderMap) -> BTreeMap<String, HeaderValue
 /// A body-stream error while collecting returns `Err((500, _))` instead
 /// of silently yielding an empty body — a truncated/failed response must
 /// never be reported as a clean success.  This mirrors the
-/// response-streaming path ([`dispatch_response_streaming`]), which
+/// response-streaming paths, which
 /// already surfaces mid-stream body errors as a 500.
 async fn collect_response_parts(
     response: axum::response::Response,
 ) -> Result<ResponseParts, (u16, String)> {
     let (parts, body) = response.into_parts();
 
-    let body_bytes = body
-        .collect()
-        .await
-        .map(http_body_util::Collected::to_bytes)
-        .map_err(|_| (500u16, BODY_STREAM_ERROR_MSG.to_owned()))?;
+    // Capped at `max_buffered_response_bytes` (500 naming the limit) and
+    // grown fallibly — the text-envelope path materialises the whole body.
+    let body_bytes =
+        crate::bounded::collect_capped(body, crate::config::max_buffered_response_bytes()).await?;
 
     Ok((
         parts.status.as_u16(),
@@ -748,28 +662,6 @@ mod tests {
             ),
             Ok(_) => panic!("malformed path should not produce a successful dispatch"),
         }
-    }
-
-    #[test]
-    fn malformed_path_streaming_returns_error_not_panic() {
-        let result = block_on(async {
-            let mut sink = |_: &[u8]| ControlFlow::Continue(());
-            dispatch_response_streaming(
-                crate::Router::new(),
-                "GET",
-                "bad path with spaces",
-                "",
-                std::iter::empty(),
-                Bytes::new(),
-                None,
-                &mut sink,
-            )
-            .await
-        });
-        assert!(
-            result.is_err(),
-            "streaming dispatch must reject malformed path"
-        );
     }
 
     #[test]

@@ -3,6 +3,13 @@
 
 use std::sync::OnceLock;
 
+mod limits;
+pub use limits::{
+    DEFAULT_MAX_BUFFERED_RESPONSE_BYTES, dispatch_timeout, max_buffered_response_bytes,
+    max_streaming_request_bytes, set_dispatch_timeout, set_max_buffered_response_bytes,
+    set_max_streaming_request_bytes,
+};
+
 // ── Streaming Configuration ──────────────────────────────────────────
 
 /// Default per-chunk buffer size for streaming dispatches (256 KiB).
@@ -191,41 +198,49 @@ fn cap_channel_slots(configured: usize, chunk_bytes: usize, max_buffered: usize)
 
 static MAX_REQUEST_BYTES: OnceLock<usize> = OnceLock::new();
 
+/// Default ingress cap for the **buffered** dispatch entry points (64 MiB).
+///
+/// Buffered paths hold the whole request (header + body) in memory — on
+/// the JNI side twice (the Java `byte[]` plus the Rust copy) — so the prior
+/// unbounded default let one oversized request exhaust the host.  64 MiB
+/// covers any request that belongs on a buffered path; larger uploads
+/// belong on bidirectional streaming, which is `O(chunk)` RAM and governed
+/// by its own (default-unlimited) [`max_streaming_request_bytes`] knob.
+pub const DEFAULT_MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
+
 /// Maximum accepted request size (header + body) for the **buffered**
-/// dispatch entry points, in bytes.  `0` (the default) means
-/// **unlimited**, preserving prior behaviour.
+/// dispatch entry points, in bytes.  `0` means **unlimited**; the default
+/// is [`DEFAULT_MAX_REQUEST_BYTES`] (64 MiB).
 ///
 /// Resolution order (first hit wins, then cached for the process
 /// lifetime): [`set_max_request_bytes`] > `VESPERA_MAX_REQUEST_BYTES`
-/// env var > `0` (unlimited).
+/// env var > [`DEFAULT_MAX_REQUEST_BYTES`].
 ///
-/// This is a defense-in-depth ingress cap: a caller that bypasses the
-/// autoconfigured Spring proxy (which already routes large bodies to
-/// streaming) and feeds a multi-GB body straight into `dispatchBytes` /
-/// `dispatchAsync` / `dispatchDirect` would otherwise force a full
-/// resident copy.  When set, oversized requests get a `413` wire
-/// response **before** the body is dispatched.
+/// Oversized requests get a `413` wire response **before** the body is
+/// dispatched (`dispatchBytes` / `dispatchAsync` / `dispatchDirect`, and
+/// the Rust buffered entry points).
 ///
 /// The cap also covers the **response-streaming** entry points
 /// (`dispatch_streaming_async`, `dispatch_streaming_with_header_async`)
 /// because they still buffer the full *request* in memory — only the
 /// *response* is streamed.  **Bidirectional** streaming
 /// (`dispatch_bidirectional_streaming*`), which pulls the request body
-/// chunk-by-chunk, is intentionally exempt: it is `O(chunk)` RAM and is
-/// the correct path for legitimately large payloads.
+/// chunk-by-chunk, is governed by [`max_streaming_request_bytes`] instead.
 #[must_use]
 #[inline]
 pub fn max_request_bytes() -> usize {
-    // Same read/trim/parse/warn-once/default sequence as the two streaming
-    // knobs, so the security-relevant ingress cap cannot drift from their
-    // parse policy: absent (or non-Unicode) env → `0` (unlimited, the
-    // documented default); present but unparseable (e.g. a typo like "10MB")
-    // → one-time stderr warning + `0`, because silently disabling the DoS
-    // ingress cap with no signal is worse than guessing no cap loudly.  The
-    // `[0, usize::MAX]` clamp is the identity, so every input resolves to
-    // exactly the value the hand-rolled initializer produced.
-    *MAX_REQUEST_BYTES
-        .get_or_init(|| read_env_clamped("VESPERA_MAX_REQUEST_BYTES", 0, 0, usize::MAX))
+    // Same read/trim/parse/warn-once/default sequence as the streaming
+    // knobs: absent env → the 64 MiB default; present but unparseable (e.g.
+    // a typo like "10MB") → one-time stderr warning + the default, so a typo
+    // never silently disables the DoS ingress cap.
+    *MAX_REQUEST_BYTES.get_or_init(|| {
+        read_env_clamped(
+            "VESPERA_MAX_REQUEST_BYTES",
+            DEFAULT_MAX_REQUEST_BYTES,
+            0,
+            usize::MAX,
+        )
+    })
 }
 
 /// Override the request-size cap **before the first dispatch**.
@@ -267,11 +282,11 @@ pub fn request_exceeds_limit(len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_STREAMING_CHANNEL_CAPACITY, DEFAULT_STREAMING_CHUNK_BYTES,
-        MAX_STREAMING_CHUNK_BYTES, effective_streaming_channel_capacity, max_request_bytes,
-        parse_config_value, request_exceeds_limit, set_max_request_bytes,
-        set_streaming_channel_capacity, set_streaming_chunk_bytes, streaming_channel_capacity,
-        streaming_chunk_bytes,
+        DEFAULT_MAX_REQUEST_BYTES, DEFAULT_STREAMING_CHANNEL_CAPACITY,
+        DEFAULT_STREAMING_CHUNK_BYTES, MAX_STREAMING_CHUNK_BYTES,
+        effective_streaming_channel_capacity, max_request_bytes, parse_config_value,
+        request_exceeds_limit, set_max_request_bytes, set_streaming_channel_capacity,
+        set_streaming_chunk_bytes, streaming_channel_capacity, streaming_chunk_bytes,
     };
 
     #[test]
@@ -404,21 +419,32 @@ mod tests {
     }
 
     /// [`super::max_request_bytes`] resolves through the same
-    /// [`parse_config_value`] policy as the streaming knobs, with `default = 0`
-    /// (unlimited) and the identity clamp `[0, usize::MAX]`.  The cap itself is
-    /// a process-`OnceLock` that cannot be re-entered per test, so these cases
-    /// pin the *parse policy* it delegates to: absent → unlimited, unparseable
-    /// → warn + unlimited (never an arbitrary numeric cap that would reject
-    /// legitimate traffic), valid → parsed verbatim, whitespace tolerated, and
+    /// [`parse_config_value`] policy as the streaming knobs, with the 64 MiB
+    /// default and the identity clamp `[0, usize::MAX]`.  The cap itself is a
+    /// process-`OnceLock` that cannot be re-entered per test, so these cases
+    /// pin the *parse policy* it delegates to: absent → 64 MiB, unparseable →
+    /// warn + 64 MiB (a typo never silently disables the cap), explicit `0` →
+    /// unlimited, valid → parsed verbatim, whitespace tolerated, and
     /// `usize::MAX` surviving the identity clamp.
     #[test]
-    fn max_request_bytes_policy_is_absent_or_invalid_to_unlimited() {
+    fn max_request_bytes_policy_defaults_to_64_mib() {
         let parse = |raw: Option<&str>| {
-            parse_config_value("VESPERA_MAX_REQUEST_BYTES", raw, 0, 0, usize::MAX)
+            parse_config_value(
+                "VESPERA_MAX_REQUEST_BYTES",
+                raw,
+                DEFAULT_MAX_REQUEST_BYTES,
+                0,
+                usize::MAX,
+            )
         };
-        assert_eq!(parse(None), 0, "absent → unlimited");
+        assert_eq!(DEFAULT_MAX_REQUEST_BYTES, 64 * 1024 * 1024);
+        assert_eq!(parse(None), DEFAULT_MAX_REQUEST_BYTES, "absent → default");
         for raw in ["", "abc", "-1", "10MB", "1.5"] {
-            assert_eq!(parse(Some(raw)), 0, "invalid {raw:?} → unlimited");
+            assert_eq!(
+                parse(Some(raw)),
+                DEFAULT_MAX_REQUEST_BYTES,
+                "invalid {raw:?} → default"
+            );
         }
         assert_eq!(parse(Some("0")), 0, "explicit 0 → unlimited");
         assert_eq!(parse(Some("1048576")), 1_048_576);

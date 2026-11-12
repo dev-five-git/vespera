@@ -2,6 +2,7 @@ use super::{
     ChannelBody, RequestProducerHandle, RequestSourceCloser, StreamOutcome,
     emit_header_then_stream_body,
 };
+use crate::bounded::Deadline;
 use crate::envelope::ResponseMetadata;
 use axum::body::Body;
 use bytes::Bytes;
@@ -94,6 +95,7 @@ async fn validation_body_error_commits_a_complete_500_header() {
         http::HeaderMap::new(),
         ResponseMetadata::current(),
         Body::new(ErrorBody),
+        &mut Deadline::disabled(),
         &mut |bytes| header.extend_from_slice(bytes),
         &mut |bytes| {
             chunks.extend_from_slice(bytes);
@@ -120,6 +122,7 @@ async fn validation_body_sink_stop_is_reported_after_422_header() {
         headers,
         ResponseMetadata::current(),
         Body::from(br#"{"errors":[{"path":"name"}]}"#.as_slice()),
+        &mut Deadline::disabled(),
         &mut |bytes| header.extend_from_slice(bytes),
         &mut |_bytes| ControlFlow::Break(()),
     )
@@ -138,6 +141,7 @@ async fn empty_validation_body_emits_only_a_complete_422_header() {
         http::HeaderMap::new(),
         ResponseMetadata::current(),
         Body::empty(),
+        &mut Deadline::disabled(),
         &mut |bytes| header.extend_from_slice(bytes),
         &mut |_bytes| {
             chunk_calls += 1;
@@ -166,6 +170,7 @@ async fn trailers_and_empty_data_frames_are_ignored_before_payload() {
         http::HeaderMap::new(),
         ResponseMetadata::current(),
         Body::new(SparseFrameBody { index: 0 }),
+        &mut Deadline::disabled(),
         &mut |bytes| header.extend_from_slice(bytes),
         &mut |bytes| {
             chunks.extend_from_slice(bytes);
@@ -187,6 +192,9 @@ async fn channel_body_without_a_producer_is_clean_eof() {
         pull_chunk: None,
         capacity: 1,
         producer_handle,
+        max_bytes: 0,
+        received: 0,
+        limit_exceeded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     body.start_producer_if_needed();

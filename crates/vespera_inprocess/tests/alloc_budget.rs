@@ -320,8 +320,15 @@ const BUDGET_HEADERS_POST: usize = 40; // borrowed: 40 alloc + 0 realloc (header
 // the `Uri` (`Uri::from_maybe_shared` via `slice_from_owner`), removing the
 // `Uri::try_from(&str)` allocation+copy.  A regression that re-introduces the
 // path copy (or any other owned-path allocation) trips these tightened budgets.
-const BUDGET_MATERIALISE: usize = 16; // dispatch_from_bytes: +input clone +response Vec, URI shared
-const BUDGET_DISPATCH_INTO: usize = 15; // dispatch_into: +input clone, reused out, URI shared
+//
+// DEBUG_BLOCK_ON_BOX: tokio's `block_on` heap-boxes futures larger than
+// `BOX_FUTURE_THRESHOLD` (2 KiB in debug builds, 16 KiB in release).  The
+// deadline / response-cap wrapper put the owned dispatch futures just over
+// 2 KiB, so debug test builds pay one extra (~2.3 KB) allocation that the
+// shipped release artifact does not (release measures 14 / 13, unchanged).
+const DEBUG_BLOCK_ON_BOX: usize = if cfg!(debug_assertions) { 1 } else { 0 };
+const BUDGET_MATERIALISE: usize = 16 + DEBUG_BLOCK_ON_BOX; // dispatch_from_bytes: +input clone +response Vec, URI shared
+const BUDGET_DISPATCH_INTO: usize = 15 + DEBUG_BLOCK_ON_BOX; // dispatch_into: +input clone, reused out, URI shared
 // 422 materialise path: the hoisted `validation_errors` JSON is now folded
 // into the response-`Vec` capacity estimate, so the wire header serialises
 // without the mid-write realloc a hoist-blind estimate paid (26 alloc + 0
