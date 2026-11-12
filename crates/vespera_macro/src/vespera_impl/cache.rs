@@ -22,7 +22,8 @@ use super::path_utils::{current_crate_tag, find_target_dir};
 pub(super) const CACHE_FORMAT: u32 = 2;
 
 /// Cache for avoiding redundant route scanning and OpenAPI generation.
-/// Persisted to `target/vespera/routes.cache` across builds.
+/// Persisted to `target/vespera/routes-<tag>.cache` across builds (one
+/// file per `vespera!` invocation — see `super::invocation`).
 ///
 /// The spec JSON strings themselves live in **sidecar files** (the
 /// `include_str!` embed file and the pretty sidecar) — the cache only
@@ -253,28 +254,57 @@ pub(super) fn compute_config_hash_with_merge_cache(
     merge_specs: &mut MergeSpecCache,
 ) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    processed.title.hash(&mut hasher);
-    processed.version.hash(&mut hasher);
+    hash_invocation_settings(processed, &mut hasher);
     super::path_utils::package_description().hash(&mut hasher);
-    processed.info.hash(&mut hasher);
-    processed.docs_url.hash(&mut hasher);
-    processed.redoc_url.hash(&mut hasher);
-    processed.spec_url.hash(&mut hasher);
-    processed.openapi_file_names.hash(&mut hasher);
+    // Merge children: fold each child app's exported OpenAPI sidecar
+    // content (the names are part of the settings above), so a change to a
+    // child's spec invalidates the parent's cached merged document — the
+    // path name alone cannot detect a child whose routes / schemas changed
+    // between builds.  Mirrors the sidecar resolution in
+    // `generate_and_write_openapi` (`vespera_dir / <LastSegment>.openapi.json`).
+    for merge_path in &processed.merge {
+        if let Some((_struct_name, spec_file)) = merge_specs.spec_file_for(merge_path) {
+            match merge_specs.read(&spec_file) {
+                MergeSpecRead::Present(content) => content.hash(&mut hasher),
+                // Absent / unreadable child sidecar → stable marker so the
+                // hashed state still differs from a present spec.
+                MergeSpecRead::Error(_) => "child-spec:absent".hash(&mut hasher),
+            }
+        }
+    }
+    hasher.finish()
+}
+
+/// Hash a `vespera!` invocation's own (normalized) macro settings — every
+/// input field, but nothing read from disk or the environment.  Shared by
+/// the cache key above and the per-invocation file tag
+/// (`super::invocation::invocation_tag`).
+pub(super) fn hash_invocation_settings(
+    processed: &ProcessedVesperaInput,
+    hasher: &mut impl Hasher,
+) {
+    processed.folder_name.hash(hasher);
+    processed.title.hash(hasher);
+    processed.version.hash(hasher);
+    processed.info.hash(hasher);
+    processed.docs_url.hash(hasher);
+    processed.redoc_url.hash(hasher);
+    processed.spec_url.hash(hasher);
+    processed.openapi_file_names.hash(hasher);
     match &processed.servers {
-        None => "servers:none".hash(&mut hasher),
+        None => "servers:none".hash(hasher),
         Some(servers) => {
-            "servers:some".hash(&mut hasher);
-            servers.len().hash(&mut hasher);
+            "servers:some".hash(hasher);
+            servers.len().hash(hasher);
             for s in servers {
-                s.url.hash(&mut hasher);
-                s.description.hash(&mut hasher);
+                s.url.hash(hasher);
+                s.description.hash(hasher);
             }
         }
     }
     if let Some(ref schemes) = processed.security_schemes {
         for (name, scheme) in schemes {
-            name.hash(&mut hasher);
+            name.hash(hasher);
             // Hash a STABLE serialized representation of the whole scheme
             // rather than a hand-picked field subset.  The previous list
             // omitted `flows` and `open_id_connect_url`, so changing only an
@@ -286,22 +316,22 @@ pub(super) fn compute_config_hash_with_merge_cache(
             // closing this class of stale-cache bug for good.  Serialization
             // is infallible for this plain struct; a hypothetical failure
             // falls back to a stable marker so the hash still differs.
-            hash_security_scheme(scheme, &mut hasher);
+            hash_security_scheme(scheme, hasher);
         }
     }
     match &processed.security {
-        None => "security:none".hash(&mut hasher),
+        None => "security:none".hash(hasher),
         Some(security) => {
-            "security:some".hash(&mut hasher);
-            security.len().hash(&mut hasher);
+            "security:some".hash(hasher);
+            security.len().hash(hasher);
             // Hash each requirement's scheme names AND scopes (BTreeMap →
             // sorted, deterministic). Scopes alone changing (`oauth2:
             // ["read"]` → `["read", "write"]`) must invalidate the cache.
             for requirement in security {
-                requirement.len().hash(&mut hasher);
+                requirement.len().hash(hasher);
                 for (name, scopes) in requirement {
-                    name.hash(&mut hasher);
-                    scopes.hash(&mut hasher);
+                    name.hash(hasher);
+                    scopes.hash(hasher);
                 }
             }
         }
@@ -310,28 +340,13 @@ pub(super) fn compute_config_hash_with_merge_cache(
         let mut names: Vec<_> = descriptions.keys().collect();
         names.sort_unstable();
         for name in names {
-            name.hash(&mut hasher);
-            descriptions[name].hash(&mut hasher);
+            name.hash(hasher);
+            descriptions[name].hash(hasher);
         }
     }
-    // Merge children: hash each child app's NAME *and* its exported
-    // OpenAPI sidecar content, so a change to a child's spec invalidates
-    // the parent's cached merged document — the path name alone cannot
-    // detect a child whose routes / schemas changed between builds.
-    // Mirrors the sidecar resolution in `generate_and_write_openapi`
-    // (`vespera_dir / <LastSegment>.openapi.json`).
     for merge_path in &processed.merge {
-        quote!(#merge_path).to_string().hash(&mut hasher);
-        if let Some((_struct_name, spec_file)) = merge_specs.spec_file_for(merge_path) {
-            match merge_specs.read(&spec_file) {
-                MergeSpecRead::Present(content) => content.hash(&mut hasher),
-                // Absent / unreadable child sidecar → stable marker so the
-                // hashed state still differs from a present spec.
-                MergeSpecRead::Error(_) => "child-spec:absent".hash(&mut hasher),
-            }
-        }
+        quote!(#merge_path).to_string().hash(hasher);
     }
-    hasher.finish()
 }
 
 /// Hashes one complete security scheme, preserving the stable serialization
@@ -362,13 +377,14 @@ fn merge_spec_dir() -> Option<std::path::PathBuf> {
     Some(find_target_dir(Path::new(&manifest_dir)).join("vespera"))
 }
 
-/// Get the path to this crate's routes cache file.
-pub(super) fn get_cache_path() -> std::path::PathBuf {
+/// Get the path to a `vespera!` invocation's routes cache file; `tag` is
+/// its `super::invocation::invocation_tag`.
+pub(super) fn get_cache_path(tag: &str) -> std::path::PathBuf {
     let manifest_dir = crate::env_access::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let manifest_path = Path::new(&manifest_dir);
     find_target_dir(manifest_path)
         .join("vespera")
-        .join(format!("routes-{}.cache", current_crate_tag()))
+        .join(format!("routes-{tag}.cache"))
 }
 
 /// Get the path to this crate/app/folder's `export_app!` route cache file.
