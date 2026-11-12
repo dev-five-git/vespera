@@ -103,4 +103,10 @@ Streaming dispatch also changed:
 5. **The new `configure*` methods return `boolean`** (`false` when the native side already fixed the value). `configureStreaming(int, int)` keeps its `void` signature.
 6. **Upgrade the JAR and the native library together.** A new bridge JAR paired with a cdylib built against an older `vespera` crate binds the `configure*0` JNI hooks to the wrong signatures — rebuild the Rust library whenever you upgrade `vespera-bridge`.
 
-The Gradle plugin's `publishPlugins` task now fails without Plugin Portal credentials.
+7. **Oversized buffered responses answer `500`, not `413`.** `vespera.bridge.max-buffered-response-bytes` (default 64 MiB) is forwarded to the native buffered-response cap unless `vespera.bridge.native.max-buffered-response-bytes` (or its sysprop/env) sets it.
+8. **CORS preflights reach Rust by default.** `vespera.bridge.cors=rust` routes `OPTIONS` preflights to the Rust router (configure a `tower_http` `CorsLayer` there); set `vespera.bridge.cors=spring` to keep Spring MVC's CORS handling.
+9. **Proxy errors are generic.** Unexpected failures answer `vespera dispatch failed` (details in the WARN log with the request id); a missing native library answers `503`.
+10. **Bounded app names.** `DispatchEvent.app()` and the `app` metric tag report `UNKNOWN` for client-selected app names not known to be registered.
+11. **Version check.** `VesperaBridge.init` fails when the native library's `major.minor` differs from the bridge's; `-Dvespera.native.versionCheck=warn` or `off` relaxes it.
+
+The Gradle plugin's `publishPlugins` task now fails without Plugin Portal credentials. A hyphenated `crateName` now works (new optional `packageName` / `libName`), `bridgeVersion` defaults to the matching bridge release, and `cargoSourceRoots` is ignored.

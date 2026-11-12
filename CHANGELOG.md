@@ -56,3 +56,31 @@ of an existing 0.5 application.
   `boolean`.
 - The bridge JAR and the native library must come from the same release.
 - Gradle plugin: `publishPlugins` fails without Plugin Portal credentials.
+
+### Java bridge hardening (`kr.devfive:vespera-bridge`, Gradle plugin)
+
+Behaviour changes — no code change is needed, but they are observable:
+
+- An oversized `SYNC` / `ASYNC` response answers `500` instead of `413`, and
+  `vespera.bridge.max-buffered-response-bytes` (default 64 MiB) is forwarded to
+  the native buffered-response cap unless that cap is set explicitly.
+- CORS preflights are routed to the Rust router by default
+  (`vespera.bridge.cors=rust`); set `vespera.bridge.cors=spring` to keep Spring
+  MVC's preflight handling. Duplicate `Access-Control-*` headers are resolved in
+  favour of the configured owner.
+- Unexpected proxy errors answer the fixed body `vespera dispatch failed`
+  (details only in the WARN log), and writing a proxy error keeps headers set by
+  servlet filters.
+- `DispatchEvent.app()`, the `app` metric tag and the WARN log report `UNKNOWN`
+  for client-selected app names not known to be registered.
+- A missing native library answers `503` instead of throwing
+  `UnsatisfiedLinkError`; a new `vespera` Actuator health indicator reports it.
+- `VesperaBridge.init` fails when the native library's `major.minor` differs
+  from the bridge's (`-Dvespera.native.versionCheck=warn|off`); this needs a
+  native library exporting `nativeVersion0` (older ones only log a warning).
+- On Windows, an extraction directory that is not owned by the current user or
+  whose ACL lets other principals write is replaced by a fresh random one.
+- `proxy(...)` returns a `DeferredResult` for `ASYNC`.
+- Gradle plugin: hyphenated `crateName`s work (new `packageName` / `libName`),
+  `bridgeVersion` defaults to the matching bridge release, `cargoSourceRoots` is
+  ignored and `CargoBuildTask.commands` was replaced by its properties.

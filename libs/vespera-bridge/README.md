@@ -18,7 +18,7 @@ dependencies {
 
 ### Version compatibility
 
-- **Bridge ↔ Rust crate:** the `vespera-bridge` version must match the **minor** version of the `vespera` crate your cdylib is built with (bridge `0.5.x` ↔ `vespera = "0.5"`). The JNI symbol set and the binary wire format are only guaranteed stable within a minor line.
+- **Bridge ↔ Rust crate:** the `vespera-bridge` version must match the **minor** version of the `vespera` crate your cdylib is built with (bridge `0.5.x` ↔ `vespera = "0.5"`). The JNI symbol set and the binary wire format are only guaranteed stable within a minor line. Since 0.6 this is **checked at `VesperaBridge.init`**: the native library reports its crate version (`nativeVersion0`) and a different `major.minor` fails the init with an `IllegalStateException` naming both versions (patch levels may differ). `-Dvespera.native.versionCheck=warn` downgrades the failure to a WARNING, `off` skips the check; a native library built before 0.6 (no version symbol) only logs a WARNING.
 - **Spring Boot:** compiled against Spring Boot 4.1 / Spring Framework 7.0; supported on **Spring Boot 3.5.x and 4.x** (Spring Framework 6.2 / 7.0, Jakarta Servlet 6.0+). The Boot 3.5 runtime is verified by the `testBoot3` Gradle task (run automatically after `./gradlew test`), which runs the unit suite against a Spring Boot 3.5 classpath. Spring Boot ≤ 3.4 / `javax.servlet` is not supported.
 - **Java:** 17+.
 
@@ -38,11 +38,19 @@ plugins {
 }
 
 vespera {
-    crateName.set("my_rust_lib")
+    crateName.set("my-rust-lib")   // Cargo package name, or its underscore form "my_rust_lib"
     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
-    bridgeVersion.set("0.5.0")
+    // bridgeVersion defaults to the vespera-bridge release this plugin version was built with;
+    // set it only to pin a different bridge:  bridgeVersion.set("0.5.0")
 }
 ```
+
+- **`crateName`** — the Cargo package (`my-rust-lib`) or its underscore library form (`my_rust_lib`). The bundled file follows Cargo's naming: `-` becomes `_` (`my_rust_lib.dll` / `libmy_rust_lib.so` / `libmy_rust_lib.dylib`).
+- **`packageName`** (optional) — the package passed to `cargo build -p` by `cargoBuild`. When unset, a hyphenated `crateName` is used as is; an underscore `crateName` is matched against `cargo metadata --no-deps` (e.g. `rust_jni_demo` → package `rust-jni-demo`), falling back to `crateName`.
+- **`libName`** (optional) — the library file stem when `Cargo.toml` sets a custom `[lib] name`.
+- **`bridgeVersion`** (optional) — defaults to the matching `kr.devfive:vespera-bridge` release; an explicit value wins.
+- **`cargoSourceRoots`** is deprecated and ignored: `cargoBuild` is never `UP-TO-DATE` (Cargo's incremental check decides), so it no longer fingerprints Rust sources as Gradle inputs.
+- The plugin is configuration-cache compatible.
 
 The plugin auto-wires `bundleNativeLib` (cdylib → `resources/native/<os>-<arch>/`), `processResources` dependency, and the `vespera-bridge` `implementation` dependency.  See [`examples/rust-jni-demo/java/demo-app/build.gradle.kts`](../../examples/rust-jni-demo/java/demo-app/build.gradle.kts) for a real working example (the demo dogfoods the plugin end-to-end with a 1 MiB SHA256-verified bidirectional streaming round-trip).
 
@@ -60,7 +68,7 @@ vespera {
 }
 ```
 
-Each `targets` key is a bridge platform (`<os>-<arch>`, os `windows` / `macos` / `linux`); its library is read from `<targetDir>/<triple>/<profile>/` and bundled under `native/<os>-<arch>/` with that platform's file name (`.dll` / `lib*.dylib` / `lib*.so`). A key naming the host platform replaces the host build. The cross toolchain/linker must already be installed. Everything under `extraNativeLibs/native/` is merged in; a locally built library wins over a prebuilt one with the same path. `cargoBuild` is never `UP-TO-DATE` (Cargo's own incremental check decides) and does not fingerprint `target/`, `node_modules/` or `.git/`.
+Each `targets` key is a bridge platform (`<os>-<arch>`, os `windows` / `macos` / `linux`); its library is read from `<targetDir>/<triple>/<profile>/` and bundled under `native/<os>-<arch>/` with that platform's file name (`.dll` / `lib*.dylib` / `lib*.so`). A key naming the host platform replaces the host build. The cross toolchain/linker must already be installed. Everything under `extraNativeLibs/native/` is merged in; a locally built library wins over a prebuilt one with the same path. `cargoBuild` is never `UP-TO-DATE` (Cargo's own incremental check decides) and declares no file inputs.
 
 ## Two-line integration
 
@@ -131,12 +139,14 @@ vespera:
     app-header: X-My-App        # change the header that selects the app
     exposed-apps: [admin]       # apps the (client-controlled) app header may select
     controller-enabled: true     # set false to disable our controller
+    cors: rust                   # rust (default) | spring — who answers CORS, see "CORS"
     direct-retry-on-overflow: true # set false to avoid DIRECT retry double-execution
     max-buffered-request-bytes: 67108864 # default 64 MiB; 0 = unlimited
+    max-buffered-response-bytes: 67108864 # SYNC/ASYNC response cap → 500 (default 64 MiB; 0 = unlimited)
     native:                      # Rust-side knobs, applied before the first dispatch
       max-request-bytes: 67108864           # buffered request cap → 413 (0 = unlimited)
       max-streaming-request-bytes: 0        # streamed upload cap → 413 (0 = unlimited, default)
-      max-buffered-response-bytes: 268435456 # buffered response cap → 500 (default 256 MiB)
+      max-buffered-response-bytes: 268435456 # overrides the forwarded max-buffered-response-bytes
       dispatch-timeout: 30s                 # deadline → 504 (default: disabled); see below
       async-max-in-flight: 4096             # dispatchAsync concurrency cap → 503
       worker-threads: 8                     # shared Tokio runtime workers (default: CPUs)
@@ -179,6 +189,19 @@ unlimited), matching the Rust-side `VESPERA_MAX_REQUEST_BYTES` default.  The
 proxy rejects SYNC/ASYNC/DIRECT/STREAMING requests whose buffered body exceeds
 the cap with HTTP 413.  Bidirectional
 streaming is exempt and remains the path for large or unknown-size uploads.
+
+`vespera.bridge.max-buffered-response-bytes` (default 64 MiB, `0` = unlimited)
+bounds the response bodies the heap-buffered `SYNC` / `ASYNC` paths hold. It is
+**forwarded to the native buffered-response cap** during context startup (unless
+`vespera.bridge.native.max-buffered-response-bytes`,
+`-Dvespera.limits.maxBufferedResponseBytes` or
+`VESPERA_MAX_BUFFERED_RESPONSE_BYTES` sets that cap explicitly), so Rust stops
+collecting an oversized response before it is allocated on either heap and
+answers **`500`** — a server-side limit on what the handler produced, not the
+request-size status `413`. When the native cap could not be aligned (the
+library dispatched before the context started, or a controller built by hand),
+the proxy keeps a post-dispatch check with the same `500`. Use a streaming mode
+for large downloads.
 
 ### 2. Custom app-selection strategy
 
@@ -313,6 +336,29 @@ vespera:
 - The selection header is **not forwarded** to Rust (`AppNameResolver.selectionHeaderName()`), so handlers never see — or trust — it.
 
 See [`examples/rust-jni-demo/`](../../examples/rust-jni-demo/) for a complete working example with two registered apps, including an admin dashboard route reachable only via the `admin` app.
+
+## CORS
+
+Spring MVC answers every CORS **preflight** (`OPTIONS` with `Origin` and `Access-Control-Request-Method`) itself, before any controller runs. Before 0.6 a preflight therefore never reached the Rust router: without a Spring CORS configuration Spring answered it with an empty `200` carrying no `Access-Control-Allow-Origin` (so the browser blocked the real request), and with one *and* a Rust `CorsLayer` the actual responses carried duplicate `Access-Control-Allow-Origin` headers (browsers reject those).
+
+`vespera.bridge.cors` picks the owner:
+
+| Value | Preflights | `Access-Control-*` on responses |
+|---|---|---|
+| `rust` (default) | Routed to the proxy by a highest-precedence handler mapping (`VesperaPreflightHandlerMapping`), so the Rust router answers them — configure a `tower_http::cors::CorsLayer` there | A Rust header replaces one Spring or a filter already set |
+| `spring` | Answered by Spring MVC (`WebMvcConfigurer#addCorsMappings`, `@CrossOrigin`) or Spring Security `http.cors()` — the pre-0.6 behaviour | A Rust header is dropped when Spring already set it |
+
+With `rust`, do not also configure Spring CORS for proxied paths, and do not enable Spring Security's `http.cors()` (its `CorsFilter` answers preflights before they reach Spring MVC). Without a CORS layer in Rust, a preflight gets whatever the router answers for `OPTIONS` (axum: `405` for a route without an `OPTIONS` handler).
+
+## Spring Security
+
+The proxy is an ordinary Spring MVC controller, so Spring Security's filter chain runs in front of it:
+
+- **CSRF blocks proxied writes by default.** With Spring Security on the classpath, `CsrfFilter` rejects every `POST` / `PUT` / `PATCH` / `DELETE` without a CSRF token with `403` before the proxy runs. For a token-authenticated JSON API, disable CSRF for the proxied paths (`http.csrf(csrf -> csrf.ignoringRequestMatchers("/api/**"))`) or implement the token exchange; keep it for cookie-session browser forms.
+- **Match on the path Rust sees.** Authorization rules match the servlet path. The proxy forwards the path *within the application* (context path and a prefix servlet mapping stripped, `;` path parameters dropped — see [Operability](#client-address-scheme-and-servlet-path)), so write rules against that path, not the raw request URI, and keep Spring's default `StrictHttpFirewall` (it rejects encoded `/`, `;`, `..` that could make a path look different to Spring and to Rust).
+- **App selection bypasses path rules.** `X-Vespera-App` picks a whole router; restrict it with `vespera.bridge.exposed-apps` (see [Multi-app routing → Security](#security-the-app-header-is-client-controlled)) or with a custom `AppNameResolver` that checks the authenticated principal.
+- **Forward the principal through a trusted header, and strip client copies.** Rust only sees forwarded request headers. To pass the authenticated user, add a servlet filter **after** Spring Security that removes any client-supplied copy of the header (e.g. `X-Authenticated-User`) and sets it from `SecurityContextHolder` (wrap the request in an `HttpServletRequestWrapper` overriding `getHeader` / `getHeaders` / `getHeaderNames`). Rust handlers must trust that header only because every request reaches them through this proxy.
+- **Preflights.** With `vespera.bridge.cors=rust`, permit unauthenticated `OPTIONS` preflights (`.requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()`), or browsers cannot reach the Rust CORS layer.
 
 ## Binary wire format
 
@@ -775,11 +821,19 @@ An incoming id (1–128 visible ASCII characters) is reused, otherwise a random 
 
 ### Errors written by the proxy
 
-Errors the proxy produces itself (unknown app 404, buffered body too large 413, async backpressure 503, DIRECT overflow, native failures 500) are written directly as `text/plain; charset=utf-8` with the message as body, the same shape as the Rust `error_wire` responses, instead of going through Spring's `/error` page (whose shape depends on `Accept`).
+Errors the proxy produces itself (unknown app 404, buffered body too large 413, buffered response too large 500, async backpressure 503, native library not initialized 503, DIRECT overflow, unexpected failures 500) are written directly as `text/plain; charset=utf-8` with the message as body, the same shape as the Rust `error_wire` responses, instead of going through Spring's `/error` page (whose shape depends on `Accept`). An unexpected exception is answered with the fixed body `vespera dispatch failed` — its message and stack trace go only to the WARN log, tagged with the request id the response echoes — so internals (hosts, paths, SQL) never reach clients. Writing such an error discards the buffered body and only the headers the proxy itself set; headers servlet filters set before the proxy ran (CORS, security headers, cookies) are kept.
+
+If the native library was never loaded (`VesperaBridge.init` not called, or it failed), every proxied request is answered `503 vespera native library is not initialized` instead of escaping as an `UnsatisfiedLinkError` (whitelabel 500), and a WARN is logged once at startup.
+
+### Health indicator
+
+With Spring Boot Actuator on the classpath (Boot 4 `spring-boot-health` or Boot 3.5 `spring-boot-actuator` — both optional dependencies of the bridge), the `vespera` health indicator is registered: `UP` once the native library is loaded, `DOWN` (`reason: native library not initialized`) before that, `OUT_OF_SERVICE` after `VesperaBridge.shutdown(...)`. Its details carry `bridgeVersion` and the verified `nativeVersion`. Disable it with `management.health.vespera.enabled=false`; see it at `/actuator/health/vespera` (with `management.endpoint.health.show-details`).
 
 ### Panics, 5xx and metrics
 
-A Rust panic answers `500` with `"panicked":"true"` in the response wire `metadata` (`DecodedResponse.metadata().get("panicked")`). Every dispatch that ends in a panic or a `5xx` is logged at WARN with method, path, app, mode, status, latency and request id. For metrics or tracing, register `DispatchObserver` beans; each is called once per request with a `DispatchEvent(app, mode, method, path, status, durationNanos, panicked, requestId)` (observer exceptions are logged and swallowed). When Micrometer is on the classpath and a `MeterRegistry` bean exists (e.g. Spring Boot Actuator), a `MicrometerDispatchObserver` is autoconfigured: timer `vespera.bridge.dispatch` tagged `app`, `mode`, `status` and `outcome` (`SUCCESS`, `CLIENT_ERROR`, `SERVER_ERROR`, `PANIC`, ...). Micrometer stays an optional dependency.
+A Rust panic answers `500` with `"panicked":"true"` in the response wire `metadata` (`DecodedResponse.metadata().get("panicked")`). Every dispatch that ends in a panic or a `5xx` is logged at WARN with method, path, app, mode, status, latency and request id. For metrics or tracing, register `DispatchObserver` beans; each is called once per request with a `DispatchEvent(app, mode, method, path, status, durationNanos, panicked, requestId)` (observer exceptions are logged and swallowed; observers and the WARN log run with the request id in the MDC, also for `ASYNC` completions on the response executor). When Micrometer is on the classpath and a `MeterRegistry` bean exists (e.g. Spring Boot Actuator), a `MicrometerDispatchObserver` is autoconfigured: timer `vespera.bridge.dispatch` tagged `app`, `mode`, `status` and `outcome` (`SUCCESS`, `CLIENT_ERROR`, `SERVER_ERROR`, `PANIC`, ...); timers are cached per tag combination. Micrometer stays an optional dependency.
+
+The app name is client-controlled (`X-Vespera-App`), so it is **never reported verbatim**: `DispatchEvent.app()`, the `app` tag and the WARN log carry `_default`, an app listed in `vespera.bridge.exposed-apps`, an app Rust has answered from one of its handlers before (a status below 400, or a 4xx other than 400/404/408/413/431, or a panic — answers Rust's app resolution never produces; at most 256 learned names), or `UNKNOWN` (names rejected by the allowlist, invalid names, unregistered names). Random header values therefore cannot create unbounded metric series. An `ASYNC` request that hits Spring's async timeout is reported once with status `503` (what the client received); the late native result is discarded.
 
 ### Redeploy, class loaders and shutdown
 
@@ -800,7 +854,7 @@ vespera.bridge:
 
 1. **Bundled** — looks up `native/{os}-{arch}/{libname}` inside the running JAR's classpath. If present, it is extracted **content-addressed** to `<dir>/vespera-native-<sha256-prefix>/<libname>` and loaded via `System.load`. `<dir>` is the first of: system property `vespera.native.dir`, environment variable `VESPERA_NATIVE_DIR`, or the per-user default `<java.io.tmpdir>/vespera-<user.name>` (sanitized to `[A-Za-z0-9._-]`). A restart reuses the existing file when its SHA-256 matches the bundled library (no new copy per JVM start, nothing left to clean up on exit); a new extraction is written to a temp file in that directory and published with an atomic rename, so concurrent JVMs never load a half-written file. Point `vespera.native.dir` at an exec-permitted, persistent directory when `/tmp` is mounted `noexec` (or is wiped). Older bridge versions left `vespera-<random>.(dll|so|dylib)` copies in `java.io.tmpdir`; those older than one hour are removed best-effort on load (files still in use are skipped) — disable with `-Dvespera.native.cleanupLegacy=false`. Directories of previous library versions (`vespera-native-<other hash>`) are not deleted automatically.
 
-   **Directory safety (POSIX).** The base and hash directories are created with mode `0700` and, before a cached copy is trusted, verified to be real directories (symbolic links are rejected), owned by the current user, and not group- or other-writable; an explicit `vespera.native.dir` / `VESPERA_NATIVE_DIR` is subject to the same checks. The extracted library is made owner read/execute only (`0500`). If verification fails — for example a squatted, shared (`1777`-style) or symlinked directory — the library is extracted into a fresh private `vespera-native-*` temp directory for this JVM only (no reuse, removed on exit where possible) and a warning is logged. On Windows (no POSIX attributes) the directories are used as-is; the default already sits under the per-user `%TEMP%`.
+   **Directory safety (POSIX).** The base and hash directories are created with mode `0700` and, before a cached copy is trusted, verified to be real directories (symbolic links are rejected), owned by the current user, and not group- or other-writable; an explicit `vespera.native.dir` / `VESPERA_NATIVE_DIR` is subject to the same checks. The extracted library is made owner read/execute only (`0500`). If verification fails — for example a squatted, shared (`1777`-style) or symlinked directory — the library is extracted into a fresh private `vespera-native-*` temp directory for this JVM only (no reuse, removed on exit where possible) and a warning is logged. **Directory safety (Windows / non-POSIX).** The same guarantee comes from the owner and the ACL: the base and hash directories must be real directories (no symbolic link or junction), owned by the current user, and their ACL must not grant write-like rights (`WRITE_DATA`, `APPEND_DATA`, `DELETE_CHILD`, `DELETE`, `WRITE_ACL`, `WRITE_OWNER`) to anyone but the owner, `SYSTEM` or `Administrators` (inherit-only entries, `DENY` entries and SIDs that do not resolve to an account are ignored). A predictable directory that fails this — e.g. one another user created first under a shared `java.io.tmpdir` to plant a DLL — is not reused: the library is extracted into a fresh, randomly named `vespera-native-*` temp directory for this JVM and a warning is logged. A file system without ACLs gets the same fallback.
 2. **Fallback** — `System.loadLibrary("crateName")` searches `java.library.path`.
 
 The supported triples are `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64`, `windows-x86_64`. Place the cdylib at `src/main/resources/native/{os}-{arch}/` to bundle it; see [`examples/rust-jni-demo/java/demo-app/build.gradle.kts`](../../examples/rust-jni-demo/java/demo-app/build.gradle.kts) for a working Gradle task.
@@ -810,6 +864,8 @@ The supported triples are `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `maco
 See [`examples/rust-jni-demo`](../../examples/rust-jni-demo/) for a complete Rust + Spring Boot integration including build scripts, native bundling, and a curl smoke test.
 
 ## Breaking changes after 0.5.0
+
+> **Behaviour changes in 0.6 (no code change required, but observable):** the buffered-response cap answers `500` instead of `413` (item 13); CORS preflights are routed to Rust by default (item 14); proxy errors keep filter-set headers and no longer echo exception messages (item 15); the `app` of `DispatchEvent` / the metrics tag is bounded (item 16); a missing native library answers `503` (item 17); a bridge/native release mismatch fails `init` (item 18).
 
 1. **Spring is a provided dependency.** The bridge no longer exports `spring-boot-starter-web` / `jackson-databind`; see [Dependencies](#dependencies--spring-is-provided-by-your-app). Apps that got Spring MVC or Jackson only through the bridge must declare them.
 2. **`HEAD` responses advertise the real representation length.** axum answers `HEAD` with an empty body but the `content-length` of the matching `GET`; the proxy now forwards that value (in every dispatch mode) instead of `Content-Length: 0`. When Rust declares no length and sends no body, `Content-Length` is left unset rather than `0`.
@@ -823,6 +879,13 @@ See [`examples/rust-jni-demo`](../../examples/rust-jni-demo/) for a complete Rus
 10. **App selection is restrictable and the app header is no longer forwarded.** New `vespera.bridge.exposed-apps`; the `X-Vespera-App` header (or whatever `app-header` names) is stripped before dispatch — Rust handlers no longer see it (each app is its own router, so a handler already knows which app serves it). See [Security](#security-the-app-header-is-client-controlled).
 11. **Non-ASCII header values** now cross the wire under the Latin-1 mapping (see [Binary wire format](#binary-wire-format)) instead of being dropped (responses) or double-encoded (requests).
 12. **Consumed form-urlencoded bodies are rebuilt** from the request parameters (see [VesperaProxyController behaviour](#vesperaproxycontroller-behaviour)); a resolver's `BIDIRECTIONAL_STREAMING` choice for a form request becomes `STREAMING`.
+13. **Buffered-response cap: `500`, enforced natively.** `vespera.bridge.max-buffered-response-bytes` is forwarded to the native cap (Rust stops before buffering the body) and an oversized `SYNC` / `ASYNC` response is answered `500` instead of `413` (413 means *request* too large). The Spring default (64 MiB) now also applies to the native side unless `vespera.bridge.native.max-buffered-response-bytes` / `vespera.limits.maxBufferedResponseBytes` / `VESPERA_MAX_BUFFERED_RESPONSE_BYTES` set it.
+14. **CORS preflights reach Rust by default** (`vespera.bridge.cors=rust`); set `vespera.bridge.cors=spring` to keep Spring's preflight handling. Duplicate `Access-Control-*` headers are merged per owner. See [CORS](#cors).
+15. **Proxy-written errors** use the fixed body `vespera dispatch failed` for unexpected exceptions (details only in the WARN log) and keep headers set by servlet filters (`resetBuffer()` + dropping only the proxy's own headers, instead of `reset()`).
+16. **Bounded app names.** `DispatchEvent.app()` / the `app` metric tag / the WARN log report `UNKNOWN` for client-selected app names not known to be registered (previously the raw header value; an allowlist-rejected app was reported as `_default`).
+17. **Missing native library → `503`.** The proxy answers `503` instead of throwing `UnsatisfiedLinkError`; new `VesperaBridge.isShutdown()`; new `vespera` Actuator health indicator.
+18. **Version check.** `VesperaBridge.init` fails when the native library's `major.minor` differs from the bridge's (`-Dvespera.native.versionCheck=warn|off` to relax).
+19. **ASYNC** returns a `DeferredResult` (was a `CompletableFuture`) from `proxy(...)`, records a Spring async timeout once as `503`, and serves the body as a zero-copy `InputStreamResource` view of the wire response (no `Range` handling, same as before).
 
 ## 0.2.0 breaking changes
 
