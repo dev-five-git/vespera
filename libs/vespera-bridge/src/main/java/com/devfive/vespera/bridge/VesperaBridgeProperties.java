@@ -1,6 +1,7 @@
 package com.devfive.vespera.bridge;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -33,6 +34,9 @@ import java.util.List;
  *     library-name: my_app        # auto-run VesperaBridge.init("my_app") at startup
  *     shutdown-on-close: false    # shut the native runtime down on context close (irreversible)
  *     shutdown-timeout: 10s
+ *     springdoc:                  # needs springdoc-openapi on the classpath
+ *       mode: group               # group (own Swagger UI entry) | merge (into springdoc's document)
+ *       spec-path: /openapi.json  # the Rust app's vespera!(spec_url = ...)
  *     request-id:
  *       enabled: true             # read / generate, forward, echo and MDC the request id
  *       header: X-Request-Id
@@ -211,6 +215,14 @@ public class VesperaBridgeProperties {
     private final RequestId requestId = new RequestId();
 
     /**
+     * springdoc-openapi integration ({@code vespera.bridge.springdoc.*}):
+     * shows the Rust app's OpenAPI document in the application's Swagger UI.
+     * Only active when springdoc is on the classpath.
+     */
+    @NestedConfigurationProperty
+    private final VesperaSpringdocProperties springdoc = new VesperaSpringdocProperties();
+
+    /**
      * Path patterns (Spring {@code PathPattern} syntax, matched against the
      * path within the application) the proxy controller serves.  Default
      * {@code /**}: every path no more specific Spring MVC handler claims.
@@ -348,6 +360,10 @@ public class VesperaBridgeProperties {
 
     public RequestId getRequestId() {
         return requestId;
+    }
+
+    public VesperaSpringdocProperties getSpringdoc() {
+        return springdoc;
     }
 
     public List<String> getIncludePatterns() {

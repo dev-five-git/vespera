@@ -44,13 +44,18 @@ class ConfigurationMetadataTest {
 
     /** Nested property groups of {@link VesperaBridgeProperties}. */
     private static final Set<Class<?>> NESTED = Set.of(
-            VesperaBridgeProperties.Native.class, VesperaBridgeProperties.RequestId.class);
+            VesperaBridgeProperties.Native.class, VesperaBridgeProperties.RequestId.class,
+            VesperaSpringdocProperties.class);
 
     /** Every class whose {@code @ConditionalOnProperty} reads a property. */
     private static final List<Class<?>> AUTO_CONFIGURATIONS = List.of(
             VesperaBridgeAutoConfiguration.class,
             VesperaBridgeMetricsAutoConfiguration.class,
-            VesperaBridgeHealthAutoConfiguration.class);
+            VesperaBridgeHealthAutoConfiguration.class,
+            VesperaSpringdocAutoConfiguration.class);
+
+    /** Conditions on properties another library owns (and documents). */
+    private static final Set<String> FOREIGN_PROPERTIES = Set.of("springdoc.api-docs.enabled");
 
     private static JsonNode bridgeMetadata() throws Exception {
         Enumeration<URL> resources =
@@ -176,6 +181,9 @@ class ConfigurationMetadataTest {
     void everyConditionalPropertyIsDocumented() throws Exception {
         Map<String, JsonNode> properties = byName(bridgeMetadata().path("properties"));
         Set<String> conditions = conditionalProperties();
+        assertTrue(conditions.containsAll(FOREIGN_PROPERTIES), conditions.toString());
+        conditions.removeAll(FOREIGN_PROPERTIES);
+        assertTrue(conditions.contains(PREFIX + ".springdoc.mode"), conditions.toString());
         assertTrue(conditions.contains("management.health.vespera.enabled"), conditions.toString());
         for (String name : conditions) {
             JsonNode property = properties.get(name);
@@ -193,12 +201,18 @@ class ConfigurationMetadataTest {
         assertEquals(Stream.of(CorsHandling.values())
                         .map(c -> c.name().toLowerCase(Locale.ROOT)).collect(Collectors.toSet()),
                 hintValues(hints.get(PREFIX + ".cors")));
+        assertEquals(Stream.of(VesperaSpringdocProperties.Mode.values())
+                        .map(m -> m.name().toLowerCase(Locale.ROOT)).collect(Collectors.toSet()),
+                hintValues(hints.get(PREFIX + ".springdoc.mode")));
 
         Map<String, JsonNode> properties = byName(root.path("properties"));
         assertEquals("smart", properties.get(PREFIX + ".dispatch-mode").path("defaultValue").asText());
         assertEquals("/**", properties.get(PREFIX + ".include-patterns").path("defaultValue").path(0).asText());
         assertEquals(VesperaProxyController.DEFAULT_MAX_BUFFERED_REQUEST_BYTES,
                 properties.get(PREFIX + ".max-buffered-request-bytes").path("defaultValue").asLong());
+        assertEquals("group", properties.get(PREFIX + ".springdoc.mode").path("defaultValue").asText());
+        assertFalse(byName(root.path("groups")).get(PREFIX + ".springdoc")
+                .path("description").asText().isBlank());
         JsonNode forwardPrincipal = properties.get(PREFIX + ".forward-principal");
         assertTrue(forwardPrincipal.path("defaultValue").asBoolean(), "forward-principal defaults to true");
         assertTrue(forwardPrincipal.path("description").asText().contains("never"),

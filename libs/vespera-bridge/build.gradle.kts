@@ -63,6 +63,10 @@ val springFrameworkVersion = "7.0.10"
 val springBoot3Version = "3.5.16"
 val springFramework3Version = "6.2.19"
 val micrometerVersion = "1.15.12"
+// Optional springdoc-openapi integration (VesperaSpringdocAutoConfiguration):
+// springdoc 3.x targets Boot 4, 2.x Boot 3.5 — the APIs the bridge uses exist in both.
+val springdocVersion = "3.2.0"
+val springdoc3Version = "2.10.0"
 
 dependencies {
     compileOnly("org.springframework.boot:spring-boot-autoconfigure:$springBootVersion")
@@ -72,6 +76,10 @@ dependencies {
     // Optional: MicrometerDispatchObserver / VesperaBridgeMetricsAutoConfiguration
     // only load when the application ships Micrometer (e.g. via Actuator).
     compileOnly("io.micrometer:micrometer-core:$micrometerVersion")
+    // Optional: VesperaSpringdocAutoConfiguration only loads when the application
+    // ships springdoc-openapi (webmvc-api or -ui); its swagger-core / Jackson 2
+    // types come with it.
+    compileOnly("org.springdoc:springdoc-openapi-starter-webmvc-ui:$springdocVersion")
     // Optional: the `vespera` Actuator health indicator. Boot 4 moved the health
     // API to spring-boot-health (org.springframework.boot.health.contributor);
     // Boot 3.5 keeps it in spring-boot-actuator (org.springframework.boot.actuate
@@ -93,6 +101,7 @@ dependencies {
 
     testImplementation("org.springframework.boot:spring-boot-starter-web:$springBootVersion")
     testImplementation("io.micrometer:micrometer-core:$micrometerVersion")
+    testImplementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:$springdocVersion")
     testImplementation("org.springframework.boot:spring-boot-health:$springBootVersion")
     // VesperaWireTest cross-checks the hand-rolled JSON codec against Jackson.
     testImplementation("com.fasterxml.jackson.core:jackson-databind:2.23.0")
@@ -122,6 +131,7 @@ val testBoot3Runtime: Configuration = configurations.create("testBoot3Runtime") 
 dependencies {
     testBoot3Runtime("org.springframework.boot:spring-boot-starter-web:$springBoot3Version")
     testBoot3Runtime("io.micrometer:micrometer-core:$micrometerVersion")
+    testBoot3Runtime("org.springdoc:springdoc-openapi-starter-webmvc-ui:$springdoc3Version")
     testBoot3Runtime("org.springframework.boot:spring-boot-actuator:$springBoot3Version")
     testBoot3Runtime("org.springframework.boot:spring-boot-test:$springBoot3Version")
     testBoot3Runtime("org.springframework:spring-test:$springFramework3Version")

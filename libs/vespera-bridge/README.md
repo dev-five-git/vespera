@@ -240,7 +240,7 @@ exclusion condition once the context's singletons are initialised.
 The JAR ships `META-INF/spring-configuration-metadata.json`, so IntelliJ IDEA
 and the Spring Tools for VS Code / Eclipse complete and document every
 `vespera.bridge.*` key (plus `management.health.vespera.enabled`) and offer the
-values of `dispatch-mode` and `cors`.
+values of `dispatch-mode`, `cors` and `springdoc.mode`.
 
 ### 2. Custom app-selection strategy
 
@@ -430,6 +430,47 @@ pub async fn me(principal: Principal) -> String {          // 401 when anonymous
 
   Build it only from authentication state the server established, never from raw request headers.
 - A hand-written `VesperaBridge.HeaderSource` forwards one by overriding `principal()`.
+
+## springdoc-openapi (Swagger UI)
+
+An application that uses [springdoc-openapi](https://springdoc.org/) for its Java controllers gets the Rust routes into the same Swagger UI. The integration (`VesperaSpringdocAutoConfiguration`) activates by itself when springdoc is on the classpath — springdoc stays **your** dependency (`org.springdoc:springdoc-openapi-starter-webmvc-ui`, 3.x for Boot 4, 2.8+ for Boot 3.5); the bridge only compiles against it.
+
+**Requirement:** the Rust app serves its document — add `spec_url` to `vespera!`:
+
+```rust
+pub fn create_app() -> axum::Router {
+    vespera!(spec_url = "/openapi.json", title = "My API", version = "1.0.0")
+}
+```
+
+The bridge fetches it **in-process** (a native `GET /openapi.json` dispatch, no HTTP or socket), so it is always the document of the loaded cdylib, including any `merge = [...]`. A different route goes in `vespera.bridge.springdoc.spec-path` (per app: `spec-paths.<app>`); to read it from somewhere else (e.g. the `openapi.json` written by `vespera!(openapi = ...)`, bundled as a resource), register your own `VesperaOpenApiSource` bean.
+
+Two modes (`vespera.bridge.springdoc.mode`):
+
+| Mode | Result |
+|---|---|
+| `group` (default) | Every documented app becomes its own entry of the Swagger UI definition dropdown (`vespera`, `vespera (admin)`, …), served **verbatim** at `/v3/api-docs/vespera/<app>`. springdoc's own document stays as it is and is listed as `application` (selected first) unless you configured `springdoc.swagger-ui.urls` or springdoc groups — those are kept. |
+| `merge` | The Rust paths, components and tags are merged into springdoc's default `/v3/api-docs` (an `OpenApiCustomizer`): paths outside `include-patterns` / inside `exclude-patterns` are dropped; a path springdoc already documents keeps the Java definition (logged); a different component under a clashing name is renamed `vespera_<Name>` (`<app>_<Name>` for a named app) with every `$ref` rewritten, an identical one is shared; a named app's operations get a required `X-Vespera-App` (`app-header`) parameter so "Try it out" reaches it; the Rust top-level `security` is copied onto its operations. springdoc caches the document, so initialise the native library before the first `/v3/api-docs` request. |
+
+```yaml
+vespera:
+  bridge:
+    springdoc:
+      enabled: true                # false: no integration (the proxy stays hidden from springdoc)
+      mode: group                  # group | merge
+      spec-path: /openapi.json     # the Rust spec_url, dispatched in-process
+      spec-paths:
+        admin: /admin/openapi.json # per-app override
+      apps: [_default, admin]      # default: _default + vespera.bridge.exposed-apps
+      docs-path: /v3/api-docs/vespera # group mode: documents served at <docs-path>/<app>
+      display-name: vespera        # group mode: Swagger UI label (named apps: "vespera (admin)")
+```
+
+- **Multi-app (`jni_apps!`):** every documented app gets its own definition (`group`) or is merged with the app header parameter (`merge`). Only `_default` and `vespera.bridge.exposed-apps` are documented by default; `<docs-path>/<app>` answers `404` for any other app, `503` while the native library is not loaded and `502` when the Rust route fails (e.g. no `spec_url` — the reason is logged).
+- In `group` mode "Try it out" on a named app's definition does not send `X-Vespera-App` (the Rust document does not know about it); use `merge` mode, or a gateway that selects the app.
+- The documents live under springdoc's `/v3/api-docs/**`, so an existing Spring Security rule for the API docs covers them.
+- The proxy's catch-all `/**` mapping is hidden from springdoc's document whenever springdoc is present.
+- springdoc's `springdoc.api-docs.enabled=false` disables the integration too.
 
 ## Binary wire format
 

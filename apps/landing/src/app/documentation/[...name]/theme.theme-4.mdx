@@ -1,6 +1,6 @@
 # Spring Configuration
 
-Every behaviour of the autoconfigured proxy can be tuned from `application.yml`. The JAR ships `META-INF/spring-configuration-metadata.json`, so IntelliJ IDEA and the Spring Tools for VS Code / Eclipse complete and document every `vespera.bridge.*` key (plus `management.health.vespera.enabled`) and offer the values of `dispatch-mode` and `cors`.
+Every behaviour of the autoconfigured proxy can be tuned from `application.yml`. The JAR ships `META-INF/spring-configuration-metadata.json`, so IntelliJ IDEA and the Spring Tools for VS Code / Eclipse complete and document every `vespera.bridge.*` key (plus `management.health.vespera.enabled`) and offer the values of `dispatch-mode`, `cors` and `springdoc.mode`.
 
 ## Property Reference
 
@@ -25,6 +25,9 @@ vespera:
     library-name: my_rust_lib            # VesperaBridge.init(...) during startup
     shutdown-on-close: false
     shutdown-timeout: 10s
+    springdoc:                           # Swagger UI integration, see below
+      mode: group                        # group | merge
+      spec-path: /openapi.json           # the Rust vespera!(spec_url = ...)
     native:                              # Rust-side knobs, see below
       max-request-bytes: 67108864
       max-streaming-request-bytes: 0
@@ -52,6 +55,7 @@ vespera:
 | `request-id.enabled` / `.header` | `true` / `X-Request-Id` | Request-id propagation, see below |
 | `library-name` | none | Crate name the autoconfiguration loads with `VesperaBridge.init(...)` when the application has not done it |
 | `shutdown-on-close` / `shutdown-timeout` | `false` / `10s` | Stop the Rust runtime when the context closes, see below |
+| `springdoc.*` | `enabled: true`, `mode: group` | Rust routes in springdoc's Swagger UI, see below |
 | `management.health.vespera.enabled` | `true` | Actuator health indicator |
 
 ## Proxied Paths
@@ -87,6 +91,35 @@ Or replace `AppNameResolver` with a bean that derives the app from something the
 | `spring` | Answered by Spring MVC (`addCorsMappings`, `@CrossOrigin`) or Spring Security `http.cors()` | A Rust header is dropped when Spring already set it |
 
 With `rust`, do not also configure Spring CORS for proxied paths, and permit unauthenticated `OPTIONS` requests in Spring Security so preflights reach Rust.
+
+## Swagger UI (springdoc-openapi)
+
+When the application uses [springdoc-openapi](https://springdoc.org/) (`springdoc-openapi-starter-webmvc-ui` — your dependency, 3.x for Boot 4, 2.8+ for Boot 3.5), the Rust routes appear in the same Swagger UI. The Rust app must serve its document:
+
+```rust
+vespera!(spec_url = "/openapi.json", title = "My API", version = "1.0.0")
+```
+
+The bridge fetches it **in-process** — a native `GET /openapi.json` dispatch, no HTTP — so it is always the document of the loaded library.
+
+```yaml
+vespera:
+  bridge:
+    springdoc:
+      enabled: true                      # false = no integration
+      mode: group                        # group | merge
+      spec-path: /openapi.json           # Rust spec_url (spec-paths.<app> per app)
+      apps: [_default, admin]            # default: _default + exposed-apps
+      docs-path: /v3/api-docs/vespera    # group mode: <docs-path>/<app>
+      display-name: vespera              # group mode: Swagger UI label
+```
+
+| `mode` | Result |
+|--------|--------|
+| `group` (default) | One Swagger UI definition per app (`vespera`, `vespera (admin)`), served verbatim at `/v3/api-docs/vespera/<app>`. springdoc's own document stays listed as `application` and is selected first |
+| `merge` | Rust paths, components and tags are merged into springdoc's `/v3/api-docs`. Java paths win on a clash, a clashing component is renamed `vespera_<Name>` (`<app>_<Name>`) with its `$ref`s rewritten, and a named app's operations get the required `X-Vespera-App` header parameter |
+
+Only the default app and `exposed-apps` are documented unless `apps` is set. To read the document from somewhere else (for example the `openapi.json` written at build time, bundled as a resource), declare your own `VesperaOpenApiSource` bean. The proxy's `/**` catch-all is hidden from springdoc's document.
 
 ## Native Limits, Timeouts and Runtime
 
