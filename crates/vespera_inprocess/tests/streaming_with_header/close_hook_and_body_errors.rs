@@ -408,13 +408,16 @@ async fn panicking_request_producer_aborts_the_upload() {
         &[],
     );
 
-    let header = dispatch_bidirectional_streaming_closing(
+    // Inside a spawned task the pull runs on the `spawn_blocking` producer
+    // (a `block_on` caller would take the inline small-body path instead).
+    let header = tokio::spawn(dispatch_bidirectional_streaming_closing(
         wire,
         || -> RequestChunk { panic!("producer failed") },
-        |_chunk| ControlFlow::Continue(()),
+        |_chunk: &[u8]| ControlFlow::Continue(()),
         || {},
-    )
-    .await;
+    ))
+    .await
+    .unwrap();
 
     let (header_json, _) = decode_wire(&header);
     assert_eq!(
