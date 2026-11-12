@@ -1,6 +1,5 @@
 ---
 source: examples/axum-example/tests/integration_test.rs
-assertion_line: 434
 expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
 ---
 {
@@ -356,6 +355,34 @@ expression: "std::fs::read_to_string(\"openapi.json\").unwrap()"
               "text/plain": {
                 "schema": {
                   "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/error/error-alias": {
+      "get": {
+        "operationId": "error_endpoint_alias",
+        "summary": "Returns its error through the crate-wide `ApiResult` alias, which `vespera!` resolves from `models/api.rs`.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse2"
                 }
               }
             }

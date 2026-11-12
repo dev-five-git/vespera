@@ -358,6 +358,34 @@
         }
       }
     },
+    "/error/error-alias": {
+      "get": {
+        "operationId": "error_endpoint_alias",
+        "summary": "Returns its error through the crate-wide `ApiResult` alias, which `vespera!` resolves from `models/api.rs`.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse2"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/error/error-with-status": {
       "get": {
         "operationId": "error_endpoint_with_status_code",

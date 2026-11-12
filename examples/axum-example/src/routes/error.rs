@@ -101,3 +101,13 @@ pub async fn cookie_jar_endpoint(
 ) -> Result<(CookieJar, Json<()>), (StatusCode, String)> {
     Ok((jar, Json(())))
 }
+
+/// Returns its error through the crate-wide `ApiResult` alias, which
+/// `vespera!` resolves from `models/api.rs`.
+#[vespera::route(path = "/error-alias")]
+pub async fn error_endpoint_alias() -> crate::models::api::ApiResult<ErrorResponse> {
+    Err(ErrorResponse2 {
+        error: "Internal server error".to_string(),
+        code: 500,
+    })
+}
