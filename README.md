@@ -31,7 +31,7 @@ let app = vespera!(openapi = "openapi.json", docs_url = "/docs");
 
 ```toml
 [dependencies]
-vespera = "0.5"
+vespera = "0.6"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 ```
@@ -830,7 +830,7 @@ Schedule background tasks with `#[vespera::cron]`. A tiny built-in tokio schedul
 
 ```toml
 [dependencies]
-vespera = { version = "0.5", features = ["cron"] }
+vespera = { version = "0.6", features = ["cron"] }
 ```
 
 ### Define Cron Jobs
@@ -1009,7 +1009,7 @@ Embed your Vespera router inside a Java/Spring application — no TCP, no JSON e
 
 ```rust
 // Cargo.toml
-// vespera = { version = "0.5", features = ["jni"] }
+// vespera = { version = "0.6", features = ["jni"] }
 
 pub fn create_app() -> axum::Router {
     vespera!(title = "My API")

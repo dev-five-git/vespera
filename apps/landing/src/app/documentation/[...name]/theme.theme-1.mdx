@@ -6,7 +6,7 @@
 
 ```toml
 [dependencies]
-vespera = { version = "0.5", features = ["jni"] }
+vespera = { version = "0.6", features = ["jni"] }
 ```
 
 The `jni` feature implies `inprocess` — both are enabled automatically.
@@ -52,7 +52,7 @@ cargo build --release
 <dependency>
   <groupId>kr.devfive</groupId>
   <artifactId>vespera-bridge</artifactId>
-  <version>0.5.0</version>
+  <version>0.6.0</version>
 </dependency>
 ```
 
@@ -60,7 +60,7 @@ cargo build --release
 
 ```kotlin
 dependencies {
-    implementation("kr.devfive:vespera-bridge:0.5.0")
+    implementation("kr.devfive:vespera-bridge:0.6.0")
 }
 ```
 
@@ -70,13 +70,13 @@ The `kr.devfive.vespera-bridge` Gradle plugin replaces ~22 lines of native-libra
 
 ```kotlin
 plugins {
-    id("kr.devfive.vespera-bridge") version "0.4.1"
+    id("kr.devfive.vespera-bridge") version "0.5.0"
 }
 
 vespera {
     crateName.set("my_rust_lib")
     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
-    bridgeVersion.set("0.5.0")
+    bridgeVersion.set("0.6.0")
 }
 ```
 
@@ -118,7 +118,7 @@ Out of the box the autoconfigure module wires up:
 
 | Concern | Default | Override |
 |---------|---------|----------|
-| App selection | Read `X-Vespera-App` request header; absent → default app | Property `vespera.bridge.app-header`, or custom `AppNameResolver` bean |
+| App selection | Read `X-Vespera-App` request header; absent → default app. **Client-controlled** — restrict it with `vespera.bridge.exposed-apps` | Properties `vespera.bridge.app-header` / `vespera.bridge.exposed-apps`, or custom `AppNameResolver` bean |
 | Dispatch mode | `SmartDispatchModeResolver` since 0.2.0 — `DIRECT` for small/bodyless idempotent, `SYNC` for small non-idempotent, `BIDIRECTIONAL_STREAMING` for the rest | Property `vespera.bridge.dispatch-mode: bidirectional-streaming`, or custom `DispatchModeResolver` bean |
 | URL pattern | `@RequestMapping("/**")` catch-all | Set `vespera.bridge.controller-enabled: false` and supply your own controller |
 

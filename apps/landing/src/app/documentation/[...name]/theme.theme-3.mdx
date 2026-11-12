@@ -91,6 +91,8 @@ curl -H "X-Vespera-App: public" http://localhost:8080/info
 
 Each app's URLs are independent — the same `/users` path can mean different things in `admin` vs `public` apps. Unknown app names return `404`; invalid app names (special characters, > 64 bytes) return `400`.
 
+> **Security:** the app-selection header is sent by the client. Any caller can ask for any registered app (for example `admin`) on a path your Spring Security rules treat as public. Restrict the reachable apps with `vespera.bridge.exposed-apps` (unlisted names get `404` without being dispatched), or replace `AppNameResolver` with one that derives the app from something the client cannot forge. The header itself is never forwarded to Rust.
+
 ### Custom App-Selection Strategy
 
 ```java
