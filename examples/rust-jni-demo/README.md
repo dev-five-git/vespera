@@ -194,6 +194,6 @@ repositories {
     mavenCentral()
 }
 dependencies {
-    implementation("kr.devfive:vespera-bridge:0.2.0")
+    implementation("kr.devfive:vespera-bridge:0.6.0")
 }
 ```

@@ -6,19 +6,19 @@ JNI bridge that lets a Java/Spring application embed a Rust [`vespera`](../../) 
 <dependency>
   <groupId>kr.devfive</groupId>
   <artifactId>vespera-bridge</artifactId>
-  <version>0.5.0</version>
+  <version>0.6.0</version>
 </dependency>
 ```
 
 ```kotlin
 dependencies {
-    implementation("kr.devfive:vespera-bridge:0.5.0")
+    implementation("kr.devfive:vespera-bridge:0.6.0")
 }
 ```
 
 ### Version compatibility
 
-- **Bridge ↔ Rust crate:** the `vespera-bridge` version must match the **minor** version of the `vespera` crate your cdylib is built with (bridge `0.5.x` ↔ `vespera = "0.5"`). The JNI symbol set and the binary wire format are only guaranteed stable within a minor line. Since 0.6 this is **checked at `VesperaBridge.init`**: the native library reports its crate version (`nativeVersion0`) and a different `major.minor` fails the init with an `IllegalStateException` naming both versions (patch levels may differ). `-Dvespera.native.versionCheck=warn` downgrades the failure to a WARNING, `off` skips the check; a native library built before 0.6 (no version symbol) only logs a WARNING.
+- **Bridge ↔ Rust crate:** the `vespera-bridge` version must match the **minor** version of the `vespera` crate your cdylib is built with (bridge `0.6.x` ↔ `vespera = "0.6"`). The JNI symbol set and the binary wire format are only guaranteed stable within a minor line. Since 0.6 this is **checked at `VesperaBridge.init`**: the native library reports its crate version (`nativeVersion0`) and a different `major.minor` fails the init with an `IllegalStateException` naming both versions (patch levels may differ). `-Dvespera.native.versionCheck=warn` downgrades the failure to a WARNING, `off` skips the check; a native library built before 0.6 (no version symbol) only logs a WARNING.
 - **Spring Boot:** compiled against Spring Boot 4.1 / Spring Framework 7.0; supported on **Spring Boot 3.5.x and 4.x** (Spring Framework 6.2 / 7.0, Jakarta Servlet 6.0+). The Boot 3.5 runtime is verified by the `testBoot3` Gradle task (run automatically after `./gradlew test`), which runs the unit suite against a Spring Boot 3.5 classpath. Spring Boot ≤ 3.4 / `javax.servlet` is not supported.
 - **Java:** 17+.
 
@@ -34,14 +34,14 @@ For Spring Boot apps the [`kr.devfive.vespera-bridge`](../vespera-bridge-gradle-
 
 ```kotlin
 plugins {
-    id("kr.devfive.vespera-bridge") version "0.4.1"
+    id("kr.devfive.vespera-bridge") version "0.6.0"
 }
 
 vespera {
     crateName.set("my-rust-lib")   // Cargo package name, or its underscore form "my_rust_lib"
     cargoRoot.set(rootProject.layout.projectDirectory.dir("../.."))
     // bridgeVersion defaults to the vespera-bridge release this plugin version was built with;
-    // set it only to pin a different bridge:  bridgeVersion.set("0.5.0")
+    // set it only to pin a different bridge:  bridgeVersion.set("0.6.0")
 }
 ```
 
@@ -879,13 +879,18 @@ See [`examples/rust-jni-demo`](../../examples/rust-jni-demo/) for a complete Rus
 10. **App selection is restrictable and the app header is no longer forwarded.** New `vespera.bridge.exposed-apps`; the `X-Vespera-App` header (or whatever `app-header` names) is stripped before dispatch — Rust handlers no longer see it (each app is its own router, so a handler already knows which app serves it). See [Security](#security-the-app-header-is-client-controlled).
 11. **Non-ASCII header values** now cross the wire under the Latin-1 mapping (see [Binary wire format](#binary-wire-format)) instead of being dropped (responses) or double-encoded (requests).
 12. **Consumed form-urlencoded bodies are rebuilt** from the request parameters (see [VesperaProxyController behaviour](#vesperaproxycontroller-behaviour)); a resolver's `BIDIRECTIONAL_STREAMING` choice for a form request becomes `STREAMING`.
-13. **Buffered-response cap: `500`, enforced natively.** `vespera.bridge.max-buffered-response-bytes` is forwarded to the native cap (Rust stops before buffering the body) and an oversized `SYNC` / `ASYNC` response is answered `500` instead of `413` (413 means *request* too large). The Spring default (64 MiB) now also applies to the native side unless `vespera.bridge.native.max-buffered-response-bytes` / `vespera.limits.maxBufferedResponseBytes` / `VESPERA_MAX_BUFFERED_RESPONSE_BYTES` set it.
-14. **CORS preflights reach Rust by default** (`vespera.bridge.cors=rust`); set `vespera.bridge.cors=spring` to keep Spring's preflight handling. Duplicate `Access-Control-*` headers are merged per owner. See [CORS](#cors).
-15. **Proxy-written errors** use the fixed body `vespera dispatch failed` for unexpected exceptions (details only in the WARN log) and keep headers set by servlet filters (`resetBuffer()` + dropping only the proxy's own headers, instead of `reset()`).
-16. **Bounded app names.** `DispatchEvent.app()` / the `app` metric tag / the WARN log report `UNKNOWN` for client-selected app names not known to be registered (previously the raw header value; an allowlist-rejected app was reported as `_default`).
-17. **Missing native library → `503`.** The proxy answers `503` instead of throwing `UnsatisfiedLinkError`; new `VesperaBridge.isShutdown()`; new `vespera` Actuator health indicator.
-18. **Version check.** `VesperaBridge.init` fails when the native library's `major.minor` differs from the bridge's (`-Dvespera.native.versionCheck=warn|off` to relax).
-19. **ASYNC** returns a `DeferredResult` (was a `CompletableFuture`) from `proxy(...)`, records a Spring async timeout once as `503`, and serves the body as a zero-copy `InputStreamResource` view of the wire response (no `Range` handling, same as before).
+13. **Request ids are on by default.** Responses carry `X-Request-Id` (an incoming valid id is reused, otherwise a UUID is generated); disable with `vespera.bridge.request-id.enabled=false`. Controllers built by hand with the old constructors have request ids off.
+14. **The forwarded path is the application path.** The servlet context path, a prefix servlet mapping and `;` path parameters (e.g. `;jsessionid`) are stripped before dispatch.
+15. **Proxy-generated errors are `text/plain`** (the same shape as Rust's `error_wire`) instead of going through Spring's `/error` page; the unknown-app `404` no longer echoes the requested app name.
+16. **`ASYNC` responses get no Spring `Range` handling** (see item 24 for the return type).
+17. **Gradle plugin `cargoBuild` is a `CargoBuildTask`**, not an `Exec`; build scripts that configure it as `Exec` must be updated.
+18. **Buffered-response cap: `500`, enforced natively.** `vespera.bridge.max-buffered-response-bytes` is forwarded to the native cap (Rust stops before buffering the body) and an oversized `SYNC` / `ASYNC` response is answered `500` instead of `413` (413 means *request* too large). The Spring default (64 MiB) now also applies to the native side unless `vespera.bridge.native.max-buffered-response-bytes` / `vespera.limits.maxBufferedResponseBytes` / `VESPERA_MAX_BUFFERED_RESPONSE_BYTES` set it.
+19. **CORS preflights reach Rust by default** (`vespera.bridge.cors=rust`); set `vespera.bridge.cors=spring` to keep Spring's preflight handling. Duplicate `Access-Control-*` headers are merged per owner. See [CORS](#cors).
+20. **Proxy-written errors** use the fixed body `vespera dispatch failed` for unexpected exceptions (details only in the WARN log) and keep headers set by servlet filters (`resetBuffer()` + dropping only the proxy's own headers, instead of `reset()`).
+21. **Bounded app names.** `DispatchEvent.app()` / the `app` metric tag / the WARN log report `UNKNOWN` for client-selected app names not known to be registered (previously the raw header value; an allowlist-rejected app was reported as `_default`).
+22. **Missing native library → `503`.** The proxy answers `503` instead of throwing `UnsatisfiedLinkError`; new `VesperaBridge.isShutdown()`; new `vespera` Actuator health indicator.
+23. **Version check.** `VesperaBridge.init` fails when the native library's `major.minor` differs from the bridge's (`-Dvespera.native.versionCheck=warn|off` to relax).
+24. **ASYNC** returns a `DeferredResult` (was a `CompletableFuture`) from `proxy(...)`, records a Spring async timeout once as `503`, and serves the body as a zero-copy `InputStreamResource` view of the wire response (no `Range` handling, same as before).
 
 ## 0.2.0 breaking changes
 

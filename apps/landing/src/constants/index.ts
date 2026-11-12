@@ -4,9 +4,9 @@
  * `src/__tests__/docs-versions.test.ts` fails when any sample drifts from
  * these constants. Bump them together with a release.
  */
-export const VESPERA_VERSION = '0.5'
-export const VESPERA_BRIDGE_VERSION = '0.5.0'
-export const VESPERA_BRIDGE_PLUGIN_VERSION = '0.4.1'
+export const VESPERA_VERSION = '0.6'
+export const VESPERA_BRIDGE_VERSION = '0.6.0'
+export const VESPERA_BRIDGE_PLUGIN_VERSION = '0.5.0'
 
 export interface SideMenuItem {
   label: string
