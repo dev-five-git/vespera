@@ -50,6 +50,12 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: cargo clippy (workspace, no default features)
         run: cargo clippy --workspace --no-default-features -- -D warnings
+      - name: cargo doc (deny rustdoc warnings)
+        # Broken / private intra-doc links and ambiguous paths fail the build
+        # here instead of surfacing only as docs.rs warnings after a release.
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --all-features
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
       - name: oxlint
@@ -60,6 +66,24 @@ jobs:
         # Root bunfig.toml preloads @devup-ui/bun-plugin + bun-test-env-dom
         # (see AGENTS.md "Front tests need the bun preloads").
         run: bun test
+
+  # The libFuzzer targets under fuzz/ are their own cargo workspace, so no
+  # other job compiles them. Building (not running) them on every PR keeps
+  # the fuzz harness in sync with the vespera_inprocess API it drives.
+  fuzz-build:
+    name: Fuzz targets build (nightly)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
+        with:
+          toolchain: nightly-2026-08-29
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-fuzz
+      - name: cargo fuzz build
+        run: cargo fuzz build
 
   # Minimum supported Rust version of the PUBLISHED crates
   # ([workspace.package] rust-version). Examples are deliberately not held to
