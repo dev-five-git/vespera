@@ -1,6 +1,7 @@
 //! Type to JSON Schema conversion for OpenAPI generation.
 
 mod conversion;
+pub mod generic_instances;
 
 pub use conversion::{
     is_builtin_openapi_type, is_primitive_type, parse_type_to_schema_ref, tuple_array_schema,

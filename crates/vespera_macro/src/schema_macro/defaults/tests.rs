@@ -645,6 +645,7 @@ fn test_generate_schema_type_code_preserves_struct_doc() {
         explicit_schema_name: false,
         field_defaults: std::collections::BTreeMap::new(),
         source_identity: None,
+        rust_ident: None,
     };
     let storage = to_storage(vec![struct_def]);
     let result = generate_schema_type_code(&input, &storage);

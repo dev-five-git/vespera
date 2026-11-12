@@ -221,6 +221,7 @@ struct SchemaDeserialize {
     nullable: Option<bool>,
     read_only: Option<bool>,
     write_only: Option<bool>,
+    deprecated: Option<bool>,
     external_docs: Option<ExternalDocumentation>,
     #[serde(rename = "$defs")]
     defs: Option<BTreeMap<String, Schema>>,
@@ -280,6 +281,7 @@ impl<'de> Deserialize<'de> for Schema {
             nullable,
             read_only: wire.read_only,
             write_only: wire.write_only,
+            deprecated: wire.deprecated,
             external_docs: wire.external_docs,
             defs: wire.defs,
             dynamic_anchor: wire.dynamic_anchor,
@@ -445,6 +447,9 @@ impl Schema {
         if let Some(value) = self.write_only {
             out.serialize_field("writeOnly", &value)?;
         }
+        if let Some(value) = self.deprecated {
+            out.serialize_field("deprecated", &value)?;
+        }
         if let Some(value) = &self.external_docs {
             out.serialize_field("externalDocs", value)?;
         }
@@ -483,7 +488,7 @@ impl Serialize for Schema {
                 "invalid Schema: nullable `$ref` serializes through anyOf and cannot also carry an explicit type; build it via Schema::nullable_reference",
             ));
         }
-        let mut out = serializer.serialize_struct("Schema", 42)?;
+        let mut out = serializer.serialize_struct("Schema", 43)?;
         if let Some(ref_path) = &self.ref_path {
             if nullable_ref {
                 out.serialize_field("anyOf", &NullableRefAnyOf { ref_path })?;

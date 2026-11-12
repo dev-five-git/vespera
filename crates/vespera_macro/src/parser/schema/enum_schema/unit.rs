@@ -1,6 +1,6 @@
 use vespera_core::schema::{Schema, SchemaType};
 
-use super::super::serde_attrs::{extract_field_rename, rename_field, strip_raw_prefix_owned};
+use super::super::serde_attrs::{extract_field_rename, rename_variant, strip_raw_prefix_owned};
 
 /// Parse a simple enum (all unit variants) to a string schema with enum values.
 pub(super) fn parse_unit_enum_to_schema(
@@ -19,7 +19,7 @@ pub(super) fn parse_unit_enum_to_schema(
 
         // Check for variant-level rename attribute first (takes precedence)
         let enum_value = extract_field_rename(&variant.attrs)
-            .unwrap_or_else(|| rename_field(&variant_name, rename_all));
+            .unwrap_or_else(|| rename_variant(&variant_name, rename_all));
 
         enum_values.push(serde_json::Value::String(enum_value));
     }
@@ -40,5 +40,6 @@ pub(super) fn parse_unit_enum_to_schema(
 pub(super) fn get_variant_key(variant: &syn::Variant, rename_all: Option<&str>) -> String {
     let variant_name = strip_raw_prefix_owned(variant.ident.to_string());
 
-    extract_field_rename(&variant.attrs).unwrap_or_else(|| rename_field(&variant_name, rename_all))
+    extract_field_rename(&variant.attrs)
+        .unwrap_or_else(|| rename_variant(&variant_name, rename_all))
 }

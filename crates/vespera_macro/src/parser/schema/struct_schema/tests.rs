@@ -138,6 +138,34 @@ fn serde_skip_attrs_drive_required(#[case] attr: &str, #[case] expected: Option<
     }
 }
 
+/// One-sided serde skips become `readOnly` / `writeOnly`, Rust
+/// `#[deprecated]` becomes `deprecated: true`; `$ref` fields are wrapped in
+/// `allOf` so the annotation sits beside the reference.
+#[test]
+fn field_access_and_deprecation_annotations() {
+    let struct_item: syn::ItemStruct = syn::parse_str(
+        r#"
+            struct Account {
+                #[serde(skip_deserializing)]
+                id: i32,
+                #[serde(skip_serializing)]
+                password: String,
+                #[deprecated(note = "use owner")]
+                /// Legacy owner
+                user: User,
+                plain: bool,
+            }
+        "#,
+    )
+    .unwrap();
+    let known: HashSet<String> = std::iter::once("User".to_string()).collect();
+    let schema = parse_struct_to_schema(&struct_item, &known, &HashMap::<String, String>::new());
+    insta::assert_snapshot!(
+        "struct_field_access_and_deprecation",
+        serde_json::to_string_pretty(&schema).unwrap()
+    );
+}
+
 #[test]
 fn test_parse_struct_to_schema_serde_transparent_named_wrapper_uses_inner_schema() {
     let struct_item: syn::ItemStruct = syn::parse_str(

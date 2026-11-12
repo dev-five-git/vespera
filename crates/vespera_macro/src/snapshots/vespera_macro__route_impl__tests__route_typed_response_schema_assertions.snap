@@ -1,0 +1,15 @@
+---
+source: crates/vespera_macro/src/route_impl.rs
+expression: "prettyplease::unparse(&file)"
+---
+pub async fn handler() -> String {
+    "ok".to_string()
+}
+const _: () = {
+    const fn __vespera_assert_schema<T: ::vespera::Schema + ?Sized>() {}
+    let _ = __vespera_assert_schema::<NotFound>;
+};
+const _: () = {
+    const fn __vespera_assert_schema<T: ::vespera::Schema + ?Sized>() {}
+    let _ = __vespera_assert_schema::<errors::Conflict>;
+};

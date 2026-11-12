@@ -1,16 +1,14 @@
 pub(super) fn quoted_value_after_key(tokens: &str, key: &str) -> Option<String> {
     for (start, _) in tokens.match_indices(key) {
-        if key == "rename" && tokens[start..].starts_with("rename_all") {
-            continue;
-        }
         if !is_standalone_word_at(tokens, start, key) && !is_qualified_key(tokens, start) {
             continue;
         }
-        let remaining = &tokens[start + key.len()..];
-        let Some(equals_pos) = remaining.find('=') else {
+        // Only the `key = "value"` form: a side list `key(serialize = "a",
+        // deserialize = "b")` must never yield one side's value for both.
+        let Some(value_part) = tokens[start + key.len()..].trim_start().strip_prefix('=') else {
             continue;
         };
-        let value_part = remaining[equals_pos + 1..].trim();
+        let value_part = value_part.trim();
         let Some(quote_start) = value_part.find('"') else {
             continue;
         };
@@ -708,6 +706,8 @@ mod tests {
     #[case::embedded_key("some_rename = \"x\"", "rename")]
     #[case::missing_quote("rename = value", "rename")]
     #[case::missing_end_quote("rename = \"value", "rename")]
+    #[case::longer_key("rename_all = \"camelCase\"", "rename")]
+    #[case::qualified_longer_key("serde::rename_all = \"camelCase\"", "rename")]
     fn quoted_value_after_key_rejects_malformed_candidates(
         #[case] tokens: &str,
         #[case] key: &str,

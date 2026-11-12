@@ -47,6 +47,7 @@ Schema {
     nullable: None,
     read_only: None,
     write_only: None,
+    deprecated: None,
     external_docs: None,
     defs: None,
     dynamic_anchor: None,

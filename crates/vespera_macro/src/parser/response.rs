@@ -4,7 +4,7 @@ use syn::{ReturnType, Type};
 use vespera_core::route::{Header, MediaType, Response};
 use vespera_core::schema::{Schema, SchemaRef};
 
-use super::schema::parse_type_to_schema_ref;
+use super::schema::{is_builtin_openapi_type, parse_type_to_schema_ref};
 use crate::parser::is_keyword_type::{KeywordType, is_keyword_type, is_keyword_type_by_type_path};
 
 /// Unwrap Json<T> to get T
@@ -25,40 +25,22 @@ fn unwrap_json(ty: &Type) -> &Type {
 }
 
 /// Extract Ok and Err types from Result<T, E> or Result<Json<T>, E>
-/// Handles both Result and `std::result::Result`, and unwraps references
+/// Handles both Result and `std::result::Result`, and unwraps references.
+///
+/// A one-argument `Result<T>` is axum's `axum::response::Result<T>` (error
+/// type `axum::response::ErrorResponse`): its error body is opaque. User
+/// aliases such as `type ApiResult<T> = Result<Json<T>, AppError>` are
+/// expanded before this point (see [`super::result_alias`]).
 fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
-    // First unwrap Json if present
-    let unwrapped = unwrap_json(ty);
+    let (ok_ty, err_ty) = result_args(ty)?;
+    let err_ty = err_ty.cloned().unwrap_or_else(axum_error_response);
+    Some((unwrap_json(ok_ty).clone(), err_ty))
+}
 
-    // Handle both Type::Path and Type::Reference (for &Result<...>)
-    let result_type = if let Type::Path(type_path) = unwrapped {
-        type_path
-    } else if let Type::Reference(type_ref) = unwrapped
-        && let Type::Path(type_path) = type_ref.elem.as_ref()
-    {
-        type_path
-    } else {
-        return None;
-    };
-
-    let path = &result_type.path;
-    if path.segments.is_empty() {
-        return None;
-    }
-
-    if is_keyword_type_by_type_path(result_type, &KeywordType::Result)
-        && let Some(segment) = path.segments.last()
-        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-        && args.args.len() >= 2
-        && let (Some(syn::GenericArgument::Type(ok_ty)), Some(syn::GenericArgument::Type(err_ty))) =
-            (args.args.first(), args.args.get(1))
-    {
-        // Get the last segment (Result) to check for generics
-        // Unwrap Json from Ok type if present
-        let ok_ty_unwrapped = unwrap_json(ok_ty);
-        return Some((ok_ty_unwrapped.clone(), err_ty.clone()));
-    }
-    None
+/// `axum::response::ErrorResponse` — the error half of a one-argument
+/// `axum::response::Result<T>`.
+fn axum_error_response() -> Type {
+    syn::parse_quote!(axum::response::ErrorResponse)
 }
 
 /// Check if error type is a tuple (`StatusCode`, E) or (`StatusCode`, Json<E>)
@@ -80,8 +62,11 @@ fn extract_status_code_tuple(err_ty: &Type) -> Option<(u16, Type)> {
 /// These types contribute to the HTTP response (status, headers, cookies)
 /// but do not form the response body.
 /// `[(HeaderName, &str); N]` header arrays are axum `IntoResponseParts` too.
+/// A bare `()` is axum's empty response (no body at all), unlike `Json<()>`,
+/// which serializes `null`.
 fn is_non_body_type(ty: &Type) -> bool {
-    matches!(ty, Type::Array(array) if matches!(array.elem.as_ref(), Type::Tuple(_)))
+    is_unit(ty)
+        || matches!(ty, Type::Array(array) if matches!(array.elem.as_ref(), Type::Tuple(_)))
         || is_keyword_type(ty, &KeywordType::StatusCode)
         || is_keyword_type(ty, &KeywordType::HeaderMap)
         || is_keyword_type(ty, &KeywordType::CookieJar)
@@ -114,7 +99,16 @@ fn extract_ok_payload_and_headers(
         return (payload_ty, headers);
     }
 
+    if is_unit(ok_ty) {
+        // `Result<(), E>` / `-> ()`: an empty 200 — no `content`.
+        return (None, None);
+    }
     (Some(unwrap_json(ok_ty).clone()), None)
+}
+
+/// `()` — the empty tuple.
+fn is_unit(ty: &Type) -> bool {
+    matches!(ty, Type::Tuple(tuple) if tuple.elems.is_empty())
 }
 
 /// True if `ty` is a bare `String` / `str` / `&str` (NOT wrapped in `Json`).
@@ -163,16 +157,15 @@ fn is_u8(ty: &Type) -> bool {
 }
 
 /// True for bodies whose shape the signature does not reveal: `impl
-/// IntoResponse` (any `impl Trait`), a type-erased `Response` and a
-/// `Redirect` (no body at all). They are documented by description only.
+/// IntoResponse` (any `impl Trait`), a type-erased `Response`, axum's
+/// `ErrorResponse` and a `Redirect` (no body at all). They are documented by
+/// description only.
 fn is_opaque_body(ty: &Type) -> bool {
     match ty {
         Type::ImplTrait(_) => true,
-        Type::Path(type_path) => type_path
-            .path
-            .segments
-            .last()
-            .is_some_and(|seg| seg.ident == "Response" || seg.ident == "Redirect"),
+        Type::Path(type_path) => type_path.path.segments.last().is_some_and(|seg| {
+            seg.ident == "Response" || seg.ident == "Redirect" || seg.ident == "ErrorResponse"
+        }),
         _ => false,
     }
 }
@@ -220,27 +213,25 @@ fn tuple_body(ty: &Type) -> &Type {
 }
 
 /// The original `(Ok, Err)` argument types of a `Result<Ok, Err>` return type
-/// (no `Json` unwrapping) — used for content-type determination only.
-fn result_args(ty: &Type) -> Option<(&Type, &Type)> {
-    let type_path = match unwrap_json(ty) {
-        Type::Path(type_path) => type_path,
-        Type::Reference(type_ref) => match type_ref.elem.as_ref() {
-            Type::Path(type_path) => type_path,
-            _ => return None,
-        },
-        _ => return None,
-    };
-    if is_keyword_type_by_type_path(type_path, &KeywordType::Result)
+/// (no `Json` unwrapping). `Err` is `None` for axum's one-argument
+/// `Result<T>`, whose error (`ErrorResponse`) is opaque.
+fn result_args(ty: &Type) -> Option<(&Type, Option<&Type>)> {
+    let mut inner = unwrap_json(ty);
+    if let Type::Reference(type_ref) = inner {
+        inner = type_ref.elem.as_ref();
+    }
+    if let Type::Path(type_path) = inner
+        && is_keyword_type_by_type_path(type_path, &KeywordType::Result)
         && let Some(segment) = type_path.path.segments.last()
         && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-        && args.args.len() >= 2
-        && let (Some(syn::GenericArgument::Type(ok)), Some(syn::GenericArgument::Type(err))) =
-            (args.args.first(), args.args.get(1))
     {
-        Some((ok, err))
-    } else {
-        None
+        let mut types = args.args.iter().filter_map(|arg| match arg {
+            syn::GenericArgument::Type(ty) => Some(ty),
+            _ => None,
+        });
+        return types.next().map(|ok| (ok, types.next()));
     }
+    None
 }
 
 /// `(200-body content-type, error-body content-type)` for a handler return
@@ -249,11 +240,44 @@ fn response_content_types(ty: &Type) -> (Option<&'static str>, Option<&'static s
     if let Some((ok, err)) = result_args(ty) {
         (
             body_content_type(tuple_body(ok)),
-            body_content_type(tuple_body(err)),
+            err.and_then(|err| body_content_type(tuple_body(err))),
         )
     } else {
         (body_content_type(tuple_body(ty)), Some("application/json"))
     }
+}
+
+/// Wrapper / response idents [`parse_return_type`] understands beyond the
+/// schema builtins (see [`is_builtin_openapi_type`]).
+const RESPONSE_IDENTS: [&str; 12] = [
+    "Json",
+    "Html",
+    "Sse",
+    "Bytes",
+    "BytesMut",
+    "Body",
+    "Response",
+    "Redirect",
+    "ErrorResponse",
+    "HeaderMap",
+    "CookieJar",
+    "Value",
+];
+
+/// True for a top-level named return type whose shape vespera cannot resolve:
+/// not a builtin, not a response wrapper, and not a known `Schema` type.
+fn is_unresolved_named_type(
+    ty: &Type,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &HashMap<&str, &str>,
+) -> bool {
+    crate::schema_macro::type_utils::last_path_segment(ty).is_some_and(|segment| {
+        let ident = segment.ident.to_string();
+        !(is_builtin_openapi_type(&ident)
+            || RESPONSE_IDENTS.contains(&ident.as_str())
+            || known_schemas.contains(ident.as_str())
+            || struct_definitions.contains_key(ident.as_str()))
+    })
 }
 
 fn content_for_type(
@@ -381,6 +405,15 @@ pub fn parse_return_type(
                     content: None,
                 },
             );
+        }
+        ReturnType::Type(_, ty)
+            if is_unresolved_named_type(ty, known_schemas, struct_definitions) =>
+        {
+            // A named type vespera cannot see through (an unexpanded alias,
+            // a custom `IntoResponse` without `#[derive(Schema)]`): its wire
+            // shape is unknown, so document the response by description only
+            // instead of claiming a generic JSON object.
+            responses.insert("200".to_string(), successful_response(None, None));
         }
         ReturnType::Type(_, ty) => {
             let (ok_content_type, err_content_type) = response_content_types(ty);

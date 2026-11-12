@@ -6,11 +6,11 @@ use std::{
     hash::Hash,
 };
 
-use vespera_core::schema::Schema;
+use vespera_core::schema::{Schema, SchemaRef};
 
 use super::serde_attrs::{
     SerdeEnumRepr, extract_doc_comment, extract_enum_repr, extract_rename_all,
-    extract_rename_all_fields,
+    extract_rename_all_fields, extract_untagged,
 };
 
 mod representations;
@@ -42,6 +42,20 @@ pub fn parse_enum_to_schema(
         fields: rename_all_fields.as_deref(),
     };
     let repr = extract_enum_repr(&enum_item.attrs);
+    if !matches!(repr, SerdeEnumRepr::Untagged)
+        && enum_item
+            .variants
+            .iter()
+            .any(|variant| extract_untagged(&variant.attrs))
+    {
+        return parse_enum_with_untagged_variants(
+            enum_item,
+            enum_description,
+            renames,
+            known_schemas,
+            struct_definitions,
+        );
+    }
     let all_unit = enum_item
         .variants
         .iter()
@@ -89,6 +103,63 @@ pub fn parse_enum_to_schema(
     }
 }
 
+/// A tagged enum with per-variant `#[serde(untagged)]` variants.
+///
+/// serde tries the tagged variants first and falls back to the untagged ones
+/// (in declaration order), whose payload is written without any tag. The
+/// schema is therefore `anyOf: [<tagged variants>, ...<untagged variants>]` —
+/// `anyOf`, because an untagged payload may also match a tagged branch
+/// (`Custom(String)` next to the unit variants of a string enum).
+fn parse_enum_with_untagged_variants(
+    enum_item: &syn::ItemEnum,
+    description: Option<String>,
+    renames: EnumRenames<'_>,
+    known_schemas: &HashSet<impl Borrow<str> + Eq + Hash>,
+    struct_definitions: &HashMap<impl Borrow<str> + Eq + Hash, impl AsRef<str>>,
+) -> Schema {
+    let mut tagged = enum_item.clone();
+    let mut untagged = enum_item.clone();
+    tagged.attrs.retain(|attr| !attr.path().is_ident("doc"));
+    tagged.variants = enum_item
+        .variants
+        .iter()
+        .filter(|variant| !extract_untagged(&variant.attrs))
+        .cloned()
+        .collect();
+    untagged.variants = enum_item
+        .variants
+        .iter()
+        .filter(|variant| extract_untagged(&variant.attrs))
+        .cloned()
+        .collect();
+
+    let mut any_of = Vec::new();
+    if tagged
+        .variants
+        .iter()
+        .any(|variant| !variant::is_variant_omitted(variant))
+    {
+        any_of.push(SchemaRef::Inline(Box::new(parse_enum_to_schema(
+            &tagged,
+            known_schemas,
+            struct_definitions,
+        ))));
+    }
+    let untagged = representations::parse_untagged_enum(
+        &untagged,
+        None,
+        renames,
+        known_schemas,
+        struct_definitions,
+    );
+    any_of.extend(untagged.any_of.unwrap_or_default());
+    Schema {
+        description,
+        any_of: (!any_of.is_empty()).then_some(any_of),
+        ..Schema::default()
+    }
+}
+
 /// Reject enum shapes whose serde representation cannot be described.
 ///
 /// An internally tagged (`#[serde(tag = "..")]`) newtype variant must wrap a
@@ -103,7 +174,8 @@ pub fn validate_enum_for_schema(enum_item: &syn::ItemEnum) -> syn::Result<()> {
         return Ok(());
     };
     for variant in &enum_item.variants {
-        if variant::is_variant_omitted(variant) {
+        // An untagged variant carries no tag, so any payload is fine.
+        if variant::is_variant_omitted(variant) || extract_untagged(&variant.attrs) {
             continue;
         }
         let syn::Fields::Unnamed(fields) = &variant.fields else {

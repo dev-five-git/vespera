@@ -241,7 +241,7 @@ pub struct UserResponse {
     #[serde(rename = "fullName")]  // ✅ Respected
     name: String,        // → "fullName" in JSON Schema
     
-    #[serde(default)]    // ✅ Recognized (does NOT affect `required` — only Option<T> does)
+    #[serde(default)]    // ✅ Optional in request bodies (`UserResponseInput`, see below)
     bio: Option<String>,
     
     #[serde(skip)]       // ✅ Excluded from schema
@@ -290,7 +290,7 @@ npx @apidevtools/swagger-cli validate openapi.json
 | `VESPERA_VERSION` | API version | `CARGO_PKG_VERSION` |
 | `VESPERA_DOCS_URL` | Swagger UI path | none |
 | `VESPERA_REDOC_URL` | ReDoc path | none |
-| `VESPERA_SERVER_URL` | Server URL | `http://localhost:3000` |
+| `VESPERA_SERVER_URL` | Server URL | none (`servers` omitted → same origin) |
 
 ---
 
@@ -518,7 +518,9 @@ vespera::schema_type!(Schema from Model, name = "MemoSchema");
 
 **Database Defaults in OpenAPI:** Fields with `#[sea_orm(default_value = "...")]` or `#[sea_orm(primary_key)]` automatically get `default` values in the generated OpenAPI schema. SQL functions like `NOW()` and `gen_random_uuid()` are mapped to type-appropriate defaults.
 
-**Required Logic:** `required` is determined **solely by nullability** (`Option<T>`). Fields with `#[serde(default)]` or `#[serde(skip_serializing_if)]` are still `required` unless they are `Option<T>`.
+**Required Logic:** `required` follows nullability (`Option<T>`) and what serde writes: `skip_serializing` / `skip_serializing_if` fields are not required in the response view.
+
+**Request views (`{Name}Input`):** when serde reads a type differently than it writes it (`#[serde(default)]` on a field or the container, one-sided `skip_deserializing` / `skip_serializing`, `rename(deserialize = ..)` / `rename_all(deserialize = ..)` differing from the serialize side, or a field type that itself has an input view), request bodies (`Json` / `Form` / `TypedMultipart`) reference an extra `{Name}Input` component: defaulted fields are optional, `skip_deserializing` fields are absent, keys use the deserialize name. `{Name}` stays the response view. Nothing extra is emitted when both views are identical or no request body uses the type. `#[schema(name = "X")]` gives `XInput`; if that name is taken, `XInput2`, `XInput3`, ….
 
 ### Same-File Relation Adapters
 

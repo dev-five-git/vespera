@@ -22,7 +22,10 @@ use vespera_core::route::{HttpMethod, PathItem};
 use crate::{
     file_utils::normalize_path_key,
     metadata::CollectedMetadata,
-    parser::{OperationRouteConfig, build_operation_from_function, openapi_path_template},
+    parser::{
+        OperationRouteConfig, build_operation_from_function, openapi_path_template,
+        schema::{generic_instances, request_view},
+    },
     route_impl::StoredRouteInfo,
 };
 
@@ -34,6 +37,29 @@ type StorageFnSigs<'a> = HashMap<(Option<String>, &'a str), Option<&'a str>>;
 /// Uses `route_storage` (from `#[route]` macro) as the primary source for function
 /// signatures. Falls back to pre-built `file_cache` when ROUTE_STORAGE doesn't
 /// have an entry (e.g., during tests or for routes added without the attribute).
+/// An AST-backed route job: route index, metadata, signature, and the AST of
+/// the file that declares it (for same-file alias lookup).
+type AstJob<'a> = (
+    usize,
+    &'a crate::metadata::RouteMetadata,
+    &'a syn::Signature,
+    Option<&'a syn::File>,
+);
+
+/// `sig` with its return-type alias expanded (borrowed when nothing changed).
+fn expanded_signature<'a>(
+    sig: &'a syn::Signature,
+    file_ast: Option<&syn::File>,
+    src_dir: Option<&std::path::Path>,
+) -> std::borrow::Cow<'a, syn::Signature> {
+    let mut expanded = sig.clone();
+    if crate::parser::expand_return_type_alias(&mut expanded, file_ast, src_dir) {
+        std::borrow::Cow::Owned(expanded)
+    } else {
+        std::borrow::Cow::Borrowed(sig)
+    }
+}
+
 pub(super) fn build_path_items(
     metadata: &CollectedMetadata,
     known_schema_names: &HashSet<&str>,
@@ -77,6 +103,10 @@ pub(super) fn build_path_items(
             (normalize_path_key(path, &cwd), fns)
         })
         .collect();
+    let file_by_key: HashMap<String, &syn::File> = file_cache
+        .iter()
+        .map(|(path, ast)| (normalize_path_key(path, &cwd), ast))
+        .collect();
 
     // ROUTE_STORAGE-backed function signatures (skipped when the same
     // function is already covered by `fn_index` — re-parsing would be
@@ -90,7 +120,7 @@ pub(super) fn build_path_items(
     // route order so PathItem operations are applied deterministically
     // regardless of which thread produced them.
     let mut parallel_jobs: Vec<(usize, &crate::metadata::RouteMetadata, &str)> = Vec::new();
-    let mut ast_jobs: Vec<(usize, &crate::metadata::RouteMetadata, &syn::Signature)> = Vec::new();
+    let mut ast_jobs: Vec<AstJob<'_>> = Vec::new();
     for (idx, route_meta) in metadata.routes.iter().enumerate() {
         // ROUTE_STORAGE first (avoids file_cache dependency for known
         // routes) — same priority order as the previous sequential code.
@@ -118,7 +148,12 @@ pub(super) fn build_path_items(
             && let Some(fns) = fn_index.get(&norm_key)
             && let Some(fn_item) = fns.get(&route_meta.function_name)
         {
-            ast_jobs.push((idx, route_meta, &fn_item.sig));
+            ast_jobs.push((
+                idx,
+                route_meta,
+                &fn_item.sig,
+                file_by_key.get(&norm_key).copied(),
+            ));
         }
     }
 
@@ -164,8 +199,13 @@ pub(super) fn build_path_items(
     let mut results: Vec<(usize, HttpMethod, vespera_core::route::Operation)> =
         run_route_jobs_parallel(&parallel_jobs, &build_one)?;
 
-    for (idx, route_meta, fn_sig) in ast_jobs {
-        if let Some((method, operation)) = build_one(route_meta, fn_sig)? {
+    // `#[route]` already expanded return-type aliases in the stored
+    // signatures; AST-backed signatures get the same expansion here.
+    let src_dir = crate::schema_macro::file_cache::get_manifest_dir()
+        .map(|dir| std::path::PathBuf::from(dir).join("src"));
+    for (idx, route_meta, fn_sig, file_ast) in ast_jobs {
+        let fn_sig = expanded_signature(fn_sig, file_ast, src_dir.as_deref());
+        if let Some((method, operation)) = build_one(route_meta, &fn_sig)? {
             results.push((idx, method, operation));
         }
     }
@@ -490,13 +530,21 @@ pub(super) fn parallel_filter_map<T: Sync, R: Send>(
     let _guard = FallbackGuard;
 
     let chunk_size = jobs.len().div_ceil(workers);
+    // Workers do not inherit the caller's thread-locals.
+    let input_names = request_view::snapshot();
     std::thread::scope(|scope| {
         let handles: Vec<_> = jobs
             .chunks(chunk_size)
             .map(|chunk| {
+                let input_names = std::sync::Arc::clone(&input_names);
                 scope.spawn(move || {
+                    request_view::install(input_names);
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        chunk.iter().filter_map(|job| f(job).transpose()).collect()
+                        let results: syn::Result<Vec<R>> =
+                            chunk.iter().filter_map(|job| f(job).transpose()).collect();
+                        // Recursive generic components built on this worker
+                        // travel back to the calling thread.
+                        (results, generic_instances::take_materialized())
                     }))
                 })
             })
@@ -506,8 +554,9 @@ pub(super) fn parallel_filter_map<T: Sync, R: Send>(
             let worker_result = handle
                 .join()
                 .map_err(|panic| worker_panic_error(panic.as_ref()))?;
-            let chunk_results: syn::Result<Vec<R>> =
+            let (chunk_results, materialized) =
                 worker_result.map_err(|panic| worker_panic_error(panic.as_ref()))?;
+            generic_instances::merge_materialized(materialized);
             results.extend(chunk_results?);
         }
         Ok(results)

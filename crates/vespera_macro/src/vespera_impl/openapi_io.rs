@@ -92,6 +92,9 @@ pub fn generate_and_write_openapi(
         Some(file_asts),
         route_storage,
     )?;
+    if openapi_doc.info.description.is_none() {
+        openapi_doc.info.description = super::path_utils::package_description();
+    }
 
     // Merge specs from child apps at compile time. This is the one point where
     // the parent and every exported child definition are all available, so

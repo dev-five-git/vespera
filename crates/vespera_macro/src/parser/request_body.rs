@@ -107,7 +107,11 @@ fn body_for_type(
             .find_map(|(name, media_type)| (ident == name).then_some(*media_type))
             && let Some(inner_ty) = first_generic_type(segment)
         {
-            let schema = parse_type_to_schema_ref(inner_ty, known_schemas, struct_definitions);
+            // Request view: types whose deserialized shape differs reference
+            // their `{Name}Input` component (see `schema::request_view`).
+            let schema = super::schema::request_view::with_request_view(|| {
+                parse_type_to_schema_ref(inner_ty, known_schemas, struct_definitions)
+            });
             return Some(single_content_body(media_type, schema));
         }
 

@@ -172,7 +172,12 @@ pub fn build_operation_from_function(
         for (status_code, schema_name) in typed_responses {
             responses.insert(
                 status_code.to_string(),
-                typed_response(schema_name, response_description_for_status(*status_code)),
+                typed_response(
+                    schema_name,
+                    response_description_for_status(*status_code),
+                    known_schemas,
+                    struct_definitions,
+                ),
             );
         }
     }
@@ -292,12 +297,28 @@ fn deduplicate_header_parameters(parameters: &mut Vec<Parameter>) {
     });
 }
 
-fn typed_response(schema_name: &str, description: String) -> Response {
+/// `responses = [(404, NotFound)]` entry. `#[route]` asserts the type is
+/// `Schema` at compile time; a type known to this crate goes through the
+/// regular type conversion (so a `#[schema(name = "...")]` rename is honoured),
+/// one defined elsewhere (e.g. a merged child app) keeps a plain `$ref`.
+fn typed_response(
+    schema_name: &str,
+    description: String,
+    known_schemas: &HashSet<&str>,
+    struct_definitions: &std::collections::HashMap<&str, &str>,
+) -> Response {
+    let schema = if known_schemas.contains(schema_name)
+        && let Ok(ty) = syn::parse_str::<Type>(schema_name)
+    {
+        super::schema::parse_type_to_schema_ref(&ty, known_schemas, struct_definitions)
+    } else {
+        SchemaRef::Ref(Reference::schema(schema_name))
+    };
     let mut content = BTreeMap::new();
     content.insert(
         "application/json".to_string(),
         MediaType {
-            schema: Some(SchemaRef::Ref(Reference::schema(schema_name))),
+            schema: Some(schema),
             example: None,
             examples: None,
         },

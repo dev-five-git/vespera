@@ -94,6 +94,11 @@ pub struct StructMetadata {
     /// rejecting two distinct items that claim the same OpenAPI schema name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_identity: Option<String>,
+    /// The Rust identifier of the type when it differs from [`Self::name`]
+    /// (`#[schema(name = "X")] struct Foo` → `Some("Foo")`). Uses of `Foo` in
+    /// handler signatures and fields resolve through it to `$ref: X`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rust_ident: Option<String>,
 }
 
 const fn default_include_in_openapi() -> bool {
@@ -109,6 +114,7 @@ impl Default for StructMetadata {
             explicit_schema_name: false,
             field_defaults: BTreeMap::new(),
             source_identity: None,
+            rust_ident: None,
         }
     }
 }
@@ -123,6 +129,7 @@ impl StructMetadata {
             explicit_schema_name: false,
             field_defaults: BTreeMap::new(),
             source_identity: None,
+            rust_ident: None,
         }
     }
 
@@ -135,6 +142,7 @@ impl StructMetadata {
             explicit_schema_name: false,
             field_defaults: BTreeMap::new(),
             source_identity: None,
+            rust_ident: None,
         }
     }
 

@@ -1,0 +1,293 @@
+---
+source: crates/vespera_macro/src/openapi_generator/tests_accuracy.rs
+expression: pretty(&doc)
+---
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/account": {
+      "post": {
+        "operationId": "account",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountDtoInput2"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/page": {
+      "post": {
+        "operationId": "page",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/SettingsInput"
+                    }
+                  }
+                },
+                "required": [
+                  "items"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Settings"
+                      }
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/plain": {
+      "get": {
+        "operationId": "plain",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Plain"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Plain"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/profile": {
+      "post": {
+        "operationId": "save",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AccountDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "uint32"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "AccountDtoInput": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "integer",
+            "format": "uint8"
+          }
+        },
+        "required": [
+          "x"
+        ]
+      },
+      "AccountDtoInput2": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "uint32"
+          }
+        }
+      },
+      "Page": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "Plain": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "integer",
+            "format": "uint8"
+          }
+        },
+        "required": [
+          "x"
+        ]
+      },
+      "Profile": {
+        "type": "object",
+        "properties": {
+          "settings": {
+            "$ref": "#/components/schemas/Settings"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "settings",
+          "tags"
+        ]
+      },
+      "ProfileInput": {
+        "type": "object",
+        "properties": {
+          "settings": {
+            "$ref": "#/components/schemas/SettingsInput"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "settings",
+          "tags"
+        ]
+      },
+      "Settings": {
+        "type": "object",
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "plain": {
+            "type": "boolean"
+          },
+          "secret": {
+            "type": "string",
+            "writeOnly": true
+          },
+          "theme": {
+            "type": "string",
+            "default": ""
+          },
+          "updated_at": {
+            "type": "string",
+            "readOnly": true
+          }
+        },
+        "required": [
+          "updated_at",
+          "displayName",
+          "plain"
+        ]
+      },
+      "SettingsInput": {
+        "type": "object",
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "plain": {
+            "type": "boolean"
+          },
+          "secret": {
+            "type": "string"
+          },
+          "theme": {
+            "type": "string",
+            "default": ""
+          }
+        },
+        "required": [
+          "secret",
+          "display_name",
+          "plain"
+        ]
+      }
+    }
+  }
+}

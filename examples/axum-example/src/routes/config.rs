@@ -78,3 +78,33 @@ pub async fn update_config(Json(req): Json<UpdateConfigRequest>) -> Json<Config>
         delimiter: req.delimiter.or(current.delimiter),
     })
 }
+
+fn default_digest_hour() -> u8 {
+    9
+}
+
+/// Notification preferences.
+///
+/// serde reads a different shape than it writes, so the request body
+/// references `PreferencesInput` (defaults optional, `updatedBy` absent)
+/// while the response keeps `Preferences`.
+#[derive(Serialize, Deserialize, Schema)]
+#[serde(rename_all = "camelCase")]
+pub struct Preferences {
+    #[serde(default)]
+    pub email_opt_in: bool,
+    #[serde(default = "default_digest_hour")]
+    pub digest_hour: u8,
+    #[serde(skip_deserializing)]
+    pub updated_by: String,
+    pub locale: String,
+}
+
+/// Save notification preferences
+#[vespera::route(put, path = "/preferences", tags = ["config"])]
+pub async fn save_preferences(Json(prefs): Json<Preferences>) -> Json<Preferences> {
+    Json(Preferences {
+        updated_by: "api".to_string(),
+        ..prefs
+    })
+}

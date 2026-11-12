@@ -45,7 +45,13 @@ fn check_extractors(
     metadata: &CollectedMetadata,
     file_cache: &HashMap<String, syn::File>,
 ) -> syn::Result<()> {
-    let known: HashSet<&str> = metadata.structs.iter().map(|s| s.name.as_str()).collect();
+    // Renamed schemas (`#[schema(name = "X")] struct Foo`) are known under
+    // their Rust ident too — that is the name a handler signature uses.
+    let known: HashSet<&str> = metadata
+        .structs
+        .iter()
+        .flat_map(|s| std::iter::once(s.name.as_str()).chain(s.rust_ident.as_deref()))
+        .collect();
     // Map each route file's module path → its file path so an absolute
     // `crate::<route-module>::Type` import can be resolved back to the route file
     // and checked: a path that resolves *inside* the route folder names a route

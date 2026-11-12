@@ -24,6 +24,7 @@ thread_local! {
 
 use super::super::{
     generics::substitute_type,
+    request_view,
     serde_attrs::{capitalize_first, extract_schema_name_from_entity, extract_schema_ref_override},
     struct_schema::parse_struct_to_schema,
 };
@@ -527,15 +528,32 @@ fn parse_type_impl(
                             parsed.generics.params.clear();
                             parsed.generics.where_clause = None;
 
-                            // Parse the substituted struct to schema (inline)
-                            let schema =
-                                parse_struct_to_schema(&parsed, known_schemas, struct_definitions);
-                            return SchemaRef::Inline(Box::new(schema));
+                            // Inline the substituted struct, unless it
+                            // contains itself — then it becomes the named
+                            // component `Base_Arg..` (see `generic_instances`).
+                            let base = component_name(resolved_name, def_str);
+                            let mut name = super::generic_instances::instance_name(
+                                &base,
+                                concrete_types.iter().copied(),
+                            );
+                            // A request-view instantiation differs from the
+                            // response one when it names an input type.
+                            if request_view::in_request_view()
+                                && (request_view::has_input(&base)
+                                    || request_view::mentions_input(concrete_types.iter().copied()))
+                            {
+                                name.push_str("Input");
+                            }
+                            return super::generic_instances::inline_or_reference(&name, || {
+                                parse_struct_to_schema(&parsed, known_schemas, struct_definitions)
+                            });
                         }
                     }
                 }
                 // Non-generic type or generic without parameters - use reference
-                SchemaRef::Ref(Reference::schema(&resolved_name))
+                let component = component_name(resolved_name, def_str);
+                let component = request_view::input_component(&component).unwrap_or(component);
+                SchemaRef::Ref(Reference::schema(&component))
             } else {
                 // For unknown custom types, return object schema instead of reference
                 // This prevents creating invalid references to non-existent schemas
@@ -586,6 +604,17 @@ fn parse_type_impl(
         }
         _ => SchemaRef::Inline(Box::new(Schema::new(SchemaType::Object))),
     }
+}
+
+/// The component name a reference to the known type `ident` must use: the
+/// `#[schema(name = "...")]` of its definition when it carries one (the Rust
+/// ident is only an alias then), otherwise `ident` itself.
+fn component_name(ident: String, definition: Option<&str>) -> String {
+    definition
+        .filter(|def| def.contains("[schema") && def.contains("name"))
+        .and_then(|def| syn::parse_str::<syn::DeriveInput>(def).ok())
+        .and_then(|input| crate::schema_impl::extract_schema_name_attr(&input.attrs))
+        .unwrap_or(ident)
 }
 
 /// Fixed-length JSON array for a Rust tuple / tuple struct / tuple variant:

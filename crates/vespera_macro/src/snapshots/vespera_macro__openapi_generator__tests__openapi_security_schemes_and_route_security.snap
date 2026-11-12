@@ -8,11 +8,6 @@ expression: "serde_json::to_string_pretty(&doc).unwrap()"
     "title": "Security API",
     "version": "1.0.0"
   },
-  "servers": [
-    {
-      "url": "http://localhost:3000"
-    }
-  ],
   "paths": {
     "/secure": {
       "get": {

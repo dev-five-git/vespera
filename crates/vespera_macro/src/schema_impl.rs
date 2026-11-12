@@ -352,6 +352,9 @@ pub fn process_derive_schema(
     let mut metadata = build_struct_metadata(input, schema_name, call_site_file.as_deref());
     if has_explicit_schema_name {
         metadata.explicit_schema_name = true;
+        if *name != metadata.name {
+            metadata.rust_ident = Some(name.to_string());
+        }
     }
     if schema_attr.has_ref_override {
         metadata.include_in_openapi = false;

@@ -6,8 +6,8 @@ use vespera_core::{
     schema::{Schema, SchemaRef},
 };
 
-use super::shared::{named_struct_fields, serde_field_name};
-use crate::parser::schema::{extract_rename_all, parse_type_to_schema_ref};
+use super::shared::{input_rename_all, named_struct_fields, serde_field_name};
+use crate::parser::schema::{extract_doc_comment, parse_type_to_schema_ref};
 
 /// A required `in: path` parameter.
 pub(in crate::parser) fn path_parameter(name: &str, schema: SchemaRef) -> Parameter {
@@ -64,18 +64,22 @@ pub(in crate::parser) fn path_extractor_parameters(
     }
 
     if let Some(struct_item) = named_struct_fields(inner_ty, struct_definitions) {
-        let rename_all = extract_rename_all(&struct_item.attrs);
+        let rename_all = input_rename_all(&struct_item.attrs);
         return path_params
             .iter()
             .map(|name| {
-                let schema = struct_item
+                let field = struct_item
                     .fields
                     .iter()
-                    .find(|field| serde_field_name(field, rename_all.as_deref()) == *name)
-                    .map_or_else(string_path_schema, |field| {
-                        parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions)
-                    });
-                path_parameter(name, schema)
+                    .find(|field| serde_field_name(field, rename_all.as_deref()) == *name);
+                let schema = field.map_or_else(string_path_schema, |field| {
+                    parse_type_to_schema_ref(&field.ty, known_schemas, struct_definitions)
+                });
+                // The field's doc comment documents the parameter.
+                Parameter {
+                    description: field.and_then(|field| extract_doc_comment(&field.attrs)),
+                    ..path_parameter(name, schema)
+                }
             })
             .collect();
     }
